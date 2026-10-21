@@ -90,7 +90,7 @@ impl ConnectorGate {
                     // error stays the surfaced one.
                     if grant.granted {
                         if let Err(revoke_err) =
-                            crate::features::marketplace::revoke_connect_enable(self.id, &grant)
+                            crate::features::marketplace::revoke_connect_enable(&grant)
                         {
                             log::warn!(
                                 "[{}] revoking the connect grant after the apply failure failed: {revoke_err}",
@@ -124,7 +124,7 @@ impl ConnectorGate {
                         // not be stripped.
                         if grant.granted {
                             if let Err(revoke_err) =
-                                crate::features::marketplace::revoke_connect_enable(self.id, &grant)
+                                crate::features::marketplace::revoke_connect_enable(&grant)
                             {
                                 log::warn!(
                                     "[{}] revoking the connect grant after the belt persist failure failed: {revoke_err}",
@@ -199,7 +199,7 @@ impl ConnectorGate {
                 // retries from "never consented".
                 if grant.granted {
                     if let Err(revoke_err) =
-                        crate::features::marketplace::revoke_connect_enable(self.id, &grant)
+                        crate::features::marketplace::revoke_connect_enable(&grant)
                     {
                         log::warn!(
                             "[{}] revoking the connect grant after the refresh materialization failure failed: {revoke_err}",
@@ -239,7 +239,7 @@ impl ConnectorGate {
                     // granted) standing behind a failed refresh.
                     if grant.granted {
                         if let Err(revoke_err) =
-                            crate::features::marketplace::revoke_connect_enable(self.id, &grant)
+                            crate::features::marketplace::revoke_connect_enable(&grant)
                         {
                             log::warn!(
                                 "[{}] revoking the connect grant after the refresh tail persist failure failed: {revoke_err}",
@@ -790,7 +790,10 @@ mod tests {
     /// grant lifts nothing there) — the compensation must rebuild plain's row
     /// and NOT downgrade code's enabled-by-absence to a liftable default-off
     /// row. Reverting the revoke to the unconditional per-mode restore fails
-    /// the code-scope legs.
+    /// the code-scope legs. Round-3 review: the fixture row is an UNMARKED
+    /// no-ledger verdict, so the restore must also keep its attribution —
+    /// re-adding a registration marker the pre-grant state did not have
+    /// would downgrade the explicit verdict to a liftable install default.
     #[test]
     fn revoke_restores_exactly_the_scopes_the_grant_lifted() {
         use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
@@ -835,10 +838,12 @@ mod tests {
                 "the lifted row must be restored in the scope the grant lifted: {raw}"
             );
             assert!(
-                raw["default_off_scopes"]["plain"]
+                raw["default_off_scopes"].get("plain").is_none_or(|ids| !ids
                     .as_array()
-                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
-                "the restored row must carry its marker back: {raw}"
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu"))),
+                "the restored row must keep its pre-grant attribution — the fixture row is an \
+                 UNMARKED no-ledger verdict, and re-adding a registration marker would \
+                 downgrade it to a liftable install default (round-3 review): {raw}"
             );
             // THE footprint legs: the grant lifted nothing in code, so the
             // compensation must leave code's stored shape alone — no row, no
@@ -887,14 +892,19 @@ mod tests {
     /// its sole truth — so a connect whose materialization then failed used
     /// to leave the connector computed-ON by row-absence behind the failure
     /// card, with the next boot refresh silently completing the enable (both
-    /// reproduced). The revoke must REBUILD the registered-default-off shape
-    /// — row + marker back in every initialized DenyAll scope — so the
-    /// failure end-state is fail-closed on both scope kinds and the restored
-    /// row re-arms the verdict guard against the boot backfill. (Round-2
-    /// fix-wave follow-up: this doc and the `#[test]` had been left above the
-    /// exact-footprint pin inserted before this fn — both attributes attached
-    /// to the new fn, double-registering it and silencing this pin; the
-    /// test-registry guard caught the pair.)
+    /// reproduced). The revoke must REBUILD the lifted rows — row back in
+    /// every initialized DenyAll scope, so the failure end-state is
+    /// fail-closed on both scope kinds and the restored row re-arms the
+    /// verdict guard against the boot backfill. Round-3 review: the
+    /// restoration is attribution-faithful — the fixture row is an UNMARKED
+    /// no-ledger verdict (a legacy-migrated disable, or a toggle-off after a
+    /// failed connect persist), so it must come back UNMARKED; re-adding a
+    /// registration marker would downgrade the explicit verdict to a
+    /// liftable install default that a batch enable can silently lift.
+    /// (Round-2 fix-wave follow-up: this doc and the `#[test]` had been left
+    /// above the exact-footprint pin inserted before this fn — both
+    /// attributes attached to the new fn, double-registering it and
+    /// silencing this pin; the test-registry guard caught the pair.)
     #[test]
     fn revoke_restores_the_lifted_rows_in_initialized_scopes() {
         use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
@@ -938,10 +948,12 @@ mod tests {
                 "the revoke must restore the lifted row in the initialized scope: {raw}"
             );
             assert!(
-                raw["default_off_scopes"]["plain"]
+                raw["default_off_scopes"].get("plain").is_none_or(|ids| !ids
                     .as_array()
-                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
-                "the revoke must restore the registration marker: {raw}"
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu"))),
+                "the revoke must restore the verdict's own attribution — the fixture row is \
+                 UNMARKED, and re-adding a registration marker would downgrade it to a \
+                 liftable install default (round-3 review): {raw}"
             );
             assert!(
                 raw["connect_granted"]
@@ -976,6 +988,259 @@ mod tests {
                 "the boot refresh must not grant over the restored verdict: {raw}"
             );
         });
+    }
+
+    /// Round-3 review MAJOR: the fresh-home grant covers the UNINITIALIZED
+    /// DenyAll scopes through the grant alone — `lifted_scopes` stays empty,
+    /// so the lifted-row restores cannot see them. If such a scope
+    /// MATERIALIZES between the grant and the compensating revoke (the
+    /// composer's whole-list write or another pack's enable initializing it
+    /// from a post-grant snapshot names other packs and keeps the grant), its
+    /// stored list computes the connector ON by row-absence once the grant is
+    /// gone: fail-open behind the failure card, and the next boot refresh
+    /// completes the enable (no row anywhere for the verdict guard, no ledger
+    /// for the gate). The revoke must rebuild the deny-first shape (row +
+    /// marker — what a deny-first registration would have written) in the
+    /// covered scopes that have since materialized. (Reverting the
+    /// covered-uninitialized restore fails the computed-OFF legs.)
+    #[test]
+    fn revoke_restores_a_scope_that_materializes_mid_connect() {
+        use crate::features::marketplace::{
+            ConnectorScope, deny_first_register_connector, load_disabled_bundles_for,
+            save_disabled_bundles_for,
+        };
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-revoke-covered", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            // Fresh home: NEITHER DenyAll scope is initialized, so the grant
+            // lands in the uninitialized arms — grant + ledger pairs, no
+            // rows, both scopes covered on the outcome.
+            let grant = deny_first_register_connector("feishu", true).unwrap();
+            assert!(grant.granted, "fixture: the fresh-home grant must land");
+            assert!(
+                grant.lifted_scopes.is_empty(),
+                "fixture: an uninitialized scope lifts nothing: {grant:?}"
+            );
+            assert_eq!(
+                grant.covered_uninitialized_scopes.len(),
+                2,
+                "fixture: both DenyAll scopes are covered uninitialized: {grant:?}"
+            );
+
+            // Mid-connect: an unrelated composer write materializes plain
+            // from the post-grant snapshot (feishu renders ON, so it is not
+            // in the stored list and its grant survives the write).
+            save_disabled_bundles_for(ConnectorScope::Plain, &["dingtalk".to_string()]).unwrap();
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "fixture: plain computes feishu ON by row absence behind the grant"
+            );
+
+            crate::features::marketplace::revoke_connect_enable(&grant).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["scopes"]["plain"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the materialized covered scope must get its deny-first row back: {raw}"
+            );
+            assert!(
+                raw["default_off_scopes"]["plain"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the restored deny-first shape carries the registration marker: {raw}"
+            );
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu"))
+                    && !raw["install_default_synced"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
+                "the revoke must still strip the grant and the ledger: {raw}"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the restored row must compute the connector OFF again"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Code)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the still-uninitialized covered scope denies via the expansion again"
+            );
+
+            // The restored plain row re-arms the verdict guard: a boot
+            // refresh must not complete the enable over it.
+            let regrant =
+                crate::features::marketplace::scope::grant_connect_enable_refresh("feishu")
+                    .unwrap();
+            assert!(
+                !regrant,
+                "the boot refresh must not grant over the restored verdict"
+            );
+        });
+    }
+
+    /// Round-3 review MINOR: the compensating revoke runs best-effort AFTER
+    /// materialization, and a verdict write can land in that window. A
+    /// composer toggle-off naming the id strips the grant and writes an
+    /// UNMARKED row while the grant's ledger pairs survive — the exact shape
+    /// that makes the verdict reconnect-proof. The revoke's grant-consumed
+    /// predicate must see the gone grant and leave the newer verdict alone:
+    /// no ledger strip (which would let a reconnect lift the verdict), no
+    /// marker re-add (which would downgrade the explicit verdict).
+    #[test]
+    fn revoke_leaves_a_consumed_grant_alone() {
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_file, save_disabled_bundles_for,
+        };
+        use crate::features::marketplace::{ConnectorScope, deny_first_register_connector};
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-revoke-consumed", || {
+            // plain initialized holding a MARKED feishu row (the deny-first
+            // shape): the fresh-home save seeds the marker from the expansion.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            let grant = deny_first_register_connector("feishu", true).unwrap();
+            assert!(grant.granted, "fixture: the gesture lifts the stale row");
+            assert_eq!(grant.lifted_scopes, vec!["plain".to_string()]);
+            assert_eq!(grant.lifted_markers, vec!["plain".to_string()]);
+
+            // Mid-connect: the user toggles feishu OFF again. The whole-list
+            // write strips the grant, writes an unmarked row (the existing
+            // markers were lifted, so nothing is retained), and keeps the
+            // grant-era ledger pairs.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            {
+                let file = load_disabled_bundles_file();
+                assert!(
+                    !file
+                        .default_off_scopes
+                        .get("plain")
+                        .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                    "fixture: the toggle-off is an explicit verdict, not a default: {file:?}"
+                );
+                assert!(
+                    file.install_default_synced
+                        .iter()
+                        .any(|entry| entry == "plain:feishu"),
+                    "fixture: the toggle-off keeps the ledger pair: {file:?}"
+                );
+                assert!(
+                    !file.connect_granted.iter().any(|id| id == "feishu"),
+                    "fixture: the toggle-off stripped the grant: {file:?}"
+                );
+            }
+
+            crate::features::marketplace::revoke_connect_enable(&grant).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.scopes
+                    .get("plain")
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the explicit verdict row must survive the compensation: {file:?}"
+            );
+            assert!(
+                !file
+                    .default_off_scopes
+                    .get("plain")
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the compensation must not re-add a marker over the explicit verdict: {file:?}"
+            );
+            assert!(
+                file.install_default_synced
+                    .iter()
+                    .any(|entry| entry == "plain:feishu"),
+                "the compensation must not strip the ledger pair that makes the verdict \
+                 reconnect-proof: {file:?}"
+            );
+        });
+    }
+
+    /// Round-3 review MINOR: the lift records WHERE it found a registration
+    /// marker, and the revoke restores a marker only there — the restoration
+    /// is attribution-faithful on both cohorts. (a) An unmarked verdict row
+    /// (an initialize-empty write, then a second whole-list write adding the
+    /// row — entering entries carry no marker) must come back unmarked:
+    /// restoring a marker over it would reclassify the explicit verdict as a
+    /// liftable install default. (b) A markered deny-first row keeps its
+    /// marker.
+    #[test]
+    fn revoke_restores_markers_only_where_the_lift_found_one() {
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_file, save_disabled_bundles_for,
+        };
+        use crate::features::marketplace::{ConnectorScope, deny_first_register_connector};
+
+        // (a) The unmarked verdict cohort.
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-skillgate-revoke-marker-unmarked",
+            || {
+                save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
+                save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+                let file = load_disabled_bundles_file();
+                assert!(
+                    !file
+                        .default_off_scopes
+                        .get("plain")
+                        .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                    "fixture: an entering row carries no marker: {file:?}"
+                );
+                let grant = deny_first_register_connector("feishu", true).unwrap();
+                assert!(
+                    grant.lifted_markers.is_empty(),
+                    "fixture: the lift found no marker: {grant:?}"
+                );
+
+                crate::features::marketplace::revoke_connect_enable(&grant).unwrap();
+                let file = load_disabled_bundles_file();
+                assert!(
+                    file.scopes
+                        .get("plain")
+                        .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                    "the verdict row must be restored: {file:?}"
+                );
+                assert!(
+                    !file
+                        .default_off_scopes
+                        .get("plain")
+                        .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                    "the restored verdict must stay unmarked — a marker would downgrade it \
+                     to a liftable install default: {file:?}"
+                );
+            },
+        );
+
+        // (b) The markered deny-first cohort keeps its marker.
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-skillgate-revoke-marker-markered",
+            || {
+                let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+                std::fs::write(
+                    &store,
+                    r#"{"scopes":{"plain":["feishu"]},"default_off_scopes":{"plain":["feishu"]},"initialized":["plain"]}"#,
+                )
+                .unwrap();
+                let grant = deny_first_register_connector("feishu", true).unwrap();
+                assert_eq!(grant.lifted_markers, vec!["plain".to_string()]);
+
+                crate::features::marketplace::revoke_connect_enable(&grant).unwrap();
+                let file = load_disabled_bundles_file();
+                assert!(
+                    file.default_off_scopes
+                        .get("plain")
+                        .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                    "the markered registration restores with its marker: {file:?}"
+                );
+            },
+        );
     }
 
     /// Round-33 MAJOR 2 (review #455), dual-marker form (feat/connector-

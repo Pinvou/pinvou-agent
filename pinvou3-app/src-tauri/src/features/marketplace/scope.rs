@@ -2068,14 +2068,17 @@ pub fn deny_first_register_connector(
 
 /// The STARTUP counterpart of [`deny_first_register_connector`] — same
 /// deny-first boundary for the auth-gate refresh / startup backfill, but its
-/// consent write is the LEDGER-GATED, VERDICT-RESPECTING grant
-/// ([`grant_connect_enable_refresh`]): a boot refresh has no user gesture
-/// behind it, so it never lifts a stored row (a stored row is a user verdict
-/// — the composer toggle-off or a legacy-migrated explicit disable) and only
-/// backfills pairs nothing ever consented. See the review BLOCKER: routing
-/// the boot refresh through the gesture variant silently flipped both
-/// cohorts ON.
-pub(crate) fn deny_first_register_connector_refresh(
+/// consent write is the LEDGER-GATED, VERDICT-RESPECTING grant (the
+/// crate-internal `grant_connect_enable_refresh`): a boot refresh has no user
+/// gesture behind it, so it never lifts a stored row (a stored row is a user
+/// verdict — the composer toggle-off or a legacy-migrated explicit disable)
+/// and only backfills pairs nothing ever consented. See the review BLOCKER:
+/// routing the boot refresh through the gesture variant silently flipped both
+/// cohorts ON. `pub` since the round-3 review: the CLI's standalone
+/// `apply-skills` maintenance run drives this same gated entry — a command
+/// with no connect gesture behind it must not lift a stored no-ledger
+/// verdict the way a real connect may.
+pub fn deny_first_register_connector_refresh(
     connector_id: &str,
     show: bool,
 ) -> Result<ConnectGrantOutcome, String> {
@@ -2136,9 +2139,9 @@ fn deny_first_register_connector_inner(
     // "try again". Owner-claim refusals propagate unwrapped — they are
     // policy refusals, not persist failures.
     if ledger_gated {
-        grant_connect_enable_inner(connector_id, true)
+        grant_connect_enable_inner(&package_id, true)
     } else {
-        grant_connect_enable_inner(connector_id, false).map_err(|e| {
+        grant_connect_enable_inner(&package_id, false).map_err(|e| {
             connect_consent_sync_failure_message(&format!("{connector_id} connected"), &e)
         })
     }
@@ -2354,7 +2357,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str) -> Result<(), String> {
 /// ledger gate) — route a new caller through the gate, never straight here.
 /// A retry is safe (idempotent membership writes).
 pub(crate) fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
-    grant_connect_enable_inner(raw_id, false).map(|outcome| outcome.granted)
+    grant_connect_enable_inner(&to_package_id(raw_id), false).map(|outcome| outcome.granted)
 }
 
 /// The STARTUP connector-gate-refresh variant: LEDGER-GATED and
@@ -2366,7 +2369,7 @@ pub(crate) fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
 /// gesture counterpart that may lift stale rows on a fresh connect is
 /// [`grant_connect_enable`].
 pub(crate) fn grant_connect_enable_refresh(raw_id: &str) -> Result<bool, String> {
-    grant_connect_enable_inner(raw_id, true).map(|outcome| outcome.granted)
+    grant_connect_enable_inner(&to_package_id(raw_id), true).map(|outcome| outcome.granted)
 }
 
 /// What one connect-grant write actually did. The compensating revoke needs
@@ -2380,36 +2383,61 @@ pub(crate) fn grant_connect_enable_refresh(raw_id: &str) -> Result<bool, String>
 pub struct ConnectGrantOutcome {
     /// Whether THIS call persisted any change (the grant is now in place).
     pub granted: bool,
+    /// The package id THIS call granted under — the grant-time
+    /// `to_package_id` fold, carried so `revoke_connect_enable` compensates
+    /// the exact id that was registered instead of re-folding the raw id
+    /// (an installed claimant pack landing mid-connect could fold the same
+    /// raw id differently at revoke time and strand the real grant).
+    pub package_id: String,
     /// DenyAll scope keys (`"plain"`/`"code"`) where THIS call lifted a
-    /// stored default-off row or its marker — exactly what
-    /// `revoke_connect_enable` restores.
+    /// stored default-off row or its marker — the rows the revoke restores.
     pub lifted_scopes: Vec<String>,
+    /// The subset of `lifted_scopes` where the lift found a
+    /// `default_off_scopes` MARKER. The revoke re-adds a marker only here:
+    /// an unmarked verdict row (a legacy-migrated disable, a composer
+    /// toggle-off after a failed connect persist) must come back unmarked —
+    /// restoring a marker over it would downgrade the explicit verdict to a
+    /// liftable install default (round-3 review).
+    pub lifted_markers: Vec<String>,
     /// Whether THIS call cleared a `recovery_hold` (the gesture variant's
     /// post-recovery re-consent); the revoke re-arms it so a failed connect
     /// after a recovery cannot leave the boot backfill guessing over the
     /// lost state again.
     pub cleared_recovery_hold: bool,
+    /// DenyAll scope keys where THIS call recorded the grant while the
+    /// scope was still UNINITIALIZED (the fresh-home arm: the grant + its
+    /// ledger pair are all that covers the connector there, so nothing was
+    /// lifted and `lifted_scopes` stays empty). The revoke must still
+    /// restore the deny-first shape in such a scope when it has since
+    /// MATERIALIZED — a whole-list composer write or another pack's enable
+    /// initializing it from a post-grant snapshot leaves the connector
+    /// computed-ON by row-absence with the grant gone, behind the failure
+    /// card, and the next boot refresh completes the enable (round-3
+    /// review).
+    pub covered_uninitialized_scopes: Vec<String>,
 }
 
 fn grant_connect_enable_inner(
-    raw_id: &str,
+    package_id: &str,
     ledger_gated: bool,
 ) -> Result<ConnectGrantOutcome, String> {
-    let package_id = to_package_id(raw_id);
     // Builtin exemption and known-bundle skip mirror the install sync: the
     // boot-seeded builtin must never enter user state, and a bundle whose
     // consent is already recorded must not be re-registered — the ledger the
     // first grant wrote is what keeps a later refresh/relogin from
     // re-granting over a user's toggle-off.
-    if crate::features::marketplace::builtin::is_builtin_tool(&package_id) {
+    if crate::features::marketplace::builtin::is_builtin_tool(package_id) {
         return Ok(ConnectGrantOutcome::default());
     }
-    if consent_gate_bundle_already_known(&package_id) {
+    if consent_gate_bundle_already_known(package_id) {
         return Ok(ConnectGrantOutcome::default());
     }
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
-        let mut outcome = ConnectGrantOutcome::default();
+        let mut outcome = ConnectGrantOutcome {
+            package_id: package_id.to_string(),
+            ..ConnectGrantOutcome::default()
+        };
         // In-lock ledger recheck: the gate's ledger pre-read is the bounded
         // try-read, which degrades to an unlocked snapshot under contention
         // and can MISS a consent write that lands while this connect is in
@@ -2419,7 +2447,7 @@ fn grant_connect_enable_inner(
         // consent write already ran, so the standing verdict stays and the
         // gesture is a no-op). The refresh variant never reaches the
         // row-lifting arm anyway, so this is fail-safe for both.
-        if ledger_has_any_mode(&file.install_default_synced, &package_id) {
+        if ledger_has_any_mode(&file.install_default_synced, package_id) {
             return Ok(outcome);
         }
         // BOOT REFRESH NEVER OVERRIDES A VERDICT: a stored row in any scope
@@ -2438,7 +2466,7 @@ fn grant_connect_enable_inner(
             && file
                 .scopes
                 .values()
-                .any(|ids| ids.iter().any(|id| id == &package_id))
+                .any(|ids| ids.iter().any(|id| id == package_id))
         {
             return Ok(outcome);
         }
@@ -2469,7 +2497,7 @@ fn grant_connect_enable_inner(
                 continue;
             }
             let key = mode.as_str();
-            let ledger_key = ledger_key(key, &package_id);
+            let ledger_key = ledger_key(key, package_id);
             if !file.initialized.contains(key) {
                 // Same round-32 rationale as the install sync's uninitialized
                 // arm: record the pair even though nothing else is stored, or
@@ -2483,13 +2511,27 @@ fn grant_connect_enable_inner(
                     file.install_default_synced.push(ledger_key);
                     changed = true;
                 }
-                if !file.connect_granted.contains(&package_id) {
-                    file.connect_granted.push(package_id.clone());
+                if !file.connect_granted.iter().any(|id| id == package_id) {
+                    file.connect_granted.push(package_id.to_string());
                     changed = true;
                 }
-                continue;
-            }
-            if ledger_gated && file.install_default_synced.contains(&ledger_key) {
+                // Footprint (round-3 review): this scope is covered by the
+                // GRANT, not by a lifted row — the compensation's
+                // `lifted_scopes` restore cannot see it. If the scope
+                // materializes between the grant and a compensating revoke
+                // (the composer's whole-list write or another pack's enable
+                // initializing it from a post-grant snapshot), the stored
+                // list is the sole truth there and the connector computes ON
+                // by row-absence once the grant is gone. Track the covered
+                // scopes so the revoke can restore the deny-first shape in
+                // the ones that have since materialized.
+                if !outcome
+                    .covered_uninitialized_scopes
+                    .iter()
+                    .any(|k| k == key)
+                {
+                    outcome.covered_uninitialized_scopes.push(key.to_string());
+                }
                 continue;
             }
             // A stored row must not outlive the connect GESTURE: the row and
@@ -2502,20 +2544,24 @@ fn grant_connect_enable_inner(
             // overrides; the boot refresh (ledger_gated) never reaches this
             // arm at all — its guard above returns before any write. Lifted
             // scope keys are tracked on the outcome: they are the ONLY rows
-            // the compensating revoke may rebuild.
+            // the compensating revoke may rebuild, and `lifted_markers`
+            // records where the lift found a marker so the revoke restores
+            // the verdict's own attribution instead of downgrading it.
             let mut lifted_here = false;
+            let mut lifted_marker_here = false;
             if let Some(ids) = file.scopes.get_mut(key) {
                 let before = ids.len();
-                ids.retain(|id| id != &package_id);
+                ids.retain(|id| id != package_id);
                 changed |= ids.len() != before;
                 lifted_here |= ids.len() != before;
             }
             let mut drop_marker_key = false;
             if let Some(defaults) = file.default_off_scopes.get_mut(key) {
                 let before = defaults.len();
-                defaults.retain(|id| id != &package_id);
+                defaults.retain(|id| id != package_id);
                 changed |= defaults.len() != before;
                 lifted_here |= defaults.len() != before;
+                lifted_marker_here = defaults.len() != before;
                 drop_marker_key = defaults.is_empty();
             }
             if drop_marker_key {
@@ -2523,9 +2569,17 @@ fn grant_connect_enable_inner(
             }
             if lifted_here {
                 outcome.lifted_scopes.push(key.to_string());
+                // Attribution (round-3 review): the marker is recorded only
+                // where the lift actually FOUND one — a row-only lift (an
+                // unmarked verdict) must come back unmarked, or the revoke's
+                // restoration would downgrade the explicit verdict to a
+                // liftable install default.
+                if lifted_marker_here && outcome.lifted_markers.iter().all(|k| k != key) {
+                    outcome.lifted_markers.push(key.to_string());
+                }
             }
-            if !file.connect_granted.contains(&package_id) {
-                file.connect_granted.push(package_id.clone());
+            if !file.connect_granted.iter().any(|id| id == package_id) {
+                file.connect_granted.push(package_id.to_string());
                 changed = true;
             }
             if !file.install_default_synced.contains(&ledger_key) {
@@ -2548,60 +2602,118 @@ fn grant_connect_enable_inner(
 /// card reports failure — the review's fail-open abort window, where main
 /// kept the default-off rows and stayed fully denied. Removes the
 /// `connect_granted` entry and the sync ledger pairs, and RESTORES the
-/// markered default-off rows the grant lifted — EXACTLY the scopes recorded
-/// on the grant's [`ConnectGrantOutcome`], so a grant that no-oped in an
-/// initialized scope cannot downgrade the verdict stored there (round-1
-/// review: an unconditional restore flipped a user's composer-ON back to a
-/// liftable default-off row when a reconnect-after-failure re-granted
-/// nothing in that scope). An initialized scope's stored list is its sole
-/// truth, so leaving a lifted row unrestored computes the connector ON by
-/// row-absence behind the failure card and lets the next boot refresh
-/// complete the enable; the restoration — which matches what a deny-first
+/// deny-first shape from the grant's [`ConnectGrantOutcome`] footprint: the
+/// default-off rows the grant lifted — EXACTLY the scopes recorded in
+/// `lifted_scopes`, with markers only where `lifted_markers` says the lift
+/// found one (round-1 review: an unconditional restore flipped a user's
+/// composer-ON back to a liftable default-off row when a
+/// reconnect-after-failure re-granted nothing in that scope; round-3
+/// review: re-adding a marker over an UNMARKED verdict downgrades its
+/// attribution to a liftable install default) — plus the deny-first shape
+/// in every `covered_uninitialized_scopes` scope that has since
+/// MATERIALIZED (round-3 review: the fresh-home grant covers those scopes
+/// through the grant alone; a whole-list composer write or another pack's
+/// enable initializing the scope from a post-grant snapshot leaves the
+/// connector computed-ON by row-absence once the grant is gone, behind the
+/// failure card, and the next boot refresh completes the enable). An
+/// initialized scope's stored list is its sole truth, so leaving a covered
+/// scope unrestored computes the connector ON by row-absence behind the
+/// failure card; the restoration — which matches what a deny-first
 /// registration would have written — returns the touched scopes to the
-/// fail-closed "never consented" shape and re-arms the verdict guard against
-/// the boot backfill. A hold the grant cleared is re-armed for the same
-/// reason: with the ledger gone again the backfill must not guess over the
-/// recovered state. The next connect retries the full flow. Callers invoke
-/// this best-effort next to the materialize failure and log a revoke
-/// failure instead of masking the original error.
-pub(crate) fn revoke_connect_enable(
-    raw_id: &str,
-    grant: &ConnectGrantOutcome,
-) -> Result<(), String> {
-    let package_id = to_package_id(raw_id);
+/// fail-closed "never consented" shape and re-arms the verdict guard
+/// against the boot backfill.
+///
+/// GRANT-CONSUMED PREDICATE (round-3 review): if the grant is no longer in
+/// the store, a later verdict write has already consumed this consent
+/// state — a composer toggle-off naming the id (whose ledger pair must
+/// survive so the verdict stays reconnect-proof), or a teardown sweep.
+/// Compensating over the newer verdict would mangle it (strip its ledger
+/// protection, re-add markered rows over its shape), so only the
+/// `recovery_hold` re-arm still runs: the hold waits for the next real
+/// gesture either way. The id and the footprint both come from the
+/// outcome — the grant-time fold, not a revoke-time re-fold whose
+/// `to_package_id` could diverge onto a claimant pack that installed
+/// mid-connect (round-3 review). A hold the grant cleared is re-armed for
+/// the same reason: with the ledger gone again the backfill must not
+/// guess over the recovered state. The next connect retries the full
+/// flow. Callers invoke this best-effort next to the materialize failure
+/// and log a revoke failure instead of masking the original error.
+pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), String> {
+    if !grant.granted {
+        // Nothing of this call's landed (a declined gate, a standing
+        // consent) — there is no consent state to compensate.
+        return Ok(());
+    }
+    let package_id = grant.package_id.clone();
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let mut changed = false;
-        let before_grant = file.connect_granted.len();
-        file.connect_granted.retain(|id| id != &package_id);
-        changed |= file.connect_granted.len() != before_grant;
-        for mode in SessionMode::ALL {
-            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
-                continue;
+        // GRANT-CONSUMED PREDICATE: the whole compensation — strip AND
+        // restores — runs only while the grant still stands. A verdict write
+        // that consumed it (a composer toggle-off naming the id, a teardown
+        // sweep) left the newer shape the user owns; compensating over it
+        // would re-add markered rows over the explicit verdict and strip the
+        // ledger pair that makes the verdict reconnect-proof. Only the
+        // `recovery_hold` re-arm runs either way: the hold waits for the
+        // next real gesture regardless of which shape won.
+        if file.connect_granted.contains(&package_id) {
+            let before_grant = file.connect_granted.len();
+            file.connect_granted.retain(|id| id != &package_id);
+            changed |= file.connect_granted.len() != before_grant;
+            for mode in SessionMode::ALL {
+                if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                    continue;
+                }
+                let ledger_key = ledger_key(mode.as_str(), &package_id);
+                let before_ledger = file.install_default_synced.len();
+                file.install_default_synced
+                    .retain(|entry| entry != &ledger_key);
+                changed |= file.install_default_synced.len() != before_ledger;
             }
-            let ledger_key = ledger_key(mode.as_str(), &package_id);
-            let before_ledger = file.install_default_synced.len();
-            file.install_default_synced
-                .retain(|entry| entry != &ledger_key);
-            changed |= file.install_default_synced.len() != before_ledger;
-        }
-        for key in &grant.lifted_scopes {
-            if !file.initialized.contains(key.as_str()) {
-                // The scope's materialization was torn down between the
-                // grant and this revoke: an uninitialized scope is covered
-                // by the DenyAll expansion on the fly, which denies again
-                // now that the grant above is gone — nothing to restore.
-                continue;
+            for key in &grant.lifted_scopes {
+                if !file.initialized.contains(key.as_str()) {
+                    // The scope's materialization was torn down between the
+                    // grant and this revoke: an uninitialized scope is covered
+                    // by the DenyAll expansion on the fly, which denies again
+                    // now that the grant above is gone — nothing to restore.
+                    continue;
+                }
+                let ids = file.scopes.entry(key.clone()).or_default();
+                if !ids.contains(&package_id) {
+                    ids.push(package_id.clone());
+                    changed = true;
+                }
+                if grant.lifted_markers.iter().any(|k| k == key) {
+                    let defaults = file.default_off_scopes.entry(key.clone()).or_default();
+                    if !defaults.contains(&package_id) {
+                        defaults.push(package_id.clone());
+                        changed = true;
+                    }
+                }
             }
-            let ids = file.scopes.entry(key.clone()).or_default();
-            if !ids.contains(&package_id) {
-                ids.push(package_id.clone());
-                changed = true;
-            }
-            let defaults = file.default_off_scopes.entry(key.clone()).or_default();
-            if !defaults.contains(&package_id) {
-                defaults.push(package_id.clone());
-                changed = true;
+            for key in &grant.covered_uninitialized_scopes {
+                if !file.initialized.contains(key.as_str()) {
+                    // Still uninitialized: the DenyAll expansion denies again
+                    // now that the grant above is gone — nothing to restore.
+                    continue;
+                }
+                // The scope materialized mid-connect from a post-grant
+                // snapshot: its stored list names other packs and computes
+                // this connector ON by absence. Restore the deny-first shape
+                // (row + marker — what a deny-first registration would have
+                // written) so the failure end-state is fail-closed and the
+                // restored row re-arms the verdict guard against the boot
+                // backfill.
+                let ids = file.scopes.entry(key.clone()).or_default();
+                if !ids.contains(&package_id) {
+                    ids.push(package_id.clone());
+                    changed = true;
+                }
+                let defaults = file.default_off_scopes.entry(key.clone()).or_default();
+                if !defaults.contains(&package_id) {
+                    defaults.push(package_id.clone());
+                    changed = true;
+                }
             }
         }
         if grant.cleared_recovery_hold && !file.recovery_hold {
@@ -3956,7 +4068,7 @@ mod tests {
 
             // The compensating revoke must restore the hold so the boot
             // backfill cannot guess over the lost state again.
-            revoke_connect_enable("feishu", &grant).unwrap();
+            revoke_connect_enable(&grant).unwrap();
             let file = load_disabled_bundles_file();
             assert!(
                 file.recovery_hold,
