@@ -41,9 +41,15 @@ ignore = [
     # emSign ECC Root CA - G3, whose intermediates' private keys are public).
     # The 1.0.x copy is bumped to 1.0.10 in this PR; the remaining hit is the
     # 0.26.11 copy (ureq 2.12.1 — frozen by the fastembed platform-floor hold
-    # — and tokio-tungstenite 0.30), and no patched 0.26.x release exists:
-    # the fix path is those consumers moving to webpki-roots 1.x. Reassess on
-    # any fastembed/ureq/tokio-tungstenite bump.
+    # — and tokio-tungstenite 0.30). That hit is an advisory version-match
+    # false positive, not a remaining vulnerable bundle: 0.26.11 is a semver
+    # compatibility shim that carries no root data of its own and re-exports
+    # `TLS_SERVER_ROOTS` from its single dependency, which every parent lock
+    # resolves to the patched webpki-roots 1.0.10. The advisory's `<1.0.10`
+    # range cannot see through the shim's version number. No patched 0.26.x
+    # release exists; the cleanup path is those consumers migrating to
+    # webpki-roots 1.x and dropping the shim. Reassess on any
+    # fastembed/ureq/tokio-tungstenite bump.
     "RUSTSEC-2026-0381",
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深

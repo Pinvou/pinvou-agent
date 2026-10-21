@@ -261,16 +261,27 @@ test('the layer scan is case-insensitive, string-aware, and blind to comments an
     fs.writeFileSync(path.join(distDir, 'assets', 'upper.css'), '@LAYER base{*{box-sizing:border-box}}');
     fs.writeFileSync(path.join(distDir, 'assets', 'upper-import.css'), '@IMPORT URL("./u.css") LAYER;');
     fs.writeFileSync(path.join(distDir, 'assets', 'semicolon-url.css'), '@import url(data:text/css;base64,QGxheWVy) layer;');
+    fs.writeFileSync(path.join(distDir, 'assets', 'quoted-semicolon-anon.css'), '@import url("https://example.com/a.css?v=1;v2=2") layer;');
+    fs.writeFileSync(path.join(distDir, 'assets', 'quoted-semicolon-named.css'), '@import url("https://example.com/a.css?v=1;v2=2") layer(nav);');
+    fs.writeFileSync(path.join(distDir, 'assets', 'string-semicolon-named.css'), '@import "a.css;x" layer(nav);');
     const violations = hermeticAudit({ distDir });
-    assert.equal(violations.length, 3, `all three layer shapes must be reported; got: ${JSON.stringify(violations)}`);
+    assert.equal(violations.length, 6, `all six layer shapes must be reported; got: ${JSON.stringify(violations)}`);
     assert.deepEqual(
       violations.map((violation) => violation.slice('dist:'.length).replace(/:.*/, '')).sort((a, b) => a.localeCompare(b)),
-      ['semicolon-url.css', 'upper-import.css', 'upper.css'],
+      [
+        'quoted-semicolon-anon.css',
+        'quoted-semicolon-named.css',
+        'semicolon-url.css',
+        'string-semicolon-named.css',
+        'upper-import.css',
+        'upper.css',
+      ],
       'each fixture file must be reported exactly once',
     );
     assert.match(violations.find((violation) => violation.includes('upper.css')), / @layer survives the build/);
-    assert.match(violations.find((violation) => violation.includes('upper-import.css')), / @import layer survives the build/);
-    assert.match(violations.find((violation) => violation.includes('semicolon-url.css')), / @import layer survives the build/);
+    for (const file of ['upper-import.css', 'semicolon-url.css', 'quoted-semicolon-anon.css', 'quoted-semicolon-named.css', 'string-semicolon-named.css']) {
+      assert.match(violations.find((violation) => violation.includes(file)), / @import layer survives the build/, `${file} must be an import-layer violation`);
+    }
 
     fs.rmSync(path.join(distDir, 'assets'), { recursive: true, force: true });
     fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
