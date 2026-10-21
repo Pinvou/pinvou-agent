@@ -501,7 +501,18 @@ function enforceLazyChunks() {
 // 82 B over the 504_000 ceiling this PR last raised. The picker/grouping
 // helpers are render-path synchronous and cannot defer; the ceiling is
 // the measured projection, not padded.
-export const MAIN_ENTRY_BUDGET_BYTES = 505_000;
+//
+// 505_000 → 506_000 (PR #628's rebase onto the #733+#744 main, measured
+// per policy): the app-automations builtin adds +5,131 B of web entry on
+// the current toolchain (main@2c2e40d03 alone = 500,424 B main-entry under
+// node v24 + vite 8.3.4; merged = 505,555 B web / 502,236 B desktop) —
+// the result card and its parser ride the on-demand scheduled-task-card
+// chunk, and the residual is the timeline-header summary logic plus the
+// dispatch constants, trilingual copy, and the lazy/boundary wiring, whose
+// synchronous rendering is pinned reviewed behavior. The measurement is
+// already on CI's node major, so the 445 B of headroom is toolchain
+// tolerance only; the ceiling is the measured projection, not padded.
+export const MAIN_ENTRY_BUDGET_BYTES = 506_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (

@@ -17,10 +17,11 @@ function chunk({ name, modules = {}, isEntry = false, code = '' }) {
 const mainSource = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
 
 test('startup gates remain active in desktop and web production builds', () => {
-  // Round-21 B-1 + this PR's rebase raise, both measured per policy — see the
-  // budget comment in vite.config.mjs (main's #627+#714 web entry = 500.69 kB
-  // local; this PR's feature net +2.10 kB → 502.79 local / ≈503.7 CI-project).
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 505_000);
+  // Round-21 B-1 + PR #628's measured rebase raises — see the budget comment
+  // in vite.config.mjs (main@2c2e40d03 alone = 500,424 B under node v24 +
+  // vite 8.3.4; the automations residual adds +5,131 B web → 505,555 web /
+  // 502,236 desktop, ceiling 506,000 with toolchain tolerance only).
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 506_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
     const pluginNames = new Set(config.plugins.flat(Infinity).filter(Boolean).map(plugin => plugin.name));
