@@ -108,14 +108,14 @@ pub struct DisabledBundlesFile {
     /// verdict that outranks the connect default), teardown
     /// ([`remove_bundle_from_disabled_scopes_exact`]) sweeps it with the rows
     /// so a same-id reinstall starts from the connect flow's own re-grant,
-    /// and the boot refresh ([`grant_connect_enable_refresh`]) never grants
+    /// and the boot refresh (`grant_connect_enable_refresh`) never grants
     /// over a stored verdict — only the connect gesture
-    /// ([`grant_connect_enable`]) may lift a row.
+    /// (`grant_connect_enable`) may lift a row.
     #[serde(default)]
     pub connect_granted: Vec<String>,
     /// Corrupt/lost-store recovery hold: set by every recovery arm, it blocks
-    /// the boot refresh's consent backfill ([`grant_connect_enable_refresh`])
-    /// until the next connect gesture ([`grant_connect_enable`]) clears it.
+    /// the boot refresh's consent backfill (`grant_connect_enable_refresh`)
+    /// until the next connect gesture (`grant_connect_enable`) clears it.
     /// After a store loss the stored verdicts and the connect ledger are gone
     /// together, so the refresh can no longer tell "never consented" from
     /// "consented" — without the hold, one boot refresh silently converted
@@ -2024,10 +2024,10 @@ pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), Stri
 /// exposed. The consent is an ENABLE grant
 /// (feat/connector-connect-grants-enable): the connect gesture is itself the
 /// opt-in, so the registration lands the connector ENABLED in every DenyAll
-/// scope ([`grant_connect_enable`]) instead of the former default-off rows.
+/// scope (`grant_connect_enable_inner`, behind this gate) instead of the former default-off rows.
 /// Returns the [`ConnectGrantOutcome`] footprint of THIS call — `granted`
 /// says whether the grant landed, and the caller feeds the whole outcome to
-/// [`revoke_connect_enable`] when the skill
+/// `revoke_connect_enable` when the skill
 /// materialization after the grant fails, so a failed connect cannot leave
 /// the connector computed-ON behind a failure card. A hidden
 /// (`show == false`) connector needs no registration. The known-bundle skip
@@ -2053,7 +2053,7 @@ pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), Stri
 /// This is the GESTURE surface: the user just connected, so lifting a stale
 /// stored row is the connect overriding an old verdict with a fresh one. The
 /// boot-time counterpart that must never touch verdicts is
-/// [`deny_first_register_connector_refresh`]. Both CLI consent writes
+/// `deny_first_register_connector_refresh`. Both CLI consent writes
 /// (`pinvou connectors connect`, the `apply-skills` show branch) route
 /// through THIS gated entry — calling the bare grant skipped the
 /// owner-claim refusal and the ledger gate and let a CLI connect grant a
@@ -2075,7 +2075,7 @@ pub fn deny_first_register_connector(
 /// backfills pairs nothing ever consented. See the review BLOCKER: routing
 /// the boot refresh through the gesture variant silently flipped both
 /// cohorts ON.
-pub fn deny_first_register_connector_refresh(
+pub(crate) fn deny_first_register_connector_refresh(
     connector_id: &str,
     show: bool,
 ) -> Result<ConnectGrantOutcome, String> {
@@ -2346,12 +2346,14 @@ fn sync_deny_all_scopes_inner(raw_id: &str) -> Result<(), String> {
 /// **fail-visible** for the same reason the install sync's is: the deny-first
 /// caller aborts the connect before materializing anything, so a swallowed
 /// save would strand the connector disabled with the card claiming success.
-/// Pack/MCP INSTALLS keep defaulting off — the connector connect flow is this
-/// function's only consumer (the deny-first gate's gesture arm and
-/// `apply_skills_command`'s tail leg, plus — since the round-2 review routed
-/// the CLI behind the same gates — the CLI connect/apply-skills consent
-/// write). A retry is safe (idempotent membership writes).
-pub fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
+/// Pack/MCP INSTALLS keep defaulting off. Crate-internal on purpose: this
+/// wrapper's only production caller is `apply_skills_command`'s tail leg;
+/// every connect consent write (the GUI deny-first leg and the CLI
+/// connect/apply-skills consent write) consumes `grant_connect_enable_inner`
+/// BEHIND [`deny_first_register_connector`]'s gates (owner-claim refusal +
+/// ledger gate) — route a new caller through the gate, never straight here.
+/// A retry is safe (idempotent membership writes).
+pub(crate) fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
     grant_connect_enable_inner(raw_id, false).map(|outcome| outcome.granted)
 }
 
@@ -2363,7 +2365,7 @@ pub fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
 /// (the ledger gate alone cannot see the no-ledger verdict cohorts). The
 /// gesture counterpart that may lift stale rows on a fresh connect is
 /// [`grant_connect_enable`].
-pub fn grant_connect_enable_refresh(raw_id: &str) -> Result<bool, String> {
+pub(crate) fn grant_connect_enable_refresh(raw_id: &str) -> Result<bool, String> {
     grant_connect_enable_inner(raw_id, true).map(|outcome| outcome.granted)
 }
 
@@ -2380,7 +2382,7 @@ pub struct ConnectGrantOutcome {
     pub granted: bool,
     /// DenyAll scope keys (`"plain"`/`"code"`) where THIS call lifted a
     /// stored default-off row or its marker — exactly what
-    /// [`revoke_connect_enable`] restores.
+    /// `revoke_connect_enable` restores.
     pub lifted_scopes: Vec<String>,
     /// Whether THIS call cleared a `recovery_hold` (the gesture variant's
     /// post-recovery re-consent); the revoke re-arms it so a failed connect
@@ -2562,7 +2564,10 @@ fn grant_connect_enable_inner(
 /// recovered state. The next connect retries the full flow. Callers invoke
 /// this best-effort next to the materialize failure and log a revoke
 /// failure instead of masking the original error.
-pub fn revoke_connect_enable(raw_id: &str, grant: &ConnectGrantOutcome) -> Result<(), String> {
+pub(crate) fn revoke_connect_enable(
+    raw_id: &str,
+    grant: &ConnectGrantOutcome,
+) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
