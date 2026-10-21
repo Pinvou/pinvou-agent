@@ -1939,8 +1939,65 @@ fn apply_skills_after_disable_preserves_the_verdict() {
     );
 }
 
+/// Round-3 review: the standalone apply-skills consent write is the
+/// VERDICT-RESPECTING maintenance variant. The round-2 verdict pin above
+/// covers only the LEDGER-backed cohort (connect → disable keeps the grant's
+/// ledger pairs, which the ledger gate sees); the NO-ledger verdict cohorts
+/// — a legacy-migrated disable, or a toggle-off after a failed connect
+/// persist — are invisible to that gate, and the gesture variant's
+/// row-lifting arm deleted the row and re-granted on a scripted command with
+/// exit 0. The refresh variant's verdict guard refuses over any stored row.
+/// (Red against the gesture gate: the row is lifted, the grant and both
+/// ledger pairs land, `consent_granted` reports true.)
+#[test]
+#[cfg(unix)]
+fn apply_skills_over_a_no_ledger_disable_preserves_the_verdict() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-applyskills-noledger-verdict");
+
+    // Initialized plain holding the disable row, NO ledger entry: the exact
+    // post-failed-connect-persist / legacy-migrated shape.
+    std::fs::write(
+        home.disabled_bundles_file(),
+        r#"{"scopes":{"plain":["dingtalk"]},"initialized":["plain"]}"#,
+    )
+    .unwrap();
+
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
+
+    assert_eq!(
+        value["consent_granted"], false,
+        "the verdict-respecting maintenance gate must decline: {value}"
+    );
+    let persisted = read_disabled_bundles(&home);
+    let disabled = persisted["scopes"]["plain"]
+        .as_array()
+        .expect("plain scope persists")
+        .iter()
+        .any(|id| id.as_str() == Some("dingtalk"));
+    assert!(
+        disabled,
+        "apply-skills must NOT lift a no-ledger explicit disable: {persisted}"
+    );
+    assert!(
+        !persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "apply-skills must not grant over the no-ledger verdict: {persisted}"
+    );
+    assert!(
+        !persisted["install_default_synced"]
+            .as_array()
+            .is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry.as_str() == Some("plain:dingtalk"))),
+        "apply-skills must not ledger the no-ledger verdict: {persisted}"
+    );
+}
+
 /// The apply-skills show branch records the connect ENABLE grant (the same
-/// consent the GUI's connect-completion apply write performs), so a headless
+/// shape the GUI's connect-completion apply write performs, through the
+/// VERDICT-RESPECTING maintenance variant since round-3), so a headless
 /// maintenance run over a connected, never-consented connector converges to
 /// the connected=enabled shape instead of staying unregistered.
 #[test]
