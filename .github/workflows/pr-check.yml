@@ -696,7 +696,9 @@ jobs:
       # Web (relay) build: the startup-bundle layer and the web index contract
       # test (tests/vite_static_assets_contract.test.mjs) only cover the web
       # dist when it exists, so build it unconditionally here instead of
-      # relying on the diff-selected test:webui smoke.
+      # relying on the diff-selected test:webui smoke. That smoke reuses this
+      # dist via PINVOU_WEBUI_SKIP_BUILD=1 (smoke steps below) instead of
+      # running a second identical vite build.
       - name: Vite web build (remote relay)
         run: npm run build:web
 
@@ -726,6 +728,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # dist was already built unconditionally above; skip the identical
+          # in-smoke rebuild (see scripts/run-webui-smoke.mjs).
+          PINVOU_WEBUI_SKIP_BUILD: "1"
         run: |
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
             | node ../scripts/select-frontend-smokes.mjs \
@@ -736,6 +741,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          # Same dist reuse as the PR smoke step above.
+          PINVOU_WEBUI_SKIP_BUILD: "1"
         run: |
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" \
             | node ../scripts/select-frontend-smokes.mjs \
