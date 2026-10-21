@@ -1925,7 +1925,7 @@ class ReviewFollowupInputTests(unittest.TestCase):
         for args in ([], [1], "text", 0, False, None):
             with self.subTest(args=args), patch.object(server, "_error") as error:
                 server._handle_call(1, {"name": "list_scheduled_tasks", "arguments": args},
-                                    "/unused", "/unused", {})
+                                    "/unused", "/unused", "/unused", {})
                 self.assertEqual(error.call_args.args[1], -32602)
 
 
