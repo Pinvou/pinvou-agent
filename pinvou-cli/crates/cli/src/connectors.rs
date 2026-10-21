@@ -1785,13 +1785,33 @@ fn sync_consent_after_connect(id: &str, show: bool) -> Result<bool, CliError> {
         .map_err(CliError::failed)
 }
 
+/// The standalone `apply-skills` maintenance variant: same gated boundary,
+/// but the LEDGER-GATED, VERDICT-RESPECTING refresh entry instead of the
+/// gesture one (round-3 review). A standalone maintenance run has no connect
+/// gesture behind it — its show branch used to drive the gesture gate, whose
+/// row-lifting arm silently re-enabled the no-ledger verdict cohorts (a
+/// legacy-migrated disable, or a toggle-off after a failed connect persist:
+/// row present, no ledger pair for the gate to see) on a scripted command
+/// with exit 0. The refresh variant's verdict guard refuses over any stored
+/// row, so explicit verdicts survive `apply-skills` regardless of ledger
+/// backing; a never-consented connector still converges to the
+/// connected=enabled shape (`apply_skills_show_branch_grants_the_enable`).
+fn sync_consent_after_maintenance(id: &str, show: bool) -> Result<bool, CliError> {
+    pinvou3_lib::features::marketplace::deny_first_register_connector_refresh(id, show)
+        .map(|outcome| outcome.granted)
+        .map_err(CliError::failed)
+}
+
 /// Mirror of `<connector>_apply_skills` (`ConnectorGate::apply_skills_command`
 /// → `skills_should_show()` = marker read + `ready_probe()`), unchanged from
 /// the GUI: recompute `should_show`, then apply it. The gate deliberately
 /// does NOT consult the plain-scope switch state — the GUI's toggle governs
 /// composite materialization and never deletes `bundles/<id>/skills`, so the
 /// CLI's hide direction fires only on the marker or the absence of a
-/// connection (round-18 finding 1).
+/// connection (round-18 finding 1). The consent write is the
+/// VERDICT-RESPECTING maintenance variant (`sync_consent_after_maintenance`,
+/// round-3 review): this command has no connect gesture behind it, so it
+/// must not lift a stored no-ledger disable the way a real connect may.
 ///
 /// The `false` half is applied for real here — it is the app's plain
 /// `remove_dir_all` of the skill dirs plus the NOTICE file, which needs no
@@ -1816,9 +1836,16 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let probe_errored = probe.is_err() && resolve_vendor_cli(spec).is_some();
     let connected = probe.unwrap_or(false);
     let visible = gui_skill_gate_shows_with(kind, connected);
-    if visible {
-        sync_consent_after_connect(spec.id, visible)?;
+    // Whether THIS run's consent write landed the grant (round-3 review:
+    // surfaced like `connect`'s, so a script can tell a fresh grant from a
+    // declined/no-op run without a follow-up `status`; the hide direction
+    // writes no consent at all).
+    let consent_granted = if visible {
+        sync_consent_after_maintenance(spec.id, visible)?
     } else {
+        false
+    };
+    if !visible {
         hide_connector_skills(kind)?;
     }
     let applied_line = if visible {
@@ -1841,6 +1868,11 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
         "id": spec.id,
         "visible": visible,
         "connected": if probe_errored { None } else { Some(connected) },
+        // Round-3 review: parity with `connect`'s receipt — whether THIS
+        // run's consent write landed the grant (false = declined over a
+        // stored verdict / a legacy marker, or the hide direction wrote no
+        // consent at all).
+        "consent_granted": consent_granted,
         // The show direction remains app-only; the hide direction ran here.
         "skills_unpack": "app-only",
         "skills_removed": !visible,
