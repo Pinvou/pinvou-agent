@@ -91,9 +91,12 @@ uuid = { version = "1.11", features = ["v4", "v5"] }
 # 外部 Agent ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
 # Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
 # unstable_elicitation 在 2.1.0 已转正（feature 被移除），2.2 直接带稳定
-# elicitation；不再加 feature 开关。3.x（当前 3.3.0）改了 feature 命名与
+# elicitation；不再加 feature 开关。3.x（当前 3.4.0）改了 feature 命名与
 # 协议 schema，留给独立 PR 评估，本仓暂不升级。
-agent-client-protocol = { version = "2.2" }
+# 钉死 =2.2.0：协议 schema crate，wire 兼容由锁文件可复现；浮动的 "2.2"
+# 会允许 cargo update 静默漂到未评审的 2.x minor（本块旧注释对 2.0.0 的
+# 论证同样适用于 2.2.x）。
+agent-client-protocol = { version = "=2.2.0" }
 
 # 底层 Agent —— CodeWhale 提供 LLM 调用 + 工具循环 + 流式事件。
 # 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`
