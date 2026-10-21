@@ -10103,8 +10103,11 @@ pub(crate) mod tests {
             // wires the key, exactly like the secret_env package above — and
             // an Upload uninstall recycles the whole package, which is the
             // flow this gate guards.
-            mgr.install_upload("sn-rec", store::BundleSource::Upload("sn-rec.zip".to_string()))
-                .unwrap();
+            mgr.install_upload(
+                "sn-rec",
+                store::BundleSource::Upload("sn-rec.zip".to_string()),
+            )
+            .unwrap();
 
             mgr.uninstall("sn-rec").unwrap();
             assert_eq!(
@@ -12280,7 +12283,10 @@ pub(crate) mod tests {
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
             let error = manager
-                .install_upload("cfg-i", store::BundleSource::Upload("cfg-i.zip".to_string()))
+                .install_upload(
+                    "cfg-i",
+                    store::BundleSource::Upload("cfg-i.zip".to_string()),
+                )
                 .unwrap_err();
             assert!(
                 error.contains("X_API_KEY") && error.contains("missing secret"),
@@ -12321,8 +12327,7 @@ pub(crate) mod tests {
                 .expect("a provided required key must install");
             let entry = &read_mcp_json()["servers"]["cfg-w"];
             assert_eq!(
-                entry["env"]["X_API_KEY"],
-                "${PINVOU3_MCP_SECRET_X_API_KEY}",
+                entry["env"]["X_API_KEY"], "${PINVOU3_MCP_SECRET_X_API_KEY}",
                 "the provided key must be wired as the store placeholder: {entry}"
             );
         });
@@ -12340,7 +12345,7 @@ pub(crate) mod tests {
                 "inert-x",
                 "InertX",
                 r#""mcp_tools":[],"command":"python","args":["server.py"],
-                    "env":{"NOTE":"docs say PINVOU3_MCP_SECRET_BARE_KEY is needed"},
+                    "env":{"NOTE":"see PINVOU3_MCP_SECRET_BARE_KEY"},
                     "secret_env":[{"key":"BARE_KEY","provider":"p","required":true}]"#,
             );
             std::fs::write(
@@ -12374,7 +12379,10 @@ pub(crate) mod tests {
     /// wiring — the engine's env expansion resolves that token, and an
     /// absent credential fails the spawn loudly naming the variable. The
     /// static oracle therefore spares the entry; this pins that sparing so
-    /// tightening the scan later cannot silently break composed manifests.
+    /// tightening the scan later cannot silently break composed manifests
+    /// (a placeholder's name is always `}`-terminated, so the exact-token
+    /// scan is strictly tighter than the remote boundary check, never
+    /// looser).
     #[test]
     fn restore_placeholder_composition_in_plain_env_still_wires() {
         with_temp_home(|| {
@@ -12382,7 +12390,7 @@ pub(crate) mod tests {
                 "comp-x",
                 "CompX",
                 r#""mcp_tools":[],"command":"python","args":["server.py"],
-                    "env":{"NOTE":"use ${PINVOU3_MCP_SECRET_COMP_KEY} at runtime"},
+                    "env":{"NOTE":"x${PINVOU3_MCP_SECRET_COMP_KEY}y"},
                     "secret_env":[{"key":"COMP_KEY","provider":"p","required":true}]"#,
             );
             std::fs::write(

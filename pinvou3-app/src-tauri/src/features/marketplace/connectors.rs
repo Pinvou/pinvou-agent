@@ -1102,8 +1102,7 @@ fn entry_secret_keys_without_wiring(
     // channel.
     let counts_remote = is_remote || !(is_remote || is_local);
     let counts_local = (!is_remote && is_local) || !(is_remote || is_local);
-    let (remote_wiring, local_wiring) =
-        entry_wiring_values(entry, counts_remote, counts_local);
+    let (remote_wiring, local_wiring) = entry_wiring_values(entry, counts_remote, counts_local);
     // A remote key is masked only by a remote wiring value naming it; a
     // local key only by a local `env` placeholder expanding it — a foreign
     // channel's data must not mask a gap.
