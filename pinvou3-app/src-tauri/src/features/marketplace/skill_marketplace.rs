@@ -4499,8 +4499,16 @@ mod tests {
             .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
             .unwrap_err();
         assert!(
-            err.contains("超过 zip 头声明"),
-            "伪造头部条目应被有界读取拒收，实际: {err}"
+            // zip 9 的读取器自己校验「实际 > 头部声明」并先行拒绝（"File is
+            // larger than its declared uncompressed size"），抢在有界读取的
+            // 自定义错误之前——本测试只断言拒收发生（两层之一），不区分层。
+            // app 有界读取分支（"超过 zip 头声明"）在 zip 9 下被 zip 层遮蔽、
+            // 集成层无法触达；该分支的回归由 plugin_import 的原语钉
+            // read_zip_entry_bounded_rejects_oversized_actual（同一测试二进制
+            // 独立运行）拦截，拒收不会退化为"只剩 zip 层、app 层无人守"。
+            err.contains("超过 zip 头声明")
+                || err.contains("larger than its declared uncompressed size"),
+            "伪造头部条目应被有界读取或 zip 自身大小校验拒收，实际: {err}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4538,8 +4546,12 @@ mod tests {
             .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
             .unwrap_err();
         assert!(
-            err.contains("超过 zip 头声明"),
-            "伪造 SKILL.md 头部应被有界预读拒收，实际: {err}"
+            // zip 9 同上：读取器自身的大小校验先行拒绝；app 有界读取分支的
+            // 回归由 read_zip_entry_bounded_rejects_oversized_actual 原语钉
+            // 独立拦截（见上一测试的层级说明）。
+            err.contains("超过 zip 头声明")
+                || err.contains("larger than its declared uncompressed size"),
+            "伪造 SKILL.md 头部应被有界预读或 zip 自身大小校验拒收，实际: {err}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }

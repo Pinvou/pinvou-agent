@@ -46,7 +46,7 @@ anyhow = "1.0"
 # graph also carries a 0.23 copy via pem 4 (rcgen 0.14.10) and reqwest 0.13.
 # Revisit the split once the upstreams realign on one line.
 base64 = "0.22"
-calamine = "0.36"
+calamine = "0.37"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 encoding_rs = "0.8"
 parking_lot = "0.12"

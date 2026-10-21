@@ -152,9 +152,10 @@ sha2 = "0.11"
 # standard annex. Already in the graph transitively, so this direct edge adds
 # no package to either lockfile.
 unicode-normalization = "0.1"
-# 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
+# 9.x 与 calamine 0.37 传递引入的 zip 9.0.5 收敛为单一版本（8.6.0 命中
+# RUSTSEC-2026-0367/0368/0369 extract 族公告，9.x 为修复线）。
 # 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
@@ -188,8 +189,11 @@ walkdir = "2"
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
 # 电子表格解析（file_ingest 用）：读 xlsx/xls/ods 的全部工作表。
 # 0.36 拉入 quick-xml 0.41+,修 RUSTSEC-2026-0194/0195 ReDoS。
-# The quick-xml pulled in transitively by plist/tauri is unified to 0.41 too; no stale version remains in the graph.
-calamine = "0.36"
+# The quick-xml pulled in transitively by plist/tauri is unified to 0.41; calamine 0.37 pulls its own 0.42 — two coexisting versions, no stale (vulnerable) one in the graph.
+# 0.37 (rust_version 1.88 ≤ workspace MSRV 1.89) requires zip ^9, closing
+# RUSTSEC-2026-0367/0368/0369 (the zip 8.x extract-family advisories the
+# deny.toml ignores used to carry — dropped with this bump).
+calamine = "0.37"
 # XLSX structure preservation: inspect OOXML cell styles, formulas, and merged
 # ranges that calamine's value-only Range intentionally does not expose.
 quick-xml = "0.41"

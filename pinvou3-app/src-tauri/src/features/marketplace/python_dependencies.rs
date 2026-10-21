@@ -827,19 +827,22 @@ fn extract_wheel(
         let mut entry = archive
             .by_index(index)
             .map_err(|e| format!("failed to read the wheel entry: {e}"))?;
+        // zip 9: name() validates and returns owned text instead of &str.
+        let entry_name = entry
+            .name()
+            .map_err(|e| format!("failed to read the wheel entry name: {e}"))?
+            .into_owned();
         if entry
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
             return Err(format!(
-                "Python wheel contains a disallowed symlink: {}",
-                entry.name()
+                "Python wheel contains a disallowed symlink: {entry_name}"
             ));
         }
         let Some(enclosed) = entry.enclosed_name() else {
             return Err(format!(
-                "Python wheel contains an unsafe path: {}",
-                entry.name()
+                "Python wheel contains an unsafe path: {entry_name}"
             ));
         };
         let Some(relative) = wheel_install_relative_path(&enclosed) else {
