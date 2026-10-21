@@ -2053,6 +2053,77 @@ fn connect_refuses_owner_claimed_id() {
     );
 }
 
+/// Round-2 review: the CLI connect must decline the consent grant when the
+/// legacy `<id>_disabled` marker stands, exactly like the GUI's gate
+/// (`show = !legacy_marker && probe`) — a marker-present connect must not
+/// record an ENABLE grant behind a disable the app's own gate keeps honoring
+/// (`enable` is the one path that clears the marker; the GUI connect on the
+/// same state lands no grant either). The connect itself still succeeds and
+/// reports `consent_granted: false`, the marker file survives untouched, and
+/// no grant, ledger pair, or row may land in `disabled_bundles.json`.
+#[test]
+#[cfg(unix)]
+fn connect_with_a_legacy_marker_declines_the_grant() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-legacy-marker");
+
+    let marker = home.0.path().join("dingtalk_disabled");
+    std::fs::write(&marker, b"").unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert_eq!(value["connected"], true, "{value}");
+    assert_eq!(
+        value["consent_granted"], false,
+        "a marker-present connect must decline the grant: {value}"
+    );
+    assert!(
+        marker.is_file(),
+        "the connect must not clear the legacy marker (only `enable` does)"
+    );
+
+    // The declined write lands nothing; the store file may not exist at all
+    // on this fresh home — an absent file IS the no-grant shape.
+    let persisted = std::fs::read_to_string(home.disabled_bundles_file())
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(&text)
+                .expect("disabled_bundles.json stays valid JSON")
+        })
+        .unwrap_or(serde_json::json!({}));
+    assert!(
+        !persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "no grant may be recorded over the legacy disable: {persisted}"
+    );
+    assert!(
+        !persisted["install_default_synced"]
+            .as_array()
+            .is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":dingtalk")))),
+        "no ledger pair may be written for the declined grant: {persisted}"
+    );
+    for (scope, ids) in persisted["scopes"]
+        .as_object()
+        .unwrap_or(&serde_json::Map::new())
+    {
+        assert!(
+            !ids.as_array()
+                .expect("scope id list persists")
+                .iter()
+                .any(|id| id.as_str() == Some("dingtalk")),
+            "the declined connect must not register a row in the {scope} scope: {persisted}"
+        );
+    }
+}
+
 /// The feishu poll judges readiness by a status probe on every tick; the
 /// probe is a fresh spawn whose failure is NOT the login's failure. The GUI
 /// folds probe errors to "not connected yet" and keeps polling (feishu.rs
