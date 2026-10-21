@@ -165,7 +165,7 @@ Rollout 的 draft→running、running→paused、paused→running、任意非终
 
 解析成功后，FullPack 和未来每个 IncrementalPack 分别成为独立 Artifact/Package。客户端只下载本次选择的一个 packageId，不下载外层复合 ZIP。
 
-客户端验证顺序：可信元数据和 Package Manifest → 下载子包大小/哈希 → 安全解压 → 最终安装器大小/哈希 → 平台真实性。
+客户端验证顺序：可信元数据和 Package Manifest → 下载子包大小/哈希 → 安全解压 → 最终安装器及 helper/launcher 大小/哈希 → 平台格式、架构、产品/版本及同一受保护对象验证。原生代码签名、发布者证书和公证仅为可选观察，不是升级准入门槛；客户端的 Root、已交付元数据/Manifest 与在线授权验证保持强制；构建来源 DSSE 签名及 SBOM 继续由服务端供应链闸门验证，不新增客户端下载未交付证明的要求。
 
 ### 6.2 身份字段
 

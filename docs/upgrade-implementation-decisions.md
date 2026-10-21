@@ -91,16 +91,20 @@ support. Other Linux distributions, Ubuntu 26.04, Windows arm64, MSI and per-use
 packages are not additions to this first upgrade certification proposal. A system
 absent from the certification list is not evidence of unsupported application use.
 The macOS list preserves the existing app minimum, but does not imply every version
-can run every newly required helper/runtime. Verify bundled dependencies and signing
-identities on each row before claiming compatibility; disclose incompatible cases.
+can run every newly required helper/runtime. Verify bundled dependencies, architecture and metadata-bound contents
+on each row before claiming compatibility; disclose incompatible cases.
 
 Every row must cover normal/forced direct installation and silent inactive staging
 followed by restart activation, required/no-backup cases, multiple users, disconnected
 sessions, background services, host crashes and original-budget recovery. Linux must
 also exercise dpkg contention/partial configuration and relevant display/GPU variants;
-macOS must check each Universal slice, Team ID, notarization and privilege deployment;
-Windows must check Authenticode and machine ACLs. Existing ad-hoc macOS development
-signing is not production identity or certification evidence.
+macOS must check each Universal slice, exact metadata-bound contents and privilege deployment;
+Windows must check exact metadata-bound native contents and machine ACLs. Native code
+signing, publisher certificates and notarization are optional observations. They are
+not required for update admission or platform certification; OS execution policy still
+applies. Protocol metadata, Root/Manifest/DSSE signatures, exact hashes and current
+authorization remain required. A file hash computed by an untrusted caller or embedded
+by the same installer is not an independent trust source.
 
 Initial physical environments: lowest approved OS per architecture, each other
 listed OS major, and each distinct certified time provider. Virtual machines can
@@ -378,3 +382,17 @@ Strict time option A, local health criteria and the backend stack are already
 approved, and the separate `UpdateServer` repository has been supplied; these are
 not asked again. Hardware/time mechanism research remains technical work; unresolved
 feasibility must be disclosed rather than treated as approval to relax the policy.
+
+## Native package certificate decision (2026-10-21)
+
+The owner removed mandatory native code-signing certificates for update packages,
+installers, helpers and launchers. Authenticode and macOS certificate/notarization
+results may be retained as optional observations; they do not gate Pinvou admission.
+This replaces earlier required publisher/SPKI/timestamp and Developer ID/notarization
+assumptions. TLS and protocol Root/metadata/Manifest/DSSE signatures, exact content
+hashes, scoped authorization, protected ownership and OS permission checks remain.
+DSSE provenance and SBOM validation stay with the existing server supply-chain gate;
+clients do not newly download or validate evidence absent from their package.
+Existing certificate-enforcing host/build code needs an explicit source-trust and
+unsigned-path implementation review; changing this document does not make old
+binaries pass unsigned native acceptance.
