@@ -264,7 +264,7 @@ test('the layer scan is case-insensitive, string-aware, and blind to comments an
     const violations = hermeticAudit({ distDir });
     assert.equal(violations.length, 3, `all three layer shapes must be reported; got: ${JSON.stringify(violations)}`);
     assert.deepEqual(
-      violations.map((violation) => violation.slice('dist:'.length).replace(/:.*/, '')).sort(),
+      violations.map((violation) => violation.slice('dist:'.length).replace(/:.*/, '')).sort((a, b) => a.localeCompare(b)),
       ['semicolon-url.css', 'upper-import.css', 'upper.css'],
       'each fixture file must be reported exactly once',
     );
