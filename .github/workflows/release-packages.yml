@@ -4,7 +4,9 @@ name: release-packages
 #
 # 触发条件:
 # - push main 且 VERSION 被修改;
-# - workflow_dispatch 手动触发:无条件全量构建(用于补打/重打或显式验证)。
+# - workflow_dispatch 手动触发:全量构建(用于补打/重打或显式验证)。例外:
+#   build-windows-x64 仅在 main ref 上运行(见其 if 条件与 windows-release Environment),
+#   非 main ref 手动触发时产出 4/5 平台。
 # 普通 PR 不进入本工作流；版本/打包脚本的轻量契约由 pr-check.yml 验证。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
