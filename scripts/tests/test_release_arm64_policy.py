@@ -42,8 +42,9 @@ class ReleaseArm64PolicyTests(unittest.TestCase):
         self.assertNotIn("RUSTFLAGS", build)
 
     def test_arm64_release_budget_keeps_measured_headroom(self):
-        # 2026-10 measured baseline: 19 successful release builds ran
-        # 39-48 min (peak 48m14s), so the old 90 cap already held ~2x
+        # 2026-10 measured baseline: 19 fully-successful release builds
+        # ran 37m12s-46m22s; the highest observed arm64 job (48m14s) ran
+        # inside a run cancelled via its windows job. The old 90 cap held ~2x
         # headroom. 120 keeps ~2.5x for toolchain rollovers and cold
         # caches; the cap is pinned end-anchored (a bare substring would
         # also match 1200) with the last-key-wins count check, so it can

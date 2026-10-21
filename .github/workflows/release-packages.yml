@@ -283,7 +283,8 @@ jobs:
     # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35),
     # runner 钉在 ubuntu-22.04-arm,升级前先确认新基线决策。
     runs-on: ubuntu-22.04-arm
-    # 2026-10 实测:近 19 次成功 release 构建 39–48min(峰值 48m14s),
+    # 2026-10 实测:近 19 次完全成功的 release 构建 37m12s–46m22s
+    # (历史观测峰值 48m14s 出自一次被取消 run 中的 arm64 job),
     # 旧上限 90 本有约 2x 余量。放宽到 120 为工具链滚动、缓存冷启动等
     # 长尾留余量,代价只是真挂死时多 30min 才被取消(成功时长不受影响)。
     timeout-minutes: 120
@@ -439,7 +440,7 @@ jobs:
     # 没有 lld)+ deepin beige (glibc 2.38) sysroot。目标基线 = deepin
     # 23/25 + UOS V25 的 glibc 2.38,由工具链/sysroot 决定而非 runner 发行版
     # (与 x64/arm64 的"链接构建机 glibc"模型不同,详见 floor 守护注释)。
-    # 交叉构建显著慢于原生 arm64(arm64 实测 39–48min;本 job 尚无成功
+    # 交叉构建显著慢于原生 arm64(arm64 实测 37–47min;本 job 尚无成功
     # release 实测,典型时长未知)。timeout 按 arm64 上限的 ~1.5x 放大
     # (arm64 上限 120 → 本 job 180),保持放大规则自洽。
     runs-on: ubuntu-22.04
@@ -880,7 +881,7 @@ jobs:
             echo "✓ 手动 dmg 打包完成(无 Finder 图标美化)"
           fi
 
-          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; ls -la; exit 1; }
+          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; ls -la "$(dirname "$DMG")"; exit 1; }
 
           # Compression upgrade: the tauri dmg (bundler's bundle_dmg) is
           # UDZO/zlib and passes no -imagekey zlib-level, so hdiutil uses its

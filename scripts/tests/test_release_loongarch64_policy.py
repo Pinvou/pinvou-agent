@@ -549,8 +549,8 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn("tail -n 120", asr)
 
     def test_release_job_gives_the_cross_build_headroom(self):
-        # arm64 (native) measured 39-48 min across 19 successful release
-        # runs (2026-10); its cap is 120, pinned in
+        # arm64 (native) measured 37-47 min across 19 fully-successful
+        # release runs (2026-10); its cap is 120, pinned in
         # test_release_arm64_policy. The cross build reuses the same runner
         # shape with the cross toolchain in front of it and has no
         # successful release run to measure yet, so the budget stays the
