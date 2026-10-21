@@ -342,11 +342,19 @@ super-permission pkexec toggle.
 - CLI consent/scope writes to `disabled_bundles.json` (`connectors
   enable`/`disable`, `plugins enable`/`disable`/`project-skills`, the
   DenyAll install sync after `plugins` installs/imports and `ima connect`,
-  and the connect-channel ENABLE grant behind `deny_first_register_connector`
+  the connect-channel ENABLE grant behind `deny_first_register_connector`
   for `connectors connect` and the `apply-skills` show branch — round-2
-  review: same gates as the GUI) serialize only in-process, like the desktop
-  app's own writers; a CLI write racing a live desktop-app write to that file
-  is last-writer-wins until the cross-process lock (#517) lands.
+  review: same gates as the GUI, and the teardown consent cleanups after
+  `connectors ima disconnect` and `plugins uninstall`) serialize their
+  read-modify-write sections through the SAME cross-process funnel as the
+  desktop app's own writers (`file_lock.rs`, the #521 generalization of
+  #517) — they are not last-writer-wins per section. The residual race is
+  the two-section shape of the CLI whole-list writers (`connectors
+  enable`/`disable` and `plugins` toggles read the current list unlocked,
+  then save a whole new list under the lock): two such writes, or one racing
+  a desktop-app composer write to the same scope, resolve last-writer-wins
+  per save (round-1 review: the doc's former "until the cross-process lock
+  (#517) lands" tail described a lock that has since shipped).
   `bundles.json` and `recycle-bin.json` are NOT in that class. The `bundles.json` store mirror
   `connectors status` connects and disconnects write through the app's
   `BundleStore` (`bundle_store_on_connected` / `bundle_store_on_disconnected`),
