@@ -749,31 +749,51 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     /// rebuild-then-reapply pair: a crash can never leave the fresh form without
     /// the preserved fields.
     ///
-    /// Returns the required-credential keys whose wiring could not be restored
-    /// (empty = fully wired). Under the credential rule the written entry then
-    /// carries `disabled: true` — an entry that cannot authenticate must not be
+    /// Returns `(missing_keys, cleared_preserved_disabled)`: the
+    /// required-credential keys whose wiring could not be restored (empty =
+    /// fully wired), and whether a preserved `disabled: true` was cleared.
+    /// Under the credential rule the written entry then carries
+    /// `disabled: true` — an entry that cannot authenticate must not be
     /// enabled (the caller's note names the keys and the reinstall fix). The
     /// rule wins over a preserved `disabled: false`: a hand re-enable of an
     /// entry whose credential is gone would recreate the enabled-but-unwired
-    /// state this rule exists to prevent; the note discloses the flip.
+    /// state this rule exists to prevent; the note discloses the flip. When
+    /// every required credential DID resolve, a preserved `disabled: true`
+    /// is stale — this rebuild writes as fresh an entry as the wholesale
+    /// install writer, and keeping the flag would leave a wired, keyed entry
+    /// disabled with no signal (readiness reports Ready) — so it is cleared,
+    /// and the note discloses that too.
     pub(super) fn write_rebuilt_local_entry(
         &self,
         manifest: &ToolManifest,
         server_dir: &std::path::Path,
         preserved: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<(Vec<String>, bool), String> {
+        let preserved_had_disabled =
+            preserved.get("disabled").and_then(|v| v.as_bool()) == Some(true);
         let mut entry =
             self.build_local_server_entry(manifest, &HashMap::new(), server_dir, None, true)?;
-        let missing_secrets = entry_secret_keys_without_wiring(
-            manifest,
-            entry.as_object().unwrap_or(&serde_json::Map::new()),
-        );
         if let Some(object) = entry.as_object_mut() {
             for (key, value) in preserved {
                 object.insert(key, value);
             }
+        }
+        // Judge the FINAL entry form (fresh wiring + preserved user fields):
+        // a preserved hand edit can change the judged shape (a hand-added
+        // `url` makes a hybrid the engine launches remotely), so judging the
+        // pre-merge form could disable — or clear the flag of — an entry on
+        // channels the final form does not even use.
+        let missing_secrets = entry_secret_keys_without_wiring(
+            manifest,
+            entry.as_object().unwrap_or(&serde_json::Map::new()),
+        );
+        let mut cleared_preserved_disabled = false;
+        if let Some(object) = entry.as_object_mut() {
             if !missing_secrets.is_empty() {
                 object.insert("disabled".to_string(), serde_json::Value::Bool(true));
+            } else if preserved_had_disabled {
+                object.remove("disabled");
+                cleared_preserved_disabled = true;
             }
         }
         with_mcp_json_lock(|| {
@@ -785,7 +805,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             servers.insert(manifest.id.clone(), entry);
             write_json_pretty(&mcp_path, &mcp)
         })?;
-        Ok(missing_secrets)
+        Ok((missing_secrets, cleared_preserved_disabled))
     }
 
     pub(super) fn remove_from_mcp_json(&self, tool_id: &str) -> Result<(), String> {
@@ -1021,14 +1041,14 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
 }
 
 /// Required-credential source keys of `manifest` whose env-var NAME appears
-/// nowhere in an mcp.json entry: the entry carries none of the manifest's
-/// required store-resolvable auth wiring (a restore degraded because no
-/// stored credential resolved, or the wiring was never written). This is the
-/// oracle for the credential rule — a non-exempt entry with a gap here
-/// carries no wiring the app can vouch for, so it must not boot enabled —
-/// and for the restore notes that name the missing keys. Only names are
-/// reported — never values. The oracle is static: it sees wiring, not
-/// credentials, so an entry whose wiring remains while the keyring entry
+/// in none of an mcp.json entry's auth-wiring values: the entry carries none
+/// of the manifest's required store-resolvable auth wiring (a restore
+/// degraded because no stored credential resolved, or the wiring was never
+/// written). This is the oracle for the credential rule — a non-exempt entry
+/// with a gap here carries no wiring the app can vouch for, so it must not
+/// boot enabled — and for the restore notes that name the missing keys. Only
+/// names are reported — never values. The oracle is static: it sees wiring,
+/// not credentials, so an entry whose wiring remains while the keyring entry
 /// behind it was deleted stays invisible (existing entries are never probed
 /// against the store — a transiently locked keyring must never flip
 /// entries), and a required non-secret bearer field (plaintext, never in
@@ -1036,26 +1056,28 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
 ///
 /// Channels are guarded by the entry shape so one function serves both
 /// entry forms: a remote entry (`url`) wires secret_headers / secret bearer
-/// config fields via `env_headers` and `bearer_token_env_var`; a local
-/// entry (`command`) wires secret_env / secret-or-sensitive env config
-/// fields via `env`. Both wire under the env-var NAME, so one
-/// boundary-aware scan of the rendered entry covers every channel.
-/// OPTIONAL (`required: false`) fields are excluded per channel: their
-/// absence is a legitimate outcome (the qcc shape is OAuth-first), so "no
-/// stored credential" would send an OAuth-only user hunting for a key they
-/// never needed — and under the fallback it would be a claim we cannot
-/// verify either way. An entry carrying BOTH markers (a hand-edited
-/// hybrid) is judged by the remote channel alone: the engine launches the
-/// URL whenever it is set, so the local channel cannot affect that entry's
-/// authentication. An entry carrying neither marker (dead defense — every
-/// production call site materializes its marker before judging) counts
-/// every channel: the conservative direction for a shape this rule cannot
-/// classify.
+/// config fields via `env_headers` values and `bearer_token_env_var`; a
+/// local entry (`command`) wires secret_env / secret-or-sensitive env
+/// config fields via `env` placeholder values. The gap scan consults ONLY
+/// those wiring values — the one place the writers ever put a secret
+/// env-var name. Manifest-authored strings that also land in the entry
+/// (`url`, `scopes`, `oauth` blocks, `secret_headers[].header` names) are
+/// data no writer puts a secret name into, so a name embedded there cannot
+/// mask a credential gap. OPTIONAL (`required: false`) fields are excluded
+/// per channel: their absence is a legitimate outcome (the qcc shape is
+/// OAuth-first), so "no stored credential" would send an OAuth-only user
+/// hunting for a key they never needed — and under the fallback it would be
+/// a claim we cannot verify either way. An entry carrying BOTH markers (a
+/// hand-edited hybrid) is judged by the remote channel alone: the engine
+/// launches the URL whenever it is set, so the local channel cannot affect
+/// that entry's authentication. An entry carrying neither marker (dead
+/// defense — every production call site materializes its marker before
+/// judging) counts every channel: the conservative direction for a shape
+/// this rule cannot classify.
 fn entry_secret_keys_without_wiring(
     manifest: &ToolManifest,
     entry: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<String> {
-    let rendered = serde_json::to_string(entry).unwrap_or_default();
     // Null-safe: the engine's typed round-trip materializes `"command": null`
     // on remote entries and `"url": null` on local entries, so a bare
     // `is_some` would count both channels for every engine-touched entry.
@@ -1073,9 +1095,14 @@ fn entry_secret_keys_without_wiring(
     // channel.
     let counts_remote = is_remote || !(is_remote || is_local);
     let counts_local = (!is_remote && is_local) || !(is_remote || is_local);
+    let wiring = entry_wiring_values(entry, counts_remote, counts_local);
     let mut keys: Vec<String> = Vec::new();
     let mut push = |key: &str| {
-        if rendered_contains_secret_name(&rendered, &mcp_secret_env_var(key)) {
+        let name = mcp_secret_env_var(key);
+        if wiring
+            .iter()
+            .any(|value| wiring_value_contains_secret_name(value, &name))
+        {
             return;
         }
         if !keys.iter().any(|k| k == key) {
@@ -1128,9 +1155,12 @@ fn entry_secret_keys_without_wiring(
             // fallback never ran when other wiring exists, and one wired key
             // served the entry (the rest were never attempted).
             if !remote_entry_has_auth_wiring(entry)
-                && !legacy_keys
-                    .iter()
-                    .any(|k| rendered_contains_secret_name(&rendered, &mcp_secret_env_var(k)))
+                && !legacy_keys.iter().any(|k| {
+                    let name = mcp_secret_env_var(k);
+                    wiring
+                        .iter()
+                        .any(|value| wiring_value_contains_secret_name(value, &name))
+                })
             {
                 for key in &legacy_keys {
                     push(key.as_str());
@@ -1147,13 +1177,49 @@ fn entry_secret_keys_without_wiring(
     keys
 }
 
+/// The auth-wiring strings of the channels an entry is judged by — the only
+/// values the builders ever write a secret env-var name into: the remote
+/// channel wires `env_headers` values (the engine also deserializes them
+/// under its `env_http_headers` alias) and `bearer_token_env_var`; the
+/// local channel wires `env` placeholder values. Everything else in the
+/// entry (`url`, `scopes`, header NAMES, `oauth` blocks) is manifest- or
+/// user-authored data no writer puts a secret name into, so it is not
+/// scanned: an embedded name there can never authenticate the entry and
+/// must not mask a credential gap.
+fn entry_wiring_values(
+    entry: &serde_json::Map<String, serde_json::Value>,
+    counts_remote: bool,
+    counts_local: bool,
+) -> Vec<String> {
+    let mut values: Vec<String> = Vec::new();
+    let mut push_values = |value: Option<&serde_json::Value>| match value {
+        Some(serde_json::Value::String(name)) => values.push(name.clone()),
+        Some(serde_json::Value::Object(map)) => {
+            values.extend(map.values().filter_map(|v| v.as_str()).map(str::to_string))
+        }
+        _ => {}
+    };
+    if counts_remote {
+        push_values(entry.get("env_headers"));
+        push_values(entry.get("env_http_headers"));
+        push_values(entry.get("bearer_token_env_var"));
+    }
+    if counts_local {
+        push_values(entry.get("env"));
+    }
+    values
+}
+
 /// Whether a remote entry carries any auth wiring the remote builder treats
 /// as superseding its legacy `manifest.env` fallback — the entry-level
 /// mirror of the builder's `headers.is_empty() && env_headers.is_empty() &&
-/// bearer_token_env_var.is_none()` gate. A header map whose values are all
-/// empty or null wires nothing (the host resolver skips empty header values
-/// and empty env-var names), so it does not count: a hand-mangled dead
-/// header must not mask the credential gap.
+/// bearer_token_env_var.is_none()` gate (the engine's `env_http_headers`
+/// alias included). A value that is empty or whitespace-only wires nothing —
+/// the host resolver skips empty/whitespace `env_headers` and bearer
+/// env-var names, and a literal `headers` value that is empty or
+/// whitespace authenticates nothing even though the engine sends it — so it
+/// does not count: a hand-mangled dead header must not mask the credential
+/// gap.
 fn remote_entry_has_auth_wiring(entry: &serde_json::Map<String, serde_json::Value>) -> bool {
     let has_wired_value = |value: Option<&serde_json::Value>| {
         value
@@ -1161,36 +1227,36 @@ fn remote_entry_has_auth_wiring(entry: &serde_json::Map<String, serde_json::Valu
             .is_some_and(|object| {
                 object
                     .values()
-                    .any(|v| v.as_str().is_some_and(|name| !name.is_empty()))
+                    .any(|v| v.as_str().is_some_and(|name| !name.trim().is_empty()))
             })
     };
     has_wired_value(entry.get("headers"))
         || has_wired_value(entry.get("env_headers"))
+        || has_wired_value(entry.get("env_http_headers"))
         || entry
             .get("bearer_token_env_var")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|name| !name.is_empty())
+            .is_some_and(|name| !name.trim().is_empty())
 }
 
-/// `rendered.contains(name)` with a name boundary on both sides: a required
-/// key whose env-var name merely embeds in another wired name (`KEY` inside
-/// `PINVOU3_MCP_SECRET_KEY_V2`, or `ABA` inside
+/// Whether one wiring value carries the env-var NAME with a name boundary on
+/// both sides: a required key whose env-var name merely embeds in another
+/// wired name (`KEY` inside `PINVOU3_MCP_SECRET_KEY_V2`, or `ABA` inside
 /// `PINVOU3_MCP_SECRET_XPINVOU3_MCP_SECRET_ABA`) must not be masked by it.
-/// Every wiring the builders write delimits the name — it starts after `"`
-/// or `{` and ends at a JSON string terminator (`"..."`) or a placeholder
-/// close brace (`${...}`) — so a match with an alphanumeric/underscore
+/// Every wiring the builders write delimits the name — the value is the
+/// bare name, its `${...}` placeholder, or a composition with the name
+/// inside a placeholder — so a match with an alphanumeric/underscore
 /// neighbor on either side does not count as wiring.
-fn rendered_contains_secret_name(rendered: &str, name: &str) -> bool {
+fn wiring_value_contains_secret_name(value: &str, name: &str) -> bool {
     let mut from = 0;
-    while let Some(offset) = rendered[from..].find(name) {
+    while let Some(offset) = value[from..].find(name) {
         let start = from + offset;
         let end = start + name.len();
-        let leading_wired = rendered[..start]
+        let leading_wired = value[..start]
             .chars()
             .next_back()
             .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-        let trailing_wired =
-            !matches!(rendered[end..].chars().next(), None | Some('"') | Some('}'));
+        let trailing_wired = !matches!(value[end..].chars().next(), None | Some('"') | Some('}'));
         if !leading_wired && !trailing_wired {
             return true;
         }
@@ -1206,10 +1272,12 @@ fn rendered_contains_secret_name(rendered: &str, name: &str) -> bool {
 /// manifest does not declare it, and it is blanket: an OAuth server that
 /// additionally declares a required secret channel is spared too, at the
 /// cost of leaving that channel's gap to the restore note. Converged
-/// entries are spared — `disabled: true`, and the engine's `enabled: false`
-/// (its doctor-fix/toggle writers disable without touching `disabled`).
-/// Hand-authored auth wiring the manifest cannot judge is exempt (see
-/// [`entry_has_hand_auth_wiring`]).
+/// entries are spared — `disabled: true` (the stamp the engine's own toggle
+/// and runtime API also write) and `enabled: false` (doctor-fix's stamp):
+/// the engine's `is_enabled()` refuses both flags, so either way the entry
+/// boots for nobody and flipping it would only overwrite another writer's
+/// state. Hand-authored auth wiring the manifest cannot judge is exempt
+/// (see [`entry_has_hand_auth_wiring`]).
 fn credential_rule_exempt(
     manifest: &ToolManifest,
     server: &super::types::RemoteServer,
@@ -1221,11 +1289,12 @@ fn credential_rule_exempt(
     // Already disabled: the entry is converged, and existing entries are
     // never probed against the store — so a key that later re-enters the
     // store out of band (a keychain restore) cannot re-enable the entry
-    // here; only the reinstall writer does. The engine's own disable flag
-    // earns the same respect: doctor-fix and the /mcp toggle write
-    // `enabled: false` without touching `disabled`, and the engine's
-    // `is_enabled()` refuses both — such an entry boots for nobody, so
-    // flipping it would only overwrite another writer's state.
+    // here; only the reinstall writer does. The engine's own disable
+    // stamps earn the same respect: its toggle and runtime API write
+    // `disabled: true` alongside `enabled: false`, and doctor-fix writes
+    // `enabled: false` alone — `is_enabled()` refuses both flags, so
+    // either way the entry boots for nobody and flipping it would only
+    // overwrite another writer's state.
     if entry.get("disabled").and_then(|v| v.as_bool()) == Some(true) {
         return true;
     }
@@ -1241,17 +1310,21 @@ fn credential_rule_exempt(
 /// Whether an entry carries auth wiring this rule cannot judge — wiring a
 /// hand edit added that the manifest does not explain. HTTP header names are
 /// case-insensitive (the writers compare with `eq_ignore_ascii_case`), and
-/// the host resolver serves whatever env-var name a wiring value names, so:
+/// the host resolver serves whatever env-var name a wiring value names
+/// (through `env_headers` or the engine's `env_http_headers` alias — a
+/// config copied from another tool keeps working), so:
 /// - any `headers` member other than `Authorization` is hand auth, and a
-///   non-empty `Authorization` value is exempt too: whether it came from
+///   non-blank `Authorization` value is exempt too: whether it came from
 ///   install-time user input or a hand edit, it is literal auth this rule
 ///   cannot judge — the app itself only ever writes `Authorization` there;
 /// - an `env_headers` / `bearer_token_env_var` value naming an env var
 ///   outside the manifest's own secret namespace is hand wiring — the
 ///   builders only ever write `PINVOU3_MCP_SECRET_*` names derived from the
 ///   manifest.
-/// Such an entry may authenticate through wiring this static rule cannot
-/// see, so it is left enabled instead of disabled on a gap.
+/// Empty or whitespace-only values wire nothing on every channel, so they
+/// are neither hand auth nor wiring. Such an entry may authenticate through
+/// wiring this static rule cannot see, so it is left enabled instead of
+/// disabled on a gap.
 fn entry_has_hand_auth_wiring(
     manifest: &ToolManifest,
     entry: &serde_json::Map<String, serde_json::Value>,
@@ -1265,7 +1338,7 @@ fn entry_has_hand_auth_wiring(
         }
         if headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("authorization")
-                && value.as_str().is_some_and(|v| !v.is_empty())
+                && value.as_str().is_some_and(|v| !v.trim().is_empty())
         }) {
             return true;
         }
@@ -1289,19 +1362,19 @@ fn entry_has_hand_auth_wiring(
                 .map(|k| mcp_secret_env_var(k)),
         )
         .collect();
-    let foreign = |value: Option<&serde_json::Value>| {
-        value
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|name| !name.is_empty() && !manifest_secret_names.contains(name))
-    };
-    if entry
-        .get("env_headers")
-        .and_then(serde_json::Value::as_object)
-        .is_some_and(|env_headers| env_headers.values().any(|v| foreign(Some(v))))
-    {
+    let foreign = |name: &str| !name.trim().is_empty() && !manifest_secret_names.contains(name);
+    if ["env_headers", "env_http_headers"].into_iter().any(|key| {
+        entry
+            .get(key)
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|map| map.values().any(|v| v.as_str().is_some_and(foreign)))
+    }) {
         return true;
     }
-    foreign(entry.get("bearer_token_env_var"))
+    entry
+        .get("bearer_token_env_var")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(foreign)
 }
 
 /// Whether a startup-written/reconciled entry must carry `disabled: true`
