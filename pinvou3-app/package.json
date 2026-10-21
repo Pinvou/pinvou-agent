@@ -35,6 +35,8 @@
     "test:windows-runtime-manifest": "powershell -NoProfile -ExecutionPolicy Bypass -File src-tauri/packaging/windows/runtime/scripts/test-runtime-manifest-contract.ps1",
     "test:windows-rustup-repair": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_rustup_repair_smoke.ps1",
     "build:nsis": "node scripts/tauri/build.js build --bundles nsis",
+    "upgrade:pack": "node scripts/upgrade-pack/run.cjs",
+    "test:upgrade-pack": "node --test tests/upgrade_pack_adapter.test.cjs",
     "test:tauri-layout": "node tests/tauri_platform_layout.test.js",
     "test:tauri-effective-config": "node tests/tauri_effective_config.test.js",
     "test:startup-window": "node tests/startup_window_logic.test.mjs",
