@@ -48,7 +48,7 @@ completed-task ratio remains 5/47 (10.6%).
 | T28 | 0% | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
 | T29 | 65% | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
-| T31 | 45% | In progress | Certificate-optional initial-source changes are implemented in the Windows worktree and independently reviewed. Packaging regression passed 62 tests with three native opt-in skips; normal Rust passed 58 with one explicit native ignore. Remaining configurations, fresh unsigned roles, installation, IPC and native recovery acceptance remain pending. |
+| T31 | 45% | In progress | Certificate-optional initial-source changes are implemented in the Windows worktree and independently reviewed. Packaging regression passed 62 tests with three native opt-in skips; normal, disabled and fault Rust configurations each passed 58 with one explicit native ignore. The normal-profile fault-hook rejection passed. Fresh unsigned roles, installation, IPC and native recovery acceptance remain pending. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
 | T33 | 35% | In progress | Reviewed optional Windows same-object Authenticode observations, shared relative custody and retained FullPack final-installer/helper/launcher composition with original-job compatibility; protected host, installation/slot execution and platform qualification remain pending. Native certificate qualification is not a prerequisite. |
 | T34 | 0% | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
@@ -14167,12 +14167,17 @@ or retry-count cap.
 
 ## Current verification and environment limits (2026-10-21)
 
-The certificate-optional Windows packaging regression and normal Rust stage have
-passed independent evidence review; they do not complete T31. Other Rust stages
-remain unaccepted because owned MSVC telemetry processes did not naturally drain
-within their original observation allowances. Those failed runs remain failures.
-The architecture guard passed for the Windows worktree. No system compiler or
-host telemetry configuration was changed.
+The certificate-optional Windows packaging regression passed 62 tests, with three
+native opt-in skips. Normal, disabled and fault Rust configurations each passed
+58 tests, with the same explicit native ignore. This is 174 test executions over
+three configurations, not 174 distinct tests. The normal-profile fault-hook
+negative check returned the expected build rejection. Independent evidence review
+confirmed natural owned-Job closure, no forced termination and unchanged source
+inputs. Earlier failed runs remain failures; the normal stage is reused from its
+accepted run. The architecture guard passed for the Windows worktree. No system
+compiler or host telemetry configuration was changed. Fresh unsigned installation,
+IPC and native recovery acceptance remain pending; these checks do not complete
+T31.
 
 The isolated Windows guest has an expired evaluation license and scheduled
 shutdowns, limiting uninterrupted native experiments. No licensing bypass is
