@@ -208,6 +208,14 @@ impl std::fmt::Display for SecretResolveError {
 /// `sync_secret_values` clear-and-rebuild — silent 401s from the first
 /// restart. The registry is keyed by env-var name only, so when both targets
 /// of the same key ever hold values, the later (Bearer) registration wins.
+///
+/// The `config_fields` leg uses the same disjunct as the entry builders and
+/// the credential rule's oracle — `field.secret || is_sensitive_key_name` —
+/// not `field.secret` alone: a required field that is only sensitive-named is
+/// a secret channel to every writer that matters. With the narrow form, a
+/// manifest whose only such channel slipped the recycle-restore supply gate
+/// (installing enabled-unwired) and its credential was never rehydrated after
+/// a restart (silent auth loss on a wired entry).
 pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut push = |target: &str, key: &str| {
@@ -235,7 +243,7 @@ pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, S
         );
     }
     for f in &manifest.config_fields {
-        if f.secret {
+        if f.secret || is_sensitive_key_name(&f.key) {
             let target = if f.target == "bearer" {
                 bundle::keyring_target(bundle::CredentialTarget::Bearer)
             } else {
@@ -474,6 +482,32 @@ mod tests {
         assert_eq!(targets.len(), 2, "AMAP/QCC each deduplicated once");
         assert!(targets.contains(&("env".to_string(), "AMAP_KEY".to_string())));
         assert!(targets.contains(&("header".to_string(), "QCC_API_KEY".to_string())));
+    }
+
+    #[test]
+    fn manifest_secret_targets_includes_sensitive_named_config_fields() {
+        // The config_fields leg uses the builders' disjunct — `secret` OR a
+        // sensitive key NAME — so a required field declared plain but named
+        // like a secret is enumerated (the recycle-restore gate and the
+        // restart rehydration both consume this list), while a genuinely
+        // non-sensitive field stays out.
+        let manifest: ToolManifest = serde_json::from_str(
+            r#"{
+            "id":"t","name":"T","description":"","version":"1","icon":"","category":"",
+            "mcp_tools":[],"command":"","args":[],
+            "config_fields":[
+                {"key":"MY_API_KEY","label":"","required":true,"target":"env","secret":false},
+                {"key":"REGION","label":"","required":true,"target":"env","secret":false}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let targets = manifest_secret_targets(&manifest);
+        assert!(targets.contains(&("env".to_string(), "MY_API_KEY".to_string())));
+        assert!(
+            !targets.iter().any(|(_, key)| key == "REGION"),
+            "non-sensitive config fields are not secrets"
+        );
     }
 
     #[test]

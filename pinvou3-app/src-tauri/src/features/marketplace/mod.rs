@@ -2620,8 +2620,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
                 if cleared_preserved_disabled {
                     note.push_str(
-                        "; its preserved disabled flag was cleared — the stored credential \
-                         resolves again",
+                        "; its preserved disabled flag was cleared — every credential the \
+                         rebuilt entry needs resolves",
                     );
                 }
                 actions.push(note);
@@ -10072,6 +10072,63 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-4 review MAJOR-1c: a manifest whose ONLY secret channel is a
+    /// sensitive-named non-secret `config_fields` key is a secret channel to
+    /// the builders and the credential rule, so the recycle-restore supply
+    /// gate must route it the same way — previously
+    /// `manifest_secret_targets` enumerated `field.secret` alone, the gate
+    /// passed as "no secrets", and the supply ran into an entry the rule
+    /// could never see. Red on the pre-fix tree (the widened refusal inside
+    /// the supply turns the restore into an error there).
+    #[test]
+    fn restore_recycled_sensitive_named_config_field_flags_credentials_required() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "sn-rec",
+                "SnRec",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"MY_API_KEY","label":"key","required":true,"target":"env","secret":false}
+                    ]"#,
+            );
+            let store = MemoryCredentialStore::default();
+            store
+                .set(
+                    &mcp_secret_reference("sn-rec", "env", "MY_API_KEY"),
+                    &secret_value("sn"),
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store.clone());
+            // Upload-source install (empty user_config): the store fallback
+            // wires the key, exactly like the secret_env package above — and
+            // an Upload uninstall recycles the whole package, which is the
+            // flow this gate guards.
+            mgr.install_upload("sn-rec", store::BundleSource::Upload("sn-rec.zip".to_string()))
+                .unwrap();
+
+            mgr.uninstall("sn-rec").unwrap();
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference("sn-rec", "env", "MY_API_KEY"))
+                    .unwrap(),
+                None,
+                "uninstall must delete the sensitive-named field's stored credential"
+            );
+
+            let result = recycle_bin::restore_plugin("sn-rec").unwrap();
+            assert!(
+                result.credentials_required,
+                "the sensitive-named channel must flag credentials required"
+            );
+            assert!(
+                !MarketplaceManager::new()
+                    .installed_ids()
+                    .contains(&"sn-rec".to_string()),
+                "缺凭据时跳过 MCP 供给（不写 installed.json，避免半安装态）"
+            );
+        });
+    }
+
     /// 上传/导入路径禁用 pip 自动安装（供应链安全）：`install_upload` 遇非空
     /// `pip_dependencies` 不执行 pip install（若执行，不存在的包名会让安装失败），
     /// 只提示用户自行安装，供给照常完成。
@@ -11080,6 +11137,44 @@ pub(crate) mod tests {
                 snapshot_secret_values().get(&env_var).map(String::as_str),
                 Some("legacy-manifest-value"),
                 "the local legacy secret must survive the restart rehydration"
+            );
+        });
+    }
+
+    /// Round-4 review F2 (pre-existing, fixed alongside MAJOR-1c): the same
+    /// `manifest_secret_targets` widening feeds `sync_secret_values`, so a
+    /// wired `${PINVOU3_MCP_SECRET_MY_API_KEY}` on a sensitive-named
+    /// non-secret config field is rehydrated after a restart instead of
+    /// being wiped by the clear-and-rebuild (silent auth loss). Red on the
+    /// pre-fix tree.
+    #[test]
+    fn sync_rehydrates_sensitive_named_config_field_credential() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "syn-x",
+                "SynX",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"MY_API_KEY","label":"key","required":true,"target":"env","secret":false}
+                    ]"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let value = secret_value("syn");
+            store
+                .set(
+                    &mcp_secret_reference("syn-x", "env", "MY_API_KEY"),
+                    &value.clone(),
+                )
+                .unwrap();
+            write_installed_ids(&["syn-x".to_string()]);
+            let manager = MarketplaceManager::with_store(store);
+
+            manager.sync_secret_values().unwrap();
+            let env_var = mcp_secret_env_var("MY_API_KEY");
+            assert_eq!(
+                snapshot_secret_values().get(&env_var).map(String::as_str),
+                Some(value.as_str()),
+                "the sensitive-named field's credential must survive the restart rehydration"
             );
         });
     }
@@ -12156,6 +12251,161 @@ pub(crate) mod tests {
                 entry.get("disabled").is_none() && entry.get("env").is_none(),
                 "the healthy pass is zero-writes even when the credential is gone: {entry}"
             );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// Round-4 review MAJOR-1 (comment 5594553635): the import/upload path
+    /// installs with an empty user_config, so an omitted REQUIRED secret
+    /// `config_fields` key must fail the install loud — silently skipping it
+    /// landed the entry enabled-unwired (the exact state the credential rule
+    /// exists to prevent), and unlike the remote analog nothing ever healed
+    /// it. Probe-proven on the pre-fix tree; this pin is red on it.
+    #[test]
+    fn install_upload_refuses_local_required_secret_config_field() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cfg-i",
+                "CfgI",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"X_API_KEY","label":"key","required":true,"target":"env","secret":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("cfg-i").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let error = manager
+                .install_upload("cfg-i", store::BundleSource::Upload("cfg-i.zip".to_string()))
+                .unwrap_err();
+            assert!(
+                error.contains("X_API_KEY") && error.contains("missing secret"),
+                "the refusal must name the missing required key: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// The green counterpart: the same required secret config field provided
+    /// through the store card's config dialog wires the entry exactly like
+    /// the other secret channels — the refusal is only for omitted keys.
+    #[test]
+    fn install_wires_local_required_secret_config_field_when_input_provides_it() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cfg-w",
+                "CfgW",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"X_API_KEY","label":"key","required":true,"target":"env","secret":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("cfg-w").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut config = std::collections::HashMap::new();
+            config.insert("X_API_KEY".to_string(), secret_value("t1").clone());
+
+            manager
+                .install("cfg-w", &config)
+                .expect("a provided required key must install");
+            let entry = &read_mcp_json()["servers"]["cfg-w"];
+            assert_eq!(
+                entry["env"]["X_API_KEY"],
+                "${PINVOU3_MCP_SECRET_X_API_KEY}",
+                "the provided key must be wired as the store placeholder: {entry}"
+            );
+        });
+    }
+
+    /// Round-4 review MINOR (inert-text masking): a manifest plain `env`
+    /// value that merely MENTIONS a required key's env-var name — no
+    /// `${...}` placeholder, so the engine expands nothing — must not mask
+    /// that key's credential gap. Without the placeholder-exact local scan
+    /// this restores enabled with the gap suppressed.
+    #[test]
+    fn restore_ignores_inert_env_text_sharing_a_secret_name() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "inert-x",
+                "InertX",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"NOTE":"docs say PINVOU3_MCP_SECRET_BARE_KEY is needed"},
+                    "secret_env":[{"key":"BARE_KEY","provider":"p","required":true}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("inert-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["inert-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("BARE_KEY"),
+                "the inert mention must not mask the gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["inert-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the keyless entry must still be written disabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The deliberate boundary the placeholder-exact scan keeps: a plain
+    /// `env` value that COMPOSES the placeholder (`x${NAME}y`) is real
+    /// wiring — the engine's env expansion resolves that token, and an
+    /// absent credential fails the spawn loudly naming the variable. The
+    /// static oracle therefore spares the entry; this pins that sparing so
+    /// tightening the scan later cannot silently break composed manifests.
+    #[test]
+    fn restore_placeholder_composition_in_plain_env_still_wires() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "comp-x",
+                "CompX",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"NOTE":"use ${PINVOU3_MCP_SECRET_COMP_KEY} at runtime"},
+                    "secret_env":[{"key":"COMP_KEY","provider":"p","required":true}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("comp-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["comp-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                !actions[0].contains("written disabled"),
+                "a composed placeholder is live wiring and must not disable: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["comp-x"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "the composed entry stays enabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
             assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }

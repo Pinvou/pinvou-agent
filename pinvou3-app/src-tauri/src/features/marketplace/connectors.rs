@@ -668,16 +668,20 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     } else {
                         env.insert(field.key.clone(), val.clone());
                     }
-                } else if degrade_unresolved_secrets
-                    && (field.secret || is_sensitive_key_name(&field.key))
-                {
-                    // Startup rebuild has no user input: re-derive a secret
-                    // config field from the credential store, the same channel
-                    // the install writer filled from the user's input. An
-                    // absent credential degrades; a store failure fails the
-                    // rebuild so the next startup retries instead of silently
-                    // dropping the wiring. (The enclosing if guarantees
-                    // `degrade`, so `Ok(None)` always skips the wiring.)
+                } else if field.secret || is_sensitive_key_name(&field.key) {
+                    // No user input for a secret config field: re-derive the
+                    // wiring from the credential store in EVERY mode — the
+                    // store fallback also serves a re-install over a
+                    // previously configured tool. This is the same resolution
+                    // the secret_env and legacy sensitive channels run, so it
+                    // inherits their exact outcomes: a genuine absence fails
+                    // the install loud (the import/upload path installs with
+                    // an empty config, and silence here would land the entry
+                    // enabled-unwired — the state the credential rule exists
+                    // to prevent) and degrades only on the startup rebuild;
+                    // a store FAILURE fails the build in every mode so the
+                    // next startup retries instead of silently dropping the
+                    // wiring. (Under `degrade`, `Ok(None)` skips the wiring.)
                     match self.resolve_entry_secret(
                         &manifest.id,
                         "env",
@@ -1058,7 +1062,10 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
 /// entry forms: a remote entry (`url`) wires secret_headers / secret bearer
 /// config fields via `env_headers` values and `bearer_token_env_var`; a
 /// local entry (`command`) wires secret_env / secret-or-sensitive env
-/// config fields via `env` placeholder values. The gap scan consults ONLY
+/// config fields via `env` values' exact `${...}` placeholder tokens — the
+/// only form the engine's env expansion resolves, so any other occurrence
+/// of the name in a plain value is inert text. Each key is matched only
+/// against its own channel's wiring values. The gap scan consults ONLY
 /// those wiring values — the one place the writers ever put a secret
 /// env-var name. Manifest-authored strings that also land in the entry
 /// (`url`, `scopes`, `oauth` blocks, `secret_headers[].header` names) are
@@ -1095,35 +1102,48 @@ fn entry_secret_keys_without_wiring(
     // channel.
     let counts_remote = is_remote || !(is_remote || is_local);
     let counts_local = (!is_remote && is_local) || !(is_remote || is_local);
-    let wiring = entry_wiring_values(entry, counts_remote, counts_local);
-    let mut keys: Vec<String> = Vec::new();
-    let mut push = |key: &str| {
+    let (remote_wiring, local_wiring) =
+        entry_wiring_values(entry, counts_remote, counts_local);
+    // A remote key is masked only by a remote wiring value naming it; a
+    // local key only by a local `env` placeholder expanding it — a foreign
+    // channel's data must not mask a gap.
+    let remote_wired = |key: &str| {
         let name = mcp_secret_env_var(key);
-        if wiring
+        remote_wiring
             .iter()
             .any(|value| wiring_value_contains_secret_name(value, &name))
-        {
-            return;
-        }
+    };
+    let local_wired = |key: &str| {
+        let name = mcp_secret_env_var(key);
+        local_wiring
+            .iter()
+            .any(|value| placeholder_value_contains_secret_name(value, &name))
+    };
+    let mut keys: Vec<String> = Vec::new();
+    let mut push = |key: &str| {
         if !keys.iter().any(|k| k == key) {
             keys.push(key.to_string());
         }
     };
     if counts_remote {
         for secret in &manifest.secret_headers {
-            if secret.required {
+            if secret.required && !remote_wired(&secret.source_key) {
                 push(&secret.source_key);
             }
         }
         for field in &manifest.config_fields {
-            if field.target == "bearer" && field.secret && field.required {
+            if field.target == "bearer"
+                && field.secret
+                && field.required
+                && !remote_wired(&field.key)
+            {
                 push(&field.key);
             }
         }
     }
     if counts_local {
         for secret in &manifest.secret_env {
-            if secret.required {
+            if secret.required && !local_wired(&secret.key) {
                 push(&secret.key);
             }
         }
@@ -1131,6 +1151,7 @@ fn entry_secret_keys_without_wiring(
             if field.target == "env"
                 && field.required
                 && (field.secret || is_sensitive_key_name(&field.key))
+                && !local_wired(&field.key)
             {
                 push(&field.key);
             }
@@ -1154,13 +1175,7 @@ fn entry_secret_keys_without_wiring(
             // Remote: the legacy channel is judged as a whole — the builder's
             // fallback never ran when other wiring exists, and one wired key
             // served the entry (the rest were never attempted).
-            if !remote_entry_has_auth_wiring(entry)
-                && !legacy_keys.iter().any(|k| {
-                    let name = mcp_secret_env_var(k);
-                    wiring
-                        .iter()
-                        .any(|value| wiring_value_contains_secret_name(value, &name))
-                })
+            if !remote_entry_has_auth_wiring(entry) && !legacy_keys.iter().any(|k| remote_wired(k))
             {
                 for key in &legacy_keys {
                     push(key.as_str());
@@ -1170,44 +1185,61 @@ fn entry_secret_keys_without_wiring(
             // Local: the builder wires every sensitive key, so each counts
             // on its own.
             for key in &legacy_keys {
-                push(key.as_str());
+                if !local_wired(key) {
+                    push(key.as_str());
+                }
             }
         }
     }
     keys
 }
 
-/// The auth-wiring strings of the channels an entry is judged by — the only
-/// values the builders ever write a secret env-var name into: the remote
-/// channel wires `env_headers` values (the engine also deserializes them
-/// under its `env_http_headers` alias) and `bearer_token_env_var`; the
-/// local channel wires `env` placeholder values. Everything else in the
-/// entry (`url`, `scopes`, header NAMES, `oauth` blocks) is manifest- or
-/// user-authored data no writer puts a secret name into, so it is not
-/// scanned: an embedded name there can never authenticate the entry and
-/// must not mask a credential gap.
+/// The auth-wiring strings of the channels an entry is judged by, split by
+/// transport — the only values the builders ever write a secret env-var name
+/// into: the remote channel wires `env_headers` values (the engine also
+/// deserializes them under its `env_http_headers` alias) and
+/// `bearer_token_env_var`; the local channel wires `env` placeholder values.
+/// Everything else in the entry (`url`, `scopes`, header NAMES, `oauth`
+/// blocks) is manifest- or user-authored data no writer puts a secret name
+/// into, so it is not scanned: an embedded name there can never authenticate
+/// the entry and must not mask a credential gap. The split lets each
+/// channel's keys be matched against the wiring form its own engine
+/// semantics resolve (bare env-var names remotely, exact `${...}` tokens
+/// locally).
 fn entry_wiring_values(
     entry: &serde_json::Map<String, serde_json::Value>,
     counts_remote: bool,
     counts_local: bool,
-) -> Vec<String> {
-    let mut values: Vec<String> = Vec::new();
-    let mut push_values = |value: Option<&serde_json::Value>| match value {
-        Some(serde_json::Value::String(name)) => values.push(name.clone()),
+) -> (Vec<String>, Vec<String>) {
+    let mut remote: Vec<String> = Vec::new();
+    let mut local: Vec<String> = Vec::new();
+    let push_values = |value: Option<&serde_json::Value>, out: &mut Vec<String>| match value {
+        Some(serde_json::Value::String(name)) => out.push(name.clone()),
         Some(serde_json::Value::Object(map)) => {
-            values.extend(map.values().filter_map(|v| v.as_str()).map(str::to_string))
+            out.extend(map.values().filter_map(|v| v.as_str()).map(str::to_string))
         }
         _ => {}
     };
     if counts_remote {
-        push_values(entry.get("env_headers"));
-        push_values(entry.get("env_http_headers"));
-        push_values(entry.get("bearer_token_env_var"));
+        push_values(entry.get("env_headers"), &mut remote);
+        push_values(entry.get("env_http_headers"), &mut remote);
+        push_values(entry.get("bearer_token_env_var"), &mut remote);
     }
     if counts_local {
-        push_values(entry.get("env"));
+        push_values(entry.get("env"), &mut local);
     }
-    values
+    (remote, local)
+}
+
+/// Whether a local `env` value wires the secret `name`: only the exact
+/// `${name}` placeholder token does — that is the sole form the engine's env
+/// expansion resolves (composition included, since `x${name}y` expands the
+/// same token), and it is exactly what [`mcp_secret_placeholder`] writes.
+/// Every other occurrence of the name in a plain value — a bare name, a
+/// malformed placeholder — is inert text the engine sends verbatim, so it
+/// must not mask a credential gap.
+fn placeholder_value_contains_secret_name(value: &str, name: &str) -> bool {
+    value.contains(&format!("${{{name}}}"))
 }
 
 /// Whether a remote entry carries any auth wiring the remote builder treats
@@ -1243,10 +1275,13 @@ fn remote_entry_has_auth_wiring(entry: &serde_json::Map<String, serde_json::Valu
 /// both sides: a required key whose env-var name merely embeds in another
 /// wired name (`KEY` inside `PINVOU3_MCP_SECRET_KEY_V2`, or `ABA` inside
 /// `PINVOU3_MCP_SECRET_XPINVOU3_MCP_SECRET_ABA`) must not be masked by it.
-/// Every wiring the builders write delimits the name — the value is the
-/// bare name, its `${...}` placeholder, or a composition with the name
-/// inside a placeholder — so a match with an alphanumeric/underscore
-/// neighbor on either side does not count as wiring.
+/// The only wiring form this checks is the remote channel's: an
+/// `env_headers` / `bearer_token_env_var` value IS the bare env-var name
+/// (the engine looks the variable up by exactly that name), so a match with
+/// an alphanumeric/underscore neighbor on either side is a different
+/// variable, not wiring. Local `env` values are judged by the stricter
+/// placeholder token instead — see
+/// [`placeholder_value_contains_secret_name`].
 fn wiring_value_contains_secret_name(value: &str, name: &str) -> bool {
     let mut from = 0;
     while let Some(offset) = value[from..].find(name) {
