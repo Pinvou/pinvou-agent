@@ -2084,6 +2084,32 @@ mod tests {
             );
         }
 
+        // 生产闸接线 executable 钉：同样的条目必须经生产闸得出同样的
+        // verdict——若 `checked_zip_entry_path` 被换成底座拒绝谓词，
+        // `/abs/x`、`./b`、`a/../b`、`C:/x` 会从放行翻成拒绝，本循环先红
+        // （同时就是登记差异的 gate-level Ok 断言）。
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let mut gate_total = 0u64;
+        for (name, expected) in entries.iter() {
+            let mut entry = archive.by_name(name).unwrap();
+            match checked_zip_entry_path(&mut entry, &mut gate_total, u64::MAX, "verdicts") {
+                Ok(normalized) => {
+                    let want = expected.expect("放行条目应有登记的净化输出");
+                    assert_eq!(
+                        normalized, want,
+                        "生产闸对 {name:?} 的净化输出与登记的 sanitizer 语义不符"
+                    );
+                }
+                Err(err) => {
+                    assert!(
+                        expected.is_none(),
+                        "放行条目 {name:?} 不应被生产闸拒绝: {err}"
+                    );
+                    assert_eq!(err, REJECT_TRAVERSAL, "穿越条目必须以穿越理由拒绝");
+                }
+            }
+        }
+
         // symlink 面 executable 化：unix_mode 文件类型位 = symlink 的条目被
         // 生产闸拒绝（底座 `entry_type_is_link` 的 zip 面）。链接条目名本身
         // 的 enclosed_name 是放行的（上一循环），拒绝必须来自 symlink 判定。
@@ -2112,10 +2138,15 @@ mod tests {
             let f = std::fs::File::create(&zip_path).unwrap();
             let mut zw = zip::ZipWriter::new(f);
             let opts = zip::write::SimpleFileOptions::default();
-            for name in ["a.txt", "b.txt", "c.txt"] {
+            for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"] {
                 zw.start_file(name, opts).unwrap();
                 use std::io::Write;
-                zw.write_all(&[b'x'; 400]).unwrap();
+                let payload: &[u8] = if name == "d.txt" {
+                    &[b'x'; 200]
+                } else {
+                    &[b'x'; 400]
+                };
+                zw.write_all(payload).unwrap();
             }
             zw.finish().unwrap();
         }
@@ -2129,10 +2160,30 @@ mod tests {
             assert_eq!(path, name);
         }
         assert_eq!(total, 800, "前两条目声明大小应已累计");
-        let mut entry = archive.by_name("c.txt").unwrap();
-        let err = checked_zip_entry_path(&mut entry, &mut total, max_bytes, "c.txt")
-            .expect_err("越过声明上限必须被拒");
+        // 被拒条目不得写回累计值（引擎调用 `?` 先于写回）。
+        let err = {
+            let mut entry = archive.by_name("c.txt").unwrap();
+            checked_zip_entry_path(&mut entry, &mut total, max_bytes, "c.txt")
+                .expect_err("越过声明上限必须被拒")
+        };
         assert_eq!(err, reject_declared_cap("c.txt", max_bytes));
+        assert_eq!(total, 800);
+        // 边界面：恰好抵达上限（800 + 200 == 1000）必须放行——上限语义是
+        // 严格大于才拒绝，与引擎 `add_entry_size` 一致（等价性测试在引擎
+        // 侧钉同一边界，本钉在生产闸钉）。
+        {
+            let mut entry = archive.by_name("d.txt").unwrap();
+            let path = checked_zip_entry_path(&mut entry, &mut total, max_bytes, "d.txt")
+                .unwrap_or_else(|e| panic!("恰好抵达上限应放行: {e}"));
+            assert_eq!(path, "d.txt");
+        }
+        assert_eq!(total, 1000);
+        let err = {
+            let mut entry = archive.by_name("e.txt").unwrap();
+            checked_zip_entry_path(&mut entry, &mut total, max_bytes, "e.txt")
+                .expect_err("越过声明上限必须被拒")
+        };
+        assert_eq!(err, reject_declared_cap("e.txt", max_bytes));
     }
 
     /// The literal rejection messages must keep carrying the substrings the
