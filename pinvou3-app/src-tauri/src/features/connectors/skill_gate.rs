@@ -782,16 +782,6 @@ mod tests {
         });
     }
 
-    /// Round-2 review M1: the gesture grant lifts stored rows in EVERY
-    /// initialized DenyAll scope, and an initialized scope's stored list is
-    /// its sole truth — so a connect whose materialization then failed used
-    /// to leave the connector computed-ON by row-absence behind the failure
-    /// card, with the next boot refresh silently completing the enable (both
-    /// reproduced). The revoke must REBUILD the registered-default-off shape
-    /// — row + marker back in every initialized DenyAll scope — so the
-    /// failure end-state is fail-closed on both scope kinds and the restored
-    /// row re-arms the verdict guard against the boot backfill.
-    #[test]
     /// Round-2 review: the exact-footprint restore has no pin of its own —
     /// the sibling pin above lifts rows in EVERY initialized scope, where the
     /// footprinted and the unconditional restore are indistinguishable. This
@@ -892,6 +882,20 @@ mod tests {
         });
     }
 
+    /// Round-2 review M1: the gesture grant lifts stored rows in EVERY
+    /// initialized DenyAll scope, and an initialized scope's stored list is
+    /// its sole truth — so a connect whose materialization then failed used
+    /// to leave the connector computed-ON by row-absence behind the failure
+    /// card, with the next boot refresh silently completing the enable (both
+    /// reproduced). The revoke must REBUILD the registered-default-off shape
+    /// — row + marker back in every initialized DenyAll scope — so the
+    /// failure end-state is fail-closed on both scope kinds and the restored
+    /// row re-arms the verdict guard against the boot backfill. (Round-2
+    /// fix-wave follow-up: this doc and the `#[test]` had been left above the
+    /// exact-footprint pin inserted before this fn — both attributes attached
+    /// to the new fn, double-registering it and silencing this pin; the
+    /// test-registry guard caught the pair.)
+    #[test]
     fn revoke_restores_the_lifted_rows_in_initialized_scopes() {
         use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
 
