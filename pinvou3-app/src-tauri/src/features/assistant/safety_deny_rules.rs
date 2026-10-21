@@ -1980,11 +1980,23 @@ mod tests {
     /// 例拦截，语料覆盖面变化必须是有意识的。
     #[test]
     fn forkguard_deny_inventory_anchored_to_engine_sensitive_paths() {
-        use sensitive_paths::{SENSITIVE_ABSOLUTE_PREFIXES, SENSITIVE_FILE_NAMES};
+        use sensitive_paths::{
+            SENSITIVE_ABSOLUTE_PREFIXES, SENSITIVE_DIRECTORY_NAMES, SENSITIVE_FILE_NAMES,
+        };
 
         // 直派面：`SENSITIVE_DIR_NAMES` 是引擎 `SENSITIVE_DIRECTORY_NAMES`
         // 的 const 别名（内容与顺序即引擎面，非复制）；语料字节不变由
         // `rule_snapshot_is_stable` 的钉数与分族断言承载。
+        //
+        // 直派漂移探测器：别名成立时两边是同一数组，本断言恒真；它的承重
+        // 场景是别名被改回等值手抄清单之后——脱钩瞬间内容相等不会红（快照
+        // 钉的是语料字节，不随引擎变化），而引擎目录面一旦增删，手抄副本
+        // 与引擎面失衡，本钉即红，强制把直派关系有意识地接回来。
+        assert_eq!(
+            SENSITIVE_DIR_NAMES, SENSITIVE_DIRECTORY_NAMES,
+            "SENSITIVE_DIR_NAMES 与引擎目录面内容失衡——直派关系疑似被改回手抄清单，\
+             引擎目录面漂移将对语料静默"
+        );
 
         // 子集面。
         for child in SENSITIVE_CHILD_FILES {
