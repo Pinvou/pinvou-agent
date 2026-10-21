@@ -55,10 +55,11 @@ jobs:
       build_required: ${{ steps.release.outputs.build_required }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      # fetch-depth:0 确保 push 事件的 before commit 可用于整段 push 范围比较。
+      # 本 job 只做文件级版本比对(sync-version --check 与其测试),不读 git
+      # 历史(此前 fetch-depth:0 注释声称的 push 范围比较并不存在),浅克隆即可。
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -146,6 +147,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -312,6 +315,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -465,6 +470,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -796,6 +803,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
