@@ -44,6 +44,74 @@ test('native foreground tool output retains the existing timer', async () => {
   assert.equal(snapshots[0].chatItems.find(item => item.toolId === 'tool').output, 'hello');
 });
 
+test('continuous background deltas retain the first throttle deadline instead of debouncing', async () => {
+  const host = await setup();
+  let calls = 0;
+  host.api.state.subscribe('chat', () => { calls++; });
+  delta(host, '0');
+  host.advance(30);
+  delta(host, '30');
+  host.advance(19);
+  assert.equal(calls, 0);
+  host.advance(1);
+  assert.equal(calls, 1, 'the second chunk must not postpone the first 50ms deadline');
+  host.advance(10);
+  delta(host, '60');
+  host.advance(30);
+  delta(host, '90');
+  host.advance(20);
+  assert.equal(calls, 2);
+  host.advance(90);
+  assert.equal(calls, 2);
+  await host.load('background');
+  assert.equal(item(host).output, '0306090');
+});
+
+const growingShellTasks = (args, now) => args.sessionId === 'background' ? [{
+  id: 'job', status: 'Running', command: 'synthetic', origin_tool_call_id: 'tool',
+  stdout_tail: `poll ${now}`, stdout_len: String(`poll ${now}`).length,
+  stderr_tail: '', stderr_len: 0, exit_code: null, elapsed_ms: now,
+}] : [];
+
+async function shellCadence(source, withDeltas) {
+  const host = createNativeToolOutputHarness({ eventSource: source, shellTasks: growingShellTasks });
+  await host.load('background');
+  start(host, 'background', 'tool', 'Bash');
+  await host.load('foreground');
+  host.advance(100);
+  await new Promise(resolve => { setImmediate(resolve); });
+  const snapshots = [];
+  const unsubscribe = host.api.state.subscribe('chat', value => snapshots.push(value));
+  for (let index = 0; index < 12; index++) {
+    if (withDeltas) delta(host, `chunk ${index}\n`);
+    host.advance(250);
+    await new Promise(resolve => { setImmediate(resolve); });
+  }
+  const publications = snapshots.length;
+  const identicalTransitions = snapshots.slice(1).filter((value, index) => value === snapshots[index]).length;
+  unsubscribe();
+  await host.load('background');
+  assert.equal(item(host).taskId, 'job');
+  assert.equal(item(host).state, 'running');
+  return { publications, identicalTransitions, final: JSON.parse(JSON.stringify(host.snapshot())) };
+}
+
+test('changing invisible shell polls still publish without any tool deltas in both variants', async () => {
+  for (const source of [baselineSource, eventSource]) {
+    const receipt = await shellCadence(source, false);
+    assert.equal(receipt.publications, 12, 'the separate 250ms poll publisher is outside this optimization');
+    assert.ok(receipt.identicalTransitions > 0);
+  }
+});
+
+test('250ms tool deltas plus changing shell polls reduce publications from 36 to 24, preserving final state', async () => {
+  const before = await shellCadence(baselineSource, true);
+  const after = await shellCadence(eventSource, true);
+  assert.equal(before.publications, 36);
+  assert.equal(after.publications, 24);
+  assert.deepEqual(after.final, before.final);
+});
+
 test('timer-only host coalesces two background sessions into one coherent foreground publication', async () => {
   const host = await setup({ requestAnimationFrame: false });
   await host.load('second');

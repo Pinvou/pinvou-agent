@@ -228,7 +228,10 @@ const expectedProtocolHashes = {
   // tool-store-events.js), and the wave-5 chat-events DI pairs
   // (recordTurnStarted/stream-notify/reasoning/flush families) moved into
   // the shared tauriChatEvents/web cluster with unchanged event surface.
-  chat: '148c3fc1947008cdb2c8f8bc2c8c8e112ffaa3c55be521163f7ba9bd6897e5a0',
+  // Recomputed for background tool-delta routing: the captured listener body
+  // now defers its extra publication to the existing terminal timer. Invoke
+  // and event wire shapes remain unchanged; publication timing is intentional.
+  chat: 'b3d5b2882cf4f83958f7b16d8e3ebc6e5fd75006a7b43e285690bfd78e8a4f49',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

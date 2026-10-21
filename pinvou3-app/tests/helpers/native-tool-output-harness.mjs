@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-/** Boot the actual native host; only IPC and the clock are simulated. */
-export function createNativeToolOutputHarness({ eventSource, requestAnimationFrame = true } = {}) {
+/** Load the native bridge/router/terminal scripts without bridge init or the UI. */
+export function createNativeToolOutputHarness({ eventSource, shellTasks = () => [], requestAnimationFrame = true } = {}) {
   let now = 0;
   let nextTimer = 1;
   const timers = new Map();
@@ -31,6 +31,7 @@ export function createNativeToolOutputHarness({ eventSource, requestAnimationFra
     if (command === 'get_session_mode' || command === 'get_default_mode') return 'work';
     if (command === 'get_mode_state') return { mode: 'yolo', multi_agent: false };
     if (command === 'get_settings') return {};
+    if (command === 'list_shell_tasks') return structuredClone(shellTasks(args, now));
     if (/list|timeline|events|reviews|messages|snapshots/.test(command)) return [];
     return null;
   };
