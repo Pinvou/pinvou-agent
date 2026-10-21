@@ -9,55 +9,63 @@ Current task totals: 47 tasks; five implemented, twenty in progress and
 twenty-one not completed and one explicitly deferred. Detailed evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
-| Task | Status | Delivery / outstanding dependency |
-|---|---|---|
-| T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
-| T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03 | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples and three earlier payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
-| T04 | In progress | Reviewed offline prepare/assemble/verify tool and exact native-format/Package/evidence byte binding; complete provenance, production build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
-| T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
-| T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
-| T08 | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
-| T09 | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
-| T10 | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
-| T11 | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
-| T12 | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
-| T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
-| T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
-| T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
-| T16 | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
-| T17 | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
-| T18 | In progress | Reviewed production HTTPS primary/backup/redirect policy administration, independent approval, replacement/disable, original-key recovery and transient current-policy DNS diagnostics are delivered with three-language admin; qualified download-info issuance and client distribution remain pending. |
-| T19 | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
-| T20 | In progress | Actual no-update/transaction and bounded Session/download/resume/activation acceptance, four HTTP batch routes, client request/ACK correlation and restricted task observation calculation; actual task acceptance, durable client queue and quality contribution remain pending |
-| T21 | In progress | Private sample/receipt persistence authenticates actual frozen SN sources and preserves original-stage history; contribution, aggregate evaluation and business composition remain pending |
-| T22 | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
-| T23 | Not completed | Complete grouped quality review and controlled unfreeze. |
-| T24 | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
-| T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
-| T27 | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
-| T28 | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
-| T29 | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
-| T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
-| T31 | In progress | Independently reviewed Windows LocalSystem host design and a certificate-optional source-entry proposal; real unsigned helper/launcher implementation and acceptance, protected registration and installer/IPC integration remain pending. |
-| T32 | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
-| T33 | In progress | Reviewed optional Windows same-object Authenticode observations, shared relative custody and retained FullPack final-installer/helper/launcher composition with original-job compatibility; protected host, installation/slot execution and platform qualification remain pending. Native certificate qualification is not a prerequisite. |
-| T34 | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
-| T35 | Not completed | Actual macOS Intel/Apple Silicon execution and qualification. |
-| T36 | Not completed | Protected single-hop execution, active-identity verification and local health. |
-| T37 | Not completed | Complete normal upgrade interaction across hops. |
-| T38 | Not completed | Complete silent preinstallation, restart activation and slot management. |
-| T39 | Not completed | Forced gate and related higher-version forward repair. |
-| T40 | Not completed | Machine-wide channel settings and three-language privacy/consent workflow. |
-| T41 | Not completed | Atomic legacy bootstrap migration to the new protocol. |
-| T42 | Explicitly deferred | Production deployment, operations, alerts and disaster-recovery acceptance are deferred at the owner's request |
-| T43 | Not completed | All-target real-system combined qualification and release gates. |
-| T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
-| T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
-| T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
-| T47 | In progress | Protected frozen SN lifecycle, operation-bound child write sets and complete scope occupancy/absence with original T06 atomic composition and permanent-source recovery; running Rollout, parent, quality and active publication composition remain pending. |
+The estimates below were assessed on 2026-10-21 from delivered capabilities and
+remaining implementation and acceptance work. They are engineering estimates,
+not measured hours or release readiness. Shared foundations are not counted again
+for tasks without their own business implementation. Counting deferred T42 as
+zero in the 47-task denominator gives an equal-task average of 32.2%; the strict
+completed-task ratio remains 5/47 (10.6%).
+
+| Task | Estimate | Status | Delivery / outstanding dependency |
+|---|---|---|---|
+| T01 | 100% | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
+| T02 | 100% | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
+| T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples and three earlier payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
+| T04 | 65% | In progress | Reviewed offline prepare/assemble/verify tool and exact native-format/Package/evidence byte binding; complete provenance, production build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
+| T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
+| T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
+| T07 | 75% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
+| T08 | 60% | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
+| T09 | 55% | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
+| T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
+| T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
+| T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
+| T13 | 0% | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
+| T14 | 40% | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
+| T15 | 0% | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
+| T16 | 0% | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
+| T17 | 55% | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
+| T18 | 70% | In progress | Reviewed production HTTPS primary/backup/redirect policy administration, independent approval, replacement/disable, original-key recovery and transient current-policy DNS diagnostics are delivered with three-language admin; qualified download-info issuance and client distribution remain pending. |
+| T19 | 0% | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
+| T20 | 45% | In progress | Actual no-update/transaction and bounded Session/download/resume/activation acceptance, four HTTP batch routes, client request/ACK correlation and restricted task observation calculation; actual task acceptance, durable client queue and quality contribution remain pending |
+| T21 | 35% | In progress | Private sample/receipt persistence authenticates actual frozen SN sources and preserves original-stage history; contribution, aggregate evaluation and business composition remain pending |
+| T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
+| T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
+| T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
+| T25 | 20% | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
+| T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
+| T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
+| T28 | 0% | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
+| T29 | 65% | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
+| T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
+| T31 | 45% | In progress | Certificate-optional initial-source changes are implemented in the Windows worktree and independently reviewed. Packaging regression passed 62 tests with three native opt-in skips; normal Rust passed 58 with one explicit native ignore. Remaining configurations, fresh unsigned roles, installation, IPC and native recovery acceptance remain pending. |
+| T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
+| T33 | 35% | In progress | Reviewed optional Windows same-object Authenticode observations, shared relative custody and retained FullPack final-installer/helper/launcher composition with original-job compatibility; protected host, installation/slot execution and platform qualification remain pending. Native certificate qualification is not a prerequisite. |
+| T34 | 0% | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
+| T35 | 0% | Not completed | Actual macOS Intel/Apple Silicon execution and qualification. |
+| T36 | 0% | Not completed | Protected single-hop execution, active-identity verification and local health. |
+| T37 | 0% | Not completed | Complete normal upgrade interaction across hops. |
+| T38 | 0% | Not completed | Complete silent preinstallation, restart activation and slot management. |
+| T39 | 0% | Not completed | Forced gate and related higher-version forward repair. |
+| T40 | 0% | Not completed | Machine-wide channel settings and three-language privacy/consent workflow. |
+| T41 | 0% | Not completed | Atomic legacy bootstrap migration to the new protocol. |
+| T42 | Deferred | Explicitly deferred | Production deployment, operations, alerts and disaster-recovery acceptance are deferred at the owner's request |
+| T43 | 0% | Not completed | All-target real-system combined qualification and release gates. |
+| T44 | 100% | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
+| T45 | 0% | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
+| T46 | 0% | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
+| T47 | 60% | In progress | Protected frozen SN lifecycle, operation-bound child write sets and complete scope occupancy/absence with original T06 atomic composition and permanent-source recovery; running Rollout, parent, quality and active publication composition remain pending. |
+
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -14156,3 +14164,21 @@ implementation and native acceptance remain unfinished. Totals stay five
 implemented, twenty in progress, twenty-one not completed and one deferred out of
 47. T42 deployment remains deferred. Downloads retain no total/cumulative duration
 or retry-count cap.
+
+## Current verification and environment limits (2026-10-21)
+
+The certificate-optional Windows packaging regression and normal Rust stage have
+passed independent evidence review; they do not complete T31. Other Rust stages
+remain unaccepted because owned MSVC telemetry processes did not naturally drain
+within their original observation allowances. Those failed runs remain failures.
+The architecture guard passed for the Windows worktree. No system compiler or
+host telemetry configuration was changed.
+
+The isolated Windows guest has an expired evaluation license and scheduled
+shutdowns, limiting uninterrupted native experiments. No licensing bypass is
+used. The separate Linux scanner media and disk are prepared, and 14 synthetic
+serial-parser control groups passed. Actual Linux scanner isolation is not
+certified: the suspended observer remained in a host Job and was terminated
+before resume. No guest was started by that rejected attempt. Linux scanner
+execution source work continues independently; synthetic controls confer no
+Artifact, scanner qualification or task completion. T42 remains deferred.
