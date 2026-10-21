@@ -2818,15 +2818,12 @@ mod tests {
     use crate::platform::test_support::with_temp_home;
 
     /// 标记常量已改引底座 `skills::install` 的公共常量；本钉把磁盘历史格式
-    /// （旧布局 `.installed-from` 明文 spec）与底座常量绑在一起——底座改名或
-    /// 换格式时这里与迁移/清扫逻辑一起编译期/测试期暴露。
+    /// （旧布局 `.installed-from` 明文 spec）钉在底座常量的现值上——底座换
+    /// 值时这里转红；底座改名则由 `use` 导入在编译期暴露（改名不需要独立
+    /// 断言，别名比较是恒真式）。
     #[test]
     fn forkguard_installed_from_marker_delegates_to_engine_constant() {
         assert_eq!(INSTALLED_FROM_MARKER, ".installed-from");
-        assert_eq!(
-            deepseek_tui::skills::install::INSTALLED_FROM_MARKER,
-            INSTALLED_FROM_MARKER
-        );
     }
 
     /// `extract_embedded_subdir` 的 Python 编译缓存排除与 runtime_bundle 的
