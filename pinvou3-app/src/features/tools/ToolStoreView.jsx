@@ -373,9 +373,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // shared done-phase broadcast (useConnectorFlowSubscription) lets a mounted composer refetch the
           // pre-grant state and render the connector OFF until the next broadcast. Notify after the write
           // settles instead, on BOTH paths: a failed write leaves abort/revoke state a refresh should still
-          // pick up (notifying when nothing changed is harmless). The awaited branch (dingtalk/tmeet) gets
-          // this for free — its done phase is written after the apply resolves, so the shared broadcast is
-          // already post-apply there.
+          // pick up (notifying when nothing changed is harmless). The awaited branch (dingtalk/tmeet) reaches
+          // done only after its apply resolves, so its shared broadcast is already post-apply — but only when
+          // the store view (and its subscription) is mounted at done time; the awaited catch below still
+          // notifies on failure for the unmounted case (round-1 review).
           invokeTauri(cfg.commands.applySkills).then(
             () => {
               // Post-settle composer refresh (Round-38 above): the grant is now readable.
@@ -565,7 +566,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // mirrors store state into local rendering and finalizes on done/failure (alert dialog, connection-state
     // refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
     // tmeet's done toast uses a detailCopy phrase via doneTitle; others pass evaluated storeCopy.connectedTool(...).
-    const useConnectorFlowSubscription = ({ enabled, conn, ensureListeners, setFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle, toolId }) => {
+    // doneSettlesLater (the fire-and-forget 'apply' connectors): their done phase is written synchronously
+    // while the consent grant settles later, so the done toast stays title-only — the "enabled by default"
+    // subtitle would be a claim the write has not made yet (round-1 review: on a later persist failure the
+    // old subtitle briefly said something false; the connected banner still carries the enabled-by-default
+    // copy once the card reaches its connected state). The awaited branches' done already trails their
+    // apply, so their subtitle is accurate at done time.
+    const useConnectorFlowSubscription = ({ enabled, conn, ensureListeners, setFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle, toolId, doneSettlesLater }) => {
       // The subscription effect runs once per enabled state; the toast copy goes
       // through a latest-ref so a "connected" toast raised after a mid-flow
       // language switch uses the current language, like the failure card does.
@@ -584,11 +591,14 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             if (ph === 'done') {
               setBusyId((current) => releaseBusy(current, toolId));
               loadBackendState();
-              setAlert({ visible: true, loading: false, title: toastCopyRef.current && toastCopyRef.current.doneTitle, subtitle: toastCopyRef.current && toastCopyRef.current.enabledSubtitle, isInstall: true, isError: false, toolId });
+              setAlert({ visible: true, loading: false, title: toastCopyRef.current && toastCopyRef.current.doneTitle, subtitle: doneSettlesLater ? undefined : toastCopyRef.current && toastCopyRef.current.enabledSubtitle, isInstall: true, isError: false, toolId });
               // For the fire-and-forget ('apply') connectors done is written synchronously, so this
               // broadcast can land BEFORE their consent grant settles — their authoritative composer
               // refresh is the post-settle notify in the apply-mode listener (Round-38). The awaited
-              // branches reach done only after their apply resolved, so here it is already post-apply.
+              // branches reach done only after their apply resolved, so here it is already post-apply —
+              // but only while this view (and this subscription) is mounted at done time; an unmounted
+              // store view still needs the awaited apply's own notify paths for a mounted composer
+              // (round-1 review: the earlier "gets this for free" wording ignored the mount dependency).
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId((current) => releaseBusy(current, toolId));
@@ -1321,10 +1331,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       // (alert dialog, connection-state refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu' });
+      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu', doneSettlesLater: true });
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: wecomConn, ensureListeners: ensureWecomListeners, setFlow: setWecomFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.wecom), toolId: 'wecom' });
+      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: wecomConn, ensureListeners: ensureWecomListeners, setFlow: setWecomFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.wecom), toolId: 'wecom', doneSettlesLater: true });
 
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
       useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: dingtalkConn, ensureListeners: ensureDingtalkListeners, setFlow: setDingtalkFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), toolId: 'dingtalk' });
