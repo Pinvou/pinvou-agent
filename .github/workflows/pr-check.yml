@@ -845,6 +845,9 @@ jobs:
         )
       }}
     runs-on: ubuntu-22.04
+    # 冷跑时长未实测(命中缓存 3–6min)。工具链滚动触发冷跑且逼近 30m 时
+    # job 会超时取消,但 cache-on-failure 的 post 步在 cancel 下仍保存已编译
+    # 产物(post-if 恒真),namespace 不会全冷;冷跑实测逼近上限时再上调。
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -975,7 +978,8 @@ jobs:
     # 2026-10 起本 job 在 main push 上无条件运行以刷新存档(此前非 rust 合并会
     # 整体跳过、存档老化),但工具链滚动或缓存池淘汰仍可能让 PR 端
     # "No cache found" 冷跑(2026-10-01 前后多次冷跑在 ~30m 整点被 cancel,
-    # 公开运行史可查);缓存命中的成功运行 13-28m,不受影响。
+    # 公开运行史可查);缓存命中的成功运行 11-28m(实测样本 10m54s–26m46s),
+    # 不受影响。
     # 冷跑至少需要 30m 以上,60m 留出余量。
     timeout-minutes: 60
     env:
@@ -2480,7 +2484,8 @@ jobs:
       # Same dev-profile memory guard as rust-test/windows-rust-test: with
       # [profile.dev.package."*"] opt-level = 2, codewhale-tui's LLVM IR makes
       # the dev thin-LTO compile of the final crate the heaviest single rustc
-      # invocation of this job, and this runner has half the RAM where that
+      # invocation of this job's test-link legs (cargo check does no
+      # codegen), and this runner has half the RAM where that
       # recipe already OOM'd (Linux 16 GB: 14.2 GB Max RSS peaks, see
       # rust-test's Cargo cache comment; this runner is 7 GB with no
       # swap-expansion step). Warm-cache runs were validated without it on
