@@ -60,9 +60,11 @@ built certificate chain; its actual native failure is still reported.
 Provider countersigner chains are included when present. Their verification
 as-of FILETIME and certificate validity FILETIMEs are lossless decimal strings.
 They are signature-verification observations, **not T26 current trusted time**.
-An empty timestamp list does not satisfy a V1 timestamp requirement. This library
-does not implement Pinvou Publisher/SPKI/EKU/RFC3161 mapping, current revocation
-freshness policy, timestamp allowlists or publisher qualification. A future
+An empty timestamp list is reported as absent and does not prove a verified
+timestamp. Native code-signing certificates and timestamps are optional in V1;
+these observations do not gate package admission or upgrade activation. This
+library does not implement Pinvou Publisher/SPKI/EKU/RFC3161 mapping, current
+revocation freshness policy, timestamp allowlists or publisher qualification. A future
 actual policy owner must consume the evidence and supply those decisions.
 
 The report always sets `publisherQualification`, `currentQualification`,
