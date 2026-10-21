@@ -5,15 +5,15 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, twenty in progress and
-twenty-one not completed and one explicitly deferred. Detailed evidence follows
+Current task totals: 47 tasks; five implemented, twenty-one in progress and
+twenty not completed and one explicitly deferred. Detailed evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
-The estimates below were assessed on 2026-10-21 from delivered capabilities and
+The estimates below were assessed on 2026-10-22 from delivered capabilities and
 remaining implementation and acceptance work. They are engineering estimates,
 not measured hours or release readiness. Shared foundations are not counted again
 for tasks without their own business implementation. Counting deferred T42 as
-zero in the 47-task denominator gives an equal-task average of 32.2%; the strict
+zero in the 47-task denominator gives an equal-task average of 32.4%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
 | Task | Estimate | Status | Delivery / outstanding dependency |
@@ -30,7 +30,7 @@ completed-task ratio remains 5/47 (10.6%).
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
-| T13 | 0% | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
+| T13 | 10% | In progress | Reviewed support-floor planning domain and current-authority draft port; protected persistence, approvals, publication, ordinary prerequisite paths and historical bridge eligibility remain pending. |
 | T14 | 40% | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
 | T15 | 0% | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | 0% | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
@@ -42,7 +42,7 @@ completed-task ratio remains 5/47 (10.6%).
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 20% | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
+| T25 | 20% | In progress | Reviewed OpenBao provider for independent nonexportable purpose/week HMAC keys is committed; protected material-owner migration and native lifecycle tests remain blocked by a reproducible first-install migration failure. Event composition and retention remain pending. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
 | T28 | 0% | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
@@ -65,6 +65,16 @@ completed-task ratio remains 5/47 (10.6%).
 | T45 | 0% | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | 0% | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
 | T47 | 60% | In progress | Protected frozen SN lifecycle, operation-bound child write sets and complete scope occupancy/absence with original T06 atomic composition and permanent-source recovery; running Rollout, parent, quality and active publication composition remain pending. |
+
+T13's first bounded batch is committed and pushed in the separate service as
+`eadd95f6d5c4e366d0849aeda155601c3b6bb3bc`, following the private-catalog empty
+argument correction `36b4cf73700f5e63f532f03ca94edf0bbe8f2b41`. Independent source
+review and actual-result readback passed. Focused checks passed eighteen T13
+tests, two catalog argument tests and fifteen real PostgreSQL test cases. Eight
+common checks passed initially; the full default suite needed a corrected QA
+PATH containing the pinned Node executable and then passed 1,140 top-level and
+2,505 nested tests. Its 1,636 skipped cases remain unverified by that run. No
+active support floor, persistent draft workflow or whole T13 completion is claimed.
 
 
 Confirmed implementation decisions (2026-10-09):
