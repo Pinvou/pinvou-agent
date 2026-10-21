@@ -63,6 +63,11 @@ REQUIRED_PINS = [
     # "nothing was disabled" while the wide signal initializes plain fully-on.
     "corrupt_legacy_file_fails_closed_not_implicitly_all_on",
     "schema_invalid_legacy_file_fails_closed",
+    # skill_gate.rs (connect-grant fix wave, round-1 review): the
+    # exact-footprint restore pin — the compensation must rebuild ONLY the
+    # scopes the grant actually lifted, never downgrading another scope's
+    # stored verdict to a liftable default-off row.
+    "revoke_restores_exactly_the_scopes_the_grant_lifted",
 ]
 
 
