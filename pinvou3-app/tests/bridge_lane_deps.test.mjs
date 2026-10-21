@@ -193,7 +193,10 @@ while ((m = clusterRe.exec(helpers)) !== null) {
   snapshot.clusters[m[1]] = [...m[2].matchAll(/([\w$]+): b\.([\w$]+)/g)].map((p) => `${p[1]}:${p[2]}`);
 }
 const EXPECTED_SURFACE = {
-  sharedFnCount: 312,
+  // The replay result mutator is private and parameter-only. AST scope audit:
+  // updateToolItem adds only that helper; replay adds it plus standard Map.
+  // No new cluster deps, exports or forwarders; REQUIRED stays unchanged.
+  sharedFnCount: 313,
 };
 
 assert.equal(

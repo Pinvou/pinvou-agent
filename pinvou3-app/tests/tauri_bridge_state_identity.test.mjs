@@ -135,3 +135,49 @@ unsubscribeSettings();
 api.chat.prefillComposer('draft-3');
 assert.equal(combinedSnapshots.length, 3, 'unsubscribe must stop subscribeMany deliveries');
 assert.equal(settingsSnapshots.length, 3, 'unsubscribe must stop subscribe deliveries');
+
+// Exercise the desktop public cold-load path with real replay and immutable
+// subscriptions, including duplicate IDs and the cached return to that history.
+const replayLoads = [];
+invokeResponse = async (command, args) => {
+  if (command !== 'load_session') return null;
+  replayLoads.push(args.id);
+  return {
+    metadata: { id: args.id, title: args.id }, artifacts: [],
+    messages: args.id === 'replay-A' ? [
+      { role: 'user', content: [{ type: 'text', text: 'Restore tool history' }] },
+      { role: 'assistant', content: [
+        { type: 'tool_use', id: 'duplicate', name: 'Bash', input: { command: 'first' } },
+        { type: 'tool_use', id: 'duplicate', name: 'Bash', input: { command: 'second' } },
+        { type: 'tool_use', id: 'failure', name: 'Bash', input: { command: 'fail' } },
+        { type: 'tool_use', id: 'pending', name: 'Bash', input: { command: 'pending' } },
+      ] },
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'duplicate', content: 'complete' },
+        { type: 'tool_result', tool_use_id: 'failure', content: 'failed', is_error: true },
+      ] },
+      { role: 'assistant', content: [{ type: 'text', text: 'Restored' }] },
+    ] : [{ role: 'user', content: [{ type: 'text', text: 'Other session' }] }],
+  };
+};
+let replaySnapshot;
+const unsubscribeReplay = api.state.subscribe('chat', snapshot => { replaySnapshot = snapshot; });
+assert.equal(await api.sessions.switchToSession('replay-A'), true);
+const replayRows = () => Array.from(replaySnapshot.chatItems.filter(item => item.type === 'tool'), item => ({
+  command: item.args.command, output: item.output, state: item.state, success: item.success,
+}));
+const expectedReplayRows = [
+  { command: 'first', output: 'complete', state: 'done', success: true },
+  { command: 'second', output: null, state: 'pending', success: null },
+  { command: 'fail', output: 'failed', state: 'failed', success: false },
+  { command: 'pending', output: null, state: 'failed', success: false },
+];
+assert.deepEqual(replayRows(), expectedReplayRows);
+const firstReplaySnapshot = replaySnapshot;
+assert.ok(Object.isFrozen(firstReplaySnapshot.chatItems));
+assert.equal(await api.sessions.switchToSession('replay-B'), true);
+assert.equal(await api.sessions.switchToSession('replay-A'), true);
+assert.deepEqual(replayRows(), expectedReplayRows);
+assert.deepEqual(replayLoads, ['replay-A', 'replay-B']);
+assert.equal(firstReplaySnapshot.chatItems[1].output, 'complete', 'later navigation must not mutate an old published tool');
+unsubscribeReplay();

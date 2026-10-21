@@ -2406,14 +2406,18 @@
 
   // web+tauriTerminal 共享（FE14 残余批：原 tauri terminal.js / web bridge.js 逐字镜像，
   // 正文取自 tauri 侧（含 _terminalParser 释放；web 从不挂该字段，delete 为无操作））
+  function applyToolItemResult(item, output, success) {
+    item.output = output;
+    item.success = success;
+    item.state = success ? "done" : "failed";
+    delete item._terminalParser;
+    return item;
+  }
+
   function updateToolItem(toolId, output, success) {
     for (let i = 0; i < state.chatItems.length; i++) {
       if (state.chatItems[i].type === "tool" && state.chatItems[i].toolId === toolId) {
-        state.chatItems[i].output = output;
-        state.chatItems[i].success = success;
-        state.chatItems[i].state = success ? "done" : "failed";
-        delete state.chatItems[i]._terminalParser;
-        return state.chatItems[i];
+        return applyToolItemResult(state.chatItems[i], output, success);
       }
     }
     return null;
@@ -5066,6 +5070,14 @@
   // eslint-disable-next-line sonarjs/cognitive-complexity -- verbatim merged replay body; the lane hooks extracted the only lane differences
   function rerenderFromMessagesCore(lane, opts) {
     state.chatItems = [];
+    // Ordinary tool cards are append-only during replay. Keep the first match, just as
+    // updateToolItem does; unusual legacy IDs retain its strict-equality scan.
+    const firstToolItemById = new Map();
+    function backfillToolItem(toolId, output, success) {
+      if (typeof toolId !== "string") return lane.updateToolItem(toolId, output, success);
+      const item = firstToolItemById.get(toolId);
+      return item ? applyToolItemResult(item, output, success) : null;
+    }
     lane.itemIdSeq.value = 0;
     // Replay rebuilds toolMeta only for historical tool_uses that still have a
     // matching tool_result to backfill (write/patch's large args otherwise
@@ -5155,14 +5167,14 @@
             // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
             const blockedMd = parseCarefulBlocked(toolResultText(c.content));
             if (blockedMd) {
-              lane.updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
+              backfillToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
               addChatItem(lane.carefulBlockedItem(c, tm, blockedMd));
             } else {
               // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
               const contentForCard = (tm.name === "load_skill")
                 ? bt("skillContentHidden")
                 : toolResultDisplayContent(c.content);
-              lane.updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
+              backfillToolItem(c.tool_use_id, contentForCard, !c.is_error);
             }
           }
           lane.afterToolResultBackfill(c.tool_use_id);
@@ -5238,7 +5250,9 @@
             sawPlanTool = true;
             continue;
           }
-          addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
+          const toolItem = { type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" };
+          addChatItem(toolItem);
+          if (typeof b.id === "string" && !firstToolItemById.has(b.id)) firstToolItemById.set(b.id, toolItem);
           if (shouldUseToolOutputAsArtifact(b.name)) {
             const gres2 = resultById[b.id];
             const gap = artifactPathFromToolOutput(gres2 && gres2.content);
