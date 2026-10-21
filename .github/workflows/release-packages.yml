@@ -5,8 +5,8 @@ name: release-packages
 # 触发条件:
 # - push main 且 VERSION 被修改;
 # - workflow_dispatch 手动触发:全量构建(用于补打/重打或显式验证)。例外:
-#   build-windows-x64 仅在 main ref 上运行(见其 if 条件与 windows-release Environment),
-#   非 main ref 手动触发时产出 4/5 平台。
+#   build-windows-x64 仅在 main ref 上运行(仅由其 if 条件强制;windows-release
+#   Environment 只是发布边界,不含分支保护规则),非 main ref 手动触发时产出 4/5 平台。
 # 普通 PR 不进入本工作流；版本/打包脚本的轻量契约由 pr-check.yml 验证。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
@@ -280,9 +280,9 @@ jobs:
     # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35),
     # runner 钉在 ubuntu-22.04-arm,升级前先确认新基线决策。
     runs-on: ubuntu-22.04-arm
-    # 实测典型时长 ~90min(loong64 job 的放大注释即以它为基准)。旧上限 90 与
-    # 典型时长相等,任何抖动即撞线,而失败重跑是又一次 ~90min 全冷构建;
-    # 放宽到 120 只在真挂死时多付 30min,换取抖动不再触发整包重跑。
+    # 2026-10 实测:近 19 次成功 release 构建 39–48min(峰值 48m14s),
+    # 旧上限 90 本有约 2x 余量。放宽到 120 为工具链滚动、缓存冷启动等
+    # 长尾留余量,代价只是真挂死时多 30min 才被取消(成功时长不受影响)。
     timeout-minutes: 120
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
@@ -436,8 +436,9 @@ jobs:
     # 没有 lld)+ deepin beige (glibc 2.38) sysroot。目标基线 = deepin
     # 23/25 + UOS V25 的 glibc 2.38,由工具链/sysroot 决定而非 runner 发行版
     # (与 x64/arm64 的"链接构建机 glibc"模型不同,详见 floor 守护注释)。
-    # 交叉构建显著慢于原生 arm64(典型 ~90min),timeout 按 arm64 上限的
-    # ~1.5x 放大(arm64 上限 120 → 本 job 180),保持放大规则自洽。
+    # 交叉构建显著慢于原生 arm64(arm64 实测 39–48min;本 job 尚无成功
+    # release 实测,典型时长未知)。timeout 按 arm64 上限的 ~1.5x 放大
+    # (arm64 上限 120 → 本 job 180),保持放大规则自洽。
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
