@@ -1767,16 +1767,18 @@ turn {pronoun} off in the tools list: {error}",
 /// connect could grant a foreign claimant's pack and a reconnect or an
 /// `apply-skills` could silently revert an explicit disable). `Ok(false)` =
 /// the gates declined to write (a recorded consent or a hidden connector) —
-/// nothing to do, the standing verdict stays. A failed write FAILS the
+/// nothing to do, the standing verdict stays; the flag is surfaced as
+/// `consent_granted` in the `connect` JSON so a script can tell a fresh
+/// grant from a declined one (round-1 review). A failed write FAILS the
 /// command (fail-closed, the app's deny-first contract): the connector never
 /// goes live unconsented, and with grant and rows alike absent the DenyAll
 /// expansion keeps it off in new sessions until a reconnect retries. The
 /// error message is the scope layer's single-source copy (persist failures
 /// already carry `CONNECT_CONSENT_SYNC_FAILURE_MARKER`; refusals carry their
 /// policy reason), so no CLI-side rewording can desynchronize the surfaces.
-fn sync_consent_after_connect(id: &str) -> Result<(), CliError> {
+fn sync_consent_after_connect(id: &str) -> Result<bool, CliError> {
     pinvou3_lib::features::marketplace::deny_first_register_connector(id, true)
-        .map(|_granted| ())
+        .map(|outcome| outcome.granted)
         .map_err(CliError::failed)
 }
 
@@ -3224,7 +3226,10 @@ fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliE
 ///   code sessions where a GUI connect had it ON, and the CLI-written
 ///   sync-ledger entry permanently suppressed the GUI's own connect grant
 ///   (`deny_first_register_connector`'s ledger gate short-circuits on it).
-fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
+/// `Ok(true)` = THIS connect recorded the consent grant; `Ok(false)` = the
+/// gates declined (a recorded consent or a hidden connector — the standing
+/// verdict stays), surfaced as `consent_granted` in the connect JSON.
+fn finish_connect_side_effects(spec: &VendorSpec) -> Result<bool, CliError> {
     bundle_store_on_connected(spec.id);
     // GUI parity (round-18 finding 2; grant semantics since
     // feat/connector-connect-grants-enable): the desktop connect flow ends
@@ -3244,14 +3249,18 @@ fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     // instead of reporting a connection whose consent never landed — the
     // scope layer logs nothing on write failure, so the error carries the
     // reason.
-    sync_consent_after_connect(spec.id)?;
-    Ok(())
+    sync_consent_after_connect(spec.id)
 }
 
 fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliOutcome, CliError> {
     let spec = kind.spec();
     let deadline = Instant::now() + Duration::from_secs(timeout);
     let mut notes: Vec<String> = Vec::new();
+    // Whether THIS connect's consent write landed the grant (the gates can
+    // decline — a recorded consent or a hidden connector — leaving the
+    // standing verdict in place). Surfaced in the JSON so scripts can tell a
+    // fresh grant from a declined one without a follow-up `status` call.
+    let mut consent_granted = false;
     // Bounded, redacted tail of what the vendor CLI itself printed. Its
     // stdout/stderr are piped (the drainer needs them to find the login
     // link), so without this the user never sees the vendor's own failure
@@ -3345,7 +3354,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 // not abort the connect after a successful login — the next
                 // tick retries and the loop deadline still bounds the wait.
                 if cli_connected_bounded(kind, deadline) {
-                    finish_connect_side_effects(spec)?;
+                    consent_granted = finish_connect_side_effects(spec)?;
                     break;
                 }
             }
@@ -3443,14 +3452,14 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                 }
                 return Err(error);
             }
-            if let Err(error) = finish_connect_side_effects(spec) {
+            consent_granted = finish_connect_side_effects(spec).map_err(|error| {
                 // The login itself succeeded, so the one-scan grant already
                 // took effect and the QR note promises removal once it does:
                 // a failed post-login store sync must not leave the
                 // credential-equivalent PNG behind.
                 let _ = std::fs::remove_dir_all(&qr_dir);
-                return Err(error);
-            }
+                error
+            })?;
             let _ = std::fs::remove_dir_all(&qr_dir);
         }
         ConnectorKind::Dingtalk | ConnectorKind::Tmeet => {
@@ -3496,7 +3505,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
                     connect_failure_suffix(spec, &notes, &tail)
                 )));
             }
-            finish_connect_side_effects(spec)?;
+            consent_granted = finish_connect_side_effects(spec)?;
         }
     }
     notes.push(format!("{} connected", spec.id));
@@ -3508,6 +3517,7 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
         "ok": true,
         "id": spec.id,
         "connected": true,
+        "consent_granted": consent_granted,
         "notes": notes,
     });
     Ok(success(render(output, notes.join("\n"), &value)))

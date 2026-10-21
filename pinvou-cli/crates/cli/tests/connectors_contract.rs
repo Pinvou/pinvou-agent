@@ -1742,6 +1742,9 @@ fn connect_grants_the_code_scope_enabled_after_a_fresh_connection() {
         "30",
     ]);
     assert_eq!(value["connected"], true, "{value}");
+    // Round-1 review: the connect JSON must let a script tell a fresh grant
+    // from a declined one without a follow-up `status` call.
+    assert_eq!(value["consent_granted"], true, "{value}");
 
     let persisted: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
@@ -1821,8 +1824,14 @@ fn connect_grants_the_code_scope_enabled_after_a_fresh_connection() {
 /// answers, `auth login` prints the login URL plus the user-code line,
 /// `auth status` reports authenticated — `connect` completes through the
 /// post-exit grace probe (same shape as the fresh-connect pin above).
+/// Round-1 review BLOCKER: everything below is `#[cfg(unix)]` like the
+/// fake-CLI helpers it calls (`fake_bin_dir`/`write_fake_cli`/`DWS_VERSION`
+/// are unix-gated); ungated items broke the Windows all-targets check with
+/// E0425s on this head.
+#[cfg(unix)]
 const DWS_CONNECT_FAKE: &str = "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"User Code: ZXCV1234\"; echo \"open https://login.dingtalk.com/oauth/authorize?user_code=ZXCV1234 to authorize\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\":true}'; exit 0; fi\nexit 1\n";
 
+#[cfg(unix)]
 fn dws_connect_setup(tag: &str) -> (HomeGuard, VendorCliGuard) {
     let home = HomeGuard::new(tag);
     let bin = fake_bin_dir(tag);
@@ -1831,6 +1840,7 @@ fn dws_connect_setup(tag: &str) -> (HomeGuard, VendorCliGuard) {
     (home, guard)
 }
 
+#[cfg(unix)]
 fn read_disabled_bundles(home: &HomeGuard) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(home.disabled_bundles_file()).unwrap())
         .expect("disabled_bundles.json stays valid JSON")
@@ -1843,6 +1853,7 @@ fn read_disabled_bundles(home: &HomeGuard) -> serde_json::Value {
 /// with exit 0 while the GUI kept the verdict — surface-dependent consent in
 /// the harmful direction.
 #[test]
+#[cfg(unix)]
 fn reconnect_after_disable_preserves_the_verdict() {
     let _env = common::env_lock();
     let (home, _path) = dws_connect_setup("connect-reconnect-verdict");
@@ -1856,7 +1867,7 @@ fn reconnect_after_disable_preserves_the_verdict() {
         "30",
     ]);
     run_json(&["pinvou", "connectors", "disable", "dingtalk"]);
-    run_json(&[
+    let reconnect = run_json(&[
         "pinvou",
         "connectors",
         "connect",
@@ -1881,6 +1892,14 @@ fn reconnect_after_disable_preserves_the_verdict() {
             .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
         "the reconnect must not re-grant over the verdict: {persisted}"
     );
+    // Round-1 review: the declined grant must be visible in the connect JSON
+    // — the command still exits 0 (the login itself succeeded and the
+    // standing verdict was honored), but `consent_granted: false` is what
+    // tells a script the connector did not come out of this connect enabled.
+    assert_eq!(
+        reconnect["consent_granted"], false,
+        "the declined reconnect must surface consent_granted=false: {reconnect}"
+    );
 }
 
 /// Round-2 review BLOCKER, apply-skills half: the show branch is a
@@ -1889,6 +1908,7 @@ fn reconnect_after_disable_preserves_the_verdict() {
 /// explicit disable must leave the verdict alone instead of silently
 /// re-enabling (pre-fix: row deleted, grant rewritten, exit 0).
 #[test]
+#[cfg(unix)]
 fn apply_skills_after_disable_preserves_the_verdict() {
     let _env = common::env_lock();
     let (home, _path) = dws_connect_setup("connect-applyskills-verdict");
@@ -1927,6 +1947,7 @@ fn apply_skills_after_disable_preserves_the_verdict() {
 /// maintenance run over a connected, never-consented connector converges to
 /// the connected=enabled shape instead of staying unregistered.
 #[test]
+#[cfg(unix)]
 fn apply_skills_show_branch_grants_the_enable() {
     let _env = common::env_lock();
     let (home, _path) = dws_connect_setup("connect-applyskills-grant");
@@ -1976,6 +1997,7 @@ fn apply_skills_show_branch_grants_the_enable() {
 /// `connector_gate_refuses_owner_claimed_ids`: the manifest plus an
 /// installed store record.)
 #[test]
+#[cfg(unix)]
 fn connect_refuses_owner_claimed_id() {
     let _env = common::env_lock();
     let (home, _path) = dws_connect_setup("connect-claimed-refusal");
