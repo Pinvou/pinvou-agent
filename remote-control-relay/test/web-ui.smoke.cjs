@@ -338,6 +338,16 @@ async function installFrontendBarrierProbe(page) {
   }, endpointId, barrierEpoch, barrierAfterSeq);
 }
 
+// The suite pins the drawer's animated transition (properties + nonzero
+// duration), and the app deliberately drops those transitions under
+// prefers-reduced-motion: reduce (motion-reduce:transition-none). Pin
+// no-preference on every page so a host whose OS asks for reduced motion
+// cannot turn the animation records red; the reduce degenerate path has its
+// own journey below.
+async function pinNoMotionPreference(page) {
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
+}
+
 async function waitForSharedUi(page, width, height) {
   await page.waitForFunction(() => (
     window.PinvouPlatform?.kind === 'web'
@@ -416,6 +426,7 @@ async function main() {
   observePage(desktopPage);
   await observeBrowserProtocol(desktopPage);
   await installFrontendBarrierProbe(desktopPage);
+  await pinNoMotionPreference(desktopPage);
   await desktopPage.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await desktopPage.goto(`${httpBase}conversations/current${fragment}`, { waitUntil: 'networkidle0' });
 
@@ -604,6 +615,7 @@ async function main() {
   const takeoverStart = desktop.messages.length;
   const mobilePage = await browser.newPage();
   observePage(mobilePage);
+  await pinNoMotionPreference(mobilePage);
   await mobilePage.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
   await mobilePage.goto(`${httpBase}${fragment}`, { waitUntil: 'networkidle0' });
   const secondConnected = await desktop.waitFor(
@@ -622,11 +634,24 @@ async function main() {
       return { bottom: r.bottom, visible: r.height > 0 && r.width > 0 };
     };
     const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    // 抽屉常驻挂载，关闭时 translateX(-100%) 滑出视口并 visibility:hidden，
+    // 因此「隐藏」判据是滑出视口（右缘 ≤ 0）或 visibility，而不是 width === 0。
+    // 元素缺失不算「隐藏」：直接让断言变红，钉住常驻挂载本身。
+    const sidebarRect = sidebar ? sidebar.getBoundingClientRect() : null;
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
     return {
       topBar: rect('[data-testid="mobile-top-bar"]'),
       tabBar: rect('[data-testid="mobile-tab-bar"]'),
       tabCount: document.querySelectorAll('[data-testid="mobile-tab-bar"] button').length,
-      sidebarHidden: !sidebar || sidebar.getBoundingClientRect().width === 0,
+      sidebarHidden: !!sidebar && (sidebarRect.right <= 0
+        || getComputedStyle(sidebar).visibility === 'hidden'),
+      scrimClosed: scrim && scrimCs ? {
+        opacity: scrimCs.opacity,
+        pointerEvents: scrimCs.pointerEvents,
+        ariaHidden: scrim.getAttribute('aria-hidden'),
+        tabIndex: scrim.tabIndex,
+      } : null,
     };
   });
   record('390x844 呈现移动壳层：顶栏 + 底部 Tab，侧栏窄轨隐藏',
@@ -636,6 +661,16 @@ async function main() {
       && mobileShell.tabCount === 4
       && mobileShell.sidebarHidden,
     JSON.stringify(mobileShell));
+  // 关闭态背板必须完全不可达：透明 + 穿透 + 移出无障碍树和焦点序。背板是
+  // 常驻挂载的全屏按钮，门控回归（改回 isSidebarOpen 或丢掉 opacity-0/
+  // pointer-events-none/aria-hidden/tabIndex）会在这里变红。
+  record('手机抽屉关闭态背板不可达（透明+穿透+aria-hidden+tabIndex=-1）',
+    !!mobileShell.scrimClosed
+      && mobileShell.scrimClosed.opacity === '0'
+      && mobileShell.scrimClosed.pointerEvents === 'none'
+      && mobileShell.scrimClosed.ariaHidden === 'true'
+      && mobileShell.scrimClosed.tabIndex === -1,
+    JSON.stringify(mobileShell.scrimClosed));
 
   const mobileComposerGap = await mobilePage.evaluate(() => {
     const disclaimer = document.querySelector('[data-testid="chat-disclaimer"]')?.getBoundingClientRect();
@@ -754,13 +789,26 @@ async function main() {
   );
 
   await mobilePage.click('[data-testid="mobile-navigation-open"]');
+  // 抽屉是常驻挂载的滑入动画：width 恒为 280，必须等滑入完成（左缘归位且可见）
+  // 再量取几何信息，否则会采到动画中间态。
   await mobilePage.waitForFunction(
-    () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width > 0,
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !!sidebar
+        && getComputedStyle(sidebar).visibility === 'visible'
+        && sidebar.getBoundingClientRect().left >= 0;
+    },
     { timeout: 5_000 },
   );
   const mobileSidebarLayout = await mobilePage.evaluate(() => {
     const sidebar = document.querySelector('[data-testid="app-sidebar"]');
     const rect = sidebar.getBoundingClientRect();
+    const sidebarCs = getComputedStyle(sidebar);
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
+    // 过渡钉扎用的判据：时长取逗号分段里的最大值（0 = 瞬切，动画已被删）。
+    const maxDuration = (cs) => cs.transitionDuration.split(',')
+      .reduce((max, value) => Math.max(max, parseFloat(value) || 0), 0);
     const primaryNav = document.querySelector('[data-testid="sidebar-primary-nav"]');
     const primaryRect = primaryNav && primaryNav.getBoundingClientRect();
     const navButtons = primaryNav ? Array.from(primaryNav.querySelectorAll(':scope > div')).map((node) => {
@@ -769,13 +817,32 @@ async function main() {
     }) : [];
     const recents = document.querySelector('[data-testid="sidebar-recents"]');
     const recentsRect = recents && recents.getBoundingClientRect();
+    const barRect = (selector) => {
+      const node = document.querySelector(selector);
+      return node ? { top: node.getBoundingClientRect().top, bottom: node.getBoundingClientRect().bottom } : null;
+    };
     return {
       viewport: document.documentElement.clientWidth,
       width: rect.width,
+      top: rect.top,
+      bottom: rect.bottom,
+      topBar: barRect('[data-testid="mobile-top-bar"]'),
+      tabBar: barRect('[data-testid="mobile-tab-bar"]'),
       rightGap: document.documentElement.clientWidth - rect.right,
       primaryBottom: primaryRect ? primaryRect.bottom : null,
       recentsTop: recentsRect ? recentsRect.top : null,
       navButtons,
+      drawerTransition: {
+        property: sidebarCs.transitionProperty,
+        maxDurationSeconds: maxDuration(sidebarCs),
+      },
+      scrimOpen: scrim && scrimCs ? {
+        opacity: scrimCs.opacity,
+        pointerEvents: scrimCs.pointerEvents,
+        ariaHidden: scrim.getAttribute('aria-hidden'),
+        transitionProperty: scrimCs.transitionProperty,
+        maxDurationSeconds: maxDuration(scrimCs),
+      } : null,
     };
   });
   record('手机会话抽屉压缩顶部导航高度，为任务列表留出纵向空间',
@@ -785,14 +852,127 @@ async function main() {
       && mobileSidebarLayout.primaryBottom <= 400
       && mobileSidebarLayout.recentsTop <= 405,
     JSON.stringify(mobileSidebarLayout));
-  // The z-40 sidebar covers the center of the z-30 full-screen overlay. A
-  // Puppeteer coordinate click would hit a sidebar session instead of closing
-  // the drawer, so invoke the overlay's click handler directly.
-  await mobilePage.evaluate(() => document.querySelector('[data-testid="mobile-navigation-close"]').click());
+  // 全高断言：抽屉上下缘必须至少包住顶栏上缘与底部 Tab 下缘（与 env() 安全区
+  // 取值无关），重新引入 top:48/bottom:56 夹层会让该断言变红。
+  record('手机会话抽屉全高覆盖顶栏与底部 Tab',
+    !!mobileSidebarLayout.topBar
+      && !!mobileSidebarLayout.tabBar
+      && mobileSidebarLayout.top <= mobileSidebarLayout.topBar.top
+      && mobileSidebarLayout.bottom >= mobileSidebarLayout.tabBar.bottom,
+    JSON.stringify(mobileSidebarLayout));
+  // 动画钉扎：抽屉与背板必须声明真实过渡（时长>0，属性覆盖 transform/
+  // visibility/opacity）。端点等待区分不了「有动画」和「瞬切」——删掉过渡
+  // （transition:none 或去掉类）的回归只有这里能拦住。
+  record('手机抽屉与背板声明滑入/淡入过渡（时长>0 且属性覆盖）',
+    mobileSidebarLayout.drawerTransition.maxDurationSeconds > 0
+      && (mobileSidebarLayout.drawerTransition.property === 'all'
+        || (mobileSidebarLayout.drawerTransition.property.includes('transform')
+          && mobileSidebarLayout.drawerTransition.property.includes('visibility')))
+      && !!mobileSidebarLayout.scrimOpen
+      && mobileSidebarLayout.scrimOpen.maxDurationSeconds > 0
+      && (mobileSidebarLayout.scrimOpen.transitionProperty === 'all'
+        || mobileSidebarLayout.scrimOpen.transitionProperty.includes('opacity'))
+      && mobileSidebarLayout.scrimOpen.opacity === '1'
+      && mobileSidebarLayout.scrimOpen.pointerEvents === 'auto'
+      && mobileSidebarLayout.scrimOpen.ariaHidden === 'false',
+    JSON.stringify({ drawer: mobileSidebarLayout.drawerTransition, scrim: mobileSidebarLayout.scrimOpen }));
+  // 关闭走真实指针点击：x=370 在 280px 抽屉右侧 90px 处，只会命中背板（抽屉
+  // 居左覆盖 0–280）。真实事件会把焦点交给背板按钮——合成 DOM .click() 不迁移
+  // 焦点，测不出「焦点滞留 aria-hidden 按钮」这类回归。
+  await mobilePage.mouse.click(370, 400);
+  // 关闭是 300ms 滑出动画：visibility 在过渡末尾才翻为 hidden，等它落定。
+  // 元素缺失不再视为满足：条件卸载回归会在此超时变红（钉住常驻挂载）。
   await mobilePage.waitForFunction(
-    () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width === 0,
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !!sidebar && getComputedStyle(sidebar).visibility === 'hidden';
+    },
     { timeout: 5_000 },
   );
+  const scrimFocus = await mobilePage.evaluate(() => {
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const active = document.activeElement;
+    return {
+      activeTag: active ? active.tagName : null,
+      activeIsScrim: active === scrim,
+      activeAriaHidden: active && active.getAttribute ? active.getAttribute('aria-hidden') : null,
+    };
+  });
+  // 关抽屉后焦点不得滞留在已 aria-hidden 的隐形按钮上：真实指针点击会聚焦
+  // 背板，onClick 先 blur 再关，让焦点落回 body（ARIA 禁止 aria-hidden 命中
+  // 焦点元素）。
+  record('手机抽屉关闭后焦点不滞留在背板按钮',
+    !scrimFocus.activeIsScrim && scrimFocus.activeAriaHidden !== 'true',
+    JSON.stringify(scrimFocus));
+
+  // Reduced-motion 合同（评审 P2）：宿主 OS 可以要求 reduce，应用据此通过
+  // motion-reduce:transition-none 让抽屉/背板两层退出过渡——上方动画钉扎记录
+  // 之所以要在 no-preference 下跑，就是因为「无过渡」本身是这里的正确行为。
+  // 这段在同一条 mobilePage 上显式 emulate reduce，钉住退化路径：过渡属性必须
+  // 变为 none（删掉应用的 motion-reduce 支持会在这里变红），且开/关抽屉仍然
+  // 即时可用。注意 reduce 下 transitionDuration 仍报 0.3s（属性为 none 时
+  // 不生效），所以判据只能落在 transition-property 上。结束后恢复
+  // no-preference，后续旅程与宿主偏好解耦的语义不变。
+  await mobilePage.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  await mobilePage.click('[data-testid="mobile-navigation-open"]');
+  await mobilePage.waitForFunction(
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !!sidebar
+        && getComputedStyle(sidebar).visibility === 'visible'
+        && sidebar.getBoundingClientRect().left >= 0;
+    },
+    { timeout: 5_000 },
+  );
+  const reducedOpen = await mobilePage.evaluate(() => {
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
+    return {
+      drawerProperty: getComputedStyle(sidebar).transitionProperty,
+      scrim: scrim && scrimCs ? {
+        opacity: scrimCs.opacity,
+        pointerEvents: scrimCs.pointerEvents,
+        ariaHidden: scrim.getAttribute('aria-hidden'),
+        property: scrimCs.transitionProperty,
+      } : null,
+    };
+  });
+  record('prefers-reduced-motion 下抽屉与背板退出过渡（property=none）且开抽屉仍可用',
+    reducedOpen.drawerProperty === 'none'
+      && !!reducedOpen.scrim
+      && reducedOpen.scrim.property === 'none'
+      && reducedOpen.scrim.opacity === '1'
+      && reducedOpen.scrim.pointerEvents === 'auto'
+      && reducedOpen.scrim.ariaHidden === 'false',
+    JSON.stringify(reducedOpen));
+  await mobilePage.mouse.click(370, 400);
+  await mobilePage.waitForFunction(
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !!sidebar && getComputedStyle(sidebar).visibility === 'hidden';
+    },
+    { timeout: 5_000 },
+  );
+  const reducedClosed = await mobilePage.evaluate(() => {
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
+    return scrim && scrimCs ? {
+      opacity: scrimCs.opacity,
+      pointerEvents: scrimCs.pointerEvents,
+      ariaHidden: scrim.getAttribute('aria-hidden'),
+      tabIndex: scrim.tabIndex,
+    } : null;
+  });
+  record('prefers-reduced-motion 下关抽屉仍即时生效且背板不可达',
+    !!reducedClosed
+      && reducedClosed.opacity === '0'
+      && reducedClosed.pointerEvents === 'none'
+      && reducedClosed.ariaHidden === 'true'
+      && reducedClosed.tabIndex === -1,
+    JSON.stringify(reducedClosed));
+  await mobilePage.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
+
   await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
 
   const compactGreeting = await mobilePage.evaluate(() => {
