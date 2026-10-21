@@ -65,3 +65,31 @@ The local run's complete samples are in `tmp/native-stream-review-performance.js
 - Independent follow-up review found no remaining blockers after the failed-activation return path was fixed and covered by a red/green test.
 
 No application UI text, configuration format, network endpoint, runtime dependency, permission policy or CodeWhale behavior changes.
+
+## Native tool-output publication
+
+Native `chat:tool_delta` events use the terminal feature's existing 50ms host timer
+for both foreground and background sessions. The event router skips its extra
+immediate background publication for these deltas. Output accumulation, split
+ANSI parsing, stdout/stderr handling and the bounded live tail still update
+synchronously on every chunk; the completed tool result remains authoritative.
+
+Ordinary background progress can wait for that 50ms publication window. Tool
+start/end, user-input requests, gate decisions, failures and interrupted turn
+completion retain their existing synchronous handling. Session activation reads
+the current accumulated output immediately. A pending host timer publishes the
+current working set after a switch or deletion and does not capture or recreate
+the former session. Web and ACP transports are unchanged.
+
+The full-host scheduling regressions load the actual desktop scripts, working-set
+router, terminal parser and immutable subscription implementation under synthetic
+IPC and controlled timers:
+
+```powershell
+node --test pinvou3-app/tests/native_tool_output_scheduling.test.mjs
+```
+
+They exercise burst batching, foreground control, ANSI/tail equivalence, switching,
+deletion, semantic completion and interruption, cancellation/retry, input and gate
+events, and subscriber exception/reentrancy. These tests do not execute a real
+Engine, native tool process, permission dialog or packaged WebView2.
