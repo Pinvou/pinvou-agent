@@ -814,7 +814,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     const p = e.payload || {};
     appendToolItemOutput(p.id, p.content, p.stream);
     scheduleShellNotify();
-  }); });
+  // The existing terminal timer publishes after background routing restores
+  // the visible session; avoid an extra full snapshot for every output chunk.
+  }, { deferBackgroundNotify: true }); });
 
   // 子智能体不产生 chat:tool_start/chat:tool_end（forwarder 只转发 mailbox 进展），
   // 它启动的后台 shell 任务若无人调度轮询，就要等到会话切换或顶层 shell 调用

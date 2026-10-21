@@ -65,3 +65,82 @@ The local run's complete samples are in `tmp/native-stream-review-performance.js
 - Independent follow-up review found no remaining blockers after the failed-activation return path was fixed and covered by a red/green test.
 
 No application UI text, configuration format, network endpoint, runtime dependency, permission policy or CodeWhale behavior changes.
+
+## Native tool-output publication
+
+Native `chat:tool_delta` events use the terminal feature's existing 50ms host timer
+for both foreground and background sessions. The event router skips its extra
+immediate background publication for these deltas. Output accumulation, split
+ANSI parsing, stdout/stderr handling and the bounded live tail still update
+synchronously on every chunk; the completed tool result remains authoritative.
+
+For tool-delta-driven notifications, the existing 50ms timer is a throttle: later
+chunks do not postpone its first deadline. Tool start/end, user-input requests,
+gate decisions, failures and interrupted turn completion retain their existing
+synchronous handling. Session activation reads accumulated output immediately.
+A pending host timer publishes the current working set after a switch or
+deletion and does not capture or recreate the former session. Web and ACP
+transports are unchanged. Event/invoke wire shapes are unchanged; the protocol
+test's listener-body digest is updated for the deliberate scheduling change.
+
+Pull-on-notify consumers such as the auxiliary chat panel can observe ordinary
+tool output up to 50ms later. The notification-derived `sessionBusy` refresh can
+also wait for this timer; turn/tool start still updates authoritative busy state
+synchronously. Subscriber exceptions now surface from the timer callback rather
+than the delta listener. Existing exception/reentrancy tests cover recovery.
+
+### Separate shell poll publisher and follow-up
+
+`applyShellSnapshots` still calls `notify()` when an invisible session's shell
+snapshot changes. Its 250ms polling path is independent of `chat:tool_delta` and
+is unchanged by this PR. The native shell output producer also uses a 250ms poll
+interval. Therefore a private 10ms burst benchmark's large reduction does not
+establish a production-wide reduction of the same size or a single 50ms window
+for all background progress.
+
+Committed deterministic tests reproduce this limitation with one running shell
+job in an inactive session and an empty foreground timeline:
+
+| Three seconds of virtual input | Publications before | After |
+| --- | ---: | ---: |
+| Changing shell snapshots only, no tool deltas | 12 | 12 |
+| Twelve tool deltas at 250ms intervals plus changing shell snapshots | 36 | 24 |
+
+Both variants preserve identical final chat state in the combined case. The
+one-third reduction is a fixture-specific notification count, not a measurement
+of production wall time, React commits or native input latency. Initial session
+setup and final activation are outside the count. Faster bursts still eliminate
+per-chunk router publications, but their gains depend on event cadence and other
+publishers. No general tool-output elapsed-time benchmark is committed here;
+`perf:native-stream` above measures assistant text previews instead.
+
+Follow-up: evaluate visibility-aware publication or coalescing for the trailing
+`applyShellSnapshots` notification, with separate regressions for active/inactive
+sessions, terminal transitions and activation. That publisher is intentionally
+left for a separate change; suppressing it blindly could hide other state changes.
+
+### Regression reproduction and scope
+
+From the repository root, after installing the locked app dependencies:
+
+```sh
+node --test pinvou3-app/tests/native_tool_output_scheduling.test.mjs
+node --test pinvou3-app/tests/bridge_domain_protocol.test.mjs
+```
+
+The scheduling harness loads the selected actual bridge/router/terminal scripts
+in index order and uses real immutable subscriptions under synthetic IPC and a
+controlled clock. It does not run bridge `init` or load the complete application.
+Its 18 tests exercise bursts, first-deadline throttling, foreground control,
+changing shell polls, ANSI/tail equivalence, switching, deletion, semantic
+completion and interruption, cancellation/retry, input/gate events and subscriber
+exception/reentrancy. The protocol contract is a separate nineteenth check.
+These tests do not execute a real Engine, native tool process, permission dialog
+or packaged WebView2.
+
+The review follow-up passed 81 related tests, changed-test lint and the
+architecture guard. The local Windows full run is not green: 1,299 passed,
+23 failed and two skipped. Clean-main checks also reproduce static-contract and
+browser-wrapper lifecycle failures; the latter are timing-sensitive and vary
+between runs. This is not a claim that the full local suite passes. Remote CI
+must validate the updated protocol pin and the combined test suite.
