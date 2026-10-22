@@ -113,6 +113,16 @@ pub struct DisabledBundlesFile {
     /// (`grant_connect_enable`) may lift a row.
     #[serde(default)]
     pub connect_granted: Vec<String>,
+    /// The standing grant's operation identity, keyed by package id: the
+    /// token of the connect whose grant currently stands for the pack. A
+    /// compensating revoke may strip only the grant it created — a materialization
+    /// failure resolving AFTER a teardown + reconnect granted afresh must
+    /// leave the newer consent alone (round-6 review P2: the package id
+    /// alone cannot tell this call's grant from a replacement's). Written
+    /// when a grant lands, cleared wherever the grant is consumed (the
+    /// owning revoke, the composer verdict write, the teardown sweep).
+    #[serde(default)]
+    pub connect_grant_tokens: std::collections::BTreeMap<String, String>,
     /// Corrupt/lost-store recovery hold: set by every recovery arm, it blocks
     /// the boot refresh's consent backfill (`grant_connect_enable_refresh`)
     /// until the next connect gesture (`grant_connect_enable`) clears it.
@@ -1877,6 +1887,11 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
         // expansion the grant set feeds. Entries the write leaves ON are
         // absent from `normalized` and keep their grants.
         file.connect_granted.retain(|id| !normalized.contains(id));
+        // The consumed grants' ownership tokens go with them (round-6 review
+        // P2): a stale connect's compensating revoke must keep seeing the
+        // grant as consumed, not re-discover it through a dangling token.
+        file.connect_grant_tokens
+            .retain(|id, _| !normalized.contains(id));
         // The composer sends the whole list, not a per-id gesture, so this write
         // says nothing about who switched a given entry off. Keep the
         // install-default marker for entries that were already persisted as off
@@ -2404,6 +2419,13 @@ pub struct ConnectGrantOutcome {
     /// after a recovery cannot leave the boot backfill guessing over the
     /// lost state again.
     pub cleared_recovery_hold: bool,
+    /// The operation token THIS grant stored beside the `connect_granted`
+    /// entry — the ownership proof `revoke_connect_enable` checks before
+    /// compensating. A teardown + reconnect between this grant and its
+    /// compensating revoke writes a fresh token, so the stale revoke
+    /// becomes a no-op instead of deleting the newer grant (round-6
+    /// review P2).
+    pub grant_token: String,
     /// DenyAll scope keys where THIS call recorded the grant while the
     /// scope was still UNINITIALIZED (the fresh-home arm: the grant + its
     /// ledger pair are all that covers the connector there, so nothing was
@@ -2433,9 +2455,16 @@ fn grant_connect_enable_inner(
         return Ok(ConnectGrantOutcome::default());
     }
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        // Operation identity (round-6 review P2): this grant's ownership
+        // proof. A compensating revoke runs long after the write that landed
+        // it (skill materialization sits in between), so the outcome must be
+        // able to prove the standing grant is still ITS grant and not a
+        // replacement a teardown + reconnect landed in the window.
+        let grant_token = uuid::Uuid::new_v4().to_string();
         let mut file = load_disabled_bundles_file_locked();
         let mut outcome = ConnectGrantOutcome {
             package_id: package_id.to_string(),
+            grant_token,
             ..ConnectGrantOutcome::default()
         };
         // In-lock ledger recheck: the gate's ledger pre-read is the bounded
@@ -2588,6 +2617,14 @@ fn grant_connect_enable_inner(
             }
         }
         if changed {
+            // The token marks THIS call as the author of the pack's standing
+            // consent. It rides the same save as the grant, so the stored
+            // identity can never claim a grant this call did not write —
+            // including a hand-edited pre-present entry, where claiming
+            // ownership keeps the compensating revoke fail-closed (it strips
+            // the entry instead of skipping it over an unprovable identity).
+            file.connect_grant_tokens
+                .insert(package_id.to_string(), outcome.grant_token.clone());
             try_save_disabled_bundles_file(&file)?;
         }
         outcome.granted = changed;
@@ -2630,7 +2667,14 @@ fn grant_connect_enable_inner(
 /// Compensating over the newer verdict would mangle it (strip its ledger
 /// protection, re-add markered rows over its shape), so only the
 /// `recovery_hold` re-arm still runs: the hold waits for the next real
-/// gesture either way. The id and the footprint both come from the
+/// gesture either way. GRANT OWNERSHIP (round-6 review P2): presence of the
+/// package id is not proof of ownership either — a teardown + reconnect in
+/// the grant-to-revoke window lands a fresh grant under the same id, and
+/// the stale revoke must leave it (and the verdicts around it) untouched.
+/// Every grant therefore writes a per-operation token beside its
+/// `connect_granted` entry, and the revoke compensates only when the
+/// standing entry still carries THIS grant's token. The id and the footprint
+/// both come from the
 /// outcome — the grant-time fold, not a revoke-time re-fold whose
 /// `to_package_id` could diverge onto a claimant pack that installed
 /// mid-connect (round-3 review). A hold the grant cleared is re-armed for
@@ -2656,10 +2700,26 @@ pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), S
         // ledger pair that makes the verdict reconnect-proof. Only the
         // `recovery_hold` re-arm runs either way: the hold waits for the
         // next real gesture regardless of which shape won.
-        if file.connect_granted.contains(&package_id) {
+        //
+        // GRANT OWNERSHIP (round-6 review P2): presence alone cannot tell
+        // this call's grant from a replacement's. A teardown + reconnect
+        // between the grant and this compensating revoke removes the stale
+        // entry and lands a fresh grant for the same package id — stripping
+        // by id alone would delete the newer consent and restore this call's
+        // lifted rows over a successful later connection. The token this
+        // grant wrote proves the standing entry is still its own; a mismatch
+        // means a newer operation owns the state and the stale revoke keeps
+        // its hands off entirely.
+        if file.connect_granted.contains(&package_id)
+            && file
+                .connect_grant_tokens
+                .get(&package_id)
+                .is_some_and(|token| token == &grant.grant_token)
+        {
             let before_grant = file.connect_granted.len();
             file.connect_granted.retain(|id| id != &package_id);
             changed |= file.connect_granted.len() != before_grant;
+            changed |= file.connect_grant_tokens.remove(&package_id).is_some();
             for mode in SessionMode::ALL {
                 if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
                     continue;
@@ -2834,6 +2894,7 @@ pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), 
         let before_grant = file.connect_granted.len();
         file.connect_granted.retain(|id| id != package_id);
         changed |= file.connect_granted.len() != before_grant;
+        changed |= file.connect_grant_tokens.remove(package_id).is_some();
         if changed {
             try_save_disabled_bundles_file(&file)?;
         }

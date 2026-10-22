@@ -88,6 +88,10 @@ REQUIRED_PINS = [
     "revoke_restores_a_scope_that_materializes_mid_connect",
     "revoke_leaves_a_consumed_grant_alone",
     "revoke_restores_markers_only_where_the_lift_found_one",
+    # Round-6 review P2: the compensating revoke owns its grant by the
+    # operation token — a stale failure after a teardown + reconnect must
+    # leave the replacement grant alone.
+    "stale_revoke_leaves_a_replacement_grant_alone",
 ]
 
 
