@@ -12835,6 +12835,124 @@ pub(crate) mod tests {
         });
     }
 
+    /// The writer preempts the bearer slot when the same source_key is also
+    /// declared on an Authorization secret_headers entry (the historical
+    /// Tencent Docs shape: raw-token auth must not gain a Bearer prefix), so
+    /// a restore's `env_headers.Authorization` wiring IS that required
+    /// bearer field's wiring — the entry is restored enabled, not disabled
+    /// by a slot demand the writer never fills.
+    #[test]
+    fn reconcile_restores_preempted_bearer_field_by_its_raw_authorization_header() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "preempt-r",
+                "Preempt",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"preempt-remote","url":"https://preempt.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"","source_key":"RAW_TOKEN","provider":"p","required":true}],
+                    "config_fields":[
+                    {"key":"RAW_TOKEN","label":"Token","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["preempt-r".to_string()]);
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("preempt-r");
+            store
+                .set(
+                    &mcp_secret_reference("preempt-r", "header", "RAW_TOKEN"),
+                    &secret,
+                )
+                .unwrap();
+            let manager = MarketplaceManager::with_store(store);
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'preempt-r': restored missing remote entry 'preempt-remote'".to_string()
+                ],
+                "the raw Authorization header wires the preempted key: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["preempt-remote"];
+            assert_eq!(
+                entry["env_headers"]["Authorization"],
+                mcp_secret_env_var("RAW_TOKEN"),
+                "the writer's raw-header form: {entry}"
+            );
+            assert!(
+                entry.get("bearer_token_env_var").is_none(),
+                "the preempted slot stays unfilled: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "a writer-shaped, fully wired entry must not be disabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A successful install of the preempted shape followed by reconciliation
+    /// converges: the install writer's `env_headers.Authorization` is judged
+    /// as the key's wiring, so the entry is never disabled — reconfiguring
+    /// re-emits the same valid raw header, so a slot demand here would create
+    /// an install → disable → reinstall flapping loop with no exit.
+    #[test]
+    fn reconcile_keeps_installed_raw_authorization_entry_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "preempt-i",
+                "Preempt",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"preempt-remote-i","url":"https://preempt-i.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"","source_key":"RAW_TOKEN","provider":"p","required":true}],
+                    "config_fields":[
+                    {"key":"RAW_TOKEN","label":"Token","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("preempt-i");
+            store
+                .set(
+                    &mcp_secret_reference("preempt-i", "header", "RAW_TOKEN"),
+                    &secret,
+                )
+                .unwrap();
+            let manager = MarketplaceManager::with_store(store);
+            let mut user_config = std::collections::HashMap::new();
+            user_config.insert("RAW_TOKEN".to_string(), secret.clone());
+            manager.install("preempt-i", &user_config).unwrap();
+            assert!(
+                read_mcp_json()["servers"]["preempt-remote-i"]
+                    .get("bearer_token_env_var")
+                    .is_none(),
+                "the install writes the raw-header form"
+            );
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a freshly installed, fully wired entry must converge: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["preempt-remote-i"];
+            assert_eq!(
+                entry["env_headers"]["Authorization"],
+                mcp_secret_env_var("RAW_TOKEN"),
+                "the entry is left exactly as installed: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "no startup pass may flip the installed form: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
     /// The remote twin of the local required-field refusal: the import/upload
     /// path installs with an empty config and no dialog, so a REQUIRED secret
     /// bearer config field whose credential is absent must refuse the

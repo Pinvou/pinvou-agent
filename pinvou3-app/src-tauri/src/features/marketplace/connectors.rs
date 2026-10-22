@@ -1170,7 +1170,15 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
 /// (http transport), so a value parked under any other header never
 /// reaches the server as auth. A manifest-namespace name under a foreign
 /// slot (`"X-Sentinel": "PINVOU3_MCP_SECRET_K"` for a Bearer manifest)
-/// therefore does not wire the key — it masks nothing. Slot values are
+/// therefore does not wire the key — it masks nothing. The scan also mirrors
+/// the builder's same-key precedence: a source_key declared on an
+/// Authorization `secret_headers` entry never receives the bearer slot (dual
+/// Authorization writes with diverging schemes — Bearer prefix vs raw value —
+/// would land a contradictory entry; the `secret_headers` declaration is the
+/// authoritative one), so such a key is judged by that Authorization header
+/// channel instead, and regardless of the header's own `required` flag — the
+/// writer skips the bearer slot for the key in every mode, so the header
+/// channel is the only live wiring it can ever have. Slot values are
 /// compared exactly: the remote resolver looks an env var up by the value
 /// string with no expansion, so a composed `${...}` value names a
 /// different, unresolvable variable. Manifest-authored strings that also
@@ -1264,13 +1272,35 @@ fn entry_secret_keys_without_wiring(
                 push(&secret.source_key);
             }
         }
+        // The writer preempts the bearer slot when the same source_key is
+        // also declared on an Authorization secret_headers entry (the
+        // historical Tencent Docs shape: raw-token auth must not gain a
+        // Bearer prefix) — for such a key the header channel is the only
+        // live wiring, so judge the key by it, required or not. Demanding
+        // the preempted slot here would report a correctly wired entry as
+        // missing its credential and disable it on every startup, while the
+        // install writer keeps emitting the same valid raw header — a
+        // reconfigure could never converge.
+        let secret_header_auth_keys: std::collections::HashSet<&str> = manifest
+            .secret_headers
+            .iter()
+            .filter(|s| s.header.eq_ignore_ascii_case("authorization"))
+            .map(|s| s.source_key.as_str())
+            .collect();
         for field in &manifest.config_fields {
-            if field.target == "bearer"
-                && field.secret
-                && field.required
-                && !remote_wired_in_bearer(&mcp_secret_env_var(&field.key))
-            {
-                push(&field.key);
+            if field.target == "bearer" && field.secret && field.required {
+                let wired = if secret_header_auth_keys.contains(field.key.as_str()) {
+                    manifest.secret_headers.iter().any(|s| {
+                        s.source_key == field.key
+                            && s.header.eq_ignore_ascii_case("authorization")
+                            && secret_header_wired(s)
+                    })
+                } else {
+                    remote_wired_in_bearer(&mcp_secret_env_var(&field.key))
+                };
+                if !wired {
+                    push(&field.key);
+                }
             }
         }
     }
