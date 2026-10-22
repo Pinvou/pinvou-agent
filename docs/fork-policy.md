@@ -8,10 +8,11 @@
 
 - 采用上游 #6619 中的输出预算切片（`3e39820f530496dec909a57541f25f3f6f63ac9f`）及底座审核修复。引擎、Web 包装层、Chat Completions 兜底和 TUI 镜像共用路由预算；在串行/并行结果广播前，以不可变 artifact 保全引擎收到的完整正文，保留真实保存失败提示、检索和所属证明边界，以及 fork 的有界 child-route/handle 摘要。
 - 审核闭合：`cf82289a2` 补齐有界失败摘要接线、wire 预算上下两侧/去重合同和 receipt 正文/恢复提示的分离边界。新候选按真实字段、行或流省略记录恢复需求，不把重新排版当作截断；完整结构化结果不再请求恢复 artifact。adaptive 预览记录原始行数，重复的未保存预览不再被说成完整正文引用；小预算提示保持单份且有界，损坏的预览长度安全拒绝。
+- 新一轮固定提交审核：`tasks gate_run` 内联展示不同的非空 stdout/stderr summary，真实字段截断时保留恢复需求，覆盖无 active task/日志 artifact 的普通聊天。短中断子代理快照省略 `checkpoint`/`needs_input` 时同样保留恢复，兼顾行本身及外层 wrapper；回归使用真实 TasksTool 返回结果和真实中断 checkpoint/needs-input DTO 构造器。没有这些遗漏的完整行保持原语义。
 - R4 范围决定：仅能恢复到达引擎的正文。工具生产端上限仍保留：`git.rs`、`git_history.rs` 为 40,000 字符，`test_runner.rs` 每条输出流为 40,000 字符，`verifier.rs` 每项 gate 的 stdout/stderr 各为 16,000 字符。工具内部已经丢弃的尾部不会到达引擎，不能由本切片恢复；移除这些上限明确延后，不冒称本次已回移该部分上游变更。
 - 独立的搜索决定：native-search 回答链仍维持既有 2,048/4,096 token 上限，本次不新增 provider length-stop 标记；其上限和终止原因合同延后到单独审核的底座切片。正常新执行的 Responses 请求使用引擎视图，但本次未增加其历史消息 wire 兜底；Chat Completions 的旧历史兜底仍与路由无关，不声称所有 provider wire 均有同等兜底。
 - 保留的非阻塞边界：路由预算缩小时 Web envelope artifact 尚不会重新发布为恢复引用；缺少原始行数的旧预览仍采用保守的可见行回退。既有 /status 的 raw-over-cap 文案和会话相对路径 artifact 大小观测另作后续项。不声称新增打包宿主或真实 provider 验证。
-- 候选 gitlink：`580bbb1d3c195a8c921ce91b890ec637c1e244f0`（v0.9.12 之上共 79 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。这是独立候选，不包含失败标志、JSONPath、Python 环境的其他候选；公开维护分支和不可变 tag 均未改变。
+- 候选 gitlink：`293d7376a82b59189c01503f71f1c83880a33a4c`（v0.9.12 之上共 81 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。这是独立候选，不包含失败标志、JSONPath、Python 环境的其他候选；公开维护分支和不可变 tag 均未改变。
 - 合入前提：先合入 CodeWhale#118，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单的候选头换成实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`、重算 `EXPECTED_COMMITS`，协调其他已合入修复并同步两份策略/修改清单。通过未放宽的 `verify-public-submodule.sh` 后，还须审核最终集成树。候选检查不豁免公开门禁；草稿不具备合并或发布资格。
 - 验证见承载 PR 的固定提交记录。指纹覆盖 header-padding Web 回归、完整/截断的结构化结果、adaptive 行数、损坏预览 metadata、重复未保存的 wire 预览。未增加 changelog：CodeWhale `CONTRIBUTING.md` 明确要求在 main 合并时统一登记，不在 PR 分支改写。排除客户数据、凭证及运行/会话日志。
 
