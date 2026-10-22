@@ -287,6 +287,8 @@ jobs:
     # (历史观测峰值 48m14s 出自一次被取消 run 中的 arm64 job),
     # 旧上限 90 本有约 2x 余量。放宽到 120 为工具链滚动、缓存冷启动等
     # 长尾留余量,代价只是真挂死时多 30min 才被取消(成功时长不受影响)。
+    # 本次仅放宽有实测样本的 arm64(与按 1.5x 联动的 loong64);
+    # windows 150 与 macos 360 的余量比例更紧,见各自 job 注释观察。
     timeout-minutes: 120
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
@@ -426,7 +428,7 @@ jobs:
   build-linux-loongarch64:
     name: 构建 Linux loongarch64 deb
     needs: check-version-bump
-    # 触发合同:只有手动触发或 push 到 main 才进入这个 135 分钟重交叉构建。
+    # 触发合同:只有手动触发或 push 到 main 才进入这个重交叉构建。
     # gate 无条件置 build_required=true;一旦本 workflow 的触发面扩大
     # (如引入 pull_request 做发布链路轻量契约验证),缺这层守卫就会让每个
     # 触碰发布链路的 PR 都发起 loong64 交叉构建。
@@ -683,6 +685,7 @@ jobs:
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
+          trap 'rm -rf "$probe"' EXIT
           echo 'fn main() {}' > "$probe/probe.rs"
           # --remap-path-prefix normalizes build-machine absolute paths
           # embedded in the artifact (panic locations etc.), same as the
