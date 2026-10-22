@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-22 20:58 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-22 21:47 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; additional T13/T25/T47 source repairs and local acceptance continue.
 The combined business workflows have not passed complete acceptance. Candidate
@@ -72,9 +72,17 @@ source remains separate from delivery:
   actual-result review confirmed natural process closure, unchanged source
   and no resource-floor trip. These attempts did not establish the original
   two initialization failure causes or pass the complete native suite. A
-  reviewed four-test-file cleanup plan removes temporary diagnostics while
-  preserving the actual lifecycle, search-path, SQL and full-DSN repairs;
-  final cleanup and required acceptance remain pending.
+  reviewed four-test-file cleanup was then applied, preserving the actual
+  lifecycle, search-path, SQL, full-DSN and browser repairs. Independent source
+  review confirmed precisely those four changes and the other 2,393 unchanged
+  inputs. The resulting 2,396-input normal suite passed twenty-six top-level
+  tests and all fifty-two subtests, with zero skips, but one top-level test
+  failed in the original signing migration before metadata initialization or
+  its missing-version business case. Independent result review confirmed
+  unchanged source, natural outer process closure and no resource-floor trip.
+  This remains a failed complete suite. The signing-initialization cause is
+  unconfirmed; bounded stage/SQLSTATE diagnosis is being prepared rather than
+  treating another green repeat as an explanation.
 - Admin strict type checking, 17 pure controls and the production build passed.
   After correcting browser discovery, nine of eleven synthetic browser controls
   passed; two exact-label selectors failed. All eight related textarea selectors
@@ -85,11 +93,20 @@ source remains separate from delivery:
   of eleven controls; its remaining assertion incorrectly compared legal JSON
   object insertion order after original-wire restoration. The independently
   reviewed strict-JSON value assertion repair then passed all eleven controls
-  with zero skips or retries. The real PostgreSQL/HTTP/browser run failed in
-  all three locales and remains red. A later English diagnostic run retained
+  with zero skips or retries. The first real PostgreSQL/HTTP/browser run failed
+  in all three locales. A later English diagnostic run retained
   its private report and passed the original lost-ACK recovery case, but failed
   the correction case's immediate asynchronous-state assertion. That test
-  repair is under independent review; real three-language acceptance is pending.
+  repair passed independent source review: it waits for the existing exact
+  storage-clear predicate without changing that predicate or its timeout.
+  English, Simplified Chinese and Japanese then each passed a separate actual
+  browser run containing two fixed cases, with zero skips, retries or flaky
+  cases. Independent actual-result review confirmed all six cases, the same
+  2,397-input source map, fixed database census and no resource-floor trip.
+  Each outer Job closed naturally; nested browser ownership was checked under
+  its original helper, which can terminate its own remaining descendants.
+  The three runs are not counted as one three-locale Go run. This browser
+  evidence does not pass the subsequent complete native suite or deliver T13.
 - T31's normal unsigned standalone helper and launcher passed release compilation
   and independent PE readback. This covers the two actual build outputs, not
   service installation, IPC, protected execution or fault recovery.
@@ -118,8 +135,16 @@ source remains separate from delivery:
   without skips, and independent actual-result review passed. In the following
   workflow run, private pending classification passed one top-level test and
   three subtests, while three creation-dependent top-level tests failed. A
-  bounded private observer identified a denied original-kernel internal read;
-  the legitimate fixed read bridge still requires repair and acceptance.
+  bounded private observer identified a denied original-kernel internal read.
+  A fixed read-only bridge and its native negative controls passed independent
+  source review; the original internal helper remains private. After removing
+  the query diagnostic, a five-test native run again passed private pending
+  classification and its three subtests, while four creation-dependent tests
+  failed. A later private phase witness recorded two Read-success markers
+  and entry into Compute and ApplyResult before refusal; it does not separately
+  establish the complete pure computation as correct. The bounded query
+  observer recorded no SQL error. Result application is still being
+  diagnosed, and the unexecuted negative cases are not counted as passed.
   Exact approval ACK recovery, fixed HTTP queries, three-language UI and
   genuine HTTP/browser controls have scoped source reviews. The UI's original
   request terminal-proof gap remains open. No complete T47 workflow delivery,
