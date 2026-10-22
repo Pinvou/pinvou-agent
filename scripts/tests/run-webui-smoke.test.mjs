@@ -22,7 +22,8 @@ const WRAPPER = path.join(REPO_ROOT, "pinvou3-app", "scripts", "run-webui-smoke.
 // relay smoke's exit-2 must pass through untouched). Nothing executed it —
 // these cover build gating, ordering, and exit-code passthrough against a
 // stub smoke and a fake `npm` on PATH. The fixtures are POSIX shell scripts,
-// so the suite skips on Windows like the other PATH-stubbing tests.
+// so the suite skips on Windows (the wrapper's win32 npm path has no
+// exercise in this suite today).
 
 const POSIX_ONLY = process.platform === "win32" ? "posix-only fixtures" : false;
 
@@ -93,6 +94,17 @@ test(
   (t) => {
     const { smoke, fakeBin, log } = makeSandbox(t);
     const run = runWrapper({ smoke, fakeBin, log });
+    assert.equal(run.status, 0);
+    assert.deepEqual(calls(log), ["run build:web", "smoke-ran"]);
+  },
+);
+
+test(
+  "SKIP=0 still builds: only the exact documented value skips",
+  { skip: POSIX_ONLY },
+  (t) => {
+    const { smoke, fakeBin, log } = makeSandbox(t);
+    const run = runWrapper({ smoke, fakeBin, log, skipBuild: "0" });
     assert.equal(run.status, 0);
     assert.deepEqual(calls(log), ["run build:web", "smoke-ran"]);
   },
