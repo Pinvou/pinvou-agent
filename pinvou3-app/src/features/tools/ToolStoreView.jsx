@@ -118,7 +118,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   ima: 'assets/tool-icons/wb-ima-mcp.png',
   obsidian: 'assets/tool-icons/obsidian.ico',
   'yuandian-mcp': 'assets/tool-icons/wb-yuandian-mcp.svg',
-  3: 'assets/tool-icons/wb-qq-mail.png',
+  3: 'assets/tool-icons/wb-qq-mail.jpg',
   5: 'assets/tool-icons/wb-lexiang.png',
   11: 'assets/tool-icons/wb-tapd.png',
   12: 'assets/tool-icons/wb-cnb-api.svg',
@@ -2552,10 +2552,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                               <span>{(builtinCopy || {}).sectionTitle}</span>
                             </button>
                           )}
-                          <span className="shrink-0 hidden sm:flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
-                            {storeCopy.guide.dragHintShort}
+                          <span className="hidden xl:flex min-w-0 items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
+                            <span className="truncate">{storeCopy.guide.dragHintShort}</span>
                             <button type="button" onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}
-                              className="w-[18px] h-[18px] rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/20 flex items-center justify-center text-[11px] font-bold leading-none">?</button>
+                              className="shrink-0 w-[18px] h-[18px] rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/20 flex items-center justify-center text-[11px] font-bold leading-none">?</button>
                           </span>
                         </div>
                       </div>
