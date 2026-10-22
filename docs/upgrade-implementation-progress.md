@@ -13,7 +13,7 @@ The estimates below were assessed on 2026-10-22 from delivered capabilities and
 remaining implementation and acceptance work. They are engineering estimates,
 not measured hours or release readiness. Shared foundations are not counted again
 for tasks without their own business implementation. Counting deferred T42 as
-zero in the 47-task denominator gives an equal-task average of 32.4%; the strict
+zero in the 47-task denominator gives an equal-task average of 32.8%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
 | Task | Estimate | Status | Delivery / outstanding dependency |
@@ -21,7 +21,7 @@ completed-task ratio remains 5/47 (10.6%).
 | T01 | 100% | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | 100% | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
 | T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples and three earlier payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
-| T04 | 65% | In progress | Reviewed offline prepare/assemble/verify tool and exact native-format/Package/evidence byte binding; complete provenance, production build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
+| T04 | 65% | In progress | Offline tools and the Windows post-build npm adapter are delivered; eight real isolated CLI cases and original-child cancellation passed independent acceptance. Final NSIS source integration, complete provenance and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 75% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
@@ -42,7 +42,7 @@ completed-task ratio remains 5/47 (10.6%).
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 20% | In progress | Reviewed OpenBao provider for independent nonexportable purpose/week HMAC keys is committed; protected material-owner migration and native lifecycle tests remain blocked by a reproducible first-install migration failure. Event composition and retention remain pending. |
+| T25 | 35% | In progress | Independent nonexportable purpose/week OpenBao keys and protected material-owner migration, original-operation recovery and native lifecycle regression are committed and pushed. Actual event/source composition, purpose-qualified consumption, privacy retention and weekly snapshots remain pending. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
 | T28 | 0% | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
@@ -14232,3 +14232,65 @@ real separate users/services, protected key recovery and power-off behavior rema
 unproven; the experimental in-memory backup key is cleared after verification.
 T03 remains in progress, and no task is newly declared complete. Downloads retain
 no hard total or cumulative duration limit.
+
+
+## T25 protected weekly material owner delivery (2026-10-22)
+
+Service commit `c045188aead6bb817dbdbe446a512aa2bba6dc39` is committed with
+DCO and ordinarily pushed. It adds the protected purpose/week material catalog,
+explicit owner installation, original-operation reservation and recovery, durable
+provider work and final fencing. Creation requires the original committed attempt;
+uncertain commit acknowledgement or a later reconciliation cannot mint a second
+creation permission. Existing installations are checked rather than automatically
+repaired. The original 32 MiB/4,096-item combined resource bounds remain enforced.
+
+Independent source and final-result reviews passed with no unresolved findings.
+Final component checks passed 26 pure top-level tests and 34 subtests, plus
+14 real PostgreSQL/OpenBao top-level tests and 30 subtests, with no skips.
+The complete default suite passed 1,164 top-level tests and 2,539 subtests;
+901 top-level tests and 749 subtests were skipped and remain separately
+unverified by that run. Formatting, vet, module verification, server build,
+pinned contracts and all three whitespace checks passed. The accepted original
+process trees exited naturally without forced termination, source/index drift
+or a recorded resource-floor breach. Counts from these overlapping suites are
+not a count of distinct tests.
+
+This completes a bounded material-lifecycle batch. It does not grant a caller
+purpose-qualified HMAC consumption, complete event attribution or contribution
+qualification, ASN/source authenticity, retention cleanup or public weekly
+statistics. Unknown-COMMIT network acknowledgement loss was not injected in this
+final component run. T25 remains in progress at an engineering estimate of 35%;
+the strict completed-task count stays five of 47.
+
+The owner-approved current installed version, first legal server acceptance
+time, original retransmission attribution, week-end-plus-seven-day freeze and
+unavailable-leaf rules were independently reviewed and pushed in client
+requirements commit `c973e23ef46c6c7fa7cde0f33ededde3198ab390`.
+
+## T04 isolated CLI and cancellation evidence (2026-10-22)
+
+The Windows post-build npm adapter is already delivered in client commit
+`404bb78814239a366e75d2374941de006ae18acc`. An isolated original CLI and
+independent signer completed two positive package pipelines. Six negative cases
+covered wrong Root, Root hash, bad signature, changed input, existing output and
+signer failure; none published a completion result. A separate original-child
+experiment observed a real OS spawn, abort request and original close with
+`T04_CANCELLED`, without publishing completion. Independent actual-result reviews
+accepted both experiments. They do not prove application initialization, kill
+causality, arbitrary detached-child custody or native installation.
+
+The final service NSIS integration is still undergoing its actual-source
+regression. Its portable opt-in fixture path repair retains the exact original
+image hash, size and negative assertions; historical experiments do not qualify
+the new test invocation automatically. T04 stays at 65%, with provenance and
+physical platform acceptance still pending.
+
+## T10 Linux scanner startup refusal (2026-10-22)
+
+The owner's external PowerShell observer returned `passed: false` before starting
+the Linux guest: available memory was about 6.45 GiB against the retained 9 GiB
+startup requirement. The VM was not started and scanner tests were not executed.
+This result does not supersede the source, cross-build or synthetic parser
+checks, and does not confer actual Linux scanner qualification. Other builds
+and source work continue without stopping unrelated processes or lowering the
+experiment's resource requirements.
