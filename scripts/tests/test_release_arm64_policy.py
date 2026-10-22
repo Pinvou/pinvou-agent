@@ -53,11 +53,18 @@ class ReleaseArm64PolicyTests(unittest.TestCase):
         arm64_job = self.workflow.split(
             "\n  build-linux-arm64:", maxsplit=1
         )[1].split("\n  build-linux-loongarch64:", maxsplit=1)[0]
-        self.assertIn("\n    timeout-minutes: 120\n", arm64_job)
+        # Comment-stripped like the loong64 twin, so a future explanatory
+        # comment containing "timeout-minutes:" cannot false-red the count.
+        live = "\n".join(
+            line
+            for line in arm64_job.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        self.assertIn("\n    timeout-minutes: 120\n", live)
         self.assertEqual(
-            arm64_job.count("timeout-minutes:"),
+            live.count("timeout-minutes:"),
             1,
-            "exactly one timeout budget may exist in the job",
+            "exactly one live timeout budget may exist in the job",
         )
 
 

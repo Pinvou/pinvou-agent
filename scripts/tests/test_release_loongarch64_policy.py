@@ -235,7 +235,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
     def test_release_job_runs_only_on_main_push_or_manual_dispatch(self):
         # The gate sets build_required unconditionally (it never looks at the
         # event name), so this job-level trigger contract is what keeps the
-        # 135-minute cross build off every release-chain PR the day the
+        # heavy cross build off every release-chain PR the day the
         # workflow grows a pull_request trigger for light contract jobs.
         # Only workflow_dispatch or a push to refs/heads/main may start it.
         job_header = self.job_code.split("\n    steps:", maxsplit=1)[0]
