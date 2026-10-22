@@ -415,8 +415,9 @@ evidence; the separate nonderived SN HMAC adapter does not certify this new
 weekly-key workflow. Raw-IP security logs remain at most seven days and
 purpose-isolated prefix-HMAC/ASN summaries at most thirty days. Query-family
 isolation, contribution limits, k20 suppression, immutable frozen snapshots and
-prohibition on network-based admission are unchanged. Source/ASN classification policy still needs a concrete contract before its
-implementation. The network-week attribution and freeze choices below are now
+prohibition on network-based admission are unchanged. The approved ASN source
+and classification contract is recorded below; source-IP acquisition remains a
+separate pending choice. The network-week attribution and freeze choices below are now
 explicitly approved; they do not inherit T24 policy implicitly. Production deployment
 remains deferred. The actual weekly-key lifecycle and provider acceptance are
 not implemented by changing these documents.
@@ -432,3 +433,20 @@ days after the week ends, and never rewrite it after freezing. If a missing key
 service or source chain prevents establishing complete leaf integrity, show that
 leaf as data unavailable and publish no partial statistics. These decisions do
 not certify an implementation, alter retention or relax query-family isolation.
+
+## Approved offline ASN source and grouping (2026-10-22)
+
+The owner approved a locally imported offline ASN database, such as GeoLite2-ASN
+or an equivalent source, with a verified version, content digest and validity
+period. Initial grouping uses the actual ASN number, for example `asn-123`,
+rather than inferred carrier or cloud categories. Do not query an external
+service for each IP address or infer classifications from organization names.
+The controlled import must establish the trusted expected database identity;
+a package's own claimed digest is not independent source authentication.
+
+Missing, expired or unverifiable data must not produce invented ASN groups or
+normal partial statistics for potentially affected leaves. Existing purpose
+isolation, retention, contribution limits and completeness requirements remain.
+This decision does not certify a dataset or implementation. The choice between
+direct socket attribution and an authenticated proxy chain remains pending;
+untrusted forwarding headers do not establish a real source IP.
