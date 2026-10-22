@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 81 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 82 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="293d7376a82b59189c01503f71f1c83880a33a4c"
-EXPECTED_COMMITS=81
+EXPECTED_HEAD="5ea533e4141e93a5464af7bd4a58f521b48110cc"
+EXPECTED_COMMITS=82
 # The registered review head must descend from the immutable r1 closure.
 # Candidate validation does not assert public maintenance-head alignment;
 # scripts/verify-public-submodule.sh enforces that separate merge gate.
@@ -74,6 +74,8 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|Serial dispatch preserves original before fan-out|CodeWhale/crates/tui/src/core/engine/output_recovery_tests.rs|fn forkguard_turn_loop_serial_preserves_output_before_fanout"
+  "T2|Parallel dispatch preserves original before fan-out|CodeWhale/crates/tui/src/core/engine/output_recovery_tests.rs|fn forkguard_turn_loop_parallel_preserves_output_before_fanout"
   "T2|Gate stream DTO omissions are recoverable|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_task_stream_summaries_are_inline_or_recoverable"
   "T2|Interrupted coordination field omissions are recoverable|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_short_coordination_fields_are_inline_or_recoverable"
   "T2|Real taskless gate retains both output streams|CodeWhale/crates/tui/src/tools/tasks.rs|fn forkguard_gate_without_active_task_keeps_both_streams_recoverable"
@@ -83,6 +85,7 @@ fingerprints=(
   "T2|Adaptive evidence keeps original line totals|CodeWhale/crates/tui/src/tools/truncate.rs|fn adaptive_evidence_footer_names_artifact_path_and_recovery"
   "T2|Preview metadata overflow fails closed|CodeWhale/crates/tui/src/tools/truncate.rs|fn refit_spilled_preview_rejects_overflowing_metadata"
   "T2|Unsaved wire previews are not full-content refs|CodeWhale/crates/tui/src/client/chat/tests/stream_decoder.rs|fn request_builder_never_deduplicates_unsaved_output_previews"
+  "T2|Header-padded Web body and JSON fields survive|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_web_body_and_json_fields_survive_header_padding"
   "T2|Recover complete tool outputs|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_web_body_and_json_fields_survive_header_padding"
   "T2|Web JSONPath schema agrees with parser results|CodeWhale/crates/tui/src/tools/web/contract.rs|fn forkguard_web_fields_description_matches_parser"
   "T2|Document the Web JSONPath subset|CodeWhale/crates/tui/src/tools/web_tool.rs|Recursive descent (..) and filters are not supported"
