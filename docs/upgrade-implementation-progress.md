@@ -16,11 +16,14 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 05:49 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 07:36 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
-delivered; additional T13/T25/T47 source repairs and local acceptance continue.
+delivered; remaining T13/T25/T47 source repairs and local acceptance are pending.
 The combined business workflows have not passed complete acceptance. Candidate
-source remains separate from delivery:
+source remains separate from delivery. At the owner's subsequent request,
+development and tests are stopped for a device restart. Incomplete UI/contract
+work is preserved as unreviewed WIP, the owned test database was shut down
+normally, and work will resume only after a new instruction:
 
 - The abort-recovery UI candidate passed strict type checking, a fresh build
   and all 67 pure tests, retaining the original 40 controls. Independent actual
@@ -51,13 +54,35 @@ source remains separate from delivery:
   independent RIPE bulk-AS routing timelines in an isolated data-test interval;
   this does not approve production freshness, installation or database accuracy.
   No real lookup or complete T25 qualification is claimed.
-- T10's original native capture cancellation classification and blob-seal error
-  cleanup repairs passed independent source review. An acquired error Blob now
-  closes, and explicit unknown cleanup/durability takes precedence over ordinary
-  cancellation. The current-principal fact wrapper also passed scoped source
-  review. The fixed scan owner, durable intent, fenced claim/renewal and final
-  transaction remain in development; these components have not been compiled,
-  tested or registered as an available scanner workflow.
+- T10's fixed scan-capture owner, durable original intent, fenced claim/renewal,
+  once-only native launch permit and final transaction passed scoped independent
+  source review. Root repaired a stale-deadline cancellation race and a common
+  recovery registration-order mismatch; both repairs passed independent review.
+  The regression control now establishes the former timer wait using an isolated
+  test-local scheduling bubble. The coherent server source has 57 production and
+  30 test files over 2,374 exact inputs. Its pure test plan retains all original
+  24/61 controls and adds 12/42, plus server wiring compilation. No Go compilation,
+  PostgreSQL acceptance, Linux scanner or new test execution has occurred.
+  Management UI and the four-interface contract extension remain in development.
+- T25's controlled offline ASN source owner passed independent deep source review:
+  initial installation, CAS disable, exact original-request recovery and current
+  local lookup preserve the original audit and operation boundaries. Formatting
+  passed independent semantic-delta review. Following the new owner decision,
+  explicit same-version/different-digest revisions are approved and await
+  implementation; no append, dataset or complete owner runtime acceptance is
+  claimed.
+- T34's first Linux material block provides an immutable anonymous copy and an
+  explicit native-evidence CLI observation while preserving Windows behavior.
+  Root repaired an unsupported-platform test reference and an omitted consumer
+  in the pending lock-update inventory; independent source review passed. Eight
+  normal Cargo lock updates, compilation and actual Linux acceptance remain
+  pending. The 1,070 locked public dependency archives are present; an isolated
+  mirror-derived cache was assembled as source preparation only, without running
+  Cargo or qualifying resolution, build or tests.
+- The owner explicitly deferred the T03 50 GiB / 500,000-file measurement because
+  no current volume meets its approximately 104 GiB free-space precondition.
+  Other development and smaller-load/platform measurement work continue. Existing
+  partial samples do not establish final preparation budgets or full T03 coverage.
 - The dense real-source capacity experiment's read-only lower-bound calculation
   incorrectly conflated different history revisions with the same kind and ID.
   Root repaired its test-only identity to include revision and added seven
@@ -75,7 +100,7 @@ source remains separate from delivery:
   before launching a child. Source work continues while a usable local testing
   window is pending. The owner chose to arrange that window by reducing other
   applications' memory use; the latest host observation was approximately
-  6.5 GiB available, below the start floor. No new test child was launched, no
+  4.9 GiB available, below the start floor. No new test child was launched, no
   unrelated process was stopped and no download deadline was added.
 
 - Normal T13/T25/T20 integration preserves all thirteen delivered T20 files.

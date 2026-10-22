@@ -450,3 +450,22 @@ isolation, retention, contribution limits and completeness requirements remain.
 This decision does not certify a dataset or implementation. The choice between
 direct socket attribution and an authenticated proxy chain remains pending;
 untrusted forwarding headers do not establish a real source IP.
+
+## Approved controlled same-version ASN revisions (2026-10-23)
+
+The owner approved explicit installation of a revision with the same declared
+ASN dataset version and a different content digest. The controlled operation must
+check the current source version, retain the original immutable records and
+prevent automatic fallback. Existing expected identity, validity, original-request
+recovery and current-source CAS requirements still apply. Source-IP acquisition
+remains a separate pending choice. Implementation and runtime acceptance are
+tracked in the progress document.
+
+## Deferred large T03 experiment (2026-10-23)
+
+The owner deferred the 50 GiB / 500,000-file measurement and requested continued
+work on other tasks. The existing experiment requires approximately 104 GiB of
+free capacity for the source, backup and safety allowance; current local volumes
+are insufficient. Smaller-load experiments and other development remain in scope.
+Final preparation budgets and complete platform coverage remain pending actual
+measurements.
