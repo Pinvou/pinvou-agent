@@ -11506,6 +11506,596 @@
           }
         }
       }
+    },
+    "/v1/admin/path-policy/floor-drafts/context": {
+      "post": {
+        "operationId": "support-floor-draft-context",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T13",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "REVISION_CONFLICT",
+          "IDEMPOTENCY_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "managementIdentity": []
+          }
+        ],
+        "description": "Original authenticated current provider/session, exact Origin and CSRF required on every POST. Read requires commands.policy AND change.read; save/resume requires commands.policy AND change.create. Current grants rechecked in original transaction; planning declarations never approval or current floor. Request<=1MiB, each record<=1MiB, actual source union<=32MiB/4096 refs; private page response<=33MiB. No active ChangeSupportFloor/publication execution.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.floor-draft.context-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized protected planning read or exact committed original saved/stale ACK, never activation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.floor-draft.context-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/path-policy/floor-drafts/read": {
+      "post": {
+        "operationId": "support-floor-draft-read",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T13",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "REVISION_CONFLICT",
+          "IDEMPOTENCY_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "managementIdentity": []
+          }
+        ],
+        "description": "Original authenticated current provider/session, exact Origin and CSRF required on every POST. Read requires commands.policy AND change.read; save/resume requires commands.policy AND change.create. Current grants rechecked in original transaction; planning declarations never approval or current floor. Request<=1MiB, each record<=1MiB, actual source union<=32MiB/4096 refs; private page response<=33MiB. No active ChangeSupportFloor/publication execution.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.floor-draft.read-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized protected planning read or exact committed original saved/stale ACK, never activation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.floor-draft.read-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/path-policy/floor-drafts/history": {
+      "post": {
+        "operationId": "support-floor-draft-history",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T13",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "REVISION_CONFLICT",
+          "IDEMPOTENCY_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "managementIdentity": []
+          }
+        ],
+        "description": "Original authenticated current provider/session, exact Origin and CSRF required on every POST. Read requires commands.policy AND change.read; save/resume requires commands.policy AND change.create. Current grants rechecked in original transaction; planning declarations never approval or current floor. Request<=1MiB, each record<=1MiB, actual source union<=32MiB/4096 refs; private page response<=33MiB. No active ChangeSupportFloor/publication execution.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.floor-draft.history-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized protected planning read or exact committed original saved/stale ACK, never activation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.floor-draft.history-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/path-policy/floor-drafts/save": {
+      "post": {
+        "operationId": "support-floor-draft-save",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T13",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "REVISION_CONFLICT",
+          "IDEMPOTENCY_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "managementIdentity": []
+          }
+        ],
+        "description": "Original authenticated current provider/session, exact Origin and CSRF required on every POST. Read requires commands.policy AND change.read; save/resume requires commands.policy AND change.create. Current grants rechecked in original transaction; planning declarations never approval or current floor. Request<=1MiB, each record<=1MiB, actual source union<=32MiB/4096 refs; private page response<=33MiB. No active ChangeSupportFloor/publication execution.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.floor-draft.save-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized protected planning read or exact committed original saved/stale ACK, never activation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.floor-draft.save-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Generic contract error OR exact original specialized not_admitted fact after full native proof. Never infer the latter from HTTP400 alone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/api.error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/api.floor-draft.not-admitted-error"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/path-policy/floor-drafts/operation-lookup": {
+      "post": {
+        "operationId": "support-floor-draft-operation-lookup",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T13",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "REVISION_CONFLICT",
+          "IDEMPOTENCY_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "managementIdentity": []
+          }
+        ],
+        "description": "Original authenticated current provider/session, exact Origin and CSRF required on every POST. Read requires commands.policy AND change.read; save/resume requires commands.policy AND change.create. Current grants rechecked in original transaction; planning declarations never approval or current floor. Request<=1MiB, each record<=1MiB, actual source union<=32MiB/4096 refs; private page response<=33MiB. No active ChangeSupportFloor/publication execution.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.floor-draft.lookup-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized protected planning read or exact committed original saved/stale ACK, never activation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.floor-draft.lookup-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/path-policy/floor-drafts/operation-resume": {
+      "post": {
+        "operationId": "support-floor-draft-operation-resume",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T13",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "REVISION_CONFLICT",
+          "IDEMPOTENCY_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "managementIdentity": []
+          }
+        ],
+        "description": "Original authenticated current provider/session, exact Origin and CSRF required on every POST. Read requires commands.policy AND change.read; save/resume requires commands.policy AND change.create. Current grants rechecked in original transaction; planning declarations never approval or current floor. Request<=1MiB, each record<=1MiB, actual source union<=32MiB/4096 refs; private page response<=33MiB. No active ChangeSupportFloor/publication execution.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.floor-draft.resume-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authorized protected planning read or exact committed original saved/stale ACK, never activation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.floor-draft.resume-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Generic contract error OR exact original specialized not_admitted fact after full native proof. Never infer the latter from HTTP400 alone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/api.error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/api.floor-draft.not-admitted-error"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Closed safe management error; generic errors/lookup absent never prove no admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -24867,6 +25457,1157 @@
           "artifactId",
           "revision",
           "state"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.scope": {
+        "type": "object",
+        "properties": {
+          "product": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "component": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "channel": {
+            "enum": [
+              "stable",
+              "beta",
+              "internal"
+            ]
+          },
+          "targetKey": {
+            "enum": [
+              "windows-x86_64-nsis-perMachine",
+              "linux-x86_64-deb-perMachine",
+              "linux-arm64-deb-perMachine",
+              "macos-universal-dmg-perMachine"
+            ]
+          }
+        },
+        "required": [
+          "product",
+          "component",
+          "channel",
+          "targetKey"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.ref": {
+        "type": "object",
+        "properties": {
+          "draftId": {
+            "type": "string",
+            "pattern": "^floor-draft-[0-9a-f]{64}$"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/common/$defs/positive"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "draftId",
+          "revision",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.authorization": {
+        "type": "object",
+        "properties": {
+          "recordKind": {
+            "const": "authorization"
+          },
+          "recordId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/common/$defs/positive"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "recordKind",
+          "recordId",
+          "revision",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.basis": {
+        "type": "object",
+        "properties": {
+          "authorization": {
+            "$ref": "#/components/schemas/api.floor-draft.authorization"
+          },
+          "head": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/api.floor-draft.ref"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "authorization",
+          "head"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.declared-base": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "floorId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/common/$defs/positive"
+          },
+          "supportFloorVersion": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/common/$defs/version"
+              }
+            ],
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "scope",
+          "floorId",
+          "revision",
+          "supportFloorVersion"
+        ],
+        "additionalProperties": false,
+        "description": "Explicit unverified declared base only, never the current active floor or authenticated publication. Same full scope required."
+      },
+      "api.floor-draft.inventory-source": {
+        "type": "object",
+        "properties": {
+          "sourceProfileId": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "facts": {
+            "$ref": "#/components/schemas/common/$defs/stableFacts"
+          },
+          "installations": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          }
+        },
+        "required": [
+          "sourceProfileId",
+          "facts",
+          "installations"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.inventory": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "snapshotId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/common/$defs/positive"
+          },
+          "observedAt": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/api.floor-draft.inventory-source"
+            },
+            "maxItems": 4096
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "scope",
+          "snapshotId",
+          "revision",
+          "observedAt",
+          "sources"
+        ],
+        "additionalProperties": false,
+        "description": "Declared per-profile counts only. Each profile ID is recomputed using original T12 stableFacts; full product/component/target match, unique profile IDs, exact safe total. Not authenticated population, completeness, path reachability or qualification. Whole canonical inventory <=1MiB."
+      },
+      "api.floor-draft.save-request": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "expectedBasis": {
+            "$ref": "#/components/schemas/api.floor-draft.basis"
+          },
+          "declaredBase": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/api.floor-draft.declared-base"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/api.floor-draft.inventory"
+          },
+          "proposedVersion": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/common/$defs/version"
+              }
+            ],
+            "maxLength": 65536
+          },
+          "reason": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "expectedBasis",
+          "declaredBase",
+          "inventory",
+          "proposedVersion",
+          "reason",
+          "commandKey"
+        ],
+        "additionalProperties": false,
+        "description": "Closed canonical original, max1MiB including retained actor/projection/record capacity. Server recomputes proposal. Basis head cannot be maximum safe revision. Declared base/inventory must have same exact scope. Raw JSON duplicates/noncanonical numbers/aliases rejected. Same actor/key forever binds original full canonical bytes, including basis; no changed-body retry."
+      },
+      "api.floor-draft.data-ref": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/common/$defs/positive"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.source-impact": {
+        "type": "object",
+        "properties": {
+          "sourceProfileId": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "canonicalAppVersion": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/common/$defs/version"
+              }
+            ],
+            "maxLength": 65536
+          },
+          "installations": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "beforeInFloorRange": {
+            "type": "boolean"
+          },
+          "afterInFloorRange": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sourceProfileId",
+          "canonicalAppVersion",
+          "installations",
+          "beforeInFloorRange",
+          "afterInFloorRange"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.impact": {
+        "type": "object",
+        "properties": {
+          "observedInstallations": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "beforeInFloorRange": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "afterInFloorRange": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "removedFromFloorRange": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "addedToFloorRange": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/api.floor-draft.source-impact"
+            },
+            "maxItems": 4096
+          }
+        },
+        "required": [
+          "observedInstallations",
+          "beforeInFloorRange",
+          "afterInFloorRange",
+          "removedFromFloorRange",
+          "addedToFloorRange",
+          "sources"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.assessment": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "direction": {
+            "enum": [
+              "initial",
+              "raise",
+              "lower"
+            ]
+          },
+          "base": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/api.floor-draft.data-ref"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposedVersion": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/common/$defs/version"
+              }
+            ],
+            "maxLength": 65536
+          },
+          "inventory": {
+            "$ref": "#/components/schemas/api.floor-draft.data-ref"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/api.floor-draft.impact"
+          },
+          "reviewRequirement": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "const": "ChangeSupportFloor"
+              },
+              "permission": {
+                "const": "commands.policy"
+              },
+              "reviews": {
+                "const": 2
+              },
+              "mfa": {
+                "const": true
+              }
+            },
+            "required": [
+              "command",
+              "permission",
+              "reviews",
+              "mfa"
+            ],
+            "additionalProperties": false
+          },
+          "missingEvidence": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "current-scope-and-floor-source-required",
+                "current-complete-census-and-registry-source-required",
+                "actual-two-review-mfa-floor-approval-required",
+                "complete-current-paths-and-atomic-publication-required",
+                "actual-migration-bootstrap-source-not-installed",
+                "prior-announcement-and-manual-upgrade-source-required",
+                "actual-new-source-migration-upgrade-evidence-not-installed"
+              ]
+            },
+            "minItems": 4,
+            "maxItems": 7,
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "scope",
+          "direction",
+          "base",
+          "proposedVersion",
+          "inventory",
+          "impact",
+          "reviewRequirement",
+          "missingEvidence"
+        ],
+        "additionalProperties": false,
+        "description": "Server recomputes every scope/profile hash/count/version/reference and retains all original MissingEvidence. reviewRequirement describes future high-risk activation policy; saving a draft consumes no review and grants no active floor."
+      },
+      "api.floor-draft.proposal": {
+        "type": "object",
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "purpose": {
+            "const": "support-floor-proposal-data.v1"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "assessment": {
+            "$ref": "#/components/schemas/api.floor-draft.assessment"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "purpose",
+          "reason",
+          "assessment"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.record": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "purpose": {
+            "const": "support-floor-planning-draft.v1"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "draftId": {
+            "type": "string",
+            "pattern": "^floor-draft-[0-9a-f]{64}$"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/common/$defs/positive"
+          },
+          "authorId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "savedAt": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "resultId": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "requestSha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "inputEvidence": {
+            "const": "declared-unverified"
+          },
+          "policyEffect": {
+            "const": "none"
+          },
+          "request": {
+            "$ref": "#/components/schemas/api.floor-draft.save-request"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/api.floor-draft.proposal"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "purpose",
+          "scope",
+          "draftId",
+          "revision",
+          "authorId",
+          "savedAt",
+          "resultId",
+          "requestSha256",
+          "inputEvidence",
+          "policyEffect",
+          "request",
+          "proposal"
+        ],
+        "additionalProperties": false,
+        "description": "Immutable revision rebuilt from exact original request, actual SQL save time/result and original T05 source MAC. Draft ID is deterministic for exact full scope. Record/proposal SHA is recomputed; data alone grants no authority. Whole canonical record <=1MiB."
+      },
+      "api.floor-draft.outcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "scope": {
+                "$ref": "#/components/schemas/api.floor-draft.scope"
+              },
+              "resultId": {
+                "$ref": "#/components/schemas/common/$defs/hash"
+              },
+              "requestSha256": {
+                "$ref": "#/components/schemas/common/$defs/hash"
+              },
+              "commandKey": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "committedAt": {
+                "$ref": "#/components/schemas/common/$defs/positive"
+              },
+              "outcome": {
+                "const": "saved"
+              },
+              "record": {
+                "$ref": "#/components/schemas/api.floor-draft.ref"
+              },
+              "observedHead": {
+                "$ref": "#/components/schemas/api.floor-draft.ref"
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "scope",
+              "resultId",
+              "requestSha256",
+              "commandKey",
+              "committedAt",
+              "outcome",
+              "record",
+              "observedHead"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "scope": {
+                "$ref": "#/components/schemas/api.floor-draft.scope"
+              },
+              "resultId": {
+                "$ref": "#/components/schemas/common/$defs/hash"
+              },
+              "requestSha256": {
+                "$ref": "#/components/schemas/common/$defs/hash"
+              },
+              "commandKey": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "committedAt": {
+                "$ref": "#/components/schemas/common/$defs/positive"
+              },
+              "outcome": {
+                "const": "stale"
+              },
+              "record": {
+                "const": null
+              },
+              "observedHead": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/api.floor-draft.ref"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "scope",
+              "resultId",
+              "requestSha256",
+              "commandKey",
+              "committedAt",
+              "outcome",
+              "record",
+              "observedHead"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Exact original canonical ACK including historical SQL committedAt/observedHead, permanently authenticated by original result source. Saved observedHead equals record. Stale record=null and observedHead differs from original expected head. Stale is HTTP200 durable original result, not an error permitting implicit new Save."
+      },
+      "api.floor-draft.locator": {
+        "type": "object",
+        "properties": {
+          "resultId": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "requestSha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "state": {
+            "enum": [
+              "processing",
+              "committed"
+            ]
+          }
+        },
+        "required": [
+          "resultId",
+          "commandKey",
+          "requestSha256",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.context-request": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.context-result": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "basis": {
+            "$ref": "#/components/schemas/api.floor-draft.basis"
+          },
+          "current": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/api.floor-draft.record"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/api.floor-draft.locator"
+            },
+            "maxItems": 32
+          },
+          "pendingTruncated": {
+            "type": "boolean"
+          },
+          "inputEvidence": {
+            "const": "declared-unverified"
+          },
+          "policyEffect": {
+            "const": "none"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "basis",
+          "current",
+          "pending",
+          "pendingTruncated",
+          "inputEvidence",
+          "policyEffect"
+        ],
+        "additionalProperties": false,
+        "description": "Actual current authorization planning basis and protected planning head. current is the full DraftRecord, not a ref wrapper; null matches null planning head. Pending locators only current real actor/exact scope processing originals; lookup recovers original request. This is not the active floor."
+      },
+      "api.floor-draft.read-request": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "revision": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/common/$defs/positive"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.read-result": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "record": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/api.floor-draft.record"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "record"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.history-request": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "afterRevision": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "afterRevision",
+          "limit"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.history-result": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/api.floor-draft.record"
+            },
+            "maxItems": 32
+          },
+          "nextAfterRevision": {
+            "$ref": "#/components/schemas/common/$defs/integer"
+          },
+          "more": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "records",
+          "nextAfterRevision",
+          "more"
+        ],
+        "additionalProperties": false,
+        "description": "Strict contiguous ascending revisions after requested afterRevision. nextAfterRevision is page last revision even when more=false; empty page echoes requested afterRevision. All immutable content/native/MAC links are checked."
+      },
+      "api.floor-draft.lookup-request": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "requestSha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "commandKey",
+          "requestSha256"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.resume-request": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "request": {
+            "$ref": "#/components/schemas/api.floor-draft.save-request"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "request"
+        ],
+        "additionalProperties": false,
+        "description": "Unchanged original request/full scope only. It never initially admits an absent original or substitutes a new basis. A determinately invalid original can be transported for exact no-admit recovery: outer envelope is closed/within1MiB, but inner valid-save schema failure may produce only the specialized400 after the same full native proof. Schema rejection is not itself a no-admit fact."
+      },
+      "api.floor-draft.lookup-result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "scope": {
+                "$ref": "#/components/schemas/api.floor-draft.scope"
+              },
+              "state": {
+                "const": "absent"
+              },
+              "original": {
+                "const": null
+              },
+              "request": {
+                "const": null
+              },
+              "result": {
+                "const": null
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "scope",
+              "state",
+              "original",
+              "request",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "scope": {
+                "$ref": "#/components/schemas/api.floor-draft.scope"
+              },
+              "state": {
+                "const": "processing"
+              },
+              "original": {
+                "$ref": "#/components/schemas/api.floor-draft.locator"
+              },
+              "request": {
+                "$ref": "#/components/schemas/api.floor-draft.save-request"
+              },
+              "result": {
+                "const": null
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "scope",
+              "state",
+              "original",
+              "request",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "scope": {
+                "$ref": "#/components/schemas/api.floor-draft.scope"
+              },
+              "state": {
+                "const": "committed"
+              },
+              "original": {
+                "$ref": "#/components/schemas/api.floor-draft.locator"
+              },
+              "request": {
+                "$ref": "#/components/schemas/api.floor-draft.save-request"
+              },
+              "result": {
+                "$ref": "#/components/schemas/api.floor-draft.outcome"
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "scope",
+              "state",
+              "original",
+              "request",
+              "result"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Absent is not terminal and grants no new save. Existing request/result belong to exact current actor/full scope/key/hash. Committed always includes original full request and ACK; processing has original full request and null result. Locator state equals outer state."
+      },
+      "api.floor-draft.not-admitted": {
+        "type": "object",
+        "properties": {
+          "disposition": {
+            "const": "not_admitted"
+          },
+          "command": {
+            "const": "path-policy.save-floor-draft.v1"
+          },
+          "actorId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.floor-draft.scope"
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "requestSha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "wireSha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "disposition",
+          "command",
+          "actorId",
+          "scope",
+          "commandKey",
+          "requestSha256",
+          "wireSha256"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.not-admitted-error": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "code": {
+            "const": "CONTRACT_INVALID"
+          },
+          "retryable": {
+            "const": false
+          },
+          "terminal": {
+            "$ref": "#/components/schemas/api.floor-draft.not-admitted"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "code",
+          "retryable",
+          "terminal"
+        ],
+        "additionalProperties": false,
+        "description": "Only Save or exact-original Resume, after actual same-pool original lookup lock then T05 head FOR UPDATE, complete native/MAC census/current dual create permission, no ledger/native/admission/outbox for original actor/key, and known-success transaction. Predicate is actual fixed command decoder rejection OR valid expected authorization differs from current actual authorization ref; never generic error/absence/deny/config/unknown or head CAS stale. Old SERIALIZABLE snapshot racing admission must real40001/retry. Both full hashes bind canonical Save and canonical {actorId,request}. Client retains fact+original; only exact current actor/scope/key/two hashes permit explicit user correction with new key; never automatic retry or new admission permission."
+      },
+      "api.floor-draft.context-response": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.floor-draft.context-result"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.read-response": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.floor-draft.read-result"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.history-response": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.floor-draft.history-result"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.save-response": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.floor-draft.outcome"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.lookup-response": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.floor-draft.lookup-result"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.floor-draft.resume-response": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.floor-draft.outcome"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
         ],
         "additionalProperties": false
       }
