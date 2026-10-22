@@ -107,7 +107,8 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 批量 enable 的整批判拒只针对 stored 中**不在**本表
 的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
 不可。`install_default_synced`（评审 #455 round-31/32）是 `"<mode>:<包 id>"`
-同步账本：install 同步、connect 授权与 composer 显式启用**三个写入变体**
+同步账本：install 同步、connect 授权与欢迎卡/场景批量启用
+（`enable_packages_in_scope`）**三个写入变体**
 对观察到的每个 DenyAll scope × 包对各记一行，**scope 仍处于未初始化时同样
 记账**（round-32 MAJOR 1：fresh home 上的连接发生在 plain 物化之前，不记账
 则用户的**首次**启用会在下次启动被覆盖）；启动 refresh 只对**从未记账**的
@@ -119,7 +120,11 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 **连接动作显式授予启用**的包 id：连接手势本身就是同意，GUI 的 `*_apply_skills`
 （连接完成臂）与 CLI 的 `pinvou connectors connect` 经手势门
 `deny_first_register_connector` → `grant_connect_enable_inner` 在物化技能文件
-**之前**落地「开」——清掉旧默认关行与标记、记 `connect_granted`、写账本对；
+**之前**落地「开」——清掉旧默认关行与标记、记 `connect_granted`、写账本对。
+**例外：ima 不在此列**——§3.1 的包分类上 ima 虽属 CLI 包，但其连接卡在两个
+界面都走安装侧默认关注册（它装载的是被认领的技能包而非 CLI 连接器身份，见
+`CONNECTOR_CLAIMED_SKILLS` 认领模型），其同意同步沿用安装通道的
+`CONSENT_SYNC_FAILURE_MARKER`/`consent_persist_failed` 而非连接通道；
 CLI 的独立 `apply-skills` 维护命令没有连接手势，自 round-3 评审起走**账本门控、
 尊重裁决**的 refresh 变体（`deny_first_register_connector_refresh`，与启动
 回填同一入口）：verdict guard 见到任何 scope 的 stored 行即拒绝，无账本裁决
