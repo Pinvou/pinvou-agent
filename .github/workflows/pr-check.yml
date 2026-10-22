@@ -851,9 +851,10 @@ jobs:
       }}
     runs-on: ubuntu-22.04
     # 冷跑时长未实测(命中缓存 3–6min)。工具链滚动触发冷跑且逼近 30m 时
-    # job 会超时取消,但 cache-on-failure 的 post 步在 cancel 下仍保存
+    # job 被超时判败,cache-on-failure 的 post 步在失败下仍保存
     # ~/.cargo(registry/git 等;cache-targets: false,不含 target 编译产物),
-    # namespace 不会全冷;冷跑实测逼近上限时再上调。
+    # namespace 不会全冷;手动取消整个 run 不触发保存,但那不产生冷跑压力。
+    # 冷跑实测逼近上限时再上调。
     timeout-minutes: 30
     steps:
       - name: Checkout
