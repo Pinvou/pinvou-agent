@@ -228,7 +228,8 @@ not establish a startup improvement or zero overhead. All complete final values
 and poll traces match in all eight control cases. The control runner hash is
 `1ca4b5a91fb2028e1de99fb935d84d1b12c0cbff9473a7061f9cb761660fd967`.
 
-An independent 101-pair single-background-session confirmation gives 50-turn
+An independent single-background-session confirmation uses 101 pairs for each
+foreground size. It gives 50-turn
 processing P50/P95 of 8.7/12.3 to 8.8/12.0ms, and 2,000-turn processing of
 330.5/381.2 to 267.0/394.5ms. Long-history hydration is 488.7 to 489.7ms
 (+0.2%). Its candidate mean is 7.33 publications versus 8 before. Absolute
@@ -272,9 +273,55 @@ retry, immutable snapshots, activation and deletion without buffer resurrection.
 Four negative mutations confirm that the revision, exception, foreground and
 per-job guards are observable regression protections.
 
-The affected native/shared/protocol/identity/auxiliary/session/lifecycle set passes
-151 tests. The new 16-test file also passes after its final lint-only adjustment.
-Desktop and Web UI builds, Safari 14 compatibility audit, architecture guard,
-changed-test lint and UI lint pass; UI lint has four existing documentation
-warnings and zero errors. This is scoped verification, not a fresh full-suite or
-native device-validation claim.
+The original implementation passed 151 affected tests, Desktop and Web UI builds,
+Safari 14 compatibility audit, architecture guard, changed-test lint and UI lint;
+UI lint had four existing documentation warnings and zero errors. The review
+follow-up below corrects an omitted dependency-audit pin. This is scoped
+verification, not a fresh full-suite or native device-validation claim.
+
+### Review follow-up: dependency audit and reproducible counts
+
+The first remote `frontend-test` failed because `tauriTerminal` gained the optional
+`publishShellSnapshots` dependency without updating its exact audited key set.
+The AST surface audit confirms that the only changed shared function is
+`applyShellSnapshots`, the shared-function count remains 313, and cluster exports
+and forwarders are unchanged. Its guarded `notify()` fallback makes the dependency
+optional, so only `EXPECTED_CLUSTER_KEYS.tauriTerminal` changes; `REQUIRED` and
+`FORWARDER_DEP_NAMES` stay unchanged.
+
+The regression file now has 22 tests. Additional cases pin non-string/empty job
+identities, running jobs with matching non-null exit codes, missing historical
+exit-code metadata and activation during notification (with and without a new
+output request). The strict exit-code comparison is retained: `undefined !== null`
+is true, whereas testing both values only with `!= null` would accept that metadata
+mismatch. The new regression detects that attempted simplification.
+
+Committed actual native bridge tests reproduce aligned multi-session counts with
+four output windows. All producer polls are aligned, each window's deltas arrive
+20ms before its poll, and the existing 50ms output timer is still pending:
+
+| Background sessions | Timer consumption disabled | Enabled |
+| ---: | ---: | ---: |
+| 1 | 8 | 4 |
+| 5 | 24 | 20 |
+| 10 | 44 | 40 |
+
+The enabled assertions execute the actual native poll/router/subscription path.
+An in-memory disabled-consumption mutation produces the left column and fails
+all three assertions. These are notification counts, not timing measurements.
+The phase topology determines the magnitude: this aligned setup saves one shared
+output timer per window, so five/ten sessions reduce counts by only 16.7%/9.1%.
+The earlier staggered-poll/mixed-output cohort has more overlapping timers and
+gives the larger headline gains; other topologies can yield much smaller gains.
+
+Run the dependency pin and publication regressions from the repository root:
+
+```sh
+node pinvou3-app/tests/bridge_lane_deps.test.mjs
+node --test pinvou3-app/tests/native_shell_poll_publication.test.mjs
+```
+
+The expanded affected native/shared/dependency/protocol/identity/auxiliary/session/
+lifecycle set passes 158 tests. Six additional in-memory mutations fail for the
+intended guard/count assertions. Production sources remain byte-identical to
+`36e44b750`; the original A/B source snapshots and measurements still apply.

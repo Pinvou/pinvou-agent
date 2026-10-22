@@ -120,6 +120,7 @@ test('new, binding, status, terminal and mixed terminal batches retain pending p
     h => { h.buffers.get('background')[0].sessionId = 'different'; },
     h => { h.buffers.get('background')[0].state = 'failed'; },
     h => { h.buffers.get('background')[0].exitCode = 1; },
+    h => { delete h.buffers.get('background')[0].exitCode; },
     h => { h.buffers.get('background')[0].success = true; },
     h => { delete h.buffers.get('background')[0].shellSnapshotKey; },
   ];
@@ -156,6 +157,55 @@ test('terminal and unknown statuses stay immediate without consuming a pending t
     assert.equal(host.buffers.get('background')[0].state, status === 'Completed' ? 'done' : 'failed');
     host.advance(50);
     assert.equal(host.publications.length, 3);
+  }
+});
+
+test('invalid existing job identities cannot consume a pending publication', () => {
+  for (const id of [42, '']) {
+    const host = harness();
+    host.terminal.applyShellSnapshots('background', [job({ id })]);
+    host.terminal.scheduleShellNotify();
+    host.terminal.applyShellSnapshots('background', [job({ id, stdout_tail: 'new' })]);
+    assert.equal(host.publications.length, 2);
+    host.advance(50);
+    assert.equal(host.publications.length, 3);
+  }
+});
+
+test('a running job already reporting a matching exit code retains the pending timer', () => {
+  const host = harness();
+  host.terminal.applyShellSnapshots('background', [job({ exit_code: 7 })]);
+  assert.equal(host.buffers.get('background')[0].exitCode, 7);
+  host.terminal.scheduleShellNotify();
+  host.terminal.applyShellSnapshots('background', [job({ exit_code: 7, stdout_tail: 'new' })]);
+  assert.equal(host.publications.length, 2);
+  host.advance(50);
+  assert.equal(host.publications.length, 3);
+});
+
+test('activation during publication consumes covered output but preserves a reentrant request', () => {
+  for (const requestsOutput of [false, true]) {
+    const host = harness();
+    prime(host);
+    host.terminal.scheduleShellNotify();
+    host.advance(30);
+    let first = true;
+    host.subscriber(() => {
+      if (!first) return;
+      first = false;
+      host.state.activeSessionId = 'background';
+      host.state.chatItems = host.buffers.get('background');
+      if (requestsOutput) host.terminal.scheduleShellNotify();
+    });
+    progress(host);
+    assert.equal(host.state.chatItems[0].output, 'new');
+    assert.equal(host.publications.length, 2);
+    host.advance(20);
+    assert.equal(host.publications.length, requestsOutput ? 3 : 2);
+    if (requestsOutput) assert.equal(host.publications.at(-1).at, 50);
+    host.terminal.scheduleShellNotify();
+    host.advance(50);
+    assert.equal(host.publications.length, requestsOutput ? 4 : 3);
   }
 });
 
@@ -450,3 +500,42 @@ test('actual changing-poll overlap exposes output on activation and cannot resur
   await host.load(sid);
   assert.equal(host.snapshot().chatItems.some(item => item.toolId === 'tool'), false);
 });
+
+for (const backgroundCount of [1, 5, 10]) {
+  test(`actual aligned polls consume one redundant timer per window across ${backgroundCount} sessions`, async () => {
+    const ids = Array.from({ length: backgroundCount }, (_, index) => `background-${index}`);
+    const host = createNativeToolOutputHarness({ requestAnimationFrame: false,
+      shellTasks: (args, now) => ids.includes(args.sessionId) ? [job({
+        id: `job-${args.sessionId}`, origin_tool_call_id: `tool-${args.sessionId}`,
+        stdout_tail: `poll ${now}`, stdout_len: `poll ${now}`.length,
+      })] : [],
+    });
+    for (const sid of ids) {
+      await host.load(sid);
+      host.emit('chat:turn_started', { session_id: sid });
+      host.emit('chat:tool_start', { session_id: sid, id: `tool-${sid}`, name: 'Bash', args: { command: 'synthetic' } });
+    }
+    await host.load('foreground');
+    host.advance(0);
+    await settle();
+    host.advance(100);
+    let publications = 0;
+    host.api.state.subscribe('chat', () => { publications++; });
+    for (let window = 0; window < 4; window++) {
+      host.advance(window === 0 ? 130 : 230);
+      for (const sid of ids) host.emit('chat:tool_delta', { session_id: sid, id: `tool-${sid}`, content: 'pending' });
+      host.advance(20);
+      await settle();
+    }
+    host.advance(50);
+    assert.equal(publications, backgroundCount * 4,
+      'each aligned window keeps every poll publication and consumes its single output timer');
+    assert.equal(host.snapshot().chatItems.length, 0);
+    for (const sid of ids) {
+      const item = host.api.auxChat.snapshot(sid).chatItems.find(value => value.toolId === `tool-${sid}`);
+      assert.equal(item.taskId, `job-${sid}`);
+      assert.equal(item.output, 'poll 1000');
+      assert.equal(item.state, 'running');
+    }
+  });
+}
