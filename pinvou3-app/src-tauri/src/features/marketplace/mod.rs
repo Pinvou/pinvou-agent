@@ -12313,6 +12313,59 @@ pub(crate) mod tests {
         });
     }
 
+    /// The startup counterpart of the refusal above: with every legacy key
+    /// unresolvable, the reconcile-time builder must NOT refuse — the
+    /// unwired declarative entry is what falls through to the restore's gap
+    /// scan, which lands the promised `disabled: true` entry with the note
+    /// naming the keys. An unconditional refusal aborted the whole restore
+    /// before any write and repeated on every startup. Store faults still
+    /// refuse in both modes (the builder's `Err` arm is untouched); the
+    /// direct-install refusal keeps its own test above.
+    #[test]
+    fn reconcile_restores_legacy_env_tool_without_resolvable_credential() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-r",
+                "LegR",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-r-remote","url":"https://leg-r.example.com/mcp"}],
+                    "env":{"AAA_API_KEY":"","ZZZ_API_KEY":""}"#,
+            );
+            write_installed_ids(&["leg-r".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            let note = &actions[0];
+            assert!(
+                note.contains("restored missing remote entry 'leg-r-remote'")
+                    && note.contains("AAA_API_KEY")
+                    && note.contains("ZZZ_API_KEY")
+                    && note.contains("restored disabled"),
+                "the degrade note must name every missing legacy key and the disable: \
+                 {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["leg-r-remote"];
+            assert_eq!(entry["url"], "https://leg-r.example.com/mcp");
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless legacy entry must not be restored enabled: {entry}"
+            );
+            assert!(
+                entry.get("bearer_token_env_var").is_none()
+                    && entry.get("env_headers").is_none()
+                    && entry.get("headers").is_none(),
+                "no credential wiring may be invented when no legacy key resolves: {entry}"
+            );
+
+            // Idempotent: the disabled declarative restore matches the manifest
+            // on the second run, which writes nothing.
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
     /// The green counterpart: the same required secret config field provided
     /// through the store card's config dialog wires the entry exactly like
     /// the other secret channels — the refusal is only for omitted keys.

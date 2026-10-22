@@ -563,9 +563,13 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     Err(error) => return Err(error.to_string()),
                 }
             }
-            if !missing.is_empty() {
-                // The message lists every missing key through the same
-                // sentence mcp_secret_missing_error uses for one key.
+            // The message lists every missing key through the same sentence
+            // mcp_secret_missing_error uses for one key. Startup (degrade)
+            // falls through instead: the unwired declarative entry is what the
+            // restore must land, and the caller's gap scan turns it into the
+            // promised disabled entry with the note — refusing here aborted
+            // the whole restore before any write, on every startup.
+            if !missing.is_empty() && !degrade_unresolved_secrets {
                 return Err(mcp_secret_missing_error(&manifest.id, &missing.join(", ")));
             }
         }
