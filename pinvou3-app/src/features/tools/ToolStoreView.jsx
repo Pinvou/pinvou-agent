@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Server, Settings, Trash2, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { IosSearchField } from '../../components/IosControls.jsx';
@@ -296,10 +296,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const createFlowStore = () => ({
       flow: null,
       tick: null,
+      // Latched while the LAST settled connect of this connector failed its consent persist.
+      // Lives on the module-level store, not the component: the failure can settle while the
+      // store view is unmounted, and the latch must survive remount AND card dismissal until
+      // a connect reaches done (review #741 P2 — a component-local latch restarted at false
+      // on remount, so the connected banner claimed enabled-by-default over a fail-closed backend).
+      consentSyncFailed: false,
       listenersReady: false,
       subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
+      // Same broadcast discipline as setFlow: subscribers re-mirror both fields, so a latch-only
+      // change (the failure can land after the card was closed, where the flow write null-guards
+      // to a no-op) still wakes mounted components.
+      setConsentSyncFailed(v) { this.consentSyncFailed = !!v; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -351,6 +361,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         ev.listen(cfg.events.connected, cfg.connectedMode === 'apply' ? () => {
           conn.stopTick();
+          // A fresh connect reached done → an earlier consent-persist latch is stale. Store-level now
+          // (review #741 P2): on this fire-and-forget channel done precedes the consent settle, so if
+          // THIS connect's own persist fails, the classification below re-latches.
+          conn.setConsentSyncFailed(false);
           // Flow null = the card was closed (cancel) before the event landed;
           // writing would resurrect a zombie "done" card.
           conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
@@ -392,6 +406,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               const failure = msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
                 ? { code: 'connect_consent_persist_failed' }
                 : { code: 'skills_enable_failed' };
+              // Latch on the store BEFORE the flow write: the card may already be closed (the write
+              // below null-guards to a no-op) and the latch must survive that — plus any remount and
+              // dismissal — so the connected banner keeps the title-only copy (review #741 P2).
+              if (failure.code === 'connect_consent_persist_failed') conn.setConsentSyncFailed(true);
               reportConnectorFailure(cfg.key, failure, 'cli');
               // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
               conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
@@ -413,6 +431,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               }
             }
             await invokeTauri(cfg.commands.applySkills);
+            // A fresh connect reached done → an earlier consent-persist latch is stale. Store-level
+            // now (review #741 P2); on the awaited channel done only trails a successful apply, so
+            // nothing re-latches afterwards.
+            conn.setConsentSyncFailed(false);
             // Round-38 + round-3 review: the success notify lives here (post-apply,
             // view-independent) instead of the mounted subscription's done phase —
             // an unmounted store view's composer must learn of the connector
@@ -438,6 +460,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               : msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
                 ? { code: 'connect_consent_persist_failed' }
                 : { code: 'skills_enable_failed' };
+            // Latch on the store BEFORE the flow write — same closed-card/remount reasoning as the
+            // fire-and-forget branch above (review #741 P2).
+            if (failure.code === 'connect_consent_persist_failed') conn.setConsentSyncFailed(true);
             reportConnectorFailure(cfg.key, failure, 'qr');
             // Same null guard: a failure landing after the card was closed must not fabricate one.
             conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'qr') : f));
@@ -498,6 +523,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
       // Cancel/close the flow card: mark cancelled + kill child processes + clear state.
+      // Deliberately does NOT clear conn.consentSyncFailed: the fail-closed backend outlives the
+      // dismissed error card, and the connected banner must keep its title-only fallback until a
+      // connect reaches done (review #741 P2 — clearing here re-armed the enabled-by-default claim).
       const resetFlow = ({ setBusyId }) => {
         conn.stopTick();
         invokeTauri(cfg.commands.cancel).catch(() => {});
@@ -580,12 +608,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // Returns consentSyncFailed: latched while the LAST settled connect of this connector failed its
     // consent persist — the connected banner must not claim enabled-by-default over a fail-closed state,
     // so it falls back to the title-only copy until the next connect reaches done (round-3 review).
+    // The latch itself lives on the module-level conn store (review #741 P2): the failure can settle
+    // while this view is unmounted, so owning it in component useState lost it on remount.
+    // useSyncExternalStore mirrors the store field into rendering — React re-reads the store on every
+    // mount, so a latch that landed while unmounted is picked up by hydration itself instead of a
+    // fresh useState(false) re-arming the enabled-by-default banner.
     const useConnectorFlowSubscription = ({ enabled, conn, ensureListeners, setFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle, toolId, doneSettlesLater }) => {
       // The subscription effect runs once per enabled state; the toast copy goes
       // through a latest-ref so a "connected" toast raised after a mid-flow
       // language switch uses the current language, like the failure card does.
       const toastCopyRef = useRef(null);
-      const [consentSyncFailed, setConsentSyncFailed] = useState(false);
+      const consentSyncFailed = useSyncExternalStore(
+        (onStoreChange) => conn.subscribe(onStoreChange),
+        () => conn.consentSyncFailed,
+      );
       useEffect(() => {
         toastCopyRef.current = { doneTitle, enabledSubtitle: detailCopy.actions.enabled };
       });
@@ -601,10 +637,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               setBusyId((current) => releaseBusy(current, toolId));
               loadBackendState();
               setAlert({ visible: true, loading: false, title: toastCopyRef.current && toastCopyRef.current.doneTitle, subtitle: doneSettlesLater ? undefined : toastCopyRef.current && toastCopyRef.current.enabledSubtitle, suppressHint: !!doneSettlesLater, isInstall: true, isError: false, toolId });
-              // A new connect reached done: a latched consent failure is stale
-              // (if this connect's own settle fails, the error phase re-latches
-              // below — done is written before the write settles).
-              setConsentSyncFailed(false);
+              // The latch's stale-on-done clear moved to the store's done WRITES (both listener
+              // branches) — a transition observed here may be the hydration of a done that landed
+              // while unmounted, and a mount-time clear would resurrect the P2 bug in reverse.
               // No composer broadcast here: for the fire-and-forget connectors
               // done is written synchronously, so this broadcast landed BEFORE
               // their consent grant settled — a provably wasted pre-grant
@@ -614,12 +649,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               // every notify is settle-ordered and view-independent.
             } else if (ph === 'error') {
               setBusyId((current) => releaseBusy(current, toolId));
-              // Latch a consent-persist failure: the fail-closed state (grant
-              // revoked) contradicts the connected banner's enabled-by-default
-              // copy once the error card is dismissed.
-              if (flow && flow.errorCode === 'connect_consent_persist_failed') {
-                setConsentSyncFailed(true);
-              }
+              // The consent-persist latch is set at the store by the listener that CLASSIFIES the
+              // failure — the view may be unmounted here, and the error card may even never have
+              // been written (null-guarded). Latching in this mounted callback was the P2 bug.
             }
             prevPhase = ph;
           }
