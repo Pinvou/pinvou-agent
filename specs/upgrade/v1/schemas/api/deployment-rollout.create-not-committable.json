@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.create-not-committable",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "not_committable"
+    },
+    "proof": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.create-proof"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "status",
+    "proof"
+  ],
+  "additionalProperties": false,
+  "description": "Only deployment.create.v1 may return this third locator variant. It is neither never-admitted nor terminated, does not mutate the original and does not synthesize an ACK. Explicit UI correction must freshly re-query and preserve full original/proof diagnostics before clearing only the exact local pending. Never apply this predicate to abort/preparation/review."
+}

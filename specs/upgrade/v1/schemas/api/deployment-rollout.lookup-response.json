@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-response",
+  "oneOf": [
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-unresolved"
+    },
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-create-committed"
+    },
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-abort-committed"
+    },
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.create-not-committable"
+    }
+  ],
+  "description": "Direct owner JSON. deployment.create.v1 allows unresolved/committed/not_committable; rollout.abort.v1 allows unresolved/committed only. No requestId/result wrapper is added."
+}

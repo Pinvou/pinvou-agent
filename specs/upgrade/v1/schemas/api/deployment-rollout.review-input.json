@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.review-input",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "change": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.change-ref"
+    },
+    "expectedChangeRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3
+    },
+    "expectedReadSet": {
+      "$ref": "urn:pinvou:upgrade:v1:api:read-set"
+    },
+    "disposition": {
+      "enum": [
+        "approve",
+        "reject"
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "commandKey",
+    "reason",
+    "change",
+    "expectedChangeRevision",
+    "expectedReadSet",
+    "disposition"
+  ],
+  "additionalProperties": false,
+  "description": "Exact original T05 ReviewRequest. Its scope must equal the outer scope, expectedChangeRevision must equal change.revision, and the current read set and independent reviewer are authenticated by the server."
+}

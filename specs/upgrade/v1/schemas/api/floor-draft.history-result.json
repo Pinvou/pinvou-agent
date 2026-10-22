@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.history-result",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.record"
+      },
+      "maxItems": 32
+    },
+    "nextAfterRevision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "more": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "records",
+    "nextAfterRevision",
+    "more"
+  ],
+  "additionalProperties": false,
+  "description": "Strict contiguous ascending revisions after requested afterRevision. nextAfterRevision is page last revision even when more=false; empty page echoes requested afterRevision. All immutable content/native/MAC links are checked."
+}

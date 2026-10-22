@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.ref",
+  "type": "object",
+  "properties": {
+    "draftId": {
+      "type": "string",
+      "pattern": "^floor-draft-[0-9a-f]{64}$"
+    },
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "sha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "draftId",
+    "revision",
+    "sha256"
+  ],
+  "additionalProperties": false
+}

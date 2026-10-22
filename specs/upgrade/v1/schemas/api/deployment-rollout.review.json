@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.review",
+  "type": "object",
+  "properties": {
+    "actorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "disposition": {
+      "enum": [
+        "approve",
+        "reject"
+      ]
+    }
+  },
+  "required": [
+    "actorId",
+    "disposition"
+  ],
+  "additionalProperties": false
+}

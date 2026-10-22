@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.read-result",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "record": {
+      "oneOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.record"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "record"
+  ],
+  "additionalProperties": false
+}

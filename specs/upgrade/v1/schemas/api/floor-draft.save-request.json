@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.save-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "expectedBasis": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.basis"
+    },
+    "declaredBase": {
+      "oneOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.declared-base"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inventory": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.inventory"
+    },
+    "proposedVersion": {
+      "type": "string",
+      "allOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+        }
+      ],
+      "maxLength": 65536
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "expectedBasis",
+    "declaredBase",
+    "inventory",
+    "proposedVersion",
+    "reason",
+    "commandKey"
+  ],
+  "additionalProperties": false,
+  "description": "Closed canonical original, max1MiB including retained actor/projection/record capacity. Server recomputes proposal. Basis head cannot be maximum safe revision. Declared base/inventory must have same exact scope. Raw JSON duplicates/noncanonical numbers/aliases rejected. Same actor/key forever binds original full canonical bytes, including basis; no changed-body retry."
+}

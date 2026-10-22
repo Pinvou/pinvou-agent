@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.proposal",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "purpose": {
+      "const": "support-floor-proposal-data.v1"
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "assessment": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.assessment"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "purpose",
+    "reason",
+    "assessment"
+  ],
+  "additionalProperties": false
+}

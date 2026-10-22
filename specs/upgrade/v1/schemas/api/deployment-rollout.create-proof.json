@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.create-proof",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "create"
+    },
+    "command": {
+      "const": "deployment.create.v1"
+    },
+    "actorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "publicRequestSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "internalWireSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "basis": {
+      "oneOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.parent-advanced-basis"
+        },
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.authorization-advanced-basis"
+        }
+      ]
+    }
+  },
+  "required": [
+    "operation",
+    "command",
+    "actorId",
+    "scope",
+    "commandKey",
+    "publicRequestSha256",
+    "internalWireSha256",
+    "basis"
+  ],
+  "additionalProperties": false,
+  "description": "Create-only irreversible original-request observation. publicRequestSha256 hashes canonical original public create bytes. internalWireSha256 is the server-verified internal BindCompositionCreate wire hash, not the public hash or T06 request digest. No actor/permission/absence/ACK is granted."
+}

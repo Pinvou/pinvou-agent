@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.scope",
+  "type": "object",
+  "properties": {
+    "product": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "component": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "channel": {
+      "enum": [
+        "stable",
+        "beta",
+        "internal"
+      ]
+    },
+    "targetKey": {
+      "enum": [
+        "windows-x86_64-nsis-perMachine",
+        "linux-x86_64-deb-perMachine",
+        "linux-arm64-deb-perMachine",
+        "macos-universal-dmg-perMachine"
+      ]
+    }
+  },
+  "required": [
+    "product",
+    "component",
+    "channel",
+    "targetKey"
+  ],
+  "additionalProperties": false
+}

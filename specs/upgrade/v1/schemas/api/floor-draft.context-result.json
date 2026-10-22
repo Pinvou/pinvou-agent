@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.context-result",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "basis": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.basis"
+    },
+    "current": {
+      "oneOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.record"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pending": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.locator"
+      },
+      "maxItems": 32
+    },
+    "pendingTruncated": {
+      "type": "boolean"
+    },
+    "inputEvidence": {
+      "const": "declared-unverified"
+    },
+    "policyEffect": {
+      "const": "none"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "basis",
+    "current",
+    "pending",
+    "pendingTruncated",
+    "inputEvidence",
+    "policyEffect"
+  ],
+  "additionalProperties": false,
+  "description": "Actual current authorization planning basis and protected planning head. current is the full DraftRecord, not a ref wrapper; null matches null planning head. Pending locators only current real actor/exact scope processing originals; lookup recovers original request. This is not the active floor."
+}

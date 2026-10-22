@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.not-admitted-error",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "code": {
+      "const": "CONTRACT_INVALID"
+    },
+    "retryable": {
+      "const": false
+    },
+    "terminal": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.not-admitted"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "code",
+    "retryable",
+    "terminal"
+  ],
+  "additionalProperties": false,
+  "description": "Only Save or exact-original Resume, after actual same-pool original lookup lock then T05 head FOR UPDATE, complete native/MAC census/current dual create permission, no ledger/native/admission/outbox for original actor/key, and known-success transaction. Predicate is actual fixed command decoder rejection OR valid expected authorization differs from current actual authorization ref; never generic error/absence/deny/config/unknown or head CAS stale. Old SERIALIZABLE snapshot racing admission must real40001/retry. Both full hashes bind canonical Save and canonical {actorId,request}. Client retains fact+original; only exact current actor/scope/key/two hashes permit explicit user correction with new key; never automatic retry or new admission permission."
+}

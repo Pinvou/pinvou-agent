@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.record",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "purpose": {
+      "const": "support-floor-planning-draft.v1"
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "draftId": {
+      "type": "string",
+      "pattern": "^floor-draft-[0-9a-f]{64}$"
+    },
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "authorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "savedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "resultId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "requestSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "inputEvidence": {
+      "const": "declared-unverified"
+    },
+    "policyEffect": {
+      "const": "none"
+    },
+    "request": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.save-request"
+    },
+    "proposal": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.proposal"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "purpose",
+    "scope",
+    "draftId",
+    "revision",
+    "authorId",
+    "savedAt",
+    "resultId",
+    "requestSha256",
+    "inputEvidence",
+    "policyEffect",
+    "request",
+    "proposal"
+  ],
+  "additionalProperties": false,
+  "description": "Immutable revision rebuilt from exact original request, actual SQL save time/result and original T05 source MAC. Draft ID is deterministic for exact full scope. Record/proposal SHA is recomputed; data alone grants no authority. Whole canonical record <=1MiB."
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.inventory-source",
+  "type": "object",
+  "properties": {
+    "sourceProfileId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "facts": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/stableFacts"
+    },
+    "installations": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    }
+  },
+  "required": [
+    "sourceProfileId",
+    "facts",
+    "installations"
+  ],
+  "additionalProperties": false
+}

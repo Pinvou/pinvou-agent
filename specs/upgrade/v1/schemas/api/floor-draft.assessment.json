@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.assessment",
+  "type": "object",
+  "properties": {
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "direction": {
+      "enum": [
+        "initial",
+        "raise",
+        "lower"
+      ]
+    },
+    "base": {
+      "oneOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.data-ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "proposedVersion": {
+      "type": "string",
+      "allOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+        }
+      ],
+      "maxLength": 65536
+    },
+    "inventory": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.data-ref"
+    },
+    "impact": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.impact"
+    },
+    "reviewRequirement": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "const": "ChangeSupportFloor"
+        },
+        "permission": {
+          "const": "commands.policy"
+        },
+        "reviews": {
+          "const": 2
+        },
+        "mfa": {
+          "const": true
+        }
+      },
+      "required": [
+        "command",
+        "permission",
+        "reviews",
+        "mfa"
+      ],
+      "additionalProperties": false
+    },
+    "missingEvidence": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "current-scope-and-floor-source-required",
+          "current-complete-census-and-registry-source-required",
+          "actual-two-review-mfa-floor-approval-required",
+          "complete-current-paths-and-atomic-publication-required",
+          "actual-migration-bootstrap-source-not-installed",
+          "prior-announcement-and-manual-upgrade-source-required",
+          "actual-new-source-migration-upgrade-evidence-not-installed"
+        ]
+      },
+      "minItems": 4,
+      "maxItems": 7,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "scope",
+    "direction",
+    "base",
+    "proposedVersion",
+    "inventory",
+    "impact",
+    "reviewRequirement",
+    "missingEvidence"
+  ],
+  "additionalProperties": false,
+  "description": "Server recomputes every scope/profile hash/count/version/reference and retains all original MissingEvidence. reviewRequirement describes future high-risk activation policy; saving a draft consumes no review and grants no active floor."
+}

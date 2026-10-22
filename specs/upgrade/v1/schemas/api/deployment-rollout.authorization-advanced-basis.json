@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.authorization-advanced-basis",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "authorization_advanced"
+    },
+    "original": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.authorization-ref"
+    },
+    "current": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.authorization-ref"
+    }
+  },
+  "required": [
+    "kind",
+    "original",
+    "current"
+  ],
+  "additionalProperties": false,
+  "description": "Both references name the same original actor. Current revision is strictly higher and the server authenticates the real historical/current provision chain. Historical grants do not replace current read permission."
+}

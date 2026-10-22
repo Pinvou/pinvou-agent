@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.not-admitted",
+  "type": "object",
+  "properties": {
+    "disposition": {
+      "const": "not_admitted"
+    },
+    "command": {
+      "const": "path-policy.save-floor-draft.v1"
+    },
+    "actorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "requestSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "wireSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "disposition",
+    "command",
+    "actorId",
+    "scope",
+    "commandKey",
+    "requestSha256",
+    "wireSha256"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.source-impact",
+  "type": "object",
+  "properties": {
+    "sourceProfileId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "canonicalAppVersion": {
+      "type": "string",
+      "allOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/version"
+        }
+      ],
+      "maxLength": 65536
+    },
+    "installations": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "beforeInFloorRange": {
+      "type": "boolean"
+    },
+    "afterInFloorRange": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "sourceProfileId",
+    "canonicalAppVersion",
+    "installations",
+    "beforeInFloorRange",
+    "afterInFloorRange"
+  ],
+  "additionalProperties": false
+}

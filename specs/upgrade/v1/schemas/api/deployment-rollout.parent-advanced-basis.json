@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.parent-advanced-basis",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "parent_advanced"
+    },
+    "original": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+    },
+    "current": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+    }
+  },
+  "required": [
+    "kind",
+    "original",
+    "current"
+  ],
+  "additionalProperties": false,
+  "description": "Both references name the same actual historical configuration identity. Current revision is strictly higher; complete old/current native lineage, body and MAC sources are authenticated."
+}

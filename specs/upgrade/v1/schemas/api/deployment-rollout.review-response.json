@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.review-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "change": {
+      "allOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.change-ref"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "revision": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 3
+            }
+          }
+        }
+      ]
+    },
+    "state": {
+      "enum": [
+        "awaiting-second-review",
+        "approved",
+        "rejected"
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "change",
+    "state"
+  ],
+  "additionalProperties": false,
+  "description": "Exact original T05 review ACK/prefix. Current later Change state is a separate read; it never replaces a retained original response."
+}

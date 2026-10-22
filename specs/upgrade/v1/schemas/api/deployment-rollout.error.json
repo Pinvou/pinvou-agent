@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.error",
+  "allOf": [
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:error"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "code": {
+          "enum": [
+            "CONTRACT_INVALID",
+            "CREDENTIAL_INVALID",
+            "PERMISSION_DENIED",
+            "MFA_REQUIRED",
+            "APPROVAL_REQUIRED",
+            "REVISION_CONFLICT",
+            "IDEMPOTENCY_CONFLICT",
+            "SERVICE_UNAVAILABLE"
+          ]
+        }
+      },
+      "maxProperties": 4
+    }
+  ],
+  "description": "Existing machineError envelope: exactly protocolVersion/requestId/code/retryable; no SQL, paths, provider errors or secrets. Original route does not add retryAfterMs. A generic error never releases pending or proves no admission."
+}

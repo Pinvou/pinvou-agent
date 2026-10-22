@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.context-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "deployment": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+    },
+    "plan": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.plan-ref"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "deployment",
+    "plan"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.review-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "request": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.review-input"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "request"
+  ],
+  "additionalProperties": false
+}

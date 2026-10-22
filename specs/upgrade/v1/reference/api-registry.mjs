@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { schemas as trustSchemas } from './build-schemas.mjs';
 import { API_SCHEMAS, API_BASE, OPERATIONS } from './build-api.mjs';
-import { canonicalize, parseJson } from './canonical-json.mjs';
+import { canonicalize, parseJson, canonicalizePrivateFrame, parsePrivateFrame } from './canonical-json.mjs';
+import { assertFloorPageBounds } from './api-floor-pages.mjs';
 import { consumeRequestDigest, sha256 } from './digests.mjs';
 import { requireCondition } from './errors.mjs';
 import { checkSemantics, sameJson } from './semantics.mjs';
@@ -32,14 +33,18 @@ export function assertApiContract(operationName, direction, value) {
   const operation = OPERATIONS.find((item) => item.name === operationName);
   requireCondition(operation !== undefined && ['request', 'response'].includes(direction), 'API_OPERATION_UNKNOWN');
   // Reparse also applies T01's UTF-8, depth, string and aggregate input bounds.
-  const canonical = canonicalize(value);
-  parseJson(canonical);
+  const privatePage = direction === 'response' && operation.privateFloorResponse === true;
+  const canonical = privatePage ? canonicalizePrivateFrame(value) : canonicalize(value);
+  if (privatePage) parsePrivateFrame(canonical); else parseJson(canonical);
   // The strict parser deliberately creates null-prototype objects. Ajv's
   // uniqueItems equality requires ordinary JSON objects for object members.
   // Only parse the exact bytes already checked for all strict limits; keep the
   // original value for semantics and return identity, without assigning/merging
   // any properties or invoking caller hooks.
-  assertApiShape(operationName + '-' + direction, JSON.parse(Buffer.from(canonical).toString('utf8')));
+  const shape = operation[direction + 'Shape'] ?? operationName + '-' + direction;
+  const checked = JSON.parse(Buffer.from(canonical).toString('utf8'));
+  assertApiShape(shape, checked);
+  if (privatePage) assertFloorPageBounds(checked);
   for (const envelope of embeddedCredentials(value)) {
     requireCondition(canonicalize(envelope).length <= 65_536, 'CREDENTIAL_TOO_LARGE');
     checkSemantics(envelope.signed, { now: Math.max(envelope.signed.iat, envelope.signed.nbf) });
@@ -95,7 +100,8 @@ export function assertApiContract(operationName, direction, value) {
       && (configuration.upgradeType !== 'forced' || configuration.releaseVisibleAt <= configuration.installNotBefore), 'API_CONFIGURATION_INVALID');
   }
   if (direction === 'response') {
-    if (value.authorization !== undefined) requireCondition(value.authorization.signed.purpose === operation.purpose, 'API_PURPOSE_MISMATCH');
+    // Management context returns nullable read references, not credentials.
+    if (!operation.management && value.authorization !== undefined) requireCondition(value.authorization.signed.purpose === operation.purpose, 'API_PURPOSE_MISMATCH');
     if (['check', 'refresh'].includes(operationName)) {
       const decision = value.decision.signed; const telemetry = value.telemetryCredential.signed;
       requireCondition(['product', 'component', 'installId', 'decisionId', 'decisionRevision', 'telemetrySessionId', 'selectionGeneration']

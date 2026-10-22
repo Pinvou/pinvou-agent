@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-abort-committed",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "committed"
+    },
+    "resultId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "rollout": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.aborted-child-ref"
+    },
+    "deployment": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+    },
+    "plan": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.plan-ref"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "status",
+    "resultId",
+    "rollout",
+    "deployment",
+    "plan"
+  ],
+  "additionalProperties": false,
+  "description": "Permanent original result/reference locator, including after retained response expiry. No original ACK is recreated and no execution or refreshed retention is granted."
+}

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.outcome",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+        },
+        "resultId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "requestSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "committedAt": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "outcome": {
+          "const": "saved"
+        },
+        "record": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.ref"
+        },
+        "observedHead": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.ref"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "resultId",
+        "requestSha256",
+        "commandKey",
+        "committedAt",
+        "outcome",
+        "record",
+        "observedHead"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+        },
+        "resultId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "requestSha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "commandKey": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "committedAt": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+        },
+        "outcome": {
+          "const": "stale"
+        },
+        "record": {
+          "const": null
+        },
+        "observedHead": {
+          "oneOf": [
+            {
+              "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "resultId",
+        "requestSha256",
+        "commandKey",
+        "committedAt",
+        "outcome",
+        "record",
+        "observedHead"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "description": "Exact original canonical ACK including historical SQL committedAt/observedHead, permanently authenticated by original result source. Saved observedHead equals record. Stale record=null and observedHead differs from original expected head. Stale is HTTP200 durable original result, not an error permitting implicit new Save."
+}

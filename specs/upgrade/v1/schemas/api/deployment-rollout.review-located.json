@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.review-located",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "located"
+    },
+    "change": {
+      "type": "object",
+      "properties": {
+        "changeId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3
+        },
+        "sha256": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        }
+      },
+      "required": [
+        "changeId",
+        "revision",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "sourceSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "responseState": {
+      "enum": [
+        "retained",
+        "retired"
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "status",
+    "change",
+    "sourceSha256",
+    "responseState"
+  ],
+  "additionalProperties": false,
+  "description": "Authenticated permanent ORIGINAL actor/key/digest/source reference. retained/retired observes original T05 response retention; no response lease refresh, source rewrite, approval or ACK recreation occurs."
+}

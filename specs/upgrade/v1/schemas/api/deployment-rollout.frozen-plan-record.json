@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.frozen-plan-record",
+  "type": "object",
+  "properties": {
+    "planId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 9007199254740991
+    },
+    "policyRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "state": {
+      "const": "frozen"
+    },
+    "plan": {
+      "$ref": "urn:pinvou:upgrade:v1:api:frozen-stage-plan"
+    }
+  },
+  "required": [
+    "planId",
+    "revision",
+    "policyRevision",
+    "scope",
+    "state",
+    "plan"
+  ],
+  "additionalProperties": false,
+  "description": "Actual reviewed frozen record, not the inline configuration plan. The server verifies policyRevision=revision-1 and the complete record hash; freezing a policy grants no running/active/release qualification."
+}

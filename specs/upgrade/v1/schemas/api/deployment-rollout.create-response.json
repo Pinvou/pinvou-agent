@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.create-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "resultId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "revision": {
+      "const": 1
+    },
+    "rolloutId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "stageFactRevision": {
+      "type": "null"
+    },
+    "state": {
+      "const": "draft"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "resultId",
+    "revision",
+    "rolloutId",
+    "stageFactRevision",
+    "state"
+  ],
+  "additionalProperties": false,
+  "description": "Original committed OperationACK plus fresh transport protocolVersion/requestId. No pending/unknown ACK is synthesized; only requestId is refreshed on an authorized original replay."
+}

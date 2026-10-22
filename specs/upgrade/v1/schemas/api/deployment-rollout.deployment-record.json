@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-record",
+  "type": "object",
+  "properties": {
+    "recordId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "state": {
+      "const": "draft"
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "draft": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-draft"
+    },
+    "draftSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "createdBy": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "updatedBy": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "reason": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "createdSequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "recordId",
+    "revision",
+    "state",
+    "scope",
+    "draft",
+    "draftSha256",
+    "createdBy",
+    "updatedBy",
+    "reason",
+    "createdSequence"
+  ],
+  "additionalProperties": false,
+  "description": "Full immutable configuration revision. A declared release reference or inline plan is not source qualification. The deployment reference hashes this complete record; draftSha256 hashes draft only."
+}

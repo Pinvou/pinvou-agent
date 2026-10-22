@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-binding",
+  "type": "object",
+  "properties": {
+    "command": {
+      "const": "AbortRollout"
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "objectId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "objectRevision": {
+      "const": 1
+    }
+  },
+  "required": [
+    "command",
+    "scope",
+    "objectId",
+    "objectRevision"
+  ],
+  "additionalProperties": false
+}

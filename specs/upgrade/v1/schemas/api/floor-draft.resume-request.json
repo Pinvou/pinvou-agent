@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.resume-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "request": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.save-request"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "request"
+  ],
+  "additionalProperties": false,
+  "description": "Unchanged original request/full scope only. It never initially admits an absent original or substitutes a new basis. A determinately invalid original can be transported for exact no-admit recovery: outer envelope is closed/within1MiB, but inner valid-save schema failure may produce only the specialized400 after the same full native proof. Schema rejection is not itself a no-admit fact."
+}

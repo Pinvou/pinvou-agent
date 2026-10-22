@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.history-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.history-item"
+      },
+      "minItems": 0,
+      "maxItems": 100
+    },
+    "nextBeforeSequence": {
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "currentDeployment": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "items",
+    "nextBeforeSequence",
+    "currentDeployment"
+  ],
+  "additionalProperties": false,
+  "description": "Direct owner JSON. All items refer to authenticated original permanent sources; sequence strictly descends below the exclusive request cursor. A non-null nextBeforeSequence is the last returned sequence. currentDeployment is current context, not a rewrite of historical references."
+}

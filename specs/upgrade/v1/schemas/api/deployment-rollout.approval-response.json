@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.approval-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "change": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.change-ref"
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "awaiting-second-review",
+        "approved",
+        "rejected"
+      ]
+    },
+    "authorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "reviews": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.review"
+      },
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "binding": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-binding"
+    },
+    "body": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-body"
+    },
+    "authorization": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.management-authorization"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "change",
+    "state",
+    "authorId",
+    "reviews",
+    "binding",
+    "body",
+    "authorization"
+  ],
+  "additionalProperties": false,
+  "description": "Direct protected approval/context JSON. The current authority is not execution approval. Preparation-context is limited to the original preparer; review-context uses the actual reviewer preflight, without adding change.read."
+}

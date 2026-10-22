@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.approval-locator-unresolved",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "unresolved"
+    },
+    "change": {
+      "type": "null"
+    },
+    "sourceSha256": {
+      "type": "null"
+    },
+    "responseState": {
+      "const": "unknown"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "status",
+    "change",
+    "sourceSha256",
+    "responseState"
+  ],
+  "additionalProperties": false,
+  "description": "No row/pending observation gives no permission to discard or reuse an original key."
+}

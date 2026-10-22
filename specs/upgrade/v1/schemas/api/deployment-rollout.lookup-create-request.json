@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-create-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "command": {
+      "const": "deployment.create.v1"
+    },
+    "originalRequest": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.create-request"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "command",
+    "originalRequest"
+  ],
+  "additionalProperties": false,
+  "description": "Same actor, scope, commandKey and complete original create body; this is not a result-ID query or a new create request."
+}

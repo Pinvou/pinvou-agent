@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-unresolved",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "unresolved"
+    },
+    "resultId": {
+      "type": "null"
+    },
+    "rollout": {
+      "type": "null"
+    },
+    "deployment": {
+      "type": "null"
+    },
+    "plan": {
+      "type": "null"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "status",
+    "resultId",
+    "rollout",
+    "deployment",
+    "plan"
+  ],
+  "additionalProperties": false,
+  "description": "Absence, pending or another unresolved observation is not a never-admitted/not-committable proof. Keep the original wire and key."
+}

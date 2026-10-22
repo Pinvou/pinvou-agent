@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.locator",
+  "type": "object",
+  "properties": {
+    "resultId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "requestSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "state": {
+      "enum": [
+        "processing",
+        "committed"
+      ]
+    }
+  },
+  "required": [
+    "resultId",
+    "commandKey",
+    "requestSha256",
+    "state"
+  ],
+  "additionalProperties": false
+}

@@ -32,6 +32,14 @@ export function parseJson(bytes, maximumBytes = LIMITS.metadataBytes) {
   requireCondition(bytes instanceof Uint8Array, 'JSON_BYTES_REQUIRED');
   requireCondition(Number.isSafeInteger(maximumBytes) && maximumBytes > 0
     && maximumBytes <= LIMITS.metadataBytes, 'JSON_LIMIT_INVALID');
+  return parseBounded(bytes, maximumBytes);
+}
+
+// Fixed private framing only: never use for trust metadata or credentials.
+export function parsePrivateFrame(bytes) { return parseBounded(bytes, 33 * 1024 * 1024); }
+
+function parseBounded(bytes, maximumBytes) {
+  requireCondition(bytes instanceof Uint8Array, 'JSON_BYTES_REQUIRED');
   requireCondition(bytes.byteLength <= maximumBytes, 'JSON_INPUT_LIMIT');
   let input;
   try {
@@ -114,12 +122,17 @@ export function parseJson(bytes, maximumBytes = LIMITS.metadataBytes) {
  * This routine accepts JSON data only: no getters, prototypes, toJSON hooks,
  * sparse arrays, cycles, undefined or class instances can influence the bytes.
  */
-export function canonicalize(value) {
+export function canonicalize(value) { return canonicalizeBounded(value, LIMITS.metadataBytes); }
+
+// Individual records and the compact private frame still use canonicalize().
+export function canonicalizePrivateFrame(value) { return canonicalizeBounded(value, 33 * 1024 * 1024); }
+
+function canonicalizeBounded(value, maximumBytes) {
   const ancestors = new Set();
   let size = 0;
   function account(piece) {
     size += Buffer.byteLength(piece, 'utf8');
-    requireCondition(size <= LIMITS.metadataBytes, 'JSON_INPUT_LIMIT');
+    requireCondition(size <= maximumBytes, 'JSON_INPUT_LIMIT');
     return piece;
   }
   function visit(item, depth) {

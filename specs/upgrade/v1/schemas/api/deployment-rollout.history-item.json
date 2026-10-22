@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.history-item",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "command": {
+          "const": "deployment.create.v1"
+        },
+        "actorId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "resultId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "deployment": {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+        },
+        "plan": {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.plan-ref"
+        },
+        "rollout": {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.draft-child-ref"
+        }
+      },
+      "required": [
+        "sequence",
+        "command",
+        "actorId",
+        "resultId",
+        "deployment",
+        "plan",
+        "rollout"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "command": {
+          "const": "rollout.abort.v1"
+        },
+        "actorId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "resultId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+        },
+        "deployment": {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+        },
+        "plan": {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.plan-ref"
+        },
+        "rollout": {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.aborted-child-ref"
+        }
+      },
+      "required": [
+        "sequence",
+        "command",
+        "actorId",
+        "resultId",
+        "deployment",
+        "plan",
+        "rollout"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

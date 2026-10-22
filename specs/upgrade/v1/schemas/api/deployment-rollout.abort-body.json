@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-body",
+  "type": "object",
+  "properties": {
+    "actorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "command": {
+      "const": "AbortRollout"
+    },
+    "intent": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-intent"
+    }
+  },
+  "required": [
+    "actorId",
+    "command",
+    "intent"
+  ],
+  "additionalProperties": false,
+  "description": "Complete exact operation body that the operator reviews. Both actor fields are the original author; intent.base/id and binding.objectId name the same draft child."
+}

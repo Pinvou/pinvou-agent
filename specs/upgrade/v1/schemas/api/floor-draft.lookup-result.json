@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.lookup-result",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+        },
+        "state": {
+          "const": "absent"
+        },
+        "original": {
+          "const": null
+        },
+        "request": {
+          "const": null
+        },
+        "result": {
+          "const": null
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "state",
+        "original",
+        "request",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+        },
+        "state": {
+          "const": "processing"
+        },
+        "original": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.locator"
+        },
+        "request": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.save-request"
+        },
+        "result": {
+          "const": null
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "state",
+        "original",
+        "request",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+        },
+        "state": {
+          "const": "committed"
+        },
+        "original": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.locator"
+        },
+        "request": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.save-request"
+        },
+        "result": {
+          "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.outcome"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "scope",
+        "state",
+        "original",
+        "request",
+        "result"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "description": "Absent is not terminal and grants no new save. Existing request/result belong to exact current actor/full scope/key/hash. Committed always includes original full request and ACK; processing has original full request and null result. Locator state equals outer state."
+}

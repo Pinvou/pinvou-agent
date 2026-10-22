@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "deploymentId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "rollout": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.draft-child-ref"
+    },
+    "plan": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.plan-ref"
+    },
+    "approval": {
+      "allOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.change-ref"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "revision": {
+              "const": 3
+            }
+          }
+        }
+      ],
+      "description": "Exact approved revision3 of the original body. The server verifies two independent reviewers, original author and fresh MFA; this reference itself grants no authority."
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "scope",
+    "commandKey",
+    "deploymentId",
+    "rollout",
+    "plan",
+    "approval"
+  ],
+  "additionalProperties": false,
+  "description": "Draft-only rollout.abort.v1. The server authenticates the original association/body and requires an approved exact body. Running/active/quality operations remain unavailable."
+}

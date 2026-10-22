@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.context-result",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "deployment": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-record"
+    },
+    "reference": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.deployment-ref"
+    },
+    "plan": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.frozen-plan-record"
+    },
+    "planReference": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.plan-ref"
+    },
+    "occupancy": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.occupancy-ref"
+    },
+    "authorization": {
+      "oneOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.authorization-ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "canCreate": {
+      "type": "boolean"
+    },
+    "openRolloutId": {
+      "oneOf": [
+        {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "deployment",
+    "reference",
+    "plan",
+    "planReference",
+    "occupancy",
+    "authorization",
+    "canCreate",
+    "openRolloutId"
+  ],
+  "additionalProperties": false,
+  "description": "Direct owner JSON, with no transport requestId/result wrapper. Native/MAC sources and current exact scope are verified before any body is returned. canCreate is an observation, never an admission capability.",
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "canCreate": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "authorization": {
+            "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.authorization-ref"
+          },
+          "openRolloutId": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

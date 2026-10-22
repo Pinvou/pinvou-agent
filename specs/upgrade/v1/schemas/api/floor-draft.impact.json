@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.impact",
+  "type": "object",
+  "properties": {
+    "observedInstallations": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "beforeInFloorRange": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "afterInFloorRange": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "removedFromFloorRange": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "addedToFloorRange": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.source-impact"
+      },
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "observedInstallations",
+    "beforeInFloorRange",
+    "afterInFloorRange",
+    "removedFromFloorRange",
+    "addedToFloorRange",
+    "sources"
+  ],
+  "additionalProperties": false
+}

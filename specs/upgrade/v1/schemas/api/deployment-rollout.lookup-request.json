@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-request",
+  "oneOf": [
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-create-request"
+    },
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.lookup-abort-request"
+    }
+  ],
+  "description": "Outer scope must equal originalRequest.scope. The server derives the original registered request identity, never from a caller-supplied digest."
+}

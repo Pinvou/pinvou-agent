@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 00:30 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 01:48 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; additional T13/T25/T47 source repairs and local acceptance continue.
 The combined business workflows have not passed complete acceptance. Candidate
@@ -59,17 +59,48 @@ source remains separate from delivery:
   tests and twenty-seven subtests in two packages, including the six existing
   core tests, the real reservation/retry control and two contract tests, with
   zero skips. All 2,489 inputs remained unchanged, closure was natural and the
-  resource guard did not trip. Independent actual-result review is pending;
-  the original timeout remains a failed run.
-- The original Engine's new pure processing-cipher authentication seam passed
-  four top-level tests and twenty-seven subtests, with zero skips. It reuses the
-  original cipher/projection decoder and proves no current epoch, permission,
-  lease or business irreversibility. The 2,408-input source map was unchanged,
-  with natural closure and no resource-floor trip. Independent actual-result
-  review is pending. Create-only terminal-proof backend and strict UI codec
-  candidates passed scoped source review after accounting and exact-integer
-  repairs, but their native/HTTP/browser acceptance and explicit UI recovery
-  workflow remain incomplete. No proof-based pending release is delivered.
+  resource guard did not trip. Independent actual-result review passed with
+  zero open findings; the original timeout remains a failed run.
+- The original Engine's pure processing-cipher authentication seam passed four
+  top-level tests and twenty-seven subtests, with zero skips and independent
+  actual-result approval. It authenticates the original cipher/projection only;
+  current epoch, permission and business irreversibility are separate checks.
+- The integrated T47 source regression passed seventeen top-level tests and
+  eighty subtests in four packages, with zero skips. Independent review verified
+  all 2,495 source inputs and the thirteen merged source paths, including the
+  historical-parent bridge and preserved native fence registration.
+- Create-only original-request proof passed four genuine PostgreSQL top-level
+  tests and nineteen subtests, with zero skips. Real original reservations use
+  the fixture's original encryption key and known successful first transaction.
+  Current read revocation and separate isolated ciphertext, epoch, kernel and
+  source corruptions refuse output. Prepaid full ledger costs are reused exactly
+  once, with missing or changed cost identities rejected. Independent actual
+  review confirmed all 2,496 inputs unchanged, natural closure and no resource
+  trip. The retirement control moves only an isolated result-retention clock;
+  it is not actual elapsed-time or unknown-COMMIT validation.
+- The merged administration source passed strict src/Vite typechecking, its
+  production build and forty exact synthetic codec/fetch/storage tests, with
+  zero skips or retries. Independent review verified all 3,632 inputs and three
+  built assets. The existing nonfatal chunk-size advisory remains. Three-language
+  copy now accurately describes a removal followed by failed storage readback;
+  it promises no successful correction or guaranteed physical pending retention.
+  Genuine three-language browser recovery has not yet passed acceptance. Its
+  test-source review repaired IdP control-lock reentry, required reporter fields, unused
+  imports and output-directory isolation. No browser acceptance is inferred.
+- The T47 contract candidate adds twelve actual POST routes and forty-eight
+  closed schemas; independent content review passed. A generator repair also
+  brings the six existing floor-draft routes and their thirty-three schemas into
+  deterministic standalone generation. Actual pure generation reproduces the
+  reviewed OpenAPI exactly and preserves all 119 legacy standalone schemas.
+  Private floor pagination keeps each record/request and compact frame within
+  1 MiB, while its fixed response framing may reach 33 MiB. Public metadata,
+  credentials, requests and other APIs retain their original limits. The complete
+  twenty-five-file reference suite passed all 179 tests with zero failures,
+  cancellations, skips or TODOs, including seven new draft/capacity regressions.
+  Its 864-input graph stayed unchanged, with natural process closure and no
+  resource trip. Independent actual-result review passed with zero open findings.
+  The service's export from the committed main contract remains pending.
+  These candidates and tests do not complete F1 or deliver pending release.
 - The earlier Linux scanner attempt was refused before VM startup: its proof
   reports about 6.45 GiB available against its original 9 GiB startup floor.
   It provides no scanner or guest execution result. A new output namespace and

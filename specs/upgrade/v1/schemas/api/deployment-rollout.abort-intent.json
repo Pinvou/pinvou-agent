@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-intent",
+  "type": "object",
+  "properties": {
+    "purpose": {
+      "const": "operator-abort"
+    },
+    "actorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "rolloutId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "deploymentId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "plan": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.plan-ref"
+    },
+    "base": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.draft-child-ref"
+    },
+    "windowId": {
+      "const": ""
+    }
+  },
+  "required": [
+    "purpose",
+    "actorId",
+    "rolloutId",
+    "deploymentId",
+    "plan",
+    "base",
+    "windowId"
+  ],
+  "additionalProperties": false
+}

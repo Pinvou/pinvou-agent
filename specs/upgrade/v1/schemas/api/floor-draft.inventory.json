@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:floor-draft.inventory",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.scope"
+    },
+    "snapshotId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "revision": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/positive"
+    },
+    "observedAt": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/integer"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:api:floor-draft.inventory-source"
+      },
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "scope",
+    "snapshotId",
+    "revision",
+    "observedAt",
+    "sources"
+  ],
+  "additionalProperties": false,
+  "description": "Declared per-profile counts only. Each profile ID is recomputed using original T12 stableFacts; full product/component/target match, unique profile IDs, exact safe total. Not authenticated population, completeness, path reachability or qualification. Whole canonical inventory <=1MiB."
+}
