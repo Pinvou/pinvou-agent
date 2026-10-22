@@ -663,19 +663,57 @@ class CiGatePolicyTests(unittest.TestCase):
         # selector branch existed but the filter never routed the path, and
         # the suite only ever ran locally).
         changes = _without_yaml_comments(_changes_block(self.pr_workflow))
-        frontend_paths = _frontend_filter_paths(changes)
+        # Extracted entries, not raw substrings: a trailing-comment decoy
+        # ("- 'other' # was 'run-webui-smoke.mjs'") must not satisfy this
+        # pin (round-42 extractor discipline; unrecognized entry shapes
+        # fail closed). Round-3 review of PR #745.
+        frontend_paths = _extract_quoted_paths(_frontend_filter_paths(changes))
         self.assertIn(
             "pinvou3-app/scripts/run-webui-smoke.mjs",
             frontend_paths,
             "webui wrapper 不在 frontend filter 中,wrapper-only PR 会静默跳过 frontend-test",
         )
-        version_consistency = self.pr_workflow.split(
-            "\n  version-consistency:", maxsplit=1
-        )[1].split("\n  changes:", maxsplit=1)[0]
+        # Comment-stripped: a commented-out list entry must not satisfy the
+        # membership pin (round-3 review of PR #745: the bare substring
+        # stayed green under `# scripts/tests/run-webui-smoke.test.mjs`).
+        version_consistency = _without_yaml_comments(
+            self.pr_workflow.split(
+                "\n  version-consistency:", maxsplit=1
+            )[1].split("\n  changes:", maxsplit=1)[0]
+        )
         self.assertIn(
             "scripts/tests/run-webui-smoke.test.mjs",
             version_consistency,
             "wrapper 套件未接入 version-consistency 的显式 node --test 列表,CI 永不执行",
+        )
+
+    def test_node_suites_under_scripts_tests_are_all_wired(self):
+        # Nothing auto-discovers scripts/tests/*.test.mjs:
+        # version-consistency's explicit node --test list is the only
+        # runner (the PR #745 round-2 review found a suite that only ever
+        # ran locally). Pin both directions so the class stays closed:
+        # every suite on disk must be listed (a forgotten new suite
+        # silently never runs), and every listed scripts/tests entry must
+        # exist (a renamed suite must not leave a dead entry green).
+        version_consistency = _without_yaml_comments(
+            self.pr_workflow.split("\n  version-consistency:", maxsplit=1)[1].split(
+                "\n  changes:", maxsplit=1
+            )[0]
+        )
+        listed = set(
+            re.findall(
+                r"scripts/tests/[A-Za-z0-9_./-]+\.test\.mjs", version_consistency
+            )
+        )
+        on_disk = {
+            f"scripts/tests/{path.name}"
+            for path in (ROOT / "scripts" / "tests").glob("*.test.mjs")
+        }
+        self.assertEqual(
+            listed,
+            on_disk,
+            "scripts/tests node 套件与 version-consistency 显式列表不一致"
+            "(缺失=永不执行;多余=死条目)",
         )
 
     def test_cross_language_contract_rust_sources_route_to_frontend_test(self):
@@ -3555,15 +3593,19 @@ class CiGatePolicyTests(unittest.TestCase):
         # resurfaces the cold-run OOM with no runtime error — so pin the
         # shared payload in every leg. Windows speaks pwsh (Add-Content
         # here-string), the others a bash heredoc; the TOML section is the
-        # contract they share.
+        # contract they share. Judged on comment-stripped text: commenting
+        # the TOML section out is inert in the written config.toml and must
+        # red this pin exactly like deletion (round-3 review of PR #745).
         for job_name, end_marker in (
             ("rust-test", "\n  cli-test:"),
             ("windows-rust-test", "\n  macos-rust-check:"),
             ("macos-rust-check", "\n  windows-codex-runtime-test:"),
         ):
-            job = self.pr_workflow.split(f"\n  {job_name}:", maxsplit=1)[1].split(
-                end_marker, maxsplit=1
-            )[0]
+            job = _without_yaml_comments(
+                self.pr_workflow.split(f"\n  {job_name}:", maxsplit=1)[1].split(
+                    end_marker, maxsplit=1
+                )[0]
+            )
             self.assertIn("codewhale-tui O0", job, job_name)
             self.assertIn("[profile.dev.package.codewhale-tui]", job, job_name)
             self.assertIn("opt-level = 0", job, job_name)
@@ -3574,9 +3616,11 @@ class CiGatePolicyTests(unittest.TestCase):
             ("rust-test", "\n  cli-test:"),
             ("macos-rust-check", "\n  windows-codex-runtime-test:"),
         ):
-            job = self.pr_workflow.split(f"\n  {job_name}:", maxsplit=1)[1].split(
-                end_marker, maxsplit=1
-            )[0]
+            job = _without_yaml_comments(
+                self.pr_workflow.split(f"\n  {job_name}:", maxsplit=1)[1].split(
+                    end_marker, maxsplit=1
+                )[0]
+            )
             self.assertIn(
                 'config="${CARGO_HOME:-$HOME/.cargo}/config.toml"',
                 job,
@@ -3590,9 +3634,13 @@ class CiGatePolicyTests(unittest.TestCase):
         # instead of paying a second identical vite build. Both smoke steps —
         # the PR-selected and the merge-group one — must keep the env: a
         # dropped step silently reintroduces the duplicate build.
-        frontend = self.pr_workflow.split("\n  frontend-test:", maxsplit=1)[1].split(
-            "\n  relay-test:", maxsplit=1
-        )[0]
+        # Comment-stripped: commenting one of the two live lines must not
+        # keep the count at 2 (round-3 review of PR #745).
+        frontend = _without_yaml_comments(
+            self.pr_workflow.split("\n  frontend-test:", maxsplit=1)[1].split(
+                "\n  relay-test:", maxsplit=1
+            )[0]
+        )
         self.assertEqual(
             frontend.count('PINVOU_WEBUI_SKIP_BUILD: "1"'),
             2,
