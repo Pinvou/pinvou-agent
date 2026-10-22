@@ -1,15 +1,15 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-10-23。公开维护头 ea9fdc90f 已包含 #115/#116/#117；父仓 gitlink 与公开维护头对齐。
+> 最后更新：2026-10-22（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、复随 2026-10-15 批次（#108）前进至 `13ee4dfd2`、再随 2026-10-17 批次（#105/#106/#111）前进至 `c08c8c022`、又随 2026-10-20 批次（#112/#113）前进至 `083cebfd9`，公开维护状态下 gitlink=维护分支头并领先 tag；当前树的独立审核候选及阻塞门禁见下节；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
-## T2 review candidate: Recover complete tool outputs
+## T2 审核候选：恢复完整工具输出
 
-- Backport the recoverable output-budget slice of upstream #6619 across engine, wire, TUI mirror and artifact recovery. Preserve fork-specific route/handle summaries, add parallel-path preservation, immutable full-output writes and truthful failure hints.
-- Candidate gitlink: `23081ae75227323f81fccf663f9111d70f5ac073` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
-- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
-- Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_web_body_and_json_fields_survive_header_padding`. Customer data, credentials, runtime logs and reproduction session files are excluded.
+- 回移上游 #6619 中的可恢复输出预算切片，覆盖引擎、wire、TUI 镜像和 artifact 检索；保留 fork 的 route/handle 摘要，并补入并行路径保存、不可变完整输出写入及真实的保存失败提示。
+- 候选 gitlink：`23081ae75227323f81fccf663f9111d70f5ac073`（v0.9.12 之上共 77 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。下文登记的公开维护分支和不可变 tag 尚未改变；本候选是独立分支，不包含其他会话工具候选修复。
+- 合入前提：先合入对应底座 PR，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单中的候选头替换为实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`，重新计算 `EXPECTED_COMMITS`，同步两份策略/修改清单并协调已合入修复，最后通过 `verify-public-submodule.sh`。候选校验通过不豁免公开维护头门禁，也不允许重打基线 tag；本候选不具备发布资格。
+- 验证证据见承载 PR 及其固定提交自审核。指纹固定 `fn forkguard_web_body_and_json_fields_survive_header_padding`。不包含客户数据、凭证、运行日志或复现会话文件。
 
 ## 0. 当前维护基线与验证边界
 

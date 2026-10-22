@@ -1,11 +1,11 @@
 # CodeWhale Fork 修改清单
 
-## T2 review candidate: Recover complete tool outputs
+## T2 审核候选：恢复完整工具输出
 
-- Backport the recoverable output-budget slice of upstream #6619 across engine, wire, TUI mirror and artifact recovery. Preserve fork-specific route/handle summaries, add parallel-path preservation, immutable full-output writes and truthful failure hints.
-- Candidate gitlink: `23081ae75227323f81fccf663f9111d70f5ac073` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
-- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
-- Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_web_body_and_json_fields_survive_header_padding`. Customer data, credentials, runtime logs and reproduction session files are excluded.
+- 回移上游 #6619 中的可恢复输出预算切片，覆盖引擎、wire、TUI 镜像和 artifact 检索；保留 fork 的 route/handle 摘要，并补入并行路径保存、不可变完整输出写入及真实的保存失败提示。
+- 候选 gitlink：`23081ae75227323f81fccf663f9111d70f5ac073`（v0.9.12 之上共 77 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。下文登记的公开维护分支和不可变 tag 尚未改变；本候选是独立分支，不包含其他会话工具候选修复。
+- 合入前提：先合入对应底座 PR，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单中的候选头替换为实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`，重新计算 `EXPECTED_COMMITS`，同步两份策略/修改清单并协调已合入修复，最后通过 `verify-public-submodule.sh`。候选校验通过不豁免公开维护头门禁，也不允许重打基线 tag；本候选不具备发布资格。
+- 验证证据见承载 PR 及其固定提交自审核。指纹固定 `fn forkguard_web_body_and_json_fields_survive_header_padding`。不包含客户数据、凭证、运行日志或复现会话文件。
 
 ## 已合入维护分支：压缩检查点角色兼容性
 

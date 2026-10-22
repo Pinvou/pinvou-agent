@@ -1,13 +1,13 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-23. Public maintenance ea9fdc90f contains #115/#116/#117; parent gitlink follows the public maintenance head.
+> Updated: 2026-10-22. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch, again to `3118c36b8a` with the 2026-10-12/13 batch (upstream absorptions #90/#91/#93/#97/#98), and to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108), and to `c08c8c022` with the 2026-10-17 batch (#105/#106/#111), and to `083cebfd9` with the 2026-10-20 batch (#112/#113) — the published-state parent gitlink tracks the maintenance branch and leads the tag; this tree’s independent review candidate and blocking gate are described below; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## T2 review candidate: Recover complete tool outputs
 
 - Backport the recoverable output-budget slice of upstream #6619 across engine, wire, TUI mirror and artifact recovery. Preserve fork-specific route/handle summaries, add parallel-path preservation, immutable full-output writes and truthful failure hints.
 - Candidate gitlink: `23081ae75227323f81fccf663f9111d70f5ac073` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
-- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
+- Merge dependency: first merge its foundation PR, then replace the candidate gitlink, `EXPECTED_HEAD` and both register heads with the actual public maintenance SHA; verify `EXPECTED_UPSTREAM`, recount `EXPECTED_COMMITS`, synchronize both policy/register pairs, reconcile any already-landed fixes and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
 - Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_web_body_and_json_fields_survive_header_padding`. Customer data, credentials, runtime logs and reproduction session files are excluded.
 
 ## 0. Current maintenance baseline and validation boundary

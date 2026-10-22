@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 79 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 77 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,6 +8,9 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 EXPECTED_HEAD="23081ae75227323f81fccf663f9111d70f5ac073"
 EXPECTED_COMMITS=77
+# The registered review head must descend from the immutable r1 closure.
+# Candidate validation does not assert public maintenance-head alignment;
+# scripts/verify-public-submodule.sh enforces that separate merge gate.
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="ea9fdc90f1c90335554833195eeeb847c83d82dd"
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
@@ -29,6 +32,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
+bold "── Layer 0: v0.9.12 registered review head topology ──"
 bold "── Layer 0: v0.9.12 registered maintenance topology ──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
@@ -49,9 +53,9 @@ if git -C "$CODEWHALE" merge-base --is-ancestor "$R1_CLOSURE" HEAD 2>/dev/null; 
   green "  ✓ Registered head descends from the immutable r1 closure; public maintenance alignment is checked separately"
 else
   red "  ✗ Immutable r1 closure $R1_CLOSURE is not an ancestor of the registered head"
+
   fail=1
 fi
-
 if git -C "$CODEWHALE" merge-base --is-ancestor "$MAINTENANCE_BASE" HEAD 2>/dev/null; then
   green "  ✓ Registered head contains public maintenance base $MAINTENANCE_BASE"
 else

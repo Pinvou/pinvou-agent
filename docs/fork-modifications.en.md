@@ -4,7 +4,7 @@
 
 - Backport the recoverable output-budget slice of upstream #6619 across engine, wire, TUI mirror and artifact recovery. Preserve fork-specific route/handle summaries, add parallel-path preservation, immutable full-output writes and truthful failure hints.
 - Candidate gitlink: `23081ae75227323f81fccf663f9111d70f5ac073` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
-- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
+- Merge dependency: first merge its foundation PR, then replace the candidate gitlink, `EXPECTED_HEAD` and both register heads with the actual public maintenance SHA; verify `EXPECTED_UPSTREAM`, recount `EXPECTED_COMMITS`, synchronize both policy/register pairs, reconcile any already-landed fixes and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
 - Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_web_body_and_json_fields_survive_header_padding`. Customer data, credentials, runtime logs and reproduction session files are excluded.
 
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
