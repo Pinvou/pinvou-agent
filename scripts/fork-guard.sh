@@ -6,8 +6,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="083cebfd9aac5f6b9993ed610383fe2b38c6785f"
-EXPECTED_COMMITS=76
+EXPECTED_HEAD="187d94c62e6a04b3cf41c966a9e741eeca0e41fa"
+EXPECTED_COMMITS=77
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
 # 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
@@ -61,6 +61,7 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|Document the Web JSONPath subset|CodeWhale/crates/tui/src/tools/web_tool.rs|Recursive descent (..) and filters are not supported"
   "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
   "T2|Windows PowerShell policy bypass flags|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn powershell_build_command_includes_no_profile_and_command_flags"
   "T2|Windows PowerShell encoded fallback builder|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn forkguard_powershell_encoded_fallback_avoids_the_script_file"

@@ -3,6 +3,13 @@
 > Updated: 2026-10-20. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch, again to `3118c36b8a` with the 2026-10-12/13 batch (upstream absorptions #90/#91/#93/#97/#98), and to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108), and to `c08c8c022` with the 2026-10-17 batch (#105/#106/#111), and to `083cebfd9` with the 2026-10-20 batch (#112/#113) — the parent gitlink tracks the maintenance branch and leads the tag; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
+## T2 review candidate: Document the Web JSONPath subset
+
+- The Web wrapper now discloses the selectors the existing parser accepts and explicitly rejects recursive descent and filters in its model-visible description. No parser or network-policy change.
+- Candidate gitlink: `187d94c62e6a04b3cf41c966a9e741eeca0e41fa` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
+- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
+- Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `Recursive descent (..) and filters are not supported`. Customer data, credentials, runtime logs and reproduction session files are excluded.
+
 ## Baseline
 
 - Upstream: `Hmbown/CodeWhale` `v0.9.12` at `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`.

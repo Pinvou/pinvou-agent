@@ -4,6 +4,13 @@
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
+## T2 review candidate: Document the Web JSONPath subset
+
+- The Web wrapper now discloses the selectors the existing parser accepts and explicitly rejects recursive descent and filters in its model-visible description. No parser or network-policy change.
+- Candidate gitlink: `187d94c62e6a04b3cf41c966a9e741eeca0e41fa` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
+- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
+- Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `Recursive descent (..) and filters are not supported`. Customer data, credentials, runtime logs and reproduction session files are excluded.
+
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
