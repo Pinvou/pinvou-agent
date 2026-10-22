@@ -561,7 +561,6 @@
     @keyframes bnrFloat1 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
     @keyframes bnrFloat2 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
     @keyframes bnrFloat3 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
-    @media (max-width: 760px){ .bnr-avatars { display: none; } }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
     .persona-body h1, .persona-body h2, .persona-body h3 { font-weight:600; margin:.9em 0 .35em; line-height:1.3; }
     .persona-body h1 { font-size:1.15em; } .persona-body h2 { font-size:1.06em; } .persona-body h3 { font-size:1em; }

@@ -170,7 +170,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
     };
 
     // AI 造卡推广 banner(卡池顶部 hero):彩色渐变 + 标题 + 开始造卡 + 三步条 + 右侧浮动本地头像。
-    // 整条/按钮点击 → onStart(=startAICard)。深浅模式同一条彩色卡。窄屏由 .bnr-avatars 媒体查询隐藏头像。
+    // 整条/按钮点击 → onStart(=startAICard)。深浅模式同一条彩色卡。头像行 xl(1280px) 以下隐藏:
+    // 五张 108px 卡 + 430px 文案列在 overflow-hidden 的 banner 里需要 ≥986px，折叠侧栏时对应 ≥~1134px 窗口。
     const AICardBanner = ({ onStart, isDark, t }) => {
       const F = (t && t.bnrFaces) || [];
       const face = (i) => ({ name: (F[i] && F[i][0]) || '', role: (F[i] && F[i][1]) || '' });
@@ -210,7 +211,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
             </div>
           </div>
           {/* 右侧:头像横向一排,垂直居中,各自浮动 */}
-          <div className="bnr-avatars relative z-0 flex-1 flex items-center justify-evenly" style={{ paddingRight:16 }}>
+          <div className="relative z-0 flex-1 hidden xl:flex items-center justify-evenly" style={{ paddingRight:16 }}>
             {avs.map((a,i) => (
               <div key={i} className="flex flex-col items-center shrink-0" style={{ background:'#fff', borderRadius:18, padding:'14px 14px 11px', boxShadow:'0 10px 26px rgba(83,74,183,.22)', animation:`bnrFloat${(i%3)+1} ${(3.2+i*0.25).toFixed(2)}s ease-in-out infinite ${(i*0.3).toFixed(1)}s` }}>
                 <img src={a.src} width={80} height={80} alt="" loading="lazy" decoding="async" style={{ borderRadius:14, display:'block' }} />
