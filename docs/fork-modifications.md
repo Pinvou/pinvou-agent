@@ -1,11 +1,5 @@
 # CodeWhale Fork 修改清单
 
-## T2 审核候选：说明 Web JSONPath 子集
-
-- Web 的模型可见描述说明现有解析器接受的选择器，并明确不支持递归下降和过滤表达式。解析器及网络策略不变。
-- 候选 gitlink：`187d94c62e6a04b3cf41c966a9e741eeca0e41fa`（v0.9.12 之上共 77 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。下文登记的公开维护分支和不可变 tag 尚未改变；本候选是独立分支，不包含其他会话工具候选修复。
-- 合入前提：先合入对应底座 PR，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单中的候选头替换为实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`，重新计算 `EXPECTED_COMMITS`，同步两份策略/修改清单并协调已合入修复，最后通过 `verify-public-submodule.sh`。候选校验通过不豁免公开维护头门禁，也不允许重打基线 tag；本候选不具备发布资格。
-- 验证证据见承载 PR 及其固定提交自审核。指纹固定 `Recursive descent (..) and filters are not supported`。不包含客户数据、凭证、运行日志或复现会话文件。
 
 ## 已合入维护分支：压缩检查点角色兼容性
 
@@ -36,6 +30,15 @@
 - All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
 - Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
 
+### Web JSONPath 上游回移（待维护分支集成，#756）
+
+- 来源：[上游 #7046](https://github.com/codewhale-hq/Codewhale/pull/7046) 已于 2026-10-22 合入为 `b9619942905ac4b62752a579ca8937467d0486fc`。集成候选在公开维护头 `083cebfd9` 上用 `git cherry-pick -x` 承载该提交为 `4164aa6fd`，原始补丁、提交说明和贡献者署名保留；不是新增 fork 主题。代码仍归既有 T2 工具契约。
+- 当前 gitlink 候选：`3799761652ba6d201d1f25edac1d6f98b9c4444f`（`integration/jsonpath-upstream-7046`），共 78 个 review-candidate 提交、77 个带 DCO；公开维护基线仍为 76 个登记提交、75 个带 DCO。其树 `29f9332b3df40c72755fbbbec17a47fddc3ece9a` 与 #117 修复头 `744d9b80c` 相同；保留 #117 的已发表历史，未强推。
+- Web schema 保留上游原文，说明现有选择器及递归下降/filters 限制。`forkguard_web_fields_description_matches_parser` 将真实 schema 绑定到 `query_jsonpath` 的具体匹配结果和拒绝行为。指纹同时保留上游描述及结果测试。解析器、网络策略和工具执行不变；新激活会看到固定 catalog 前缀的描述变化，不注入易变运行时信息。
+- 本地探针编译未改写的 schema 方法、解析器和新增测试：1 项通过；恢复旧 schema、破坏匹配结果或误接受不支持语法均失败。探针使用缓存 serde_json 1.0.151 及最小 trait/类型外壳，不是完整锁定 TUI；完整本地测试因缺少 adler2 缓存未完成，CI 按对应源码/树另记。
+- 公共门禁仍拒绝未集成候选；fast guard 通过不代表维护分支一致。依第 6 节明确授权后才可推进受保护维护分支；届时复核实际远端 SHA、重新计数和同步两份清单/策略及 guard，再通过未改写的 `verify-public-submodule.sh` 和最终集成树复审。#756 保持草稿，当前不具备合并/发布资格，不移动不可变 tag。
+- 非阻塞边界：双引号 key、非负索引、ASCII 点字段和对象通配的完整说明，以及带 `]` 的 quoted key 扫描限制、handle_read/fetch_url 文案统一未随该上游原文扩展；不是本次新增的解析器修复。不新增客户数据、凭证或运行日志。
+
 ## T3 增补：技能索引幻影工具修复（#56 已合入为 `72e98fd89`）
 
 - 状态：[Pinvou/CodeWhale#56](https://github.com/Pinvou/CodeWhale/pull/56) 已合入为 squash `72e98fd89`（2026-09-17），并随 2026-09-17 批次把公开 `pinvou3-clean` 推进至 `92427bd8d`（候选分支原 `ae7e3fb36` 之上共 8 个提交：事故现场 `c34c3a430`、同类清扫 `f81528358`、两段式激活收口 `a2e21fcf9`、拼车剥离 `18f7c7b15`、复审去重与守护加固 `9f46ac5f0`、复审第五轮收口 `be2b2fe92`、复审第六轮同类收口 `4eb487cd3`、复审第七轮一致性收口 `dc1f391d6`）；父仓侧白名单/常载与指令适配随父仓 PR #490。候选期 `CANDIDATE_HEAD` 登记随落地回收，父仓 gitlink 恢复指向公开维护分支头，`verify-public-submodule.sh` 恢复绿。
@@ -65,11 +68,12 @@
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
 | 维护分支 | `pinvou3-clean` = `083cebfd9aac5f6b9993ed610383fe2b38c6785f`（r1 基线 `1fafee7e2` 之上 61 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66、2026-09-21 批次 #64/#67、2026-09-22/23 批次 #63/#65/#68/#69/#70/#71/#72/#73、收口追加 #77/#76（替换原 #74）、2026-10-02 批次 #80、2026-10-08/09 批次 #79/#88/#89/#75/#78/#94/#95 、2026-10-12/13 批次 #90/#91/#97/#98/#93 、2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）、2026-10-14 批次（#54/#107）、2026-10-15 批次（#108）、2026-10-17 批次（#105/#106/#111）与 2026-10-20 批次（#112/#113）） |
-| 发布状态 | r3 已收口（2026-09-23）：不可变 tag `pinvou-v0.9.12-r3` 切在合并头 `61cb769be`；2026-10-02 起 #80 使登记头领先 tag，进入过渡期，`scripts/verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言 tag 仍钉在 `61cb769be` 且 gitlink = 维护分支头并领先 tag（2026-10-08/09 批次 #79/#88/#89/#75/#78 与 2026-10-12/13 批次 #90/#91/#93/#97/#98 延续该过渡态）。r2 tag `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f`（24 个提交）作为回退点。r3 tag 曾短暂钉在 `ba2a07768f`，在父仓引用前因 #77 Windows 编译修复重切至 `61cb769be`（同日完成，未被任何父仓提交引用） |
+| 审核候选 | 3799761652ba6d201d1f25edac1d6f98b9c4444f；78 个 review-candidate 提交、77 个带 DCO；尚非公开维护头 |
+| 发布状态 | 审核候选尚未发布；以下为公开维护基线。r3 已收口（2026-09-23）：不可变 tag `pinvou-v0.9.12-r3` 切在合并头 `61cb769be`；2026-10-02 起 #80 使登记头领先 tag，进入过渡期，`scripts/verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言 tag 仍钉在 `61cb769be` 且 gitlink = 维护分支头并领先 tag（2026-10-08/09 批次 #79/#88/#89/#75/#78 与 2026-10-12/13 批次 #90/#91/#93/#97/#98 延续该过渡态）。r2 tag `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f`（24 个提交）作为回退点。r3 tag 曾短暂钉在 `ba2a07768f`，在父仓引用前因 #77 Windows 编译修复重切至 `61cb769be`（同日完成，未被任何父仓提交引用） |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
 | 历史组织 | 上游之上 76 个登记提交（75 个带 DCO sign-off；唯一未签为 #107 squash `f27672935`——其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107），归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 3 个已合入维护分支的主题（T7 压缩检查点角色兼容；T9 custom wire 运行时路线——底座 #79 随 2026-10-08/09 批次 squash 合入，父仓配套随 #625 落地；T10 Tachyon 思考强度方言——#113 随 2026-10-20 批次 squash 合入，见 T10 节）；r1 之后 61 个提交全部经 PR squash 合入并过必需门禁。T8 主题经 Pinvou/CodeWhale#65 落位：原以五个提交随父仓蜂群二期 PR 走保持提交合入以保全钉定 SHA，实际经 squash 合入（`c5fadb86d`）——登记随之改为钉定公开维护分支头，不再钉定合入前的波次 SHA（登记头现为 `083cebfd9`；详见第 13 节教训登记） |
 | drift | `504 files, +85620/-37597`，净增 48023 行（实测于 `083cebfd9` vs 上游 `dcd4c200f`；2026-10-20 批次 #112 为模型面文本对齐修复、#113 为 Tachyon 思考强度方言（T10），净增较 `c08c8c022` 增 1687）；`470 files, +83668/-37332`，净增 46336 行（实测于 `c08c8c022` vs 上游 `dcd4c200f`；2026-10-17 批次 #106 依赖去重使净增较 `13ee4dfd2` 回落 8）；`445 files, +67393/-21049`，净增 46344 行（实测于 `13ee4dfd2` vs 上游 `dcd4c200f`；2026-10-15 批次 #108 为同模型宿主申报限额经引擎路由重推导保持的修复，净增较 `803e672bb` 增 223）；`445 files, +67187/-21066`，净增 46121 行（实测于 `803e672bb` vs 上游 `dcd4c200f`；2026-10-14 批次 #54 为多根 workspace_roots 授权基础设施（runtime lanes），净增较 `f27672935` 增 13,959；#107 为同模型宿主路由限制修复，净增较 `480bebf61` 增 119）；`397 files, +53709/-21547`，净增 32162 行（实测于 `f27672935` vs 上游 `dcd4c200f`）；`397 files, +53533/-21490`，净增 32043 行（实测于 `480bebf61` vs 上游 `dcd4c200f`；2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）以 #102 无价值测试清理与 #104 界限简化回落净增，此前 `3118c36b8a` 为 294 files +51027/-14227 净增 36800）；`252 files, +36785/-5754`，净增 31031 行（实测于 `0bc868ff0` vs 上游 `dcd4c200f`）；`906ffa979` 为 `252 files, +36779/-5754`（净增 31025），`7624cd3db` 为 `252 files, +36755/-5754`（净增 31001），`44921cf02` 为 `231 files, +29286/-5364`（净增 23922），r3 收口点 `61cb769be` 为 `229 files, +29272/-5352`（净增 23920），r2 为 `190 files, +19135/-2628`（净增 16507），旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 226 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试（勘误：前行登记 167 为滞后值——实测 `c08c8c022` 已为 216，本批按实数 226 登记） |
+| 守护 | 本审核候选为 227 条；公开维护基线为 226 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试（勘误：前行登记 167 为滞后值——实测 `c08c8c022` 已为 216，本批按实数 226 登记） |
 | 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力 |
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
