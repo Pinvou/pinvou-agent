@@ -249,11 +249,11 @@ const SortableTimeHeader = ({ t, dir, onToggle, justifySelfStart }) => (
 const KbDialog = ({ onClose, testId, role, ariaModal, width = 'w-[400px]', children }) => (
   // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
   // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-  <div data-testid={testId} className="absolute inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+  <div data-testid={testId} className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
     {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
     {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
     {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal follows the prop-provided role (confirmDoc passes role dialog); static analysis cannot see the dynamic role */}
-    <div role={role} aria-modal={ariaModal} onClick={(e) => e.stopPropagation()} className={`${width} rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
+    <div role={role} aria-modal={ariaModal} onClick={(e) => e.stopPropagation()} className={`${width} max-w-full rounded-2xl p-6 bg-white dark:bg-[#1E1F20]`}>
       {children}
     </div>
   </div>
@@ -1057,7 +1057,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                   />
                 )}
               </div>
-              <div className="flex min-w-0 flex-col gap-3 overflow-hidden lg:ml-8 lg:flex-1 lg:flex-row lg:items-center lg:justify-end">
+              <div className="flex min-w-0 flex-col gap-3 lg:ml-8 lg:flex-1 lg:flex-row lg:flex-wrap lg:items-center lg:justify-end">
                 {sub === 'output' ? (
                   <>
                     <IosSearchField
@@ -1182,7 +1182,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                   // 避免整页空白死等 refreshL0(大库冷读时尤其明显)。loaded 后切真实数据,结构一致很平滑。
                   <div>
                     <div className={`text-[15px] font-bold mb-3 ${ink}`}>{t.kbBrowseByType}</div>
-                    <div className="grid grid-cols-4 lg:grid-cols-7 gap-3 mb-7">
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-7">
                       {CATS.map((c) => { const col = CAT_COLOR[c.key] || '#8a8a9a'; const CatI = CAT_ICON[c.key] || FileText; return (
                         <div key={c.key} className={`flex items-center gap-3 p-3 rounded-xl ${panel}`} style={panelShadow}>
                           <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 col) */}
@@ -1557,7 +1557,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       <div className={`text-[15px] font-bold ${ink}`}>{t.kbMyColls}</div>
                       <div className={`text-[12px] ${muted}`}>{colls.length} {t.kbCollUnit} · {colls.reduce((s, c) => s + (c.docCount || 0), 0)} {t.kbDocs} · {fmtSize(colls.reduce((s, c) => s + (c.totalBytes || 0), 0))}</div>
                     </div>
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                       {shown.map((c) => {
                         const prog = (idx && idx.running && idx.collectionId === c.id && idx.total > 0) ? Math.round((idx.done / idx.total) * 100) : null;
                         const isIdx = c.status === 'indexing' || prog != null;
