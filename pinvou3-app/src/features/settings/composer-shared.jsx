@@ -467,10 +467,10 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       if (writeGateRef.current === null) writeGateRef.current = createToggleWriteGate();
       // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
       const [connectorStates, setConnectorStates] = useState(initialConnectorStates);
-      // Round-38 刷新序号门（round-2 review m9）：连接现在会背靠背广播两次
-      // （done 相位 + 写入落定后），第一次读到的必然是授权落地前的旧状态。
-      // 桌面端 invoke 应答有序，按 key 的 setState 本就按服务次序落盘；此
-      // 序号门额外覆盖不保序的传输（web 桥）：只允许最新一次刷新提交。
+      // Round-38 刷新序号门（round-2 review m9）：连接/开关会在授权写入落定后
+      // 触发工具刷新，快速连续操作可能背靠背发起多次读取。桌面端 invoke 应答
+      // 有序，按 key 的 setState 本就按服务次序落盘；此序号门额外覆盖不保序
+      // 的传输（web 桥）：只允许最新一次刷新提交。
       const refreshSeqRef = useRef(0);
       async function refreshToolsMenu(isAlive) {
         const seq = ++refreshSeqRef.current;
