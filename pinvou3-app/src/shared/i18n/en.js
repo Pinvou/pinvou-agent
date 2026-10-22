@@ -454,7 +454,7 @@ export const dictEn = {
         dep_ocr: 'Image / scanned-PDF OCR', dep_archive: 'Archives (zip/rar/7z)', dep_email: 'Email (.eml / .msg)', dep_voice_asr: 'Local speech recognition',
         dep_voice_asr_model: 'Speech recognition model (SenseVoice q8)', dep_knowledge_embedding_model: 'Knowledge embedding model (bge-m3)',
         depHint_email_manual: 'Manual install required: run `sudo cpan -i Email::Outlook::Message` in Terminal (no Homebrew formula). See https://metacpan.org/pod/Email::Outlook::Message',
-        communityQrAlt: 'Pinvou QQ group QR code', communityChannelTag: 'Chinese QQ community',
+        communityQrAlt: 'Pinvou QQ group QR code', communityChannelTag: 'Chinese QQ community', communityGroupName: 'pinvou-agent official community (QQ)',
         communityQrHint: 'Scan with mobile QQ to join, or copy the group ID to search manually.',
         communityGroupLabel: 'Group ID', communityCopyGroup: 'Copy group ID', communityCopied: 'Group ID copied',
         communityDiscussions: 'GitHub Discussions',
@@ -995,6 +995,7 @@ visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart 
 Object.assign(dictEn.uiToolStore, {
   groupByType:'By Type', groupByBusiness:'By Domain',
   typeGroups:{ bundle:'Plugin Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
+  recycleKinds:{ bundle:'Plugin bundle', mcp:'MCP', skill:'Skill', cli:'CLI integration', api:'API & Webhook' },
   recycleBin:'Recycle Bin', recycleBinTitle:'Plugin Recycle Bin', recycleBinEmpty:'Recycle bin is empty', recycleBinEmptyHint:'Uploaded plugins you uninstall are moved here; you can restore or permanently delete them.',
   recycleBinLoadFailed:'Failed to load the recycle bin. Please retry.', recycleBinLoading:'Loading recycle bin…', recycledAt:time=>`Recycled at ${time}`,
   recycleRestore:'Restore', recycleRestoreUnavailable:'Package files are missing and cannot be restored', recyclePurge:'Delete Permanently',

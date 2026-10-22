@@ -2326,7 +2326,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           <div className="flex-1 min-w-0">
                             <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white truncate">{name}</h3>
                             <div className="flex items-center gap-2 mt-1">
-                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.typeGroups || {})[item.kind] || item.kind}</span>
+                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.recycleKinds || {})[item.kind] || item.kind}</span>
                               {recycledAt && <span className="text-[12px] text-slate-400 dark:text-slate-500">{storeCopy.recycledAt(recycledAt)}</span>}
                             </div>
                           </div>
