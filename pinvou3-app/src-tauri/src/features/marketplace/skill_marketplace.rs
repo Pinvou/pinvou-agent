@@ -4498,8 +4498,10 @@ mod tests {
         let err = mgr
             .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
             .unwrap_err();
+        // zip ≥9 在读取时自校验「解压超过头声明大小」并先于应用层守卫报错；
+        // 应用层「超过 zip 头声明」守卫保留为纵深防御。两者任一触发即为拒收。
         assert!(
-            err.contains("超过 zip 头声明"),
+            err.contains("declared uncompressed size") || err.contains("超过 zip 头声明"),
             "伪造头部条目应被有界读取拒收，实际: {err}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
@@ -4537,8 +4539,9 @@ mod tests {
         let err = mgr
             .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
             .unwrap_err();
+        // 同上：zip ≥9 的读取期自校验先于应用层有界预读守卫触发。
         assert!(
-            err.contains("超过 zip 头声明"),
+            err.contains("declared uncompressed size") || err.contains("超过 zip 头声明"),
             "伪造 SKILL.md 头部应被有界预读拒收，实际: {err}"
         );
         let _ = std::fs::remove_dir_all(&tmp);

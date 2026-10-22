@@ -2234,7 +2234,7 @@ mod tests {
             let archive_file = std::fs::File::open(&dest).unwrap();
             let mut archive = zip::ZipArchive::new(archive_file).unwrap();
             let mut names: Vec<String> = (0..archive.len())
-                .map(|i| archive.by_index(i).unwrap().name().to_string())
+                .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
                 .collect();
             names.sort();
             assert_eq!(

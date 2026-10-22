@@ -20,37 +20,32 @@ ignore = [
     # RUSTSEC-2026-0194 (quick-xml quadratic complexity) and
     # RUSTSEC-2026-0195 (NsReader memory exhaustion) no longer match:
     # both advisories are fixed in quick-xml >=0.41.0, and the lockfile
-    # resolves 0.41.0 (锁文件把 plist 保持在 1.10.0 以继续用 ^0.41;calamine 0.36.1 也走 0.41)。
+    # resolves 0.41.0 + 0.42.0（0.42 来自本仓直接依赖与 calamine 0.37/plist 1.10.3;
+    # 残留的 0.41.0 仅在 wayland-scanner/xcb 的 Linux 构建链,同样在修复线上）。
     # Without an ignore entry, a future dependency downgrade below
     # 0.41 would trip the advisory and fail CI again — reassess then.
     #
-    # RUSTSEC-2026-0367/0368/0369 (zip 8.6.0: SUID/SGID preservation,
-    # symlink escape and permission-through-symlink in the wholesale
-    # `ZipArchive::extract()` / stream-extract APIs). Patched only in
-    # zip >=9.0.0, which calamine 0.36.1 (^8.6) cannot reach; ignore is
-    # scoped on reachability: the graph never calls the wholesale
-    # extraction APIs — calamine only reads xlsx in memory, and every
-    # direct zip consumer iterates `by_index` with `enclosed_name()`
-    # guards (artifacts/native_installer/marketplace/python_dependencies).
-    # Reassess on any calamine/zip bump or new extract() call site.
-    "RUSTSEC-2026-0367",
-    "RUSTSEC-2026-0368",
-    "RUSTSEC-2026-0369",
+    # RUSTSEC-2026-0367/0368/0369 (zip 8.x extract-family) RETIRED:
+    # calamine 0.37 requires zip ^9, and both parent workspaces now pin
+    # calamine = "0.37" — the graph converges on a single zip 9.0.5 and no
+    # longer contains a vulnerable zip. The round-30 reachability note (the
+    # graph never calls the wholesale `ZipArchive::extract()` /
+    # stream-extract APIs — every direct zip consumer iterates `by_index`
+    # with `enclosed_name()` guards) remains true and is the fallback
+    # posture: if a future downgrade below zip 9 re-enters the tree, these
+    # three advisories trip CI again.
     #
-    # RUSTSEC-2026-0381 (CVE-2026-111943: webpki-roots <1.0.10 bundles the
-    # emSign ECC Root CA - G3, whose intermediates' private keys are public).
-    # The 1.0.x copy is bumped to 1.0.10 in this PR; the remaining hit is the
-    # 0.26.11 copy (ureq 2.12.1 — frozen by the fastembed platform-floor hold
-    # — and tokio-tungstenite 0.30). That hit is an advisory version-match
-    # false positive, not a remaining vulnerable bundle: 0.26.11 is a semver
-    # compatibility shim that carries no root data of its own and re-exports
-    # `TLS_SERVER_ROOTS` from its single dependency, which every parent lock
-    # resolves to the patched webpki-roots 1.0.10. The advisory's `<1.0.10`
-    # range cannot see through the shim's version number. No patched 0.26.x
-    # release exists; the cleanup path is those consumers migrating to
-    # webpki-roots 1.x and dropping the shim. Reassess on any
-    # fastembed/ureq/tokio-tungstenite bump.
-    "RUSTSEC-2026-0381",
+    # RUSTSEC-2026-0381 (webpki-roots 0.26) ignore removed (2026-10): the
+    # current advisory DB no longer matches the locked graph — cargo deny
+    # reports advisory-not-detected for the 0.26.11 copy (ureq 2.12.1,
+    # frozen by the fastembed platform-floor hold, and tokio-tungstenite
+    # 0.30). For the record: 0.26.11 was a semver compatibility shim
+    # carrying no root data of its own — it re-exported `TLS_SERVER_ROOTS`
+    # from webpki-roots 1.0.10, the patched line every parent lock
+    # resolves; no patched 0.26.x release exists (0.26.11 is the last).
+    # If a future advisory-DB revision re-covers the shim, the advisories
+    # check fails CI again — re-add an ignore with that justification then,
+    # or (the real cleanup) migrate those consumers to webpki-roots 1.x.
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深
 # (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
@@ -58,11 +53,11 @@ ignore = [
 # 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
 # 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
 unmaintained = "workspace"
-# Keep yanked releases visible while calamine 0.36.1 requires zip ^8.6.
-# Retain the locked graph; RustSec vulnerability advisories still fail.
-# Restore "deny" with a supported non-yanked dependency update, and reassess
-# immediately if an advisory affects the pinned version.
-yanked = "warn"
+# Restored to "deny": the supported non-yanked dependency update this block
+# waited for has landed — calamine 0.37 with a single zip 9.0.5 in the graph —
+# so yanked releases are denied again. Reassess immediately if an advisory
+# affects the pinned version.
+yanked = "deny"
 
 [licenses]
 version = 2
