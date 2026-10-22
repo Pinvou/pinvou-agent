@@ -13,13 +13,29 @@ The estimates below were assessed on 2026-10-22 from delivered capabilities and
 remaining implementation and acceptance work. They are engineering estimates,
 not measured hours or release readiness. Shared foundations are not counted again
 for tasks without their own business implementation. Counting deferred T42 as
-zero in the 47-task denominator gives an equal-task average of 32.8%; the strict
+zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-22 15:20 Asia/Shanghai**. The estimates remain
-unchanged because the new combined business workflow has not completed native
-acceptance or been committed to the service. Independently reviewed candidate
-source is reported separately from delivered functionality:
+Current checkpoint: **2026-10-22 19:30 Asia/Shanghai**. T20 advances from 45% to
+50% following delivery of its bounded read-only Session-retention inspection
+batch. Other estimates remain unchanged; the combined business workflow has not
+completed native acceptance. Candidate source remains separate from delivery:
+
+- T20's thirteen-file inspection batch was independently reviewed, verified,
+  committed and pushed as `9f3c92d22557801f222b63166e557aae91ef3d96` in the
+  separate service. Four fixed profiles inspect original Session, download
+  progress, resume and activation receipt time floors without changing accepted
+  data. Eight pure top-level tests with sixteen subtests and six actual
+  PostgreSQL top-level tests with sixteen subtests passed with zero skips,
+  including actual CLI/helper execution. Formatting, vet, module verification,
+  service build, pinned contract and whitespace checks passed. The first default
+  suite passed 1,181 top-level tests and 2,581 subtests but failed one process test
+  because its isolated PATH omitted Node. The corrected environment passed both
+  that test and a previously skipped cross-engine signing test: two top-level
+  tests, two subtests, two packages, zero skips. The original red result and
+  909 top-level/756 subtest skips are retained; some skipped identities have
+  separate scoped native evidence. No other opt-in result is inferred. This
+  batch does not complete T20 or authorize archival or deletion.
 
 - T13 planning-draft domain, protected persistence, private recovery, six HTTP
   routes, administration and real-system test sources passed scoped independent
@@ -36,15 +52,17 @@ source is reported separately from delivered functionality:
   tests with 149 subtests and scoped vet. Its first complete native run passed
   seven top-level tests with 41 subtests and failed twenty top-level tests;
   eleven planned subtests were not reached. This is a failed acceptance run.
-  A subsequent focused run confirmed and independently reviewed a T13 SQL
-  record-variable/table-alias collision repair: migration passed, then eleven
-  of twelve T13 native tests passed. The remaining test incorrectly expected
-  an unwrapped PostgreSQL error at the public T06 boundary; separate native
-  refusal and public closed-error assertions are prepared for verification.
-  T25's original begin-capture failed with SQLSTATE `42P01`; two invalid local
-  variable qualifications in history collection/readback have been repaired
-  in isolation, passed independent source review and await actual retesting. Diagnostic
-  fixtures and these source repairs are not service deliveries.
+  Subsequently reviewed repairs address a T13 record-variable/table-alias
+  collision, separate native/public late-commit assertions, T25 SQL variable
+  qualification and the actual pool's catalog-before-temp search path. The
+  focused T25 retry passed four top-level tests and seven subtests in two
+  packages with zero skips. The latest retry of the planned 27-top-level/
+  52-subtest native suite passed 24 top-level tests and 49 subtests, but three top-level tests
+  failed during original catalog migration/runtime initialization. These
+  failures remain under investigation; three planned subtests were not reached.
+  This is not a passed complete run.
+  The previously excluded large-body history control actually ran and passed.
+  Diagnostic fixtures and these source repairs are not service deliveries.
 - Admin strict type checking, 17 pure controls and the production build passed.
   After correcting browser discovery, nine of eleven synthetic browser controls
   passed; two exact-label selectors failed. All eight related textarea selectors
@@ -56,17 +74,31 @@ source is reported separately from delivered functionality:
   service installation, IPC, protected execution or fault recovery.
 - Client contract commit `2e584e1d62c6e3ffccdc55c5e92aa590fd96c717` and offline
   ASN decision commit `bc5244d8f518b551815f9e553382643b4cbcfbdf` are pushed.
-  The service remains clean at `e5868978f0a8cded70723a2378e4a99d55a989cf`;
+  The service is clean at the pushed T20 commit above;
   synchronization to the actual contract revision and combined acceptance remain.
 - T14/T47's next complete draft-composition workflow is in development. Source
   review found an incorrect approval-reference field and insufficient original
   request/cache binding. The primary role prepared explicit preparation/review
   journals, full MAC bindings and exact cached-result checks. The six-source
-  component passed independent source review; native composition, HTTP/UI and
-  complete acceptance remain pending.
+  components passed scoped independent source review. A coherent isolated
+  2,328-input source snapshot passed combination compilation and 36 pure
+  top-level tests with 109 actually executed subtests in four packages, without
+  skips. These results do not qualify native persistence, migration, HTTP/UI or
+  the complete workflow. Current-result cost accounting, exact approval ACK
+  recovery, fixed HTTP queries and three-language UI work continue.
+- T29's fixed control-POST-to-file caller candidate passed 22 unit tests and two
+  actual process tests, formatting and Clippy. An adjacent binary check first
+  exposed omitted original source files in the isolated test tree. After those
+  inputs were restored, the compiler exited successfully but an MSVC helper did
+  not close naturally; that run remains failed and its mutable tree/cache are
+  excluded from reuse. A compile-only local-option probe also failed process
+  closure. No host compiler files or process-drain limits were changed. The
+  caller and private TLS E2E candidate remain uncommitted and full T29 remains
+  incomplete.
 
-Current constraints: heavyweight tests retain their original resource admission
-and active-run floors; available memory fluctuates around the startup threshold.
+Current constraints: the owner selected a local test window with reduced other
+memory use. Heavyweight tests retain 7 GiB startup and 6 GiB active-run admission
+floors; recent closed T20/T25/T47 runs stayed above them.
 The earlier unrelated Rust build was left running as requested and was absent
 at the latest process check; it is not assumed to remain the current blocker. Linux
 scanner native acceptance has not run, the Windows guest's previously observed
@@ -96,7 +128,7 @@ remain pending. Production deployment T42 remains explicitly deferred.
 | T17 | 55% | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
 | T18 | 70% | In progress | Reviewed production HTTPS primary/backup/redirect policy administration, independent approval, replacement/disable, original-key recovery and transient current-policy DNS diagnostics are delivered with three-language admin; qualified download-info issuance and client distribution remain pending. |
 | T19 | 0% | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
-| T20 | 45% | In progress | Actual no-update/transaction and bounded Session/download/resume/activation acceptance, four HTTP batch routes, client request/ACK correlation and restricted task observation calculation; actual task acceptance, durable client queue and quality contribution remain pending |
+| T20 | 50% | In progress | Actual no-update/transaction and bounded Session/download/resume/activation acceptance, four HTTP batch routes, client request/ACK correlation, restricted task observation and delivered original Session-retention read-only inspection; actual task acceptance, durable client queue, quality contribution and complete archival/cleanup remain pending |
 | T21 | 35% | In progress | Private sample/receipt persistence authenticates actual frozen SN sources and preserves original-stage history; contribution, aggregate evaluation and business composition remain pending |
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
