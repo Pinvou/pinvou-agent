@@ -4627,18 +4627,6 @@ mod unattended_shield_tests {
             .map(|offset| send_start + offset)
             .unwrap_or(live.len());
         let send_body = &live[send_start..send_end];
-        eprintln!(
-            "[shield-probe] send_body len={} op_at={:?} clone_at={:?} setdis_at={:?} first_slashslash_line={:?}",
-            send_body.len(),
-            send_body.find("Op::SetDisallowedTools {"),
-            send_body.find("self.scheduled_disallowed_tools.clone()"),
-            send_body.find("Op::SetDisallowedTools"),
-            send_body
-                .lines()
-                .enumerate()
-                .find(|(_, l)| l.contains("//"))
-                .map(|(i, l)| (i, l.to_string())),
-        );
         let op = send_body
             .find("Op::SetDisallowedTools {")
             .expect("the shield send must exist in the production span");
