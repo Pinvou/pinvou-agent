@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.8%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-22 12:17 Asia/Shanghai**. The estimates remain
+Current checkpoint: **2026-10-22 15:20 Asia/Shanghai**. The estimates remain
 unchanged because the new combined business workflow has not completed native
 acceptance or been committed to the service. Independently reviewed candidate
 source is reported separately from delivered functionality:
@@ -32,6 +32,19 @@ source is reported separately from delivered functionality:
   PostgreSQL top-level tests with 36 subtests, with zero skips. Independent
   actual-result review passed. This does not qualify the subsequent complete
   runtime, HTTP composition or owner candidates.
+- The combined workflow passed contract synchronization, 77 pure top-level
+  tests with 149 subtests and scoped vet. Its first complete native run passed
+  seven top-level tests with 41 subtests and failed twenty top-level tests;
+  eleven planned subtests were not reached. This is a failed acceptance run.
+  A subsequent focused run confirmed and independently reviewed a T13 SQL
+  record-variable/table-alias collision repair: migration passed, then eleven
+  of twelve T13 native tests passed. The remaining test incorrectly expected
+  an unwrapped PostgreSQL error at the public T06 boundary; separate native
+  refusal and public closed-error assertions are prepared for verification.
+  T25's original begin-capture failed with SQLSTATE `42P01`; two invalid local
+  variable qualifications in history collection/readback have been repaired
+  in isolation, passed independent source review and await actual retesting. Diagnostic
+  fixtures and these source repairs are not service deliveries.
 - Admin strict type checking, 17 pure controls and the production build passed.
   After correcting browser discovery, nine of eleven synthetic browser controls
   passed; two exact-label selectors failed. All eight related textarea selectors
@@ -45,9 +58,17 @@ source is reported separately from delivered functionality:
   ASN decision commit `bc5244d8f518b551815f9e553382643b4cbcfbdf` are pushed.
   The service remains clean at `e5868978f0a8cded70723a2378e4a99d55a989cf`;
   synchronization to the actual contract revision and combined acceptance remain.
+- T14/T47's next complete draft-composition workflow is in development. Source
+  review found an incorrect approval-reference field and insufficient original
+  request/cache binding. The primary role prepared explicit preparation/review
+  journals, full MAC bindings and exact cached-result checks. The six-source
+  component passed independent source review; native composition, HTTP/UI and
+  complete acceptance remain pending.
 
-Current constraints: an unrelated Rust build repeatedly consumes the memory
-needed by the queued tests; it is left running as the owner requested. Linux
+Current constraints: heavyweight tests retain their original resource admission
+and active-run floors; available memory fluctuates around the startup threshold.
+The earlier unrelated Rust build was left running as requested and was absent
+at the latest process check; it is not assumed to remain the current blocker. Linux
 scanner native acceptance has not run, the Windows guest's previously observed
 expiry/time faults remain unresolved, and T03 has no approved measured budgets
 or completed four-target 1/10/50 GiB matrix. ASN offline-database grouping is
