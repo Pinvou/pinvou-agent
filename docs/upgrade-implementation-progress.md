@@ -16,11 +16,49 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.8%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
+Current checkpoint: **2026-10-22 12:17 Asia/Shanghai**. The estimates remain
+unchanged because the new combined business workflow has not completed native
+acceptance or been committed to the service. Independently reviewed candidate
+source is reported separately from delivered functionality:
+
+- T13 planning-draft domain, protected persistence, private recovery, six HTTP
+  routes, administration and real-system test sources passed scoped independent
+  source review. The T13/T25 single recovery classifier repair also passed.
+  The combined candidate map contains 125 selected service paths over a
+  2,279-input baseline, producing 2,394 source inputs before contract sync.
+  It is not installed or committed in the service; active support-floor policy,
+  prerequisite paths and BridgeEligibility remain outside this delivered slice.
+- Component QA passed 39 pure top-level tests with 49 subtests and three actual
+  PostgreSQL top-level tests with 36 subtests, with zero skips. Independent
+  actual-result review passed. This does not qualify the subsequent complete
+  runtime, HTTP composition or owner candidates.
+- Admin strict type checking, 17 pure controls and the production build passed.
+  After correcting browser discovery, nine of eleven synthetic browser controls
+  passed; two exact-label selectors failed. All eight related textarea selectors
+  have since been repaired and independently reviewed. The fresh strict/browser
+  retry is prepared, not passed. Real PostgreSQL/HTTP/three-language browser
+  workflow sources are reviewed but have not run.
+- T31's normal unsigned standalone helper and launcher passed release compilation
+  and independent PE readback. This covers the two actual build outputs, not
+  service installation, IPC, protected execution or fault recovery.
+- Client contract commit `2e584e1d62c6e3ffccdc55c5e92aa590fd96c717` and offline
+  ASN decision commit `bc5244d8f518b551815f9e553382643b4cbcfbdf` are pushed.
+  The service remains clean at `e5868978f0a8cded70723a2378e4a99d55a989cf`;
+  synchronization to the actual contract revision and combined acceptance remain.
+
+Current constraints: an unrelated Rust build repeatedly consumes the memory
+needed by the queued tests; it is left running as the owner requested. Linux
+scanner native acceptance has not run, the Windows guest's previously observed
+expiry/time faults remain unresolved, and T03 has no approved measured budgets
+or completed four-target 1/10/50 GiB matrix. ASN offline-database grouping is
+approved; trusted source-IP acquisition mode and a real licensed ASN dataset
+remain pending. Production deployment T42 remains explicitly deferred.
+
 | Task | Estimate | Status | Delivery / outstanding dependency |
 |---|---|---|---|
 | T01 | 100% | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | 100% | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples and three earlier payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
+| T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples, one 10 GiB many-file development sample and three earlier payload smokes; the full four-target matrix, final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
 | T04 | 65% | In progress | Offline tools, Windows post-build npm adapter and role-specific NSIS inspection are delivered; the integrated source passed default regression and current-CLI normal/wrong-Root cases. Complete provenance, product build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
@@ -30,7 +68,7 @@ completed-task ratio remains 5/47 (10.6%).
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
-| T13 | 10% | In progress | Reviewed support-floor planning domain and current-authority draft port; protected persistence, approvals, publication, ordinary prerequisite paths and historical bridge eligibility remain pending. |
+| T13 | 10% | In progress | Delivered planning domain and authority port; protected persistence, private recovery, HTTP/admin and genuine E2E candidates passed scoped source review. Contract routes are pushed; service sync and complete workflow tests/commit remain pending, as do active-floor approvals/publication, ordinary prerequisite paths and historical bridge eligibility. |
 | T14 | 40% | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
 | T15 | 0% | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | 0% | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
@@ -42,13 +80,13 @@ completed-task ratio remains 5/47 (10.6%).
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 35% | In progress | Independent nonexportable purpose/week OpenBao keys and protected material-owner migration, original-operation recovery and native lifecycle regression are committed and pushed. Actual event/source composition, purpose-qualified consumption, privacy retention and weekly snapshots remain pending. |
+| T25 | 35% | In progress | Independent purpose/week OpenBao material ownership is delivered. Accepted-event attribution, retention and shared recovery candidates passed source review; their complete native acceptance/commit remain pending. First-acceptance model repair is reviewed, offline ASN grouping approved; authenticated edge inputs, purpose-qualified consumption and frozen privacy snapshots remain pending. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
 | T28 | 0% | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
 | T29 | 65% | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
-| T31 | 45% | In progress | Certificate-optional initial-source changes are implemented in the Windows worktree and independently reviewed. Packaging regression passed 62 tests with three native opt-in skips; normal, disabled and fault Rust configurations each passed 58 with one explicit native ignore. The normal-profile fault-hook rejection passed. Fresh unsigned roles, installation, IPC and native recovery acceptance remain pending. |
+| T31 | 45% | In progress | Certificate-optional Windows sources, packaging/Rust regressions and normal-profile fault-hook rejection are verified. Fresh normal unsigned helper/launcher release builds and PE readback passed independent acceptance. Service installation, protected IPC, multi-user behavior and real fault recovery remain pending. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
 | T33 | 35% | In progress | Reviewed optional Windows same-object Authenticode observations, shared relative custody and retained FullPack final-installer/helper/launcher composition with original-job compatibility; protected host, installation/slot execution and platform qualification remain pending. Native certificate qualification is not a prerequisite. |
 | T34 | 0% | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
