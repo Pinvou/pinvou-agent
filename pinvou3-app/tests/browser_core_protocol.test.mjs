@@ -179,6 +179,27 @@ test('shared instructions keep the deferred-tool doctrine, credential red line, 
   assert.doesNotMatch(shared, /【设置 ?→ ?系统权限/);
 });
 
+test('shared shell instructions preserve interpreter, transport, and probe safety', () => {
+  const shared = readFileSync(
+    new URL('../src-tauri/resources/common/bundle/instructions-shared.md', import.meta.url),
+    'utf8',
+  );
+
+  // These are model-visible contracts, not proof that a model follows them.
+  assert.match(shared, /先确认解释器,再复用同一入口/);
+  assert.match(shared, /找到有效入口后停止探测.*不要因另一个别名失败而宣称 Python 或依赖未安装/);
+  assert.doesNotMatch(shared, /python3\s+-c\b/);
+
+  assert.match(shared, /跨 shell 传递脚本要保全文本/);
+  assert.match(shared, /文本传输明确双方编码.*不要依赖 PowerShell 管道的默认编码/);
+  assert.match(shared, /编码不改变命令含义或授权要求/);
+
+  assert.match(shared, /每项探针独立报告结果.*区分必需检查和可选检查/);
+  assert.match(shared, /必需步骤失败应明确返回失败.*`catch` 不能只打印错误后继续报告成功/);
+  assert.match(shared, /不要让最后一个可选命令或无匹配的 `grep` 覆盖前面检查的事实/);
+  assert.match(shared, /不要把退出码 0 当成业务操作已完成的证明/);
+});
+
 test('artifact title rule stays single-sourced and the bound lane keeps auto-tracking', () => {
   const bundle = '../src-tauri/resources/common/bundle/';
   const work = readFileSync(new URL(`${bundle}instructions-work.md`, import.meta.url), 'utf8');
