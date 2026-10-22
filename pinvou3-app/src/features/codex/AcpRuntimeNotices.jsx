@@ -38,7 +38,7 @@ export function RuntimeNotice({
     setDeclinedUpgrade(false);
   }, [resetKey, status?.agent_id, status?.installed, status?.latest_version]);
   const noticeMode = runtimeNoticeMode(status, declinedUpgrade || suppressAdvisoryUpgrade);
-  if (noticeMode === 'checking') return <div className="text-[13px] text-gray-400">{copy.checking}</div>;
+  if (noticeMode === 'checking') return <div className="text-[13px] text-gray-500 dark:text-gray-400">{copy.checking}</div>;
   const rawError = error || status.error;
   const visibleError = rawError
     ? (!isWeb && copy.showRawErrors ? rawError : copy.operationFailed)
@@ -50,7 +50,7 @@ export function RuntimeNotice({
         <AlertTriangle size={19} className="text-red-500 shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{isCodex ? copy.bridgeUnavailable : copy.setupRequired}</div>
-          <div className="mt-1 text-[12px] text-gray-500">{setupHintText(copy, status.setup_hint) || copy.bridgeRepair}</div>
+          <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{setupHintText(copy, status.setup_hint) || copy.bridgeRepair}</div>
           {visibleError && <div className="mt-2 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         {!isCodex && (
@@ -92,7 +92,7 @@ export function RuntimeNotice({
                   ? copy.cliOutdated(status.version, status.min_version)
                   : copy.cliMissing(agentName)}
           </div>
-          <div className="mt-0.5 text-[12px] text-gray-500">{hint}</div>
+          <div className="mt-0.5 text-[12px] text-gray-500 dark:text-gray-400">{hint}</div>
           {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
         </div>
         {managementAvailable && canAutoUpgrade ? (
@@ -134,7 +134,7 @@ export function RuntimeNotice({
         <Sparkles size={19} className="text-amber-500 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{waitingForLogin ? waitingTitle : signedOutTitle}</div>
-          <div className="text-[12px] text-gray-500">
+          <div className="text-[12px] text-gray-500 dark:text-gray-400">
             {loginUrlReady
               ? copy.finishAgentAuth(agentName)
               : waitingForLogin
@@ -234,7 +234,7 @@ export function AgentServiceFailureNotice({
           <div className="text-[13px] font-semibold text-red-700 dark:text-red-300">{title}</div>
           <div className="mt-1 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{description}</div>
           <details className="mt-2">
-            <summary className="cursor-pointer text-[11px] text-gray-400">{copy.errorDetails}</summary>
+            <summary className="cursor-pointer text-[11px] text-gray-500 dark:text-gray-400">{copy.errorDetails}</summary>
             <div className="mt-1 break-words text-[11px] text-red-500">{failure.detail}</div>
           </details>
         </div>
@@ -319,7 +319,7 @@ export function AgentRuntimeNotice({
           <div className="mt-1 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{description}</div>
           {notice.detail && (
             <details className="mt-2">
-              <summary className="cursor-pointer text-[11px] text-gray-400">{copy.errorDetails}</summary>
+              <summary className="cursor-pointer text-[11px] text-gray-500 dark:text-gray-400">{copy.errorDetails}</summary>
               <div className="mt-1 break-words text-[11px] text-amber-600 dark:text-amber-300">{notice.detail}</div>
             </details>
           )}
