@@ -21,7 +21,7 @@ completed-task ratio remains 5/47 (10.6%).
 | T01 | 100% | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | 100% | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
 | T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples and three earlier payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
-| T04 | 65% | In progress | Offline tools and the Windows post-build npm adapter are delivered; eight real isolated CLI cases and original-child cancellation passed independent acceptance. Final NSIS source integration, complete provenance and exact platform qualification remain pending. Native code-signing certificates are optional. |
+| T04 | 65% | In progress | Offline tools, Windows post-build npm adapter and role-specific NSIS inspection are delivered; the integrated source passed default regression and current-CLI normal/wrong-Root cases. Complete provenance, product build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 75% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
@@ -14279,11 +14279,31 @@ experiment observed a real OS spawn, abort request and original close with
 accepted both experiments. They do not prove application initialization, kill
 causality, arbitrary detached-child custody or native installation.
 
-The final service NSIS integration is still undergoing its actual-source
-regression. Its portable opt-in fixture path repair retains the exact original
-image hash, size and negative assertions; historical experiments do not qualify
-the new test invocation automatically. T04 stays at 65%, with provenance and
-physical platform acceptance still pending.
+The role-specific NSIS integration is delivered in service commit
+`e5868978f0a8cded70723a2378e4a99d55a989cf`, with DCO and ordinary push
+confirmed. It observes the final installer's PE32/i386 NSIS CRC framing while
+keeping helper, launcher and helperArtifact roles strict PE64/x86_64. Only the
+validated same-image NSIS profile accepts the compiler's known zero fixed-version
+layout; the generic version observer stays strict. Native certificates remain
+optional observations; Root, metadata, DSSE and exact-content authorization
+requirements remain unchanged.
+
+The actual integrated source passed 30 focused top-level tests and 47 subtests,
+including the portable original-image version regression; four unrelated frozen
+Windows-record opt-ins were skipped. All nine common gates passed. Default tests
+passed 1,173 top-level tests and 2,567 subtests; 903 top-level and 749 subtests
+were skipped and are not native qualification. A freshly compiled CLI separately
+completed prepare/sign/assemble/verify with the original independent signer.
+Using the same signed Manifest under the wrong Root stopped at assembly and
+published no completion result. Both real cases passed independent acceptance,
+with natural owned-Job closure, unchanged source and no resource-floor breach.
+These overlapping suites are not a count of distinct tests. The historical six
+other negatives and cancellation were not repeated with this new CLI.
+
+This closes the NSIS integration correction, not whole T04. T04 stays at 65%:
+complete provenance, product build integration, nonempty incremental fallback and
+physical platform acceptance remain pending. No installer was executed by these
+inspection and offline pipeline checks.
 
 ## T10 Linux scanner startup refusal (2026-10-22)
 
