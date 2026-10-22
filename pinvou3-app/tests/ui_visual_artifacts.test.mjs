@@ -1,0 +1,150 @@
+// Regression pins for the 2026-10 full-app visual e2e sweep fixes.
+//
+// These run Chrome-free under `node --test` (every CI leg, every platform), so
+// they must not depend on puppeteer or a browser binary. Where the repo already
+// exposes a real artefact (the three-language dictionary, the icon bytes, the
+// theme storage key constant) the pin checks that artefact; the remaining pins
+// are source anchors over comment-stripped text, because the behaviours they
+// protect (paint-containment clipping, cascade order, first-paint colour) are
+// only observable in a real browser and are exercised by the sweep harness.
+import assert from 'node:assert/strict';
+import { readFileSync, existsSync } from 'node:fs';
+import { test } from 'node:test';
+import { dict } from './helpers/i18n-all.js';
+import { COLOR_SCHEME_STORAGE_KEY } from '../src/shared/color-scheme.js';
+
+const sourceUrl = relative => new URL(`../src/${relative}`, import.meta.url);
+const source = relative => readFileSync(sourceUrl(relative), 'utf8');
+// Positive anchors run against comment-stripped text so a guard that was
+// commented out cannot keep its pin green; negative anchors run against the
+// RAW text so a mention inside a comment or string is also caught (same split
+// as ui_language_coverage.test.mjs).
+const stripComments = text => text
+  .replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\n]/g, ''))
+  .split('\n')
+  .map(line => line.replace(/\/\/.*$/, ''))
+  .join('\n');
+const count = (text, re) => (text.match(re) || []).length;
+
+test('chat markdown: long tokens wrap with a Safari-14 fallback and tables keep their scroll box', () => {
+  const baseCss = stripComments(source('styles/base.css'));
+  // break-word must precede anywhere: `anywhere` is Safari 15.4+, and alone it
+  // shrinks table-cell min-content until auto-layout tables stop overflowing
+  // into the block-table scroll box.
+  assert.match(
+    baseCss,
+    /\.msg-md,\.persona-body,\.codex-markdown \{ overflow-wrap:break-word; overflow-wrap:anywhere; \}/,
+    'markdown bodies must wrap long tokens with break-word declared before anywhere',
+  );
+  assert.match(
+    baseCss,
+    /\.msg-md th,\.msg-md td,\.codex-markdown th,\.codex-markdown td \{ overflow-wrap:normal; \}/,
+    'table cells must opt back out of anywhere so wide tables scroll instead of collapsing',
+  );
+});
+
+test('reload hydration joins adjacent assistant text blocks with a blank line (both lanes)', () => {
+  const shared = stripComments(source('shared/bridge-shared-helpers.js'));
+  assert.match(shared, /textBuf = textBuf \? textBuf \+ "\\n\\n" \+ b\.text : b\.text/,
+    'shared rerender must join adjacent text blocks with a blank line');
+  const codeLane = stripComments(source('features/codex/code-native-lane.js'));
+  assert.match(codeLane, /textBuf = textBuf \? `\$\{textBuf\}\\n\\n\$\{blockText\}` : blockText/,
+    'code-native hydration must use the same blank-line join');
+});
+
+test('knowledge dialogs fit narrow panes', () => {
+  const knowledgeView = stripComments(source('features/knowledge/KnowledgeView.jsx'));
+  assert.match(knowledgeView, /bg-black\/40 p-4" onClick=\{onClose\}/,
+    'KbDialog overlay must pad its contents away from the pane edge');
+  assert.match(knowledgeView, /max-w-full rounded-2xl p-6 bg-white dark:bg-\[#1E1F20\]/,
+    'KbDialog card must never exceed its overlay width');
+});
+
+test('personas banner avatars hide below xl through utilities, not a cascade hack', () => {
+  const personas = source('features/personas/Personas.jsx');
+  assert.match(stripComments(personas), /hidden xl:flex items-center justify-evenly/,
+    'avatar row must be hidden below xl (1280px) with responsive utilities');
+  assert.doesNotMatch(personas, /bnr-avatars/, 'the dead bnr-avatars hook must stay removed');
+  assert.doesNotMatch(source('styles/base.css'), /bnr-avatars/,
+    'base.css must not reintroduce a media-query hide rule that loses to the flex utility');
+});
+
+test('reader window paints its own dark canvas before first paint and keeps it on mount', () => {
+  const readerHtml = source('reader.html');
+  const tag = readerHtml.match(/<script src="\/shared\/theme-boot\.js" data-dark-bg="(#[0-9A-Fa-f]{6})"><\/script>/);
+  assert.ok(tag, 'reader.html must load the shared theme-boot script with a data-dark-bg colour');
+  const darkBg = tag[1];
+  const readerApp = stripComments(source('features/reader/ReaderApp.jsx'));
+  assert.match(readerApp, new RegExp(`bg-white dark:bg-\\[${darkBg}\\]`),
+    'the pre-paint canvas colour must equal the reader root dark background (no shade pop at mount)');
+  assert.match(readerApp, /useState\(\(\) => \{[\s\S]*?localStorage\.getItem\(COLOR_SCHEME_STORAGE_KEY\)[\s\S]*?return 'system';\s*\}\)/,
+    'ReaderApp must seed its colour scheme from the stored value or it strips the pre-paint class on mount');
+
+  const themeBoot = stripComments(source('shared/theme-boot.js'));
+  assert.match(themeBoot, new RegExp(`getItem\\('${COLOR_SCHEME_STORAGE_KEY.replaceAll('.', '\\.')}'\\)`),
+    'theme-boot must read the same storage key as color-scheme.js');
+  assert.match(themeBoot, /dataset\.darkBg/, 'theme-boot must take the canvas colour from its script tag');
+  assert.match(themeBoot, /classList\.add\('dark'\)/, 'theme-boot must set the dark class pre-paint');
+  // index.html keeps an inline copy on the startup critical path; it must stay
+  // on the same key so the two windows agree on the boot-time cache.
+  assert.match(source('index.html'), new RegExp(COLOR_SCHEME_STORAGE_KEY.replaceAll('.', '\\.')));
+});
+
+test('web-access primaries and the refresh confirm carry the shared light + dark pairing', () => {
+  const settingsView = stripComments(source('features/settings/SettingsView.jsx'));
+  assert.match(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-60 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\]/,
+    'refresh confirm button must carry light + dark primary styling');
+  assert.ok(count(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-50 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\]/g) >= 2,
+    'the allow-workspace and enable primaries in the same panel must carry the dark pairing too');
+});
+
+test('dark-capable hint text and toggle tracks have dark variants', () => {
+  const remoteKnowledge = stripComments(source('features/remote-knowledge/RemoteKnowledgeView.jsx'));
+  assert.match(remoteKnowledge, /bg-\[#E5E5EA\] dark:bg-\[#39393D\] transition-colors/,
+    'remote-KB toggle track must follow the shared Toggle light/dark track colours');
+  const acpNotices = stripComments(source('features/codex/AcpRuntimeNotices.jsx'));
+  assert.equal(count(acpNotices, /(?<!dark:)text-gray-400/g), 0,
+    'every gray-400 hint in the runtime notices must be the dark half of a gray-500/gray-400 pair');
+  assert.ok(count(acpNotices, /text-gray-500 dark:text-gray-400/g) >= 6,
+    'runtime-notice hints must raise contrast in dark mode');
+});
+
+test('tool store: hint, dialogs, labels, badge, icon', () => {
+  const raw = source('features/tools/ToolStoreView.jsx');
+  const toolStore = stripComments(raw);
+  assert.match(toolStore, /hidden xl:flex min-w-0 items-center gap-1\.5/,
+    'drag hint must hide when the chip row cannot fit it');
+  assert.match(toolStore, /bg-black\/40 p-4 backdrop-blur-sm/, 'ModalBackdrop must pad its cards away from the viewport edge');
+  assert.equal(count(toolStore, /w-\[300px\] max-w-full rounded-\[20px\]/g), 4, 'all four 300px dialog cards must carry max-w-full');
+  assert.doesNotMatch(raw, /w-\[300px\] rounded/, 'no 300px dialog card may lose its max-width guard');
+  assert.ok(count(toolStore, /text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider/g) >= 3,
+    'detail labels must have a dark variant');
+  assert.match(toolStore, /\(storeCopy\.recycleKinds \|\| \{\}\)\[item\.kind\]/, 'recycle badge must use the singular type labels');
+  assert.match(toolStore, /wb-qq-mail\.jpg/, 'QQ-mail icon asset must be referenced by its real jpeg extension');
+
+  const jpg = sourceUrl('assets/tool-icons/wb-qq-mail.jpg');
+  assert.ok(existsSync(jpg), 'wb-qq-mail.jpg must exist');
+  assert.ok(!existsSync(sourceUrl('assets/tool-icons/wb-qq-mail.png')), 'the mislabelled .png must stay removed');
+  const magic = readFileSync(jpg).subarray(0, 3);
+  assert.deepEqual([...magic], [0xff, 0xd8, 0xff], 'wb-qq-mail.jpg must really be JPEG data');
+});
+
+test('community group name and recycle-bin badge labels exist in all three languages', () => {
+  for (const language of ['zh', 'en', 'ja']) {
+    assert.ok(typeof dict[language].communityGroupName === 'string' && dict[language].communityGroupName.trim(),
+      `${language}.communityGroupName must exist`);
+    const kinds = dict[language].uiToolStore.recycleKinds;
+    // recycle_bin.rs only ever records mcp / skill / bundle packages.
+    for (const kind of ['bundle', 'mcp', 'skill']) {
+      assert.ok(kinds && typeof kinds[kind] === 'string' && kinds[kind].trim(), `${language}.uiToolStore.recycleKinds.${kind} must exist`);
+    }
+  }
+  // dictJa spreads dictEn: a ja-missing key silently falls back to English.
+  assert.notEqual(dict.ja.communityGroupName, dict.en.communityGroupName, 'ja community group name must not fall back to English');
+  assert.equal(dict.en.uiToolStore.recycleKinds.skill, 'Skill', 'en recycle badge labels must be singular');
+
+  const communityPanel = source('features/settings/CommunityPanel.jsx');
+  assert.match(stripComments(communityPanel), /copy\.communityGroupName/, 'the community panel must render the localized group name');
+  assert.doesNotMatch(communityPanel, /COMMUNITY_QQ_GROUP_NAME/, 'the raw Chinese constant must not come back');
+  assert.doesNotMatch(source('features/settings/community-config.js'), /COMMUNITY_QQ_GROUP_NAME/, 'community-config must not export the name');
+});
