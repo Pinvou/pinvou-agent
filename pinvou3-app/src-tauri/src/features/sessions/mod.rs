@@ -133,6 +133,7 @@ use std::sync::atomic::AtomicU64;
 pub use crate::core::mode_state::SerializableMode;
 use crate::platform::paths;
 use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
+use deepseek_tui::models::Message as ChatMessage;
 use parking_lot::{Mutex, RwLock};
 #[cfg(feature = "benchmark-hooks")]
 pub(crate) use retention::RetentionEvictionRecord;
@@ -378,6 +379,13 @@ pub struct SessionStore {
     /// startup); deletion proceeds and only the process-level state goes
     /// unnotified.
     session_purged_hooks: Arc<RwLock<Vec<SessionPurgedHook>>>,
+    /// Messages-shrunk hook registry (r21 M1): fired when an engine-state
+    /// persist replaces the transcript with strictly fewer messages —
+    /// compaction is the only shrinking writer on that path. The checkpoint
+    /// ledger rides it to invalidate truncated-branch Turn entries so the
+    /// ledger-derived reconciliation count stays transcript-honest in the
+    /// idle-after-compaction window.
+    messages_shrunk_hooks: Arc<RwLock<Vec<SessionMessagesShrunkHook>>>,
     /// Durable-session-deleted hook registry. This lifecycle point is separate
     /// from `session_purged_hooks`: the durable JSON can be committed as absent
     /// before workspace/side-map cleanup succeeds, while a side-map purge does
@@ -426,6 +434,15 @@ pub type CodeSessionPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// guard's feature dependency direction); the app composition root
 /// registers it.
 pub type SessionPurgedHook = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Messages-shrunk hook (r21 M1): fired with the NEW (already persisted)
+/// message list when an engine-state persist replaces the transcript with
+/// strictly fewer messages (compaction). Injected for the same
+/// dependency-inversion reason as [`SessionPurgedHook`] — the checkpoint
+/// invalidation lives in `code_checkpoints`, which `sessions` must not
+/// import. Handlers run inside the persist lock: defer store re-entry and
+/// heavy IO to their own thread.
+pub type SessionMessagesShrunkHook = Arc<dyn Fn(&str, &[ChatMessage]) + Send + Sync>;
 
 /// Durable-session-deleted hook: fired as soon as `<id>.json` is confirmed
 /// absent, including partial commits where later workspace cleanup reports an

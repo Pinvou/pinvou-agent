@@ -2253,6 +2253,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ledger);
     }
 
+    /// r21 M1（阻塞项回归钉）：压缩整体替换 transcript 后的空闲窗口——账本
+    /// 末条 Turn 序号必须随收缩钩子作废而被拉回与新 transcript 同数（此处
+    /// 保留 1），调和门据此隐藏错位入口；否则前端时间线（保留全部气泡的
+    /// 10）== 账本序号 → 门放行 → 内部芯片静默错位回退。
+    #[tokio::test]
+    async fn compaction_shrink_keeps_ledger_count_transcript_honest() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("compaction-window");
+        let _s1 = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+        )
+        .await
+        .expect("t1");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed 1");
+        let _s2 = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+        )
+        .await
+        .expect("t2");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed 2");
+
+        // 注册与 lib.rs 组合根同形的收缩钩子（测试内同步执行——失效只触碰
+        // 账本索引，不重入 store，符合钩子纪律），随后模拟压缩整体替换。
+        let hook_store = store.clone();
+        let hook_ledger = ledger.clone();
+        let hook_id = id.clone();
+        store.register_messages_shrunk_hook(std::sync::Arc::new(
+            move |session_id: &str, messages: &[deepseek_tui::models::Message]| {
+                let kept = checkpoints::count_user_turns(messages);
+                let _ = checkpoints::invalidate_turn_checkpoints_after(&hook_ledger, kept);
+                let _ = (session_id, &hook_id, &hook_store);
+            },
+        ));
+        let compacted = crate::features::sessions::ChatEngineState {
+            messages: vec![user_msg("第一轮"), assistant_msg("答一")],
+            system_prompt: None,
+            model: "/model".into(),
+            workspace: std::env::temp_dir(),
+        };
+        store
+            .persist_chat_engine_state_with_commit(&id, &compacted, || true, |_| {})
+            .expect("compaction persist");
+
+        // 空闲窗口的调和门计数：索引末条 Turn 必须是收缩后的 1（而非 2）。
+        let entries = checkpoints::list_checkpoints(&ledger).expect("list");
+        let last_turn = entries
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == checkpoints::CheckpointKind::Turn)
+            .and_then(|entry| entry.turn);
+        assert_eq!(
+            last_turn,
+            Some(1),
+            "压缩收缩后账本派生计数必须与新 transcript 同数（r21 M1），否则调和门放行错位回退"
+        );
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
     /// r19 M6：回退在 apply 后、truncate 前崩溃（暂记落盘、代码已恢复、对话
     /// 未截断）——下一次 turn 快照前的崩溃对账必须自动完成协议：截断生效、
     /// 被截分支快照作废、暂记清除、本轮快照登记在截断后的树上（而不是把混合

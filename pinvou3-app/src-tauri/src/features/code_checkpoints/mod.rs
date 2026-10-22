@@ -1251,6 +1251,14 @@ fn validate_no_sensitive_paths_staged(
         pathspecs.push(format!(":(icase){pattern}"));
         pathspecs.push(format!(":(icase)**/{pattern}"));
     }
+    // r21 M3：SHADOW_EXCLUDES（依赖/构建目录）同样会被 worktree 否定行击穿
+    // ——击穿后 add -A 照收 node_modules 等，绕过 2GB 体积门的估算豁免、撑爆
+    // 影子库，且 clean -fd 在 restore 时删掉中途生成的未跟踪依赖文件。与
+    // 秘密同款 bail（拒绝快照直到否定行移除）。
+    for pattern in SHADOW_EXCLUDES {
+        pathspecs.push(format!(":(icase){pattern}"));
+        pathspecs.push(format!(":(icase)**/{pattern}"));
+    }
     pathspecs.extend(ledger_guard_pathspecs(&ledger_guard_paths(
         ledger_root,
         work_tree,
@@ -1267,7 +1275,7 @@ fn validate_no_sensitive_paths_staged(
         // read-tree --empty 只动 index：下一轮 add -A 全量重建，无正确性损失。
         let _ = git(repo, work_tree, &["read-tree", "--empty"]);
         bail!(
-            "checkpoint staged sensitive path {path} detected: worktree .gitignore negation may have pierced the exclusion; refusing to snapshot",
+            "checkpoint staged excluded path {path} detected: worktree .gitignore negation pierced a secret/shadow exclusion; refusing to snapshot until the negation is removed",
         );
     }
     Ok(())
@@ -1586,6 +1594,13 @@ pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
         return Ok(None);
     };
     if find_checkpoint(ledger_root, &pending.checkpoint_id).is_err() {
+        // 目标已被 LRU 淘汰：该回退永远无法完成——清掉暂记解除快照阻断并
+        // 如实留痕（此前静默 None，文件永不清、reconcile 的淘汰分支不可达）。
+        eprintln!(
+            "[checkpoints] pending rewind target evicted, dropping pending: {}",
+            pending.checkpoint_id
+        );
+        let _ = fs::remove_file(&path);
         return Ok(None);
     }
     Ok(Some(pending))
