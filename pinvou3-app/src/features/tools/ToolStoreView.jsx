@@ -584,7 +584,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const ModalBackdrop = ({ onClose, onKeyDown, children }) => (
       // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
       <div
-        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
         onClick={onClose}
         onKeyDown={onKeyDown}
       >
@@ -683,7 +683,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       return (
         <ModalBackdrop>
           <div
-            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
+            className={`w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
             <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
@@ -798,7 +798,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
           <div
             data-testid="edit-display-dialog"
-            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
+            className={`w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
             onClick={e => e.stopPropagation()}
           >
@@ -906,7 +906,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
       return (
         <ModalBackdrop>
-          <div className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`} style={{ animation: 'tsAlertIn .2s ease-out' }}>
+          <div className={`w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`} style={{ animation: 'tsAlertIn .2s ease-out' }}>
             <div className="px-6 pt-6 pb-4 text-center">
               <div className="text-[34px] mb-2">📖</div>
               <div className={`text-[17px] font-semibold mb-2 text-slate-900 dark:text-white`}>{c.title}</div>
@@ -928,7 +928,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       <ModalBackdrop onClose={onCancel}>
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
-        <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
+        <div className="w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
           <div className="px-6 pt-6 pb-5 text-center">
             <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{title}</div>
             <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{desc}</div>
@@ -2765,19 +2765,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
                   <div className="flex items-center justify-between py-5 mb-8 border-y border-slate-100 dark:border-white/5 overflow-x-auto no-scrollbar gap-8">
                     <div className="flex flex-col flex-shrink-0">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.type}</span>
                       <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailVersion}</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailVersion}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.version}</span>
                       <span className="text-[12px] text-slate-400 mt-1">{storeCopy.detailStableRelease}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0 pr-4">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailLatency}</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailLatency}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.latency}</span>
                       <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> {storeCopy.detailGlobalAccel}</span>
                     </div>
