@@ -4284,6 +4284,35 @@ mod expert_turn_invariant_tests {
 mod tests {
     use super::*;
 
+    /// Round-34 M4: the delegation-disable leg is the deterministic defense
+    /// for unattended turns (the typed Ask rules never fire for MCP tools),
+    /// and it had NO pin — deleting the `subagents_enabled = false` arm at
+    /// the unattended spawn site kept the whole serial suite green
+    /// (reviewer mutation). Source-pin the disable at its production site:
+    /// engine.rs scatters its cfg(test) modules, so the span runs from the
+    /// unattended spawn gate to the shell-manager injection (the split
+    /// itself proves the gate exists; the arm inside it proves the disable).
+    #[test]
+    fn unattended_spawn_disables_subagents_in_source() {
+        let source = include_str!("engine.rs");
+        let production = source
+            .split("mod tests {")
+            .next()
+            .expect("the production half of engine.rs present");
+        let span = production
+            .split("if scheduled_unattended_spawn {")
+            .nth(1)
+            .expect("the unattended spawn gate present")
+            .split("engine_config.runtime_services.shell_manager")
+            .next()
+            .expect("the disable arm is bounded by the shell-manager injection");
+        assert!(
+            span.contains("engine_config.subagents_enabled = false;"),
+            "the unattended spawn must disable subagents — the deterministic \
+             delegation-disable leg of the recursion shield (round-34 M4)"
+        );
+    }
+
     #[test]
     fn sync_session_op_carries_the_keychain_backfill() {
         // Round-13 M4: the SyncSession payload is the keychain backfill's only

@@ -7403,13 +7403,16 @@ mod tests {
     /// and a caller passing `restrict_tools=false` is still pressed to the
     /// scoped list — never the full catalog — by the `aux-` prefix.
     /// Ordinary sessions are enforced on neither side.
-    /// Round-8 M1(a) (#628): scheduled hidden sessions spawn with
-    /// subagents DISABLED — the recursion shield rides the engine's
-    /// disallowed_tools, which a model-supplied
-    /// `agent(inherit_disallowed_tools=false)` would otherwise shed (the
-    /// child keeps MCP + auto_approve while the posture lists do not
-    /// cover the app-automations write tools). Re-enabling subagents for
-    /// sched sessions turns this red.
+    /// Round-8 M1(a) (#628), revised per round-33 M8 / round-34 M4: the
+    /// recursion shield rides the engine's disallowed_tools, which a
+    /// model-supplied `agent(inherit_disallowed_tools=false)` would
+    /// otherwise shed (the child keeps MCP + auto_approve while the
+    /// posture lists do not cover the app-automations write tools).
+    /// Round-33 M8 scoped the disable to the UNATTENDED run engine — an
+    /// interactive continuation rebuilds with normal delegation, so this
+    /// test pins that interactive scheduled sessions KEEP subagents. The
+    /// unattended spawn config's disable is pinned at its engine.rs site
+    /// (`unattended_spawn_disables_subagents_in_source`).
     #[test]
     fn scheduled_session_spawns_without_subagents() {
         let mut bridge = fixture_bridge();

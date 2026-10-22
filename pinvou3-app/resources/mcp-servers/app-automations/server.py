@@ -177,7 +177,7 @@ TOOL_DEFS = [
         "description": (
             "Create a Pinvou scheduled task (write operation, applied immediately — "
             "there is no per-call confirmation dialog; the Scheduled Tasks panel "
-            "and the audit log are the review surface). "
+            "and the result card are the review surfaces). "
             "Use this when the user asks for a recurring or one-shot automated job, e.g. "
             "'run an AI news digest every day at 8:30' or 'remind me once on June 1st at 9:30'. "
             "Each run starts its own conversation in a task-dedicated workspace. Call "

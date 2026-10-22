@@ -405,7 +405,7 @@ at-least-once. User review surfaces are result cards and the Scheduled Tasks
 panel, not the hidden audit JSONL. Same-user direct writes to the Automation
 store bypass validation, provenance and shadow auditing; shadow evidence is
 best effort for watcher-applied requests only, not a security boundary.
-Delete and prompt/rrule replacement require the user's panel action, by the
-explicit product decision for this revision. Older queued destructive
-requests are rejected before apply. See the design document's Round-33
+Delete of an unambiguous target executes without a panel card (§5
+exception); prompt/rrule replacement requires panel review/submission.
+Older queued destructive requests are rejected before apply. See the design document's Round-33
 section for directory, batch, retention and unattended-run boundaries.

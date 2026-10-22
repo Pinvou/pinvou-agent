@@ -211,11 +211,11 @@
 ## 8. 边界与已披露事项
 
 - 交互会话无阻塞确认（决策记录 §2）；`tasks`/`github` 基座工具可见性问题本次不处理。
-- **无人值守递归防护的真实边界（round-8 M1 修订）**：确定性防线是引擎侧 `unattended_disallowed_tools`（deny 名单）+ round-8 起对 sched- 隐藏会话**关闭 subagents**（`agent(inherit_disallowed_tools=false)` 无法再剥离 deny 名单——子运行时本会保留 MCP+自动批准，而 posture 名单不含本族三写工具）。剩余通道有三（round-27 M1 改真；round-30 REQUIRED-2 增补第三并封堵）。其一，**无需 shell**：定时任务钉死 Yolo（`tasks.rs`）→ trust mode 下 `write_file` 接受绝对路径，`~/.pinvou3` 不在默认拒绝子树内，而无人值守 deny 名单只含具名工具——故仅凭文件工具即可向 `~/.pinvou3/task-requests/` 写入合法 spool 记录（claimed-string 过滤器的既有让步）。其二，**messaging spool 是同类的第二通道，且可跨会话洗白**：`features/messaging/mod.rs` 自述该目录为"未经认证的本地侧门"（无 digest 绑定、`from_session` 可选）——无人值守运行的文件工具写入后，投递会把普通目录回合注入任意普通会话，而该会话目录含本族三写工具（即 round-9 M2 在工具层修掉的间接性的文件写孪生）。其三，**registry 启动器曾可扩充同回合工具面**：`registry_sync`/`start_registry_mcp_server` 随应用白名单对 sched- 引擎可见，自动批准放行，而宿主全访问 hold 名单只含 `start_mcp_server`——启动用户缓存的 registry 候选会让其 `mcp_<name>_*` 工具以本盾看不见的新身份加入同一回合。**本波已把两个启动器加入 `unattended_disallowed_tools`**（引擎侧具名 deny 名单，round-30 REQUIRED-2），该逃逸通道就此关闭；把启动器加入宿主 hold 名单是 CodeWhale 侧的彻底修法（按 fork 边界另行上游跟进）。
+- **无人值守递归防护的真实边界（round-8 M1 修订）**：确定性防线是引擎侧 `unattended_disallowed_tools`（deny 名单）+ round-8 起仅对**无人值守运行引擎**关闭 subagents、交互续接以正常委派重建（round-33 M8 改真；`agent(inherit_disallowed_tools=false)` 无法再剥离 deny 名单——子运行时本会保留 MCP+自动批准，而 posture 名单不含本族三写工具）。剩余通道有三（round-27 M1 改真；round-30 REQUIRED-2 增补第三并封堵）。其一，**无需 shell**：定时任务钉死 Yolo（`tasks.rs`）→ trust mode 下 `write_file` 接受绝对路径，`~/.pinvou3` 不在默认拒绝子树内，而无人值守 deny 名单只含具名工具——故仅凭文件工具即可向 `~/.pinvou3/task-requests/` 写入合法 spool 记录（claimed-string 过滤器的既有让步）。其二，**messaging spool 是同类的第二通道，且可跨会话洗白**：`features/messaging/mod.rs` 自述该目录为"未经认证的本地侧门"（无 digest 绑定、`from_session` 可选）——无人值守运行的文件工具写入后，投递会把普通目录回合注入任意普通会话，而该会话目录含本族三写工具（即 round-9 M2 在工具层修掉的间接性的文件写孪生）。其三，**registry 启动器曾可扩充同回合工具面**：`registry_sync`/`start_registry_mcp_server` 随应用白名单对 sched- 引擎可见，自动批准放行，而宿主全访问 hold 名单只含 `start_mcp_server`——启动用户缓存的 registry 候选会让其 `mcp_<name>_*` 工具以本盾看不见的新身份加入同一回合。**本波已把两个启动器加入 `unattended_disallowed_tools`**（引擎侧具名 deny 名单，round-30 REQUIRED-2），该逃逸通道就此关闭；把启动器加入宿主 hold 名单是 CodeWhale 侧的彻底修法（按 fork 边界另行上游跟进）。
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
 - 零 CodeWhale / fork 内容变更；本分支**不含** fork 登记册刷新与 gitlink 追平提交——gitlink 随基座 main 对齐（round-27 M2 改真），`docs/fork-modifications.md` 由各落地 PR 各自维护；本计划文档本身随本分支入库，作为后续实施的评审基线。
 - 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
-- **超侧车上限的任务对模型不可见（round-30 S6）**：面板创建的任务若 prompt 超过 256 KiB 存储读上限（域层不限长），`read` 会答 "not found"、`list` 静默跳过——模型的建前去重会因此重复创建。已在本条与 read 的错误语义中披露；更细的 "存在但不可读" 信号是后续工作。
+- **存储读上限（round-31 M3 回填 EN 修订）**：单条读在被尺寸/类型策略拒绝时报告"不可读记录"，`list` 跳过策略拒绝/损坏的记录，权限/IO 失败按错误返回而不是谎称存储为空；超过 256 KiB 上限的任务在列表中仍不完整——模型的建前去重会因此重复创建（既知让步）。
 - **运行结果不可观测（round-27 minor 12）**：`list`/`read` 只暴露 status/nextRunAt/lastRunAt——模型无法读取运行输出（session-reader 硬拒 `sched-` 目标，无旁路）；被替换的基础 `automation` 工具在此处更丰富（read 含运行记录）。单一用户语义下面子可接受，特此披露。
 - **特性开关文案先于设置页（round-27 minor 13）**：`scheduled-task-automation` 开关的三语文案已入库，但本 PR 未随附自动化设置页——开关目前经命令/配置可达（契约 §3.1 的"随特性落地接入各自设置页"以跟进 PR 履行）。
 - **IO 范围**：定时请求审计使用既有目录句柄原语与新增的句柄相对追加操作。本 PR 已移除先前对全局 audit.rs/open_private_append_file 的行为改动；消息、computer-use、诊断保持原行为。回执采用独占唯一临时文件，旧的截断临时文件辅助函数已移除。
@@ -246,7 +246,7 @@
 | spool 扩展 | 记录加 `kind`(`create`/`update`/`delete`) + `task_id`，其余字段全部可选 | 契约 §4.4 只允许增字段：旧 create 记录经 watcher 默认 `kind=create` 继续有效 |
 | 幂等命名 | `sha256("<from_session>\|<kind>\|<task_id>\|<key>")`；key 必须随 from_session | 命名空间按发送方收敛，不随 from_session 缺省退化为全局；同键不同操作不互踩（创建与更新可共用一个键而不互相覆盖） |
 | 目标预检 | 更新在 server 侧检查存在性；删除即使对象已不存在仍到达回执/领域层 | 保证删除重试不会在读取既有成功回执前失败；领域层区分明确 NotFound 与 IO/解析错误。 |
-| Ask 规则 | update/delete 同 create 一样注册 typed Ask 规则；read/list 不加 | 读操作不加门（不打扰）；规则在当前全自动审批下不弹窗，为审批分化预留；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 eval_/aux- 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求） |
+| Ask 规则 | update/delete 同 create 一样注册 typed Ask 规则；read/list 不加 | 读操作无应用侧确认规则，但仍受 feature/scope 与底座 Plan-mode 门约束（round-31 M3 回填 EN 修订）；规则在当前全自动审批下不弹窗，为审批分化预留；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 eval_/aux- 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求） |
 
 ### 9.3 验收矩阵追加（接续 §5 编号）
 

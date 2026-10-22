@@ -2410,10 +2410,18 @@ mod tests {
             .split("match EnginePool::new_with_dependencies")
             .next()
             .expect("the deny closure is followed by the engine pool build");
+        // Round-34 M4 (related): raw-source matching self-satisfies on
+        // COMMENTED-OUT pushes — strip line-comment tails before matching
+        // so commenting a deny line cannot satisfy the pin.
+        let live = span
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
         for tool in ["automation", "send_later"] {
             let push = format!("tools.push(\"{tool}\".to_string());");
             assert!(
-                span.contains(&push),
+                live.contains(&push),
                 "lib.rs must deny the dead foundation tool '{tool}'"
             );
         }
