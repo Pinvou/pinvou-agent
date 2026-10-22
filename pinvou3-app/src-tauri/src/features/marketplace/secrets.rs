@@ -137,7 +137,28 @@ pub(super) fn set_remote_secret_header(
         return Ok(());
     }
     if scheme.trim().is_empty() {
-        env_headers.insert(header.to_string(), serde_json::Value::String(env_var));
+        let existing = env_headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(header))
+            .map(|(_, value)| value.clone());
+        match existing {
+            // Idempotent re-declaration (same key resolved twice) is fine;
+            // a DIFFERENT credential behind the same header can never be
+            // represented — one env-var slot serves one header — and a
+            // silent overwrite would land an entry the credential rule
+            // disables at the very next startup (the dropped key unwired),
+            // with the reinstall fix never converging. Fail loud instead,
+            // mirroring the Bearer arm's conflicting-name refusal.
+            Some(existing) if existing.as_str() != Some(env_var.as_str()) => {
+                return Err(format!(
+                    "a remote MCP server does not support multiple secrets for header '{header}'"
+                ));
+            }
+            Some(_) => {}
+            None => {
+                env_headers.insert(header.to_string(), serde_json::Value::String(env_var));
+            }
+        }
         return Ok(());
     }
     Err(format!(

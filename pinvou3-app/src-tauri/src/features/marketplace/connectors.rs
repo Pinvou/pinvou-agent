@@ -96,8 +96,26 @@ pub(super) fn load_mcp_json_for_reconcile() -> Result<(PathBuf, serde_json::Valu
         return Ok((mcp_path, default_mcp_json()));
     }
     let content = read_private_data_file(&mcp_path).map_err(|e| format!("读取 mcp.json: {e}"))?;
-    match serde_json::from_str(&content) {
-        Ok(mcp) => Ok((mcp_path, mcp)),
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(mut mcp) => {
+            // A parseable file that merely LACKS the servers map (a hand
+            // trim, a partial external write) is healed in memory instead of
+            // failing every tool's reconcile with "mcp.json 格式错误" on
+            // every boot: inserting the empty map destroys nothing, and the
+            // healed shape persists with the pass's first real write. A
+            // `servers` key PRESENT but not an object keeps the refusal —
+            // that shape may hold data no writer here can interpret.
+            if mcp.get("servers").is_none() {
+                let object = mcp
+                    .as_object_mut()
+                    .ok_or("mcp.json 格式错误：root is not a JSON object")?;
+                object.insert(
+                    "servers".to_string(),
+                    serde_json::Value::Object(serde_json::Map::new()),
+                );
+            }
+            Ok((mcp_path, mcp))
+        }
         Err(error) => {
             super::backup_corrupt_json_file(&mcp_path, "mcp.json.corrupt", &content);
             Err(format!(
@@ -298,10 +316,16 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     /// Shared arm of the mcp.json entry builders for one secret placeholder.
     /// `Ok(Some(placeholder))` — wire it; `Ok(None)` — the credential is
     /// absent and `degrade_unresolved_secrets` allows skipping the wiring
-    /// (startup reconcile); `Err` — a required secret is missing (install
-    /// mode) or the credential store itself failed (both modes) — the caller
-    /// refuses the build so a transiently locked keyring is never baked into
-    /// a permanently unwired entry. Collapses the per-site 4-arm match over
+    /// (startup reconcile) or the channel is optional (`required == false` —
+    /// the same doctrine the config-field arms apply: an optional key's
+    /// absence is a legitimate outcome the config dialog explicitly invites);
+    /// `Err` — a required secret is missing (install mode) or the credential
+    /// store itself failed (both modes) — the caller refuses the build so a
+    /// transiently locked keyring is never baked into a permanently unwired
+    /// entry. The one tolerated store error is
+    /// [`SecretResolveError::UndeterminableMiss`] for an optional channel
+    /// (absence cannot be proven on a keyring-less host, so an install must
+    /// not block on it). Collapses the per-site 4-arm match over
     /// `try_resolve_secret_placeholder`, which carries the
     /// error-classification doctrine.
     fn resolve_entry_secret(
@@ -311,12 +335,14 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         key: &str,
         user_config: &HashMap<String, String>,
         legacy_env: &HashMap<String, String>,
+        required: bool,
         degrade_unresolved_secrets: bool,
     ) -> Result<Option<String>, String> {
         match self.try_resolve_secret_placeholder(tool_id, target, key, user_config, legacy_env) {
             Ok(Some(placeholder)) => Ok(Some(placeholder)),
-            Ok(None) if degrade_unresolved_secrets => Ok(None),
+            Ok(None) if degrade_unresolved_secrets || !required => Ok(None),
             Ok(None) => Err(mcp_secret_missing_error(tool_id, key)),
+            Err(SecretResolveError::UndeterminableMiss(_)) if !required => Ok(None),
             Err(error) => Err(error.to_string()),
         }
     }
@@ -471,6 +497,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 &secret.source_key,
                 user_config,
                 &manifest.env,
+                secret.required,
                 degrade_unresolved_secrets,
             ) {
                 // The user's current input must still be persisted to the
@@ -494,33 +521,52 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         //    字面值、不展开占位符（底座 mcp.rs `headers` 字段文档），字面占位符
         //    是一条永远鉴权失败的接线。
         if headers.is_empty() && env_headers.is_empty() && bearer_token_env_var.is_none() {
-            for k in manifest.env.keys() {
-                if is_sensitive_key_name(k) {
-                    match self.resolve_entry_secret(
-                        &manifest.id,
-                        bundle::keyring_target(bundle::CredentialTarget::Bearer),
-                        k,
-                        user_config,
-                        &manifest.env,
-                        degrade_unresolved_secrets,
-                    ) {
-                        // The resolved value is persisted to the store/registry
-                        // inside `try_resolve_secret_placeholder`; the entry
-                        // only ever carries the env-var NAME.
-                        Ok(Some(_)) => {
-                            set_remote_secret_header(
-                                &mut env_headers,
-                                &mut bearer_token_env_var,
-                                "Authorization",
-                                "Bearer",
-                                k,
-                            )?;
-                        }
-                        Ok(None) => continue,
-                        Err(error) => return Err(error),
+            // The legacy channel is EXISTENTIAL, matching the oracle that
+            // judges it (entry_secret_keys_without_wiring): the builder wires
+            // the first resolving key and the entry authenticates through it
+            // — so resolution must not depend on `manifest.env`'s HashMap
+            // iteration order. Keys are tried in sorted order; a key that
+            // cannot resolve is skipped (both modes — at startup the gap scan
+            // handles the none-resolved case), a store FAILURE still fails
+            // the build in every mode, and only when NO key resolves does a
+            // direct install refuse loud, naming every missing key sorted.
+            let mut missing: Vec<String> = Vec::new();
+            let mut legacy_keys: Vec<&String> = manifest
+                .env
+                .keys()
+                .filter(|k| is_sensitive_key_name(k))
+                .collect();
+            legacy_keys.sort();
+            for k in legacy_keys {
+                match self.try_resolve_secret_placeholder(
+                    &manifest.id,
+                    bundle::keyring_target(bundle::CredentialTarget::Bearer),
+                    k,
+                    user_config,
+                    &manifest.env,
+                ) {
+                    // The resolved value is persisted to the store/registry
+                    // inside `try_resolve_secret_placeholder`; the entry
+                    // only ever carries the env-var NAME.
+                    Ok(Some(_)) => {
+                        set_remote_secret_header(
+                            &mut env_headers,
+                            &mut bearer_token_env_var,
+                            "Authorization",
+                            "Bearer",
+                            k,
+                        )?;
+                        missing.clear();
+                        break;
                     }
-                    break;
+                    Ok(None) => missing.push(k.clone()),
+                    Err(error) => return Err(error.to_string()),
                 }
+            }
+            if !missing.is_empty() {
+                // The message lists every missing key through the same
+                // sentence mcp_secret_missing_error uses for one key.
+                return Err(mcp_secret_missing_error(&manifest.id, &missing.join(", ")));
             }
         }
 
@@ -665,7 +711,12 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             .collect::<HashMap<_, _>>();
         for field in &manifest.config_fields {
             if field.target == "env" {
-                if let Some(val) = user_config.get(&field.key) {
+                // 空串/纯空白输入 = "未提供"（弹窗里输入后清空的字段），与
+                // try_resolve_secret_placeholder 的过滤同一语义：必须走下面的
+                // omitted 分支（从 store 重推导 / 容忍缺席），而不是被当成
+                // "用户给了一个凭据"在解析失败时 fail-loud 卡死整个安装——
+                // 远端 bearer 臂的同款防护见 build_remote_server_entry。
+                if let Some(val) = user_config.get(&field.key).filter(|v| !v.trim().is_empty()) {
                     if field.secret || is_sensitive_key_name(&field.key) {
                         let placeholder = self.resolve_secret_placeholder(
                             &manifest.id,
@@ -724,6 +775,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 &secret.key,
                 user_config,
                 &manifest.env,
+                secret.required,
                 degrade_unresolved_secrets,
             ) {
                 Ok(Some(placeholder)) => {
@@ -741,6 +793,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     key,
                     user_config,
                     &manifest.env,
+                    true,
                     degrade_unresolved_secrets,
                 ) {
                     Ok(Some(placeholder)) => {
@@ -917,6 +970,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                     // so a direct caller can never fight the boot-time builtin upsert.
                     continue;
                 }
+                let had_entry = servers_map.get(&server.name).is_some();
                 match servers_map
                     .get_mut(&server.name)
                     .and_then(|entry| entry.as_object_mut())
@@ -978,8 +1032,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                         }
                         servers_map.insert(server.name.clone(), entry);
                         // Say what the restore could not do instead of reporting an
-                        // unqualified success that 401s on first use.
-                        let mut note = format!("restored missing remote entry '{}'", server.name);
+                        // unqualified success that 401s on first use. A key that
+                        // held a non-object value was PRESENT, not missing — the
+                        // write replaced a malformed shape, and the note must not
+                        // claim otherwise.
+                        let mut note = if had_entry {
+                            format!("replaced malformed remote entry '{}'", server.name)
+                        } else {
+                            format!("restored missing remote entry '{}'", server.name)
+                        };
                         if !disabled
                             && manifest
                                 .config_fields
@@ -1084,7 +1145,9 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
 /// stays invisible (existing entries are never probed against the store — a
 /// transiently locked keyring must never flip entries), and a required
 /// non-secret bearer field (plaintext, never in the keyring) is out of
-/// scope: the restore note discloses it instead.
+/// scope: the restore note discloses it instead — unless the entry is
+/// itself restored disabled, where the disabled note already carries the
+/// reinstall remedy that re-collects every field (pinned).
 ///
 /// Channels are guarded by the entry shape so one function serves both
 /// entry forms: a remote entry (`url`) wires secret_headers / secret bearer

@@ -4679,11 +4679,11 @@ pub(crate) mod tests {
             );
             let entry = &read_mcp_json()["servers"]["cf-remote-m"];
             let wired = entry["bearer_token_env_var"].as_str().unwrap_or_default();
-            assert!(
-                wired == mcp_secret_env_var("Y1_API_KEY")
-                    || wired == mcp_secret_env_var("Y2_API_KEY"),
-                "the writer wires exactly one legacy key (manifest.env is a HashMap, \
-                 so which one resolves first is not pinned): {entry}"
+            assert_eq!(
+                wired,
+                mcp_secret_env_var("Y1_API_KEY"),
+                "the writer wires the sorted-first resolving legacy key (the choice must \
+                 not depend on manifest.env's HashMap iteration order): {entry}"
             );
             assert!(
                 entry.get("disabled").is_none(),
@@ -4781,8 +4781,10 @@ pub(crate) mod tests {
 
     /// A required secret key whose env-var name is a strict prefix of another
     /// wired key's name (`PFX_KEY` inside `PINVOU3_MCP_SECRET_PFX_KEY_V2`)
-    /// must still be counted as a gap: the wiring scan checks the name
-    /// boundary, so a prefix collision cannot mask a missing credential.
+    /// must still be counted as a gap: the wiring scan matches each key's
+    /// name EXACTLY against its own declared slot (`bearer_token_env_var` /
+    /// the declared header's entry / the exact local `${NAME}` token), so a
+    /// prefix collision cannot mask a missing credential.
     #[test]
     fn reconcile_names_required_key_when_only_prefix_wired() {
         with_temp_home(|| {
@@ -5219,10 +5221,12 @@ pub(crate) mod tests {
         });
     }
 
-    /// The wiring scan checks the name boundary on BOTH sides: a required key
-    /// whose env-var name is a strict suffix of another wired key's name
-    /// (`ABA` inside `PINVOU3_MCP_SECRET_XPINVOU3_MCP_SECRET_ABA`) must still
-    /// count as a gap.
+    /// The wiring scan matches each key's name EXACTLY against its own
+    /// declared slot (`bearer_token_env_var` / the declared header's entry /
+    /// the exact local `${NAME}` token): a required key whose env-var name is
+    /// a strict suffix of another wired key's name (`ABA` inside
+    /// `PINVOU3_MCP_SECRET_XPINVOU3_MCP_SECRET_ABA`) must still count as a
+    /// gap.
     #[test]
     fn reconcile_names_required_key_when_only_suffix_twin_wired() {
         with_temp_home(|| {
@@ -12861,6 +12865,364 @@ pub(crate) mod tests {
                 entry["disabled"],
                 serde_json::Value::Bool(true),
                 "the stamp pair stays converged: {entry}"
+            );
+
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    // ===== Round-6 review fix pins (comment 5607809034) =====
+
+    /// A typed-then-cleared OPTIONAL env secret config field (the dialog
+    /// submits the cleared field as an empty string) must take the same
+    /// omitted path as a never-typed key: its absence is legitimate, and
+    /// treating the blank as "a credential the user gave" fails the whole
+    /// install with "missing secret". The remote bearer arm has guarded
+    /// this exact hazard since round 5; the local arm now does too.
+    #[test]
+    fn install_treats_a_cleared_optional_env_secret_input_as_absent() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "opt-blank-f",
+                "OptBlankF",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"OPT_API_KEY","label":"key","required":false,"target":"env","secret":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("opt-blank-f").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut config = std::collections::HashMap::new();
+            config.insert("OPT_API_KEY".to_string(), "".to_string());
+
+            manager
+                .install("opt-blank-f", &config)
+                .unwrap_or_else(|error| {
+                    panic!("a CLEARED optional key must not fail the install: {error}")
+                });
+            let entry = &read_mcp_json()["servers"]["opt-blank-f"];
+            assert!(
+                entry.get("env").is_none() || entry["env"].get("OPT_API_KEY").is_none(),
+                "the cleared optional key must not invent wiring: {entry}"
+            );
+        });
+    }
+
+    /// The legacy remote channel is existential and its wiring choice must
+    /// be DETERMINATE: with every sensitive legacy key resolvable, the
+    /// sorted-first key is wired, not whichever `manifest.env`'s HashMap
+    /// happens to yield.
+    #[test]
+    fn install_wires_the_sorted_first_resolving_legacy_key() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-s",
+                "LegS",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-s-remote","url":"https://leg-s.example.com/mcp"}],
+                    "env":{"ZZZ_API_KEY":"tok-zzz","AAA_API_KEY":"tok-aaa"}"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "leg-s",
+                    store::BundleSource::Upload("leg-s.zip".to_string()),
+                )
+                .expect("a resolvable legacy key must serve the install");
+            let entry = &read_mcp_json()["servers"]["leg-s-remote"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                mcp_secret_env_var("AAA_API_KEY"),
+                "the sorted-first resolvable key must be wired: {entry}"
+            );
+        });
+    }
+
+    /// With mixed resolvability the install must skip the dead key and wire
+    /// the resolving one — the same existential judgment the gap scan
+    /// applies at startup. Under the order-dependent writer this install
+    /// failed whenever the unresolvable key was iterated first.
+    #[test]
+    fn install_skips_unresolvable_legacy_key_when_another_resolves() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-m",
+                "LegM",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-m-remote","url":"https://leg-m.example.com/mcp"}],
+                    "env":{"AAA_API_KEY":"","ZZZ_API_KEY":"tok-zzz"}"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "leg-m",
+                    store::BundleSource::Upload("leg-m.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("one resolvable legacy key must serve the install: {error}")
+                });
+            let entry = &read_mcp_json()["servers"]["leg-m-remote"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                mcp_secret_env_var("ZZZ_API_KEY"),
+                "the resolving key must be wired: {entry}"
+            );
+        });
+    }
+
+    /// The fail-loud contract survives the existential rewrite: when NO
+    /// legacy key resolves, a direct install still refuses, naming every
+    /// missing key (sorted, so the message is deterministic).
+    #[test]
+    fn install_still_refuses_when_no_legacy_key_resolves() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-n",
+                "LegN",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-n-remote","url":"https://leg-n.example.com/mcp"}],
+                    "env":{"AAA_API_KEY":"","ZZZ_API_KEY":""}"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let error = manager
+                .install_upload(
+                    "leg-n",
+                    store::BundleSource::Upload("leg-n.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("missing secret AAA_API_KEY, ZZZ_API_KEY"),
+                "the refusal must name every missing legacy key in sorted order: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// Two secret_headers declaring the SAME header for DIFFERENT source
+    /// keys can never be represented — one env-var slot serves one header —
+    /// and the writer's former silent overwrite landed a colliding entry
+    /// that the credential rule disabled at the very next startup, with a
+    /// reinstall fix that never converged. The install now refuses loud,
+    /// mirroring the Bearer arm's conflicting-name refusal.
+    #[test]
+    fn install_refuses_duplicate_custom_secret_headers() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "dup-h",
+                "DupH",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"dup-h-remote","url":"https://dup-h.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"X-Api-Key","scheme":"","source_key":"K1","provider":"p"},
+                    {"header":"X-Api-Key","scheme":"","source_key":"K2","provider":"p"}
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("dup-h", "header", "K1"), "t1")
+                .unwrap();
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("dup-h", "header", "K2"), "t2")
+                .unwrap();
+
+            let error = manager
+                .install_upload(
+                    "dup-h",
+                    store::BundleSource::Upload("dup-h.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("multiple secrets for header 'X-Api-Key'"),
+                "the refusal must name the contested header: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// An OPTIONAL secret_env channel whose key is absent installs without
+    /// the wiring — the same doctrine the config-field arms apply. Under
+    /// the required-blind resolver this install failed loud.
+    #[test]
+    fn install_skips_absent_optional_secret_env() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "ose-i",
+                "OseI",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"OPT_SE_KEY","provider":"p","required":false}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("ose-i").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "ose-i",
+                    store::BundleSource::Upload("ose-i.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("an absent OPTIONAL secret_env key must not fail the install: {error}")
+                });
+            let entry = &read_mcp_json()["servers"]["ose-i"];
+            assert!(
+                entry.get("env").is_none() || entry["env"].get("OPT_SE_KEY").is_none(),
+                "the skipped optional channel must not invent wiring: {entry}"
+            );
+        });
+    }
+
+    /// Same doctrine for an OPTIONAL secret_headers channel on the remote
+    /// side: absent key, install succeeds, no auth wiring invented.
+    #[test]
+    fn install_skips_absent_optional_secret_header() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "osh-i",
+                "OshI",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"osh-remote","url":"https://osh.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"Bearer","source_key":"OPT_SH_KEY","provider":"p","required":false}
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "osh-i",
+                    store::BundleSource::Upload("osh-i.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "an absent OPTIONAL secret_headers key must not fail the install: {error}"
+                    )
+                });
+            let entry = &read_mcp_json()["servers"]["osh-remote"];
+            assert!(
+                entry.get("bearer_token_env_var").is_none() && entry.get("env_headers").is_none(),
+                "the skipped optional channel must not invent wiring: {entry}"
+            );
+        });
+    }
+
+    /// An OPTIONAL channel tolerates exactly one store error at install —
+    /// [`SecretResolveError::UndeterminableMiss`], the keyring-less-host
+    /// case where absence cannot be proven — matching the config-field
+    /// arms. A real fault still fails the build.
+    #[test]
+    fn install_tolerates_undeterminable_miss_for_optional_secret_env() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "ose-u",
+                "OseU",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"OPT_U_KEY","provider":"p","required":false}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("ose-u").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
+            });
+
+            manager
+                .install_upload(
+                    "ose-u",
+                    store::BundleSource::Upload("ose-u.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "an undeterminable miss on an OPTIONAL channel must not block the \
+                            install on a keyring-less host: {error}"
+                    )
+                });
+        });
+    }
+
+    /// A servers-map key holding a non-object value is PRESENT, not missing:
+    /// the heal overwrites the malformed shape and the note must say so.
+    #[test]
+    fn reconcile_replaces_malformed_remote_entry_with_truthful_note() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "rp-x",
+                "rp-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"rp-remote","url":"https://rp.example.com/mcp"}]"#,
+            );
+            seed_mcp_json(serde_json::json!({ "rp-remote": "hand-garbage" }));
+            write_installed_ids(&["rp-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'rp-x': replaced malformed remote entry 'rp-remote'".to_string()],
+                "the note must not claim the entry was missing: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["rp-remote"];
+            assert_eq!(entry["url"], "https://rp.example.com/mcp", "{entry}");
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A parseable mcp.json that merely LACKS the servers map is healed
+    /// instead of failing every tool's reconcile on every boot; the heal
+    /// inserts an empty map (destroying nothing) and other top-level keys
+    /// survive. A `servers` key present but not an object stays refused.
+    #[test]
+    fn reconcile_heals_mcp_json_missing_servers_map() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "heal-x",
+                "heal-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"heal-remote","url":"https://heal.example.com/mcp"}]"#,
+            );
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(&mcp_path, "{\n  \"other_config\": true\n}\n").unwrap();
+            write_installed_ids(&["heal-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions
+                    .iter()
+                    .any(|a| a.contains("restored missing remote entry 'heal-remote'")),
+                "the restore must proceed on the healed file: {actions:?}"
+            );
+            let healed = read_mcp_json();
+            assert_eq!(
+                healed["servers"]["heal-remote"]["url"], "https://heal.example.com/mcp",
+                "{healed}"
+            );
+            assert_eq!(
+                healed["other_config"], true,
+                "the heal must not destroy unrelated top-level keys: {healed}"
             );
 
             assert_reconcile_idempotent(&manager, &mcp_path);
