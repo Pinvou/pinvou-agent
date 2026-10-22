@@ -415,8 +415,20 @@ evidence; the separate nonderived SN HMAC adapter does not certify this new
 weekly-key workflow. Raw-IP security logs remain at most seven days and
 purpose-isolated prefix-HMAC/ASN summaries at most thirty days. Query-family
 isolation, contribution limits, k20 suppression, immutable frozen snapshots and
-prohibition on network-based admission are unchanged. Source/ASN policy and
-network-week freeze/cutoff details still need a concrete contract before their
-implementation; no T24 timing policy is silently borrowed. Production deployment
+prohibition on network-based admission are unchanged. Source/ASN classification policy still needs a concrete contract before its
+implementation. The network-week attribution and freeze choices below are now
+explicitly approved; they do not inherit T24 policy implicitly. Production deployment
 remains deferred. The actual weekly-key lifecycle and provider acceptance are
 not implemented by changing these documents.
+
+## Approved network-week attribution and completeness (2026-10-22)
+
+The owner selected the trusted client CurrentVersion from the original legal
+event context for the network leaf major.minor dimension, rather than the target
+upgrade version. Events without a trusted installed-version source do not count.
+The server first acceptance time of a legal event determines its UTC week and day;
+retransmission keeps the original attribution. Freeze the public snapshot seven
+days after the week ends, and never rewrite it after freezing. If a missing key
+service or source chain prevents establishing complete leaf integrity, show that
+leaf as data unavailable and publish no partial statistics. These decisions do
+not certify an implementation, alter retention or relax query-family isolation.
