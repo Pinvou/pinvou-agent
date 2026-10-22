@@ -2098,7 +2098,10 @@ jobs:
           # Make that runner assumption explicit and deterministic.
           unset SHELL
           cd CodeWhale
-          for filter in forkguard_powershell forkguard_windows_shell_text; do
+          for filter in forkguard_powershell forkguard_windows_shell_text \
+            command_spec_env_overlays_preserve_existing_values \
+            forkguard_windows_shell_env_overlays_keep_python_stdio_utf8 \
+            windows_shell_env_explicit_override_is_case_insensitive; do
             log="/tmp/codewhale_windows_${filter}.log"
             cargo test -p codewhale-tui --lib --locked "$filter" -- --test-threads=1 2>&1 | tee "$log"
             grep -qE 'running [1-9][0-9]* tests?' "$log" || {

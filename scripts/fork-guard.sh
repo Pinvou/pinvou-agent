@@ -9,10 +9,11 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Review candidate; maintenance remains at 083cebfd9 until its PR merges.
 EXPECTED_HEAD="af50096ff843617f3f68f47bc6fc45bbffe3c937"
 EXPECTED_COMMITS=78
-# r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
-# 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
-# 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
-# scripts/verify-public-submodule.sh 在过渡期断言）。
+# Public base of the registered candidate; update on final maintenance re-pin.
+MAINTENANCE_BASE="083cebfd9aac5f6b9993ed610383fe2b38c6785f"
+# The immutable r1 closure must remain an ancestor of the registered head.
+# A review candidate may lead public maintenance; this does not waive the
+# separate public-head gate or change the immutable r3 transition baseline.
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 FAST_ONLY=0
 
@@ -33,29 +34,36 @@ actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale matches registered review head ${EXPECTED_HEAD}; public maintenance alignment is checked separately"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD ${actual_head:-<unreadable>} differs from registered head $EXPECTED_HEAD"
   fail=1
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ 当前 gitlink 继承官方 v0.9.12"
+  green "  ✓ Registered head descends from official v0.9.12"
 else
-  red "  ✗ 当前 gitlink 未继承官方 v0.9.12 $EXPECTED_UPSTREAM"
+  red "  ✗ Registered head does not descend from official v0.9.12 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$R1_CLOSURE" HEAD 2>/dev/null; then
-  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（过渡期内 gitlink=分支头，领先钉在 r3 收口的 tag）"
+  green "  ✓ Registered head descends from the immutable r1 closure; public maintenance alignment is checked separately"
 else
-  red "  ✗ r1 收口 $R1_CLOSURE 不是当前 head 的祖先，线性前进关系断裂"
+  red "  ✗ Immutable r1 closure $R1_CLOSURE is not an ancestor of the registered head"
+  fail=1
+fi
+
+if git -C "$CODEWHALE" merge-base --is-ancestor "$MAINTENANCE_BASE" HEAD 2>/dev/null; then
+  green "  ✓ Registered head contains public maintenance base $MAINTENANCE_BASE"
+else
+  red "  ✗ Registered head does not contain public maintenance base $MAINTENANCE_BASE"
   fail=1
 fi
 
 commit_count="$(git -C "$CODEWHALE" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
 if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.12 之上 $EXPECTED_COMMITS 个登记提交"
+  green "  ✓ $EXPECTED_COMMITS registered commits above v0.9.12"
 else
-  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $EXPECTED_COMMITS"
+  red "  ✗ ${commit_count:-<unreadable>} commits above v0.9.12; expected $EXPECTED_COMMITS"
   fail=1
 fi
 
