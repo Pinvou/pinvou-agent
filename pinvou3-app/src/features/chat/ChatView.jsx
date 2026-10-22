@@ -4935,7 +4935,11 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         } catch { /* 非 JSON 块,跳过 */ }
         if (!payload) continue;
         if (tagged) { chosen = m[0]; chosenPayload = payload; break; } // tagged block wins
-        if (!chosenPayload) { chosen = m[0]; chosenPayload = payload; }
+        if (chosenPayload) {
+          continue;
+        }
+
+        chosen = m[0]; chosenPayload = payload;
       }
       if (!chosenPayload) return miss;
       return { payload: chosenPayload, html: html.replace(chosen, '') };

@@ -10,8 +10,11 @@ edition = "2024"
 # MSRV: rust-version is the lower bound "the minimum rustc that can compile
 # this crate"; the actual toolchain is pinned to an exact version by
 # rust-toolchain.toml (reproducible). The two are complementary.
-# 1.89 > the 1.85 floor of edition 2024 — kept unchanged.
-rust-version = "1.89"
+# 1.90 is the floor required by the Tauri 2.12 line (tauri 2.12 / tauri-build
+# 2.7 and the 2.12-era plugins declare rust-version 1.90; wry 0.57 itself
+# declares 1.85, so tauri sets the floor);
+# above the 1.85 floor of edition 2024.
+rust-version = "1.90"
 # The main binary is the Tauri app (src/main.rs); src/bin/dump_system_prompt.rs
 # is a dev tool. This key makes `cargo run` (without --bin) default to the
 # main app instead of erroring out due to multiple bins. Must live directly in
@@ -48,7 +51,7 @@ dev-tools = []
 benchmark-hooks = ["dep:agent-backend-api", "deepseek-tui/benchmark-eval-controls"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.1", features = [] }
+tauri-build = { version = "2.7", features = [] }
 cc = "1"
 
 [dev-dependencies]
@@ -70,7 +73,7 @@ serde = { version = "1.0", features = ["derive"] }
 semver = "1"
 toml = "1"
 log = "0.4"
-tauri = { version = "2.11.1", features = ["unstable"] }
+tauri = { version = "2.12", features = ["unstable"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
@@ -87,10 +90,13 @@ uuid = { version = "1.11", features = ["v4", "v5"] }
 
 # 外部 Agent ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
 # Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
-# unstable_elicitation is load-bearing (codex_acp CreateElicitation flow);
-# unstable_session_fork only gates the ForkSession API (zero app references), so the phase-4 audit drops it.
-# Pinned: 2.1.0 removes the unstable_elicitation feature (and a plain "2" would let cargo update pick it).
-agent-client-protocol = { version = "=2.0.0", features = ["unstable_elicitation"] }
+# unstable_elicitation 在 2.1.0 已转正（feature 被移除），2.2 直接带稳定
+# elicitation；不再加 feature 开关。3.x（当前 3.4.0）改了 feature 命名与
+# 协议 schema，留给独立 PR 评估，本仓暂不升级。
+# 钉死 =2.2.0：协议 schema crate，wire 兼容由锁文件可复现；浮动的 "2.2"
+# 会允许 cargo update 静默漂到未评审的 2.x minor（本块旧注释对 2.0.0 的
+# 论证同样适用于 2.2.x）。
+agent-client-protocol = { version = "=2.2.0" }
 
 # 底层 Agent —— CodeWhale 提供 LLM 调用 + 工具循环 + 流式事件。
 # 上游 v0.8.45 起 rebrand：库 crate 改名 codewhale-tui。用 Cargo 的 `package`
@@ -202,7 +208,7 @@ rand = "0.10"
 # Keep 0.22: age/codewhale-tui/hyper-util still require 0.22; a solo 0.23 bump would only add a second copy. Revisit once upstreams align.
 base64 = "0.22"
 tempfile = "3"
-age = { version = "=0.12.1", default-features = false }
+age = { version = "0.12", default-features = false }
 
 # Computer Use capability foundation (features/computer_use): screen capture via
 # xcap (0.9.8, reusing its re-exported image 0.25 for PNG encoding/scaling, no direct
@@ -225,7 +231,7 @@ enigo = "0.6"
 # 期望的 objc2 family major 一致即可。具体 patch 由 Cargo.lock 在 lockfile 阶段
 # 固定(当前 0.6.4 / 0.3.2)。如未来需要绝对复现同一 ABI,改为精确锁 `=0.6.4`。
 [target.'cfg(target_os = "macos")'.dependencies]
-tauri = { version = "2.11.1", features = ["macos-private-api"] }
+tauri = { version = "2.12", features = ["macos-private-api"] }
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
@@ -290,7 +296,7 @@ objc2-screen-capture-kit = { version = "0.3", default-features = false, features
 # call (DeleteObject runs while the bitmap is still selected into the memory
 # DC) and its selection is never restored.
 windows-sys = { version = "0.61", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
-webview2-com = "0.38.2"
+webview2-com = "0.39"
 # Native Outlook .msg parsing (ingest_email.rs; same gating the retired
 # os::msg_native_supported() predicate provided). Windows-only compile:
 # macOS/Linux take the msgconvert → .eml branch; previously dead-compiled everywhere.
@@ -298,7 +304,11 @@ msg_parser = "0.3.0"
 # voice/platform/windows.rs 仅用 COM 基础类型(Interface/HSTRING/Result),它们源自
 # windows-core——不必拉入完整 windows crate。windows-core 已由 webview2-com 传递引入,
 # 此处显式声明只为把 app 直接依赖收敛到更轻的 windows-core(windows::core::* 即其 re-export)。
-windows-core = "0.61"
+# 0.62 与 codewhale-tui 的 windows 0.62.2、uiautomation 0.25 及 webview2-com 0.39
+# 收敛 app 直接依赖为单一版本；enigo 0.6.1（0.6 线暂无更新）在 Windows target 仍拉
+# windows 0.61.3/windows-core 0.61.2，该副本保留到 enigo 发版；不跳 0.100——那会新增
+# 第三份拷贝。
+windows-core = "0.62"
 # Computer Use accessibility tree (features/computer_use): Windows UI Automation.
 uiautomation = "0.25"
 # The same `windows` release uiautomation builds against, so it is already in
@@ -315,7 +325,7 @@ windows = { version = "0.62", features = ["Win32_UI_Accessibility"] }
 libc = "0.2"
 
 # Linux webview(webkit2gtk)默认拒绝 getUserMedia → 语音输入点麦克风被拒。
-# 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.55 用的 2.0.x。
+# 连 permission-request 信号放行 UserMedia(麦克风)请求。版本对齐 wry 0.57 用的 2.0.x。
 [target.'cfg(target_os = "linux")'.dependencies]
 # Wayland same-session screen capture (features/computer_use/platform/wayland_capture, a
 # Linux-only module): the ScreenCast stream of the portal RemoteDesktop session takes frames
@@ -353,7 +363,7 @@ zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 # Tauri's unstable Wry plugin API lets the browser feature pre-register its
 # dedicated WebKit context with automation enabled. Keep this exact version
 # aligned with Tauri's resolved runtime so the unstable runtime API cannot drift.
-tauri-runtime-wry = "=2.11.4"
+tauri-runtime-wry = "=2.12.1"
 
 # =============================================================================
 # Lint gates — hard-gate design: deny only lints with a measured zero

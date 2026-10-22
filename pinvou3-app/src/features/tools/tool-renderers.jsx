@@ -240,9 +240,9 @@ const ToolOutput = ({ item, t }) => {
           return <div className="space-y-1 text-xs">
             {result.message ? <div>{String(result.message)}</div> : null}
             {files.map(path => <div key={path} className="font-mono break-all">{path}</div>)}
-            {(result.files_applied != null || result.hunks_applied != null) ? <div className="text-[#757575] dark:text-[#8E8E8E]">
+            {(result.files_applied == null && result.hunks_applied == null) ? null : <div className="text-[#757575] dark:text-[#8E8E8E]">
               files {result.files_applied ?? files.length} · hunks {result.hunks_applied ?? 0}
-            </div> : null}
+            </div>}
           </div>;
         }
       }
@@ -498,12 +498,12 @@ const ToolOutput = ({ item, t }) => {
       return (
         <div className={cardBoxCls('border-[#0B57D0]/20 dark:border-[#A8C7FA]/30')}>
           <div className={`text-[14px] font-semibold mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>{t.planReady}</div>
-          {(!item.plan && !item.todos)
-            ? <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{t.planEmpty}</div>
-            : <>
+          {(item.plan || item.todos)
+            ? <>
                 <PlanLayer label={t.planLabel} explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" />
                 <PlanLayer label={t.planTodos} items={item.todos && item.todos.items} field="content" />
-              </>}
+              </>
+            : <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{t.planEmpty}</div>}
           <div className={`h-px my-3 bg-black/10 dark:bg-white/10`}></div>
           {active ? (
             <div className="flex items-center gap-2 flex-wrap">
@@ -633,9 +633,9 @@ const ToolOutput = ({ item, t }) => {
           otherAnswerLabel={t.uiToolRender.other}
           inputPlaceholder={t.uiConversation.inputPlaceholder}
           onSubmit={submit}
-          onCancel={!item.resolved && !webReadOnly
-            ? () => bridge.interaction.cancelUserInput(item.id, item.toolCallId)
-            : undefined}
+          onCancel={item.resolved || webReadOnly
+            ? undefined
+            : () => bridge.interaction.cancelUserInput(item.id, item.toolCallId)}
         />
       );
     };

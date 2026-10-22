@@ -775,11 +775,13 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
         const item = [...lane.items].reverse().find(candidate => (
           candidate && candidate.type === 'tool' && candidate.toolId === block.tool_use_id
         ));
-        if (item) {
-          item.output = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-          item.success = !block.is_error;
-          item.state = 'done';
+        if (!item) {
+          continue;
         }
+
+        item.output = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+        item.success = !block.is_error;
+        item.state = 'done';
       }
       continue;
     }
@@ -855,20 +857,19 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     }
     flushText();
     // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡。
-    if (sawPlanTool && (planSnap || todosSnap)) {
-      const snaps = { plan: planSnap, todos: todosSnap };
-      lane.items.push({
-        id: nextId(lane),
-        type: 'plan_card',
-        plan: planSnap,
-        todos: todosSnap,
-        planMarkdown: composeNativePlanMarkdown(snaps),
-        planId: null,
-        cardState: 'frozen',
-        resolved: true,
-        statusKey: 'historical',
-      });
-    }
+    if (!sawPlanTool || (!planSnap && !todosSnap)) continue;
+    const snaps = { plan: planSnap, todos: todosSnap };
+    lane.items.push({
+      id: nextId(lane),
+      type: 'plan_card',
+      plan: planSnap,
+      todos: todosSnap,
+      planMarkdown: composeNativePlanMarkdown(snaps),
+      planId: null,
+      cardState: 'frozen',
+      resolved: true,
+      statusKey: 'historical',
+    });
   }
   // 未被 tool_result 回填的工具卡按失败收尾，避免历史里残留"执行中"。
   for (const item of lane.items) {

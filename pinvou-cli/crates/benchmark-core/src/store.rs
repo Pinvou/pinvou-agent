@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use fs2::FileExt;
+use fs4::FileExt;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -428,12 +428,12 @@ impl RunStore {
 
     pub(crate) fn claim_execution(&self) -> Result<RunExecutionGuard> {
         let lock = open_execution_lock(&self.run_dir.join(EXECUTION_LOCK_FILE))?;
-        match FileExt::try_lock_exclusive(&lock) {
+        match FileExt::try_lock(&lock) {
             Ok(()) => {}
-            Err(error) if error.kind() == fs2::lock_contended_error().kind() => {
+            Err(fs4::TryLockError::WouldBlock) => {
                 return Err(BenchmarkError::coded("run_in_progress"));
             }
-            Err(error) => return Err(error.into()),
+            Err(fs4::TryLockError::Error(error)) => return Err(error.into()),
         }
         let guard = RunExecutionGuard(lock);
         self.repair_torn_jsonl_tail::<RunEvent>(EVENT_FILE)?;

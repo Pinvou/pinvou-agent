@@ -281,7 +281,74 @@ function collectStaticRuntimeScripts() {
 // `.ring-inset` class name that Tailwind emits don't phantom-match.
 // `inset(` (clip-path function) and logical properties (`inset-inline:`)
 // don't match either: in both, `inset` is not followed by `:`.
-function auditDistCss(assetsDir) {
+// Replace CSS comments, quoted strings, and unquoted url() token bodies with
+// same-length space runs so the layer scans cannot fire inside them. Offsets
+// in the stripped copy index the original string 1:1. An unquoted url() token
+// is recognized before the comment arm: CSS consumes a `/*` inside it as
+// token content, so treating it as a comment opener would blank the rest of
+// the stylesheet and hide a real layer behind it (lightningcss emits a URL
+// unquoted whenever it needs no escaping — a quoted source url ships
+// unquoted in dist). `url(` only starts a token at an ident boundary
+// (`svg-url(` is a function name, not a url token). A quoted body falls
+// through to the string arm; an unterminated comment, string, or url() token
+// blanks the remainder, keeping this single pass linear on malformed input.
+function stripCssCommentsAndStrings(code) {
+  let out = '';
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    if (ch === '/' && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const stop = end === -1 ? code.length : end + 2;
+      out += ' '.repeat(stop - i);
+      i = stop;
+    } else if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < code.length && code[j] !== ch) {
+        if (code[j] === '\\') j += 1;
+        j += 1;
+      }
+      const stop = j < code.length ? j + 1 : code.length;
+      out += ' '.repeat(stop - i);
+      i = stop;
+    } else if (
+      (ch === 'u' || ch === 'U')
+      && code.slice(i, i + 4).toLowerCase() === 'url('
+      && (i === 0 || !/[-\w\\]/.test(code[i - 1]))
+    ) {
+      // Copy `url(` and its leading whitespace, blank the token body, copy
+      // the closer (an escape may hide that paren from the scan).
+      out += code.slice(i, i + 4);
+      let j = i + 4;
+      while (j < code.length && /\s/.test(code[j])) j += 1;
+      out += code.slice(i + 4, j);
+      if (code[j] !== '"' && code[j] !== "'") {
+        while (j < code.length && code[j] !== ')') {
+          if (code[j] === '\\') j += 1;
+          j += 1;
+        }
+        if (j < code.length) {
+          out += ' '.repeat(j - i - 4);
+          out += ')';
+          i = j + 1;
+        } else {
+          out += ' '.repeat(code.length - i - 4);
+          i = code.length;
+        }
+      } else {
+        i = j;
+      }
+    } else {
+      out += ch;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+// Exported for the tests' perf pin only: timing a full runAudit re-parses
+// every static runtime script and drowns the CSS-scan signal.
+export function auditDistCss(assetsDir) {
   const violations = [];
   for (const name of readdirSync(assetsDir)) {
     if (!name.endsWith('.css')) continue;
@@ -292,6 +359,61 @@ function auditDistCss(assetsDir) {
       const excerpt = code.slice(Math.max(0, match.index - 40), match.index + 50).replaceAll(/\s+/g, ' ');
       violations.push(
         `dist:${name}:${lineOfOffset(code, match.index).line}: inset shorthand survives the build — Safari 14.0 cannot parse it (needs 14.1); context: …${excerpt}…`,
+      );
+    }
+    // Cascade layers ship in Safari 15.4+ and lightningcss does not flatten
+    // them at cssTarget safari14; a Tailwind 4 build puts ~90% of its output
+    // inside @layer blocks, so any survivor means the macOS 11 / Safari 14.0
+    // floor renders unstyled (same verdict as the #665 TW4 investigation).
+    // Comments, quoted strings, and url() token bodies cannot create layers,
+    // but lightningcss keeps `/*! … */` license headers verbatim and
+    // `content` strings can quote at-rule syntax, so both scans run over the
+    // stripped copy. The replacement is space-padded, preserving offsets for
+    // the excerpt/line attribution. Covers the block/anonymous/statement
+    // `@layer` forms, case-insensitively (CSS at-keywords are ASCII
+    // case-insensitive). The import form (`@import … layer|layer(name)`)
+    // carries no `@layer` substring, so the @import preludes are parsed
+    // separately: the prelude reader consumes through the rule's `;` (an
+    // unquoted data URL may contain `;`, but its body is blanked with the
+    // token) and strips the leading URL token, so only a standalone layer
+    // clause after it fires — `layer(` inside the URL never does and the
+    // clause is caught in any position (after supports(), before/after the
+    // media query, bare or named).
+    const scan = stripCssCommentsAndStrings(code);
+    const layerPattern = /@layer/gi;
+    let layerMatch;
+    while ((layerMatch = layerPattern.exec(scan)) !== null) {
+      const excerpt = code.slice(Math.max(0, layerMatch.index - 30), layerMatch.index + 50).replaceAll(/\s+/g, ' ');
+      violations.push(
+        `dist:${name}:${lineOfOffset(code, layerMatch.index).line}: @layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
+      );
+    }
+    // The prelude is read with the same single-pass shape as the stripper,
+    // not a repetition regex: alternation arms that can both consume a
+    // `url(…)` token backtrack exponentially on an unterminated prelude.
+    // Each prelude consumes through its `;` exactly once and the match
+    // cursor jumps past it, so the scan stays linear by construction.
+    const importPattern = /@import/gi;
+    let importMatch;
+    while ((importMatch = importPattern.exec(scan)) !== null) {
+      const preludeStart = importMatch.index + importMatch[0].length;
+      const preludeEnd = scan.indexOf(';', preludeStart);
+      const stop = preludeEnd === -1 ? scan.length : preludeEnd;
+      importPattern.lastIndex = stop;
+      // @import grammar: [ <url> | <string> ] first, then the optional
+      // layer clause and import conditions — only a clause after the URL
+      // token creates a cascade layer. Bodies of strings and unquoted url()
+      // tokens are already blank, so the leading token peels off without
+      // ambiguity.
+      let rest = scan.slice(preludeStart, stop).replace(/^\s+/, '');
+      if (/^url\(/i.test(rest)) {
+        const close = rest.indexOf(')');
+        rest = close === -1 ? '' : rest.slice(close + 1);
+      }
+      if (!/(?:^|\s)layer(?:\s*\(|(?=\s|$))/i.test(rest)) continue;
+      const excerpt = code.slice(Math.max(0, importMatch.index - 30), importMatch.index + 50).replaceAll(/\s+/g, ' ');
+      violations.push(
+        `dist:${name}:${lineOfOffset(code, importMatch.index).line}: @import layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
       );
     }
   }

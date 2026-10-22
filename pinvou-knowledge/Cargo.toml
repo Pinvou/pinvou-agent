@@ -42,7 +42,9 @@ server = [
 
 [dependencies]
 anyhow = "1.0"
-# Keep 0.22 to match the app: upstreams still require 0.22; a solo 0.23 bump would add a second copy. Revisit once upstreams align.
+# Direct use stays on 0.22 (same line as age and the app's codewhale-tui); the
+# graph also carries a 0.23 copy via pem 4 (rcgen 0.14.10) and reqwest 0.13.
+# Revisit the split once the upstreams realign on one line.
 base64 = "0.22"
 calamine = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -58,16 +60,16 @@ tokio = { version = "1.49", features = ["full"] }
 url = "2"
 
 axum = { version = "0.8", features = ["multipart"], optional = true }
-axum-server = { version = "=0.8.0", default-features = false, features = ["tls-rustls"], optional = true }
-age = { version = "=0.12.1", default-features = false, optional = true }
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls"], optional = true }
+age = { version = "0.12", default-features = false, optional = true }
 clap = { version = "4", features = ["derive", "env"], optional = true }
 flate2 = { version = "1", optional = true }
 futures-util = { version = "0.3", optional = true }
 mime_guess = { version = "2", optional = true }
-mdns-sd = { version = "=0.20.3", optional = true }
+mdns-sd = { version = "0.21", optional = true }
 # 0.15 collapses with mdns-sd's transitive if-addrs into a single version (the former =0.14.0 pin forced two).
 if-addrs = "0.15"
-rcgen = { version = "=0.14.9", features = ["x509-parser"], optional = true }
+rcgen = { version = "0.14", features = ["x509-parser"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"], optional = true }
 tar = { version = "0.4", optional = true }
@@ -81,10 +83,16 @@ wait-timeout = { version = "0.2", optional = true }
 # cannot be target-gated); embedding.rs mirrors this gate and compiles the
 # explicit "unsupported on this platform" Embedder stub instead. Windows keeps
 # its dynamic-load wiring unchanged.
+# fastembed applies to BOTH target tables below (same version hold; only the
+# feature set differs per platform). fastembed 5+ pulls ort rc.10-rc.13 prebuilt
+# ONNX Runtime: rc.10 macOS minos 13.3, rc.11+ drops the x86_64-apple-darwin
+# prebuilt, rc.13 needs glibc 2.38 — all violate the macOS 11 / Ubuntu 22.04
+# (glibc 2.35) floors. Held at 4 until ort prebuilts comply.
 [target.'cfg(windows)'.dependencies]
 fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
 
 [target.'cfg(not(any(windows, all(target_os = "linux", target_arch = "loongarch64"))))'.dependencies]
+# Same hold rationale as the windows table above.
 fastembed = { version = "4", optional = true }
 
 [dev-dependencies]
