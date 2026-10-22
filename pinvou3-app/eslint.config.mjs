@@ -230,9 +230,10 @@ export default defineConfig([
     plugins: { n: nPlugin, jsdoc, unicorn, sonarjs, 'import-x': importX },
     settings: {
       'import-x/resolver': { node: { extensions: ['.js', '.mjs'] } },
-      // CI runs Node 22 (latest 22.x, which is >= 22.16 where
-      // import.meta.dirname landed); without this the n plugin falls back to
-      // its built-in >=16 floor and flags every modern builtin.
+      // CI runs Node 24; local dev tracks latest 22.x (>= 22.16, where
+      // import.meta.dirname landed). Pinning the n plugin to that dev floor
+      // stops it from falling back to its built-in >=16 floor and flagging
+      // every modern builtin.
       n: { version: '>=22.16.0 <23' },
     },
     rules: {
