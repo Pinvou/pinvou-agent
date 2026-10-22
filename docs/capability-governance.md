@@ -8,7 +8,7 @@
 
 > **落地状态**（2026-09-18）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated, install_default_synced, connect_granted, recovery_hold}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated, install_default_synced, connect_granted, connect_grant_tokens, recovery_hold}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
 > companion 联动排除改由包模型现算（门控侧解析用 `bundle::skill_gating_owner`，
 > 物理嵌套感知，round-26 minor 11 精确化）。§3.1 的
@@ -91,7 +91,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"], "connect_granted": ["<包 id>"], "recovery_hold": false }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"], "connect_granted": ["<包 id>"], "connect_grant_tokens": { "<包 id>": "<授权操作令牌>" }, "recovery_hold": false }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
@@ -142,6 +142,13 @@ fail-closed 态。授权与账本对撤除之外，补偿按 outcome 足迹重�
 **授权已被消费则整个补偿跳过**（round-3 评审：窗口内的 composer 显式关闭
 命名该 id 时已移除授权并写入裁决行，其账本对必须存活使裁决防重连翻案——
 补偿若照旧撤账本、补标记反而破坏该裁决），仅保留 `recovery_hold` 重新武装。
+补偿还须**所有权可证**（round-6 评审 P2）：每次授权落盘时同步写入
+`connect_grant_tokens`（包 id → 操作令牌，与授权同一原子保存），补偿仅在
+standing 条目仍携带**本次**授权的令牌时执行——授权与补偿之间的
+teardown+重连会在同一包 id 下落一笔全新授权，按包 id 撤除会删掉后者的授权与
+账本并按前者的足迹重建抬行，把后一次成功连接翻成关闭；令牌不匹配即视为他人
+所有，陈旧补偿整体不碰（消费判定回答「授权还在吗」，所有权判定回答「还是我的
+吗」）。composer 整表写消费授权时与 teardown 清除授权时同步清除令牌。
 已初始化 scope 以落盘列表为唯一真相，行缺席即「开」，不重建行则失败卡背后
 连接器已被现算为开，且下次启动回填会悄悄完成这次启用；重建不越出该次手势
 实际足迹的 scope——第二次重连的授权在某 scope 未抬任何行时，其失败补偿不得
