@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 02:36 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 03:43 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; additional T13/T25/T47 source repairs and local acceptance continue.
 The combined business workflows have not passed complete acceptance. Candidate
@@ -84,19 +84,21 @@ source remains separate from delivery:
   built assets. The existing nonfatal chunk-size advisory remains. Three-language
   copy now accurately describes a removal followed by failed storage readback;
   it promises no successful correction or guaranteed physical pending retention.
-  Genuine three-language browser recovery has not yet passed acceptance. The
-  first run could not find the selected Chrome. A reviewed fixed Edge path and
-  binary digest allowed all three real browsers to start. That retry exposed
-  two test lookup requests missing their required nullable revision; the next
-  reviewed retry passed those calls and reached actual proof display and explicit
-  correction in all three locales. It then failed its database invariant: the
-  oracle had included audit rows while the required fresh identity reads append
-  legitimate identity-read audit events. A narrow oracle repair is in independent
-  review; it preserves business state and the old authenticated audit prefix and
-  separately checks exactly two successful same-actor identity-read events.
-  Both actual business-assertion failures closed naturally, kept all 3,637 inputs
-  unchanged and had no resource trip. Successful intermediate steps do not grant
-  browser acceptance. Separate startup refusals created no test child.
+  Genuine create absent-original recovery now passed all three locales through
+  actual Playwright browsers. Its Go run passed three top-level tests and
+  forty-eight subtests: three locale cases, nineteen reporter controls (one
+  positive and eighteen negative), and twenty-six audit controls (one positive
+  and twenty-five negative). Independent actual review verified unique default
+  project/case, one passed attempt per locale, zero retries/skips/errors, all
+  3,637 inputs unchanged, natural closure and no resource trip. Each locale
+  drops the original create before forwarding, performs a real parent edit,
+  observes the original proof, explicitly persists and reads back the complete
+  diagnostic before exact pending removal, then submits a fresh context/key.
+  The authenticated old audit prefix and business state remain unchanged while
+  exactly two legitimate same-actor identity-read events append. Earlier missing
+  Chrome, invalid test lookup requests and audit-oracle failures remain retained.
+  This acceptance covers create absent-original recovery only; abort, processing,
+  capacity and unknown-COMMIT browser cases remain separate.
 - The committed contract source adds twelve actual POST routes and forty-eight
   closed schemas; independent content review passed. A generator repair also
   brings the six existing floor-draft routes and their thirty-three schemas into
@@ -110,29 +112,58 @@ source remains separate from delivery:
   Its 864-input graph stayed unchanged, with natural process closure and no
   resource trip. Independent actual-result review passed with zero open findings.
   The client source and generated artifacts are committed and pushed as
-  `41d8c8c35ff90668e44fd3dd9bd8bf32d7d35fe5`. A separate service export candidate
-  pins that committed revision. Its three pure top-level tests passed with zero
-  skips, including actual Go compilation of all 81 added draft schemas, and the
-  committed-byte export check passed. Independent actual review confirmed both
-  natural process closures and all 2,408 inputs unchanged. A separate five-path
-  delivery candidate preserves the actual service baseline's original 37 paths
-  and 146 schemas exactly and adds eighteen routes and 81 schemas. Its full
-  2,289-input service-base validation remains queued after a startup resource
-  refusal; no delivery of that service candidate is claimed. These scoped tests
-  do not complete F1, the combined workflows or pending release acceptance.
-- A new opt-in native test for genuine aggregate source-budget calibration passed
-  independent source review before and after formatting. It uses actual plans,
-  two independent reviews, frozen policy, configuration and draft creation;
-  neither source rows nor budget fields are manufactured. Its bounded experiment
-  must first measure a successful complete union and then an admitted-prefix
-  lower bound exceeding 32 MiB. Other limits, refusal causes, timeout or the
-  256-plan bound remain failures. Its 2,497-input execution is queued; neither an
-  aggregate bracket nor exact 32 MiB/+1 behavior has been measured.
-- The unresolved P1 runtime refusal has a new private diagnostic overlay under
-  independent source review. It preserves original SQL, predicates, connection
-  identity and rejection results while recording fixed failure stages and bounded
-  SQL-hash/error-category summaries. It is excluded from production delivery;
-  a successful diagnostic retry alone will not establish the original cause.
+  `41d8c8c35ff90668e44fd3dd9bd8bf32d7d35fe5`. The separate service export is
+  committed and pushed as `5085fbcb7064fe0e73e64c722ec10dda114ef1d1`, pinning that
+  client revision. Its five-path delivery preserves the original 37 route and
+  146 schema objects exactly and adds eighteen routes and 81 schemas. Formatting,
+  module verification, vet, service build, the complete default suite and pinned
+  synchronization passed against all 2,289 actual service-base inputs. The default
+  suite passed 1,184 top-level tests and 2,583 subtests, skipped 908 top-level tests
+  and 756 subtests, and had zero failures; all 81 added schemas compiled through
+  the actual Go validator. Independent actual review confirmed unchanged source,
+  six natural process closures and no resource trip. Default skips confer no
+  native T13/T25/T47 qualification, and this delivery does not merge their pending
+  business code or repair the separate earlier combined-workflow P1 failure.
+- Genuine source-budget calibration ran against all 2,497 frozen inputs and
+  remains failed. The last successful complete union measured 2,689,656 bytes
+  and 146 references. Nine growth members completed and one batch was observed;
+  a later composition-create preparation refused without a demonstrated cause.
+  Some earlier setup steps may already have committed. The rejected lower bound
+  is zero, so neither a 32 MiB aggregate bracket nor exact 32 MiB/+1 behavior is
+  established. Independent actual review verified natural closure, unchanged
+  source and no resource trip. No particular refusal or memory cause is claimed.
+- A new reviewed private P1 diagnostic ran one top-level test and three subtests
+  successfully, with zero skips. Its three runtime tracers observed 10,250,
+  10,246 and 20,568 queries, respectively, with zero query failures or overflow;
+  no runtime-rejection diagnostic fired. Independent actual review confirmed
+  unchanged 2,409 inputs, natural closure and no resource trip. The original
+  normal P1 failure was not reproduced and its cause remains unknown. All four
+  private diagnostic paths remain excluded from production delivery.
+- A new native combination passed abort absent-original recovery's four top-level
+  tests and fourteen subtests, including accepted/retired original priority,
+  current read revocation, genuine closing-source authentication and unresolved
+  processing. Both unknown-COMMIT subtests failed their later recovery assertion;
+  the complete five-top-level/sixteen-subtest run remains failed. Actual server
+  COMMIT witnesses and empty unavailable responses precede those failures, but
+  the six-part final assertion does not identify which comparison failed. An
+  independently confirmed oracle limitation counts pgx cancellation transports
+  among all opened sockets; it is not yet established as this run's sole cause.
+  The 2,500-input graph stayed unchanged and closure was natural. Fixed scalar
+  diagnostics preserve the original assertions for the next scoped retry.
+- Abort's separate closed proof contract and explicit administration recovery
+  passed independent source review after repairs. The UI plan preserves forty
+  original pure cases and adds seven codec and twenty recovery controls; all
+  sixty-seven, strict typechecking, build and genuine abort browsers remain
+  unexecuted for this candidate. The new contract still needs deterministic
+  generation and the full reference suite. Two generation startup refusals
+  launched no child because available memory was below the unchanged 7 GiB floor.
+- Linux x86_64/arm64 DEB offline-adapter source passed independent scoped review.
+  Its planned Windows compatibility suite has nineteen top-level tests and
+  fifteen subtests; it has not run. A private caller failed before any QA tree,
+  output directory or child creation because Windows Python reports different
+  path/fd ctime semantics. A narrow caller identity repair is under review.
+  Genuine Linux DEB/ELF, POSIX and independent signature acceptance remain pending.
+
 - The earlier Linux scanner attempt was refused before VM startup: its proof
   reports about 6.45 GiB available against its original 9 GiB startup floor.
   It provides no scanner or guest execution result. A new output namespace and
@@ -303,7 +334,7 @@ remain pending. Production deployment T42 remains explicitly deferred.
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
-| T13 | 10% | In progress | Delivered planning domain and authority port; protected persistence, private recovery, HTTP/admin and genuine E2E candidates passed scoped source review. Contract routes are pushed; service sync and complete workflow tests/commit remain pending, as do active-floor approvals/publication, ordinary prerequisite paths and historical bridge eligibility. |
+| T13 | 10% | In progress | Delivered planning domain and authority port; protected persistence, private recovery, HTTP/admin and genuine E2E candidates passed scoped source review. Contract routes and service sync are pushed; complete workflow tests/commit remain pending, as do active-floor approvals/publication, ordinary prerequisite paths and historical bridge eligibility. |
 | T14 | 40% | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
 | T15 | 0% | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | 0% | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
