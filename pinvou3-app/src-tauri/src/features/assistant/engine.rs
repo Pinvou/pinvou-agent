@@ -4295,7 +4295,15 @@ mod tests {
     #[test]
     fn unattended_spawn_disables_subagents_in_source() {
         let source = include_str!("engine.rs");
-        let production = source
+        // Round-36 review hardening: strip line comments before matching —
+        // a commented-out disable arm must not satisfy the pin (the same
+        // mutation class the lib_rs dead-tool pin defends against).
+        let live = source
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let production = live
             .split("mod tests {")
             .next()
             .expect("the production half of engine.rs present");
@@ -4604,14 +4612,33 @@ mod unattended_shield_tests {
     #[test]
     fn scheduled_sends_carry_the_shield_via_set_disallowed_tools() {
         let source = include_str!("engine.rs");
-        let send_start = source
+        // Round-36 review hardening: strip line comments before matching —
+        // a commented-out shield send must not satisfy the pin.
+        let live = source
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let send_start = live
             .find("fn send_scheduled_message")
             .expect("production send must exist");
-        let send_end = source[send_start..]
+        let send_end = live[send_start..]
             .find("\n    fn ")
             .map(|offset| send_start + offset)
-            .unwrap_or(source.len());
-        let send_body = &source[send_start..send_end];
+            .unwrap_or(live.len());
+        let send_body = &live[send_start..send_end];
+        eprintln!(
+            "[shield-probe] send_body len={} op_at={:?} clone_at={:?} setdis_at={:?} first_slashslash_line={:?}",
+            send_body.len(),
+            send_body.find("Op::SetDisallowedTools {"),
+            send_body.find("self.scheduled_disallowed_tools.clone()"),
+            send_body.find("Op::SetDisallowedTools"),
+            send_body
+                .lines()
+                .enumerate()
+                .find(|(_, l)| l.contains("//"))
+                .map(|(i, l)| (i, l.to_string())),
+        );
         let op = send_body
             .find("Op::SetDisallowedTools {")
             .expect("the shield send must exist in the production span");
@@ -4624,7 +4651,7 @@ mod unattended_shield_tests {
         assert!(carries < turn_op, "shield list carried before the turn op");
         // The wiring: the field is composed through the unattended shield
         // (a revert to `disallowed.clone()` deletes this line).
-        let spawn_body = &source[..send_start];
+        let spawn_body = &live[..send_start];
         assert!(
             spawn_body.contains(
                 "let scheduled_disallowed_tools = unattended_disallowed_tools(&disallowed);"
