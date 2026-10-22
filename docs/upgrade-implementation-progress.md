@@ -16,11 +16,42 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 03:43 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 05:12 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; additional T13/T25/T47 source repairs and local acceptance continue.
 The combined business workflows have not passed complete acceptance. Candidate
 source remains separate from delivery:
+
+- The abort-recovery UI candidate passed strict type checking, a fresh build
+  and all 67 pure tests, retaining the original 40 controls. Independent actual
+  review confirmed unchanged inputs and the three fresh assets. The six-case
+  create/abort browser preparation passed source review; it has not run.
+- The combined abort/unknown-commit native run passed eight top-level tests and
+  41 subtests, with one top-level and one subtest failure and zero skips. Both
+  real unknown-COMMIT cases passed with the repaired transport oracle. The only
+  failing subtest tried to change a stored wire hash alone, which necessarily
+  violates the table's matching-wire CHECK before reaching the intended observer.
+  Root repaired this test to change canonical wire and matching self-hash
+  together. Independent review passed the repair and fresh 9/42 preparation;
+  the four production files are unchanged and the corrected run remains pending.
+- T04's Linux adapter candidate passed 19 top-level and 15 subtests on Windows,
+  with zero skips and independent actual review. This is pure adapter acceptance,
+  not real Linux packaging, DSSE authentication or complete T04 acceptance.
+- Pure contract generation passed independent actual review: 55 paths, 230
+  component schemas and 203 standalone API schemas. Seven source/export deltas
+  and the full 26-file, 183-test preparation passed independent source review;
+  those tests and delivery remain pending. Generation is not schema acceptance.
+- A publicly licensed DB-IP ASN Lite October 2026 research sample was acquired
+  from the publisher's authenticated HTTPS download: 477,362 records and
+  30,360,919 expanded bytes. Published transfer checks match the expanded CSV;
+  the independently pinned SHA-256 is retained privately. Equivalent-format
+  adaptation is in development. No real lookup, approved source validity period,
+  protected installation or complete T25 qualification is claimed.
+- Recent available memory fell below the unchanged 7 GiB test-start floor;
+  execution still requires 6 GiB and VM startup 9 GiB. The combined native run
+  naturally closed without a resource trip; its earlier attempt was refused
+  before launching a child. Source work continues while a usable local testing
+  window is pending. No unrelated process was stopped or download deadline added.
 
 - Normal T13/T25/T20 integration preserves all thirteen delivered T20 files.
   Its combined PostgreSQL run passed thirty-one top-level tests and sixty-one
