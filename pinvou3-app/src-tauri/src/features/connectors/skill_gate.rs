@@ -1089,6 +1089,109 @@ mod tests {
         });
     }
 
+    /// Round-6 review P2: the compensating revoke owns its grant by the
+    /// operation token, not the package id. A teardown + reconnect between
+    /// the grant and its compensating revoke lands a fresh grant under the
+    /// same package id; the stale failure arriving late must leave the
+    /// replacement's consent state (grant, ledger, lifted rows) completely
+    /// alone, while the replacement's OWN revoke still compensates in full.
+    /// (Reverting the token ownership guard fails the four stale-leg
+    /// assertions: the revoke deletes B's grant + ledger and restores A's
+    /// lifted row over B's successful connection.)
+    #[test]
+    fn stale_revoke_leaves_a_replacement_grant_alone() {
+        use crate::features::marketplace::{
+            ConnectorScope, deny_first_register_connector, load_disabled_bundles_for,
+            save_disabled_bundles_for,
+        };
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-revoke-stale", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            // plain initialized holding a MARKED feishu row (the deny-first
+            // shape): operation A's grant lifts it.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(grant_a.granted, "fixture: A's grant lifts the row");
+            assert_eq!(grant_a.lifted_scopes, vec!["plain".to_string()]);
+
+            // The pack is uninstalled mid-connect: the exact teardown sweeps
+            // A's grant, ledger pair, rows, and ownership token.
+            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact("feishu")
+                .unwrap();
+            // B reconnects: the re-registered deny-first row (plain is
+            // initialized by now, so the save writes it UNMARKED) is lifted
+            // by a fresh grant under the same package id.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            let grant_b = deny_first_register_connector("feishu", true).unwrap();
+            assert!(grant_b.granted, "fixture: B's reconnect grants afresh");
+            assert_ne!(
+                grant_a.grant_token, grant_b.grant_token,
+                "fixture: distinct operations must own distinct tokens"
+            );
+
+            // A's materialization failure arrives late. The stale revoke
+            // must keep its hands off B's state entirely.
+            crate::features::marketplace::revoke_connect_enable(&grant_a).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the stale revoke must not delete the replacement grant: {raw}"
+            );
+            assert!(
+                raw["install_default_synced"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
+                "the replacement's ledger pair must survive the stale revoke: {raw}"
+            );
+            assert!(
+                raw["scopes"]["plain"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu")),
+                "the stale revoke must not restore A's lifted row over B: {raw}"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "B's successful connection must stay enabled"
+            );
+
+            // B's own compensating revoke still strips and restores in full:
+            // the ownership proof is per operation, not a blanket disarm.
+            crate::features::marketplace::revoke_connect_enable(&grant_b).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu"))
+                    && !raw["install_default_synced"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
+                "the owning revoke strips its own grant and ledger: {raw}"
+            );
+            assert!(
+                raw["scopes"]["plain"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the owning revoke restores the deny-first row: {raw}"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the failed connect's end-state is fail-closed again"
+            );
+        });
+    }
+
     /// Round-3 review MINOR: the compensating revoke runs best-effort AFTER
     /// materialization, and a verdict write can land in that window. A
     /// composer toggle-off naming the id strips the grant and writes an
