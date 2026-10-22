@@ -1379,6 +1379,13 @@ fn sanitize_marker_text(text: &str) -> String {
 // embeds exactly these prefixes).
 #[test]
 fn sanitize_marker_text_scrubs_home_prefixes() {
+    // Round-36 review: the home paths are read here and re-read inside
+    // sanitize_marker_text — a concurrent TempHome-style env flip between
+    // the two reads folds nothing and fails the assert. Hold the env lock
+    // for the whole test (the repo's own env-serialization contract).
+    let _env_lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let pinvou3_home = crate::platform::paths::pinvou3_home();
     let user_home = crate::platform::paths::user_home_dir();
     let text = format!(
