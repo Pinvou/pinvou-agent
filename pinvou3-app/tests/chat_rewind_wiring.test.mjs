@@ -242,4 +242,22 @@ for (const language of ['zh', 'en', 'ja']) {
   }
 }
 
+// r21 M1：计数源钉——list_checkpoints 的 userTurns 必须派生自账本索引末条 Turn
+// 快照（O(1)，无 transcript 解析）；回退成 store.load 全量计数或删掉派生都要红。
+// 压缩收缩窗口的正确性由后端收缩钩子的作废保证（compaction_shrink_keeps_ledger_
+// count_transcript_honest 锚定），两侧合起来才是完整的调和门契约。
+{
+  const rs = readFileSync(new URL('../src-tauri/src/app/commands/checkpoints.rs', import.meta.url), 'utf8');
+  assert.match(
+    rs,
+    /let user_turns = entries[\s\S]{0,40}?\.rev\(\)[\s\S]{0,120}?CheckpointKind::Turn/,
+    'list_checkpoints 的 userTurns 必须从索引末条 Turn 快照派生（r21 M1 计数源钉）',
+  );
+  const listBody = rs.split('pub async fn list_checkpoints')[1] || '';
+  assert.doesNotMatch(
+    listBody.split('pub async fn')[0],
+    /store_count|.load(&session_id_count)/,
+    'list_checkpoints 不得回退到全量 transcript 解析计数（r19-M8 成本回归）',
+  );
+}
 console.log('chat_rewind_wiring: all assertions passed');
