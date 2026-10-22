@@ -1,11 +1,12 @@
 # CodeWhale Fork 修改清单
 
-## T2 review candidate: Preserve failed tool-result flags
+## T2 审核候选：保留工具结果失败标志
 
-- The engine records unsuccessful returned tool payloads as failed in session history, retaining error bodies and successful schema-hydration semantics. This adopts the upstream mapping rather than adding HTTP heuristics.
-- Candidate gitlink: `687c151e0d8e5cbc5d41048ec41f77e0ac2cd363` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
-- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
-- Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_tool_failure_flag_survives_recording_and_round_trip`. Customer data, credentials, runtime logs and reproduction session files are excluded.
+- 引擎将返回成功封装但 success=false 的工具结果记为失败，同时保留正文与 schema 加载但未执行的成功语义。这里选择性前移上游提交 `2ae7460e4` 的 is_error 映射，并非恢复 v0.9.12 基线曾有的映射；该上游提交的取消 metadata 与 shell receipt 改动不在本候选范围内。
+- 中断且未执行的标记也通过该失败映射记录；恢复后的失败/取消卡片、运行时 Failed 状态与 CLI failure 计数会相应变化。子 Agent 记录器及 TUI SyncSession 镜像原有的失败标志丢失属于已披露的后续项，不声称本候选已覆盖。
+- 候选 gitlink：`687c151e0d8e5cbc5d41048ec41f77e0ac2cd363`（v0.9.12 之上共 77 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。下文登记的公开维护分支和不可变 tag 尚未改变；本候选是独立分支，不包含其他会话工具候选修复。
+- 合入前提：先合入对应底座 PR，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单中的候选头替换为实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`，重新计算 `EXPECTED_COMMITS`，同步两份策略/修改清单并协调已合入修复，最后通过 `verify-public-submodule.sh`。候选校验通过不豁免公开维护头门禁，也不允许重打基线 tag；本候选不具备发布资格。
+- 验证证据见承载 PR 及其固定提交自审核。指纹固定 `fn forkguard_tool_failure_flag_survives_recording_and_round_trip`。不包含客户数据、凭证、运行日志或复现会话文件。
 
 ## 已合入维护分支：压缩检查点角色兼容性
 
