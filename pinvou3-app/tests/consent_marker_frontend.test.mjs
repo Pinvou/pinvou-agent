@@ -308,7 +308,7 @@ assert.ok(
 // outlives the dismissed card, and clearing here re-arms the enabled-by-default
 // connected banner (the P2 scenario's final step).
 {
-  const resetFlow = store.match(/const resetFlow = \(\{ setBusyId \}\) => \{[\s\S]*?\n      \};/);
+  const resetFlow = store.match(/const resetFlow = \(\{ setBusyId \}\) => \{[\s\S]*?\n {6}\};/);
   assert.ok(resetFlow, 'resetFlow must stay recognizable');
   assert.ok(
     !resetFlow[0].includes('setConsentSyncFailed'),
@@ -336,7 +336,7 @@ assert.ok(
 // (returning again after dismissal) — without the connected banner re-arming
 // its enabled-by-default copy, and only a fresh connect reaching done clears it.
 {
-  const factory = store.match(/const createFlowStore = \(\) => \(\{[\s\S]*?\n    \}\);/);
+  const factory = store.match(/const createFlowStore = \(\) => \(\{[\s\S]*?\n {4}\}\);/);
   assert.ok(factory, 'createFlowStore must stay recognizable');
   const createFlowStore = new Function(`${factory[0]}; return createFlowStore;`)();
 
