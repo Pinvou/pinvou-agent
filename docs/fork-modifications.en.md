@@ -1,5 +1,12 @@
 # CodeWhale Fork Modification Register
 
+## T2 review candidate: Preserve failed tool-result flags
+
+- The engine records unsuccessful returned tool payloads as failed in session history, retaining error bodies and successful schema-hydration semantics. This adopts the upstream mapping rather than adding HTTP heuristics.
+- Candidate gitlink: `687c151e0d8e5cbc5d41048ec41f77e0ac2cd363` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
+- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
+- Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_tool_failure_flag_survives_recording_and_round_trip`. Customer data, credentials, runtime logs and reproduction session files are excluded.
+
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
 
 - T7: insert the typed Agent topology checkpoint after the latest real user input and before its assistant/tool chain, including when a compaction summary trails that chain. For Chat Completions, place a structurally recognized current-format summary ahead of its retained round on the wire and merge that summary plus the topology checkpoint into the same user wire message. Quoting the summary marker inside an ordinary user prompt does not trigger reordering. The fix covers only the trailing `tool -> user` that compaction itself creates; the reported provider text was `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"` (SSE lane). Saved history and tool-call/result IDs stay untouched, and the session-pinned system prefix is unchanged.
