@@ -16,39 +16,66 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-22 23:11 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 00:30 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; additional T13/T25/T47 source repairs and local acceptance continue.
 The combined business workflows have not passed complete acceptance. Candidate
 source remains separate from delivery:
 
-- Latest normal T13/T25/T20 integration contains 2,406 inputs and preserves
-  all thirteen delivered T20 files. The combined actual PostgreSQL run passed
-  thirty-one top-level tests and sixty-one subtests, with two top-level and
-  seven subtest failures and zero skips. Six subtest failures came from building
-  the observation helper from the wrong package. After independent repair
-  review, fresh helper and CLI builds passed; the boundary-only retry passed
-  one top-level test and six subtests with zero skips. It executed the helper,
-  but did not execute the CLI. The separate activation fixture's original
-  runtime-permission refusal remains unexplained; private diagnosis is prepared.
+- Normal T13/T25/T20 integration preserves all thirteen delivered T20 files.
+  Its combined PostgreSQL run passed thirty-one top-level tests and sixty-one
+  subtests, with two top-level and seven subtest failures and zero skips. Six
+  subtest failures came from building the observation helper from the wrong
+  package. After independent repair review, fresh helper and CLI builds passed;
+  the boundary-only retry passed one top-level test and six subtests with zero
+  skips. It executed the helper but did not execute the CLI. The activation
+  fixture's original runtime-permission refusal remains unexplained. A private
+  instrumented retry passed one top-level test and three subtests without
+  reproducing that refusal; it establishes no cause or production repair. All
+  private instrumentation was removed before subsequent normal source checks.
   All twenty-seven original T13/T25 top-level tests and fifty-two subtests passed
-  in the combined run, but the complete combined acceptance remains failed.
-- T47's normal database workflow now passes six top-level tests and twenty-seven
-  subtests, with zero skips, after reviewed ACK-envelope, plan-body binding and
-  SQL alias repairs. Independent result review confirmed complete unchanged
-  source and natural process closure. The first actual HTTPS run passed its
-  create/double-review/cancel/rebind/history workflow and twelve origin/CSRF
-  route subtests. Its other top-level test failed because the cross-scope input
-  retained the original scope hash; subsequent MFA assertions were not reached.
-  The input-only repair preserves the permission and no-write assertions and
-  passed independent source review. The retry and conventional service gates
-  are running; no HTTP-suite or whole-task pass is inferred. The original-request
-  terminal-proof gap remains open.
+  in the combined run; complete combined acceptance remains failed.
+- Eight conventional service gates passed: formatting, vet, modules, service
+  build, pinned-contract synchronization and the three whitespace checks. The
+  default suite passed 1,253 top-level tests and 2,732 subtests, skipped 937
+  top-level tests and 756 subtests, and failed only the pinned API inventory test:
+  its old count was 37 while the synchronized contract has 43 paths. The reviewed
+  test repair checks 43 paths and all six fixed floor-draft POST routes. Its two
+  pure top-level tests passed with zero skips and passed independent actual-result
+  review. The failed default-suite record remains retained; this scoped retry
+  does not constitute a new complete default-suite or native/CLI acceptance run.
+- T47's reviewed cross-scope input repair passed actual HTTPS acceptance: two
+  top-level tests and twelve origin/CSRF subtests, including the real workflow,
+  cross-scope denial and MFA assertions. The historical-principal bridge passed
+  four top-level tests and seven subtests in the same run. Independent review
+  confirmed natural process closure, all 2,487 inputs unchanged and zero skips.
+  This qualifies those HTTP/principal slices, not the original-request proof.
+- A new native admission fence protects original-request observation from an
+  old transaction snapshot that misses a concurrently committed real reservation.
+  Its first test timed out because nested real transactions shared the fixture's
+  single-connection pool; independent review confirmed that cause. A test-only
+  independent writer pool and a two-minute concurrency context preserve the real
+  Store, command, source guards and assertions. The retry passed nine top-level
+  tests and twenty-seven subtests in two packages, including the six existing
+  core tests, the real reservation/retry control and two contract tests, with
+  zero skips. All 2,489 inputs remained unchanged, closure was natural and the
+  resource guard did not trip. Independent actual-result review is pending;
+  the original timeout remains a failed run.
+- The original Engine's new pure processing-cipher authentication seam passed
+  four top-level tests and twenty-seven subtests, with zero skips. It reuses the
+  original cipher/projection decoder and proves no current epoch, permission,
+  lease or business irreversibility. The 2,408-input source map was unchanged,
+  with natural closure and no resource-floor trip. Independent actual-result
+  review is pending. Create-only terminal-proof backend and strict UI codec
+  candidates passed scoped source review after accounting and exact-integer
+  repairs, but their native/HTTP/browser acceptance and explicit UI recovery
+  workflow remain incomplete. No proof-based pending release is delivered.
 - The earlier Linux scanner attempt was refused before VM startup: its proof
   reports about 6.45 GiB available against its original 9 GiB startup floor.
   It provides no scanner or guest execution result. A new output namespace and
   fresh VM/input/resource verification are required before retrying; the old
-  failed evidence remains retained.
+  failed evidence remains retained. The user selected a local testing window;
+  heavy tests run serially while independent source work proceeds in parallel.
 
 - T20's thirteen-file inspection batch was independently reviewed, verified,
   committed and pushed as `9f3c92d22557801f222b63166e557aae91ef3d96` in the
