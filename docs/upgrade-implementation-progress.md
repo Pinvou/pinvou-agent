@@ -16,11 +16,39 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-22 21:47 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-22 23:11 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; additional T13/T25/T47 source repairs and local acceptance continue.
 The combined business workflows have not passed complete acceptance. Candidate
 source remains separate from delivery:
+
+- Latest normal T13/T25/T20 integration contains 2,406 inputs and preserves
+  all thirteen delivered T20 files. The combined actual PostgreSQL run passed
+  thirty-one top-level tests and sixty-one subtests, with two top-level and
+  seven subtest failures and zero skips. Six subtest failures came from building
+  the observation helper from the wrong package. After independent repair
+  review, fresh helper and CLI builds passed; the boundary-only retry passed
+  one top-level test and six subtests with zero skips. It executed the helper,
+  but did not execute the CLI. The separate activation fixture's original
+  runtime-permission refusal remains unexplained; private diagnosis is prepared.
+  All twenty-seven original T13/T25 top-level tests and fifty-two subtests passed
+  in the combined run, but the complete combined acceptance remains failed.
+- T47's normal database workflow now passes six top-level tests and twenty-seven
+  subtests, with zero skips, after reviewed ACK-envelope, plan-body binding and
+  SQL alias repairs. Independent result review confirmed complete unchanged
+  source and natural process closure. The first actual HTTPS run passed its
+  create/double-review/cancel/rebind/history workflow and twelve origin/CSRF
+  route subtests. Its other top-level test failed because the cross-scope input
+  retained the original scope hash; subsequent MFA assertions were not reached.
+  The input-only repair preserves the permission and no-write assertions and
+  passed independent source review. The retry and conventional service gates
+  are running; no HTTP-suite or whole-task pass is inferred. The original-request
+  terminal-proof gap remains open.
+- The earlier Linux scanner attempt was refused before VM startup: its proof
+  reports about 6.45 GiB available against its original 9 GiB startup floor.
+  It provides no scanner or guest execution result. A new output namespace and
+  fresh VM/input/resource verification are required before retrying; the old
+  failed evidence remains retained.
 
 - T20's thirteen-file inspection batch was independently reviewed, verified,
   committed and pushed as `9f3c92d22557801f222b63166e557aae91ef3d96` in the
@@ -160,8 +188,9 @@ source remains separate from delivery:
   incomplete.
 
 Current constraints: the owner selected a local test window with reduced other
-memory use. Heavyweight tests retain 7 GiB startup and 6 GiB active-run admission
-floors; recent closed T20/T25/T47 runs stayed above them.
+memory use. Service/native tests retain 7 GiB startup and 6 GiB active-run admission
+floors; recent closed T20/T25/T47 runs stayed above them. The existing Linux
+scanner VM observer retains its separate 9 GiB startup and 6 GiB active floor.
 The earlier unrelated Rust build was left running as requested and was absent
 at the latest process check; it is not assumed to remain the current blocker. Linux
 scanner native acceptance has not run, the Windows guest's previously observed
