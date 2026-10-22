@@ -1614,7 +1614,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                   {canManage && (
                     <label className={`${quiet} cursor-pointer px-2.5`} title={t.remoteKbShowTrash}>
                       <input data-testid="remote-trash-toggle" className="peer sr-only" type="checkbox" checked={includeTrash} onChange={event => changeTrashVisibility(event.target.checked)} />
-                      <span className="relative h-5 w-8 rounded-full bg-[#d8dce3] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-[#0B57D0] peer-checked:after:translate-x-3" />
+                      <span className="relative h-5 w-8 rounded-full bg-[#E5E5EA] dark:bg-[#39393D] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-[#0B57D0] peer-checked:after:translate-x-3" />
                       {t.remoteKbShowTrash}
                     </label>
                   )}
