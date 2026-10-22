@@ -6,14 +6,14 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#115 and #116 merged.
-EXPECTED_HEAD="ea9fdc90f1c90335554833195eeeb847c83d82dd"
-EXPECTED_COMMITS=79
+EXPECTED_HEAD="23081ae75227323f81fccf663f9111d70f5ac073"
+EXPECTED_COMMITS=77
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="ea9fdc90f1c90335554833195eeeb847c83d82dd"
-# The immutable r1 closure must remain an ancestor of the registered head.
-# A review candidate may lead public maintenance; this does not waive the
-# separate public-head gate or change the immutable r3 transition baseline.
+# r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
+# 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
+# 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
+# scripts/verify-public-submodule.sh 在过渡期断言）。
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 FAST_ONLY=0
 
@@ -70,6 +70,7 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|Recover complete tool outputs|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_web_body_and_json_fields_survive_header_padding"
   "T2|Web JSONPath schema agrees with parser results|CodeWhale/crates/tui/src/tools/web/contract.rs|fn forkguard_web_fields_description_matches_parser"
   "T2|Document the Web JSONPath subset|CodeWhale/crates/tui/src/tools/web_tool.rs|Recursive descent (..) and filters are not supported"
   "T2|Preserve failed tool-result flags|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_tool_failure_flag_survives_recording_and_round_trip"

@@ -1,5 +1,12 @@
 # CodeWhale Fork 修改清单
 
+## T2 review candidate: Recover complete tool outputs
+
+- Backport the recoverable output-budget slice of upstream #6619 across engine, wire, TUI mirror and artifact recovery. Preserve fork-specific route/handle summaries, add parallel-path preservation, immutable full-output writes and truthful failure hints.
+- Candidate gitlink: `23081ae75227323f81fccf663f9111d70f5ac073` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
+- Merge dependency: first merge its foundation PR, then replace the candidate gitlink and guard head with the actual public maintenance SHA, reconcile any already-landed fixes, recount history and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
+- Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_web_body_and_json_fields_survive_header_padding`. Customer data, credentials, runtime logs and reproduction session files are excluded.
+
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
