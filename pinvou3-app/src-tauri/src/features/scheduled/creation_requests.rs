@@ -1439,6 +1439,37 @@ fn prune_stale_state() {
     prune_stale_state_at(std::time::SystemTime::now());
 }
 
+/// Round-36: the retention sweep's starvation check — a bounded
+/// enumeration window is "starved" when it holds entries that are
+/// neither the app's own marker directories nor sweepable records, so
+/// the sweep can never reach them. The app-owned `.done`/`failed`
+/// directories are excluded: a healthy spool root holding only those
+/// (and no records) is the normal steady state, not a defect.
+fn spool_starved_by_non_records(
+    names: &[std::ffi::OsString],
+    owned_dirs: &[std::ffi::OsString],
+    is_spool_root: bool,
+) -> bool {
+    if !is_spool_root {
+        return false;
+    }
+    let non_owned: Vec<std::ffi::OsString> = names
+        .iter()
+        .filter(|name| {
+            !owned_dirs
+                .iter()
+                .any(|owned| owned.as_os_str() == name.as_os_str())
+        })
+        .cloned()
+        .collect();
+    if non_owned.is_empty() {
+        return false;
+    }
+    non_owned
+        .iter()
+        .all(|name| !name.to_string_lossy().ends_with(".json"))
+}
+
 /// The clock is injected so tests can age files without sleeping.
 fn prune_stale_state_at(now: std::time::SystemTime) {
     for (dir, keep_pending) in [
@@ -1456,15 +1487,20 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
         // Round-36 minor 2: non-JSON spool entries can fill the bounded
         // enumeration window so no sweepable name is ever seen. The sweep
         // stays bounded (the platform primitive is shared), but a window
-        // this degraded must say so once per streak instead of silently
-        // starving the retention clock.
-        let json_names = names
-            .iter()
-            .filter(|name| name.to_string_lossy().ends_with(".json"))
-            .count();
-        // The prune runs once per PRUNE_INTERVAL, so this warn is already
-        // cadence-limited; no streak gate needed.
-        if !names.is_empty() && dir == spool_root() && json_names == 0 {
+        // this degraded must say so once per prune instead of silently
+        // starving the retention clock. The app's own `.done`/`failed`
+        // directories always sit in the spool root and never count as
+        // `.json` — they are excluded, so a HEALTHY empty spool never
+        // warns (round-36 reviewer probe).
+        let starvation = spool_starved_by_non_records(
+            &names,
+            &[
+                done_dir().file_name().unwrap_or_default().to_os_string(),
+                failed_dir().file_name().unwrap_or_default().to_os_string(),
+            ],
+            dir == spool_root(),
+        );
+        if starvation {
             log::warn!(
                 "[scheduled-creation] spool enumeration window ({}) holds no .json record; retention sweeping for this directory is starved until the non-record entries are removed",
                 names.len()
@@ -3962,6 +3998,40 @@ mod tests {
     }
 
     #[test]
+    /// Round-36: the starvation check must NOT fire on a healthy spool
+    /// root (only the app's own `.done`/`failed` directories present) —
+    /// the round-36 reviewer probe showed the unfiltered check warning
+    /// forever on every healthy deployment. A foreign non-record entry
+    /// must fire it.
+    #[test]
+    fn spool_starvation_excludes_app_owned_directories() {
+        let owned = [
+            std::ffi::OsString::from(".done"),
+            std::ffi::OsString::from("failed"),
+        ];
+        let healthy = [
+            std::ffi::OsString::from(".done"),
+            std::ffi::OsString::from("failed"),
+        ];
+        assert!(
+            !spool_starved_by_non_records(&healthy, &owned, true),
+            "a healthy spool root must not warn"
+        );
+        let starved = [
+            std::ffi::OsString::from(".done"),
+            std::ffi::OsString::from("failed"),
+            std::ffi::OsString::from("junk.txt"),
+        ];
+        assert!(
+            spool_starved_by_non_records(&starved, &owned, true),
+            "a foreign non-record entry must trip the starvation warn"
+        );
+        assert!(
+            !spool_starved_by_non_records(&healthy, &owned, false),
+            "non-spool directories are never starvation-checked"
+        );
+    }
+
     fn prune_stale_state_sweeps_old_markers_and_stray_tmp() {
         let _home = TempHome::new();
         let done = done_dir();
