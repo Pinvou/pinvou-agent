@@ -65,8 +65,8 @@ export function summarizeCheckpointChanges(changes) {
  * 不落盘、后端以 ToolResult 归入当前 turn）不占序号——否则其后所有入口序号 +1、
  * 最后一个必被后端 total_turns 预检拒绝。
  *
- * 计数调和门（评审 M2）：backendUserTurns（list_checkpoints 响应携带的后端
- * count_user_turns）非空时，若时间线数出的用户 turn 总数与之不一致（如压缩后
+ * 计数调和门（评审 M2 / r21 M1）：backendUserTurns（list_checkpoints 从账本
+ * 索引末条 Turn 快照派生——压缩收缩由后端收缩钩子作废同步）非空时，若时间线数出的用户 turn 总数与之不一致（如压缩后
  * 前端时间线保留全部气泡而后端已收缩为载体+摘要尾），序号↔后端 turn 的映射
  * 不再可靠——返回空 map 不渲染任何入口，把「错点成功」降级为诚实拒绝； durable
  * 重载后时间线按收缩后的 messages 重建（载体被投影过滤），两侧计数重新对齐

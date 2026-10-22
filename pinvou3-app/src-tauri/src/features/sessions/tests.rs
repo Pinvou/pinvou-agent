@@ -4473,6 +4473,57 @@ fn retention_purge_also_updates_multi_agent_flags() {
     );
 }
 
+/// r21 M1：消息收缩钩子只在 persist 整体替换导致消息数变少时触发（压缩是
+/// 该路径唯一的收缩源）；增长/持平不得触发（每次 turn 结束的常规保存都在
+/// 走这条路径）。钩子在持久化成功后拿到的是新消息列表。
+#[test]
+fn messages_shrunk_hook_fires_on_compaction_shrink_only() {
+    let (store, _g) = isolated_store();
+    let session = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create");
+    let id = session.metadata.id.clone();
+    let fired: std::sync::Arc<std::sync::Mutex<Vec<usize>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = fired.clone();
+    store.register_messages_shrunk_hook(std::sync::Arc::new(move |_id, messages: &_| {
+        sink.lock().expect("sink").push(messages.len());
+    }));
+    let state = |n: usize| crate::features::sessions::scheduled::ChatEngineState {
+        messages: (0..n)
+            .map(|i| {
+                if i % 2 == 0 {
+                    user_text(&format!("u{i}"))
+                } else {
+                    assistant_text(&format!("a{i}"))
+                }
+            })
+            .collect(),
+        system_prompt: None,
+        model: "/model".into(),
+        workspace: std::env::temp_dir(),
+    };
+    store
+        .persist_chat_engine_state(&id, &state(4))
+        .expect("grow persist");
+    assert!(
+        fired.lock().expect("f1").is_empty(),
+        "初次持久化不得触发收缩钩子"
+    );
+    store
+        .persist_chat_engine_state(&id, &state(6))
+        .expect("grow persist");
+    assert!(fired.lock().expect("f2").is_empty(), "增长不得触发收缩钩子");
+    store
+        .persist_chat_engine_state(&id, &state(2))
+        .expect("shrink persist");
+    assert_eq!(
+        fired.lock().expect("f3").as_slice(),
+        &[2usize],
+        "压缩收缩必须以新消息列表触发钩子"
+    );
+}
+
 #[test]
 fn retention_purge_notifies_session_purged_hooks() {
     let (store, _guard) = isolated_store();

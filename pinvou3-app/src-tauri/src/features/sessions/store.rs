@@ -34,7 +34,7 @@ use super::validators::{generate_session_id, persisted_system_prompt, validate_s
 use super::validators::chat_session_file;
 use super::{
     CodeSessionPredicate, ExecutionRootResolver, SessionDeletedHook, SessionKind,
-    SessionPurgedHook, SessionRoots, SessionStore, session_roots_for,
+    SessionMessagesShrunkHook, SessionPurgedHook, SessionRoots, SessionStore, session_roots_for,
 };
 use crate::core::mode_state::SerializableMode;
 use crate::platform::prefs::UserPrefs;
@@ -305,6 +305,7 @@ impl SessionStore {
             code_permission: Arc::new(RwLock::new(prefs_snapshot.code_permission)),
             mode_defaults: Arc::new(RwLock::new(mode_defaults_snapshot)),
             session_purged_hooks: Arc::new(RwLock::new(Vec::new())),
+            messages_shrunk_hooks: Arc::new(RwLock::new(Vec::new())),
             session_deleted_hooks: Arc::new(RwLock::new(Vec::new())),
             #[cfg(feature = "benchmark-hooks")]
             retention_eviction_observer: Arc::new(Mutex::new(None)),
@@ -742,6 +743,15 @@ impl SessionStore {
     /// clones share the same Arc, so injection takes effect immediately.
     pub fn register_session_purged_hook(&self, hook: SessionPurgedHook) {
         self.session_purged_hooks.write().push(hook);
+    }
+
+    /// Register a messages-shrunk hook (r21 M1 dependency inversion, see
+    /// [`SessionMessagesShrunkHook`]): fires when an engine-state persist
+    /// REPLACES the transcript with strictly fewer messages (compaction is the
+    /// only shrinking writer on this path). Fired inside the persist lock —
+    /// handlers must defer store re-entry to their own thread.
+    pub fn register_messages_shrunk_hook(&self, hook: SessionMessagesShrunkHook) {
+        self.messages_shrunk_hooks.write().push(hook);
     }
 
     /// Register a durable-session-deleted hook. Runtime hooks are intentionally
@@ -1240,6 +1250,14 @@ impl SessionStore {
             .manager
             .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for engine persistence"))?;
+        // r21 M1：消息数收缩（压缩整体替换 transcript 是唯一走此路径的收缩源）
+        // 时在持久化成功后通知钩子——账本侧据此作废被截分支的 Turn 快照，使
+        // list 的索引派生计数在「压缩后空闲窗口」与 transcript 保持同数（否则
+        // 前端时间线（保留全部气泡）== 账本末条序号 → 调和门放行 → 内部芯片
+        // 静默错位回退）。钩子在 scheduled_mutation 锁内同步调用：注册方必须
+        // 把重活挪到独立线程（与 session_purged_hooks 同款纪律）。
+        let messages_before = session.messages.len();
+        let shrunk = state.messages.len() < messages_before;
         session.metadata.updated_at = Utc::now();
         session.metadata.message_count = state.messages.len();
         session.metadata.model = state.model.clone();
@@ -1252,6 +1270,12 @@ impl SessionStore {
             || format!("persist chat engine state for {id}"),
             "committed engine state save",
         )?;
+        if shrunk {
+            let hooks = self.messages_shrunk_hooks.read().clone();
+            for hook in hooks {
+                hook(id, &state.messages);
+            }
+        }
         Ok(session)
     }
 
