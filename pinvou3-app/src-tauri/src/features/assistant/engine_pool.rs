@@ -10916,7 +10916,14 @@ mod tests {
             .expect("the pool-reuse function present")
             .split("fn ")
             .next()
-            .expect("the reuse gate present");
+            .expect("the reuse gate present")
+            // Round-36 review: strip line comments — a comment-anchored
+            // revert of the clause must not self-satisfy the pin (the
+            // same mutation class its three sibling pins defend against).
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             span.contains("entry_is_fresh("),
             "the freshness leg must stay in the reuse gate"
