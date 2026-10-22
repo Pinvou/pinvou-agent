@@ -19,10 +19,10 @@ const ID: &str = "tmeet";
 /// family (same rationale as `TMEET_MIN_VERSION` below) — a GUI bump of the
 /// spec must move the CLI's install lane with it, and the in-file pin test
 /// keeps the spec tail on the imported version floor.
-pub const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
+pub const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.19";
 /// `pub` + the facade re-export: single-sourced with the CLI's connectors
 /// family (round-51 review, same rationale as `LARK_MIN_VERSION`).
-pub const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
+pub const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 19);
 
 const TMEET_CTX: CliCtx = CliCtx {
     cli_bin: "tmeet",
@@ -162,7 +162,7 @@ fn install_tmeet_cli() -> Result<(), String> {
     ))
 }
 
-/// Bootstrap: ensure the tmeet CLI is installed and at least 1.0.18.
+/// Bootstrap: ensure the tmeet CLI is installed and at least 1.0.19.
 pub async fn tmeet_ensure_cli() -> Result<Value, String> {
     cc::ensure_cli_with(
         "tmeet",
@@ -486,7 +486,7 @@ mod tests {
         assert!(status_is_logged_in("Logged in as user@example.com"));
         // Deliberately a case-sensitive substring over the CLI's own report:
         // the readiness probe accepts an installed-but-older CLI (the
-        // >=1.0.18 gate lives in the version gate, not here), so pin the
+        // >=1.0.19 gate lives in the version gate, not here), so pin the
         // exact match semantics as the contract.
         assert!(!status_is_logged_in("logged in"));
         assert!(status_is_logged_in("warning: Logged in on another device"));

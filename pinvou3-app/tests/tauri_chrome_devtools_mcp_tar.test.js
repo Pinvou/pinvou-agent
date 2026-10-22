@@ -56,11 +56,11 @@ try {
 
 assert.deepEqual(
   tarExtractionArguments(
-    String.raw`D:\jenkins\workspace\target\chrome-devtools-mcp-1.11.0.tgz`,
+    String.raw`D:\jenkins\workspace\target\chrome-devtools-mcp-1.12.0.tgz`,
     String.raw`D:\jenkins\workspace\target`,
     { pathApi: path.win32 },
   ),
-  ["-xzf", "chrome-devtools-mcp-1.11.0.tgz", "-C", "."],
+  ["-xzf", "chrome-devtools-mcp-1.12.0.tgz", "-C", "."],
   "the archive argument must not expose a Windows drive letter to GNU tar",
 );
 assert.throws(

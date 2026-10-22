@@ -33,9 +33,9 @@ fi
 NODE_VERSION="24.22.0"
 CODEX_ACP_VERSION="2.2.2"
 CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
-CLAUDE_ACP_VERSION="0.93.0"
+CLAUDE_ACP_VERSION="0.94.0"
 CLAUDE_ACP_PACKAGE="@agentclientprotocol/claude-agent-acp"
-CLAUDE_SDK_VERSION="0.3.300"
+CLAUDE_SDK_VERSION="0.3.303"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 
 # Print one string field of manifest.json on stdout.
