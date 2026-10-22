@@ -12693,6 +12693,53 @@ pub(crate) mod tests {
         });
     }
 
+    /// The slot binding covers the custom-header leg too: a manifest-namespace
+    /// value parked under a header the manifest does not declare (`X-Other`
+    /// for an `X-Api-Key` channel) is sent where the server does not read it —
+    /// it wires nothing and masks nothing, like the bearer-leg twin above.
+    #[test]
+    fn reconcile_disables_value_under_undeclared_custom_header_slot() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "slot-c",
+                "slot-c",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"slot-remote-c","url":"https://slot-c.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"X-Api-Key","scheme":"","source_key":"K","provider":"demo"}
+                    ]"#,
+            );
+            write_installed_ids(&["slot-c".to_string()]);
+            seed_mcp_json(serde_json::json!({
+                "slot-remote-c": {
+                    "url": "https://slot-c.example.com/mcp",
+                    "env_headers": { "X-Other": mcp_secret_env_var("K") }
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'slot-c': disabled remote entry 'slot-remote-c' — required credential \
+                      K has no auth wiring; reinstall the tool to re-enter it and enable"
+                        .to_string()
+                ],
+                "a value under an undeclared custom header must not mask the gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["slot-remote-c"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the entry cannot authenticate the declared X-Api-Key channel: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
     /// A blank hand header wires nothing on any channel (the same doctrine
     /// `remote_entry_has_auth_wiring` applies), so it is neither hand auth
     /// nor wiring: the keyless entry is disabled like its bare sibling.
