@@ -1602,11 +1602,24 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     for (name, digest, payload) in receipts {
         if write_done_marker(&done_dir().join(&name), &payload).is_ok() {
             let path = root.join(&name);
-            if read_regular_bounded(&path, MAX_SPOOL_FILE_BYTES as usize)
-                .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok())
-                .is_some_and(|request| spool_request_digest(&request) == digest)
-            {
-                let _ = directory.remove_plain_file(std::ffi::OsStr::new(&name));
+            // Round-35 minor 2: the removal is identity-anchored like the
+            // Done arm — a same-name replacement landing between the read
+            // and the unlink keeps the new payload for the next poll
+            // instead of being destroyed untried.
+            let applied = read_regular_bounded_anchored(&path, MAX_SPOOL_FILE_BYTES as usize)
+                .and_then(|(bytes, applied_meta)| {
+                    serde_json::from_slice::<SpooledCreationRequest>(&bytes)
+                        .ok()
+                        .filter(|request| spool_request_digest(&request) == digest)
+                        .map(|_| applied_meta)
+                });
+            if let Some(applied_meta) = applied {
+                if std::fs::symlink_metadata(&path)
+                    .map(|current| same_file_identity(&current, &applied_meta))
+                    .unwrap_or(false)
+                {
+                    let _ = directory.remove_plain_file(std::ffi::OsStr::new(&name));
+                }
             }
             retries.receipts.remove(&name);
         }
