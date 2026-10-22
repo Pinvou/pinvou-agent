@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 05:12 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 05:49 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; additional T13/T25/T47 source repairs and local acceptance continue.
 The combined business workflows have not passed complete acceptance. Candidate
@@ -45,13 +45,38 @@ source remains separate from delivery:
   from the publisher's authenticated HTTPS download: 477,362 records and
   30,360,919 expanded bytes. Published transfer checks match the expanded CSV;
   the independently pinned SHA-256 is retained privately. Equivalent-format
-  adaptation is in development. No real lookup, approved source validity period,
-  protected installation or complete T25 qualification is claimed.
+  adaptation, the controlled local import CLI and their 13-top/81-sub pure-test
+  caller have passed independent source review. The fresh 2,301-input test tree
+  is assembled; no Go or real-data test has run. Two known answers were bound to
+  independent RIPE bulk-AS routing timelines in an isolated data-test interval;
+  this does not approve production freshness, installation or database accuracy.
+  No real lookup or complete T25 qualification is claimed.
+- T10's original native capture cancellation classification and blob-seal error
+  cleanup repairs passed independent source review. An acquired error Blob now
+  closes, and explicit unknown cleanup/durability takes precedence over ordinary
+  cancellation. The current-principal fact wrapper also passed scoped source
+  review. The fixed scan owner, durable intent, fenced claim/renewal and final
+  transaction remain in development; these components have not been compiled,
+  tested or registered as an available scanner workflow.
+- The dense real-source capacity experiment's read-only lower-bound calculation
+  incorrectly conflated different history revisions with the same kind and ID.
+  Root repaired its test-only identity to include revision and added seven
+  focused controls. Independent source review passed. The three pure top-level
+  tests and fourteen subtests have not run; no new native capacity bracket,
+  exact 32 MiB boundary or whole-task acceptance is established.
+- Source comparison found no confirmed cause for the normal runtime-permission
+  refusal. A fresh 2,408-input tree for the unchanged one-top/three-sub retake
+  is assembled and its caller passed independent source review. It excludes all
+  private instrumentation and has not run; the private diagnostic pass remains
+  separate from normal acceptance and from a production repair.
 - Recent available memory fell below the unchanged 7 GiB test-start floor;
   execution still requires 6 GiB and VM startup 9 GiB. The combined native run
   naturally closed without a resource trip; its earlier attempt was refused
   before launching a child. Source work continues while a usable local testing
-  window is pending. No unrelated process was stopped or download deadline added.
+  window is pending. The owner chose to arrange that window by reducing other
+  applications' memory use; the latest host observation was approximately
+  6.5 GiB available, below the start floor. No new test child was launched, no
+  unrelated process was stopped and no download deadline was added.
 
 - Normal T13/T25/T20 integration preserves all thirteen delivered T20 files.
   Its combined PostgreSQL run passed thirty-one top-level tests and sixty-one
