@@ -242,10 +242,12 @@ assert.ok(
 
 // (c) The awaited branches' success path notifies (round-3 review: it lived
 // only in the mounted subscription's done phase before, so an unmounted
-// store view's composer never learned of a successful connect).
+// store view's composer never learned of a successful connect) and clears
+// the store latch on the way — done only trails a successful apply here, so
+// nothing re-latches afterwards (review #741 P2 moved the latch to the store).
 assert.ok(
-  /await invokeTauri\(cfg\.commands\.applySkills\);\s*\/\/ Round-38 \+ round-3 review[\s\S]{0,400}?notifyComposerToolsChanged\(\)/.test(store),
-  'the awaited apply success path must notify the composer right after the apply resolves (view-independent, parity with its failure path)',
+  /await invokeTauri\(cfg\.commands\.applySkills\);[\s\S]{0,500}?conn\.setConsentSyncFailed\(false\);[\s\S]{0,500}?notifyComposerToolsChanged\(\)/.test(store),
+  'the awaited apply success path must clear the store latch and notify the composer right after the apply resolves (view-independent, parity with its failure path)',
 );
 
 // (d) The connected banner falls back to the title-only copy while a consent
@@ -261,10 +263,58 @@ for (const key of ['feishu', 'wecom', 'dingtalk', 'tmeet']) {
     `the ${key} subscription must feed its consent-failure latch into the banner gate`,
   );
 }
-assert.ok(
-  collapsedStore.includes("flow.errorCode === 'connect_consent_persist_failed'"),
-  'the latch must key on the connect-consent failure code — latching every error would suppress the banner copy for ordinary auth failures',
+// The latch is keyed on the connect-consent code at BOTH listener classification
+// sites (fire-and-forget + awaited) and set on the store there — latching every
+// error would suppress the banner copy for ordinary auth failures, and a
+// component-side set is lost on remount (review #741 P2).
+assert.strictEqual(
+  store.split("failure.code === 'connect_consent_persist_failed'").length - 1,
+  2,
+  'both apply-branch classifications must key the latch on the connect-consent code exactly (fire-and-forget + awaited) — latching every error would suppress the banner copy for ordinary auth failures',
 );
+assert.strictEqual(
+  store.split('conn.setConsentSyncFailed(true)').length - 1,
+  2,
+  'the store latch must be set at exactly the two classification sites, BEFORE the null-guarded flow write — a set after it loses the closed-card case, a set in the mounted subscription is lost on remount (review #741 P2)',
+);
+assert.strictEqual(
+  store.split('conn.setConsentSyncFailed(false)').length - 1,
+  2,
+  'the store latch must clear at exactly the two done WRITES (fire-and-forget connected event + awaited success) — a clear in the mounted subscription misses done phases that land while the store view is unmounted (review #741 P2)',
+);
+// The latch set must precede the null-guarded flow write at BOTH sites: the
+// flow write is what broadcasts, so a set after it lets that broadcast carry
+// the stale snapshot and a mounted view keeps the enabled-by-default banner
+// until an unrelated broadcast. Anchored per branch on the shared
+// set -> reportConnectorFailure -> flow-write sequence.
+assert.strictEqual(
+  (store.match(/conn\.setConsentSyncFailed\(true\);[\s\S]{0,80}?reportConnectorFailure\(cfg\.key, failure, '(?:cli|qr)'\);[\s\S]{0,200}?conn\.setFlow\(f => \(f \? applyConnectorFailure/g) || []).length,
+  2,
+  'the latch set must precede the null-guarded flow write at both classification sites — a set after it lets the failure broadcast carry the stale latch snapshot (review #741 P2)',
+);
+// The hook must mirror the store latch through useSyncExternalStore — React
+// re-reads the store on every mount, so a latch that landed while the view was
+// unmounted is picked up by hydration itself. A component-local useState
+// (fresh false per mount) or a mount-time mirror statement regresses the P2.
+assert.ok(
+  /const consentSyncFailed = useSyncExternalStore\(\s*\(onStoreChange\) => conn\.subscribe\(onStoreChange\),\s*\(\) => conn\.consentSyncFailed,/.test(store),
+  'the hook must mirror the store latch via useSyncExternalStore (subscribe through the conn store, snapshot = the store field) — a component-local latch restarted at false on remount (review #741 P2)',
+);
+assert.ok(
+  !/setConsentSyncFailed\(conn\.consentSyncFailed\)/.test(store),
+  'the hook must not hand-mirror the latch in setState — a hydration/mirror statement in the effect is exactly the mount-order fragility useSyncExternalStore removes (review #741 P2)',
+);
+// Dismissing the error card must not clear the latch: the fail-closed backend
+// outlives the dismissed card, and clearing here re-arms the enabled-by-default
+// connected banner (the P2 scenario's final step).
+{
+  const resetFlow = store.match(/const resetFlow = \(\{ setBusyId \}\) => \{[\s\S]*?\n      \};/);
+  assert.ok(resetFlow, 'resetFlow must stay recognizable');
+  assert.ok(
+    !resetFlow[0].includes('setConsentSyncFailed'),
+    'dismissing the error card must NOT clear the store latch — the banner keeps the title-only copy until a connect reaches done (review #741 P2)',
+  );
+}
 
 // (e) The composer seq guard (round-38, round-2 review m9): only the latest
 // refresh may commit, so a pre-grant read can never overtake the
@@ -278,5 +328,50 @@ assert.ok(
   composerSrc.includes('seq === refreshSeqRef.current'),
   'the composer refresh must gate every commit on the seq being current',
 );
+
+// (f) Behavior of the REAL store factory (extracted from the production file,
+// the same harness shape a fresh review used): the latch must survive the exact
+// P2 sequence — consent write fails while the store view is unmounted (or the
+// user leaves after seeing the error) → view remounts → error card dismissed →
+// (returning again after dismissal) — without the connected banner re-arming
+// its enabled-by-default copy, and only a fresh connect reaching done clears it.
+{
+  const factory = store.match(/const createFlowStore = \(\) => \(\{[\s\S]*?\n    \}\);/);
+  assert.ok(factory, 'createFlowStore must stay recognizable');
+  const createFlowStore = new Function(`${factory[0]}; return createFlowStore;`)();
+
+  const conn = createFlowStore();
+  // A mounted view: the subscriber mirrors BOTH fields (the hook's shape — the
+  // latch is read off the store inside the broadcast callback).
+  let mirroredLatch = false;
+  const unsub = conn.subscribe(() => { mirroredLatch = conn.consentSyncFailed; });
+
+  // The connect's consent persist fails after the card was closed: the flow
+  // write null-guards to a no-op, but the store latch still lands and broadcasts.
+  conn.setFlow(null);
+  conn.setConsentSyncFailed(true);
+  assert.ok(mirroredLatch, 'a latch-only change must broadcast — a mounted view must mirror the failure even when the flow write was a no-op');
+
+  // Leave and return (fresh component, useState(false) + hydration): the mirror
+  // must come back true from the store, not from component state.
+  assert.ok(conn.consentSyncFailed, 'the latch must survive the view remount (review #741 P2)');
+
+  // Dismiss the error card (resetConnectorFlow nulls the flow): the latch stays,
+  // so the connected banner keeps its title-only fallback.
+  conn.setFlow(null);
+  assert.ok(conn.consentSyncFailed, 'dismissing the error card must not re-arm the enabled-by-default banner (review #741 P2)');
+
+  // Returning after dismissal hydrates the latch still; a fresh connect reaching
+  // done is the only thing that clears it.
+  assert.ok(conn.consentSyncFailed, 'returning after dismissal must still hydrate the latch');
+  conn.setConsentSyncFailed(false);
+  assert.ok(!conn.consentSyncFailed, 'a fresh connect reaching done clears the latch');
+  assert.ok(!mirroredLatch, 'the clear broadcasts too, so mounted views un-latch');
+
+  // The mirror discipline is per-store: a sibling connector's store is unaffected.
+  const sibling = createFlowStore();
+  assert.ok(!sibling.consentSyncFailed, 'connector stores must not share the latch');
+  unsub();
+}
 
 console.log('consent_marker_frontend: ok');
