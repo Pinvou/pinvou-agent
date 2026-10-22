@@ -3997,7 +3997,6 @@ mod tests {
         assert!(record.validate().is_err(), "delete rejects a stray paused");
     }
 
-    #[test]
     /// Round-36: the starvation check must NOT fire on a healthy spool
     /// root (only the app's own `.done`/`failed` directories present) —
     /// the round-36 reviewer probe showed the unfiltered check warning
@@ -4032,6 +4031,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn prune_stale_state_sweeps_old_markers_and_stray_tmp() {
         let _home = TempHome::new();
         let done = done_dir();

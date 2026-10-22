@@ -22,7 +22,7 @@
 | 决策点 | 结论 | 理由 |
 |---|---|---|
 | 归属 | **新开能力族**，新 MCP server `app-automations`（契约 §2/§8） | 调度是独立能力族，未来 run-now、记忆整理等自动化工具可归入；避免 session-reader 族膨胀 |
-| 交互确认 | 创建及名称/模型/暂停状态更新立即生效；删除和提示词/计划覆盖返回 `confirmation_required`，由用户在现有面板检查并提交 | 用户于 2026-10-21 明确选择；全自动模式下 typed Ask 规则不是授权机制 |
+| 交互确认 | 创建及名称/模型/暂停状态更新立即生效；prompt/rrule 覆盖返回 `confirmation_required`，由用户在现有面板检查并提交。~~删除同样返回 `confirmation_required`~~（round-36 修订：该半句是已被取代的 round-32 提案——无歧义目标的删除按 §5 例外直接执行，不返回 `confirmation_required`；见契约 §5/§9 与工具描述） | prompt/rrule 的面板评审由用户于 2026-10-21 明确选择；全自动模式下 typed Ask 规则不是授权机制 |
 | 返回语义 | **短等待同步**：server.py 落盘后轮询结果标记 ≤5s，命中返回任务 ID，超时回 pending | 模型能直接告知用户"已创建 XX"，前端可联动；纯异步会让模型无法确认结果 |
 | rrule 范围 | 工具层只接受产品子集（HOURLY/WEEKLY/ONCE），**拒绝 CRON 与一切分钟级频率** | 与 `SCHEDULED_TASK_CHAT_PROMPT` 的产品约束一致；比领域层（`parse_rrule` 另支持 CRON）更严格是有意为之 |
 | 基座死工具 | 顺带把 `automation`、`send_later` 加入应用 disallow 列表 | 应用内未挂 manager、永远失败，留在目录里只会诱导模型试错；`tasks`/`github` 不动（超范围） |
