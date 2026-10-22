@@ -10893,3 +10893,38 @@ mod probed_facts_wiring_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Round-35 M1: the unattended/interactive pool-reuse clause is
+    /// load-bearing — it is the only thing preventing an interactive
+    /// continuation of a sched session from reusing the run engine
+    /// (subagents disabled, spawn-pinned scheduled model, stale shield
+    /// entries). Deleting the second leg kept the whole serial suite
+    /// green (reviewer mutation, re-confirmed by the round-36 subagent
+    /// review). Source-pin BOTH legs and their conjunction at the reuse
+    /// site: engine_pool.rs carries production code after its scattered
+    /// cfg(test) modules, so the span is the reuse function's own body
+    /// (up to the next item), which excludes the test module at the
+    /// file's end.
+    #[test]
+    fn pool_reuse_requires_the_same_engine_class() {
+        let source = include_str!("engine_pool.rs");
+        let span = source
+            .split("fn get_or_spawn_with_policy")
+            .nth(1)
+            .expect("the pool-reuse function present")
+            .split("fn ")
+            .next()
+            .expect("the reuse gate present");
+        assert!(
+            span.contains("entry_is_fresh("),
+            "the freshness leg must stay in the reuse gate"
+        );
+        assert!(
+            span.contains(") && entry.engine.scheduled_run_engine == scheduled_unattended"),
+            "reuse must be CONJOINED with the run-engine class — the clause \
+             that keeps interactive continuations off the run engine (round-35 M1)"
+        );
+    }
+}

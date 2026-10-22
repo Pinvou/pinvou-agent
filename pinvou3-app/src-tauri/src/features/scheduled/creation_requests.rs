@@ -1453,6 +1453,23 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
         else {
             continue;
         };
+        // Round-36 minor 2: non-JSON spool entries can fill the bounded
+        // enumeration window so no sweepable name is ever seen. The sweep
+        // stays bounded (the platform primitive is shared), but a window
+        // this degraded must say so once per streak instead of silently
+        // starving the retention clock.
+        let json_names = names
+            .iter()
+            .filter(|name| name.to_string_lossy().ends_with(".json"))
+            .count();
+        // The prune runs once per PRUNE_INTERVAL, so this warn is already
+        // cadence-limited; no streak gate needed.
+        if !names.is_empty() && dir == spool_root() && json_names == 0 {
+            log::warn!(
+                "[scheduled-creation] spool enumeration window ({}) holds no .json record; retention sweeping for this directory is starved until the non-record entries are removed",
+                names.len()
+            );
+        }
         for name in names {
             // Untimed evidence has no trustworthy retention clock.
             if name.to_string_lossy().starts_with(".untimed-") {
