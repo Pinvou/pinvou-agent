@@ -125,6 +125,17 @@ pub(super) fn set_remote_secret_header(
     key: &str,
 ) -> Result<(), String> {
     let env_var = mcp_secret_env_var(key);
+    // A blank header NAME is as unrepresentable as a blank value: the entry
+    // would carry `env_headers[""]`, a slot the engine cannot send and the
+    // slot-bound oracle would count as wiring — an installed entry that can
+    // never authenticate. Fail the install loud, mirroring the unsupported-
+    // scheme refusal below.
+    if header.trim().is_empty() {
+        return Err(
+            "a remote MCP secret header name is blank; use Bearer Authorization or name the custom header"
+                .to_string(),
+        );
+    }
     if header.eq_ignore_ascii_case("authorization") && scheme.eq_ignore_ascii_case("bearer") {
         if let Some(existing) = bearer_token_env_var.as_deref() {
             if existing != env_var {

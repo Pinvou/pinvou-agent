@@ -13054,6 +13054,45 @@ pub(crate) mod tests {
         });
     }
 
+    /// A blank secret-header NAME is refused at install instead of landing
+    /// `env_headers[""]` — a slot no engine request can send and the
+    /// slot-bound oracle would count as wiring, i.e. an installed entry
+    /// that can never authenticate.
+    #[test]
+    fn install_refuses_blank_secret_header_name() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "blank-h",
+                "BlankH",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"blank-h-remote","url":"https://blank-h.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":" ","scheme":"","source_key":"K1","provider":"p"}
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("blank-h", "header", "K1"), "t1")
+                .unwrap();
+
+            let error = manager
+                .install_upload(
+                    "blank-h",
+                    store::BundleSource::Upload("blank-h.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("header name is blank"),
+                "the refusal must state the blank header name: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
     /// An OPTIONAL secret_env channel whose key is absent installs without
     /// the wiring — the same doctrine the config-field arms apply. Under
     /// the required-blind resolver this install failed loud.
