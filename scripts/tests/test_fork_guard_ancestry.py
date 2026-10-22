@@ -5,12 +5,20 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 BASH = shutil.which("bash")
+
+
+def isolated_git_env():
+    # Hooks and rebase --exec export repository selectors that override -C.
+    # Config/namespace selectors can redirect writes too; inherit none of them.
+    return {key: value for key, value in os.environ.items()
+            if not key.upper().startswith("GIT_")}
 
 
 @unittest.skipUnless(BASH, "requires bash")
@@ -30,7 +38,7 @@ class ForkGuardAncestryTests(unittest.TestCase):
         self.git("update-ref", "HEAD", self.head)
 
     def git(self, *args, input=None):
-        env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_COMMITTER_NAME="Fixture",
+        env = dict(isolated_git_env(), GIT_AUTHOR_NAME="Fixture", GIT_COMMITTER_NAME="Fixture",
                    GIT_AUTHOR_EMAIL="fixture@example.com", GIT_COMMITTER_EMAIL="fixture@example.com")
         return subprocess.run(
             ["git", "-C", str(self.repo), *args], input=input, env=env,
@@ -47,7 +55,11 @@ class ForkGuardAncestryTests(unittest.TestCase):
         # Execute the production topology block, stopping before unrelated
         # file fingerprints. No network, fake Git, or production checkout edits.
         source = (ROOT / "scripts/fork-guard.sh").read_text(encoding="utf-8")
-        source = source.split("fingerprints=(", 1)[0]
+        source, boundary, remainder = source.partition(
+            '\nbold "── 第 1 层：登记主题与父仓适配指纹 ──"\n'
+        )
+        self.assertTrue(boundary, "missing topology/fingerprint boundary")
+        self.assertRegex(remainder, r"\A# 格式：[^\n]*\nfingerprints=\(")
         for name, value in {
             "EXPECTED_UPSTREAM": self.upstream,
             "R1_CLOSURE": self.r1,
@@ -63,6 +75,7 @@ class ForkGuardAncestryTests(unittest.TestCase):
         script.write_text(source + '\nexit "$fail"\n', encoding="utf-8", newline="\n")
         return subprocess.run(
             [BASH, "scripts/fork-guard.sh", "--fast"], cwd=self.root,
+            env=isolated_git_env(),
             text=True, encoding="utf-8", capture_output=True, timeout=30,
         )
 
@@ -80,6 +93,42 @@ class ForkGuardAncestryTests(unittest.TestCase):
         result = self.run_gate("f" * 40)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("does not contain public maintenance base", result.stdout)
+
+
+@unittest.skipUnless(BASH, "requires bash")
+class GitEnvironmentIsolationTests(unittest.TestCase):
+    def test_ambient_git_environment_cannot_redirect_fixture(self):
+        # Only disposable repositories are exposed to the child, including when
+        # this test is used as a mutation control against the unsafe old code.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            foreign = root / "foreign.git"
+            worktree = root / "foreign-worktree"
+            alternate = root / "alternate-objects"
+            worktree.mkdir()
+            alternate.mkdir()
+            (worktree / "keep.txt").write_bytes(b"foreign worktree sentinel\n")
+            subprocess.run(["git", "init", "--bare", "--quiet", str(foreign)],
+                           env=isolated_git_env(), check=True, capture_output=True)
+            index = root / "foreign-index"
+            index.write_bytes(b"foreign index sentinel\n")
+            before = {path.relative_to(root): path.read_bytes()
+                      for path in root.rglob("*") if path.is_file()}
+            env = dict(os.environ,
+                       GIT_DIR=str(foreign), GIT_WORK_TREE=str(worktree),
+                       GIT_INDEX_FILE=str(index), GIT_COMMON_DIR=str(foreign),
+                       GIT_OBJECT_DIRECTORY=str(foreign / "objects"),
+                       GIT_ALTERNATE_OBJECT_DIRECTORIES=str(alternate))
+            result = subprocess.run(
+                [sys.executable, "-X", "utf8", str(Path(__file__).resolve()),
+                 "ForkGuardAncestryTests"],
+                env=env, text=True, encoding="utf-8", capture_output=True, timeout=120,
+            )
+            after = {path.relative_to(root): path.read_bytes()
+                     for path in root.rglob("*") if path.is_file()}
+            self.assertEqual(after, before, "fixture changed the foreign repository or index")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Ran 3 tests", result.stderr)
 
 
 if __name__ == "__main__":
