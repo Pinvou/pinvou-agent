@@ -16,10 +16,11 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-22 19:30 Asia/Shanghai**. T20 advances from 45% to
-50% following delivery of its bounded read-only Session-retention inspection
-batch. Other estimates remain unchanged; the combined business workflow has not
-completed native acceptance. Candidate source remains separate from delivery:
+Current checkpoint: **2026-10-22 20:58 Asia/Shanghai**. Estimates and delivered
+task totals remain unchanged. T20's bounded read-only Session-retention batch is
+delivered; additional T13/T25/T47 source repairs and local acceptance continue.
+The combined business workflows have not passed complete acceptance. Candidate
+source remains separate from delivery:
 
 - T20's thirteen-file inspection batch was independently reviewed, verified,
   committed and pushed as `9f3c92d22557801f222b63166e557aae91ef3d96` in the
@@ -63,12 +64,32 @@ completed native acceptance. Candidate source remains separate from delivery:
   This is not a passed complete run.
   The previously excluded large-body history control actually ran and passed.
   Diagnostic fixtures and these source repairs are not service deliveries.
+  A subsequent fixture repair installs the real lifecycle prerequisite before
+  joint initialization. Its focused run passed three top-level tests and three
+  subtests in two packages, without skips. The two previously intermittent
+  metadata initialization cases then passed three separate fresh attempts,
+  each with two top-level tests, three subtests and one package. Independent
+  actual-result review confirmed natural process closure, unchanged source
+  and no resource-floor trip. These attempts did not establish the original
+  two initialization failure causes or pass the complete native suite. A
+  reviewed four-test-file cleanup plan removes temporary diagnostics while
+  preserving the actual lifecycle, search-path, SQL and full-DSN repairs;
+  final cleanup and required acceptance remain pending.
 - Admin strict type checking, 17 pure controls and the production build passed.
   After correcting browser discovery, nine of eleven synthetic browser controls
   passed; two exact-label selectors failed. All eight related textarea selectors
   have since been repaired and independently reviewed. The fresh strict/browser
-  retry is prepared, not passed. Real PostgreSQL/HTTP/three-language browser
-  workflow sources are reviewed but have not run.
+  retry subsequently passed strict types, all seventeen pure controls and
+  the build using freshly restored, lock-bound offline dependencies. A private
+  browser-driver path error was repaired. The next synthetic run passed ten
+  of eleven controls; its remaining assertion incorrectly compared legal JSON
+  object insertion order after original-wire restoration. The independently
+  reviewed strict-JSON value assertion repair then passed all eleven controls
+  with zero skips or retries. The real PostgreSQL/HTTP/browser run failed in
+  all three locales and remains red. A later English diagnostic run retained
+  its private report and passed the original lost-ACK recovery case, but failed
+  the correction case's immediate asynchronous-state assertion. That test
+  repair is under independent review; real three-language acceptance is pending.
 - T31's normal unsigned standalone helper and launcher passed release compilation
   and independent PE readback. This covers the two actual build outputs, not
   service installation, IPC, protected execution or fault recovery.
@@ -83,9 +104,26 @@ completed native acceptance. Candidate source remains separate from delivery:
   components passed scoped independent source review. A coherent isolated
   2,328-input source snapshot passed combination compilation and 36 pure
   top-level tests with 109 actually executed subtests in four packages, without
-  skips. These results do not qualify native persistence, migration, HTTP/UI or
-  the complete workflow. Current-result cost accounting, exact approval ACK
-  recovery, fixed HTTP queries and three-language UI work continue.
+  skips. The subsequent current-result cost batch passed thirty-eight pure
+  top-level tests with 116 actually executed subtests in four packages, without
+  skips. Its actual native result-encoder/budget control passed; a 4,097-event
+  shared-audit paging control reached its corruption probe, which was blocked
+  by the original append-only trigger. The isolated-owner probe repair is
+  source-reviewed but has not passed a rerun. Genuine new-owner migration
+  initially failed because three inventory-function declaration line breaks
+  were incompatible with the fixed catalog parser. The reviewed header-only
+  repair preserves every function body and the original parser/ACL checks.
+  After removing all private migration diagnostics, the actual migration,
+  frozen-source and context smoke passed one top-level test in one package,
+  without skips, and independent actual-result review passed. In the following
+  workflow run, private pending classification passed one top-level test and
+  three subtests, while three creation-dependent top-level tests failed. A
+  bounded private observer identified a denied original-kernel internal read;
+  the legitimate fixed read bridge still requires repair and acceptance.
+  Exact approval ACK recovery, fixed HTTP queries, three-language UI and
+  genuine HTTP/browser controls have scoped source reviews. The UI's original
+  request terminal-proof gap remains open. No complete T47 workflow delivery,
+  native HTTP/UI acceptance or whole-task completion is claimed.
 - T29's fixed control-POST-to-file caller candidate passed 22 unit tests and two
   actual process tests, formatting and Clippy. An adjacent binary check first
   exposed omitted original source files in the isolated test tree. After those
