@@ -485,7 +485,7 @@ jobs:
       # setup 脚本内容 hash 进去,脚本(钉的 sha256/包清单)一变即换代,
       # 旧代由 scripts/cache-janitor.sh 规则 E 去重。
       - name: Restore loong64 cross toolchain cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.PINVOU_LOONG64_CACHE_ROOT }}/cross-tools
           key: release-linux-loong64-jammy-toolchain-${{ hashFiles('scripts/ci-loongarch64-toolchain.sh') }}
@@ -493,7 +493,7 @@ jobs:
             release-linux-loong64-jammy-toolchain-
 
       - name: Restore loong64 sysroot cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.PINVOU_LOONG64_CACHE_ROOT }}/sysroot
           key: release-linux-loong64-jammy-sysroot-${{ hashFiles('scripts/ci-loongarch64-sysroot.sh') }}

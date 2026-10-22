@@ -1047,7 +1047,7 @@ jobs:
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_code == 'true' }}
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-shear@1.13.4
+          tool: cargo-shear@1.14.0
       - name: cargo shear (hard gate, both workspaces)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_code == 'true' }}
         run: |
@@ -3100,7 +3100,7 @@ jobs:
       # 旧代由 scripts/cache-janitor.sh 规则 E 去重。
       - name: Restore loong64 cross toolchain cache
         id: loong64-toolchain-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools
           key: release-linux-loong64-jammy-toolchain-${{ hashFiles('scripts/ci-loongarch64-toolchain.sh') }}
@@ -3109,7 +3109,7 @@ jobs:
 
       - name: Restore loong64 sysroot cache
         id: loong64-sysroot-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
           key: release-linux-loong64-jammy-sysroot-${{ hashFiles('scripts/ci-loongarch64-sysroot.sh') }}
@@ -3161,14 +3161,14 @@ jobs:
       # key,后续 restore 会永远命中这份空代;cache-hit 时无需重写同一键)。
       - name: Save loong64 cross toolchain cache
         if: ${{ success() && github.ref == 'refs/heads/main' && steps.loong64-toolchain-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools
           key: release-linux-loong64-jammy-toolchain-${{ hashFiles('scripts/ci-loongarch64-toolchain.sh') }}
 
       - name: Save loong64 sysroot cache
         if: ${{ success() && github.ref == 'refs/heads/main' && steps.loong64-sysroot-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
           key: release-linux-loong64-jammy-sysroot-${{ hashFiles('scripts/ci-loongarch64-sysroot.sh') }}
