@@ -296,7 +296,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const createFlowStore = () => ({
       flow: null,
       tick: null,
-      // Latched while the LAST settled connect of this connector failed its consent persist.
+      // Latched while the LAST settled connect of this connector failed its consent persist or its
+      // post-auth skill write — the backend revokes the fresh grant (or never lands it) on either,
+      // so the connected banner must keep its title-only fallback (round-6 review P2).
       // Lives on the module-level store, not the component: the failure can settle while the
       // store view is unmounted, and the latch must survive remount AND card dismissal until
       // a connect reaches done (review #741 P2 — a component-local latch restarted at false
@@ -409,7 +411,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               // Latch on the store BEFORE the flow write: the card may already be closed (the write
               // below null-guards to a no-op) and the latch must survive that — plus any remount and
               // dismissal — so the connected banner keeps the title-only copy (review #741 P2).
-              if (failure.code === 'connect_consent_persist_failed') conn.setConsentSyncFailed(true);
+              // EVERY rejection of this write is post-auth (round-6 review P2): a persist failure
+              // stays fail-closed, and an ordinary materialization failure REVOKES the fresh grant —
+              // either way the backend is not enabled-by-default, and the marker-only latch left the
+              // enabled-by-default banner showing over a disabled connector once the error card was
+              // dismissed.
+              conn.setConsentSyncFailed(true);
               reportConnectorFailure(cfg.key, failure, 'cli');
               // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
               conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
@@ -461,8 +468,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 ? { code: 'connect_consent_persist_failed' }
                 : { code: 'skills_enable_failed' };
             // Latch on the store BEFORE the flow write — same closed-card/remount reasoning as the
-            // fire-and-forget branch above (review #741 P2).
-            if (failure.code === 'connect_consent_persist_failed') conn.setConsentSyncFailed(true);
+            // fire-and-forget branch above (review #741 P2). Both post-auth classes latch (round-6
+            // review P2): an ordinary materialization failure revokes the fresh grant exactly like
+            // a persist failure, so the banner keeps the title-only copy for either. Only the
+            // pre-apply auth failures (authIncomplete, tmeet's readiness re-check) stay unlatched —
+            // no grant was attempted, the backend state is untouched.
+            if (failure.code !== 'auth_failed') conn.setConsentSyncFailed(true);
             reportConnectorFailure(cfg.key, failure, 'qr');
             // Same null guard: a failure landing after the card was closed must not fabricate one.
             conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'qr') : f));
@@ -1382,8 +1393,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       // (alert dialog, connection-state refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
-      // consentSyncFailed latches a consent-persist failure so the connected banner cannot claim
-      // enabled-by-default over the fail-closed state (round-3 review).
+      // consentSyncFailed latches a post-auth connect failure (consent persist OR skill enable —
+      // both leave the backend fail-closed) so the connected banner cannot claim
+      // enabled-by-default over it (round-3 review, round-6 review P2).
       const feishuConsentSyncFailed = useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu', doneSettlesLater: true });
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
@@ -2269,10 +2281,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         : null;
       // Detail page "Connected" banner (five connectors, one shared visual shell): CLI connectors need the connection
       // state ready and the flow card collapsed; ima has no flow card, connection state only. Mutually exclusive, at most one shows.
-      // Round-3 review: after a consent-persist failure the connection IS up but the connector is NOT enabled
-      // (fail-closed revoke) — the enabled-by-default banner copy would claim the opposite once the error card
-      // is dismissed, so a latched failure falls back to the title-only connected copy until the next connect
-      // reaches done.
+      // Round-6 review: after a consent-persist or skill-enable failure the connection IS up but the
+      // connector is NOT enabled (fail-closed revoke) — the enabled-by-default banner copy would
+      // claim the opposite once the error card is dismissed, so a latched failure falls back to the
+      // title-only connected copy until the next connect reaches done.
       const consentSyncFailedByTool = { feishu: feishuConsentSyncFailed, wecom: wecomConsentSyncFailed, dingtalk: dingtalkConsentSyncFailed, tmeet: tmeetConsentSyncFailed };
       const connectedBannerText = (key) => (consentSyncFailedByTool[key]
         ? storeCopy.connectedTool(storeCopy.toolNames[key])

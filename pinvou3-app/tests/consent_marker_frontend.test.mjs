@@ -250,12 +250,13 @@ assert.ok(
   'the awaited apply success path must clear the store latch and notify the composer right after the apply resolves (view-independent, parity with its failure path)',
 );
 
-// (d) The connected banner falls back to the title-only copy while a consent
-// persist failure is latched — the enabled-by-default copy would lie over
-// the fail-closed state (round-3 review).
+// (d) The connected banner falls back to the title-only copy while a post-auth
+// connect failure is latched — the enabled-by-default copy would lie over the
+// fail-closed state (round-3 review; round-6 review P2 widened the latch to
+// every post-auth class).
 assert.ok(
   collapsedStore.includes("const connectedBannerText = (key) => (consentSyncFailedByTool[key] ? storeCopy.connectedTool(storeCopy.toolNames[key]) : storeCopy.connectedBanner(storeCopy.toolNames[key]));"),
-  'the connected banner must fall back to the title-only copy while a consent-persist failure is latched',
+  'the connected banner must fall back to the title-only copy while a post-auth connect failure is latched',
 );
 for (const key of ['feishu', 'wecom', 'dingtalk', 'tmeet']) {
   assert.ok(
@@ -263,14 +264,27 @@ for (const key of ['feishu', 'wecom', 'dingtalk', 'tmeet']) {
     `the ${key} subscription must feed its consent-failure latch into the banner gate`,
   );
 }
-// The latch is keyed on the connect-consent code at BOTH listener classification
-// sites (fire-and-forget + awaited) and set on the store there — latching every
-// error would suppress the banner copy for ordinary auth failures, and a
-// component-side set is lost on remount (review #741 P2).
+// The latch covers BOTH post-auth classes at BOTH classification sites
+// (round-6 review P2): an ordinary materialization failure revokes the fresh
+// grant exactly like a persist failure, so the marker-only latch left the
+// enabled-by-default banner standing over a disabled backend once the error
+// card was dismissed. The fire-and-forget branch latches unconditionally (its
+// whole catch is post-auth — the connected event already proved the sign-in);
+// the awaited branch latches every class EXCEPT the pre-apply auth failures
+// (no grant was attempted there, the backend state is untouched). A set on
+// the mounted subscription would be lost on remount (review #741 P2).
 assert.strictEqual(
-  store.split("failure.code === 'connect_consent_persist_failed'").length - 1,
-  2,
-  'both apply-branch classifications must key the latch on the connect-consent code exactly (fire-and-forget + awaited) — latching every error would suppress the banner copy for ordinary auth failures',
+  store.split("if (failure.code === 'connect_consent_persist_failed') conn.setConsentSyncFailed(true)").length - 1,
+  0,
+  'the marker-only latch guard must be gone from both classification sites — an ordinary materialization failure revokes the fresh grant too, so the enabled-by-default banner lied over the disabled backend after dismissal (round-6 review P2)',
+);
+assert.ok(
+  store.includes("if (failure.code !== 'auth_failed') conn.setConsentSyncFailed(true);"),
+  "the awaited branch must latch every post-auth class (anything but the pre-apply auth failures) — restricting the latch to the persist marker re-opens the round-6 P2",
+);
+assert.ok(
+  /: \{ code: 'skills_enable_failed' \};[\s\S]{0,1200}?conn\.setConsentSyncFailed\(true\);[\s\S]{0,80}?reportConnectorFailure\(cfg\.key, failure, 'cli'\);/.test(store),
+  'the fire-and-forget catch must latch unconditionally right after its classification (every rejection there is post-auth) — the round-6 P2',
 );
 assert.strictEqual(
   store.split('conn.setConsentSyncFailed(true)').length - 1,
@@ -371,6 +385,37 @@ assert.ok(
   // The mirror discipline is per-store: a sibling connector's store is unaffected.
   const sibling = createFlowStore();
   assert.ok(!sibling.consentSyncFailed, 'connector stores must not share the latch');
+  unsub();
+}
+
+// (g) The round-6 P2 class through the same REAL store factory: an ORDINARY
+// materialization failure (skills_enable_failed — no consent marker; the
+// backend REVOKED the fresh grant) must latch exactly like the persist
+// failure, and the sequence failure → dismiss → leave → return must keep the
+// title-only banner until a successful retry reaches done and clears it.
+{
+  const factory = store.match(/const createFlowStore = \(\) => \(\{[\s\S]*?\n {4}\}\);/);
+  assert.ok(factory, 'createFlowStore must stay recognizable');
+  const createFlowStore = new Function(`${factory[0]}; return createFlowStore;`)();
+
+  const conn = createFlowStore();
+  let mirrored = false;
+  const unsub = conn.subscribe(() => { mirrored = conn.consentSyncFailed; });
+
+  // The ordinary failure latches (the widened classification routes through
+  // the same store setter) and broadcasts to mounted views.
+  conn.setConsentSyncFailed(true);
+  assert.ok(mirrored, 'the materialization-failure latch must broadcast to mounted views');
+
+  // Dismiss the error card, leave, return: the banner stays title-only over
+  // the revoked backend.
+  conn.setFlow(null);
+  assert.ok(conn.consentSyncFailed, 'dismissing the error card must not re-arm the enabled-by-default banner over a REVOKED grant (round-6 review P2)');
+  assert.ok(conn.consentSyncFailed, 'returning after dismissal must still hydrate the materialization-failure latch');
+
+  // A successful retry reaching done is what clears it.
+  conn.setConsentSyncFailed(false);
+  assert.ok(!conn.consentSyncFailed && !mirrored, 'a successful retry reaching done clears the materialization-failure latch');
   unsub();
 }
 
