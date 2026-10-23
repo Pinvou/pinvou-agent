@@ -606,3 +606,39 @@ mod inventory_resource_tests {
         super::super::layout::validate_native_catalog(&parsed.app_files).unwrap();
     }
 }
+
+// Package snapshot validation deliberately returns no SealedImage or source
+// context. Original protected constructors keep every existing ACL gate.
+pub(super) fn validate_package_machine(file: &mut File, size: u64, nsis: bool) -> Result<()> {
+    require_machine(file, size, nsis)
+}
+pub(super) fn verify_package_role(
+    file: &mut File,
+    size: u64,
+    hash: &str,
+    seed: &Seed,
+    nsis: bool,
+) -> Result<()> {
+    let identity = verify_bytes(file, size, hash)?;
+    require_machine(file, size, nsis)?;
+    if let ImageCertificatePolicy::LegacySelectedSigner(approved) = seed.certificate_policy()? {
+        let expected = ExpectedFile::new(size, hash).map_err(|_| Error::ImageRefused)?;
+        let observation = native::observe_file(file, &expected, &AtomicBool::new(false))
+            .map_err(|_| Error::ImageRefused)?;
+        if !observation.report().signatures.iter().any(|signature| {
+            signature.verification == Verification::Verified
+                && signature.signer.as_ref().is_some_and(|chain| {
+                    chain.provider_error == 0
+                        && chain.certificates.first().is_some_and(|leaf| {
+                            leaf.provider_error == 0 && leaf.certificate_sha256 == approved
+                        })
+                })
+        }) {
+            return Err(Error::ImageRefused);
+        }
+    }
+    if custody::identity(file).map_err(custody_error)? != identity {
+        return Err(Error::ImageRefused);
+    }
+    Ok(())
+}

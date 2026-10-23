@@ -11,6 +11,8 @@ build = "build.rs"
 pinvou-upgrade-codec = { path = "../protocol/codec" }
 pinvou-upgrade-custody = { path = "../platform/custody" }
 pinvou-upgrade-native-evidence = { path = "../native-evidence" }
+pinvou-upgrade-metadata-owner = { path = "../metadata-owner" }
+pinvou-upgrade-ownership = { path = "../ownership" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.11.0"

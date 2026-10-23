@@ -164,6 +164,10 @@ impl Seed {
     pub(crate) fn seed_sha256(&self) -> String {
         json::sha256(SEED_BYTES)
     }
+    /// Original independently compiled anchor, never an accepted current chain.
+    pub(crate) fn original_root_bytes(&self) -> &'static [u8] {
+        ROOT_BYTES
+    }
     pub(crate) fn bootstrap_source_leaf(&self) -> &'static str {
         if self.profile_kind == "production" {
             "UpdaterBootstrapSource"

@@ -81,3 +81,9 @@ impl Directory {
         Err(Error::Unsupported)
     }
 }
+
+impl Directory {
+    pub fn recheck(&self, _: &Path) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
+}

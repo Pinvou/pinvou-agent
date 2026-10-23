@@ -4,6 +4,7 @@ use crate::{Error, error::Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HelperMode {
     Profile,
+    InstallLocal,
     Service,
     PrepareInstall,
     PrepareLocalInstall,
@@ -36,6 +37,7 @@ fn helper(values: &[String]) -> Result<HelperMode> {
         .as_slice()
     {
         ["--profile"] => Ok(HelperMode::Profile),
+        ["--install-local"] => Ok(HelperMode::InstallLocal),
         ["--service"] => Ok(HelperMode::Service),
         ["--installer-stage", stage] => match *stage {
             "prepare-install" => Ok(HelperMode::PrepareInstall),
@@ -85,6 +87,12 @@ pub fn helper_main(values: impl IntoIterator<Item = std::ffi::OsString>) -> std:
     finish((|| {
         let mode = helper(&arguments(values)?)?;
         crate::platform::harden_role_process()?;
+        if mode == HelperMode::InstallLocal {
+            // The native function has returned and released every package,
+            // process and file owner before this exact original Win32 status.
+            let original_status = crate::platform::install_local()?;
+            std::process::exit(original_status as i32);
+        }
         if mode == HelperMode::Profile {
             use std::io::Write;
             let bytes = crate::compiled_profile_diagnostic()?;
@@ -136,6 +144,18 @@ mod tests {
             ]),
             Ok(HelperMode::PrepareMetadataUpgrade)
         );
+        assert_eq!(
+            helper(&["--install-local".into()]),
+            Ok(HelperMode::InstallLocal)
+        );
+        for values in [
+            vec!["--install-local".into(), r"C:\package".into()],
+            vec!["--install-local".into(), "/S".into()],
+            vec!["--installer-stage".into(), "install-local".into()],
+            vec!["--install-local=production".into()],
+        ] {
+            assert_eq!(helper(&values), Err(Error::IpcInvalid));
+        }
         // These select fixed entry semantics, never caller-supplied authority.
         for values in [
             vec![

@@ -8,6 +8,10 @@ pub(crate) fn native_supported() -> Result<()> {
 }
 
 mod image;
+mod package_stage;
+pub(crate) fn install_local() -> Result<u32> {
+    package_stage::install_local()
+}
 mod layout;
 mod pipe;
 mod registry;
@@ -61,7 +65,9 @@ pub(crate) fn execute_helper(mode: crate::entry::HelperMode) -> Result<()> {
         crate::entry::HelperMode::PrepareRemove => controller::prepare_remove(),
         crate::entry::HelperMode::RemoveTarget => controller::remove_target(),
         crate::entry::HelperMode::LaunchDesktop => controller::launch_desktop(),
-        crate::entry::HelperMode::Profile => Err(crate::Error::IpcInvalid),
+        crate::entry::HelperMode::Profile | crate::entry::HelperMode::InstallLocal => {
+            Err(crate::Error::IpcInvalid)
+        }
     }
 }
 pub(crate) fn execute_launcher(id: Option<&str>) -> Result<()> {

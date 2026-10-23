@@ -1,17 +1,19 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-23 21:04 Asia/Shanghai**.
+Checkpoint: **2026-10-23 22:05 Asia/Shanghai**.
 
-There are 47 tasks: five completed, twenty-one in progress, twenty not completed,
-and T42 explicitly deferred. The strict completion ratio is **5/47 (10.6%)**.
-The existing equal-task engineering estimate remains **32.9%**; estimates were
-assessed on 2026-10-22 and are not measured hours or release readiness.
+There are 47 tasks: six completed, twenty in progress, twenty not completed,
+and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
+The equal-task engineering estimate is **34.0%**. T31 is updated in this batch;
+other estimates retain their 2026-10-22 assessment. These estimates are not
+measured hours or release readiness.
 
 ## Delivery rules and active work
 
-The active task is **T31 Windows helper/launcher host**. Work on one main task and
-at most one direct prerequisite; other incomplete tasks are parked. Parallel roles
+**T31 Windows helper/launcher host is implemented** in this delivery batch. The
+next main task is selected after this batch is committed and pushed. Work on one
+main task and at most one direct prerequisite; other incomplete tasks are parked. Parallel roles
 implement, independently review, test and integrate this same task. Reuse reviewed
 foundations and test tools; review changed behavior and its impact after repairs.
 Do not start a fresh runner or historical evidence-review chain for a small patch.
@@ -29,40 +31,56 @@ not complete its enclosing task. T42 deployment and T03's 50 GiB / 500,000-file
 measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to joined business metadata, not package downloads.
 
-## Current T31 batch
+## Completed T31 delivery
 
-- Integrated previously reviewed standalone helper/launcher and protected custody
-  code into the main working tree, app restart ordering, public build inputs,
-  independent NSIS packaging and package inventory.
-- Added explicit production opt-in with stable profile identity. Production and
-  lab have separate service, pipe, directory, registry and mutex namespaces.
-  Production refuses fault profiles and native acceptance hooks. Independent
-  scoped review passed after repairing namespace isolation. Root/metadata checks
-  remain mandatory; native code-signing certificates are optional.
-- Packaging/startup regression: **114 tests; 111 passed, zero failed, three native
-  opt-in cases skipped**. Exit zero and natural owned-process closure confirmed.
-  The original wrapper could not parse Node's newer summary format; readback
-  confirmed these counts without repeating the tests.
-- Baseline host unit assertions: **58 passed, zero failed, one existing ignored**.
-  Cargo exited zero, but MSVC auxiliary-process cleanup failed; the complete run
-  is not passed and its build outputs are quarantined from execution reuse.
-- The first new host unit attempt was refused before compilation because free
-  RAM was below the existing 7 GiB startup guard. The other build was not
-  interrupted. After RAM recovered, a fresh run passed **65 tests, zero failures,
-  one existing ignored test**. Cargo exited zero; all 214 owned processes closed
-  naturally and the resource guard did not trip. This run took 294.45 seconds
-  overall; Cargo reported 4 minutes 18 seconds to compile and link.
-- App/host Rust formatting, locked offline Cargo metadata, whitespace and
-  architecture checks passed. Final independent scoped source review passed.
-  The reviewed integration batch is ready for commit; T31 remains incomplete.
-- The successful Node run's unused empty temporary directory was removed after
-  natural process closure; command, logs and essential results were retained.
-  The fresh Rust target is retained for the next T31 delta tests.
+- Standalone helper and stable launcher, authenticated fixed-action IPC, native
+  scope/identity checks, registration CAS, takeover/fencing primitives, controlled
+  restart handoff, app wiring and explicit lab/production packaging are integrated.
+- The no-argument `helper --install-local` entry requires an already elevated local
+  administrator and the complete local package. It validates held file bytes and
+  PE resources, creates a fixed protected source with native creation ACLs, then
+  starts only its retained installer. Partial/different source is refused and
+  preserved. Existing installation repair requires the original exact source.
+  It does not authorize a metadata upgrade or prompt for elevation.
+- First intent, immutable metadata/preparation genesis and original Root bytes
+  commit in the same native registry transaction. Readback verifies the complete
+  scope-bound state; retries never reset epochs, Root or missing records. Root
+  signatures at signed issuance prove anchor integrity only, not current metadata
+  qualification or trusted current time. Unavailable T32/T36 handlers refuse.
+- Scoped independent source review, repair review and T31 task-coverage review
+  passed. Current Rust tests: **host 74 passed / one existing ignored; metadata
+  owner 6 passed; ownership 4 passed; custody 2 passed**, zero failures. All owned
+  processes closed naturally and resource guards remained satisfied.
+- Packaging/startup contracts: **114 tests; 111 passed, zero failed, three native
+  opt-in tests unexecuted**. Normal and embedded production profile checks passed.
+  A fresh current-source dev build produced both actual standalone roles; PE
+  gates verified System32-only dependent-load policy and absence of dynamic CRT
+  imports. The real helper public-profile command passed. Two actual CLI controls
+  refused invalid local arguments and unavailable metadata authorization with
+  their exact expected exit codes. These are lab artifacts, not a shipping release.
+- The three additional approved app lock edges passed an isolated Windows compile
+  probe. OAuth2 and serde-saphyr used the app's resolved Windows feature sets;
+  iana-time-zone was checked explicitly although absent from that active graph.
+  The probe verified all three exact selected dependency versions. This is not a
+  whole-application build. Existing package versions/checksums were preserved;
+  the app added only the two internal owner packages.
+- Rust formatting, locked dependency resolution, whitespace and architecture
+  checks passed. The first SHA formatting compile error was fixed and the failed
+  run retained. Earlier Node summary-parser, MSVC teardown, low-RAM refusal,
+  ambiguous dependency selection, Cargo subset-selection panic and UTF-8 setup
+  failures remain diagnostic history, not successful tests.
 
-Remaining T31 implementation includes protected source deployment and binding
-first-install T27/T28 ownership initialization. The metadata upgrade entry refuses
-safely until a genuine producer exists. Physical service, IPC, multi-user and
-recovery scenarios remain unverified; environment-only gaps are non-blocking.
+Environmental E2E gaps: isolated guest SCM install/repair/removal, ordinary-user
+and multi-user entry, recovery after process death/revival and reboot remain
+unverified. Native compiler/signature opt-ins lack directly reusable qualified
+inputs. Record these as follow-up scenarios, not passed tests. Under the owner's
+explicit policy these environment gaps do not block T31 completion or delivery.
+The implementation does not complete T26/T27/T28/T32/T36 or system acceptance T43.
+
+Cleanup pending: the successful isolated dependency probe's disposable build
+target and temporary directories are no longer needed. Automatic approval review
+blocked their recursive deletion with no more specific reason. They are retained;
+essential logs, probe inputs and reusable host artifacts remain available.
 
 File distribution separates policy/control from immutable package data. T09/T18
 still need complete OSS/COS adapters and switching acceptance: preserve package
@@ -71,7 +89,7 @@ or resumable downloads. This remains queued, not a second active development tas
 
 ## Per-task status
 
-Estimates are preserved. Outstanding environment-only E2E qualification is not a
+Only T31 changes from the previous estimates. Outstanding environment-only E2E qualification is not a
 completion blocker; outstanding business implementation is.
 
 | Task | Estimate | Status | Delivery / outstanding dependency |
@@ -102,11 +120,11 @@ completion blocker; outstanding business implementation is.
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | 35% | In progress | Independent purpose/week OpenBao material ownership and the bounded offline ASN import/source-owner component are delivered. The latter passed pure, real PostgreSQL and real-data tests. Accepted-event attribution, retention and shared recovery candidates passed source review; their complete native acceptance/commit remain pending. First-acceptance model repair is reviewed, offline ASN grouping approved; authenticated edge inputs, purpose-qualified consumption and frozen privacy snapshots remain pending. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
-| T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
-| T28 | 0% | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
+| T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization is delivered under T31; protected current acceptance/time, workflow and qualification integration remain pending |
+| T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
 | T29 | 65% | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
-| T31 | 45% | In progress | Main-tree integration includes standalone host, app restart ordering, explicit lab/production packaging and separate protected namespaces. Independent source review passed. Packaging regression: 111 passed, 3 native opt-in tests skipped. Host units: 65 passed, one existing ignored; protected source deployment and T27/T28 ownership initialization require implementation. Physical SCM/IPC/multi-user/recovery scenarios remain unverified. |
+| T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
 | T33 | 35% | In progress | Reviewed optional Windows same-object Authenticode observations, shared relative custody and retained FullPack final-installer/helper/launcher composition with original-job compatibility; protected host, installation/slot execution and platform qualification remain pending. Native certificate qualification is not a prerequisite. |
 | T34 | 0% | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |

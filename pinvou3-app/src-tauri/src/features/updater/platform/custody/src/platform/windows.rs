@@ -732,3 +732,67 @@ impl Directory {
         Ok(())
     }
 }
+
+impl Directory {
+    /// Read-only re-open of the original path and comparison of every retained
+    /// ancestor's native identity. This grants no owner/ACL or image authority.
+    pub fn recheck(&self, path: &Path) -> Result<(), Error> {
+        let reopened = directory(path)?;
+        if self._handles.len() != reopened._handles.len() {
+            return Err(Error::UnsafeObject);
+        }
+        for (held, current) in self._handles.iter().zip(&reopened._handles) {
+            check_directory(held)?;
+            check_directory(current)?;
+            let a = information(held)?;
+            let b = information(current)?;
+            if a.dwVolumeSerialNumber != b.dwVolumeSerialNumber
+                || a.nFileIndexHigh != b.nFileIndexHigh
+                || a.nFileIndexLow != b.nFileIndexLow
+                || a.ftCreationTime.dwHighDateTime != b.ftCreationTime.dwHighDateTime
+                || a.ftCreationTime.dwLowDateTime != b.ftCreationTime.dwLowDateTime
+            {
+                return Err(Error::UnsafeObject);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recheck_tests {
+    use super::*;
+    #[test]
+    fn current_path_must_reopen_the_actual_retained_directory_chain() {
+        let unique = format!(
+            "pinvou-custody-recheck-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&root).unwrap();
+        struct Temp(PathBuf);
+        impl Drop for Temp {
+            fn drop(&mut self) {
+                for name in ["actual", "sibling", "moved"] {
+                    let _ = std::fs::remove_dir(self.0.join(name));
+                }
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let _temp = Temp(root.clone());
+        std::fs::create_dir(root.join("actual")).unwrap();
+        std::fs::create_dir(root.join("sibling")).unwrap();
+        let held = directory(&root.join("actual")).unwrap();
+        held.recheck(&root.join("actual")).unwrap();
+        assert!(matches!(
+            held.recheck(&root.join("sibling")),
+            Err(Error::UnsafeObject)
+        ));
+        assert!(std::fs::rename(root.join("actual"), root.join("moved")).is_err());
+        drop(held);
+    }
+}

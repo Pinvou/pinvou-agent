@@ -1,0 +1,15 @@
+[package]
+name = "pinvou-upgrade-ownership"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-codec = { path = "../protocol/codec" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -31,6 +31,9 @@ pub(super) fn custody_error(e: custody::Error) -> Error {
         _ => Error::Unavailable,
     }
 }
+pub(super) fn validate_package_volume(path: &Path) -> Result<()> {
+    verify_local_volume(path)
+}
 #[allow(unsafe_code)]
 fn known_folder(id: &GUID) -> Result<PathBuf> {
     let mut pointer = ptr::null_mut();
@@ -165,6 +168,28 @@ impl Layout {
     }
     pub(super) fn app_path(&self) -> PathBuf {
         self.app.join("pinvou3-tauri.exe")
+    }
+    pub(super) fn create_source_root(&self, seed: &Seed) -> Result<ProtectedDirectory> {
+        let root = ProtectedDirectory::known_root(&self.program_files)?;
+        let parent = root
+            .child("Pinvou", true, false, None)?
+            .child(seed.bootstrap_source_leaf(), true, false, None)?
+            .child(&seed.profile_id, true, false, None)?;
+        parent.recheck()?;
+        let sd = creation_security(false, None)?;
+        // FILE_CREATE only: never open or adopt a leaf that raced creation.
+        let directory = parent
+            .directory
+            .create_dir_with_security(OsStr::new(&seed.build_id), &sd)
+            .map_err(custody_error)?;
+        let value = ProtectedDirectory {
+            directory,
+            path: self.source.clone(),
+            owned_from: parent.owned_from,
+            service_sid: None,
+        };
+        value.recheck()?;
+        Ok(value)
     }
     pub(super) fn source_root(&self) -> Result<ProtectedDirectory> {
         ProtectedDirectory::open_existing(&self.source, None)
@@ -368,6 +393,7 @@ impl ProtectedDirectory {
         Ok(value)
     }
     pub(super) fn recheck(&self) -> Result<()> {
+        self.directory.recheck(&self.path).map_err(custody_error)?;
         for (index, file) in self.directory.retained_directories().enumerate() {
             inspect_file(file, index >= self.owned_from, self.service_sid.as_deref())?;
         }
@@ -511,6 +537,9 @@ impl ProtectedDirectory {
         let (directory, leaf) = self.descend_parent(name, false)?;
         directory.as_ref().unwrap_or(self).file(&leaf)
     }
+    pub(super) fn existing_relative_parent(&self, name: &str) -> Result<(Option<Self>, String)> {
+        self.descend_parent(name, false)
+    }
     pub(super) fn relative_parent(&self, name: &str) -> Result<(Option<Self>, String)> {
         self.descend_parent(name, true)
     }
@@ -575,6 +604,9 @@ struct CatalogNode {
     children: Vec<CatalogNode>,
 }
 fn catalog_tree(files: &[AppFile]) -> Result<Vec<CatalogNode>> {
+    catalog_tree_with(files, crate::profile::relative_name)
+}
+fn catalog_tree_with(files: &[AppFile], valid: fn(&str) -> bool) -> Result<Vec<CatalogNode>> {
     fn add(nodes: &mut Vec<CatalogNode>, parts: &[&str]) -> Result<()> {
         let mut found = None;
         for (i, node) in nodes.iter().enumerate() {
@@ -604,7 +636,7 @@ fn catalog_tree(files: &[AppFile]) -> Result<Vec<CatalogNode>> {
     }
     let mut tree = Vec::new();
     for file in files {
-        if !crate::profile::relative_name(&file.relative_name) {
+        if !valid(&file.relative_name) {
             return Err(Error::ImageRefused);
         }
         add(
@@ -1023,5 +1055,56 @@ mod tests {
         after.sort();
         assert_eq!(after, names);
         // >64KiB returned directory records and concurrent independent cursors.
+    }
+}
+
+fn package_name(value: &str) -> bool {
+    matches!(
+        value,
+        "installer.exe" | "pinvou-upgrade-helper.exe" | "pinvou-upgrade-launcher.exe"
+    ) || value
+        .strip_prefix("app/")
+        .is_some_and(crate::profile::relative_name)
+}
+/// Ordinary input or protected output namespace only. No capability is minted.
+pub(super) fn validate_package_inventory(root: &Directory, files: &[AppFile]) -> Result<()> {
+    fn walk(root: &Directory, nodes: &[CatalogNode]) -> Result<()> {
+        match_directory(root, nodes)?;
+        for node in nodes.iter().filter(|n| !n.file) {
+            let child = root
+                .open_dir(OsStr::new(&node.name))
+                .map_err(custody_error)?;
+            walk(&child, &node.children)?;
+        }
+        Ok(())
+    }
+    let tree = catalog_tree_with(files, package_name)?;
+    walk(root, &tree)
+}
+impl ProtectedDirectory {
+    pub(super) fn validate_package_inventory(&self, files: &[AppFile]) -> Result<()> {
+        self.recheck()?;
+        validate_package_inventory(&self.directory, files)?;
+        self.recheck()
+    }
+}
+#[cfg(test)]
+mod package_catalog_tests {
+    use super::*;
+    #[test]
+    fn app_prefix_preserves_original_name_budget_and_closes_other_source_paths() {
+        let maximum = format!("app/{}", "x".repeat(1024));
+        assert!(package_name(&maximum));
+        assert!(!package_name(&format!("app/{}", "x".repeat(1025))));
+        for bad in [
+            "other.exe",
+            "app/../outside",
+            "APP/file",
+            "app/C:/file",
+            "app/",
+            "installer.exe/child",
+        ] {
+            assert!(!package_name(bad));
+        }
     }
 }

@@ -17,3 +17,7 @@ pub(crate) fn execute_helper(_: crate::entry::HelperMode) -> Result<()> {
 pub(crate) fn execute_launcher(_: Option<&str>) -> Result<()> {
     Err(Error::Unsupported)
 }
+
+pub(crate) fn install_local() -> Result<u32> {
+    Err(Error::Unsupported)
+}

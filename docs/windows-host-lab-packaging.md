@@ -195,3 +195,35 @@ There is no default Root or public-input fallback. The separate authorized
 source owner must still protect the complete retained source before starting
 the installer; old lab staging scripts are not a production distribution path.
 Without its real authorization provider, metadata upgrade remains unavailable.
+
+
+## Explicit local package installation
+
+Distribute the complete `sourceDirectory` returned by the packager: the installer,
+helper, launcher, and the entire `app/` subtree. A standalone installer executable
+is not that complete package. From an already elevated local administrator shell,
+run the package helper with exactly `--install-local`, without additional arguments.
+The helper derives input solely from its actual executable path parent. It does not
+prompt for elevation, search another directory, or accept a target/Root override.
+
+This command selects the complete held package snapshot as a local administrative
+request. It proves neither publisher authorization nor that the held helper file
+is the same FileID as the original running image section. The compiled Seed/Root
+and complete embedded inventory must match before any source copy begins.
+Staging creates fixed protected Program Files source objects using native
+at-creation security and verifies the copied complete bytes. Existing partial or
+different source is retained and refused, never deleted or overwritten.
+
+With a protected installation record, only its identical original source can be
+reopened for repair; a new build or changed package does not become a local upgrade.
+Without a record, the actual protected NSIS-to-helper chain establishes the original
+local first-install intent. Staging itself constructs no `SourceInstallerContext`,
+registration, SCM state, or Ready fact. Metadata authorization remains unavailable
+without its real provider.
+
+After validation the helper starts only the retained protected installer, waits
+for its natural return without adding a setup/download deadline, releases its
+leases, and returns that exact original Windows exit status. No failed stage starts
+an installer or cleans up its partial source implicitly. The existing protected
+installer entry still supports its original repair/removal/presentation options;
+these options are not forwarded by the new no-argument local command.

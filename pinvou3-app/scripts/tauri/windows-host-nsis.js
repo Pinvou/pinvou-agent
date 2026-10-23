@@ -265,7 +265,7 @@ async function packageHostNSIS({ profile, appBinary, helper, launcher, resourceM
     nativeControls: { original: originalControls.blocks, final: finalControls.blocks },
     initialTrustQualification: false, installationQualification: false };
   fs.writeFileSync(path.join(root, "build-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
-  return { installer, outputDirectory: root, manifestPath };
+  return { installer, sourceDirectory: path.dirname(installer), outputDirectory: root, manifestPath };
 }
 
 module.exports = { RESOURCE_SCRIPT, TEMPLATE, POWERSHELL, quoted, runBuildTool, nativeTool,

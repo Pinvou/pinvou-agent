@@ -177,7 +177,7 @@ impl HostRegistration {
             previous_record_sha256: None,
             original_install_operation_id: operation.clone(),
             reference_schema_version: 1,
-            known_owner_namespaces: vec!["bootstrap-v1".into()],
+            known_owner_namespaces: crate::bootstrap::namespaces(),
             source_set: SourceSet {
                 layout_id: seed.layout_id.clone(),
                 nsis_sha256: installer.source_nsis_sha256.clone(),
@@ -224,7 +224,7 @@ impl HostRegistration {
             || self.revision > json::SAFE_MAX
             || self.host_epoch > json::SAFE_MAX
             || self.reference_schema_version != 1
-            || self.known_owner_namespaces != ["bootstrap-v1"]
+            || !crate::bootstrap::valid_namespaces(&self.known_owner_namespaces, &seed.profile_kind)
             || self.service_identity.service_name != seed.service_name()
             || self.service_identity.account_sid != "S-1-5-18"
             || self.service_identity.sid_mode != "unrestricted"

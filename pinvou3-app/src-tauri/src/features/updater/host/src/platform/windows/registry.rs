@@ -5,6 +5,7 @@ use super::{
     security::{NativeSecurity, inspect_registry},
 };
 use crate::{
+    bootstrap::OwnerBootstrap,
     error::{Error, Result},
     inventory::{InventoryBytes, MAX_SHARDS},
     json,
@@ -258,6 +259,50 @@ fn write(key: &Key, name: &str, bytes: &[u8]) -> Result<()> {
     }
     Ok(())
 }
+
+const METADATA_BOOTSTRAP: &str = "MetadataBootstrap";
+const METADATA_BOOTSTRAP_ROOT: &str = "MetadataBootstrapRoot";
+const PREPARATION_BOOTSTRAP: &str = "PreparationBootstrap";
+
+/// A legacy record cannot hide partial genesis or silently acquire new owners.
+#[allow(unsafe_code)]
+fn require_absent_value(key: &Key, name: &str) -> Result<()> {
+    let name = wide(name);
+    let mut size = 0;
+    let status = unsafe {
+        RegQueryValueExW(
+            key.0,
+            name.as_ptr(),
+            ptr::null(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if status != ERROR_FILE_NOT_FOUND {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(())
+}
+
+fn owner_bootstrap_in(key: &Key, seed: &Seed, record: &HostRegistration) -> Result<()> {
+    if !crate::bootstrap::initialized(&record.known_owner_namespaces) {
+        for name in [
+            METADATA_BOOTSTRAP,
+            METADATA_BOOTSTRAP_ROOT,
+            PREPARATION_BOOTSTRAP,
+        ] {
+            require_absent_value(key, name)?;
+        }
+        return Ok(());
+    }
+    OwnerBootstrap::new(seed, &record.installation_scope_id)?.check_existing(
+        &read(key, METADATA_BOOTSTRAP)?,
+        &read(key, METADATA_BOOTSTRAP_ROOT)?,
+        &read(key, PREPARATION_BOOTSTRAP)?,
+    )
+}
+
 fn decode_record(bytes: &[u8], seed: &Seed) -> Result<HostRegistration> {
     let record: HostRegistration = json::decode(bytes, false)?;
     record.validate(seed)?;
@@ -401,6 +446,7 @@ impl Store {
             if prior.revision + 1 != record.revision
                 || Some(json::sha256(&bytes)) != record.previous_record_sha256
                 || prior.installation_scope_id != record.installation_scope_id
+                || prior.known_owner_namespaces != record.known_owner_namespaces
                 || prior.genesis_manifest_sha256 != record.genesis_manifest_sha256
                 || json::encode(&prior.original_installer_identity, false)?
                     != json::encode(&record.original_installer_identity, false)?
@@ -413,6 +459,7 @@ impl Store {
             return Err(Error::StateCorrupt);
         }
         self.inventory_in(&key, seed, &record)?;
+        owner_bootstrap_in(&key, seed, &record)?;
         Ok(Some(record))
     }
     /// Every private read authenticates the SAME complete committed inventory.
@@ -481,6 +528,16 @@ impl Store {
         initial_manifest: Option<&InventoryBytes>,
     ) -> Result<()> {
         next.validate(seed)?;
+        // Both owners are initialized only by a genuinely new original intent.
+        // Existing/unknown outcomes are read back, never filled or reset.
+        let initial_owners = if expected.is_none() {
+            if !crate::bootstrap::initialized(&next.known_owner_namespaces) {
+                return Err(Error::StateCorrupt);
+            }
+            Some(OwnerBootstrap::new(seed, &next.installation_scope_id)?)
+        } else {
+            None
+        };
         if let Some(input) = initial_manifest {
             let parsed = input.parse(seed).map_err(|_| Error::StateCorrupt)?;
             super::layout::validate_native_catalog(&parsed.app_files)?;
@@ -505,6 +562,7 @@ impl Store {
                     && next.installation_scope_id == actual.installation_scope_id
                     && next.genesis_seed_sha256 == actual.genesis_seed_sha256
                     && next.genesis_manifest_sha256 == actual.genesis_manifest_sha256
+                    && next.known_owner_namespaces == actual.known_owner_namespaces
                     && json::encode(&next.original_installer_identity, false)?
                         == json::encode(&actual.original_installer_identity, false)?
                     && (actual
@@ -578,6 +636,22 @@ impl Store {
         write(&private, "Head", &bytes)?;
         write(&history_revision, "Record", &bytes)?;
         write(&public, "Head", &json::encode(&next.public(), false)?)?;
+        if let Some(owners) = initial_owners {
+            // Same native transaction as the first scope, intent and manifest.
+            // The owner modules define and validate their bounded genesis bytes.
+            write(&private, METADATA_BOOTSTRAP, owners.metadata.record_bytes())?;
+            write(
+                &private,
+                METADATA_BOOTSTRAP_ROOT,
+                owners.metadata.root_bytes(),
+            )?;
+            write(
+                &private,
+                PREPARATION_BOOTSTRAP,
+                owners.ownership.record_bytes(),
+            )?;
+            owner_bootstrap_in(&private, seed, next)?;
+        }
         if let Some(manifest) = initial_manifest {
             if expected.is_some() || json::sha256(&manifest.root) != next.genesis_manifest_sha256 {
                 return Err(Error::StateCorrupt);

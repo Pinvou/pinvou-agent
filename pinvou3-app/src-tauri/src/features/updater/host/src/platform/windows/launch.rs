@@ -188,3 +188,109 @@ mod tests {
         assert_eq!(quote("a\"b"), "\"a\\\"b\"");
     }
 }
+
+/// Fixed protected local installer, inherited elevated administrator token.
+/// All file/ancestor leases outlive its real natural return; no shell or retry.
+#[allow(unsafe_code)]
+pub(super) fn run_local_installer(
+    current: &RetainedProcess,
+    path: &std::path::Path,
+    mut recheck: impl FnMut() -> Result<()>,
+) -> Result<u32> {
+    use windows_sys::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::GetExitCodeProcess};
+    recheck()?;
+    let token = current.fresh_token(None)?;
+    if token.user != current.token.user
+        || !token.elevated
+        || !token.administrator
+        || token.app_container
+        || token.network
+        || token.integrity < 0x3000
+    {
+        return Err(Error::InstallerContextRefused);
+    }
+    let application: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut command: Vec<u16> = quote(path.to_str().ok_or(Error::ImageRefused)?)
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let cwd: Vec<u16> = path
+        .parent()
+        .ok_or(Error::ImageRefused)?
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    if application.len() > 32767 || command.len() > 32767 || cwd.len() > 32767 {
+        return Err(Error::ImageRefused);
+    }
+    let mut startup = STARTUPINFOW::default();
+    startup.cb = size_of::<STARTUPINFOW>() as u32;
+    let mut information = PROCESS_INFORMATION::default();
+    if unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command.as_mut_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+            ptr::null(),
+            cwd.as_ptr(),
+            &startup,
+            &mut information,
+        )
+    } == 0
+    {
+        return Err(Error::HandoffOutcomeUnknown);
+    }
+    let mut child = SuspendedChild {
+        process: Handle::owned(information.hProcess)?,
+        thread: None,
+        process_id: information.dwProcessId,
+        resume_attempted: false,
+    };
+    child.thread = Some(Handle::owned(information.hThread)?);
+    let created = creation_time(child.process.raw())?;
+    let observed = RetainedProcess::open(child.process_id, None)?;
+    if observed.selector.process_id != child.process_id
+        || observed.selector.creation_file_time != created
+        || created.ticks() < current.selector.creation_file_time.ticks()
+        || observed.token.user != token.user
+        || !observed.token.elevated
+        || !observed.token.administrator
+        || observed.token.integrity != token.integrity
+        || observed.token.app_container
+        || observed.token.network
+        || !ordinal_equal(
+            observed.image.to_str().ok_or(Error::ImageRefused)?,
+            path.to_str().ok_or(Error::ImageRefused)?,
+        )?
+    {
+        return Err(Error::InstallerContextRefused);
+    }
+    recheck()?;
+    child.resume_attempted = true;
+    if unsafe {
+        ResumeThread(
+            child
+                .thread
+                .as_ref()
+                .ok_or(Error::HandoffOutcomeUnknown)?
+                .raw(),
+        )
+    } != 1
+    {
+        return Err(Error::HandoffOutcomeUnknown);
+    }
+    drop(child.thread.take());
+    // No setup/download/runtime deadline is added to the actual installer.
+    if unsafe { WaitForSingleObject(child.process.raw(), u32::MAX) } != WAIT_OBJECT_0 {
+        return Err(Error::HandoffOutcomeUnknown);
+    }
+    let mut original_status = 0;
+    if unsafe { GetExitCodeProcess(child.process.raw(), &mut original_status) } == 0 {
+        return Err(Error::HandoffOutcomeUnknown);
+    }
+    Ok(original_status)
+}

@@ -1,5 +1,6 @@
 //! Windows first-install host. Data models are not protected capabilities.
 //! Shipping app integration remains disabled until actual named-profile acceptance.
+mod bootstrap;
 mod error;
 mod handoff;
 mod identity;
@@ -66,3 +67,5 @@ mod entry;
 pub use entry::{helper_main, launcher_main};
 
 mod inventory;
+
+mod package_resource;
