@@ -23,12 +23,13 @@ const overlaySource = fs.readFileSync(
   'utf8',
 );
 
-// Fixture mirrors the zh locale's uiMultiAgent copy: statusPresentation must
-// map ledger tokens into whatever localized copy it is given.
+// Fixture mirrors the zh locale's uiMultiAgent copy verbatim (zh.js
+// agentCard.working / pendingTag): statusPresentation must map ledger tokens
+// into whatever localized copy it is given.
 const copy = {
-  agentCard: { failed: '失败', completed: '已完成', working: '运行中', interrupted: '已中断', cancelled: '已取消' },
+  agentCard: { failed: '失败', completed: '已完成', working: '工作中', interrupted: '已中断', cancelled: '已取消' },
   blockedTag: '受阻',
-  pendingTag: '等待中',
+  pendingTag: '排队中',
 };
 
 const entry = (overrides = {}) => ({
@@ -87,9 +88,9 @@ test('statusPresentation: terminal first; ledger English tokens map to i18n copy
   assert.equal(statusPresentation(entry({ done: true, blocked: true }), copy).dot, 'blocked');
   assert.equal(statusPresentation(entry({ done: true }), copy).text, '已完成');
   // Ledger token (regression: 'running' used to be shown verbatim to zh/ja users).
-  assert.equal(statusPresentation(entry({ status: 'running' }), copy).text, '运行中');
-  assert.equal(statusPresentation(entry({ status: 'RUNNING' }), copy).text, '运行中');
-  assert.equal(statusPresentation(entry({ status: 'queued' }), copy).text, '等待中');
+  assert.equal(statusPresentation(entry({ status: 'running' }), copy).text, '工作中');
+  assert.equal(statusPresentation(entry({ status: 'RUNNING' }), copy).text, '工作中');
+  assert.equal(statusPresentation(entry({ status: 'queued' }), copy).text, '排队中');
   // The remaining ledger tokens must not leak raw snake_case either: a worker
   // executes tools under running_tool, works its between-steps round trips
   // under model_wait, and parks at a resumable checkpoint under
@@ -97,14 +98,14 @@ test('statusPresentation: terminal first; ledger English tokens map to i18n copy
   // lists it among the live activities): bucketing it as queued made a
   // steadily working agent read as "queued" and flip against the working
   // label as the ledger poll and real-time events interleaved.
-  assert.equal(statusPresentation(entry({ status: 'running_tool' }), copy).text, '运行中');
-  assert.equal(statusPresentation(entry({ status: 'model_wait' }), copy).text, '运行中');
-  assert.equal(statusPresentation(entry({ status: 'waiting_for_user' }), copy).text, '等待中');
+  assert.equal(statusPresentation(entry({ status: 'running_tool' }), copy).text, '工作中');
+  assert.equal(statusPresentation(entry({ status: 'model_wait' }), copy).text, '工作中');
+  assert.equal(statusPresentation(entry({ status: 'waiting_for_user' }), copy).text, '排队中');
   // A non-whitelisted single token is treated as a real-time progress phrase
   // and shown verbatim; a blank phrase falls back to working.
-  assert.equal(statusPresentation(entry({ status: 'reading files' }), copy).text, '运行中');
+  assert.equal(statusPresentation(entry({ status: 'reading files' }), copy).text, '工作中');
   assert.equal(statusPresentation(entry({ status: 'scanning' }), copy).text, 'scanning');
-  assert.equal(statusPresentation(entry({ status: null }), copy).text, '运行中');
+  assert.equal(statusPresentation(entry({ status: null }), copy).text, '工作中');
 });
 
 test('statusPresentation: a cancelled or interrupted terminal is not a dispatch failure', () => {
@@ -260,7 +261,7 @@ test('mergeOverlayEntry: a structured workerStatus token outranks the progress p
     10_500,
   );
   assert.equal(evented.status, 'queued', 'the token replaces the phrase');
-  assert.equal(statusPresentation(evented, copy).text, '等待中', 'token agreement keeps the label stable across the ledger/event interleave');
+  assert.equal(statusPresentation(evented, copy).text, '排队中', 'token agreement keeps the label stable across the ledger/event interleave');
   const working = mergeOverlayEntry(
     evented,
     { sessionId: 's1', agentId: 'agent_1', status: '12/40: requesting model response', workerStatus: 'model_wait', done: false, failed: false, source: 'realtime' },
@@ -268,7 +269,7 @@ test('mergeOverlayEntry: a structured workerStatus token outranks the progress p
     11_000,
   );
   assert.equal(working.status, 'model_wait');
-  assert.equal(statusPresentation(working, copy).text, '运行中', 'model wait is live work, not queued');
+  assert.equal(statusPresentation(working, copy).text, '工作中', 'model wait is live work, not queued');
   // An event without a token (old engine payload) keeps the phrase fallback.
   const legacy = mergeOverlayEntry(
     working,
@@ -277,7 +278,7 @@ test('mergeOverlayEntry: a structured workerStatus token outranks the progress p
     11_500,
   );
   assert.equal(legacy.status, '🔧 bash (step 3)');
-  assert.equal(statusPresentation(legacy, copy).text, '运行中');
+  assert.equal(statusPresentation(legacy, copy).text, '工作中');
 });
 
 test('isUnknownLedgerRow: orphan transcripts (done=false, no status token) are not live agents', () => {
