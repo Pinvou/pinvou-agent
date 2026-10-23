@@ -69,9 +69,18 @@ async fn reconcile_pending_rewind(
     };
     // 当前 revision 与会话加载同源（store.load）。
     let current_revision = match store.load(session_id) {
-        Ok(session) => {
-            crate::features::sessions::transcript_revision(&session.messages).unwrap_or_default()
-        }
+        Ok(session) => match crate::features::sessions::transcript_revision(&session.messages) {
+            Ok(revision) => revision,
+            // r22 minor 2：revision 计算失败不得吞成默认值——空串恒不等于
+            // 暂记 revision，会把「截断未提交（apply 可能没跑过）」误判成
+            // 「截断已提交」并清掉暂记。与上方 load 失败同款：阻断本轮快照。
+            Err(error) => {
+                log::error!(
+                    "[pinvou3][checkpoints] transcript revision failed during rewind reconciliation, blocking this turn's snapshot sid={session_id}: {error:#}"
+                );
+                return false;
+            }
+        },
         Err(error) => {
             log::error!(
                 "[pinvou3][checkpoints] session load failed during rewind reconciliation, blocking this turn's snapshot sid={session_id}: {error:#}"
@@ -323,6 +332,11 @@ pub async fn checkpoint_diff(
     // 如实拒绝让前端稍后重试（确认弹窗只在空闲时可开，竞态窗口在点击之后）。
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请稍后再读取变更预览".to_string());
+    }
+    // r22 R2：压缩在飞时预览读到的是「压缩中」的中间态（forwarder 尚未落盘
+    // 压缩转录），拒绝让前端稍后重试（评审标注 arguably；与上游闸同向）。
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩对话，请稍候再读取变更预览".to_string());
     }
     // 跨会话软门：同执行根的其它会话在跑时，本 diff 的 add -A 会读到对方
     // 引擎写了一半的文件（影子仓库按会话分目录，peer 间不共享 index.lock——
@@ -688,6 +702,14 @@ pub async fn rewind_to_turn(
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请先停止当前任务再回退".to_string());
     }
+    // r22 R2：压缩不持 turn 预约（engine_pool 文档明示破坏性栅栏必须显式
+    // 询问；projects.rs 的 rebind 忙门同款）。compact_now 在飞时放行回退，
+    // forwarder 随后的压缩转录 persist 会整体覆写 state.messages，把已回退
+    // 的轮次复活、undo 又被 revision 失配永久关闭——正是 r21 M1 判不可接受
+    // 的分叉类。
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩对话，请稍候再回退".to_string());
+    }
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
@@ -1052,6 +1074,11 @@ pub async fn undo_last_rewind(
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请先停止当前任务再反悔".to_string());
     }
+    // r22 R2：与 rewind_to_turn 同款压缩栅栏——undo 的 truncate 同样会被
+    // forwarder 的压缩 persist 覆写分叉。
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩对话，请稍候再反悔".to_string());
+    }
     let reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
@@ -1185,6 +1212,55 @@ mod tests {
     use deepseek_tui::models::Message;
     // git 可用性探测与 feature 层测试共用（features/code_checkpoints 内唯一实现）。
     use checkpoints::git_available;
+
+    fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src.find(signature).expect("production fn must exist");
+        let rest = &src[start + signature.len()..];
+        // End at the next fn ITEM, not the next `pub ` token (engine_pool.rs
+        // review #463 round-17 SF-3): a `pub(crate)` item would otherwise
+        // extend the span past the function under test.
+        let end = [
+            "\npub ",
+            "\npub(crate) ",
+            "\npub(super) ",
+            "\nfn ",
+            "\nasync fn ",
+            "\n///",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(src.len(), |offset| start + signature.len() + offset);
+        &src[start..end]
+    }
+
+    /// r22 R2 pin（production_body 模式，engine_pool.rs 同款）：三个破坏性/
+    /// 预览入口的命令体必须真的询问压缩闩——压缩不持 turn 预约，turn-active
+    /// 探针对它全盲；删掉任意一处栅栏即红（接线 pin，非仅判定体 pin）。
+    #[test]
+    fn destructive_checkpoint_gates_ask_the_compaction_latch() {
+        let src = include_str!("checkpoints.rs");
+        // Cut at the test module so the probe's own strings can never satisfy
+        // the contains-assertions (engine_pool.rs round-26 MAJOR-3 pattern).
+        let src = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("test module marker must exist")];
+        for (signature, verb) in [
+            ("pub async fn rewind_to_turn(", "回退"),
+            ("pub async fn undo_last_rewind(", "反悔"),
+            ("pub async fn checkpoint_diff(", "读取变更预览"),
+        ] {
+            let body = production_body(src, signature);
+            assert!(
+                body.contains("is_compaction_in_flight(&session_id)"),
+                "{signature} 必须在压缩在飞时拒绝（r22 R2）"
+            );
+            assert!(
+                body.contains(&format!("请稍候再{verb}")),
+                "{signature} 必须携带 {verb} 的压缩文案"
+            );
+        }
+    }
 
     /// wire 形状 pin（评审 r6 M1；r7 M3 扩展到全部 JS 可见响应体）：事故类是
     /// 「结构体缺 rename_all → wire 携带 snake_case 键而前端读 camelCase，

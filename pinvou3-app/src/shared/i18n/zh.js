@@ -1,5 +1,7 @@
-// 中文 UI 词典。zh 全量内嵌:启动即用,不经 ensureLanguage。en/ja 对 zh 全部
-// 叶子 key 的覆盖由 tests/ui_language_coverage.test.mjs 强制(parity 断言)。
+// 中文 UI 词典。自启动预算拆分(round-41)起 zh 与 en/ja 一致走惰性装载
+// (ensureLanguage('zh'));各入口经 ensureLanguageWithZhFallback 在首选语言
+// 装载失败时以 zh 兜底。en/ja 对 zh 全部叶子 key 的覆盖由
+// tests/ui_language_coverage.test.mjs 强制(parity 断言)。
 // 维护约定:新增 key 三处同步;ja 以 en 兜底(i18n/ja.js 内 spread)。
 // i18n.js 聚合 shim 与 Node 契约测试(ui_language_coverage)静态 import 全部三语,拆分仅影响浏览器 chunk。
 
@@ -438,9 +440,11 @@ export const dictZh = {
         uiAttachments: { parsing:'解析中', failed:'失败', remove:name=>`移除附件 ${name}`, dropRelease:'松开即可添加', dropWebTitle:'添加任意内容', dropWebHint:'将任意文件拖放到此处，以将其添加到对话中', fileTooLarge:'文件超过 20 MB 附件上限，无法添加', archiveTooManyEntries:'压缩包包含超过 50 个条目，无法添加', archiveExpandedTooLarge:'压缩包解压后超过 100 MB，无法添加', archiveUnsafeEntry:'压缩包包含不安全的链接或路径，无法添加' },
         uiCodex: codexZh,
         uiAcpProviders: acpProvidersZh,
-        uiProjects: { convertToProject:'转为项目', projectNamePlaceholder:'项目名称', renameProject:'重命名项目', deleteProject:'删除项目', deleteConfirmLabel:'确认删除项目？', deleteProjectHint:'对话不会被删除，将回到未分组', moveToProject:'移动到项目…', moveToUngrouped:'移到未分组', alreadyUngrouped:'已在未分组', folderUnavailable:'文件夹不可用', rebindFolder:'重新绑定', moveConfirmTitle:'移动对话到此项目？', moveConfirmBody:(project, folder)=>`对话将移入「${project}」。其所在文件夹 ${folder} 不会加入项目，仅该对话归档。`, moveConfirm:'移动', searchPlaceholder:'搜索项目', noProjects:'暂无项目', currentProject:'当前项目', movedNotice:'已移动对话', movedNoticeWithFolder:folder=>`已移动对话，并已将文件夹 ${folder} 加入项目`, noMatchProject:'没有匹配的项目', opFailed:'项目操作失败' , rebindTitle:'重新绑定项目文件夹', rebindConfirm:'移动并重绑定', rebindSessionsHint:()=>'该文件夹下的所有会话都会改用新目录', rebindSuccess:n=>`已重新绑定 ${n} 个会话`, rebindUpToDate:'没有需要重绑定的会话', rebindOldExistsWarn:'原文件夹仍存在，切换后两处将指向不同目录，确认继续？', rebindPartial:(ok, failed)=>`已重新绑定 ${ok} 个会话，${failed} 个失败，可对剩余会话重试`, rebindBusyAfter:n=>`${n} 个会话在重绑定期间开始了新回合，如目录表现异常请让其空闲后重试一次` , rebindCarryoverPending:n=>`${n} 个会话已迁移但其运行时尚未完成切换，请空闲后重试一次`, rebindRetryRemaining:'重试剩余会话', rebindFailedSessions:'失败会话', rebindInProgress:'另一个目录重绑定正在进行中' , rebindBusyHint:'这些会话仍在回合中，等待其空闲后重试', rebindToRoot:'目标不能是文件系统根目录，请改选普通文件夹', rebindToNested:'新旧目录不能相互嵌套', rebindToUnusable:'目标文件夹不可用，请重新选择', rebindRootsConflict:'该文件夹与其它项目的文件夹重叠，请选择这些项目文件夹之外的目录', rebindRootsPersist:'无法把重绑定结果写入磁盘，请检查磁盘空间与权限后重试', rebindRuntimeStarting:'有智能体进程正在启动，暂时无法检查会话状态，请稍后重试', rebindLegacyTableUnsynced:'未移动任何内容：会话记录同步失败。请将该目录设为可写后重试', rebindLegacyTableCorrupt:'未移动任何内容：旧版会话记录表已损坏。请修复或删除该文件后重试', rebindRootsExpand:'展开全部失效文件夹', rebindRootsCollapse:'只保留第一个失效文件夹' },
-
-        uiCodexWorkspace: { changes:{added:'新增',modified:'修改',deleted:'删除',renamed:'重命名',copied:'复制',conflict:'冲突',untracked:'未跟踪',unknown:'文件'}, origins:{session:'本会话',preexisting:'会话前已有',preexisting_modified:'会话前已有 · 本会话继续修改',unknown:'来源未记录'}, addedPath:path=>`已添加 ${path}`, addPath:path=>`添加 ${path} 到对话`, added:'已添加到对话', add:'添加到对话', copyPath:'复制相对路径', reveal:'在文件管理器中显示', open:'用系统应用打开', reading:'正在读取…', noDiff:'没有可显示的文本差异',  unsupported:'该文件不支持内置预览。', openHint:'可以用系统应用打开。', truncated:'内容过大，当前只显示前一部分。',   title:'工作区', temporary:'临时工作区', refresh:'刷新工作区', close:'关闭工作区', files:'文件', changed:'更改', search:'搜索文件', noFiles:'没有匹配文件', noBaseline:'该旧会话没有创建时基线，因此无法判断更改是否由本会话产生。', branch:'分支', staged:'已暂存', noChanges:'工作区没有更改', copyContent:'复制内容', copied:'已复制', closeViewer:'关闭预览', loadFailed:'文件读取失败', resizeWidth:'调整弹窗宽度', resizeHeight:'调整弹窗高度', resizeCorner:'调整弹窗大小，双击恢复默认', fontDecrease:'减小字号', fontIncrease:'增大字号', openInNewWindow:'使用代码阅读器打开', diffSuffix:'(差异)', readerTitle:'代码阅读器', readerEmpty:'从工作区文件弹窗选择「使用代码阅读器打开」，文件会在此以标签页累积。', closeTab:'关闭标签页', noSessionChanges:'创建会话后，这里会列出本会话对项目的更改。' },
+        uiProjects: { convertToProject:'转为项目', projectNamePlaceholder:'项目名称', renameProject:'重命名项目', deleteProject:'删除项目', deleteConfirmLabel:'确认删除项目？', deleteProjectHint:'对话不会被删除，将回到未分组', moveToProject:'移动到项目…', moveToUngrouped:'移到未分组', alreadyUngrouped:'已在未分组', folderUnavailable:'文件夹不可用', rebindFolder:'重新绑定', moveConfirmTitle:'移动对话到此项目？', moveConfirmBody:(project, folder)=>`对话将移入「${project}」。其所在文件夹 ${folder} 不会加入项目，仅该对话归档。`, moveConfirm:'移动', searchPlaceholder:'搜索项目', noProjects:'暂无项目', currentProject:'当前项目', movedNotice:'已移动对话', movedNoticeWithFolder:folder=>`已移动对话；文件夹 ${folder} 已加入项目（本对话的可访问范围不变）`, noMatchProject:'没有匹配的项目', opFailed:'项目操作失败' , manageFolders:'管理文件夹', newSessionHere:'新建会话', rebindTitle:'重新绑定项目文件夹', rebindConfirm:'移动并重绑定', rebindSessionsHint:()=>'该文件夹下的所有会话都会改用新目录', rebindSuccess:n=>`已重新绑定 ${n} 个会话`, rebindUpToDate:'没有需要重绑定的会话', rebindOldExistsWarn:'原文件夹仍存在，切换后两处将指向不同目录，确认继续？', rebindPartial:(ok, failed)=>`已重新绑定 ${ok} 个会话，${failed} 个失败，可对剩余会话重试`, rebindBusyAfter:n=>`${n} 个会话在重绑定期间开始了新回合，如目录表现异常请让其空闲后重试一次`  , rebindCarryoverPending:n=>`${n} 个会话已迁移但其运行时尚未完成切换，请空闲后重试一次`, rebindRetryRemaining:'重试剩余会话', rebindFailedSessions:'失败会话', rebindInProgress:'另一个目录重绑定正在进行中' , rebindBusyHint:'这些会话仍在回合中，等待其空闲后重试', rebindToRoot:'目标不能是文件系统根目录，请改选普通文件夹', rebindToNested:'新目录与旧目录不能相互嵌套', rebindToUnusable:'目标文件夹不可用，请重新选择', rebindRootsConflict:'新目录会使项目自身的文件夹互相嵌套，请选择项目现有文件夹之外的目录' , rebindRootsPersist:'无法把重绑定结果写入磁盘，请检查磁盘空间与权限后重试' , rebindRuntimeStarting:'有智能体进程正在启动，暂时无法检查会话状态，请稍后重试' , rebindLegacyTableUnsynced:'未移动任何内容：会话记录同步失败。请将该目录设为可写后重试' , rebindLegacyTableCorrupt:'未移动任何内容：旧版会话记录表已损坏。请修复或删除该文件后重试', rebindRootsExpand:'展开全部失效文件夹', rebindRootsCollapse:'只保留第一个失效文件夹' },
+        uiKeychain: { accessibleFolders:n=>`可访问的 ${n} 个文件夹`, accessibleFoldersRecorded:n=>`已记录 ${n} 个文件夹（当前仅主文件夹生效）`, primaryBadge:'主', unknownDirectory:'未知目录', alignAction:'对齐到项目', alignActionDesc:'把本对话的可访问文件夹更新为项目当前的全部文件夹（下个回合生效）', alignActionDescRecorded:'更新本对话记录的文件夹集合（多根暂不送达第三方智能体，仅主文件夹生效）', alignDone:'已对齐到项目', alignNoChange:'已是最新，无需对齐', alignNoProject:'该会话不在含文件夹的项目中，无可对齐内容', alignNoWorkspace:'临时会话没有绑定工作区，无法对齐', alignBusy:'当前回合结束后重试', alignWriteSkipped:'磁盘保持原样（写入未落盘）；活动会话未被打断，可重试对齐', alignPushDeferred:'已对齐到项目；当前运行中的引擎仍用旧文件夹集合，将在引擎重启后生效', alignSidecarStale:'已对齐，但本会话的磁盘副本未能同步更新；若索引损坏，对齐前的文件夹集合可能短暂恢复', alignFailed:'对齐失败' },
+        uiManageFolders: { title:'管理文件夹', renameHint:'点击重命名项目', emptyRoots:'此项目暂无文件夹（纯标签项目）', primaryBadge:'主', setPrimaryHint:'设为主文件夹', removeAction:'移除', removeConfirm:'移除', removeConfirmBody:'在飞对话将继续访问该文件夹直到结束，且该文件夹会保留在其钥匙串中、跨重启生效，直到会话被删除；未来的新对话不再获得。显式归入的会话保持不变；自动归组的会话移到未分组；若该文件夹同时被其他项目引用，其下会话仍会归入那些项目。', removePrimaryBlocked:'这是主文件夹：请先把其它文件夹设为主，再移除它。', addAction:'添加文件夹…', addDuplicate:'该文件夹已在项目中', addNested:'该文件夹位于项目已有文件夹内部（或包含它），同一项目内不允许嵌套', addNoticeRestricted:'添加后，此项目的新对话将可访问该文件夹', addNoticeVisibility:'添加后，模型将知道该文件夹与项目新对话相关', addNoticeRestrictedRecorded:'添加后，此项目的新对话将记录该文件夹（多根暂不送达第三方智能体，仅主文件夹生效）', addNoticeVisibilityRecorded:'添加后，该文件夹将随项目新对话被记录（当前仅主文件夹对智能体生效）', exclusionSection:'不再自动建项目的文件夹', neverMaterializeAction:'不再自动建项目', neverMaterializeHint:'把此文件夹加入排除列表：之后不再为它自动物化项目（本项目与现有会话不受影响）', revokeExclusion:'撤销', exclusionDone:'已更新排除列表' },
+        uiWorkspacePicker: { title:'选择工作区', searchPlaceholder:'搜索项目或路径', empty:'暂无项目，可浏览文件夹或开始临时会话', noMatch:'没有匹配的项目', multiRootSummary:(n, primary)=>`${n} 个文件夹 · 主：${primary}`, primaryRootBadge:'主', noticeRestricted:n=>`将可访问这 ${n} 个文件夹`, noticeVisibility:n=>`模型将知道这 ${n} 个文件夹与本对话相关`, noticeRestrictedRecorded:n=>`将记录这 ${n} 个文件夹（当前仅主文件夹生效）`, noticeVisibilityRecorded:n=>`这 ${n} 个文件夹将随会话记录（当前仅主文件夹对智能体生效）`, temporary:'临时会话', temporaryDesc:'不绑定目录', browse:'浏览其他文件夹…', browseDesc:'以所选文件夹开始新对话', excludedTitle:'此文件夹已设为不自动建项目', excludedBody:name=>`「${name}」在排除列表中，不再自动物化为项目；更宽的项目仍可能按目录把其下的会话自动归组。仍可以它为目录开始纯文件夹对话。`, excludedProceed:'仍以此文件夹开始', unknownDirectory:'未知目录', assignmentDegradedNotice:'文件夹已记录，但显式的项目归属未能保存——本对话暂按目录自动归组' },
+        uiCodexWorkspace: { changes:{added:'新增',modified:'修改',deleted:'删除',renamed:'重命名',copied:'复制',conflict:'冲突',untracked:'未跟踪',unknown:'文件'}, origins:{session:'本会话',preexisting:'会话前已有',preexisting_modified:'会话前已有 · 本会话继续修改',unknown:'来源未记录'}, addedPath:path=>`已添加 ${path}`, addPath:path=>`添加 ${path} 到对话`, added:'已添加到对话', add:'添加到对话',  copyPath:'复制相对路径', reveal:'在文件管理器中显示', open:'用系统应用打开', reading:'正在读取…', noDiff:'没有可显示的文本差异', unsupported:'该文件不支持内置预览。', openHint:'可以用系统应用打开。', truncated:'内容过大，当前只显示前一部分。', title:'工作区', temporary:'临时工作区', refresh:'刷新工作区', close:'关闭工作区', files:'文件', changed:'更改', search:'搜索文件', noFiles:'没有匹配文件', noBaseline:'该旧会话没有创建时基线，因此无法判断更改是否由本会话产生。', branch:'分支', staged:'已暂存', noChanges:'工作区没有更改', copyContent:'复制内容', copied:'已复制', closeViewer:'关闭预览', loadFailed:'文件读取失败', resizeWidth:'调整弹窗宽度', resizeHeight:'调整弹窗高度', resizeCorner:'调整弹窗大小，双击恢复默认', fontDecrease:'减小字号', fontIncrease:'增大字号', openInNewWindow:'使用代码阅读器打开', diffSuffix:'(差异)', readerTitle:'代码阅读器', readerEmpty:'从工作区文件弹窗选择「使用代码阅读器打开」，文件会在此以标签页累积。', closeTab:'关闭标签页', noSessionChanges:'创建会话后，这里会列出本会话对项目的更改。' },
 
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本', updateCheckFailed: '检查失败', updateInstallFailed: '更新失败',
         newVersionFound: '发现新版本', updateNotes: '更新说明',
@@ -528,7 +532,7 @@ export const dictZh = {
         cpDescLabel: '简介',
         cpEquipBubbleNote: '完整能力档案已注入,AI 将以该专家的方法论承接后续任务。',
         cpTargetMarkTitle: '加持目标 · 在卡牌池选的专家会注入到这个对话',
-        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riOpenFolder: '打开文件夹', riAwaitingInput: '等待你的选择', riMore: '更多',
+        riGenerating: '正在生成中', riDelQ: '删除?', riDelConfirm: '确认删除', riRename: '重命名', riPin: '置顶', riUnpin: '取消置顶', riOpenFolder: '打开文件夹', riAwaitingInput: '等待你的选择', riMore: '更多', riViewWorkspace: '查看工作区',
         // —— 聊天链路/全局 chrome ——
         appTitle: 'PINVOU 智能助手（内测版）', winMin: '最小化', winMax: '最大化', winClose: '关闭',
         sidebarCollapse: '收起侧边栏', sidebarExpand: '展开侧边栏',
@@ -654,6 +658,7 @@ dictZh.uiToolDetails.showRawErrors = true;
 // 注:weather/iwencai/wecom-bot 的 zh label 由泛化的「API Key/Webhook Key」改为与
 // manifest 逐字一致的具体文案——这是用户可见的文案改进(#575 有意为之,非零变化)。
 Object.assign(dictZh.uiToolDetails.tools, {
+  'app-automations':{ title:'定时任务', subtitle:'桌面对话管理任务，对象不明确时先确认', latency:'本地', desc:'在桌面 Operate/Yolo 对话中创建、查看任务及修改名称、模型和暂停状态。删除目标明确时直接执行；重名或指代不清时先向用户确认。无任务定义备份或撤销；覆盖提示词或计划需到定时任务面板检查并提交。通过结果卡片和面板核对结果；后台运行禁用子代理。需应用保持运行。Plan 和 CLI 不支持。工具本地运行。关闭：在 settings.json 的 disabled_builtin_features 加入 scheduled-task-automation 后重启（暂无界面开关）。', welcomeQueries:['每天 8:30 创建一个 AI 早报定时任务','6 月 1 日 9:30 提醒我一次','暂停早报任务','查看已有任务'] },
   'session-reader':{ title:'会话读取', subtitle:'读取本机其他会话的历史记录；可向其他会话发送消息', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史（在输入框 @ 引用某个会话后按需翻页读取），并可向其他会话投递消息（以发送者卡片形式送达；默认安装，纯本地读取会话文件，不联网、不上传，投递写入审计）。内置插件不可卸载；可通过内置功能开关关闭会话读取。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
   weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'高德 Web 服务 API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
   iwencai:{ title:'同花顺问财', subtitle:'A股行情、财务、选股、宏观、新闻', desc:'基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', configTitle:'问财 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'打开问财 SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'问财 API Key', helpText:'进入任一官方 Skill，在「安装方式」中复制。', placeholder:'粘贴 IWENCAI_API_KEY'}], welcomeQueries:['茅台最新股价','今天大盘怎么样','市盈率低于10的银行股','最近降息新闻'] },
@@ -690,7 +695,7 @@ dictZh.uiBuiltinPlugins = {
   versionNote:'随应用升级',
   dataAccessLabel:'数据访问范围',
   levels:{ L0:'只读：不修改任何状态，内容标注为不可信', L1:'写入：会产生用户可见的副作用（如发消息、建任务）', L2:'破坏性：删除/覆盖等不可逆操作，需显式授权' },
-  dataAccess:{ 'sessions.read':'本机会话存储（只读）', 'sessions.write':'向本机其他会话发送消息（写入）' },
+  dataAccess:{ 'sessions.read':'本机会话存储（只读）', 'sessions.write':'向本机其他会话发送消息（写入）', 'automations.read':'本机定时任务列表（只读）', 'automations.write':'创建、修改、删除本机定时任务（写入）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
@@ -929,6 +934,10 @@ dictZh.uiArtifacts = {
 
 dictZh.uiSessionMention = { menuTitle:'引用会话', menuEmpty:'没有匹配的会话', dropHint:'松开即可引用该会话', chipRemove:name=>`移除引用 ${name}`, cardJump:label=>`打开会话：${label}`, cardUnavailable:'会话已删除', cardDisabled:'功能已关闭', disabledNotice:'会话引用功能已关闭，引用不会随消息发送' };
 dictZh.uiSessionMessage = { from:name=>`来自会话：${name}`, fromUnknown:'来自另一个会话', jump:name=>`打开会话：${name}`, unavailable:'会话已删除' };
+
+// app-automations scheduled-task tool card (tool-renderers.jsx create card).
+dictZh.uiScheduledTaskTool = { listLabel:'列表', duplicateNote:'重复请求：以上显示此请求标识对应的结果。', created:'定时任务已创建', updated:'定时任务已更新', deleted:'定时任务已删除', deletedNote:'运行历史已归档，任务不再调度。', pending:'请求已提交，应用尚未确认结果——可在定时任务面板查看', promptLabel:'提示词', limitSuffix:n=>` · 限 ${n} 条`, nameQuote:n=>`「${n}」`, mismatchNote:'该幂等键曾以不同载荷处理；本次发送的字段未被应用。',updatedName:'重命名为' };
+
 Object.assign(dictZh.uiAttachments, { uploading:pct=>`上传中 ${pct}%`,  deviceUploadEmpty:name=>`${name} 是空文件，无法添加`, deviceUploadUnavailable:'当前无法从此设备上传附件', deviceUploadInvalid:name=>`${name} 不是有效附件`, deviceUploadFailed:name=>`${name} 上传失败，请重试`, deviceUploadDigestInvalid:'附件完整性校验值无效，请重试', deviceUploadIntegrityMismatch:'附件内容在传输中损坏，请重新上传' });
 
 
@@ -1061,6 +1070,7 @@ Object.assign(dictZh, {
 // 措辞对齐 code 模式 uiCodex 的草稿选择器）。系统目录对话框标题经桥内
 // pickFolderTitle 提供（死键 chooseDirectoryDialog 已随 #445 评审移除）。
 dictZh.uiChatWorkspace = {
+        pickFailed:'目录选择失败',
   defaultWorkspace:'默认工作区', defaultWorkspaceDesc:'使用 Pinvou 管理的会话目录',
   chooseDirectory:'选择目录…', chooseDirectoryDesc:'让 Agent 直接在该目录中工作',
   recentDirectories:'最近使用', unknownDirectory:'未知目录',
@@ -1068,6 +1078,15 @@ dictZh.uiChatWorkspace = {
   // modeYoloConfirm*，但措辞是「工作目录」而非「项目目录」，故独立成键）。
   yoloConfirmTitle:'切换到 YOLO 模式？', yoloConfirmBody:'该模式下模型将对你的工作目录全自动读写、可执行 shell 命令，无逐步审批。',
   yoloConfirmHint:'确认后全局记住，以后切换不再提示。', yoloConfirmOk:'确认切换', yoloConfirmCancel:'取消',
+};
+
+// 会话「更多」菜单的查看工作区弹窗（features/projects/SessionWorkspaceDialog.jsx）：
+// 只读展示会话可访问文件夹快照（§6 钥匙串，roots[0] = 主文件夹即创建时 cwd）。
+// 未绑定会话（默认工作区/代码临时会话）不展示臆造的范围，只给如实说明。
+dictZh.uiSessionWorkspace = {
+  title:'查看工作区', scope:'可访问文件夹', primary:'主文件夹',
+  unknownFolder:'未知文件夹',
+  unbound:'未绑定文件夹：使用 Pinvou 管理的默认会话目录',
 };
 
 // 静态桥脚本（vite 原样拷贝，不能 ES import）经此读取共享词典，
