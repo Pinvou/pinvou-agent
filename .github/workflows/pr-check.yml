@@ -575,8 +575,9 @@ jobs:
           python3 scripts/architecture-guard.py --base-ref "origin/$base_ref"
 
       - name: 公开底座 gitlink 可达性
-        # Fail closed: gitlink 必须等于公开维护分支头；过渡期（fork-policy 第 0 节豁免）
-        # 内不可变 tag 钉在其收口 commit，rN 收口后恢复三方相等。
+        # Fail closed: the gitlink must equal the public maintenance head,
+        # including candidate windows. The transition policy only lets that
+        # public head lead the immutable closure tag; it does not waive this gate.
         run: ./scripts/verify-public-submodule.sh
 
       - name: 初始化公共底座 submodule
@@ -2098,7 +2099,10 @@ jobs:
           # Make that runner assumption explicit and deterministic.
           unset SHELL
           cd CodeWhale
-          for filter in forkguard_powershell forkguard_windows_shell_text; do
+          for filter in forkguard_powershell forkguard_windows_shell_text \
+            command_spec_env_overlays_preserve_existing_values \
+            forkguard_windows_shell_env_overlays_keep_python_stdio_utf8 \
+            windows_shell_env_explicit_override_is_case_insensitive; do
             log="/tmp/codewhale_windows_${filter}.log"
             cargo test -p codewhale-tui --lib --locked "$filter" -- --test-threads=1 2>&1 | tee "$log"
             grep -qE 'running [1-9][0-9]* tests?' "$log" || {
