@@ -56,9 +56,13 @@ assert.match(chatView, /from '\.\.\/conversation\/useRewindController\.js'/, 'Ch
 const sharedHelpers = source('shared/bridge-shared-helpers.js');
 assert.match(tauriBridge, /rerenderFromMessagesCore\(/, 'tauri 重载必须走共享核心 rerenderFromMessagesCore（lane 回退内联循环会让全部用户气泡过滤失效）');
 assert.match(webBridge, /rerenderFromMessagesCore\(/, 'web 重载必须走共享核心 rerenderFromMessagesCore（lane 回退内联循环会让全部用户气泡过滤失效）');
-// 形状锚（非标识符共现）——删掉三元守卫（回退为直取 userMessageDisplayText）
-// 必须变红；只留未用变量声明的变异同样变红。
-assert.match(sharedHelpers, /toolResultCarrier\s*\?\s*""\s*:\s*lane\.userMessageDisplayText/, '重载核心：tool_result 载体必须以三元守卫跳过用户气泡');
+// 形状锚（非标识符共现）——r22 集成修复（main #749 重放口径）：载体取用户
+// 文本必须先剥运行时图片标记（`<image path="…">`/`</image>`），纯载体剥完为空
+// 仍无气泡，混合形态保留 user 边界。变异实证：删掉 isImageMarkerTextBlock
+// 过滤（载体直取全文）或删掉 toolResultCarrier 分支（混合形态出幻影气泡）
+// 必须双双变红。
+assert.match(sharedHelpers, /toolResultCarrier\s*\?\s*blocks\.filter\(b => !isImageMarkerTextBlock\(b\)\)\s*:\s*blocks/, '重载核心：tool_result 载体必须先剥运行时图片标记再取用户文本（纯载体无气泡、混合形态保留边界）');
+assert.match(sharedHelpers, /function isImageMarkerTextBlock\(b\)/, '重载核心：图片标记谓词必须随核心定义（与 CodeWhale image_attach/turn_loop 的 <image path="…"> 标记同形）');
 // 步数预算通知过滤（r10 M3）形状锚。
 assert.match(sharedHelpers, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, '重载核心：步数预算通知必须被过滤出用户气泡');
 // 压缩载体过滤的调用形状锚（变异实证：禁用过滤行全绿）。过滤器必须在 rerender
