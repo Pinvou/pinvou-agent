@@ -531,7 +531,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       role="menuitem"
                       className={`group flex w-full items-center gap-1 rounded-[12px] transition-colors ${
                         active
-                          ? 'bg-[#E5F0FF] dark:bg-[#0A84FF]/24'
+                          ? 'bg-[#E5F0FF] dark:bg-[#0A84FF]/[0.24]'
                           : 'hover:bg-black/[0.05] dark:hover:bg-white/10'
                       }`}
                       title={a.path}
@@ -549,7 +549,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                             {itemInfo ? formatLocalDateTime(itemInfo.modified * 1000, '') : '—'}
                           </span>
                         </span>
-                        {active && <span className="shrink-0 text-[12px] text-[#007AFF]">✓</span>}
+                        {active && <span className="shrink-0 text-[12px] text-[#007AFF] dark:text-[#64B5F6]">✓</span>}
                       </button>
                       {canOpenContainingFolder && (
                         <button
@@ -813,7 +813,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       {showDesignWorkbench && (
                         <div
                           aria-hidden="true"
-                          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32 bg-gradient-to-t from-black/45 via-black/16 to-transparent"
+                          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32 bg-gradient-to-t from-black/45 via-black/[0.16] to-transparent"
                         />
                       )}
                       {showDesignWorkbench && (
@@ -839,7 +839,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 className={`h-8 rounded-full px-3 text-[12px] font-semibold transition-colors ${
                                   designAiText.trim()
                                     ? 'bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6]'
-                                    : 'bg-[#E5E5EA] text-[#8E8E93] dark:bg-white/14 dark:text-[#C7C7CC]'
+                                    : 'bg-[#E5E5EA] text-[#8E8E93] dark:bg-white/[0.14] dark:text-[#C7C7CC]'
                                 }`}
                               >
                                 {uiA.send}

@@ -47,7 +47,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
       </span>
     ) : null;
     const MonitorCard = ({ children, className = '', highlight = false }) => (
-      <div className={`group relative rounded-[36px] p-7 overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${highlight ? 'bg-white/88 dark:bg-[#1F1F23]' : 'bg-white/78 dark:bg-[#1C1C1E]'} backdrop-blur-[80px] backdrop-saturate-[200%] shadow-[0_16px_44px_rgba(15,23,42,0.10),0_2px_8px_rgba(15,23,42,0.05)] dark:shadow-[0_38px_96px_rgba(0,0,0,0.74),0_14px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.08)] hover:-translate-y-1 hover:scale-[1.006] hover:shadow-[0_24px_64px_rgba(15,23,42,0.14),0_4px_14px_rgba(15,23,42,0.07)] dark:hover:!bg-[#242428] dark:hover:shadow-[0_52px_128px_rgba(0,0,0,0.82),0_18px_42px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.1)] ${className}`}>
+      <div className={`group relative rounded-[36px] p-7 overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${highlight ? 'bg-white/[0.88] dark:bg-[#1F1F23]' : 'bg-white/[0.78] dark:bg-[#1C1C1E]'} backdrop-blur-[80px] backdrop-saturate-[200%] shadow-[0_16px_44px_rgba(15,23,42,0.10),0_2px_8px_rgba(15,23,42,0.05)] dark:shadow-[0_38px_96px_rgba(0,0,0,0.74),0_14px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.08)] hover:-translate-y-1 hover:scale-[1.006] hover:shadow-[0_24px_64px_rgba(15,23,42,0.14),0_4px_14px_rgba(15,23,42,0.07)] dark:hover:!bg-[#242428] dark:hover:shadow-[0_52px_128px_rgba(0,0,0,0.82),0_18px_42px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.1)] ${className}`}>
         <div className="absolute inset-0 rounded-[36px] pointer-events-none border border-black/[0.06] dark:border-white/[0.055] transition-colors duration-500 group-hover:border-black/[0.08] dark:group-hover:border-white/[0.09]" />
         <div className="absolute inset-0 rounded-[36px] pointer-events-none ring-1 ring-inset ring-white/70 dark:ring-white/[0.035]" />
         <div className="absolute inset-x-6 top-0 h-px bg-white/0 dark:bg-white/[0.09] pointer-events-none" />
@@ -74,7 +74,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
         </div>
         <div className="min-w-0 flex items-center gap-2.5 pl-10">
           {brandIcon && <MonitorBrandIcon src={brandIcon} className="w-10 h-10 flex-none rounded-[12px]" />}
-          <span className="min-w-0 text-[18px] leading-[1.15] font-bold tracking-[-0.01em] text-black/82 dark:text-white/86 break-words">
+          <span className="min-w-0 text-[18px] leading-[1.15] font-bold tracking-[-0.01em] text-black/[0.82] dark:text-white/[0.86] break-words">
             {device}
           </span>
         </div>
@@ -155,9 +155,9 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
       );
     };
     const MonitorMetricCard = ({ label, value, unit, hint, color, data }) => (
-      <div className="bg-white/58 dark:bg-[#2C2C2E] rounded-3xl p-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] flex flex-col justify-between transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/85 hover:shadow-[0_14px_36px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_16px_38px_rgba(0,0,0,0.34)]">
+      <div className="bg-white/[0.58] dark:bg-[#2C2C2E] rounded-3xl p-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] flex flex-col justify-between transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/85 hover:shadow-[0_14px_36px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_16px_38px_rgba(0,0,0,0.34)]">
         <div>
-          <span className="text-[13px] font-bold tracking-[0.02em] text-black/58 dark:text-white/62">{label}</span>
+          <span className="text-[13px] font-bold tracking-[0.02em] text-black/[0.58] dark:text-white/[0.62]">{label}</span>
           <div className="text-[32px] font-bold tracking-[-0.03em] mt-1">{value}{unit && String(value) !== '—' && <span className="text-[14px] text-black/40 dark:text-white/40 ml-1">{unit}</span>}</div>
           <div className="text-[12px] leading-snug font-medium text-black/45 dark:text-white/45 mt-1.5">{hint}</div>
         </div>
@@ -519,24 +519,24 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="rounded-3xl bg-white/62 dark:bg-[#2C2C2E] px-5 py-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
+                      <div className="rounded-3xl bg-white/[0.62] dark:bg-[#2C2C2E] px-5 py-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
                         <div className="flex items-start justify-between gap-4">
                           <div>
                             <div className="flex items-center gap-2">
                               <span className="w-2 h-2 rounded-full bg-[#007AFF] dark:bg-[#0A84FF]" />
-                              <div className="text-[14px] font-bold tracking-[0.02em] text-black/62 dark:text-white/68">{t.modelReadAmount}</div>
+                              <div className="text-[14px] font-bold tracking-[0.02em] text-black/[0.62] dark:text-white/[0.68]">{t.modelReadAmount}</div>
                             </div>
                             <div className="text-[12px] leading-snug font-semibold text-black/45 dark:text-white/45 mt-2">{t.modelReadHint}</div>
                           </div>
                           <div className="text-[30px] leading-none font-bold tracking-[-0.03em]">{tokenPair.input}</div>
                         </div>
                       </div>
-                      <div className="rounded-3xl bg-white/62 dark:bg-[#2C2C2E] px-5 py-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
+                      <div className="rounded-3xl bg-white/[0.62] dark:bg-[#2C2C2E] px-5 py-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
                         <div className="flex items-start justify-between gap-4">
                           <div>
                             <div className="flex items-center gap-2">
                               <span className="w-2 h-2 rounded-full bg-[#34C759] dark:bg-[#30D158]" />
-                              <div className="text-[14px] font-bold tracking-[0.02em] text-black/62 dark:text-white/68">{t.modelOutputAmount}</div>
+                              <div className="text-[14px] font-bold tracking-[0.02em] text-black/[0.62] dark:text-white/[0.68]">{t.modelOutputAmount}</div>
                             </div>
                             <div className="text-[12px] leading-snug font-semibold text-black/45 dark:text-white/45 mt-2">{t.modelOutputHint}</div>
                           </div>

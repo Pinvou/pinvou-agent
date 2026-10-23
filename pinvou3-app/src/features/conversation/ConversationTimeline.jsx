@@ -545,7 +545,7 @@ function WorkspaceResourceButtons({ resources, onOpenResource }) {
       {resources.map(resource => (
         <button type="button" key={resource.path} onClick={() => onOpenResource && onOpenResource(resource.path)}
           disabled={!onOpenResource} title={resource.path}
-          className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/8 text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
+          className="max-w-full truncate px-2 py-1 rounded-lg bg-blue-500/[0.08] text-[10px] text-blue-600 dark:text-blue-300 font-mono enabled:hover:bg-blue-500/15 disabled:cursor-default">
           {resource.name}
         </button>
       ))}

@@ -418,7 +418,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
     };
     /** @param {{ scheduledCopy: ScheduledCopy, taskFilter: string, setTaskFilter: (value: string) => void }} props - Filter tab state and copy. */
     const FilterTabs = ({ scheduledCopy, taskFilter, setTaskFilter }) => (
-      <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 bg-[#767680]/12 dark:bg-[#767680]/24`}>
+      <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24]`}>
         {[
           ['all', scheduledCopy.filterAll],
           ['active', scheduledCopy.filterActive],
@@ -1532,7 +1532,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             <div className="fixed inset-0 z-[300] flex items-center justify-center px-4">
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; the keyboard path is covered by the dialog's cancel button */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-              <div className="absolute inset-0 bg-black/28 backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
+              <div className="absolute inset-0 bg-black/[0.28] backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
               <div
                 role="alertdialog"
                 aria-modal="true"
@@ -1549,7 +1549,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                     {scheduledCopy.deleteDescription(deleteConfirmTask.name)}
                   </p>
                 </div>
-                <div className={`grid grid-cols-2 divide-x divide-[#3C3C43]/16 dark:divide-[#545458]/50`}>
+                <div className={`grid grid-cols-2 divide-x divide-[#3C3C43]/[0.16] dark:divide-[#545458]/50`}>
                   <button type="button" data-testid="scheduled-detail-delete-cancel"
                     onClick={(event) => cancelDeleteTask(event)}
                     disabled={!!busyAction}

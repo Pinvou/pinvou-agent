@@ -255,6 +255,16 @@ test('alpha modifiers stay on the opacity scale or use the bracket form', () => 
     'features/knowledge/KnowledgeView.jsx',
     'features/codex/AcpRuntimeNotices.jsx',
     'features/settings/SettingsView.jsx',
+    'features/monitor/MonitorView.jsx',
+    'features/voice-composer/VoiceNoticeBar.jsx',
+    'features/codex/CodexWorkspacePanel.jsx',
+    'features/scheduled/ScheduledTasksView.jsx',
+    'features/artifacts/ArtifactsPanel.jsx',
+    'features/multiagent/SubagentTranscriptPanel.jsx',
+    'features/codex/CodexAcpView.jsx',
+    'features/aux-chat/AuxChatPanel.jsx',
+    'features/chat/composer-controls.jsx',
+    'features/conversation/ConversationTimeline.jsx',
   ]) {
     const src = source(file);
     const offScale = [...src.matchAll(BARE_ALPHA)].map(m => m[1]).filter(v => Number(v) % 5 !== 0);
