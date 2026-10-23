@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 09:18 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 10:08 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; remaining T13/T25/T47 source repairs and local acceptance are pending.
 The combined business workflows have not passed complete acceptance. Candidate
@@ -97,9 +97,12 @@ test trees permit bounded parallel compilation while retaining resource guards:
   candidate is now authored. Independent review found a missing lifecycle
   regression control; Root added real install/disable/append coverage with
   independent head and source revisions. Independent source re-review passed;
-  execution remains pending. The owner also decided to reject a new command
+  the corresponding pure run passed 25 top-level tests and 110 subtests across
+  five packages, without skips; independent actual review passed. The owner
+  also decided to reject a new command
   containing the exact currently installed content without adding a version;
-  the corresponding conflict return and no-effect controls remain to be completed.
+  Root implemented the conflict return and native no-effect regression controls;
+  independent source review passed. Real PostgreSQL execution remains pending.
   No append, dataset or complete owner runtime acceptance is claimed.
 - T34's first Linux material block provides an immutable anonymous copy and an
   explicit native-evidence CLI observation while preserving Windows behavior.
@@ -113,12 +116,29 @@ test trees permit bounded parallel compilation while retaining resource guards:
   no current volume meets its approximately 104 GiB free-space precondition.
   Other development and smaller-load/platform measurement work continue. Existing
   partial samples do not establish final preparation budgets or full T03 coverage.
+- A further T03 10 GiB / 100,000-file development sample completed with independent
+  actual review. Freezing three same-account synthetic writers took 20.024 ms;
+  backup and authenticated readback took 287,396.7808 ms (about 4 minutes 47 seconds).
+  The logical backup contained 100,007 files and 10,738,106,891 bytes; its encrypted
+  container occupied 10,742,262,736 bytes. All three owned process trees closed
+  naturally, the source and index stayed unchanged, and no resource floor was
+  breached. Together with the retained October 22 measurement, two individual
+  10 GiB development runs are now available. Each is a single sample with
+  uncontrolled cache and unclassified storage; neither establishes the repeated
+  acceptance series or a preparation budget. Separate OS users/services,
+  protected key recovery, power-off timing and directory durability remain
+  unqualified. T03 remains at 35%; the 50 GiB measurement remains deferred.
 - The dense real-source capacity experiment's read-only lower-bound calculation
   incorrectly conflated different history revisions with the same kind and ID.
   Root repaired its test-only identity to include revision and added seven
   focused controls. Independent source review passed. The three pure top-level
   tests and fourteen subtests now pass with independent actual review and zero
-  skips; all seven revision-identity controls ran. No new native capacity bracket,
+  skips; all seven revision-identity controls ran. A subsequent native experiment
+  stopped during the eighth member's preparation because the original actors'
+  five-minute MFA had expired. Seven members were created; the last accepted
+  union was 4,653,456 bytes. Its Job closed naturally with unchanged source and
+  no resource-floor breach. This is an authentication refusal, not aggregate
+  capacity evidence; the five-minute rule remains unchanged. No native bracket,
   exact 32 MiB boundary or whole-task acceptance is established.
 - Source comparison found no confirmed cause for the normal runtime-permission
   refusal. A fresh 2,408-input tree for the unchanged one-top/three-sub retake
@@ -440,7 +460,7 @@ remain pending. Production deployment T42 remains explicitly deferred.
 |---|---|---|---|
 | T01 | 100% | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | 100% | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples, one 10 GiB many-file development sample and three earlier payload smokes; the full four-target matrix, final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
+| T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples, two individual 10 GiB many-file development samples and three earlier payload smokes; the full four-target matrix, final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
 | T04 | 65% | In progress | Offline tools, Windows post-build npm adapter and role-specific NSIS inspection are delivered; the integrated source passed default regression and current-CLI normal/wrong-Root cases. Complete provenance, product build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
