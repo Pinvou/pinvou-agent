@@ -14,7 +14,7 @@
 
 import { projectDeepSeekConversation, conversationItemsForMode, timelineDisplayError } from '../conversation/deepseek-conversation.js';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
-import { isCompactionCarrierBlocks, isInternalUserMessage, isKnownInternalMetadataBlock, isStepBudgetNoticeText } from '../../shared/internal-message.mjs';
+import { isCompactionCarrierBlocks, isInternalRuntimeEnvelopeText, isInternalUserMessage, isKnownInternalMetadataBlock, isStepBudgetNoticeText, isToolResultCarrierBlocks } from '../../shared/internal-message.mjs';
 
 // Native controls are session-owned; bridge state belongs to the separate
 // chat workspace. Only a loaded model whose controls belong to this very
@@ -783,8 +783,10 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       // 摘要头前缀 + provenance 注释；tool_result 首块即 ToolResult-first）。
       // 载体/工具结果消息只跳过「用户气泡」——下方 tool_result 回填必须照跑
       // （工具卡还原靠它；continue 版本会把回填一并跳过，r10 自检抓回）。
+      // r25 MAJOR-2：NotPrompt 同族全集（tool_search/code_execution 变体与
+      // 共享 rerender 核心同集），否则该形态重载仍出幻影气泡、顶偏序号。
       const skipUserBubble = isCompactionCarrierBlocks(blocks)
-        || blocks.some(b => b && b.type === 'tool_result');
+        || isToolResultCarrierBlocks(blocks);
       const text = skipUserBubble ? '' : userMessageText(blocks);
       // 步数预算通知（r10 M3）：过滤气泡与 Rust 计数侧同口径。
       if (text && isStepBudgetNoticeText(text)) continue;

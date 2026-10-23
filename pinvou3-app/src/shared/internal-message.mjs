@@ -145,6 +145,23 @@ export function isCompactionCarrierBlocks(blocks) {
  * 气泡、计数侧（count_user_turns 家族）同步剔除——否则活会话调和门隐藏全部
  * 回退入口、重载后渲染成用户亲发的假气泡。
  */
+// NotPrompt 同族 tool-result 块类型全集（CodeWhale request.rs ContentBlock
+// 变体；r20 minor 4 / r25 MAJOR-2 与后端 classify 及 bridge-shared-helpers 的
+// classic 副本保持同集——classic script 无法 import ESM，副本各自成文）。
+export const TOOL_RESULT_BLOCK_TYPES = [
+  'tool_result',
+  'tool_search_tool_result',
+  'code_execution_tool_result',
+];
+
+// 含 tool-result 族块的用户消息不是用户轮（classify 按 ToolResult-first 判
+// NotPrompt）——重载投影只跳过其用户气泡，工具卡回填照跑（r25 MAJOR-2）。
+export function isToolResultCarrierBlocks(blocks) {
+  return (Array.isArray(blocks) ? blocks : []).some(
+    block => block && TOOL_RESULT_BLOCK_TYPES.includes(block.type),
+  );
+}
+
 export function isStepBudgetNoticeText(text) {
   const value = String(text || '');
   return value.startsWith('Step budget soft landing:')
