@@ -347,19 +347,11 @@ pub(crate) async fn chat_with_reservation(
         let checkpoint_label = super::sessions::strip_session_mention_block(&display_content)
             .trim()
             .to_string();
-        // r23 M1：崩溃对账的重放臂是破坏性的——用真实探针预计算栅栏（压缩在
-        // 飞 / 同根对端忙碌时顺延对账），与 rewind_to_turn 的栅栏同款。
+        // r23 M1：崩溃对账的重放臂是破坏性的——真实栅栏输入（压缩闩即时读、
+        // pool 引用供对端探针与执行根互斥在重放臂内惰性消费）。
         let reconcile_gates = super::checkpoints::ReconcileGates {
             compaction_in_flight: pool.is_compaction_in_flight(&sid),
-            peer_busy: super::checkpoints::same_root_replay_busy(
-                store,
-                &pool,
-                &acp_pool,
-                &sid,
-                &roots.execution,
-            )
-            .await
-            .unwrap_or(true),
+            pools: Some((&pool, &acp_pool)),
         };
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store,

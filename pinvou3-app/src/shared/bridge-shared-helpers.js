@@ -5074,7 +5074,9 @@
   // 压缩载体识别（评审 M2；镜像 CodeWhale history_recognition 与
   // shared/internal-message.mjs 的判定）：role=User、首块文本以压缩摘要头
   // （当前/历史前缀）开头、其余为空或仅 provenance 注释。两车道同款；本文件
-  // 是 classic script（无法 import ESM），与 internal-message.mjs 保持逐字镜像。
+  // 是 classic script（无法 import ESM），与 internal-message.mjs /
+  // code-native-lane.js 为同源副本——判定集一致，但各副本随宿主上下文存在
+  // 既知的有意差异（非逐字镜像，r24 minor 22；差异明细见各副本注释）。
   // 交叉仓库口径注（r20 minor 4）：后端 is_compaction_checkpoint_message 额外
   // 要求载体块的 cache_control 为 None；本谓词不检查 cache_control——写入侧
   // （压缩落盘）从不给载体盖 cache_control，两侧当前等价。CodeWhale 若开始

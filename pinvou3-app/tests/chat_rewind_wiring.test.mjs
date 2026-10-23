@@ -97,7 +97,7 @@ assert.match(controller, /invalidateSkippedCache\(sessionId\)/,
 const invalidateCallCount = (controller.match(/invalidateSkippedCache\(sessionId\)/g) || []).length;
 assert.equal(invalidateCallCount, 6, `全部六处调用点必须传闭包局部 sessionId（单点回归此前可全绿），实际 ${invalidateCallCount}`);
 // r11 M4：frontendEcho 标记行的形状锚（变异实证：禁用标记行全绿）。标记必须
-// 在 pushUserBody 的 !persist 分支——回退为恒不标记即回滚 r5-M1。
+// 在 pushUserEcho 的 !persist 分支——回退为恒不标记即回滚 r5-M1。
 assert.match(tauriInteraction, /if \(!persist\) item\.frontendEcho = true;/, 'tauri 交互桥：persist=false 的回显必须标记 frontendEcho——禁用标记行必须变红');
 assert.match(webBridge, /if \(!persist\) item\.frontendEcho = true;/, 'web bridge：persist=false 的回显必须标记 frontendEcho——禁用标记行必须变红');
 // r10 M5：busy 容差必须在调用点以 { busy: Boolean(busy) } 传入——删掉该参数

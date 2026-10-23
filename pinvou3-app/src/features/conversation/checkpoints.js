@@ -76,6 +76,14 @@ export function summarizeCheckpointChanges(changes) {
  * busy 容忍（评审 r6 minor 9）：发送在途时前端时间线已含乐观用户气泡，而后端
  * 计数要等消息落盘才 +1——恰差 1 属期望状态，不触发拒绝（busy→false 边沿
  * refreshKey 会重拉收紧到精确比对），避免每轮发送期间入口整体消失。
+ *
+ * committed-steer 容忍（评审 r24 M4）：steer 提交后是真实用户气泡（durable
+ * 重载经 markSteered 重建，时间线序号计入），但后端不打 Turn 快照、ledger
+ * 计数要等下一次快照才包含它——快照之后提交的 steer（ordinal >
+ * backendUserTurns 的 steeredMidTurn 气泡）造成恰差 steers 属期望状态，
+ * 不触发拒绝；快照之前的 steer 已含在 ledger 计数内，仍精确比对（否则
+ * r19-M1 类序号漂移会被掩盖）。宿主 turn 结束（busy→false）瞬间不再
+ * 全部入口消失。
  */
 export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { busy = false } = {}) {
   const entries = new Map();
@@ -83,10 +91,14 @@ export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { bu
   if (!list.length) return entries;
   const byTurn = checkpointMapByTurn(list);
   let ordinal = 0;
+  let steeredBeyondBackend = 0;
   for (const turn of turns || []) {
     if (!turn || !turn.userItem || turn.id == null) continue;
     if (turn.userItem.frontendEcho) continue;
     ordinal += 1;
+    if (turn.userItem.steeredMidTurn && Number.isSafeInteger(backendUserTurns) && ordinal > backendUserTurns) {
+      steeredBeyondBackend += 1;
+    }
     const checkpoint = byTurn.get(ordinal) || null;
     entries.set(turn.id, {
       keepTurns: ordinal - 1,
@@ -94,8 +106,12 @@ export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { bu
       conversationOnly: !checkpoint,
     });
   }
-  if (Number.isSafeInteger(backendUserTurns) && backendUserTurns >= 0 && ordinal !== backendUserTurns) {
-    const inFlightTolerance = busy && ordinal === backendUserTurns + 1;
+  if (
+    Number.isSafeInteger(backendUserTurns) &&
+    backendUserTurns >= 0 &&
+    ordinal !== backendUserTurns + steeredBeyondBackend
+  ) {
+    const inFlightTolerance = busy && ordinal === backendUserTurns + steeredBeyondBackend + 1;
     if (!inFlightTolerance) return new Map();
   }
   return entries;
@@ -123,6 +139,14 @@ export function checkpointRefreshKey({ turnCount, busy }) {
  * 不清 system_prompt，回退后模型上下文可能仍带着描述被截轮次的压缩摘要——
  * 在基础提示后如实追加，不替换。
  */
+// r24 minor 24：undo 结果正文（回滚点/仅对话两态）原本在 RewindChip 与
+// RewindDialogs 各有一份逐字重复——提升到共享层单份维护。
+export function rewindUndoBodyText(copy, state) {
+  return state?.checkpointId
+    ? copy.rewindUndoBody(state.rewoundTurns)
+    : copy.rewindUndoBodyConversationOnly(state.rewoundTurns);
+}
+
 export function rewindNoticeText(copy, result, keepTurns, conversationOnlyRequested = false) {
   const base = result?.restoredCheckpoint
     ? copy.rewindNoticeRestored(keepTurns)

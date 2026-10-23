@@ -227,6 +227,36 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(rewindEntriesByTurnId(turns, checkpoints, 1, { busy: true }).size, 0, 'busy 但差 2（压缩）→ 仍拒绝');
 }
 
+// committed-steer 容忍（评审 r24 M4）：steer 提交后是真实用户气泡（durable
+// 重载经 markSteered 重建，时间线序号计入），但后端不打 Turn 快照、ledger
+// 计数要等下一次快照才包含——快照之后提交的 steer（ordinal > backend 的
+// steeredMidTurn 气泡）造成恰差 steers 属期望状态，busy→false 瞬间不得
+// 全部入口消失；快照之前的 steer 已计入 ledger，仍精确比对（r19-M1 类
+// 漂移不掩盖）。
+{
+  const steerTurn = id => ({ id, userItem: { type: 'user', steeredMidTurn: true } });
+  // steer 在最后一个快照之后：ledger=2、时间线序号 3（恰差 1 个 steer）。
+  const after = [userTurn('t1'), userTurn('t2'), steerTurn('s1')];
+  const checkpoints2 = [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+  ];
+  assert.equal(rewindEntriesByTurnId(after, checkpoints2, 2).size, 3, '快照后 committed steer 恰差 → idle 照常渲染（r24 M4 修复前为 0）');
+  // 快照前的 steer 已计入 ledger（c3 的 turn=3 含 s1）→ 精确比对。
+  const before = [userTurn('t1'), steerTurn('s1'), userTurn('t2')];
+  const checkpoints3 = [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ];
+  assert.equal(rewindEntriesByTurnId(before, checkpoints3, 3).size, 3, '快照前 steer 已计入 ledger → 精确比对照常渲染');
+  // 混合：快照前后各一个 steer → 只容忍快照后那个。
+  const mixed = [userTurn('t1'), steerTurn('s1'), userTurn('t2'), steerTurn('s2')];
+  assert.equal(rewindEntriesByTurnId(mixed, checkpoints3, 3).size, 4, '恰差快照后的 steer → 照常渲染');
+  // 非 steer 的真计数缺口（如压缩收缩）不因 steer 容忍被掩盖。
+  assert.equal(rewindEntriesByTurnId([userTurn('t1'), userTurn('t2'), userTurn('t3')], checkpoints2, 2).size, 0, '非 steer 缺口仍拒绝');
+}
+
 // checkpoint 列表为空（系统无 git/快照全部失败）→ 整个会话无入口（设计 §5）。
 {
   const turns = [userTurn('t1'), userTurn('t2')];

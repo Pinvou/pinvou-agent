@@ -43,15 +43,16 @@ fn resolve_native_session_roots(
     Ok((roots.ledger, roots.execution))
 }
 
-/// r23 M1：replay 臂的破坏性栅栏输入。压缩不持 turn 预约、ACP 同根忙碌在
-/// EnginePool 视野外——二者都会让破坏性重放（force-checkout + `clean -fd` +
-/// truncate）踩到在飞写入，与 rewind_to_turn 的栅栏同类（r22 R2 / r21 M4）。
-/// 命令层用真实 pool/ACP 探针预计算；测试传 default（全空 = 不设防，仅供
-/// 无并发 fixture 使用）。
-#[derive(Debug, Default, Clone, Copy)]
-pub(super) struct ReconcileGates {
+/// r23 M1：replay 臂的破坏性栅栏输入。压缩不持 turn 预约——会让破坏性重放
+/// （force-checkout + `clean -fd` + truncate）踩到在飞写入，与 rewind_to_turn
+/// 的栅栏同类（r22 R2 / r21 M4）。
+/// r24 minor 5：`pools` 让对端探针与执行根互斥惰性化——仅当 pending 存在且
+/// 走到重放臂时才消费（`None` = 单元夹具无池：对端探针跳过、根互斥跳过，
+/// 生产接线由 production-body pin 锚定，见 `destructive_checkpoint_gates_*`）。
+#[derive(Default, Clone, Copy)]
+pub(super) struct ReconcileGates<'a> {
     pub compaction_in_flight: bool,
-    pub peer_busy: bool,
+    pub pools: Option<(&'a EnginePool, &'a AcpPool)>,
 }
 
 /// r23 M1：同根对端忙碌探针——`reject_if_peer_busy` 的枚举内核、只回结论
@@ -133,7 +134,7 @@ async fn reconcile_pending_rewind(
     session_id: &str,
     ledger: &std::path::Path,
     execution: &std::path::Path,
-    gates: ReconcileGates,
+    gates: ReconcileGates<'_>,
 ) -> bool {
     let pending = match checkpoints::live_pending_rewind(ledger) {
         Ok(Some(pending)) => pending,
@@ -145,20 +146,24 @@ async fn reconcile_pending_rewind(
             return false;
         }
     };
-    // 当前 revision 与会话加载同源（store.load）。
-    let current_revision = match store.load(session_id) {
-        Ok(session) => match crate::features::sessions::transcript_revision(&session.messages) {
-            Ok(revision) => revision,
-            // r22 minor 2：revision 计算失败不得吞成默认值——空串恒不等于
-            // 暂记 revision，会把「截断未提交（apply 可能没跑过）」误判成
-            // 「截断已提交」并清掉暂记。与上方 load 失败同款：阻断本轮快照。
-            Err(error) => {
-                log::error!(
-                    "[pinvou3][checkpoints] transcript revision failed during rewind reconciliation, blocking this turn's snapshot sid={session_id}: {error:#}"
-                );
-                return false;
-            }
-        },
+    // 当前 revision 与会话加载同源（store.load）；turn 计数同源复用（r24 M1）。
+    let (current_revision, current_turn_count) = match store.load(session_id) {
+        Ok(session) => {
+            let revision = match crate::features::sessions::transcript_revision(&session.messages) {
+                Ok(revision) => revision,
+                // r22 minor 2：revision 计算失败不得吞成默认值——空串恒不
+                // 等于暂记 revision，会把「截断未提交（apply 可能没跑过）」
+                // 误判成「截断已提交」并清掉暂记。与下方 load 失败同款：
+                // 阻断本轮快照。
+                Err(error) => {
+                    log::error!(
+                        "[pinvou3][checkpoints] transcript revision failed during rewind reconciliation, blocking this turn's snapshot sid={session_id}: {error:#}"
+                    );
+                    return false;
+                }
+            };
+            (revision, checkpoints::count_user_turns(&session.messages))
+        }
         Err(error) => {
             log::error!(
                 "[pinvou3][checkpoints] session load failed during rewind reconciliation, blocking this turn's snapshot sid={session_id}: {error:#}"
@@ -184,17 +189,55 @@ async fn reconcile_pending_rewind(
         checkpoints::clear_pending_rewind(ledger);
         return true;
     }
+    // r24 M1：keep_turns ≥ 当前总轮数 ⇒ 该回退已无截断对象（确定性失败，
+    // sessions/rewind.rs 的轮数门必然再拒）——按空满足处理：清暂记、放行
+    // 本轮快照，**绝不重放 apply**。否则重放臂先 force-checkout 旧边界树
+    // （清掉更新的写入）再截断失败、暂记永存 = 每条消息无限破坏性重放
+    // （CLI undo 跨进程收缩 transcript、带外编辑皆可达）。瞬态 IO 失败
+    // 仍走下方阻断路径。
+    if current_turn_count <= pending.keep_turns {
+        log::warn!(
+            "[pinvou3][checkpoints] pending rewind is vacuous (keep_turns={} >= current turns {current_turn_count}), clearing pending sid={session_id}",
+            pending.keep_turns
+        );
+        checkpoints::clear_pending_rewind(ledger);
+        return true;
+    }
     // r23 M1：重放臂破坏性且调用点（快照前奏）不持预约、无任何栅栏——
     // live-abort（ACP 复查失败 / apply / join 失败）留下的 pending 若无门
     // 重放，等于让用户看着失败掉的回退在下一条消息发送时静默完成。
-    if gates.compaction_in_flight || gates.peer_busy {
+    // r24 minor 5：对端探针惰性化——仅当 pending 存在且走到重放臂时才枚举。
+    let peer_busy = match gates.pools {
+        Some((pool, acp_pool)) => {
+            same_root_replay_busy(store, pool, acp_pool, session_id, execution)
+                .await
+                .unwrap_or(true)
+        }
+        None => false,
+    };
+    if gates.compaction_in_flight || peer_busy {
         log::warn!(
-            "[pinvou3][checkpoints] pending rewind replay deferred (compaction_in_flight={} peer_busy={}), blocking this turn's snapshot sid={session_id}",
-            gates.compaction_in_flight,
-            gates.peer_busy
+            "[pinvou3][checkpoints] pending rewind replay deferred (compaction_in_flight={} peer_busy={peer_busy}), blocking this turn's snapshot sid={session_id}",
+            gates.compaction_in_flight
         );
         return false;
     }
+    // r24 M3：重放臂与手动回退/反悔同款持有执行根互斥——否则探针通过后、
+    // 重放进行中，同根对端可预约新 turn（reserve_turn 只查重放臂从未置位的
+    // 标志）并被 checkout-index / clean 清掉写入（单向栅栏，r7 同类）。
+    // 拿不到标志 = 另一回退在飞，与手动路径同款顺延。
+    let _root_guard = match gates.pools {
+        Some((pool, _)) => match pool.begin_execution_root_rewind(execution) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                log::warn!(
+                    "[pinvou3][checkpoints] pending rewind replay deferred (execution-root rewind flag held), blocking this turn's snapshot sid={session_id}: {error:#}"
+                );
+                return false;
+            }
+        },
+        None => None,
+    };
     // 半程态：幂等重放 apply（覆盖「写暂记后、apply 前死亡」与「apply 后、
     // 截断前死亡」两种崩溃点），随后完成截断。
     let target = match checkpoints::find_checkpoint(ledger, &pending.checkpoint_id) {
@@ -279,7 +322,7 @@ pub(super) async fn create_turn_checkpoint(
     execution: std::path::PathBuf,
     label: String,
     caller: &str,
-    gates: ReconcileGates,
+    gates: ReconcileGates<'_>,
 ) -> Option<String> {
     // r19 M6：快照前先对账中断的回退（收口混合态；未完成则跳过本轮快照）。
     // r23 M1：栅栏输入由命令层以真实 pool/ACP 探针预计算（ReconcileGates）。
@@ -1364,6 +1407,36 @@ mod tests {
                 "{signature} 必须携带 {verb} 的压缩文案"
             );
         }
+        // r24 M1：对端探针失败必须 fail-closed 按忙碌顺延（翻转为 unwrap_or
+        // (false) 会让探针故障期的重放畅通无阻）。
+        assert!(
+            src.contains(".unwrap_or(true)"),
+            "same_root_replay_busy 的探针失败必须 fail-closed 顺延（r24 M1）"
+        );
+    }
+
+    /// r24 M5 pin（production 源码锚，chat.rs / interaction.rs）：两个发送
+    /// 前奏的 ReconcileGates 块必须真实接线——压缩闩即时读 + pool/ACP 引用
+    /// 传入 create_turn_checkpoint。r24 评审变异实证：整块换 default、硬
+    /// 编码探针结果、翻转 unwrap_or 方向均全绿（"dead on the wire" 类，本
+    /// PR 在 r6/r8/r9 各中过一次）——删除任何一条接线腿必须在此变红。
+    #[test]
+    fn send_preludes_wire_reconcile_gates_to_real_probes() {
+        let chat = include_str!("chat.rs");
+        assert!(
+            chat.contains("let reconcile_gates = super::checkpoints::ReconcileGates {")
+                && chat.contains("compaction_in_flight: pool.is_compaction_in_flight(&sid)")
+                && chat.contains("pools: Some((&pool, &acp_pool))"),
+            "chat() 发送前奏必须把真实压缩闩与 pool/ACP 引用接进 ReconcileGates（r24 M5）"
+        );
+        let interaction = include_str!("interaction.rs");
+        assert!(
+            interaction.contains("let reconcile_gates = super::checkpoints::ReconcileGates {")
+                && interaction
+                    .contains("compaction_in_flight: pool.is_compaction_in_flight(&session_id)")
+                && interaction.contains("pools: Some((&pool, &acp_pool))"),
+            "accept_plan() 发送前奏必须把真实压缩闩与 pool/ACP 引用接进 ReconcileGates（r24 M5）"
+        );
     }
 
     /// wire 形状 pin（评审 r6 M1；r7 M3 扩展到全部 JS 可见响应体）：事故类是
@@ -2695,17 +2768,16 @@ mod tests {
             .expect("pending");
         checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
 
-        for gates in [
-            ReconcileGates {
-                compaction_in_flight: true,
-                peer_busy: false,
-            },
-            ReconcileGates {
-                compaction_in_flight: false,
-                peer_busy: true,
-            },
-        ] {
-            let deferred = format!("deferred-{gates:?}");
+        // r24 minor 5 后：对端探针与根互斥由 `pools` 引用惰性消费（单元夹具
+        // 无池 = 跳过），其对端/互斥顺延腿由 production-body pin 锚定生产接线
+        // （destructive_checkpoint_send_preludes_gate_reconcile）；此处单测钉
+        // 压缩闩腿——压缩在飞时重放必须顺延。
+        let gates = ReconcileGates {
+            compaction_in_flight: true,
+            pools: None,
+        };
+        {
+            let deferred = "deferred-compaction".to_string();
             let snapshot = create_turn_checkpoint(
                 &store,
                 &id,
@@ -2716,20 +2788,17 @@ mod tests {
                 gates,
             )
             .await;
-            assert!(
-                snapshot.is_none(),
-                "栅栏在飞时对账必须顺延（阻断本轮快照）: {gates:?}"
-            );
+            assert!(snapshot.is_none(), "压缩在飞时对账必须顺延（阻断本轮快照）");
             assert!(
                 checkpoints::live_pending_rewind(&ledger)
                     .expect("pending read")
                     .is_some(),
-                "顺延不得清掉暂记: {gates:?}"
+                "顺延不得清掉暂记"
             );
             assert_eq!(
                 checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
                 2,
-                "顺延不得执行破坏性截断: {gates:?}"
+                "顺延不得执行破坏性截断"
             );
         }
         // 栅栏解除：下一次发送照常完成协议（重放 + 截断 + 本轮快照）。
@@ -2748,6 +2817,81 @@ mod tests {
             checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
             1,
             "重放必须完成截断（保留第一轮）"
+        );
+        assert!(!snapshot.is_empty(), "本轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// r24 M1：keep_turns ≥ 当前总轮数（CLI undo 跨进程收缩、带外编辑后）的
+    /// 暂记是确定性不可满足——对账必须按空满足清掉暂记并放行本轮快照，
+    /// **绝不重放 apply**（重放会先 force-checkout 旧边界树、再截断失败、
+    /// 暂记永存 = 每条消息无限破坏性重放）。
+    #[tokio::test]
+    async fn reconcile_clears_vacuous_pending_without_replay() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("reconcile-vacuous");
+        std::fs::write(execution.join("code.txt"), "v1\n").expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        std::fs::write(execution.join("code.txt"), "v2\n").expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+
+        // rewind₂ 语义：keep_turns=2 的暂记；随后 CLI undo 把 transcript 收缩
+        // 到 1 轮（无 shrink hook 的跨进程路径）→ 总轮数 < keep_turns。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        checkpoints::write_pending_rewind(&ledger, &first, 2, "pre-restore-x", &revision)
+            .expect("pending");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("cross-process undo shrinks the transcript");
+
+        // 下一次发送：空满足 → 清暂记、放行快照、**代码不被 force-checkout**。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("空满足后本轮快照必须照常登记");
+        assert!(
+            !ledger.join("pending_rewind.json").exists(),
+            "空满足必须清掉暂记"
+        );
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            1,
+            "空满足不得改写 transcript"
         );
         assert!(!snapshot.is_empty(), "本轮快照登记");
         let _ = std::fs::remove_dir_all(&ledger);

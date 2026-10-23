@@ -40,7 +40,7 @@
 //! and cannot be observed from the CLI, so neither a GUI turn running on
 //! the same session nor an idle GUI engine holding the pre-rewind
 //! transcript is detectable — an idle engine's next persist resurrects the
-//! rewound-away turns (r22 minor 5); see the `checkpoints rewind` doc
+//! rewound-away turns (r24 minor 5); see the `checkpoints rewind` doc
 //! comment.
 //! - run/permissions/respond → stable honest errors: driving the ACP adapter
 //!   (async protocol client, adapter process, pending-permission store) is
@@ -4154,7 +4154,7 @@ static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 /// invisible to the CLI; this lock closes the CLI×CLI race, while a
 /// concurrent GUI turn — or an idle GUI engine still holding the
 /// pre-rewind transcript in memory, whose next persist resurrects the
-/// rewound-away turns — remains undetectable here (r22 minor 5;
+/// rewound-away turns — remains undetectable here (r24 minor 5;
 /// documented in the command docs and `docs/pinvou-cli.md`).
 /// Callers must keep the returned lock alive alongside its write guard.
 /// The two `{action}_lock: cannot create/open ...` closures both code
@@ -4217,7 +4217,7 @@ fn session_mutation_lock(
 /// a hash of the canonical execution root) closes the preventable CLI×CLI
 /// half. The GUI-vs-CLI residual (a GUI turn or rewind in the desktop process
 /// takes no CLI lock; an idle GUI engine's in-memory transcript persists over
-/// a CLI rewind, r22 minor 5) remains undetectable and stays documented.
+/// a CLI rewind, r24 minor 5) remains undetectable and stays documented.
 fn execution_root_lock(
     root: &Path,
     action: &str,
@@ -5638,6 +5638,12 @@ fn with_workspace_session(
 /// Native-code-session gate mirroring `resolve_code_session_roots` (the GUI's
 /// `SessionStore::is_code_session` is pub(crate); the persisted
 /// `session-agents.json` record carries the same mode flag).
+///
+/// r24 M7 deny-drift disclosure: work-mode (plain chat) sessions the GUI can
+/// now rewind are OUT of scope here — every `code checkpoints` command still
+/// gates on this native-code check and refuses them (deny-only). A work-mode
+/// session therefore has no CLI rewind entry at all; `docs/pinvou-cli.md`
+/// states the same.
 fn require_native_code_session(
     store: &SessionStore,
     agents: &SessionAgentStore,
@@ -5827,7 +5833,7 @@ fn resolve_rewind_plan(
 /// only exist inside the running app; the cross-process advisory lock
 /// serializes CLI×CLI mutations, but neither a GUI turn running on the
 /// same session nor an idle GUI engine holding the pre-rewind transcript
-/// (whose next persist resurrects the rewound-away turns, r22 minor 5)
+/// (whose next persist resurrects the rewound-away turns, r24 minor 5)
 /// can be detected here — do not rewind a session whose GUI Code session
 /// may be mid-turn or merely open.
 fn checkpoints_rewind(
@@ -6139,6 +6145,12 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
         let condition_broken = matches!(resolve_undo_state(&store, &ledger, session), Ok(None));
         undo_restore_failure(condition_broken, session, checkpoint_id.as_deref(), &detail)
     })?;
+    // r24 M2：undo 成功 = 会话状态已变，任何在途回退暂记一律作废（镜像 GUI
+    // undo_last_rewind 的显式收口，app/commands/checkpoints.rs）。否则 replay
+    // 臂看到 sidecar 绑定记录已被本次 undo 消费（committed == false）而在
+    // 下一条 GUI 发送时重放**失败回退**的旧树，把 transcript 截到 undo 刚
+    // 恢复的状态之下——用户的 undo 被静默取代。
+    checkpoints::clear_pending_rewind(&ledger);
     let value = serde_json::json!({
         "session": session,
         "restoredMessages": restored_messages,
