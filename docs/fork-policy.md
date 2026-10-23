@@ -1,16 +1,16 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-10-22（T2 候选期：父仓 gitlink 登记为 `af50096ff`，基于公开维护分支头 `083cebfd9`；不可变 tag `pinvou-v0.9.12-r3` 仍钉在收口 `61cb769be`。候选尚未合入维护分支，公开子模块门禁仍阻塞，禁止合并或发布；最终重新钉定见第 0 节）
+> 最后更新：2026-10-23。父仓登记公开维护头 `e9a7f48da1`，包含 CodeWhale#115/#116；不可变标签保持原位。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
-## 0. 当前基线
+## 0. 当前维护基线与验证边界
 
-- 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 已发布的维护基线：`Pinvou/CodeWhale:pinvou3-clean`，head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`（领先不可变 tag `pinvou-v0.9.12-r3`，tag 仍钉在其收口 `61cb769be`），共 76 个登记提交，其中 75 个带 DCO sign-off（唯一未签：#107 squash `f27672935` 的合并提交信息未保留 sign-off 尾部，属上游合并信息缺口，已留言知会上游维护者——见 CodeWhale#107；后续登记批按实数签数登记）；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交），其后 61 个提交为 2026-09-10/11 backlog 批次、2026-09-17 批次、2026-09-18 批次、2026-09-20 批次、2026-09-21 批次（#64/#67）、2026-09-22/23 批次（#63/#65/#68/#69/#70/#71/#72/#73/#76，另含 Windows 编译修复 #77）、2026-10-02 批次（#80）、2026-10-08/09 批次（#79/#88/#89/#75/#78/#94/#95）、2026-10-12/13 批次（#90/#91/#93/#97/#98）、2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）、2026-10-14 批次（#54/#107）、2026-10-15 批次（#108）、2026-10-17 批次（#105/#106/#111）与 2026-10-20 批次（#112/#113）经 PR squash 合入。
-- 当前父仓候选：`af50096ff843617f3f68f47bc6fc45bbffe3c937`，在公开维护分支头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f` 之上增加 CodeWhale#115 的两个待合入提交；相对 v0.9.12 共 78 个提交、77 个带 DCO sign-off，相对 r1 共 63 个提交（61 个已 squash 合入、2 个候选）。候选可供审核，不属于已发布维护基线。
-- 候选期登记不豁免公开子模块门禁：`verify-public-submodule.sh` 仍要求 gitlink 等于公开维护分支头，因此当前预期失败并阻止父仓合并。CodeWhale#115 经审核合入后，将 CodeWhale gitlink、`scripts/fork-guard.sh` 的 `EXPECTED_HEAD` / `EXPECTED_COMMITS` / `MAINTENANCE_BASE`、两份 policy 和两份 modification register 的当前头/历史统计同步到实际维护提交并重计数，再通过原门禁；`EXPECTED_UPSTREAM` 仍是 v0.9.12，不随重新钉定改变。此前 #747 跟踪的 RUSTSEC-2026-0381/0382/0383 告警已由 main 的 #699（`66eb25588`）解决；候选已基于该提交，`91e262ba2` 的 rust-lint 与 knowledge-rust 均通过。仍须在最终集成树上通过安全门禁，不再要求额外合入 #747。禁止放宽门禁或移动不可变 tag。
-- 候选期的快速拓扑检查同时验证 `EXPECTED_HEAD`、上游/r1 祖先、实际提交数及 `MAINTENANCE_BASE` 祖先关系；共同的 r1 祖先不能替代包含所登记的公开维护基线。快速检查通过只表示候选登记一致，公开维护头门禁仍可为红。Git 历史回归对 fixture 和门禁子进程均清除继承的 `GIT_*` 选择器，并在指向独立临时仓库的污染环境下验证外部 refs、对象、工作区及索引未改变。
+- 当前公开维护头与父仓 gitlink：`e9a7f48da169bf89399a11592e4d22a7b721cb39`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 78 个提交，r1 `1fafee7e2` 之上 63 个；76 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
+- 实测 drift：504 files, +85973/-37666，净增 48307；230 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
 - 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
@@ -29,6 +29,7 @@
   10. Tachyon 思考强度方言（T10，已合入维护分支）
 
 精确 commit、文件、理由和验证见 `docs/fork-modifications.md`。新增需求优先归入既有主题；只有形成新的稳定状态、验证和回退边界时才增加主题。
+
 
 ## 1. 核心原则
 
