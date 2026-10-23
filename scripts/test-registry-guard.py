@@ -92,6 +92,13 @@ REQUIRED_PINS = [
     # operation token — a stale failure after a teardown + reconnect must
     # leave the replacement grant alone.
     "stale_revoke_leaves_a_replacement_grant_alone",
+    # Round-7 review P2: an overlapping completion commits the relied-upon
+    # standing grant (its gate captures the standing token), so the older
+    # in-flight operation's compensating revoke stops matching; the commit
+    # declines over a replaced owner so a newer operation's own failure
+    # compensation still strips in full.
+    "committed_relied_grant_survives_the_in_flight_revoke",
+    "stale_commit_leaves_a_replacement_owner_alone",
 ]
 
 

@@ -2142,9 +2142,28 @@ fn deny_first_register_connector_inner(
     // re-arms a later show. The no-ledger verdict cohorts (legacy-migrated
     // rows, toggle-off after a failed connect persist) are the
     // refresh variant's verdict guard's job.
-    let ledger = load_disabled_bundles_file().install_default_synced;
-    if ledger_has_any_mode(&ledger, &package_id) {
-        return Ok(ConnectGrantOutcome::default());
+    let ledger_file = load_disabled_bundles_file();
+    if ledger_has_any_mode(&ledger_file.install_default_synced, &package_id) {
+        // Reliance capture (round-7 review P2): this operation is about to
+        // run on top of the standing consent instead of granting its own, so
+        // it records WHICH grant it relies on. A successful completion then
+        // commits that grant (`commit_relied_connect_grant`), making the
+        // depended-on operation's pending compensating revoke stop matching —
+        // without the commit, A grants and materializes while B connects over
+        // A's standing ledger, B succeeds, and A's late materialization
+        // failure strips the grant + ledger B's success relied on (token
+        // still A's — B never wrote one). The capture rides the same (possibly
+        // degraded) snapshot the ledger probe read; the commit re-validates
+        // the token under the write lock, so a stale capture degrades to the
+        // pre-fix behavior rather than over-committing.
+        return Ok(ConnectGrantOutcome {
+            relied_grant_token: ledger_file
+                .connect_grant_tokens
+                .get(&package_id)
+                .cloned()
+                .unwrap_or_default(),
+            ..ConnectGrantOutcome::default()
+        });
     }
     // The grant itself skips known bundles (their consent is recorded), so a
     // re-show never overrides a user verdict. The connect tail carries the
@@ -2426,6 +2445,16 @@ pub struct ConnectGrantOutcome {
     /// becomes a no-op instead of deleting the newer grant (round-6
     /// review P2).
     pub grant_token: String,
+    /// The standing grant's token THIS operation relied on when its gate
+    /// found the consent already recorded (the ledger short-circuit —
+    /// round-7 review P2). Empty when the gate granted fresh (the operation
+    /// owns its own [`ConnectGrantOutcome::grant_token`]) or found no
+    /// standing consent. A completion that succeeds on top of relied-upon
+    /// consent commits it via `commit_relied_connect_grant`: the relied
+    /// token's pending compensating revoke stops matching, so an older
+    /// in-flight operation's failure can no longer strip the consent this
+    /// successful operation just proved usable.
+    pub relied_grant_token: String,
     /// DenyAll scope keys where THIS call recorded the grant while the
     /// scope was still UNINITIALIZED (the fresh-home arm: the grant + its
     /// ledger pair are all that covers the connector there, so nothing was
@@ -2477,6 +2506,15 @@ fn grant_connect_enable_inner(
         // gesture is a no-op). The refresh variant never reaches the
         // row-lifting arm anyway, so this is fail-safe for both.
         if ledger_has_any_mode(&file.install_default_synced, package_id) {
+            // Reliance capture (round-7 review P2), the in-lock leg: the
+            // gate's unlocked pre-read missed this consent write, and THIS
+            // operation is the one that must commit it on success. The read
+            // is under the write lock, so the captured token is exact here.
+            outcome.relied_grant_token = file
+                .connect_grant_tokens
+                .get(package_id)
+                .cloned()
+                .unwrap_or_default();
             return Ok(outcome);
         }
         // BOOT REFRESH NEVER OVERRIDES A VERDICT: a stored row in any scope
@@ -2708,8 +2746,10 @@ pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), S
         // by id alone would delete the newer consent and restore this call's
         // lifted rows over a successful later connection. The token this
         // grant wrote proves the standing entry is still its own; a mismatch
-        // means a newer operation owns the state and the stale revoke keeps
-        // its hands off entirely.
+        // means a newer operation owns the state and the stale revoke leaves
+        // the standing consent untouched — the `recovery_hold` re-arm below
+        // is the one deliberate exception (it only arms a wait for the next
+        // real gesture and touches no verdict, grant, or row).
         if file.connect_granted.contains(&package_id)
             && file
                 .connect_grant_tokens
@@ -2784,6 +2824,56 @@ pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), S
             try_save_disabled_bundles_file(&file)?;
         }
         Ok(())
+    })
+}
+
+/// COMMIT of a relied-upon connect grant (round-7 review P2): a completion
+/// whose gate found the consent already recorded (the ledger short-circuit —
+/// it captured the standing token on
+/// [`ConnectGrantOutcome::relied_grant_token`]) and that then materialized
+/// and persisted SUCCESSFULLY acknowledges the grant it depended on as
+/// committed. Clearing the standing token ends the window in which the older
+/// in-flight operation's compensating revoke still matches: A grants and
+/// starts materializing, B connects over A's standing ledger (no fresh grant
+/// — the ledger gate and the tail's known-bundle skip both decline), B
+/// succeeds, and without this commit A's late failure strips the grant +
+/// ledger B's success relied on, disabling a connector a completed connect
+/// just proved usable. The commit fires only while the standing entry still
+/// carries the RELIED-UPON token (re-validated under the write lock): a
+/// teardown + regrant between the capture and the completion means a NEWER
+/// live operation owns the state, and committing over its token would make
+/// ITS OWN failure compensation a no-op (fail-open). The token is the only
+/// mutation — grant, ledger, and rows are untouched, so the verdict rules are
+/// not engaged. With no token standing (the steady state after a commit, a
+/// consumed grant, or a legacy store) this is a no-op, so the steady-state
+/// reconnect/refresh tail adds no store write. Crate-internal: like the bare
+/// grant/revoke writers, every production caller sits behind a command
+/// body's own success path (the connect/refresh tails in
+/// `features/connectors/skill_gate.rs`).
+pub(crate) fn commit_relied_connect_grant(
+    package_id: &str,
+    relied_token: &str,
+) -> Result<bool, String> {
+    if relied_token.is_empty() {
+        return Ok(false);
+    }
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        let mut file = load_disabled_bundles_file_locked();
+        // Both halves of the round-6 ownership pair must still stand: the
+        // grant (a consumed grant's dangling token must not be resurrected as
+        // a commit target) and the exact relied-upon token (a newer
+        // operation's token means the state changed owner mid-flight).
+        if !file.connect_granted.iter().any(|id| id == package_id)
+            || file
+                .connect_grant_tokens
+                .get(package_id)
+                .is_none_or(|token| token != relied_token)
+        {
+            return Ok(false);
+        }
+        file.connect_grant_tokens.remove(package_id);
+        try_save_disabled_bundles_file(&file)?;
+        Ok(true)
     })
 }
 

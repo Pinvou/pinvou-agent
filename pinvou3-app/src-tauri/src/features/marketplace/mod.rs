@@ -706,7 +706,8 @@ pub use crate::features::marketplace::scope::{
 // command with no connect gesture behind it must never lift a stored
 // no-ledger verdict (round-3 review).
 pub(crate) use crate::features::marketplace::scope::{
-    grant_connect_enable, grant_connect_enable_refresh, revoke_connect_enable,
+    commit_relied_connect_grant, grant_connect_enable, grant_connect_enable_refresh,
+    revoke_connect_enable,
 };
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
