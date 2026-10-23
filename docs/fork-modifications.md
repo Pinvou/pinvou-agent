@@ -56,7 +56,7 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `e9a7f48da1`，包含 #115/#116；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
@@ -65,10 +65,10 @@
 
 ## 0. 当前状态（2026-10-23）
 
-- 当前公开维护头与父仓 gitlink：`e9a7f48da169bf89399a11592e4d22a7b721cb39`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 78 个提交，r1 `1fafee7e2` 之上 63 个；76 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：504 files, +85973/-37666，净增 48307；230 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 本次维护集成
 

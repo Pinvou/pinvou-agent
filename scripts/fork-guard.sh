@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 78 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 79 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,10 +7,10 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Public maintenance after CodeWhale#115 and #116 merged.
-EXPECTED_HEAD="e9a7f48da169bf89399a11592e4d22a7b721cb39"
-EXPECTED_COMMITS=78
+EXPECTED_HEAD="ea9fdc90f1c90335554833195eeeb847c83d82dd"
+EXPECTED_COMMITS=79
 # Published maintenance base of this integration.
-MAINTENANCE_BASE="e9a7f48da169bf89399a11592e4d22a7b721cb39"
+MAINTENANCE_BASE="ea9fdc90f1c90335554833195eeeb847c83d82dd"
 # The immutable r1 closure must remain an ancestor of the registered head.
 # A review candidate may lead public maintenance; this does not waive the
 # separate public-head gate or change the immutable r3 transition baseline.
@@ -70,6 +70,8 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|Web JSONPath schema agrees with parser results|CodeWhale/crates/tui/src/tools/web/contract.rs|fn forkguard_web_fields_description_matches_parser"
+  "T2|Document the Web JSONPath subset|CodeWhale/crates/tui/src/tools/web_tool.rs|Recursive descent (..) and filters are not supported"
   "T2|Preserve failed tool-result flags|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_tool_failure_flag_survives_recording_and_round_trip"
   "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
   "T2|Windows PowerShell policy bypass flags|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn powershell_build_command_includes_no_profile_and_command_flags"
