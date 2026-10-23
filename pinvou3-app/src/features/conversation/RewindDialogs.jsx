@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 import { ModalShell } from '../../components/ModalShell.jsx';
-import { summarizeCheckpointChanges } from './checkpoints.js';
+import { rewindUndoBodyText, summarizeCheckpointChanges } from './checkpoints.js';
 
 const FILE_LIST_LIMIT = 8;
 
@@ -48,12 +48,6 @@ function ChangeFileList({ changes, copy }) {
 
 // null = 被撤销的那次回退是仅对话降级（文件未动过），撤销也只还原对话，
 // 文案必须如实、不得承诺恢复文件。
-function rewindUndoBodyText(copy, state) {
-  return state?.checkpointId
-    ? copy.rewindUndoBody(state.rewoundTurns)
-    : copy.rewindUndoBodyConversationOnly(state.rewoundTurns);
-}
-
 
 
 // Shared shell for the two rewind dialogs (confirm / undo-confirm), built on

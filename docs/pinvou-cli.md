@@ -159,8 +159,11 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   minutes-long hold; retry after the run finishes. A GUI turn or GUI
   rewind takes none of these locks (the app's guards are process-local) — and an
   idle GUI engine still holding the pre-rewind transcript is equally invisible:
-  its next persist resurrects the rewound-away turns (r23 minor 5). Do not
-  rewind a session whose GUI Code session may be mid-turn or merely open. Similarly, `agent run
+  its next persist resurrects the rewound-away turns (r24 minor 5). Do not
+  rewind a session whose GUI Code session may be mid-turn or merely open.
+  Deny-drift (r24 M7): work-mode (plain chat) sessions the GUI can now rewind
+  are refused by `code checkpoints` (it still gates on native code sessions) —
+  deny-only; a work-mode session has no CLI rewind entry at all. Similarly, `agent run
   --session` does not lock the session against concurrent GUI use. Remaining
   shared stores (plugins `installed.json` and the memory JSONL files —
   round-41 review: `settings.json` and the rewind-backup map
