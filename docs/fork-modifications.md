@@ -29,14 +29,10 @@
 - All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
 - Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
 
-### Web JSONPath 上游回移（待维护分支集成，#756）
+## Web JSONPath upstream backport (integrated; historical candidate evidence, #756)
 
-- 来源：[上游 #7046](https://github.com/codewhale-hq/Codewhale/pull/7046) 已于 2026-10-22 合入为 `b9619942905ac4b62752a579ca8937467d0486fc`。集成候选在公开维护头 `083cebfd9` 上用 `git cherry-pick -x` 承载该提交为 `4164aa6fd`，原始补丁、提交说明和贡献者署名保留；不是新增 fork 主题。代码仍归既有 T2 工具契约。
-- 当前公开 gitlink：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（79 个提交、77 个带 DCO），完整树仍为 `033a04bed866f6ff00b0cd02951eda9a12bb7f7e`。远端采用 #117 squash；此前真实 cherry-pick -x 候选 4bf5e0894 保留供来源审计，不将其历史形状冒称为实际维护历史。
-- Web schema 保留上游原文，说明现有选择器及递归下降/filters 限制。`forkguard_web_fields_description_matches_parser` 将真实 schema 绑定到 `query_jsonpath` 的具体匹配结果和拒绝行为。指纹同时保留上游描述及结果测试。解析器、网络策略和工具执行不变；新激活会看到固定 catalog 前缀的描述变化，不注入易变运行时信息。
-- 本地探针编译未改写的 schema 方法、解析器和新增测试：1 项通过；恢复旧 schema、破坏匹配结果或误接受不支持语法均失败。探针使用缓存 serde_json 1.0.151 及最小 trait/类型外壳，不是完整锁定 TUI；完整本地测试因缺少 adler2 缓存未完成，CI 按对应源码/树另记。
-- #117 已合入，因此公共维护对齐条件可在此父仓重新钉定后验证。保持原 verifier 和不可变 tag；以当前父仓 CI 与最终集成树复审判断合并资格，不声称发布通过。
-- 非阻塞边界：双引号 key、非负索引、ASCII 点字段和对象通配的完整说明，以及带 `]` 的 quoted key 扫描限制、handle_read/fetch_url 文案统一未随该上游原文扩展；不是本次新增的解析器修复。不新增客户数据、凭证或运行日志。
+- [上游 #7046](https://github.com/codewhale-hq/Codewhale/pull/7046) 于 2026-10-22 以 `b9619942905ac4b62752a579ca8937467d0486fc` 合入。`4164aa6fd` 在公开维护提交 `083cebfd9` 上通过 `git cherry-pick -x` 保留原补丁、消息及贡献者署名；包含该 pick 的候选分支 tip `4bf5e0894` 保留在 `integration/jsonpath-upstream-7046`，用于历史溯源。实际维护分支通过 CodeWhale#117 的 squash `ea9fdc90f` 集成，父仓已由 #750 消费此基线。此项属于既有 T2，不新增 fork 主题。
+- 边界：本次回移只对齐上游 Web schema 文案和真实 parser 契约，不改变 parser、网络策略或执行。更完整的双引号键/非负索引/ASCII 点字段/对象通配符说明及既有带引号键内 `]` 扫描限制留作后续；当前状态、计数和测试由既有基线登记负责。
 
 ## T3 增补：技能索引幻影工具修复（#56 已合入为 `72e98fd89`）
 
