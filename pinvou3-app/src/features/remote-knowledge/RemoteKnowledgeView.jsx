@@ -38,7 +38,7 @@ function classifyUploadedDocument(document, duplicate) {
     : base === 'index_failed' ? 'duplicate_failed'
       : 'duplicate_pending';
 }
-const danger = `${button} px-3 text-[#d63a3a] dark:text-[#ff8a80] hover:bg-[#d63a3a]/10`;
+const danger = `${button} px-3 text-[#d63a3a] hover:bg-[#d63a3a]/10 hover:text-[#b72f2f] dark:text-[#ff8a80] dark:hover:text-[#ff8a80]`;
 const iconButton = 'grid h-8 w-8 shrink-0 place-items-center rounded-full text-[#444746] transition-colors hover:bg-[#E1E5EA] dark:text-[#C4C7C5] dark:hover:bg-[#333537] disabled:cursor-not-allowed disabled:opacity-45';
 const field = 'h-10 w-full rounded-xl border border-[#dfe3ea] bg-white px-3.5 text-[13px] text-[#1F1F1F] outline-none transition-shadow placeholder:text-[#8b8d94] focus:border-[#0B57D0] focus:ring-2 focus:ring-[#0B57D0]/10 dark:border-white/10 dark:bg-[#171719] dark:text-[#E3E3E3] dark:focus:border-[#A8C7FA]';
 const ownerSection = 'rounded-2xl border border-[#e3e7ee] bg-white p-4 dark:border-white/10 dark:bg-[#1E1F20] sm:p-5';
@@ -1748,10 +1748,10 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                         </div>
                         <div className="min-w-0">
                           <p className={`truncate text-[13px] font-medium ${ink}`} title={document.name}>{document.name}</p>
-                          {document.error && <p className="mt-0.5 truncate text-[11px] text-[#d63a3a] dark:text-[#ff8a80]" title={document.error}>{document.error}</p>}
+                          {document.error && <p className="mt-0.5 truncate text-[11px] group-hover:text-[#b72f2f] dark:group-hover:text-[#ff8a80] text-[#d63a3a] dark:text-[#ff8a80]" title={document.error}>{document.error}</p>}
                         </div>
                       </div>
-                      <span className={`flex w-auto items-center gap-1.5 text-[11.5px] md:w-28 ${document.status === 'ready' ? 'text-[#0F7A40] dark:text-[#7DD3A8]' : document.status === 'failed' ? 'text-[#d63a3a] dark:text-[#ff8a80]' : muted}`}>
+                      <span className={`flex w-auto items-center gap-1.5 text-[11.5px] md:w-28 ${document.status === 'ready' ? 'text-[#0F7A40] dark:text-[#7DD3A8]' : document.status === 'failed' ? 'group-hover:text-[#b72f2f] dark:group-hover:text-[#ff8a80] text-[#d63a3a] dark:text-[#ff8a80]' : muted}`}>
                         <span className={`h-1.5 w-1.5 rounded-full ${document.status === 'ready' ? 'bg-[#18a957]' : document.status === 'failed' ? 'bg-[#d63a3a]' : 'bg-[#d6873e]'}`} />
                         {documentStatusLabel(document.status)}
                       </span>

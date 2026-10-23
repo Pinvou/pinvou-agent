@@ -145,7 +145,7 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
   // The file pairs every error/success text with its dark half (#ff8a80 /
   // #7DD3A8); a bare light-only instance re-opens the unreadable-in-dark
   // class. The lookahead stays inside the className string (no quote may be
-  // crossed) but tolerates dark:bg tokens sitting between the pair. The
+  // crossed) and tolerates dark:bg tokens sitting between the pair. The
   // negatives run on RAW source: a legal string containing /* makes the
   // comment stripper swallow whole regions, and a regression inside it must
   // not go unpinned (same policy as ui_language_coverage round-26 M9).
@@ -156,6 +156,13 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'every deep error-red text in remote knowledge must carry its dark pair');
   assert.equal(count(remoteKnowledgeRaw, /text-\[#16894a\](?![^"'`]*dark:text-\[#7DD3A8\])/g), 0,
     'every success-green text in remote knowledge must carry its dark pair');
+  // Row-hover inks darken on the hovered row; each must carry the dark
+  // restore of the SAME variant chain, or dark mode's hover state degrades
+  // (a plain dark half loses the cascade to the variant rule).
+  assert.equal(count(remoteKnowledgeRaw, /group-hover:text-\[#(?:b72f2f|d63a3a)\](?![^"'`]*dark:group-hover:text-\[#ff8a80\])/g), 0,
+    'every group-hover red darkening must restore its dark group-hover ink');
+  assert.equal(count(remoteKnowledgeRaw, /(?<![-\w])hover:text-\[#(?:b72f2f|d63a3a)\](?![^"'`]*dark:hover:text-\[#ff8a80\])/g), 0,
+    'every hover red darkening must restore its dark hover ink');
   // The local knowledge view pairs its error reds with the same dark half as
   // the remote one; a bare light-only instance re-opens the class there too.
   assert.equal(count(source('features/knowledge/KnowledgeView.jsx'), /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
