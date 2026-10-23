@@ -1,12 +1,13 @@
 import { canonicalize } from '../canonical-json.mjs';
 import { requireCondition } from '../errors.mjs';
-import { sameJson } from '../semantics.mjs';
+import { checkSemantics, sameJson } from '../semantics.mjs';
+import { validateSchema } from '../schema-registry.mjs';
 import { verifyPublicChain } from '../metadata-chain.mjs';
-import { verifyRootSuccessor, verifyEnvelope, assertReleaseRenewal } from '../signatures.mjs';
+import { verifyRootSuccessor, verifyEnvelope, assertReleaseRenewal, envelopeReference } from '../signatures.mjs';
 import { captureRecord, nextRecord } from './atomic.mjs';
 import { commandPlan } from './operation.mjs';
 import { readRecord, objectHash } from './inputs.mjs';
-import { deniedKeyOptions, denyRecord, deniedKeys } from './metadata-inputs.mjs';
+import { currentReleaseEnvelope, deniedKeyOptions, denyRecord, deniedKeys } from './metadata-inputs.mjs';
 import { keyRetentionReads } from './key-retention.mjs';
 import { rootChangeBody, signingKeyDenyBody, keyApprovalReads } from './key-approval.mjs';
 import { parseJson } from '../canonical-json.mjs';
@@ -119,6 +120,58 @@ export function planPublish(records, command, now) {
   const parts = publicationParts(records, command.publication, now);
   return commandPlan(records, command, now, parts.reads, parts.writes, parts.facts, { headKey: command.publication.headKey });
 }
+
+// Resolve private-current Packages from the same protected component catalog
+// used by publication/retirement, never from a caller-supplied package map.
+function currentReleasePackages(records, headKey, head, envelopes, reads, now) {
+  let inventory;
+  const packages = [];
+  for (const envelope of envelopes.filter((item) => item.signed.role === 'release')) {
+    for (const target of envelope.signed.targets) {
+      let item = head.bundle.members.find((member) => member.signed.role === 'package'
+        && objectHash(member) === target.packageManifest.envelopeSha256);
+      if (item === undefined) {
+        if (inventory === undefined) {
+          const owners = Object.entries(records).filter(([, record]) => record.product === head.product
+            && record.component === head.component && Array.isArray(record.scopeKeys)
+            && Array.isArray(record.requiredEntityKeys));
+          requireCondition(owners.length === 1, 'MODEL_CURRENT_PACKAGE_INCOMPLETE');
+          const [inventoryKey] = owners[0]; inventory = readRecord(records, inventoryKey);
+          requireCondition(new Set(inventory.requiredEntityKeys).size === inventory.requiredEntityKeys.length,
+            'MODEL_CURRENT_PACKAGE_INCOMPLETE');
+          // Every catalog record inspected during identity resolution is frozen,
+          // including records that could otherwise become an ambiguous match.
+          reads.push(inventoryKey, ...inventory.requiredEntityKeys);
+          for (const key of inventory.requiredEntityKeys) readRecord(records, key);
+        }
+        const candidates = inventory.requiredEntityKeys.filter((key) => records[key].recordKind === 'releaseTarget'
+          && records[key].releaseTargetId === target.releaseTargetId);
+        requireCondition(candidates.length === 1, 'MODEL_CURRENT_PACKAGE_INCOMPLETE');
+        const source = readRecord(records, candidates[0]);
+        requireCondition(inventory.requiredEntityKeys.includes(source.releaseKey)
+          && source.state === 'approved' && source.revision === target.releaseTargetRevision && source.packageEnvelope !== undefined,
+        'MODEL_CURRENT_PACKAGE_INCOMPLETE');
+        const release = readRecord(records, source.releaseKey);
+        requireCondition(release.recordKind === 'release' && release.metadataHeadKey === headKey
+          && release.state === 'closed' && release.releaseId === envelope.signed.scope.releaseId
+          && objectHash(currentReleaseEnvelope(records, source.releaseKey)) === objectHash(envelope),
+        'MODEL_CURRENT_PACKAGE_INCOMPLETE');
+        item = source.packageEnvelope;
+      }
+      validateSchema('metadata/package', item);
+      checkSemantics(item.signed, { now });
+      requireCondition(sameJson(envelopeReference(canonicalize(item)), target.packageManifest)
+        && item.signed.product === head.product && item.signed.component === head.component
+        && item.signed.scope.targetKey === target.targetKey && item.signed.appVersion === envelope.signed.appVersion
+        && sameJson(item.signed.launcher, target.launcher)
+        && target.activationModes.every((mode) => item.signed.activationModes.includes(mode)),
+      'MODEL_CURRENT_PACKAGE_INCOMPLETE');
+      packages.push(item);
+    }
+  }
+  return packages;
+}
+
 export function planPublishRoot(records, command, now) {
   const root = readRecord(records, command.rootKey); const inventory = readRecord(records, command.activeComponentsKey);
   const actualHeads = Object.entries(records).filter(([, record]) => record.recordKind === 'metadataHead'
@@ -127,7 +180,7 @@ export function planPublishRoot(records, command, now) {
     && new Set(inventory.componentHeadKeys.map((key) => records[key].component)).size === inventory.componentHeadKeys.length,
   'MODEL_ACTIVE_COMPONENTS_INCOMPLETE');
   requireCondition(sameJson(command.baseRoot, captureRecord(records, command.rootKey)), 'MODEL_CAS_CONFLICT');
-  const activeEnvelopes = []; const reads = [command.rootKey, command.activeComponentsKey, command.denyKey];
+  const currentEnvelopes = []; const reads = [command.rootKey, command.activeComponentsKey, command.denyKey];
   const deniedRootKeys = deniedKeys(records, command.denyKey, 'root');
   requireCondition(parseJson(command.successorBytes).signatures.every((signature) => !deniedRootKeys.includes(signature.keyId)),
     'SIGNING_KEY_DENIED');
@@ -143,11 +196,29 @@ export function planPublishRoot(records, command, now) {
   for (const key of inventory.componentHeadKeys) {
     const head = readRecord(records, key); reads.push(key);
     if (!head.published) continue;
-    const envelopes = [head.bundle.timestamp, head.bundle.snapshot, ...head.bundle.members, ...Object.values(head.releaseEnvelopes)];
-    for (const envelope of new Map(envelopes.map((item) => [objectHash(item), item])).values()) activeEnvelopes.push({
-      bytes: canonicalize(envelope), expected: { role: envelope.signed.role, product: root.product,
-        component: head.component, scope: envelope.signed.scope } });
+    const entries = [[head.bundle.timestamp, ['timestamp']], [head.bundle.snapshot, ['snapshot']],
+      ...head.bundle.members.map((envelope) => [envelope, ['target', 'release', 'package']]),
+      ...Object.values(head.releaseEnvelopes).map((envelope) => [envelope, ['release']])];
+    // Protected committed heads already passed complete graph authentication at
+    // publication. Recheck every object's shape/context and original window
+    // before consulting expiry; this does not authenticate an external projection.
+    for (const [envelope, roles] of entries) {
+      const signed = envelope?.signed;
+      requireCondition(signed !== null && typeof signed === 'object'
+        && roles.includes(signed.role) && signed.product === root.product
+        && signed.component === head.component, 'MODEL_CURRENT_METADATA_INVALID');
+      validateSchema(`metadata/${signed.role}`, envelope);
+      checkSemantics(signed, { now: signed.role === 'package' ? now : signed.issuedAt });
+      requireCondition(signed.role === 'package' || signed.issuedAt <= now, 'TIME_WINDOW_CLOSED');
+    }
+    const envelopes = entries.map(([envelope]) => envelope);
+    envelopes.push(...currentReleasePackages(records, key, head, envelopes, reads, now));
+    for (const envelope of new Map(envelopes.map((item) => [objectHash(item), item])).values()) currentEnvelopes.push(envelope);
   }
+  const activeEnvelopes = currentEnvelopes
+    .filter(({ signed }) => signed.role === 'package' || now < signed.expiresAt)
+    .map((envelope) => ({ bytes: canonicalize(envelope), expected: { role: envelope.signed.role,
+      product: root.product, component: envelope.signed.component, scope: envelope.signed.scope } }));
   // revision zero holds an independently provisioned initial Root body, never
   // keys extracted from this command. Genesis accepts that exact body only.
   const successor = root.revision === 0
@@ -166,10 +237,9 @@ export function planPublishRoot(records, command, now) {
     requireCondition(records[command.successorLineageKey].anchorKey === records[root.rootLineageKey].anchorKey
       && records[command.successorLineageKey].anchorBodySha256 === records[root.rootLineageKey].anchorBodySha256, 'MODEL_ROOT_LINEAGE_INVALID');
   }
-  // Existing committed heads already bind complete public references. Rotation
-  // preserves every scoped verification key even when those heads have expired;
-  // expiration must not deadlock Root recovery. This does not renew metadata or
-  // grant eligibility: a later publication verifies its entire fresh chain.
+  // Complete committed heads remain in the CAS read set and history. Only
+  // unexpired metadata, plus every expiry-free Package, must verify under the
+  // successor. This does not renew metadata or grant current eligibility.
   return commandPlan(records, command, now, reads, [{ key: command.rootKey,
     value: nextRecord(root, { published: true, body: successor.signed, envelopeSha256: objectHash(successor),
       rootLineageKey: command.successorLineageKey }) }],

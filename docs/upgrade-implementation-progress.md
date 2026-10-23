@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 00:28 Asia/Shanghai**.
+Checkpoint: **2026-10-24 01:21 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
@@ -12,10 +12,14 @@ measured hours or release readiness.
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The next main task is **T29 download and protected byte handoff**. Its fixed
-control caller and protected staging work share this task's boundary; T07/T08
-remain parked because their missing active publication/first-activation owners
-cannot be replaced by the existing genesis-only sources. Work on one main task
+The current main task is **T08 atomic current metadata publication**. T29's
+reviewed byte-custody and installed-image diagnostic components are pushed;
+its immutable-source signed-wire compatibility decision is pending. T29 is
+parked at that decision boundary. T08's current increment represents mixed
+genesis/published components and supplies complete authenticated current graphs
+to actual Root/issuer readers. Production publication/refresh and active deny/job
+composition remain pending. First activation still requires T14's real business
+owner. Work on one main task
 and at most one direct prerequisite; other incomplete tasks are parked. Parallel roles
 implement, independently review, test and integrate this same task. Reuse reviewed
 foundations and test tools; review changed behavior and its impact after repairs.
@@ -33,6 +37,26 @@ applicable checks. A component, source review, build or single-platform test doe
 not complete its enclosing task. T42 deployment and T03's 50 GiB / 500,000-file
 measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to joined business metadata, not package downloads.
+
+## Current T08 increment
+
+The mixed current storage/read owner and the Root compatibility repair passed
+independent source and repair reviews. Three pure owner tests, two Root
+compatibility tests, three real PostgreSQL current tests and nine affected
+regressions with four subcases passed. The reference-model private Package and
+per-object expiry repair passed 29 tests; the architecture guard also passed.
+The initial read-budget error-mapping defect and incorrect reference-test error
+expectation were repaired, and both failed runs remain recorded.
+
+The service full default run completed with 3909 passed, 1693 skipped and two
+failed test records (one existing Windows process-fixture parent and subtest).
+An isolated repeat failed the other subcase of the same unchanged fixture. Its
+late PID lookup does not retain the original process identity, so source review
+cannot distinguish PID reuse from a termination-completion window. This is not
+reported as an environment skip or a passed full run. The proposed test-only
+repair awaits the owner's scope decision; remaining checks continue. Runtime
+publication/refresh, active deny/pending jobs and T14 first activation remain
+separate unfinished functionality. T08 remains in progress at 60%.
 
 ## Completed T31 delivery
 
@@ -221,7 +245,7 @@ completion blocker; outstanding business implementation is.
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 75% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
-| T08 | 60% | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
+| T08 | 60% | In progress | Reviewed genesis/component management, atomic primitives, mixed current storage with complete authenticated Root/issuer reads, and genesis-only signing-key deny; production publication/refresh and active deny/pending jobs remain pending |
 | T09 | 55% | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
