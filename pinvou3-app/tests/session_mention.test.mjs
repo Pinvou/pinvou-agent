@@ -190,7 +190,7 @@ test('candidate filtering: excludes current/referenced/sched-, case-insensitive 
   assert.equal(limited.length, 2);
 });
 
-test('candidate filtering excludes every isolated prefix (sched-/eval_/aux-, case-insensitive) — aligned with dedupeSessionRefs', () => {
+test('candidate filtering excludes every isolated prefix (sched-/eval_/aux-/agentic_, case-insensitive) — aligned with dedupeSessionRefs', () => {
   // A listed candidate must always be an acceptable pick: isolated sessions
   // rejected by the shared choke point are filtered here too, so picking one
   // can never be a silent no-op that still consumes the typed @query.
@@ -201,6 +201,8 @@ test('candidate filtering excludes every isolated prefix (sched-/eval_/aux-, cas
     { id: 'EVAL_Upper', title: 'upper eval' },
     { id: 'aux-sidechat', title: 'side chat' },
     { id: 'Aux-Upper', title: 'upper aux' },
+    { id: 'agentic_4242_0', title: 'headless run' },
+    { id: 'AGENTIC_Upper', title: 'upper agentic' },
     { id: 'normal', title: '正常会话' },
   ];
   assert.deepEqual(
@@ -217,7 +219,7 @@ test('reference list dedupes (order preserved) and caps at MAX_SESSION_REFS', ()
   assert.equal(new Set(deduped.map(r => r.sessionId)).size, deduped.length);
 });
 
-test('dedupeSessionRefs drops isolated prefixes (sched-/eval_/aux-, case-insensitive)', () => {
+test('dedupeSessionRefs drops isolated prefixes (sched-/eval_/aux-/agentic_, case-insensitive)', () => {
   // The shared choke point folds in the sessions store isolation semantics
   // (ISOLATED_SESSION_PREFIXES in session_reader_server.py) for every add
   // path and for refs parsed out of historical messages.
@@ -228,6 +230,8 @@ test('dedupeSessionRefs drops isolated prefixes (sched-/eval_/aux-, case-insensi
     { sessionId: 'AUX-upper', title: 't' },
     { sessionId: 'EVAL_upper', title: 't' },
     { sessionId: 'Sched-Upper', title: 't' },
+    { sessionId: 'agentic_4242_0', title: 't' },
+    { sessionId: 'AGENTIC_upper', title: 't' },
     { sessionId: 'normal', title: 't' },
   ]);
   assert.deepEqual(deduped.map(r => r.sessionId), ['normal']);

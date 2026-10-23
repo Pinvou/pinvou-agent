@@ -1825,14 +1825,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const auxChatPanelRequestRef = useRef(0);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously close the sub-agent panel on session switch
       useEffect(() => { setSubagentPanel(null); }, [activeSessionId]);
-      // When the mount condition drops (sched- session / no active session /
-      // bridge or auxChat domain unavailable), the panel unmounts outright and
-      // RightDockPanel's onActiveChange has no unmount cleanup, so the
-      // highlight would linger; reset it here and let the re-mounted panel
-      // report its real visibility again. The conjuncts mirror the entry
-      // button and the mount gate exactly (round-26 minor M4).
+      // When the mount condition drops (sched-/agentic_ session / no active
+      // session / bridge or auxChat domain unavailable), the panel unmounts
+      // outright and RightDockPanel's onActiveChange has no unmount cleanup,
+      // so the highlight would linger; reset it here and let the re-mounted
+      // panel report its real visibility again. The conjuncts mirror the
+      // entry button and the mount gate exactly (round-26 minor M4).
       useEffect(() => {
         if (auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')
+          && !activeSessionId.toLowerCase().startsWith('agentic_')
           && bridge.available && bridge.auxChat) return;
         // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronously reset dock highlight when the panel unmounts; one-shot mirror, same pattern as CodexAcpView
         setAuxChatDockActive(false);
@@ -3595,7 +3596,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               )}
             </div>
             <div className="flex items-center gap-2">
-              {activeSessionId && !activeSessionId.startsWith('sched-') && bridge.available && bridge.auxChat && (
+              {activeSessionId && !activeSessionId.startsWith('sched-')
+                && !activeSessionId.toLowerCase().startsWith('agentic_')
+                && bridge.available && bridge.auxChat && (
                 <button
                   type="button"
                   data-testid="aux-chat-open"
@@ -3725,11 +3728,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 {/* Selection quotes: select text in the main conversation
                     timeline → stage it as a quote of this task's aux chat and
                     open the panel. Availability matches the header entry
-                    (sched- sessions have no aux chat). */}
+                    (sched-/agentic_ sessions have no aux chat). */}
                 <AuxQuoteSelection
                   containerRef={conversationContentRef}
                   sessionId={
-                    activeSessionId && !activeSessionId.startsWith('sched-') && bridge.available && bridge.auxChat
+                    activeSessionId && !activeSessionId.startsWith('sched-')
+                      && !activeSessionId.toLowerCase().startsWith('agentic_')
+                      && bridge.available && bridge.auxChat
                       ? activeSessionId
                       : null
                   }
@@ -4398,8 +4403,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             </PanelSuspense>
             </ViewErrorBoundary>
           )}
-          {/* sched- run sessions have no aux chat (the entry button is hidden
-              too): switching to sched- unmounts the panel with the mount
+          {/* sched-/agentic_ sessions have no aux chat (the entry button is
+              hidden too): switching to one unmounts the panel with the mount
               condition, and switching back to a normal session re-mounts it
               and re-runs ensure automatically. The bridge conjuncts match the
               entry button exactly (round-26 minor M4): the auxChat-domain
@@ -4409,6 +4414,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               somehow lingers — the web lane itself implements the domain
               fully these days. */}
           {auxChatPanel && activeSessionId && !activeSessionId.startsWith('sched-')
+            && !activeSessionId.toLowerCase().startsWith('agentic_')
             && bridge.available && bridge.auxChat && (
             <ViewErrorBoundary t={t} variant="panel">
             <PanelSuspense>

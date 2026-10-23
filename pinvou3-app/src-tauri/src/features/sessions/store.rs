@@ -1427,17 +1427,26 @@ pub(crate) fn is_not_found_error(error: &anyhow::Error) -> bool {
     })
 }
 
-/// The two ownership refusals shared by `create_aux_session` and
+/// The ownership refusals shared by `create_aux_session` and
 /// `get_or_create_aux_session`: an auxiliary conversation must not own another
 /// aux (an aux session is itself a Chat kind, so the command layer's
-/// `ensure_chat_session` cannot catch it), and a scheduled session is deleted
-/// through its automation rather than gaining an aux.
+/// `ensure_chat_session` cannot catch it), a scheduled session is deleted
+/// through its automation rather than gaining an aux, and a headless
+/// `agentic_` run is nobody's interactive parent — an aux side-chat pinned to
+/// one used to fail later at spawn time (the scoped reader refusing the
+/// isolated parent) instead of here at creation.
 fn ensure_parent_can_own_aux(parent_id: &str) -> Result<()> {
     if super::validators::is_aux_session_id(parent_id) {
         bail!("Auxiliary session '{parent_id}' cannot own an aux session");
     }
     if super::validators::is_sched_session_id(parent_id) {
         bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+    }
+    if parent_id
+        .to_ascii_lowercase()
+        .starts_with(HEADLESS_SESSION_PREFIX)
+    {
+        bail!("Headless session '{parent_id}' cannot own an aux session");
     }
     Ok(())
 }

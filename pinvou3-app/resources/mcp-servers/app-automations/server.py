@@ -581,10 +581,12 @@ WEEKDAY_TOKENS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 # or a past moment is rejected with an actionable message).
 ONCE_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}\Z")
 
-# Auxiliary and benchmark origins remain isolated. A sched- conversation may
-# be continued interactively; the engine's actual unattended flag gates writes,
-# not this unauthenticated audit claim (which a caller can omit).
-ISOLATED_SENDER_PREFIXES = ("eval_", "aux-")
+# Auxiliary, benchmark, and headless origins remain isolated. A sched-
+# conversation may be continued interactively; the engine's actual unattended
+# flag gates writes, not this unauthenticated audit claim (which a caller can
+# omit). A headless `agentic_` run is never an interactive continuation, so it
+# joins the isolated senders (the target tuple already refuses it).
+ISOLATED_SENDER_PREFIXES = ("eval_", "aux-", "agentic_")
 ISOLATED_TARGET_PREFIXES = ("sched-", "eval_", "aux-", "agentic_")
 
 
@@ -979,8 +981,9 @@ def read_scheduled_task(automations_dir, task_id):
 
 def validate_sender_session_id(session_id):
     """Charset + length validation for the audit-trail sender id, plus the
-    aux/eval isolated-prefix rejection (contract §4.3/§5, case-insensitive).
-    Scheduled conversations can be continued interactively. This is a claimed-string filter (from_session is model-supplied and
+    eval_/aux-/agentic_ isolated-prefix rejection (contract §4.3/§5,
+    case-insensitive; a headless agentic_ run is never an interactive
+    continuation). Scheduled conversations can be continued interactively. This is a claimed-string filter (from_session is model-supplied and
     unauthenticated; direct spool writes bypass it), re-checked by the Rust
     watcher; the deterministic unattended shield is the engine-side
     unattended_disallowed_tools channel. The typed Ask rule is registered too, but as the product pins

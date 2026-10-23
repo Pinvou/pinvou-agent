@@ -5877,6 +5877,37 @@ fn create_aux_session_rejects_scheduled_parent() {
     );
 }
 
+/// Headless `agentic_` runs must not own an aux session either: the scoped
+/// aux reader would point at an isolated class and refuse at spawn time, so
+/// the refusal belongs at the creation path (the engine_pool
+/// aux_parent_session_id loop is the spawn-time backstop for the same set).
+/// The mixed-case form pins the case folding — deleting the gate's conjunct
+/// turns this red.
+#[test]
+fn create_aux_session_rejects_headless_parent() {
+    let (store, _g) = isolated_store();
+    for parent in ["agentic_4242_0", "AGENTIC_x"] {
+        let error = store
+            .create_aux_session(parent)
+            .expect_err("a headless parent must be rejected at the creation path itself");
+        assert!(
+            error.to_string().contains("cannot own an aux session"),
+            "the refusal must state that headless sessions cannot own an aux session: {error:#}"
+        );
+        let error = store
+            .get_or_create_aux_session(parent)
+            .expect_err("get-or-create must reject a headless parent");
+        assert!(
+            error.to_string().contains("cannot own an aux session"),
+            "the refusal must state that headless sessions cannot own an aux session: {error:#}"
+        );
+        assert!(
+            store.aux_session_id(parent).is_none(),
+            "a rejected creation must not leave an aux record behind"
+        );
+    }
+}
+
 /// Executing truth table for the alias-defeating `sched-` predicate
 /// (round-38 MAJOR-1): the case-insensitive prefix is load-bearing for four
 /// gates (send gates, list filter, retention candidacy, delete refusal), so

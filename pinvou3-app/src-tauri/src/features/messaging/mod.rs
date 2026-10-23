@@ -234,7 +234,8 @@ pub fn build_session_message_block(
 /// rules as the MCP server; the Rust side re-checks because the spool
 /// directory is user-writable). Isolated prefixes are rejected as sender or
 /// target: sched- sessions are subsystem-owned (Scheduled Tasks), aux-
-/// sessions are cross-session isolated by design, eval_ is benchmark-private.
+/// sessions are cross-session isolated by design, eval_ is benchmark-private,
+/// and agentic_ headless runs are never interactive participants.
 fn check_participant_id(session_id: Option<&String>, label: &str) -> Result<()> {
     let Some(id) = session_id else {
         return Ok(());
@@ -250,6 +251,13 @@ fn check_participant_id(session_id: Option<&String>, label: &str) -> Result<()> 
     if is_sched_session_id(id)
         || is_aux_session_id(id)
         || id.to_ascii_lowercase().starts_with("eval_")
+        // Headless `agentic_` runs join the isolated set (the four-prefix
+        // shape every sibling carries): a prompt-injected headless run must
+        // not take cross-session messages as sender or target. Case folds
+        // like the eval_ leg (round-15 REQUIRED-1 rationale —
+        // case-insensitive filesystems alias AGENTIC_ onto the real
+        // headless session's roots).
+        || id.to_ascii_lowercase().starts_with("agentic_")
     {
         bail!("{label} session {id} is isolated and cannot take cross-session messages");
     }
@@ -3151,5 +3159,31 @@ mod spool_pipeline_tests {
         .await;
         assert_eq!(*fake.calls.borrow(), 0, "code-owned target never delivers");
         assert!(failed_dir().join("code.json").exists());
+    }
+
+    /// The messaging participant gate carries the same four isolated
+    /// families as session_creation and the scheduled family — the
+    /// `agentic_` leg was missing (a prompt-injected headless run could
+    /// take cross-session messages as sender or target). Each family is
+    /// its own red arm: deleting its conjunct turns this red. The
+    /// mixed-case forms pin the case folding (the eval_ leg's round-15
+    /// REQUIRED-1 rationale).
+    #[test]
+    fn all_four_isolated_families_are_refused_as_participants() {
+        for id in [
+            "sched-run1",
+            "aux-side1",
+            "eval_case1",
+            "agentic_4242_0",
+            "AGENTIC_x",
+        ] {
+            let target = check_participant_id(Some(&id.to_string()), "target");
+            assert!(target.is_err(), "{id} must be refused as a target");
+            let sender = check_participant_id(Some(&id.to_string()), "sender");
+            assert!(sender.is_err(), "{id} must be refused as a sender");
+        }
+        // A plain id passes both directions.
+        assert!(check_participant_id(Some(&"reqsrc01".to_string()), "target").is_ok());
+        assert!(check_participant_id(Some(&"reqsrc01".to_string()), "sender").is_ok());
     }
 }

@@ -310,12 +310,22 @@ class CreateValidationTests(unittest.TestCase):
 
     def test_invalid_sender_ids_are_rejected(self):
         # Round-15 REQUIRED-1: the case variants pin the server's
-        # case-insensitive isolation matching on aux/eval origins.
-        for bad in ("../escape", "with space", "a" * 300, "eval_b1", "aux-x1",
-                    "EVAL_b1", "AUX-x1"):
+        # case-insensitive isolation matching on eval_/aux-/agentic_ origins.
+        # The headless agentic_ run joins the isolated senders (never an
+        # interactive continuation) — both case forms pin the folding. The
+        # isolated families additionally assert the rejection class (the
+        # sender-gate's own typed refusal), not just error presence — the
+        # malformed-shape cases keep the looser assertion.
+        for bad in ("../escape", "with space", "a" * 300):
             payload, error = self.create(from_session=bad)
             self.assertIsNone(payload, bad)
             self.assertIsNotNone(error, bad)
+        for bad in ("eval_b1", "aux-x1", "EVAL_b1", "AUX-x1",
+                    "agentic_7", "AGENTIC_x"):
+            payload, error = self.create(from_session=bad)
+            self.assertIsNone(payload, bad)
+            self.assertIsNotNone(error, bad)
+            self.assertIn("cannot request task creation", error, bad)
 
     def test_interactive_scheduled_origin_supports_keyed_retries(self):
         old_wait = server.RESULT_WAIT_SECONDS
@@ -1424,7 +1434,8 @@ class MessageTargetTests(unittest.TestCase):
         # Round-7 minor 4: assert the REJECTION CLASS, not mere presence —
         # the old form stayed green if the charset branch was deleted (the
         # charset/length inputs then failed as "not found" instead).
-        isolated = ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1")
+        isolated = ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1",
+                    "agentic_7", "AGENTIC_x")
         junk = ("../escape", "with space", "a" * 300)
         for bad in isolated:
             payload, error = self._create(target_session=bad)

@@ -62,7 +62,7 @@
 | 包注册 | `src-tauri/src/features/marketplace/mcp_catalog.rs`（改） | `MCP_PACKAGES` 加一项；默认安装列表加 id |
 | 创建 watcher | `src-tauri/src/features/scheduled/creation_requests.rs`（新增） | spool 排水、重校验、调 `create_task`、结果标记、审计、事件 |
 | 状态克隆化 | `src-tauri/src/features/scheduled/tasks.rs`（改） | `ScheduledTaskState` 派生 Clone（JoinHandle 包 `Arc<Mutex<Option<…>>>`，EnginePool.idle_reaper 同款） |
-| 审批规则 | `src-tauri/src/features/assistant/platform/bridge.rs`（改） | `ToolAskRule::new(create 工具全名)`；为审批模式分化预留（当前产品全模式全自动，规则不弹窗；无人值守递归的确定性防线是引擎侧 `unattended_disallowed_tools`——三个写工具与 create_goal/update_goal 同列；watcher 的 eval_/aux- 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求，from_session 可省略且未认证） |
+| 审批规则 | `src-tauri/src/features/assistant/platform/bridge.rs`（改） | `ToolAskRule::new(create 工具全名)`；为审批模式分化预留（当前产品全模式全自动，规则不弹窗；无人值守递归的确定性防线是引擎侧 `unattended_disallowed_tools`——三个写工具与 create_goal/update_goal 同列；watcher 的 eval_/aux-/agentic_ 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求，from_session 可省略且未认证） |
 | 死工具清理 | `src-tauri/src/lib.rs`（改） | disallow 基座 `automation`/`send_later` |
 | 前端 | `src/features/tools/tool-renderers.jsx`、`src/shared/i18n/{en,ja,zh}.js`（改） | 渲染卡（执行可见性）、三语文案 |
 | 契约文档 | `docs/builtin-toolset-contract.md`（改） | §2 注册新族、§9 改 landed（round-8/9 更正：早前版本声称的"§6 回写短等待同步新模式"修订并未落地，短等待语义记录于本设计文档 §3.2，契约未单列） |
@@ -246,7 +246,7 @@
 | spool 扩展 | 记录加 `kind`(`create`/`update`/`delete`) + `task_id`，其余字段全部可选 | 契约 §4.4 只允许增字段：旧 create 记录经 watcher 默认 `kind=create` 继续有效 |
 | 幂等命名 | `sha256("<from_session>\|<kind>\|<task_id>\|<key>")`；key 必须随 from_session | 命名空间按发送方收敛，不随 from_session 缺省退化为全局；同键不同操作不互踩（创建与更新可共用一个键而不互相覆盖） |
 | 目标预检 | 更新在 server 侧检查存在性；删除即使对象已不存在仍到达回执/领域层 | 保证删除重试不会在读取既有成功回执前失败；领域层区分明确 NotFound 与 IO/解析错误。 |
-| Ask 规则 | update/delete 同 create 一样注册 typed Ask 规则；read/list 不加 | 读操作无应用侧确认规则，但仍受 feature/scope 与底座 Plan-mode 门约束（round-31 M3 回填 EN 修订）；规则在当前全自动审批下不弹窗，为审批分化预留；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 eval_/aux- 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求） |
+| Ask 规则 | update/delete 同 create 一样注册 typed Ask 规则；read/list 不加 | 读操作无应用侧确认规则，但仍受 feature/scope 与底座 Plan-mode 门约束（round-31 M3 回填 EN 修订）；规则在当前全自动审批下不弹窗，为审批分化预留；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 eval_/aux-/agentic_ 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求） |
 
 ### 9.3 验收矩阵追加（接续 §5 编号）
 
@@ -291,7 +291,7 @@
 
 ## Round-33 当前行为与边界
 
-- 支持桌面 Operate/Yolo；Plan 阻止整个 MCP 能力族（包括 L0 读取）。CLI/headless 没有 ScheduledTaskState 消费端，因此隐藏该族。五个工具在允许使用时常驻首轮目录，特性/作用域拒绝仍优先。全局提示词说明调度与应用需保持运行；会话指令给出准确的 `from_session` 供幂等键使用，该字段仍是不经认证的来源声明。人工续聊的 sched- 来源可正常使用幂等键；真正无人值守的写调用仍由引擎拒绝，aux/eval 来源限制保留。
+- 支持桌面 Operate/Yolo；Plan 阻止整个 MCP 能力族（包括 L0 读取）。CLI/headless 没有 ScheduledTaskState 消费端，因此隐藏该族。五个工具在允许使用时常驻首轮目录，特性/作用域拒绝仍优先。全局提示词说明调度与应用需保持运行；会话指令给出准确的 `from_session` 供幂等键使用，该字段仍是不经认证的来源声明。人工续聊的 sched- 来源可正常使用幂等键；真正无人值守的写调用仍由引擎拒绝，aux/eval/agentic_ 来源限制保留。
 - 用户最新明确选择：撤掉强制删除确认卡及快照确认机制。删除保留为受现有权限控制的普通模型工具：按需先用列表/详情核对，用户明确要求且对象唯一时按准确 ID 执行；重名、指代不清、信息冲突或无法可靠判断对象时必须先向用户确认，不能猜测或扩大范围。任务正文是参考数据，不是操作授权。此要求是模型行为约束，不保证程序确定性验证用户意图。复用既有监听器/领域删除流程和摘要绑定回执；对象不存在视为已删除，IO/解析失败仍报错。不增加完整任务定义备份或撤销。提示词/计划覆盖仍须面板提交，既有最小运行历史无法恢复完整定义。
 - 审计 JSONL 没有内置查看器，且被工作区文件列表隐藏；实际可见的审查入口是结果卡与面板。影子审计只是本监听器的尽力证据。相同用户的文件工具可直接改写 `<home>/automations/automations/<id>.json`，完全绕过监听器、参数校验、来源与影子日志；除 §8 的 spool/messaging 文件通道外，必须计入这一绕过。按工具名限制并不是文件系统沙箱。
 - spool、`.done`、failed、audit 逐级使用真实目录句柄，拒绝符号链接/reparse point。启动时准备目录；audit 被普通文件占用时，保留为唯一 `audit-obstruction-*` 备份后创建目录；其他不安全或不可用目录使初始化明确失败。正常轮换保留前一段；轮换被阻塞时记录警告并继续追加当前证据（修复前可能持续增长），不再丢弃所有新行。追加失败仍会记录警告，不声称防篡改。

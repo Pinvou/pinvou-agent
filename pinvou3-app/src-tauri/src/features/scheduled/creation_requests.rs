@@ -213,13 +213,19 @@ fn check_sender_session_id(session_id: Option<&String>) -> Result<()> {
     // from_session is unauthenticated audit provenance, not runtime posture.
     // A sched- conversation can be continued interactively; actual unattended
     // writes are denied by the run engine, even when this claim is omitted.
-    // Auxiliary and benchmark origins remain isolated.
+    // Auxiliary, benchmark, and headless origins remain isolated.
     // Round-15 REQUIRED-1: the eval_ leg folds case like the server's
     // `.lower()` gate — a planted `EVAL_b1` sender used to pass the
     // watcher while the server rejected it, and on case-insensitive
     // filesystems `session_roots("EVAL_b1")` aliases the real benchmark
     // session's audit root.
-    if is_aux_session_id(id) || id.to_ascii_lowercase().starts_with("eval_") {
+    // Headless `agentic_` runs join the isolated set (the server's
+    // ISOLATED_SENDER_PREFIXES shape): a prompt-injected headless run must
+    // not request task operations (case-folded like the eval_ leg).
+    if is_aux_session_id(id)
+        || id.to_ascii_lowercase().starts_with("eval_")
+        || id.to_ascii_lowercase().starts_with("agentic_")
+    {
         bail!("from_session {id} is an isolated session and cannot request task operations");
     }
     Ok(())
@@ -3792,6 +3798,16 @@ mod tests {
         );
         request.from_session = Some("AUX-side1".to_string());
         assert!(request.validate().is_err(), "AUX- variants are rejected");
+        // Headless `agentic_` senders join the isolated set (both the
+        // lowercase and the mixed-case form pin the case folding — the
+        // scheduled family's sender red arm for the fourth family).
+        request.from_session = Some("agentic_4242_0".to_string());
+        assert!(request.validate().is_err(), "agentic_ senders are rejected");
+        request.from_session = Some("AGENTIC_x".to_string());
+        assert!(
+            request.validate().is_err(),
+            "uppercase AGENTIC_ senders are rejected (case-folded)"
+        );
         request.from_session = Some("../escape".to_string());
         assert!(request.validate().is_err(), "traversal ids are rejected");
         request.from_session = None;
