@@ -103,6 +103,17 @@ REQUIRED_PINS = [
     # with a controlled materializer commits the relied-upon standing grant
     # on success, so the in-flight operation's stale revoke preserves it.
     "connect_body_commits_the_relied_standing_grant",
+    # Round-8 review P2: the commit is a completion requirement. A relied-upon
+    # grant that is GONE at commit time (the owner operation's compensating
+    # revoke won the race / a teardown swept it / a verdict consumed it) is
+    # reported as lost and writes nothing; the real connect and refresh bodies
+    # fail with the consent-sync copy instead of returning visible:true over
+    # consent that computes OFF; a commit whose persist fails fails the
+    # completion too, leaving the ownership claim standing.
+    "revoked_relied_grant_reports_lost_and_commits_nothing",
+    "connect_body_fails_when_the_relied_grant_vanishes_before_its_commit",
+    "refresh_body_fails_when_the_relied_grant_vanishes_before_its_commit",
+    "connect_body_fails_when_the_relied_grant_commit_cannot_persist",
 ]
 
 

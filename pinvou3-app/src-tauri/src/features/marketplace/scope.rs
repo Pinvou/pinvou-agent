@@ -380,6 +380,20 @@ pub(crate) fn pre_create_disabled_bundles_lock_for_test() {
     std::fs::write(disabled_bundles_lock_path(), b"").unwrap();
 }
 
+/// Test fixture: run `f` while HOLDING the store's cross-process lock, as a
+/// peer process would. The connect/refresh bodies' commit leg is the one
+/// writer whose interleaving position cannot be reached through the
+/// injectable materializer (it sits after the tail persist's known-bundle
+/// skip, whose unlocked read must stay valid), so the deterministic
+/// reverse-order tests park the body's commit behind this lock, strip the
+/// relied-upon consent as the lock holder, and let the parked commit observe
+/// the loss. `with_file_lock` is `pub(super)`; this is the one test-only
+/// funnel, alongside [`pre_create_disabled_bundles_lock_for_test`].
+#[cfg(test)]
+pub(crate) fn hold_disabled_bundles_lock_for_test<R>(f: impl FnOnce() -> R) -> R {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || Ok(f())).unwrap()
+}
+
 /// The fail-closed recovered state shared by the corrupt/lost-store recovery
 /// arms: only the migration marker is set and no scope is initialized, so the
 /// DenyAll fallback keeps every previously opted-out pack off. The recovery
@@ -2827,6 +2841,44 @@ pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), S
     })
 }
 
+/// The outcome of a relied-upon connect grant's COMMIT (round-7 review P2,
+/// three-way since the round-8 review). A completion that ran on top of
+/// standing consent must know which of these happened before it may report
+/// success: only [`ReliedGrantCommit::Committed`] and
+/// [`ReliedGrantCommit::Superseded`] leave standing consent behind the
+/// completion; [`ReliedGrantCommit::GrantLost`] means the consent the
+/// completion relied on no longer exists, so a `visible:true` would compute
+/// OFF behind the success card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReliedGrantCommit {
+    /// The completion relied on nothing (an empty captured token — it
+    /// granted fresh, or found and declined a standing verdict): nothing to
+    /// commit, nothing at risk.
+    NotRelied,
+    /// The relied-upon token was standing and is now cleared: the grant
+    /// owner's pending compensating revoke no longer matches, so the
+    /// completion's success stands on secured consent.
+    Committed,
+    /// A NEWER grant stands under a different token. The commit deliberately
+    /// declines: clearing the newer owner's token would break ITS OWN failure
+    /// compensation (fail-open, the round-7 P2). The newer consent covers
+    /// the connector, so the completion may stand on it — untouched.
+    Superseded,
+    /// No standing grant for the package at commit time: the consent this
+    /// completion relied on was consumed before it could commit — the owner
+    /// operation's compensating revoke won the race, a teardown swept it, or
+    /// a user verdict write consumed it. Nothing stands behind the
+    /// completion; the caller must not report success.
+    GrantLost,
+}
+
+/// Single source of the cause text for a lost relied-upon grant, shared by
+/// the GUI tails (which wrap it in the localized connect-consent failure
+/// copy, [`CONNECT_CONSENT_SYNC_FAILURE_MARKER`]-marked for the frontend
+/// classification) and the CLI's connect error. `pub` for the same
+/// cross-crate reason as [`commit_relied_connect_grant`].
+pub const RELIED_GRANT_LOST_CAUSE: &str = "the relied-upon connect grant is no longer standing (an overlapping operation's compensation removed it, or a newer verdict consumed it)";
+
 /// COMMIT of a relied-upon connect grant (round-7 review P2): a completion
 /// whose gate found the consent already recorded (the ledger short-circuit —
 /// it captured the standing token on
@@ -2838,41 +2890,52 @@ pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), S
 /// — the ledger gate and the tail's known-bundle skip both decline), B
 /// succeeds, and without this commit A's late failure strips the grant +
 /// ledger B's success relied on, disabling a connector a completed connect
-/// just proved usable. The commit fires only while the standing entry still
-/// carries the RELIED-UPON token (re-validated under the write lock): a
-/// teardown + regrant between the capture and the completion means a NEWER
-/// live operation owns the state, and committing over its token would make
-/// ITS OWN failure compensation a no-op (fail-open). The token is the only
-/// mutation — grant, ledger, and rows are untouched, so the verdict rules are
-/// not engaged. With no token standing (the steady state after a commit, a
-/// consumed grant, or a legacy store) this is a no-op, so the steady-state
+/// just proved usable.
+///
+/// The result is three-way (round-8 review): the commit fires only while the
+/// standing entry still carries the RELIED-UPON token (re-validated under
+/// the write lock); a mismatch means a NEWER live operation owns the state
+/// ([`ReliedGrantCommit::Superseded`] — committing over its token would make
+/// ITS OWN failure compensation a no-op, fail-open), and a vanished grant
+/// means the relied-upon consent is gone entirely
+/// ([`ReliedGrantCommit::GrantLost`] — the caller must surface an
+/// uncompleted completion instead of reporting success). The token is the
+/// only mutation — grant, ledger, and rows are untouched, so the verdict
+/// rules are not engaged. With no token captured
+/// ([`ReliedGrantCommit::NotRelied`]) this is a no-op, so the steady-state
 /// reconnect/refresh tail adds no store write. Not crate-internal despite
 /// the bare grant/revoke writers being so: the CLI's `connect` finish side
 /// effects drive the same gated entry cross-crate and must commit the
 /// consent they relied on (`pub` like
 /// `deny_first_register_connector` — a consent-affecting caller routes
 /// through the gate entry it sits behind, never here directly).
-pub fn commit_relied_connect_grant(package_id: &str, relied_token: &str) -> Result<bool, String> {
+pub fn commit_relied_connect_grant(
+    package_id: &str,
+    relied_token: &str,
+) -> Result<ReliedGrantCommit, String> {
     if relied_token.is_empty() {
-        return Ok(false);
+        return Ok(ReliedGrantCommit::NotRelied);
     }
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
-        // Both halves of the round-6 ownership pair must still stand: the
-        // grant (a consumed grant's dangling token must not be resurrected as
-        // a commit target) and the exact relied-upon token (a newer
-        // operation's token means the state changed owner mid-flight).
-        if !file.connect_granted.iter().any(|id| id == package_id)
-            || file
-                .connect_grant_tokens
-                .get(package_id)
-                .is_none_or(|token| token != relied_token)
+        // The round-6 ownership pair, reported separately (round-8 review):
+        // a grant that no longer stands is a LOST reliance — the completion
+        // would report success over consent that computes OFF — while a
+        // standing grant under a different token is a replacement owner the
+        // commit must leave alone.
+        if !file.connect_granted.iter().any(|id| id == package_id) {
+            return Ok(ReliedGrantCommit::GrantLost);
+        }
+        if file
+            .connect_grant_tokens
+            .get(package_id)
+            .is_none_or(|token| token != relied_token)
         {
-            return Ok(false);
+            return Ok(ReliedGrantCommit::Superseded);
         }
         file.connect_grant_tokens.remove(package_id);
         try_save_disabled_bundles_file(&file)?;
-        Ok(true)
+        Ok(ReliedGrantCommit::Committed)
     })
 }
 

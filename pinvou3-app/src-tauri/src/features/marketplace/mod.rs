@@ -691,10 +691,11 @@ pub use types::{
 // callers) are test-only now and are `cfg(test)` along with their
 // implementations.
 pub use crate::features::marketplace::scope::{
-    ConnectGrantOutcome, commit_relied_connect_grant, deny_first_register_connector,
-    deny_first_register_connector_refresh, load_disabled_bundles_for,
-    load_disabled_bundles_startup, load_hidden_bundles_for, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
+    ConnectGrantOutcome, RELIED_GRANT_LOST_CAUSE, ReliedGrantCommit, commit_relied_connect_grant,
+    deny_first_register_connector, deny_first_register_connector_refresh,
+    load_disabled_bundles_for, load_disabled_bundles_startup, load_hidden_bundles_for,
+    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
+    unavailable_bundles_for,
 };
 // The bare grant/revoke/refresh writers stay crate-internal: every connect
 // consent write must reach them through `deny_first_register_connector` /
