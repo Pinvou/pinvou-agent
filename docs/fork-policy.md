@@ -1,21 +1,37 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-10-22（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、复随 2026-10-15 批次（#108）前进至 `13ee4dfd2`、再随 2026-10-17 批次（#105/#106/#111）前进至 `c08c8c022`、又随 2026-10-20 批次（#112/#113）前进至 `083cebfd9`，公开维护状态下 gitlink=维护分支头并领先 tag；当前树的独立审核候选及阻塞门禁见下节；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
+> 最后更新：2026-10-23。公开维护头 e9a7f48da；父仓候选 a9486154a6 已包含该底座，公共对齐门禁仍待候选合入。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
-## T2 审核候选：恢复引擎收到的工具输出
+## 0. 当前维护基线与验证边界
 
-- 采用上游 #6619 中的输出预算切片（`3e39820f530496dec909a57541f25f3f6f63ac9f`）及底座审核修复。引擎、Web 包装层、Chat Completions 兜底和 TUI 镜像共用路由预算；在普通工具执行结果和并行聚合信封广播前，以不可变 artifact 保全其完整正文，保留真实保存失败提示、检索和所属证明边界，以及 fork 的有界 child-route/handle 摘要。移除 live TUI 工具输出 receipt 渲染器及其唯一调用点，transcript/模型视图采用共用路由预算。
-- 审核闭合：`cf82289a2` 补齐有界失败摘要接线、wire 预算上下两侧/去重合同和 receipt 正文/恢复提示的分离边界。新候选按真实字段、行或流省略记录恢复需求，不把重新排版当作截断；完整结构化结果不再请求恢复 artifact。adaptive 预览记录原始行数，重复的未保存预览不再被说成完整正文引用；小预算提示保持单份且有界，损坏的预览长度安全拒绝。
-- 新一轮固定提交审核：`tasks gate_run` 内联展示不同的非空 stdout/stderr summary，真实字段截断时保留恢复需求，覆盖无 active task/日志 artifact 的普通聊天。短中断子代理快照省略 `checkpoint`/`needs_input` 时同样保留恢复，兼顾行本身及外层 wrapper；回归使用真实 TasksTool 返回结果和真实中断 checkpoint/needs-input DTO 构造器。没有这些遗漏的完整行保持原语义。
-- 信封路径跟进：独立的 `multi_tool_use.parallel` 分支在广播聚合结果前，复用 spillover/审计与按需保全。两个单独内联的 8,000 字符子输出验证仅合并后发生的省略，barrier 强制真实子调用并发；串行、并行、信封的完整小结果均保持无 artifact。合成 guard/planning 结果、tool-search 激活回复、用户输入协议回复及仅含 `ToolError` 的错误值沿用既有处理；本切片不声称通用保全这些控制回复。
-- R4 范围决定：仅能恢复到达引擎的正文。工具生产端上限仍保留：`git.rs`、`git_history.rs` 为 40,000 字符，`test_runner.rs` 每条输出流为 40,000 字符，`verifier.rs` 每项 gate 的 stdout/stderr 各为 16,000 字符。工具内部已经丢弃的尾部不会到达引擎，不能由本切片恢复；移除这些上限明确延后，不冒称本次已回移该部分上游变更。
-- 独立的搜索决定：native-search 回答链仍维持既有 2,048/4,096 token 上限，本次不新增 provider length-stop 标记；其上限和终止原因合同延后到单独审核的底座切片。正常新执行的 Responses 请求使用引擎视图，但本次未增加其历史消息 wire 兜底；Chat Completions 的旧历史兜底仍与路由无关，不声称所有 provider wire 均有同等兜底。
-- 保留的非阻塞边界：路由预算缩小时 Web envelope artifact 尚不会重新发布为恢复引用；缺少原始行数的旧预览仍采用保守的可见行回退。既有 /status 的 raw-over-cap 文案和会话相对路径 artifact 大小观测另作后续项。不声称新增打包宿主或真实 provider 验证。
-- 候选 gitlink：`edd2e1fbdd06c78ed11b3d4290bfdf52399eff1e`（v0.9.12 之上共 83 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。这是独立候选，不包含失败标志、JSONPath、Python 环境的其他候选；公开维护分支和不可变 tag 均未改变。
-- 合入前提：先合入 CodeWhale#118，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单的候选头换成实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`、重算 `EXPECTED_COMMITS`，协调其他已合入修复并同步两份策略/修改清单。通过未放宽的 `verify-public-submodule.sh` 后，还须审核最终集成树。候选检查不豁免公开门禁；草稿不具备合并或发布资格。
-- 验证见承载 PR 的固定提交记录。十六项输出恢复指纹覆盖 header-padding Web、完整/截断结构化结果、adaptive 行数、损坏预览 metadata、重复未保存的 wire 预览、gate-stream DTO、interrupted-coordination 字段、真实 taskless-gate/interrupted-child 生产端，串行/并行/信封 turn-loop 保存接线，以及三条路径完整结果不写 artifact。六项调度测试通过 `execute_planned_tools` 执行已注册工具，核对 outcome/UI 引用并检索原始字节；大输入超过模型视图但不会触发工具执行阶段 spillover；完整小输入不得产生 artifact metadata 或文件。基线执行、禁用 helper/串行/并行/信封调用，以及始终保全变异的反例记录对应 PR 中的固定源码和验证提交。未增加 changelog：CodeWhale `CONTRIBUTING.md` 明确要求在 main 合并时统一登记，不在 PR 分支改写。排除客户数据、凭证及运行/会话日志。
+- 当前父仓候选：`a9486154a68a2682773650c7d0b3fb0f6ecdae55`，相对 v0.9.12 为 86 个提交，84 个带 DCO；已包含公开维护头 `e9a7f48da169bf89399a11592e4d22a7b721cb39`。来源 CodeWhale#118 当前头 `a9486154a68a2682773650c7d0b3fb0f6ecdae55`。本次合并保留原候选历史与来源；既有测试回执保持原执行边界，新组合树 CI 尚待确认。公开维护头不包含此候选，B1/B2 公共对齐门禁仍未满足。
+
+- 当前公开维护头（父仓候选另列）：`e9a7f48da169bf89399a11592e4d22a7b721cb39`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。
+- 公开维护历史：上游 v0.9.12 `dcd4c200f` 之上 78 个提交，r1 `1fafee7e2` 之上 63 个；76 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
+- 公开维护头实测 drift：504 files, +85973/-37666，净增 48307；230 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+
+- 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
+- r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
+- 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
+- `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
+- 当前维护 4 个长期主题、3 个追加减量主题与 3 个已合入维护分支的主题：
+
+  1. 宿主嵌入与路由边界
+  2. 工具兼容与命令执行安全
+  3. 嵌入上下文与技能来源
+  4. 定时任务与运行生命周期
+  5. 会话归档导出（T5，追加减量）
+  6. 蜂群限流治理（T6，追加减量）
+  7. 压缩检查点角色兼容（T7，已合入维护分支）
+  8. roster 宿主 profiles 呈现（T8，追加减量）
+  9. custom wire 运行时路线（T9，已合入维护分支）
+  10. Tachyon 思考强度方言（T10，已合入维护分支）
+
+精确 commit、文件、理由和验证见 `docs/fork-modifications.md`。新增需求优先归入既有主题；只有形成新的稳定状态、验证和回退边界时才增加主题。
+
 
 ## 0. 当前维护基线与验证边界
 

@@ -9,7 +9,7 @@
 - R4 范围决定：仅能恢复到达引擎的正文。工具生产端上限仍保留：`git.rs`、`git_history.rs` 为 40,000 字符，`test_runner.rs` 每条输出流为 40,000 字符，`verifier.rs` 每项 gate 的 stdout/stderr 各为 16,000 字符。工具内部已经丢弃的尾部不会到达引擎，不能由本切片恢复；移除这些上限明确延后，不冒称本次已回移该部分上游变更。
 - 独立的搜索决定：native-search 回答链仍维持既有 2,048/4,096 token 上限，本次不新增 provider length-stop 标记；其上限和终止原因合同延后到单独审核的底座切片。正常新执行的 Responses 请求使用引擎视图，但本次未增加其历史消息 wire 兜底；Chat Completions 的旧历史兜底仍与路由无关，不声称所有 provider wire 均有同等兜底。
 - 保留的非阻塞边界：路由预算缩小时 Web envelope artifact 尚不会重新发布为恢复引用；缺少原始行数的旧预览仍采用保守的可见行回退。既有 /status 的 raw-over-cap 文案和会话相对路径 artifact 大小观测另作后续项。不声称新增打包宿主或真实 provider 验证。
-- 候选 gitlink：`edd2e1fbdd06c78ed11b3d4290bfdf52399eff1e`（v0.9.12 之上共 83 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。这是独立候选，不包含失败标志、JSONPath、Python 环境的其他候选；公开维护分支和不可变 tag 均未改变。
+- 当前候选 gitlink：`a9486154a68a2682773650c7d0b3fb0f6ecdae55`（86 个提交、84 个带 DCO），已合并公开维护头 `e9a7f48da1`，包含 #115 Python 环境与 #116 失败标志；不包含独立 #117 JSONPath 候选。公开维护头仍为 e9a7f48da，尚不包含本输出恢复候选。
 - 合入前提：先合入 CodeWhale#118，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单的候选头换成实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`、重算 `EXPECTED_COMMITS`，协调其他已合入修复并同步两份策略/修改清单。通过未放宽的 `verify-public-submodule.sh` 后，还须审核最终集成树。候选检查不豁免公开门禁；草稿不具备合并或发布资格。
 - 验证见承载 PR 的固定提交记录。十六项输出恢复指纹覆盖 header-padding Web、完整/截断结构化结果、adaptive 行数、损坏预览 metadata、重复未保存的 wire 预览、gate-stream DTO、interrupted-coordination 字段、真实 taskless-gate/interrupted-child 生产端，串行/并行/信封 turn-loop 保存接线，以及三条路径完整结果不写 artifact。六项调度测试通过 `execute_planned_tools` 执行已注册工具，核对 outcome/UI 引用并检索原始字节；大输入超过模型视图但不会触发工具执行阶段 spillover；完整小输入不得产生 artifact metadata 或文件。基线执行、禁用 helper/串行/并行/信封调用，以及始终保全变异的反例记录对应 PR 中的固定源码和验证提交。未增加 changelog：CodeWhale `CONTRIBUTING.md` 明确要求在 main 合并时统一登记，不在 PR 分支改写。排除客户数据、凭证及运行/会话日志。
 
@@ -65,32 +65,14 @@
 - 修复（Pinvou 私有方言，不回馈上游）：config 侧注册 `ProviderKind::Tachyon` 与 provider 元数据（registered-only，不进 ALL 可选目录；`[providers.tachyon]` 表、`TACHYON_BASE_URL` 环境钉、keyless CredentialHelp、golden route ids/export 同步，登记数 49）；设置序列化统计 registered-only 表，内建上下文窗口校验纳入 Tachyon，inventory 仅认活跃/显式配置的路线（registered-only 身份与免密默认不推断可运行服务）。tui 侧 `ApiProvider::Tachyon` 查表/槽位/免密/持久化全链；`apply_reasoning_effort` 三档位族：off 族 `enable_thinking=false`，low~high 族 low/medium 透传且 `high` 防御性映射 medium（永不发 high），xhigh/max 族直发 `reasoning_effort=xhigh`（不复用 vllm 的 max→high 降级）；`provider_accepts_reasoning_content` 纳入 Tachyon——目录内推理 id 回放为 ON（与 vllm 的刻意差异，本条即 T10 登记），目录未知 id 解码依赖宿主显式 `separate_field` 配置；`TransportKind::for_kind` 补 Tachyon→LocalRuntime；`should_skip_secret_store_for_provider`、`route_declares_unknown_output_ceiling`、pricing/scorecard/route_billing 本地免计费与输出天花板名单、`providers_sorted_for_display` 过滤（registered-only 意图）、provider_picker 价格标签与流可见性、model_inventory 本地标签与默认模型、doctor 鉴权标签均补臂；round-2 加固：`root_deepseek_model_is_foreign_to_direct_provider` 的"可宿主 DeepSeek 模型 id"组在 tui 与 config 两处镜像名单补 Tachyon，route_billing 本地免计费回归循环补 Tachyon，workspace `.env` 凭据白名单排除 `TACHYON_API_KEY`（keyless 默认；shell 环境与 provider 表仍可用，取舍加注）；评审后段加固：`normalize_for_route` 补 Tachyon 臂（High→Medium、Max→XHigh、其余恒等——未编目 Tachyon 不再落入通用收缩），回执/档位别名（minimal/ultra）归一到生效线上档。
 - 覆盖：登记头处 8 个 `forkguard_tachyon_*` 测试——tui 侧 `forkguard_tachyon_effort_ladder_never_emits_high`、`forkguard_tachyon_max_maps_to_xhigh`、`forkguard_tachyon_stream_separates_reasoning_for_unknown_model_ids`、`forkguard_tachyon_picker_preserves_normalized_effort_on_reopen`、`forkguard_tachyon_thinking_capability_is_route_scoped`、`forkguard_tachyon_fleet_accepts_explicit_reasoning_for_served_ids`、`forkguard_tachyon_inventory_requires_an_active_or_configured_route`（inventory 仅认活跃/显式配置路线），config 侧 `forkguard_tachyon_only_provider_table_survives_config_store_save`（仅配置 Tachyon 的设置经 ConfigStore save/reload 与二次重写存活；复退旧实现四测失败）；config 侧零上下文窗口拒绝参数化；route_billing 本地免计费回归。forkguard 门禁命令（`cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`）在登记头 `083cebfd9`（Linux）实测 214 过/0 挂；#113 合并评审记录为 212。
 
-## T2：保留 Windows Python 标准流默认编码（已合入；原候选验证记录，CodeWhale#115）
-
-- 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
-- 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
-- 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
-- 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
-- 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
-- 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
-- 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
-
 ## 0. 当前状态（2026-10-23）
+- 当前父仓候选：`a9486154a68a2682773650c7d0b3fb0f6ecdae55`，相对 v0.9.12 为 86 个提交，84 个带 DCO；已包含公开维护头 `e9a7f48da169bf89399a11592e4d22a7b721cb39`。来源 CodeWhale#118 当前头 `a9486154a68a2682773650c7d0b3fb0f6ecdae55`。本次合并保留原候选历史与来源；既有测试回执保持原执行边界，新组合树 CI 尚待确认。公开维护头不包含此候选，B1/B2 公共对齐门禁仍未满足。
 
-- 当前公开维护头与父仓 gitlink：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头（父仓候选另列）：`e9a7f48da169bf89399a11592e4d22a7b721cb39`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。
+- 公开维护历史：上游 v0.9.12 `dcd4c200f` 之上 78 个提交，r1 `1fafee7e2` 之上 63 个；76 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 公开维护头实测 drift：504 files, +85973/-37666，净增 48307；230 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
-### 本次维护集成
-
-- 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
-
-- #115 保留 shell 默认环境并合并叠加，Windows 显式变量名按大小写不敏感覆盖；#116 已以 [`e9a7f48da1`](https://github.com/Pinvou/CodeWhale/commit/e9a7f48da1) 合入，将返回的失败结果标志写入实际历史并验证会话往返。两项均在 T2 内，不增加主题。
-- #116 选择性前移上游 `2ae7460e4` 的 `is_error` 映射；该映射不在 v0.9.12 基线内，上游同一提交的取消 metadata 与 shell receipt 改动未纳入。成功返回但 `success=false` 的结果以及中断且未执行的标记记为失败，正文保留；原有执行错误、成功及 schema 加载但未执行的成功语义不变。
-- 影响面为持久化历史的 `is_error`、恢复后 Anthropic 请求中的失败标志、CLI failure 计数、会话选择器预览、runtime API 会话 JSON/工具回执，以及 Pinvou 应用恢复工具卡片时由 `!is_error` 回填的成功状态（`bridge-shared-helpers.js`）。实时工具卡片与 ACP Failed 状态原已依据 `ToolResult.success`，不因这次历史标志映射而改变；CodeWhale TUI 恢复历史的渲染器不生成 ToolResult 卡片。子 Agent 记录器（`tools/subagent/mod.rs`）与 TUI `SyncSession` 镜像（`tui/ui/event_loop.rs`）原有的标志丢失仍是后续项，不声称 #116 已覆盖。
-- 指纹同时登记 Windows 默认值/构造器/显式覆盖/原生工具测试及 `forkguard_tool_failure_flag_survives_recording_and_round_trip`。底座合入不等于客户环境或发布验证通过。
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
 
