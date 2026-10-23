@@ -853,22 +853,30 @@ mod tests {
         assert!(!listed[0].has_transcript, "面板据此显示排队中而不是空任务");
         assert!(!listed[0].done);
         assert!(!listed[0].blocked);
-        // 前端桥按 snake_case 原样消费这些键（overlay 的 ledger 适配读
-        // summary.agent_type/role/status/...）：serde 若改名，两套件依然
-        // 全绿而 role-less 行在运行时丢失类型标签。把线上的键名钉死。
+        // 前端按 snake_case 原样消费这些键（overlay 的 ledger 适配读
+        // summary.agent_type/role/status/...；transcript 面板与树状还原读
+        // session_name/parent_run_id/error/objective/has_transcript）：serde
+        // 若改名或加 skip_serializing_if，JS 套件依然全绿而运行时静默丢字段
+        // （role-less 行丢类型标签、树退化成平铺）。把前端消费的线上键名钉死；
+        // spawn_depth 目前仅 Rust 侧序列化、前端未读，不在此列。
         let wire = serde_json::to_value(&listed[0]).expect("summary serializes");
         for key in [
             "agent_id",
+            "session_name",
             "role",
             "agent_type",
+            "parent_run_id",
             "status",
+            "error",
             "done",
             "failed",
             "blocked",
+            "objective",
+            "has_transcript",
         ] {
             assert!(
                 wire.get(key).is_some(),
-                "wire key `{key}` must not be renamed: the frontend overlay reads it verbatim"
+                "wire key `{key}` must not be renamed: the frontend reads it verbatim"
             );
         }
     }
