@@ -3307,18 +3307,34 @@ fn finish_connect_side_effects(spec: &VendorSpec, consent_show: bool) -> Result<
     // (possibly still in-flight) operation's pending compensating revoke
     // stops matching: without the commit, its late materialization failure
     // would strip the grant + ledger this successful connect relied on. The
-    // commit re-validates under the write lock (a teardown + regrant
-    // mid-window keeps a newer owner's compensation armed) and is
-    // best-effort — a failed commit leaves the pre-fix window open rather
-    // than failing an already-successful connect.
+    // commit re-validates under the write lock: a teardown + regrant
+    // mid-window keeps a newer owner's compensation armed
+    // ([`ReliedGrantCommit::Superseded`] — left untouched, the newer consent
+    // covers this connect). REQUIRED (round-8 review): a grant that is GONE
+    // by commit time or a persist that fails means the completed connect's
+    // consent does not stand — the connect fails instead of reporting a
+    // connection whose consent computes OFF.
     if !outcome.granted && !outcome.relied_grant_token.is_empty() {
-        if let Err(error) = pinvou3_lib::features::marketplace::commit_relied_connect_grant(
+        use pinvou3_lib::features::marketplace::ReliedGrantCommit;
+        match pinvou3_lib::features::marketplace::commit_relied_connect_grant(
             spec.id,
             &outcome.relied_grant_token,
         ) {
-            note!(
-                "pinvou: warning: connectors connect: committing the relied-upon connect grant failed: {error}"
-            );
+            Ok(ReliedGrantCommit::NotRelied | ReliedGrantCommit::Committed) => {}
+            Ok(ReliedGrantCommit::Superseded) => note!(
+                "pinvou: connectors connect: the relied-upon connect grant was replaced by a newer owner's; leaving the newer consent untouched"
+            ),
+            Ok(ReliedGrantCommit::GrantLost) => {
+                return Err(CliError::failed(format!(
+                    "pinvou: connectors connect: {} — the completed connect's consent is gone; reconnect to retry",
+                    pinvou3_lib::features::marketplace::RELIED_GRANT_LOST_CAUSE
+                )));
+            }
+            Err(error) => {
+                return Err(CliError::failed(format!(
+                    "pinvou: connectors connect: committing the relied-upon connect grant failed: {error}"
+                )));
+            }
         }
     }
     Ok(outcome.granted)
