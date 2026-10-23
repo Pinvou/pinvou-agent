@@ -21,6 +21,32 @@ def cargo_profile(text: str, profile_header: str, next_header: str) -> str:
     return text.split(profile_header, maxsplit=1)[1].split(next_header, maxsplit=1)[0]
 
 
+def _without_inline_comments(block):
+    # PR #745 round-4 review (MINOR): positive pins must judge live lines
+    # only — a literal that survives as a trailing comment on another live
+    # line must not keep the pin green. Absence pins keep their existing
+    # whole-line stripping: a comment discussing the wrong `-C` spelling
+    # must not false-red them (documented polarity, mirrored in
+    # test_ci_gate_policy's `_without_inline_comments`).
+    stripped_lines = []
+    for line in block.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        quote = None
+        cut = len(line)
+        for index, char in enumerate(line):
+            if quote is not None:
+                if char == quote:
+                    quote = None
+            elif char in ("'", '"'):
+                quote = char
+            elif char == "#" and index > 0 and line[index - 1] in (" ", "\t"):
+                cut = index
+                break
+        stripped_lines.append(line[:cut].rstrip())
+    return "\n".join(stripped_lines)
+
+
 class ReleaseSizePolicyTests(unittest.TestCase):
     """Pins the release size / debug-info policy (docs/binary-size-optimization.md).
 
@@ -78,6 +104,34 @@ class ReleaseSizePolicyTests(unittest.TestCase):
             for line in job_env.splitlines():
                 if line.strip().startswith("RUSTFLAGS:"):
                     self.assertNotIn("-C remap-path-prefix", line, start)
+
+    def test_windows_probe_exports_remap_path_prefix(self):
+        # PR #745: the Windows lld probe exports --remap-path-prefix beside
+        # the probed linker flags so the nsis artifact normalizes
+        # build-machine absolute paths like every other release job. Both
+        # separator variants ship because the embedded form follows
+        # whatever cargo passed to rustc. Dropping the flags line reverts
+        # to path-leaking artifacts with no build error, hence the pin.
+        windows = self.job("\n  build-windows-x64:", "\n  build-macos-universal:")
+        # Inline-stripped positives (round-4 review): the live line being
+        # commented out (with the literal kept in the comment) must red
+        # this pin, so the asserts judge comment-stripped text.
+        live = _without_inline_comments(windows)
+        self.assertIn('ws="${GITHUB_WORKSPACE}"', live)
+        self.assertIn('ws_fwd="${ws//\\\\//}"', live)
+        self.assertIn(
+            'flags="$flags --remap-path-prefix=$ws=/ --remap-path-prefix=$ws_fwd=/"',
+            live,
+        )
+        # Comment-stripped: a comment explaining why the -C spelling is
+        # wrong (as the probe's own comment nearly does) must not false-red
+        # the absence pin (same rule as the other policy files' helpers).
+        self.assertNotIn(
+            "-C remap-path-prefix",
+            "\n".join(
+                line for line in windows.splitlines() if not line.lstrip().startswith("#")
+            ),
+        )
 
     def test_loongarch64_job_must_not_copy_lld_rustflags(self):
         # The pinned loong64/cross-tools asset ships NO lld (bfd ld only —

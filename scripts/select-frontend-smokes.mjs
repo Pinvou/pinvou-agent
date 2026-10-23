@@ -66,6 +66,7 @@ const FULL_PREFIXES = [
 function isFrontendRelevant(path) {
   return (
     requiresFullSuite(path) ||
+    path === "pinvou3-app/scripts/run-webui-smoke.mjs" ||
     path.startsWith("pinvou3-app/src/") ||
     path.startsWith("remote-control-relay/")
   );
@@ -96,6 +97,14 @@ export function selectFrontendSmokes(paths) {
     if (requiresFullSuite(path)) return [...FULL_FRONTEND_SMOKES];
 
     if (path.startsWith("remote-control-relay/")) {
+      const item = command("npm", "test:webui");
+      selected.set(commandKey(item), item);
+      continue;
+    }
+
+    // The wrapper owns the test:webui entry (build + smoke chaining); a
+    // wrapper-only diff re-runs exactly that smoke instead of the full suite.
+    if (path === "pinvou3-app/scripts/run-webui-smoke.mjs") {
       const item = command("npm", "test:webui");
       selected.set(commandKey(item), item);
       continue;

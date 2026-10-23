@@ -27,7 +27,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ENTRY = REPO_ROOT / "scripts" / "run-user-journey-tests.sh"
 
 # Optional runners reached through `run_optional_skip2`. `npm run test:webui`
-# chains `build:web` before the smoke, so it is listed by its final runner.
+# routes through scripts/run-webui-smoke.mjs, which chains `build:web` before
+# the smoke unless PINVOU_WEBUI_SKIP_BUILD=1, so it is listed by its final runner.
 OPTIONAL_RUNNERS = {
     "pinvou3-app/tests/ui_smoke.js",
     "pinvou3-app/tests/settings_ui_smoke.js",

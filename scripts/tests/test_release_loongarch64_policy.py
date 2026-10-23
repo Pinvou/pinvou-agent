@@ -235,7 +235,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
     def test_release_job_runs_only_on_main_push_or_manual_dispatch(self):
         # The gate sets build_required unconditionally (it never looks at the
         # event name), so this job-level trigger contract is what keeps the
-        # 135-minute cross build off every release-chain PR the day the
+        # heavy cross build off every release-chain PR the day the
         # workflow grows a pull_request trigger for light contract jobs.
         # Only workflow_dispatch or a push to refs/heads/main may start it.
         job_header = self.job_code.split("\n    steps:", maxsplit=1)[0]
@@ -549,12 +549,30 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn("tail -n 120", asr)
 
     def test_release_job_gives_the_cross_build_headroom(self):
-        # arm64 (native) gets 90 minutes; the cross build reuses the same
-        # runner shape with the cross toolchain in front of it — the budget
-        # is 90 * ~1.5. Pin it so the headroom cannot silently disappear,
-        # and pin the count: GitHub's last-key-wins YAML parsing means a
-        # second live timeout-minutes would silently void the pinned value.
-        self.assertIn("timeout-minutes: 135", self.job_code)
+        # arm64 (native) measured 37-47 min across 19 fully-successful
+        # release runs (2026-10); its cap is 120, pinned in
+        # test_release_arm64_policy. The cross build reuses the same runner
+        # shape with the cross toolchain in front of it and has no
+        # successful release run to measure yet, so the budget stays the
+        # live arm64 cap * ~1.5 — computed, not literal, so the scaling
+        # rule cannot silently drift apart from the arm64 budget. Also pin
+        # the count: GitHub's last-key-wins YAML parsing means a second
+        # live timeout-minutes would silently void the pinned value.
+        arm64_job = self.release_workflow.split(
+            "\n  build-linux-arm64:", maxsplit=1
+        )[1].split("\n  build-linux-loongarch64:", maxsplit=1)[0]
+        arm64_caps = [
+            line
+            for line in arm64_job.splitlines()
+            if line.startswith("    timeout-minutes: ")
+        ]
+        self.assertEqual(
+            arm64_caps,
+            ["    timeout-minutes: 120"],
+            "arm64 cap drifted; revisit the loong 1.5x budget with it",
+        )
+        loong_budget = int(arm64_caps[0].rsplit(" ", 1)[1]) * 3 // 2
+        self.assertIn(f"\n    timeout-minutes: {loong_budget}\n", self.job_code)
         self.assertEqual(
             self.job_code.count("timeout-minutes:"),
             1,
