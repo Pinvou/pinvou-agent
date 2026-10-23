@@ -133,7 +133,11 @@ const expectedProtocolHashes = {
   // wrapper (computer_use_get_status invoke) was removed — refreshStatus
   // owns the status read path.
   computerUse: 'e0f4aadbba8ab68e1dd54f9ab172680657958d548e3c3da50a489931cf525388',
-  multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
+  multiAgent: '36821de03628eaa4ec3926b925fc96443ee1657c9dd43c67cbda13a7177ea9ba',
+  // Recomputed for the subagent status flicker fix: the agent_progress listen
+  // forwards the structured worker_status token (same vocabulary as the
+  // worker ledger) alongside the legacy free-text phrase — no new invoke or
+  // listen entries, payload-internal edit only.
   // Recomputed for the shared-helper dedup combined with the rebind wave's
   // workspace_binding redaction and retry-payload changes (see batch note
   // above; recomputed against the merged tree). Verified unchanged by the

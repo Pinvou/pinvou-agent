@@ -266,7 +266,7 @@ test('详情读取把 offset/revision 游标原样交给后端', async () => {
 test('子智能体事件由共享桥转成 DOM 事件，是否投影由会话视图决定', () => {
   const { listeners, dispatched } = loadFeature();
   listeners['multiagent:agent_progress']({
-    payload: { session_id: 'chat-1', agent_id: 'agent_a1', role_id: 'scout', status: '检索中' },
+    payload: { session_id: 'chat-1', agent_id: 'agent_a1', role_id: 'scout', status: '检索中', worker_status: 'model_wait' },
   });
   listeners['multiagent:agent_complete']({
     payload: { session_id: 'wf-2', agent_id: 'agent_b2', role_id: 'builder', failed: true },
@@ -276,8 +276,36 @@ test('子智能体事件由共享桥转成 DOM 事件，是否投影由会话视
   assert.equal(dispatched[0].detail.sessionId, 'chat-1');
   assert.equal(dispatched[0].detail.agentId, 'agent_a1');
   assert.equal(dispatched[0].detail.status, '检索中');
+  // 结构化生命周期令牌与 worker ledger 同词表；缺失时必须是 null（旧引擎
+  // payload 兼容），不能把自由文本短语冒充成令牌。
+  assert.equal(dispatched[0].detail.workerStatus, 'model_wait');
   assert.equal(dispatched[1].detail.done, true);
   assert.equal(dispatched[1].detail.failed, true);
+  listeners['multiagent:agent_progress']({
+    payload: { session_id: 'chat-1', agent_id: 'agent_a1', status: '检索中' },
+  });
+  assert.equal(dispatched[2].detail.workerStatus, null, '旧 payload 无 worker_status 时回退 null');
+});
+
+test('forwarder 必须转发结构化 worker_status，展示层不得解析进展短语', () => {
+  const forwarderSource = read('src-tauri', 'src', 'features', 'assistant', 'forwarder.rs');
+  // AgentProgress 事件自带 activity.worker_status（底座明言 UI 不得从展示
+  // 文本反推生命周期态）；漏转它会让台账令牌与实时短语互相覆盖，运行中的
+  // 子智能体状态标签在“排队中/运行中”之间来回闪烁。
+  const armStart = forwarderSource.indexOf('Event::AgentProgress {');
+  assert.ok(armStart >= 0, 'AgentProgress 转发臂必须存在');
+  const arm = forwarderSource.slice(armStart, forwarderSource.indexOf('Event::AgentProgress { .. }', armStart));
+  assert.match(
+    arm,
+    /"worker_status": deepseek_tui::tools::subagent::agent_worker_status_name\(\s*activity\.worker_status,?\s*\)/,
+    'AgentProgress 臂必须把 activity.worker_status 折成 ledger 词表令牌随 payload 下发',
+  );
+  // mailbox 的 ToolCallStarted 合成事件同样必须带令牌（工具执行中）。
+  assert.match(
+    forwarderSource,
+    /MM::ToolCallStarted \{[\s\S]{0,600}"worker_status": "running_tool"/,
+    'ToolCallStarted 合成 payload 必须携带 running_tool 令牌',
+  );
 });
 
 // ── 停止/回收：取消级联（ADR-0006 批次 A 的行为锁） ─────────────────────────

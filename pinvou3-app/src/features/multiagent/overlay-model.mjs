@@ -76,6 +76,21 @@ export function isNeutralEndingStatus(status) {
 export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
   if (previous && previous.done && !detail.done && detail.source !== 'ledger') return null;
   const next = { ...previous, ...detail, sessionId: sessionIdIn };
+  // Spawn-time identity (role/agent type) only ever arrives from the ledger:
+  // real-time progress/completion events carry neither field, and letting
+  // their nulls through the spread would wipe the ledger's values, flipping
+  // the row label to the generic role on every event and back on every poll.
+  // The ledger stays authoritative — its rows still set or clear the fields.
+  if (detail.source !== 'ledger') {
+    if (detail.role == null && previous && previous.role != null) next.role = previous.role;
+    if (detail.agentType == null && previous && previous.agentType != null) next.agentType = previous.agentType;
+  }
+  // A structured worker-status token (same vocabulary as the ledger's status
+  // column) outranks the free-text progress phrase: with only the phrase, the
+  // ledger token and the event phrase overwrote each other and the status
+  // label flickered between "queued" and "working" for a steadily working
+  // agent.
+  if (detail.workerStatus) next.status = detail.workerStatus;
   // A real-time completion carries no status token (the bridge sends
   // status: null because the engine event cannot distinguish endings) and
   // reports blocked: false, so the spread alone would whiten three neutral
@@ -105,11 +120,14 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
  * failed=true, but a swarm-off cancellation or a session interruption is not a
  * dispatch failure, so those two tokens map to their own copy and a neutral
  * dot. Non-terminal entries map the ledger's English status tokens to i18n
- * copy (queued/pending/starting, plus the waiting tokens waiting_for_user/
- * model_wait → pending; running and the executing-tools token running_tool →
- * working). A multi-word non-terminal phrase is a real-time progress line
- * (e.g. "🔧 Edit (step 3)") and falls back to working; a single unknown token
- * is shown verbatim.
+ * copy (queued/pending/starting, plus the parked token waiting_for_user →
+ * pending; running, the executing-tools token running_tool and the
+ * between-steps token model_wait → working). Model wait is a live activity —
+ * a worker's dominant steady state, listed among the live activities by the
+ * foundation's own sidebar — so bucketing it as queued made a working agent
+ * read as "queued" and flip against the working label. A multi-word
+ * non-terminal phrase is a real-time progress line (e.g. "🔧 Edit (step 3)")
+ * and falls back to working; a single unknown token is shown verbatim.
  */
 export function statusPresentation(entry, copy) {
   const statusToken = String(entry && entry.status || '').toLowerCase();
@@ -119,8 +137,8 @@ export function statusPresentation(entry, copy) {
   }
   if (entry && entry.done && entry.blocked) return { text: copy.blockedTag, dot: 'blocked' };
   if (entry && entry.done) return { text: copy.agentCard.completed, dot: 'done' };
-  if (['queued', 'pending', 'starting', 'waiting_for_user', 'model_wait'].includes(statusToken)) return { text: copy.pendingTag, dot: 'running' };
-  if (statusToken === 'running' || statusToken === 'running_tool') return { text: copy.agentCard.working, dot: 'running' };
+  if (['queued', 'pending', 'starting', 'waiting_for_user'].includes(statusToken)) return { text: copy.pendingTag, dot: 'running' };
+  if (['running', 'running_tool', 'model_wait'].includes(statusToken)) return { text: copy.agentCard.working, dot: 'running' };
   return { text: entry && entry.status && !/\s/.test(String(entry.status)) ? entry.status : copy.agentCard.working, dot: 'running' };
 }
 

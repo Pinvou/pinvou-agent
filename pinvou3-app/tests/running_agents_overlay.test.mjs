@@ -91,10 +91,14 @@ test('statusPresentation: terminal first; ledger English tokens map to i18n copy
   assert.equal(statusPresentation(entry({ status: 'RUNNING' }), copy).text, '运行中');
   assert.equal(statusPresentation(entry({ status: 'queued' }), copy).text, '等待中');
   // The remaining ledger tokens must not leak raw snake_case either: a worker
-  // executes tools under running_tool, throttles under model_wait, and parks
-  // at a resumable checkpoint under waiting_for_user.
+  // executes tools under running_tool, works its between-steps round trips
+  // under model_wait, and parks at a resumable checkpoint under
+  // waiting_for_user. model_wait is live work (the foundation's own sidebar
+  // lists it among the live activities): bucketing it as queued made a
+  // steadily working agent read as "queued" and flip against the working
+  // label as the ledger poll and real-time events interleaved.
   assert.equal(statusPresentation(entry({ status: 'running_tool' }), copy).text, '运行中');
-  assert.equal(statusPresentation(entry({ status: 'model_wait' }), copy).text, '等待中');
+  assert.equal(statusPresentation(entry({ status: 'model_wait' }), copy).text, '运行中');
   assert.equal(statusPresentation(entry({ status: 'waiting_for_user' }), copy).text, '等待中');
   // A non-whitelisted single token is treated as a real-time progress phrase
   // and shown verbatim; a blank phrase falls back to working.
@@ -217,6 +221,65 @@ test('mergeOverlayEntry: a ledger non-terminal reading flips back to running and
   assert.deepEqual(overlayVisibleEntries([revived], 11_000).active.map(item => item.agentId), ['agent_1']);
 });
 
+test('mergeOverlayEntry: a real-time event without identity cannot wipe the ledger role/agentType', () => {
+  // Real-time progress/completion events carry neither role nor agentType
+  // (the bridge payload has no such fields, so the detail always holds
+  // nulls): letting the spread overwrite the ledger's identity flipped the
+  // row label to the generic role on every event and back on every 3s poll.
+  const ledgerRow = mergeOverlayEntry(null, ledgerRead({ role: 'scout', agentType: 'scout', status: 'running', done: false, failed: false }), 's1', 10_000);
+  const afterEvent = mergeOverlayEntry(
+    ledgerRow,
+    { sessionId: 's1', agentId: 'agent_1', role: null, agentType: null, status: '12/40: requesting model response', workerStatus: 'model_wait', done: false, failed: false, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(afterEvent.role, 'scout', 'spawn-time identity is ledger-authoritative; event nulls must not erase it');
+  assert.equal(afterEvent.agentType, 'scout');
+  // The ledger stays authoritative: its rows still set (or clear) identity.
+  const afterLedger = mergeOverlayEntry(
+    afterEvent,
+    ledgerRead({ role: 'builder', agentType: 'worker', status: 'running' }),
+    's1',
+    12_000,
+  );
+  assert.equal(afterLedger.role, 'builder');
+  assert.equal(afterLedger.agentType, 'worker');
+});
+
+test('mergeOverlayEntry: a structured workerStatus token outranks the progress phrase (no queued/working flicker)', () => {
+  // The engine event's status is a free-text phrase; the ledger poll carries
+  // the canonical token. With only the phrase the two sources overwrote each
+  // other and the label flickered between queued and working for a steadily
+  // working agent; the structured token speaks the ledger's vocabulary, so
+  // both sources agree instead of fighting.
+  const queued = mergeOverlayEntry(null, ledgerRead({ status: 'queued', done: false, failed: false }), 's1', 10_000);
+  const evented = mergeOverlayEntry(
+    queued,
+    { sessionId: 's1', agentId: 'agent_1', status: 'queued — waiting for a free slot', workerStatus: 'queued', done: false, failed: false, source: 'realtime' },
+    's1',
+    10_500,
+  );
+  assert.equal(evented.status, 'queued', 'the token replaces the phrase');
+  assert.equal(statusPresentation(evented, copy).text, '等待中', 'token agreement keeps the label stable across the ledger/event interleave');
+  const working = mergeOverlayEntry(
+    evented,
+    { sessionId: 's1', agentId: 'agent_1', status: '12/40: requesting model response', workerStatus: 'model_wait', done: false, failed: false, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(working.status, 'model_wait');
+  assert.equal(statusPresentation(working, copy).text, '运行中', 'model wait is live work, not queued');
+  // An event without a token (old engine payload) keeps the phrase fallback.
+  const legacy = mergeOverlayEntry(
+    working,
+    { sessionId: 's1', agentId: 'agent_1', status: '🔧 bash (step 3)', done: false, failed: false, source: 'realtime' },
+    's1',
+    11_500,
+  );
+  assert.equal(legacy.status, '🔧 bash (step 3)');
+  assert.equal(statusPresentation(legacy, copy).text, '运行中');
+});
+
 test('isUnknownLedgerRow: orphan transcripts (done=false, no status token) are not live agents', () => {
   // transcripts.rs projects transcripts whose worker-ledger record was pruned
   // (foundation 256-record cap) as done=false/status=null unknown rows; the
@@ -332,6 +395,7 @@ test('component glue: session-switch discard, revival kick, and ledger mapping s
   for (const mapping of [
     'agentId: summary.agent_id',
     'role: summary.role || null',
+    'agentType: summary.agent_type || null',
     'status: summary.status || null',
     'done: !!summary.done',
     'failed: !!summary.failed',
