@@ -82,6 +82,15 @@ export function isWorkerEndingToken(status) {
  *   none: they were never shown as running in this session, and granting
  *   would pull the whole historical batch into the success-state window,
  *   flashing a fake "running 0" pill on open.
+ * - Spawn-time identity (role/agentType) only arrives from the ledger: a
+ *   non-ledger detail's nulls restore the previous values instead of wiping
+ *   them, while ledger rows stay authoritative and still set or clear the
+ *   fields.
+ * - A truthy detail.workerStatus (the ledger's token vocabulary) outranks
+ *   the free-text phrase in detail.status — except ending tokens
+ *   (isWorkerEndingToken): those are the engine's end-of-run announcement
+ *   ahead of the ordered completion event, not a live state, so endings
+ *   resolve through done plus the completion event/ledger instead.
  * @param {object|null} previous the entry's current cache (null = first observation)
  * @param {object} detail the new reading (with done/blocked/source, etc.)
  * @param {string} sessionIdIn session the entry belongs to
@@ -111,8 +120,8 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
   // completion event or the ledger resolves the ending.
   if (detail.workerStatus && !isWorkerEndingToken(detail.workerStatus)) next.status = detail.workerStatus;
   // A real-time completion carries no status token (the bridge sends
-  // status: null because the engine event cannot distinguish endings) and
-  // reports blocked: false, so the spread alone would whiten three neutral
+  // status: null because the engine's completion event carries no status
+  // token) and reports blocked: false, so the spread alone would whiten three neutral
   // endings until the next ledger read corrects them: a cancelled/interrupted
   // token into a green "completed", and a blocked entry into a plain
   // completion (losing the "waiting on the user" surface). Keep the ledger's
@@ -142,9 +151,11 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
  * copy (queued/pending/starting, plus the parked token waiting_for_user →
  * pending; running, the executing-tools token running_tool and the
  * between-steps token model_wait → working). Model wait is a live activity —
- * a worker's dominant steady state, listed among the live activities by the
- * foundation's own sidebar — so bucketing it as queued made a working agent
- * read as "queued" and flip against the working label. A multi-word
+ * the foundation partitions ModelWait/RunningTool into OwnerState::Running
+ * versus Queued/WaitingForUser into OwnerState::Waiting, and its own sidebar
+ * lists "model wait" among the live activities — so bucketing it as queued
+ * made a working agent read as "queued" and flip against the working label.
+ * A multi-word
  * non-terminal phrase is a real-time progress line (e.g. "🔧 Edit (step 3)")
  * and falls back to working; a single unknown token is shown verbatim.
  */

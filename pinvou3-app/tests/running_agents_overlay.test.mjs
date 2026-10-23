@@ -94,10 +94,11 @@ test('statusPresentation: terminal first; ledger English tokens map to i18n copy
   // The remaining ledger tokens must not leak raw snake_case either: a worker
   // executes tools under running_tool, works its between-steps round trips
   // under model_wait, and parks at a resumable checkpoint under
-  // waiting_for_user. model_wait is live work (the foundation's own sidebar
-  // lists it among the live activities): bucketing it as queued made a
-  // steadily working agent read as "queued" and flip against the working
-  // label as the ledger poll and real-time events interleaved.
+  // waiting_for_user. model_wait is live work (the foundation maps
+  // ModelWait/RunningTool to OwnerState::Running and
+  // Queued/WaitingForUser to OwnerState::Waiting): bucketing it as queued
+  // made a steadily working agent read as "queued" and flip against the
+  // working label as the ledger poll and real-time events interleaved.
   assert.equal(statusPresentation(entry({ status: 'running_tool' }), copy).text, '工作中');
   assert.equal(statusPresentation(entry({ status: 'model_wait' }), copy).text, '工作中');
   assert.equal(statusPresentation(entry({ status: 'waiting_for_user' }), copy).text, '排队中');

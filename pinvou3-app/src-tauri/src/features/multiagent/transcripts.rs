@@ -24,7 +24,9 @@ pub struct SubagentTranscriptSummary {
     /// 前端据此忽略占位值并继续走任务标题/类型兜底。
     pub session_name: Option<String>,
     pub role: Option<String>,
-    /// 底座 canonical Fleet 类型（worker/scout/planner/reviewer/builder/verifier/custom）。
+    /// 底座 canonical Fleet 类型（general/explore/planner/reviewer/implement/
+    /// test/advisor/custom，即 FleetRole::as_str；worker/scout 等只是反序列化
+    /// 侧的 legacy 别名，新记录不会出现）。
     /// 普通对话通常不传 role/profile，界面靠它避免全部显示成“通用执行者”。
     pub agent_type: Option<String>,
     /// 直接父代理 ID；None 表示由主对话直接派出。用于把多级代理恢复成树，
