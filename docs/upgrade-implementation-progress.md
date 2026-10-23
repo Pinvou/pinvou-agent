@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 11:25 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 12:05 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; T25's bounded offline ASN source-owner component is now delivered.
 Remaining T13/T25/T47 composition and local acceptance are pending.
@@ -52,10 +52,16 @@ test trees permit bounded parallel compilation while retaining resource guards:
 - T04's Linux adapter candidate passed 19 top-level and 15 subtests on Windows,
   with zero skips and independent actual review. This is pure adapter acceptance,
   not real Linux packaging, DSSE authentication or complete T04 acceptance.
-- Pure contract generation passed independent actual review: 55 paths, 230
-  component schemas and 203 standalone API schemas. Seven source/export deltas
-  and the full 26-file, 183-test preparation passed independent source review;
-  those tests and delivery remain pending. Generation is not schema acceptance.
+- The combined contract run passed all 190 tests in 27 files with zero skips,
+  retaining the previous 183 and adding seven scan-capture controls. Generation
+  produced 59 paths, 246 component schemas, 219 standalone API schemas and 27
+  trust schemas; all 247 artifacts match the frozen source byte for byte.
+  Independent actual review passed. The first run's 189-pass/one-failure result
+  remains recorded: Root repaired only OpenAPI insertion order and fifteen new
+  standalone schemas' line endings. All parsed values and test bodies stayed
+  unchanged. The 27-file executable-contract batch is committed and pushed as
+  `5e25441f6bf9959f221db1f1763d2b388cc851ca`; this does not deliver the associated
+  backend/UI workflows or qualify their runtime behavior.
 - A publicly licensed DB-IP ASN Lite October 2026 research sample was acquired
   from the publisher's authenticated HTTPS download: 477,362 records and
   30,360,919 expanded bytes. Published transfer checks match the expanded CSV;
@@ -95,7 +101,10 @@ test trees permit bounded parallel compilation while retaining resource guards:
   the combined T10/T47 interface now passes type checking, a fresh build and
   all 84 pure UI tests in eight files, retaining the previous 67 and adding
   these 17. Independent actual review passed. The seven new contract tests
-  and genuine scanner/UI workflow acceptance remain pending.
+  also pass in the full 190-test contract run and their contracts are delivered.
+  Genuine scanner/UI workflow acceptance remains pending. Two additional normal
+  scanner executable builds now pass for Linux amd64 and arm64, with independent
+  actual review of all source and ELF bytes. Neither executable has run.
 - T25's controlled offline ASN source owner passed independent deep source review:
   initial installation, CAS disable, exact original-request recovery and current
   local lookup preserve the original audit and operation boundaries. Formatting
@@ -153,10 +162,13 @@ test trees permit bounded parallel compilation while retaining resource guards:
   capacity evidence; the five-minute rule remains unchanged. No native bracket,
   exact 32 MiB boundary or whole-task acceptance is established.
 - Source comparison found no confirmed cause for the normal runtime-permission
-  refusal. A fresh 2,408-input tree for the unchanged one-top/three-sub retake
-  is assembled and its caller passed independent source review. It excludes all
-  private instrumentation and has not run; the private diagnostic pass remains
-  separate from normal acceptance and from a production repair.
+  refusal. The unchanged narrow normal retake now passes one top-level test and
+  three subtests, with zero skips and independent actual review. Its 2,408 inputs
+  and thirteen normal snapshots remained unchanged, without private instrumentation.
+  The actual restricted-runtime privilege census and original transaction receipt
+  checks ran for install, preinstall and activate. This does not add a standalone
+  illegal-DML test or prove a production repair. The earlier failure remains
+  recorded and its cause is still unconfirmed.
 - Before the restart, approximately 4.9 GiB available memory was below the
   unchanged 7 GiB test-start floor, so a new test attempt was refused before
   launching a child. The owner arranged a local testing window and then resumed
@@ -14767,7 +14779,7 @@ checks, and does not confer actual Linux scanner qualification. Other builds
 and source work continue without stopping unrelated processes or lowering the
 experiment's resource requirements.
 
-## T25 offline ASN component and combined UI acceptance (2026-10-23)
+## T25 offline ASN component and combined UI acceptance (2026-10-23 11:25)
 
 The bounded offline ASN component is delivered in the separate service repository
 as `0e7ce7ecc99914eae9900adb9d738a6a3152425a`, with DCO and confirmed push. Its
@@ -14805,3 +14817,53 @@ npm dependency files, the previous 67 controls and 17 new scan-capture controls.
 These are synthetic/pure UI checks, not a genuine scanner/browser workflow. The
 combined 190-test contract plan, its generation checks and integration delivery
 remain pending. No task status or percentage is raised by these bounded results.
+
+## Combined contract delivery and normal retakes (2026-10-23 12:03)
+
+The executable-contract batch is delivered in this repository as
+`5e25441f6bf9959f221db1f1763d2b388cc851ca`, with DCO and confirmed push. It adds
+the scan-capture API contracts and abort-proof lookup definitions without removing
+an existing path or component schema. The batch contains 27 changed files: 23 new
+paths and four modified paths. All 349 contract source inputs match the independently
+accepted isolated test tree. The original 183 controls and seven new scan-capture
+controls pass together: 190 tests, 27 files, zero skipped, failed or cancelled tests.
+All 247 generated artifacts match their pre-frozen expectations, source files and
+fresh output copies. The old 55-path/230-schema contract composition remains
+semantically intact after removing the four new scan routes, sixteen scan schemas
+and their two security entries.
+
+The first actual run passed 189 tests and failed the existing deterministic
+generator equality test. Sixteen frozen artifacts differed only in serialization:
+OpenAPI property insertion order and fifteen new JSON files' CRLF line endings.
+Root regenerated those artifact bytes, preserved every parsed value and all test
+bodies, and corrected an obsolete inherited source-review count. Independent source
+review and the full fresh run both passed. The original failure remains retained;
+no assertion, source-ref constraint, resource threshold or process-closure rule was
+weakened. Contract delivery does not deliver the pending owner/backend or admin
+composition, and the separate service retains its explicit earlier contract pin
+until a separately verified synchronization batch.
+
+The unchanged narrow normal PostgreSQL retake also passed one top-level test and
+three subtests with zero skips. Independent actual review verified the complete
+2,408-input map, thirteen original normal snapshots, tool pins and original
+install/preinstall/activate receipt path. Its original process tree closed naturally
+with 165 processes observed and a 0.296-second drain. The earlier refusal remains
+unexplained; a successful unchanged retake is not presented as a production fix or
+complete T13/T20/T25 acceptance.
+
+Two additional current-source normal scanner executable builds passed independently
+reviewed cross-compilation for Linux amd64 and arm64. Their held-file ELF readback
+and static Go build information confirm the scanner command, executable build mode,
+CGO disabled and corresponding architectures. Both build trees closed naturally;
+all 2,374 source inputs remained unchanged. These are separate from the earlier six
+successful test-binary compiles and two later owner-test compiles. No executable ran
+and no VM started; Linux runtime, cancellation and owner qualification remain open.
+The earlier VM media binds older production sources and cannot stand in for current
+source acceptance. Fresh media and evidence bindings must precede another target run.
+
+T47's dense native experiment still has no accepted 32 MiB bracket or exact-boundary
+result. A test-only signed OIDC login/callback/session renewal candidate now preserves
+the five-minute MFA rule and original precise permissions; independent source
+review passed, but it has not compiled or run. Its future narrow authentication control
+must pass before another capacity experiment. Task percentages and totals remain
+unchanged; the deferred 50 GiB T03 measurement and deployment T42 remain deferred.
