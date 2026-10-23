@@ -114,6 +114,11 @@ REQUIRED_PINS = [
     "connect_body_fails_when_the_relied_grant_vanishes_before_its_commit",
     "refresh_body_fails_when_the_relied_grant_vanishes_before_its_commit",
     "connect_body_fails_when_the_relied_grant_commit_cannot_persist",
+    # Round-9 review P2 pair: the known-bundle shortcut captures the standing
+    # grant's reliance token (the third gate exit — the one that dropped it),
+    # and the commit-persist failure carries the commit-stage marker (still
+    # enabled), never the fail-closed consent-sync copy.
+    "known_bundle_shortcut_captures_the_standing_reliance_token",
 ]
 
 
