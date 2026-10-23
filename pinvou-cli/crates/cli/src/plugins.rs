@@ -2779,6 +2779,16 @@ mod tests {
             ))
             .as_deref()
         );
+        let forged = translate_plugin_import_error(
+            "插件包 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝",
+        );
+        assert_eq!(
+            forged.as_deref(),
+            Some(
+                "the package decompresses beyond its zip header's declared size (forged \
+                 header / zip bomb); rejected"
+            )
+        );
         assert_eq!(
             translate_plugin_import_error("some unrelated english failure"),
             None
