@@ -3,15 +3,16 @@
 ## T2 审核候选：恢复引擎收到的工具输出
 
 - 采用上游 #6619 中的输出预算切片（`3e39820f530496dec909a57541f25f3f6f63ac9f`）及底座审核修复。引擎、Web 包装层、Chat Completions 兜底和 TUI 镜像共用路由预算；在普通工具执行结果和并行聚合信封广播前，以不可变 artifact 保全其完整正文，保留真实保存失败提示、检索和所属证明边界，以及 fork 的有界 child-route/handle 摘要。移除 live TUI 工具输出 receipt 渲染器及其唯一调用点，transcript/模型视图采用共用路由预算。
+- 完整 fetch 信封跟进：文本和已提取 PDF 的 `fetch_url` 结果保留合法完整 JSON，兼容进程内 RLM 消费；既有引擎保全在按路由压缩前保存整个信封，避免保存正文已截断的信封。二进制 PDF/媒体仍走原 artifact 路径。新不可变文件在写正文、发布前即以 Unix 0600 创建；不追溯修改旧文件，Windows 沿用继承 ACL。引擎保全的 artifact 引用也会激活既有延迟检索 schema，策略已移除的工具仍不可用，视图压缩语义不变。新增四项指纹覆盖大正文/失败/大 header 的一次引用恢复、小 JSON 无 artifact、私有不可变重放及延迟恢复激活。确定性测试从网络返回载体开始，不冒称新增 HTTP/SSRF 或原生 Windows 执行。
 - 审核闭合：`cf82289a2` 补齐有界失败摘要接线、wire 预算上下两侧/去重合同和 receipt 正文/恢复提示的分离边界。新候选按真实字段、行或流省略记录恢复需求，不把重新排版当作截断；完整结构化结果不再请求恢复 artifact。adaptive 预览记录原始行数，重复的未保存预览不再被说成完整正文引用；小预算提示保持单份且有界，损坏的预览长度安全拒绝。
 - 新一轮固定提交审核：`tasks gate_run` 内联展示不同的非空 stdout/stderr summary，真实字段截断时保留恢复需求，覆盖无 active task/日志 artifact 的普通聊天。短中断子代理快照省略 `checkpoint`/`needs_input` 时同样保留恢复，兼顾行本身及外层 wrapper；回归使用真实 TasksTool 返回结果和真实中断 checkpoint/needs-input DTO 构造器。没有这些遗漏的完整行保持原语义。
-- 信封路径跟进：独立的 `multi_tool_use.parallel` 分支在广播聚合结果前，复用 spillover/审计与按需保全。两个单独内联的 8,000 字符子输出验证仅合并后发生的省略，barrier 强制真实子调用并发；串行、并行、信封的完整小结果均保持无 artifact。合成 guard/planning 结果、tool-search 激活回复、用户输入协议回复及仅含 `ToolError` 的错误值沿用既有处理；本切片不声称通用保全这些控制回复。
+- 信封路径跟进：独立的 `multi_tool_use.parallel` 分支在广播聚合结果前，复用 spillover/审计与按需保全。两个单独内联的 8,000 字符子输出验证仅合并后发生的省略，barrier 强制真实子调用并发；该分支测试可达，但当前生产 planner 不生成此形态（#772 跟踪）；串行、并行、信封的完整小结果均保持无 artifact。合成 guard/planning 结果、tool-search 激活回复、用户输入协议回复及仅含 `ToolError` 的错误值沿用既有处理；本切片不声称通用保全这些控制回复。
 - R4 范围决定：仅能恢复到达引擎的正文。工具生产端上限仍保留：`git.rs`、`git_history.rs` 为 40,000 字符，`test_runner.rs` 每条输出流为 40,000 字符，`verifier.rs` 每项 gate 的 stdout/stderr 各为 16,000 字符。工具内部已经丢弃的尾部不会到达引擎，不能由本切片恢复；移除这些上限明确延后，不冒称本次已回移该部分上游变更。
 - 独立的搜索决定：native-search 回答链仍维持既有 2,048/4,096 token 上限，本次不新增 provider length-stop 标记；其上限和终止原因合同延后到单独审核的底座切片。正常新执行的 Responses 请求使用引擎视图，但本次未增加其历史消息 wire 兜底；Chat Completions 的旧历史兜底仍与路由无关，不声称所有 provider wire 均有同等兜底。
-- 保留的非阻塞边界：路由预算缩小时 Web envelope artifact 尚不会重新发布为恢复引用；缺少原始行数的旧预览仍采用保守的可见行回退。既有 /status 的 raw-over-cap 文案和会话相对路径 artifact 大小观测另作后续项。不声称新增打包宿主或真实 provider 验证。
-- 当前候选 gitlink：`805b62c377fd1674544b1da9cad9e27647180866`（88 个提交、86 个带 DCO），已合并公开维护头 `ea9fdc90f1`，包含 #115 Python 环境与 #116 失败标志；现已包含合入的 #117 JSONPath 修复。公开维护头仍为 ea9fdc90f，尚不包含本输出恢复候选。
+- 保留的非阻塞边界：可选的检索摘要校验（#769）、极小预算恢复尾行/字符与字节语义/旧历史路由与 wire 差异（#770）、artifact 配额与 transcript 重复及保留（#771）、继承的生产端上限/planner 可达性/有意上游差异（#772）。native_memory、handle、lsp、子代理协调也存在引擎前截断，本切片不恢复其已丢弃尾部。首次 fetch 完整信封修复不表示所有 Web 生产端信封在后续路由缩小时均重新发布引用。旧行数回退、/status raw-over-cap 文案和会话相对 artifact 大小观测仍为后续项；不声称新增打包宿主或真实 provider 验证。
+- 当前候选 gitlink：`72e1d1b43e3bec3f209478e02752a78f646c3d9a`（89 个提交、87 个带 DCO），已包含公开维护头 `ea9fdc90f1` 及 #115/#116/#117；保留远端维护者重排后的历史。公开维护头尚不包含本输出恢复候选。
 - 合入前提：先合入 CodeWhale#118，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单的候选头换成实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`、重算 `EXPECTED_COMMITS`，协调其他已合入修复并同步两份策略/修改清单。通过未放宽的 `verify-public-submodule.sh` 后，还须审核最终集成树。候选检查不豁免公开门禁；草稿不具备合并或发布资格。
-- 验证见承载 PR 的固定提交记录。十六项输出恢复指纹覆盖 header-padding Web、完整/截断结构化结果、adaptive 行数、损坏预览 metadata、重复未保存的 wire 预览、gate-stream DTO、interrupted-coordination 字段、真实 taskless-gate/interrupted-child 生产端，串行/并行/信封 turn-loop 保存接线，以及三条路径完整结果不写 artifact。六项调度测试通过 `execute_planned_tools` 执行已注册工具，核对 outcome/UI 引用并检索原始字节；大输入超过模型视图但不会触发工具执行阶段 spillover；完整小输入不得产生 artifact metadata 或文件。基线执行、禁用 helper/串行/并行/信封调用，以及始终保全变异的反例记录对应 PR 中的固定源码和验证提交。未增加 changelog：CodeWhale `CONTRIBUTING.md` 明确要求在 main 合并时统一登记，不在 PR 分支改写。排除客户数据、凭证及运行/会话日志。
+- 验证见承载 PR 的固定提交记录。二十项输出恢复指纹（包括新增四项 fetch/私有文件/激活合同）覆盖 header-padding Web、完整/截断结构化结果、adaptive 行数、损坏预览 metadata、重复未保存的 wire 预览、gate-stream DTO、interrupted-coordination 字段、真实 taskless-gate/interrupted-child 生产端，串行/并行/信封 turn-loop 保存接线，以及三条路径完整结果不写 artifact。六项调度测试通过 `execute_planned_tools` 执行已注册工具，核对 outcome/UI 引用并检索原始字节；大输入超过模型视图但不会触发工具执行阶段 spillover；完整小输入不得产生 artifact metadata 或文件。基线执行、禁用 helper/串行/并行/信封调用，以及始终保全变异的反例记录对应 PR 中的固定源码和验证提交。未增加 changelog：CodeWhale `CONTRIBUTING.md` 明确要求在 main 合并时统一登记，不在 PR 分支改写。排除客户数据、凭证及运行/会话日志。
 
 ## 已合入维护分支：压缩检查点角色兼容性
 
@@ -67,10 +68,10 @@
 
 ## 0. 当前状态（2026-10-23）
 
-- 当前底座执行回执：`805b62c377fd1674544b1da9cad9e27647180866` 的 [check 120211944621](https://github.com/Pinvou/CodeWhale/actions/runs/39891335133/job/120211944621) 实际执行 14870 项、全部通过、15 项跳过（1 slow、2 leaky）。六项真实调度恢复/小结果不落盘合同均有具名 PASS。CI 实际检出 `027e3e18f16142bb1c423c2c072a3e522a99cf3c` 的完整树 `fd2bc2174e81dbdbf048130279f78c16509ae335` 与当前源码一致；本回执不代替父仓公共维护对齐或发布验证。
+- 历史底座执行回执：`805b62c377fd1674544b1da9cad9e27647180866` 的 [check 120211944621](https://github.com/Pinvou/CodeWhale/actions/runs/39891335133/job/120211944621) 实际执行 14870 项、全部通过、15 项跳过（1 slow、2 leaky），六项调度合同均有具名 PASS。CI 实际检出 `027e3e18f16142bb1c423c2c072a3e522a99cf3c` 的树 `fd2bc2174e81dbdbf048130279f78c16509ae335` 亦为维护者重排后 f28bfdd13 的树；不证明较新 fetch/私有文件修复、父仓公共对齐或发布验证已执行。
 
 - 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
-- 当前父仓候选：`805b62c377fd1674544b1da9cad9e27647180866`，相对 v0.9.12 为 88 个提交，86 个带 DCO；已包含公开维护头 `ea9fdc90f1c90335554833195eeeb847c83d82dd`。来源 CodeWhale#118 当前头 `805b62c377fd1674544b1da9cad9e27647180866`。本次合并保留原候选历史与来源；既有测试回执保持原执行边界，当前底座源码 805b62c37 的完整 CI 已通过；父仓组合树 CI 仍须独立核对。公开维护头不包含此候选，B1/B2 公共对齐门禁仍未满足。
+- 当前父仓候选：`72e1d1b43e3bec3f209478e02752a78f646c3d9a`，相对 v0.9.12 为 89 个提交，87 个带 DCO；已包含公开维护头 `ea9fdc90f1c90335554833195eeeb847c83d82dd`。来源 CodeWhale#118 的维护者已将旧候选重排为 `f28bfdd13251d3af9f70d30afc73cc548eac5519`，其树仍为 `fd2bc2174e81dbdbf048130279f78c16509ae335`；本次在其上追加完整 fetch 信封和私有文件创建修复，保留远端新历史。既有完整 CI 回执只证明旧树；新修复的执行记录及父仓组合树 CI 须独立核对。公开维护头不包含此候选，B1/B2 公共对齐门禁仍未满足。
 
 - 当前公开维护头（父仓候选另列）：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
 - 公开维护历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。

@@ -1,11 +1,11 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-23. Public maintenance ea9fdc90f contains #115/#116/#117; parent candidate 805b62c377 contains that base but awaits public integration.
+> Updated: 2026-10-23. Public maintenance ea9fdc90f contains #115/#116/#117; parent candidate 72e1d1b43e contains that base but awaits public integration.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Current parent candidate: `805b62c377fd1674544b1da9cad9e27647180866`, 88 commits above v0.9.12, 86 DCO-signed; includes public maintenance `ea9fdc90f1c90335554833195eeeb847c83d82dd`. Source CodeWhale#118 head: `805b62c377fd1674544b1da9cad9e27647180866`. The merge preserves candidate history and provenance. Prior test receipts retain their original execution boundaries; current foundation source 805b62c37 CI has passed; parent integrated-tree CI remains separate. Public maintenance does not contain this candidate; the public alignment gate remains blocking.
+- Current parent candidate: `72e1d1b43e3bec3f209478e02752a78f646c3d9a`, 89 commits above v0.9.12, 87 DCO-signed; includes public maintenance `ea9fdc90f1c90335554833195eeeb847c83d82dd`. The CodeWhale#118 maintainer rebased the previous candidate to `f28bfdd13251d3af9f70d30afc73cc548eac5519`, retaining tree `fd2bc2174e81dbdbf048130279f78c16509ae335`. This follow-up adds complete fetch-envelope and private-file-creation fixes on that remote history. Earlier full CI receipts prove only the old tree; execution of the new fixes and parent integrated-tree CI must be checked separately. Public maintenance does not contain this candidate; public alignment remains blocking.
 
 - Public maintenance (parent candidate above): `ea9fdc90f1c90335554833195eeeb847c83d82dd` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance. #117 merged remotely on 2026-10-23 as `ea9fdc90f`.
 - Public-maintenance history: 79 commits above upstream v0.9.12 `dcd4c200f`, 64 above r1 `1fafee7e2`; 77 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
