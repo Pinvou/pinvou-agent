@@ -99,6 +99,10 @@ REQUIRED_PINS = [
     # compensation still strips in full.
     "committed_relied_grant_survives_the_in_flight_revoke",
     "stale_commit_leaves_a_replacement_owner_alone",
+    # Round-7 review P2, command-body level: the real apply_skills_command
+    # with a controlled materializer commits the relied-upon standing grant
+    # on success, so the in-flight operation's stale revoke preserves it.
+    "connect_body_commits_the_relied_standing_grant",
 ]
 
 

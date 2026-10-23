@@ -1329,6 +1329,79 @@ mod tests {
         });
     }
 
+    /// Round-7 review P2, the REAL connect body: zhuowp's probe shape. A's
+    /// refresh gate grants on a fresh home and its materialization hangs in
+    /// flight (the test's own sequencing); B drives the actual
+    /// `apply_skills_command` with a controlled materializer — its gate hits
+    /// the ledger short-circuit, the materialization succeeds, the tail
+    /// skips, and the BODY's own commit leg fires. A's late failure revoke
+    /// must then find no matching token and leave B's consent state (grant +
+    /// ledger + computed-ON, `visible:true` reported) untouched. (Deleting
+    /// the body's commit leg — or reverting the capture — leaves the token
+    /// standing and turns the preservation legs red.)
+    #[test]
+    fn connect_body_commits_the_relied_standing_grant() {
+        use crate::features::marketplace::{
+            ConnectorScope, deny_first_register_connector_refresh, load_disabled_bundles_for,
+        };
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-commit-body", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            // Operation A: the refresh grant lands; its materialization is
+            // now (represented as) in flight.
+            let grant_a = deny_first_register_connector_refresh("feishu", true).unwrap();
+            assert!(grant_a.granted, "fixture: A's refresh grant lands");
+
+            // Operation B: the real connect command body, materializer
+            // controlled to succeed.
+            let gate = Box::leak(Box::new(ConnectorGate {
+                id: "feishu",
+                disabled_filename: "feishu_disabled",
+                display_name: "Feishu",
+                ready_probe: || true,
+                apply_bundle_skills: |_| Ok(()),
+            }));
+            // The env lock is held by with_temp_home for the whole block_on,
+            // so the spawn_blocking consent writes stay under the serialized
+            // env (same shape as app/commands/tests.rs).
+            let value = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(gate.apply_skills_command())
+                .unwrap();
+            assert_eq!(
+                value["visible"],
+                serde_json::json!(true),
+                "fixture: B's connect body reports visible:true: {value}"
+            );
+
+            // The body's commit cleared the pending ownership token; A's late
+            // materialization failure must keep its hands off B's state.
+            crate::features::marketplace::revoke_connect_enable(&grant_a).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu"))
+                    && raw["connect_grant_tokens"]["feishu"].is_null()
+                    && raw["install_default_synced"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
+                "the committed grant + ledger must survive the stale revoke with the token gone: {raw}"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the connector B proved usable must still compute ON"
+            );
+        });
+    }
+
     /// Round-7 review P2 negative: the commit must not survive a change of
     /// owner. Between B's reliance capture and its completion, a teardown +
     /// fresh reconnect (operation C) lands a NEW grant under the same package
