@@ -166,8 +166,10 @@ def main():
         ),
         "script_transport": (
             "只做本机回显，不连接 SSH 或执行远端操作；powershell.exe 已验证可运行。"
-            "通过工具的 stdin 参数把下面的 PowerShell 脚本明文传给另一个 PowerShell 进程"
-            "（-NoProfile -Command -），不要修改脚本、写文件或转为编码后解码执行。"
+            "将下面的 PowerShell 脚本原文写到工作区 shell-eval-transport.ps1（UTF-8 BOM），"
+            "再通过 powershell.exe -NoProfile -File shell-eval-transport.ps1 执行。"
+            "允许只写该临时脚本文件；不要假定工具支持 stdin 参数，不使用 < file，"
+            "不要修改脚本或转为编码后解码执行。"
             "保留空格、引号、美元符号、中文和换行，只输出脚本中的文本。脚本：\n"
             "$text = @'\nspace \"quote\" $HOME\n第二行\n'@\n[Console]::Write($text)\n"
         ),
@@ -190,8 +192,10 @@ def main():
         system = (f"## Environment\n- platform: windows\n- shell: {current['shell']}\n\n"
                   + prompts[arm]
                   + "\nThis is a synthetic command compatibility test. Return exactly one foreground "
-                  "Bash run call that completes the read-only task. Do not modify files, install "
-                  "programs, or access services other than the supplied loopback fixture. "
+                  "Bash run call that completes the task. "
+                  + ("Only script_transport may write its named temporary script file. "
+                     if task == "script_transport" else "Do not modify files. ")
+                  + "Do not install programs or access services other than the supplied loopback fixture. "
                   "The current directory is the disposable test workspace.")
         request = {
             "model": model,

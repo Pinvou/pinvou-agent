@@ -193,7 +193,10 @@ test('shared shell instructions preserve interpreter, transport, and probe safet
   assert.doesNotMatch(shared, /python3\s+-c\b/);
 
   assert.match(shared, /跨 shell 传递脚本要保全文本/);
-  assert.match(shared, /通过工具的 `stdin` 参数或文件输入传给目标 shell[，,]保留可检查的明文/);
+  assert.match(shared, /复杂脚本优先写成工作区脚本文件.*PowerShell 的 `-NoProfile -File script.ps1`.*保留可检查的明文/);
+  assert.match(shared, /只使用工具 schema 声明的参数.*不要假定存在 `stdin` 参数/);
+  assert.match(shared, /Windows PowerShell 5.1 不支持 `< file` 输入重定向/);
+  assert.match(shared, /通常使用 UTF-8.*Windows PowerShell 5.1.*UTF-8 BOM/);
   assert.match(shared, /不要把脚本编码后在目标端解码执行/);
   assert.doesNotMatch(shared, /可传递明确编码的载荷[，,]在目标端解码后执行/);
   assert.match(shared, /文本传输明确双方编码.*不要依赖 PowerShell 管道的默认编码/);
@@ -201,7 +204,7 @@ test('shared shell instructions preserve interpreter, transport, and probe safet
   assert.match(shared, /先用无副作用的参数回显确认.*再执行远端操作/);
   assert.match(shared, /编码不改变命令含义或授权要求/);
 
-  assert.match(shared, /每项探针独立报告结果.*区分必需检查和可选检查/);
+  assert.match(shared, /每项探针独立报告结果.*分别记录成功、失败、不适用与失败原因.*区分必需检查和可选检查/);
   assert.match(shared, /必需步骤失败应明确返回失败.*`catch` 不能只打印错误后继续报告成功/);
   assert.match(shared, /不要让最后一个可选命令或无匹配的 `grep` 覆盖前面检查的事实/);
   assert.match(shared, /不要把退出码 0 当成业务操作已完成的证明/);

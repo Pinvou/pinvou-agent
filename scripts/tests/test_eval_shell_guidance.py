@@ -127,7 +127,14 @@ class ShellGuidanceEvalTests(unittest.TestCase):
                     tasks = [request["messages"][1]["content"] for request in requests]
                     self.assertIn("C:/shell-eval/python/python.exe", tasks[0])
                     self.assertIn("不可运行的占位符", tasks[0])
-                    self.assertIn("stdin", tasks[1])
+                    self.assertIn("-NoProfile -File shell-eval-transport.ps1", tasks[1])
+                    self.assertIn("UTF-8 BOM", tasks[1])
+                    self.assertIn("不要假定工具支持 stdin 参数", tasks[1])
+                    systems = [request["messages"][0]["content"] for request in requests]
+                    self.assertIn("Only script_transport may write its named temporary script file", systems[1])
+                    self.assertNotIn("Do not modify files.", systems[1])
+                    self.assertIn("Do not modify files.", systems[0])
+                    self.assertIn("Do not modify files.", systems[2])
                     self.assertIn("$text = @'\nspace \"quote\" $HOME\n第二行\n'@\n", tasks[1])
                     self.assertIn("不连接 SSH", tasks[1])
                     self.assertIn("必需 B", tasks[2])

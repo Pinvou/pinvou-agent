@@ -59,17 +59,18 @@ those newer lifecycle claims to this older baseline without its implementation.
 ## Current application prompt follow-up (#754)
 
 The current shared prompt reuses a verified interpreter, keeps transmitted
-scripts inspectable as plaintext through files or the tool's stdin field, and
+scripts inspectable as plaintext in workspace script files executed through the
+target shell's file entry point (PowerShell: `-NoProfile -File script.ps1`), and
 separates required probe failures from optional outcomes. The historical A/B
 tables below measure the named earlier prompts, not this revised text. Text
 contract tests and offline request-generation checks do not prove model adherence.
 
 Three additional opt-in task selections cover the new failure modes:
 
-| Selection | Synthetic input | Inspect generated output for |
+| Selection | Synthetic input | Manually inspect generated output for |
 | --- | --- | --- |
 | `verified_interpreter_reuse` | One verified interpreter path and one unusable alias in the same environment | Reuse the given path, without probing aliases or declaring Python unavailable |
-| `script_transport` | A local echo-only multiline script containing quotes, spaces, a dollar sign and Chinese text | Intact plaintext in the tool's stdin field; no network access, file writes or opaque decode-and-execute transport |
+| `script_transport` | A local echo-only multiline script containing quotes, spaces, a dollar sign and Chinese text | Intact plaintext in the named temporary script file (UTF-8 BOM for Windows PowerShell 5.1), executed with `-NoProfile -File`; no network access, other file writes or opaque decode-and-execute transport |
 | `probe_outcomes` | Passing required A, deliberately failing required B, and expected no-match optional C | Independent outcomes and a final nonzero result for required B, regardless of the last optional check |
 
 Use `--arms after --tasks verified_interpreter_reuse script_transport probe_outcomes`
@@ -88,7 +89,18 @@ Live tests are opt-in and require an authorized model endpoint. The script sends
 repository-owned instructions and synthetic tasks only. It never executes model
 commands or writes credentials/provider addresses to its output.
 
-1. Export the current tool fixture using the compiled CodeWhale test:
+The fixture exporter below instantiates the hidden compatibility `BashTool`
+(`Bash`), whose schema includes `stdin`. Production foreground sessions register
+model-visible lowercase `bash` with only `command`, `timeout`,
+`sandbox_permissions`, and `justification`; its adapter rejects `stdin`. This
+evaluator forces the legacy `Bash` fixture. Its results cannot be generalized to
+the production tool surface. The file-transport task uses `command` alone and
+permits only its named temporary script file; it does not require legacy stdin.
+Windows PowerShell 5.1 does not implement `< file`; use its `-File` entry point.
+The evaluator checks response shape and JSON parsing, not task success; every
+criterion in the table needs manual review. No new live-model run is claimed.
+
+1. Export the legacy tool fixture using the compiled CodeWhale test:
 
    ```powershell
    $env:SHELL_GUIDANCE_FIXTURE = 'D:\shell-eval\fixture.json'
