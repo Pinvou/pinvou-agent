@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 01:21 Asia/Shanghai**.
+Checkpoint: **2026-10-24 02:11 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
@@ -14,8 +14,8 @@ measured hours or release readiness.
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
 The current main task is **T08 atomic current metadata publication**. T29's
 reviewed byte-custody and installed-image diagnostic components are pushed;
-its immutable-source signed-wire compatibility decision is pending. T29 is
-parked at that decision boundary. T08's current increment represents mixed
+the owner has approved a new signed immutable-source binding without legacy
+compatibility. Its implementation is queued behind T08. T08's current increment represents mixed
 genesis/published components and supplies complete authenticated current graphs
 to actual Root/issuer readers. Production publication/refresh and active deny/job
 composition remain pending. First activation still requires T14's real business
@@ -40,23 +40,44 @@ The 32 MiB limit applies to joined business metadata, not package downloads.
 
 ## Current T08 increment
 
+The complete current storage/read increment is committed and pushed in the
+separate service repository as `9fca399`. It does not complete T08 publication.
+
 The mixed current storage/read owner and the Root compatibility repair passed
 independent source and repair reviews. Three pure owner tests, two Root
 compatibility tests, three real PostgreSQL current tests and nine affected
-regressions with four subcases passed. The reference-model private Package and
+regressions with four subcases passed. Six existing actual signing-transaction
+tests with thirteen subcases also passed, covering atomic recording, SQL/runtime
+guards, final expiry, Stop during presigning and multiple Target scopes.
+The reference-model private Package and
 per-object expiry repair passed 29 tests; the architecture guard also passed.
+That reference repair is committed and pushed as `eed20df6d`.
 The initial read-budget error-mapping defect and incorrect reference-test error
 expectation were repaired, and both failed runs remain recorded.
 
-The service full default run completed with 3909 passed, 1693 skipped and two
+The initial service full default run completed with 3909 passed, 1693 skipped and two
 failed test records (one existing Windows process-fixture parent and subtest).
 An isolated repeat failed the other subcase of the same unchanged fixture. Its
 late PID lookup does not retain the original process identity, so source review
 cannot distinguish PID reuse from a termination-completion window. This is not
-reported as an environment skip or a passed full run. The proposed test-only
-repair awaits the owner's scope decision; remaining checks continue. Runtime
+reported as an environment skip or a passed full run. The owner approved a
+test-only repair that retains the original live process handles and waits for
+their termination. Independent repair review and three consecutive fixture runs
+passed. The subsequent full default run passed **3911 / skipped 1693 / failed 0**
+test records (1218 passing and 922 skipped top-level tests). Dependency
+verification, static analysis, all command builds and the pinned client-contract
+check also passed. All check processes closed naturally without a resource-guard
+breach. The previous failures remain recorded. Runtime
 publication/refresh, active deny/pending jobs and T14 first activation remain
 separate unfinished functionality. T08 remains in progress at 60%.
+
+The direct signing prerequisite is also committed and pushed as `4888054` in the
+service repository. Its finite Target/Snapshot/Timestamp preparation passed
+independent review, 94 pure test records, two actual PostgreSQL tests with two
+rollback/fencing subcases, affected static analysis and a server build. One
+original capture and budget cover the linked chain, and actual parent references
+bind verified signed child bytes. This does not implement T08's publication
+transaction or permit first activation.
 
 ## Completed T31 delivery
 
@@ -192,7 +213,8 @@ environment follow-ups, not passed tests or completion blockers. Current
 production qualification, source continuity/continuation and integration with
 the later authorized executor remain unfinished business implementation. The
 existing DownloadInfo wire lacks an authenticated immutable-source object/version
-binding; a compatible extension is awaiting the owner's decision. No ETag or QA
+binding. The owner approved a new signed immutable-source binding without legacy
+compatibility; implementation is queued after T08. No ETag or QA
 provider assertion is promoted to a production continuity proof. These increments
 do not complete T29; its engineering estimate remains unchanged pending closure.
 
