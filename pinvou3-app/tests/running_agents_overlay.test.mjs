@@ -321,6 +321,24 @@ test('mergeOverlayEntry: an ending token on a live entry does not replace the la
   );
   assert.equal(cancelled.status, 'cancelling worker');
   assert.equal(statusPresentation(cancelled, copy).text, '工作中');
+  // failed/interrupted take the same skip: a dead agent must not flash a raw
+  // English "failed" token on the live row before its completion settles it.
+  const failed = mergeOverlayEntry(
+    running,
+    { sessionId: 's1', agentId: 'agent_1', status: 'step 7: model error', workerStatus: 'failed', done: false, failed: false, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(failed.status, 'step 7: model error');
+  assert.equal(statusPresentation(failed, copy).text, '工作中');
+  const interrupted = mergeOverlayEntry(
+    running,
+    { sessionId: 's1', agentId: 'agent_1', status: 'interrupted; parent turn ended', workerStatus: 'interrupted', done: false, failed: false, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(interrupted.status, 'interrupted; parent turn ended');
+  assert.equal(statusPresentation(interrupted, copy).text, '工作中');
   // The ordered completion still settles the ending right after.
   const settled = mergeOverlayEntry(
     ending,
@@ -329,6 +347,29 @@ test('mergeOverlayEntry: an ending token on a live entry does not replace the la
     11_000,
   );
   assert.equal(statusPresentation(settled, copy).text, '已完成', 'the completion event owns the ending presentation');
+});
+
+test('mergeOverlayEntry: a lost completion still resolves the ending through the ledger', () => {
+  // If the ordered AgentComplete is lost, the next 3s ledger read is the
+  // authority: its terminal row (done + failed + the ledger's own token) must
+  // overwrite the held live label, ending the red-less "working" window.
+  const running = mergeOverlayEntry(null, ledgerRead({ status: 'model_wait', done: false, failed: false }), 's1', 10_000);
+  const holding = mergeOverlayEntry(
+    running,
+    { sessionId: 's1', agentId: 'agent_1', status: '12/40: requesting model response', workerStatus: 'model_wait', done: false, failed: false, source: 'realtime' },
+    's1',
+    10_500,
+  );
+  assert.equal(statusPresentation(holding, copy).text, '工作中');
+  const ledgerFailed = mergeOverlayEntry(
+    holding,
+    ledgerRead({ done: true, failed: true, status: 'failed' }),
+    's1',
+    14_000,
+  );
+  assert.equal(ledgerFailed.done, true);
+  assert.equal(ledgerFailed.status, 'failed', 'the ledger terminal token lands even on a token-held row');
+  assert.deepEqual(statusPresentation(ledgerFailed, copy), { text: '失败', dot: 'failed' });
 });
 
 test('isUnknownLedgerRow: orphan transcripts (done=false, no status token) are not live agents', () => {
