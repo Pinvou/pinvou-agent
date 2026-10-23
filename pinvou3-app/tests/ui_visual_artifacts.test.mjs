@@ -38,7 +38,7 @@ test('chat markdown: long tokens wrap with a Safari-14 fallback and tables keep 
   );
   assert.match(
     baseCss,
-    /\.msg-md th,\.msg-md td,\.codex-markdown th,\.codex-markdown td \{ overflow-wrap:normal; \}/,
+    /\.msg-md th,\.msg-md td,\.codex-markdown th,\.codex-markdown td,\.persona-body th,\.persona-body td \{ overflow-wrap:normal; \}/,
     'table cells must opt back out of anywhere so wide tables scroll instead of collapsing',
   );
 });

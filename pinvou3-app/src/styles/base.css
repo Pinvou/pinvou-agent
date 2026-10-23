@@ -61,7 +61,7 @@
        its min-content shrink would let auto-layout tables collapse their cells
        instead of using the block-table scroll boxes below, so cells opt out. */
     .msg-md,.persona-body,.codex-markdown { overflow-wrap:break-word; overflow-wrap:anywhere; }
-    .msg-md th,.msg-md td,.codex-markdown th,.codex-markdown td { overflow-wrap:normal; }
+    .msg-md th,.msg-md td,.codex-markdown th,.codex-markdown td,.persona-body th,.persona-body td { overflow-wrap:normal; }
     /* Block-table pattern: wide tables (LLM output routinely exceeds the panel
        width) scroll within their own box instead of clipping at the container
        edge or forcing a whole-document pan that hides the heading column. */
@@ -572,6 +572,12 @@
     .persona-body pre code { background:none; padding:0; }
     .persona-body strong { font-weight:600; }
     .persona-body hr { border:none; border-top:1px solid rgba(128,128,128,.25); margin:.8em 0; }
+    /* Block-table pattern (same recipe as .msg-md): persona bodies render LLM
+       markdown, so a wide table must scroll in its own box instead of being
+       squeezed per-character by the overflow-wrap:anywhere min-content
+       shrink the cells above opt out of. */
+    .persona-body table { border-collapse:collapse; margin:.5em 0; font-size:.92em; display:block; width:max-content; max-width:100%; overflow-x:auto; }
+    .persona-body th,.persona-body td { border:1px solid rgba(128,128,128,.3); padding:.4em .8em; }
 
 /* ── 多智能体开关行的「专家光晕」面板（原创设计，不再仿制 Claude Code） ──
    开启态整行是深紫面板，三团柔光——品红、靛蓝、薰衣草——各自以慢速独立
