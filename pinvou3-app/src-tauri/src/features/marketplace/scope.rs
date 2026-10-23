@@ -2482,6 +2482,39 @@ pub struct ConnectGrantOutcome {
     pub covered_uninitialized_scopes: Vec<String>,
 }
 
+/// The known-bundle shortcut's reliance capture (round-9 review P2). The
+/// gate's unlocked ledger pre-read can MISS a consent write that lands while
+/// this connect is in flight (the disclosed degraded-read corner), and the
+/// other operation then grants, writes its ledger, and materializes its
+/// companion layout — so THIS grant reaches the known-bundle clause with that
+/// consent standing. Returning a default outcome here dropped the reliance:
+/// the completion reported `NotRelied`, committed nothing, and the owner's
+/// late compensating revoke could still strip the consent the successful
+/// completion relied on. The read is exact under the write lock; on a refused
+/// lock it degrades to the same unlocked snapshot the gate probes use, and
+/// the completion's commit re-validates whatever was captured under the lock
+/// anyway (`commit_relied_connect_grant`).
+fn known_bundle_standing_reliance(package_id: &str) -> ConnectGrantOutcome {
+    let token_of = |file: &DisabledBundlesFile| -> ConnectGrantOutcome {
+        ConnectGrantOutcome {
+            relied_grant_token: file
+                .connect_grant_tokens
+                .get(package_id)
+                .cloned()
+                .unwrap_or_default(),
+            ..ConnectGrantOutcome::default()
+        }
+    };
+    // Exact under the held write lock (`load_disabled_bundles_file_locked`,
+    // NOT the try-read probe: it would self-degrade against this very lock);
+    // on a refused lock degrade to the same unlocked snapshot the gate
+    // probes use.
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        Ok(token_of(&load_disabled_bundles_file_locked()))
+    })
+    .unwrap_or_else(|_| token_of(&load_disabled_bundles_file()))
+}
+
 fn grant_connect_enable_inner(
     package_id: &str,
     ledger_gated: bool,
@@ -2495,7 +2528,7 @@ fn grant_connect_enable_inner(
         return Ok(ConnectGrantOutcome::default());
     }
     if consent_gate_bundle_already_known(package_id) {
-        return Ok(ConnectGrantOutcome::default());
+        return Ok(known_bundle_standing_reliance(package_id));
     }
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         // Operation identity (round-6 review P2): this grant's ownership
@@ -4222,6 +4255,65 @@ mod tests {
             assert!(
                 load_disabled_bundles_file().connect_granted.is_empty(),
                 "the recheck must not record a grant over the recorded consent"
+            );
+        });
+    }
+
+    /// Round-9 review P2: the known-bundle shortcut must carry the standing
+    /// grant's reliance token, not drop it. The gate's unlocked ledger
+    /// pre-read can MISS a consent write that lands mid-connect (the
+    /// disclosed degraded-read corner), so the inner grant then reaches the
+    /// known-bundle clause with the other operation's grant + ledger + token
+    /// standing. A default outcome there captured no relied token: the
+    /// completion reported `NotRelied`, committed nothing, and the owner's
+    /// late compensating revoke stripped the consent the successful
+    /// completion relied on. (The outer probes — the gate pre-read and the
+    /// in-lock recheck — already capture; the shortcut is the third exit and
+    /// was the one that dropped the token. It is deterministically reachable
+    /// only through the crate-internal grant: through the public gate a
+    /// standing ledger makes the pre-read capture first, so the pin calls the
+    /// inner fn directly and the completion's commit machinery stays covered
+    /// by the round-7/8 body pins.)
+    #[test]
+    fn known_bundle_shortcut_captures_the_standing_reliance_token() {
+        with_temp_home("pinvou3-scope-known-shortcut-reliance", || {
+            // The other operation's grant stands: ledger pair + ownership
+            // token (its materialization is in flight).
+            let grant_a = grant_connect_enable_inner("feishu", false).unwrap();
+            assert!(grant_a.granted, "fixture: the standing grant lands");
+            // The known-bundle clause fires on the store-record leg — an
+            // installed record with its package dir on disk — so the
+            // shortcut, not any ledger probe, is what decides the exit.
+            plant_installed_record("feishu", BundleSource::Preset);
+            std::fs::create_dir_all(paths::bundles_root().join("feishu")).unwrap();
+
+            let outcome = grant_connect_enable_inner("feishu", false).unwrap();
+            assert!(
+                !outcome.granted,
+                "the shortcut must not grant a fresh consent over the standing one: {outcome:?}"
+            );
+            assert_eq!(
+                outcome.relied_grant_token, grant_a.grant_token,
+                "the shortcut must capture the standing grant's token: {outcome:?}"
+            );
+            // The captured reliance commits — the completion's requirement —
+            // and the owner's late revoke leaves the consent standing.
+            assert_eq!(
+                commit_relied_connect_grant("feishu", &outcome.relied_grant_token).unwrap(),
+                ReliedGrantCommit::Committed,
+                "the shortcut-captured reliance must commit"
+            );
+            revoke_connect_enable(&grant_a).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the stale revoke must not delete the committed grant: {file:?}"
+            );
+            assert!(
+                file.install_default_synced
+                    .iter()
+                    .any(|entry| entry.ends_with(":feishu")),
+                "the ledger pair the completion relied on must survive: {file:?}"
             );
         });
     }
