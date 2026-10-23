@@ -6,11 +6,14 @@
 # Arch mapping (binary_arch()) only knows amd64/arm64/riscv64/... and errors
 # out on the loongarch64-unknown-linux-gnu triple. This script rebuilds the
 # exact same package the bundler would produce, derived from the bundler
-# version the repo actually bundles with: @tauri-apps/cli 2.11.4 contains
-# tauri-bundler 2.9.4 (verified against the Cargo.lock of the upstream tag
-# tauri-cli-v2.11.4, commit 8909f221d1515955fc843808032bdc5d62209c96;
-# source: https://static.crates.io/crates/tauri-bundler/tauri-bundler-2.9.4.crate,
-# files src/bundle/linux/debian.rs and src/bundle/linux/freedesktop/mod.rs).
+# version the repo actually bundles with: @tauri-apps/cli 2.12.4 contains
+# tauri-bundler 2.10.4 (verified against the Cargo.lock of the upstream tag
+# tauri-cli-v2.12.4, commit 993038c49185307dfc895ab7657d77ca0d5ed7c7;
+# source: https://static.crates.io/crates/tauri-bundler/tauri-bundler-2.10.4.crate,
+# files src/bundle/linux/debian.rs and src/bundle/linux/freedesktop/mod.rs;
+# re-derived for the 2.11.4 -> 2.12.4 CLI bump: the 2.9.4 -> 2.10.4 delta in
+# those files is cosmetic — rustfmt import ordering and `unwrap_or` ->
+# `unwrap_or_else` — so the replicated parity below is unchanged).
 #
 # Upstream route (removal trigger): the bundler gap is a small upstream fix —
 # an `Arch::LoongArch64` variant, the `binary_arch()` arm, and the debian
