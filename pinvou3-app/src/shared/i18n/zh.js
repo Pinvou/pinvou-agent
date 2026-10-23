@@ -654,7 +654,7 @@ dictZh.uiToolDetails.showRawErrors = true;
 // manifest 逐字一致的具体文案——这是用户可见的文案改进(#575 有意为之,非零变化)。
 Object.assign(dictZh.uiToolDetails.tools, {
   'app-automations':{ title:'定时任务', subtitle:'桌面对话管理任务，对象不明确时先确认', latency:'本地', desc:'在桌面 Operate/Yolo 对话中创建、查看任务及修改名称、模型和暂停状态。删除目标明确时直接执行；重名或指代不清时先向用户确认。无任务定义备份或撤销；覆盖提示词或计划需到定时任务面板检查并提交。通过结果卡片和面板核对结果；后台运行禁用子代理。需应用保持运行。Plan 和 CLI 不支持。工具本地运行。关闭：在 settings.json 的 disabled_builtin_features 加入 scheduled-task-automation 后重启（暂无界面开关）。', welcomeQueries:['每天 8:30 创建一个 AI 早报定时任务','6 月 1 日 9:30 提醒我一次','暂停早报任务','查看已有任务'] },
-  'session-reader':{ title:'会话读取', subtitle:'读取本机其他会话的历史记录；可向其他会话发送消息', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史（在输入框 @ 引用某个会话后按需翻页读取），并可向其他会话投递消息（以发送者卡片形式送达；默认安装，纯本地读取会话文件，不联网、不上传，投递写入审计）。内置插件不可卸载；可通过内置功能开关关闭会话读取。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
+  'session-reader':{ title:'会话读取', subtitle:'读取本机其他会话的历史记录；发送消息；创建新会话', latency:'本地', desc:'让 AI 只读、分页地读取本机其他 Pinvou 会话的历史（在输入框 @ 引用某个会话后按需翻页读取），并可向其他会话投递消息（以发送者卡片形式送达），或以必填发送者、预算门控的方式创建新会话（默认安装，纯本地读取会话文件，不联网、不上传，投递与创建均写入审计）。内置插件不可卸载；可通过内置功能开关关闭会话读取与会话创建。', welcomeQueries:['总结一下我引用的这个会话','我上次那个会话进行到哪一步了'] },
   weather:{ title:'高德天气', subtitle:'高德地图实时天气与多日预报', desc:'通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', configTitle:'高德天气 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'去创建 Web 服务 Key', configFields:[{key:'AMAP_KEY', label:'高德 Web 服务 API Key', helpText:'请选择「Web 服务」类型。', placeholder:'粘贴高德 Web 服务 Key'}], welcomeQueries:['杭州今天天气','北京这周会下雨吗','上海明天穿什么'] },
   iwencai:{ title:'同花顺问财', subtitle:'A股行情、财务、选股、宏观、新闻', desc:'基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', configTitle:'问财 Key', configDescription:'Key 只保存在本机凭据，不写入 mcp.json。', configDocLabel:'打开问财 SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'问财 API Key', helpText:'进入任一官方 Skill，在「安装方式」中复制。', placeholder:'粘贴 IWENCAI_API_KEY'}], welcomeQueries:['茅台最新股价','今天大盘怎么样','市盈率低于10的银行股','最近降息新闻'] },
   card3:{ title:'QQ邮箱 API', subtitle:'智能邮件收发与线程提炼', desc:'提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。' },
@@ -690,7 +690,7 @@ dictZh.uiBuiltinPlugins = {
   versionNote:'随应用升级',
   dataAccessLabel:'数据访问范围',
   levels:{ L0:'只读：不修改任何状态，内容标注为不可信', L1:'写入：会产生用户可见的副作用（如发消息、建任务）', L2:'破坏性：删除/覆盖等不可逆操作，需显式授权' },
-  dataAccess:{ 'sessions.read':'本机会话存储（只读）', 'sessions.write':'向本机其他会话发送消息（写入）', 'automations.read':'本机定时任务列表（只读）', 'automations.write':'创建、修改、删除本机定时任务（写入）' },
+  dataAccess:{ 'sessions.read':'本机会话存储（只读）', 'sessions.write':'向本机其他会话发送消息或创建会话（写入）', 'automations.read':'本机定时任务列表（只读）', 'automations.write':'创建、修改、删除本机定时任务（写入）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md

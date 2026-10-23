@@ -419,10 +419,11 @@ mod tests {
 
     /// Feature registry: session-reader's tool_features aggregate into
     /// session-mention / long-memory (the two read tools) and
-    /// session-messaging (the send tool); app-automations' five tools
+    /// session-messaging (the send tool) and session-creation (the create
+    /// tool); app-automations' five tools
     /// aggregate into scheduled-task-automation — the registry is the union
     /// over all builtin manifests, so the new family must appear alongside
-    /// the session-reader features without disturbing them.
+    /// session-reader features without disturbing them.
     #[test]
     fn registry_aggregates_session_reader_features() {
         crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
@@ -433,6 +434,7 @@ mod tests {
                 [
                     "long-memory",
                     "scheduled-task-automation",
+                    "session-creation",
                     "session-mention",
                     "session-messaging"
                 ],
@@ -464,6 +466,15 @@ mod tests {
             assert_eq!(
                 messaging.tools,
                 ["mcp_session-reader_send_message_to_session".to_string()]
+            );
+            // The create tool serves its own switchable feature.
+            let creation = registry
+                .iter()
+                .find(|f| f.id == "session-creation")
+                .unwrap();
+            assert_eq!(
+                creation.tools,
+                ["mcp_session-reader_create_session".to_string()]
             );
             // The app-automations family: all five tools under one feature,
             // owned by the app-automations plugin only.
@@ -524,11 +535,29 @@ mod tests {
                 ]
             );
 
-            // Re-enable one read feature: only the send tool stays removed.
+            // Session-creation off as well: the create tool joins the
+            // removals (round-29 minor: this arm existed only in the
+            // python suite — deleting the create mapping stayed green
+            // here).
+            set_feature_enabled("session-creation", false).unwrap();
+            assert_eq!(
+                feature_disabled_tool_names(),
+                [
+                    "mcp_session-reader_create_session".to_string(),
+                    "mcp_session-reader_list_sessions".to_string(),
+                    "mcp_session-reader_read_session".to_string(),
+                    "mcp_session-reader_send_message_to_session".to_string()
+                ]
+            );
+
+            // Re-enable one read feature: send and create stay removed.
             set_feature_enabled("long-memory", true).unwrap();
             assert_eq!(
                 feature_disabled_tool_names(),
-                ["mcp_session-reader_send_message_to_session".to_string()]
+                [
+                    "mcp_session-reader_create_session".to_string(),
+                    "mcp_session-reader_send_message_to_session".to_string()
+                ]
             );
         });
     }
