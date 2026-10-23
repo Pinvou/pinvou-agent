@@ -828,37 +828,25 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     /// rebuild-then-reapply pair: a crash can never leave the fresh form without
     /// the preserved fields.
     ///
-    /// Returns `(missing_keys, cleared_preserved_disabled)`: the
-    /// required-credential keys whose wiring could not be restored (empty =
-    /// fully wired), and whether a preserved `disabled: true` was cleared.
-    /// Under the credential rule the written entry then carries
-    /// `disabled: true` — an entry that cannot authenticate must not be
+    /// Returns the required-credential keys whose wiring could not be restored
+    /// (empty = fully wired). Under the credential rule the written entry then
+    /// carries `disabled: true` — an entry that cannot authenticate must not be
     /// enabled (the caller's note names the keys and the reinstall fix). The
     /// rule wins over a preserved `disabled: false`: a hand re-enable of an
     /// entry whose credential is gone would recreate the enabled-but-unwired
-    /// state this rule exists to prevent; the note discloses the flip. When
-    /// every required credential DID resolve, a preserved `disabled: true`
-    /// is stale — this rebuild writes as fresh an entry as the wholesale
-    /// install writer, and keeping the flag would leave a wired, keyed entry
-    /// disabled with no signal (readiness reports Ready) — so it is cleared,
-    /// and the note discloses that too. A preserved `enabled: false` — the
-    /// engine toggle's converged stamp writes both flags together, and
-    /// doctor-fix writes `enabled: false` alone — is another writer's state:
-    /// the clear is skipped while it stands, keeping the stamp pair intact.
+    /// state this rule exists to prevent; the note discloses the flip. A
+    /// preserved `disabled: true` is kept: bare `disabled: true` is also the
+    /// engine's valid hand-edit stop (`is_enabled` is `enabled && !disabled`,
+    /// with an omitted `enabled` defaulting to true), the file carries no mark
+    /// separating that user stop from this rule's own earlier auto-disable, and
+    /// a repair is not a user request to re-enable — the caller's note
+    /// discloses the kept flag instead.
     pub(super) fn write_rebuilt_local_entry(
         &self,
         manifest: &ToolManifest,
         server_dir: &std::path::Path,
         preserved: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(Vec<String>, bool), String> {
-        let preserved_had_disabled =
-            preserved.get("disabled").and_then(|v| v.as_bool()) == Some(true);
-        // A preserved `enabled: false` marks a converged engine stamp (its
-        // toggle writes both flags together) or a deliberate hand disable —
-        // another writer's state this rebuild must not churn: the stale-flag
-        // clear below is only for an entry that is otherwise enabled.
-        let preserved_had_enabled_false =
-            preserved.get("enabled").and_then(|v| v.as_bool()) == Some(false);
+    ) -> Result<Vec<String>, String> {
         let mut entry =
             self.build_local_server_entry(manifest, &HashMap::new(), server_dir, None, true)?;
         if let Some(object) = entry.as_object_mut() {
@@ -869,19 +857,15 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         // Judge the FINAL entry form (fresh wiring + preserved user fields):
         // a preserved hand edit can change the judged shape (a hand-added
         // `url` makes a hybrid the engine launches remotely), so judging the
-        // pre-merge form could disable — or clear the flag of — an entry on
-        // channels the final form does not even use.
+        // pre-merge form could disable an entry on channels the final form
+        // does not even use.
         let missing_secrets = entry_secret_keys_without_wiring(
             manifest,
             entry.as_object().unwrap_or(&serde_json::Map::new()),
         );
-        let mut cleared_preserved_disabled = false;
-        if let Some(object) = entry.as_object_mut() {
-            if !missing_secrets.is_empty() {
+        if !missing_secrets.is_empty() {
+            if let Some(object) = entry.as_object_mut() {
                 object.insert("disabled".to_string(), serde_json::Value::Bool(true));
-            } else if preserved_had_disabled && !preserved_had_enabled_false {
-                object.remove("disabled");
-                cleared_preserved_disabled = true;
             }
         }
         with_mcp_json_lock(|| {
@@ -893,7 +877,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             servers.insert(manifest.id.clone(), entry);
             write_json_pretty(&mcp_path, &mcp)
         })?;
-        Ok((missing_secrets, cleared_preserved_disabled))
+        Ok(missing_secrets)
     }
 
     pub(super) fn remove_from_mcp_json(&self, tool_id: &str) -> Result<(), String> {

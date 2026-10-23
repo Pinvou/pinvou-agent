@@ -2544,11 +2544,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// exceptions: a rebuilt entry whose required credential no longer
     /// resolves is written `disabled: true` under the credential rule,
     /// overriding a preserved `disabled: false` — the note discloses it —
-    /// and a rebuilt entry whose required credentials all resolve again has
-    /// a preserved `disabled: true` cleared (the rebuild writes as fresh an
-    /// entry as the wholesale install writer; a kept flag would strand a
-    /// wired, keyed entry disabled with no signal) — the note discloses
-    /// that too.
+    /// and a rebuilt entry with no credential gap keeps a preserved
+    /// `disabled: true` (the file carries no mark separating a user's hand
+    /// stop from the app's own earlier auto-disable, and a repair is not a
+    /// user request to re-enable) — the note discloses that too.
     fn reconcile_local_mcp_entry(
         &self,
         manifest: &ToolManifest,
@@ -2557,8 +2556,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     ) {
         let Some(entry) = snapshot.get(&manifest.id) else {
             match self.rebuild_local_mcp_entry(manifest, &serde_json::Map::new()) {
-                // An empty preserved map can never carry a flag to clear.
-                Ok((missing_secrets, _)) => {
+                Ok(missing_secrets) => {
                     let mut note =
                         format!("tool '{}': restored missing mcp.json entry", manifest.id);
                     if let Some(caveat) = Self::credential_disabled_caveat(&missing_secrets) {
@@ -2603,7 +2601,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             })
             .unwrap_or_default();
         match self.rebuild_local_mcp_entry(manifest, &preserved) {
-            Ok((missing_secrets, cleared_preserved_disabled)) => {
+            Ok(missing_secrets) => {
                 let mut note = format!(
                     "tool '{}': rebuilt mcp.json entry with {reason}",
                     manifest.id
@@ -2617,11 +2615,15 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 }
                 if let Some(caveat) = Self::credential_disabled_caveat(&missing_secrets) {
                     note.push_str(&caveat);
-                }
-                if cleared_preserved_disabled {
+                } else if entry.get("disabled").and_then(|v| v.as_bool()) == Some(true) {
+                    // No gap and the old entry still carries `disabled: true`:
+                    // the rebuild kept the flag (a hand stop or a previous
+                    // auto-disable — the file cannot say which), so name it —
+                    // otherwise readiness reports Ready while the tool never
+                    // launches.
                     note.push_str(
-                        "; its preserved disabled flag was cleared — every credential the \
-                         rebuilt entry needs resolves",
+                        "; its preserved disabled flag was kept — the rebuilt \
+                         entry stays disabled",
                     );
                 }
                 actions.push(note);
@@ -2681,16 +2683,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// the rebuild is refused when the manifest-derived command is empty or its
     /// absolute command/script target would not exist — never write a knowingly
     /// dead entry, and never rewrite the same dead target on every startup.
-    /// Returns `(missing_keys, cleared_preserved_disabled)` — the
-    /// required-credential keys whose wiring could not be restored (empty =
-    /// fully wired) and whether a preserved `disabled: true` was cleared;
-    /// the callers turn a non-empty list into the disabled-entry caveat and
-    /// the flag into the clearing disclosure on the note.
+    /// Returns the required-credential keys whose wiring could not be
+    /// restored (empty = fully wired); the callers turn a non-empty list
+    /// into the disabled-entry caveat, and a preserved `disabled: true`
+    /// that survives a gapless rebuild into the kept-flag disclosure on
+    /// the note.
     fn rebuild_local_mcp_entry(
         &self,
         manifest: &ToolManifest,
         preserved: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(Vec<String>, bool), String> {
+    ) -> Result<Vec<String>, String> {
         mcp_catalog::ensure_package_released(&manifest.id)?;
         let server_dir = mcp_catalog::package_mcp_dir(&manifest.id);
         // Judge exactly the launch target the writer produces, via the same
@@ -12134,13 +12136,15 @@ pub(crate) mod tests {
         });
     }
 
-    /// The rebuild writes as fresh an entry as the wholesale install writer:
-    /// once every required credential resolves again (an out-of-band
-    /// keychain restore), a later dead-target repair clears the stale
-    /// preserved `disabled: true` instead of stranding a wired, keyed entry
-    /// disabled — and the note discloses the clearing.
+    /// A preserved `disabled: true` survives even a fully-wired rebuild:
+    /// the flag a keyless restore wrote is byte-identical to a user's hand
+    /// stop in mcp.json, the file carries no mark to tell them apart, and a
+    /// repair is not a user request to re-enable — so the rebuild keeps the
+    /// flag and the note discloses it. The wired path back is an explicit
+    /// user action: the store card's Configure reinstall (fresh-install
+    /// form, no preserved fields) or the engine toggle.
     #[test]
-    fn reconcile_rebuild_fully_wired_clears_preserved_disabled_flag() {
+    fn reconcile_rebuild_fully_wired_keeps_preserved_disabled_flag() {
         with_temp_home(|| {
             write_local_tool_fixture("reclr-x", true);
             write_installed_ids(&["reclr-x".to_string()]);
@@ -12170,19 +12174,25 @@ pub(crate) mod tests {
             let boot2 = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(boot2.len(), 1, "{boot2:?}");
             assert!(
-                boot2[0].contains("rebuilt") && boot2[0].contains("cleared"),
-                "the rebuild must disclose the flag clearing: {boot2:?}"
+                boot2[0].contains("rebuilt") && boot2[0].contains("kept"),
+                "the rebuild must disclose that the preserved flag stands: {boot2:?}"
             );
             let entry = &read_mcp_json()["servers"]["reclr-x"];
             assert_eq!(
                 entry["env"]["AMAP_KEY"],
                 serde_json::Value::String(format!("${{{}}}", mcp_secret_env_var("AMAP_KEY"))),
-                "the rebuilt entry must be fully wired: {entry}"
+                "the rebuilt entry must still be fully wired: {entry}"
+            );
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the preserved flag is kept even though every credential resolves: \
+                 {entry}"
             );
             assert!(
-                entry.get("disabled").is_none(),
-                "a wired rebuild of an entry whose credential resolves must not keep the \
-                 stale flag: {entry}"
+                entry.get("enabled").is_none(),
+                "the rebuild must not invent an enabled stamp beside the kept flag: \
+                 {entry}"
             );
 
             assert_reconcile_idempotent(&manager, &mcp_path);
@@ -13034,8 +13044,8 @@ pub(crate) mod tests {
 
     /// A preserved engine-toggle stamp (`enabled: false` + `disabled: true`)
     /// is another writer's converged state: even a fully-wired rebuild keeps
-    /// the pair intact instead of clearing the flag (the note's clearing
-    /// disclosure would overstate — the entry still boots for nobody).
+    /// the pair intact, and the note discloses the kept flag instead of a
+    /// clearing that no longer happens (the entry still boots for nobody).
     #[test]
     fn reconcile_rebuild_keeps_engine_disabled_stamp_pair() {
         with_temp_home(|| {
@@ -13064,9 +13074,10 @@ pub(crate) mod tests {
             let boot2 = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(boot2.len(), 1, "{boot2:?}");
             assert!(
-                boot2[0].contains("rebuilt") && !boot2[0].contains("cleared"),
-                "a converged stamp must not be cleared, and the note must not \
-                 claim it was: {boot2:?}"
+                boot2[0].contains("rebuilt")
+                    && boot2[0].contains("kept")
+                    && !boot2[0].contains("cleared"),
+                "a converged stamp must be kept and disclosed, never cleared: {boot2:?}"
             );
             let entry = &read_mcp_json()["servers"]["stamp-x"];
             assert_eq!(
@@ -13083,6 +13094,47 @@ pub(crate) mod tests {
                 entry["disabled"],
                 serde_json::Value::Bool(true),
                 "the stamp pair stays converged: {entry}"
+            );
+
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A user's bare `disabled: true` — the engine's valid hand-edit stop
+    /// (`is_enabled` is `enabled && !disabled`, an omitted `enabled`
+    /// defaulting to true) — survives a dead-target repair of a
+    /// credential-free tool: the file carries no mark separating that hand
+    /// stop from the app's own earlier auto-disable, and a repair is not a
+    /// user request to re-enable. Main's repair preserves the same input.
+    #[test]
+    fn reconcile_repair_keeps_a_disabled_only_entry_disabled() {
+        with_temp_home(|| {
+            write_local_tool_fixture("keepd-x", false);
+            write_installed_ids(&["keepd-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "keepd-x": {
+                    "command": "python3",
+                    "args": ["/nonexistent/stale/server.py"],
+                    "disabled": true
+                }
+            }));
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("rebuilt") && actions[0].contains("kept"),
+                "the note must disclose that the preserved disable stands: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["keepd-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a user's explicit disable must survive repair: {entry}"
+            );
+            assert!(
+                entry.get("enabled").is_none(),
+                "the repair must not invent an enabled stamp beside it: {entry}"
             );
 
             assert_reconcile_idempotent(&manager, &mcp_path);
