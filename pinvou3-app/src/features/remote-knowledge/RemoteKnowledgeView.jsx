@@ -94,7 +94,7 @@ function NoticeBanner({ notice, onClose, role, owner = false, closeLabel }) {
   return (
     <div
       role={role || (error ? 'alert' : 'status')}
-      className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${error ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f] dark:text-[#ff8a80]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a] dark:text-[#7DD3A8]'}`}
+      className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${error ? 'border-[#d63a3a]/20 bg-[#d63a3a]/[0.08] text-[#b72f2f] dark:text-[#ff8a80]' : 'border-[#18a957]/20 bg-[#18a957]/[0.08] text-[#16894a] dark:text-[#7DD3A8]'}`}
     >
       {error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
       <span className={`min-w-0 flex-1 ${owner ? 'break-words' : 'break-all'}`}>{notice.text}</span>
@@ -1623,7 +1623,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                   )}
                 </div>
               </div>
-              {selectedConnection.error && <p className="mt-3 rounded-xl bg-[#d63a3a]/8 px-3 py-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{selectedConnection.error}</p>}
+              {selectedConnection.error && <p className="mt-3 rounded-xl bg-[#d63a3a]/[0.08] px-3 py-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{selectedConnection.error}</p>}
             </section>
 
             <section>
@@ -1827,7 +1827,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                 <p className={`text-[12px] leading-5 ${muted}`}>{t.remoteKbHostProgressHint}</p>
               )}
               {hostProgress.phase === 'failed' && (
-                <div data-testid="shared-kb-host-progress-error" className="flex items-start gap-2 rounded-xl bg-[#d63a3a]/8 px-3.5 py-3 text-[12px] leading-5 text-[#b72f2f] dark:text-[#ff8a80]">
+                <div data-testid="shared-kb-host-progress-error" className="flex items-start gap-2 rounded-xl bg-[#d63a3a]/[0.08] px-3.5 py-3 text-[12px] leading-5 text-[#b72f2f] dark:text-[#ff8a80]">
                   <AlertTriangle size={16} className="mt-0.5 shrink-0" />
                   <span className="min-w-0 break-words">{hostProgress.error}</span>
                 </div>
@@ -1959,7 +1959,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                     <p id="remote-join-source-help" data-testid="remote-join-source-help" className={`text-[12px] leading-5 ${muted}`}>{t.remoteKbJoinHint}</p>
                   </div>
                 )}
-                {connectorError && <p role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/8 px-3.5 py-3 text-[12px] leading-5 text-[#b72f2f] dark:text-[#ff8a80]">{connectorError}</p>}
+                {connectorError && <p role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/[0.08] px-3.5 py-3 text-[12px] leading-5 text-[#b72f2f] dark:text-[#ff8a80]">{connectorError}</p>}
                 <div className="mt-5 flex justify-end gap-2">
                   <button type="button" className={quiet} onClick={() => {
                     if (identityProbe) setIdentityProbe(null);

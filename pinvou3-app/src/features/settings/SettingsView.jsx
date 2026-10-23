@@ -154,14 +154,14 @@ function hasStoredCredential(record) {
           );
         }
         return (
-          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/18 dark:text-[#64B5F6]`}>
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/[0.18] dark:text-[#64B5F6]`}>
             <Code size={compact ? 17 : 19} strokeWidth={2.2} />
           </span>
         );
       }
       if (preset === 'local_vllm') {
         return (
-          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/18 dark:text-[#64B5F6]`}>
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-[#007AFF]/10 text-[#007AFF] dark:bg-[#0A84FF]/[0.18] dark:text-[#64B5F6]`}>
             <Cpu size={compact ? 18 : 20} strokeWidth={2.2} />
           </span>
         );
@@ -938,7 +938,7 @@ function hasStoredCredential(record) {
       const renderLocalPicker = () => {
         const rows = localCandidateRows(localDetectResult);
         const mutedText = 'text-[#8A8A8E] dark:text-[#98989D]';
-        const actionClass = `shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/28`;
+        const actionClass = `shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28]`;
         return (
           <div className="space-y-4">
             <section>
@@ -1143,7 +1143,7 @@ function hasStoredCredential(record) {
                 </span>
                 <button type="button" data-testid="image-capability-test" onClick={handleImageCapabilityTest}
                   disabled={imageTesting || !model.trim() || !baseUrl.trim()}
-                  className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/28' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16'}`}>
+                  className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 ${isDark ? 'bg-[#0A84FF]/20 text-[#0A84FF] hover:bg-[#0A84FF]/[0.28]' : 'bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16]'}`}>
                   {imageTesting ? t.testingConn : settingsCopy.imageCapabilityTest}
                 </button>
               </div>
@@ -1330,7 +1330,7 @@ function hasStoredCredential(record) {
                         {testResult ? testResult.message : settingsCopy.testBeforeSave}
                       </span>
                       <button type="button" onClick={handleTest} disabled={testing || !baseUrl.trim()}
-                        className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/16 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/28`}>
+                        className={`shrink-0 min-h-8 px-3 rounded-full text-[14px] font-medium disabled:opacity-45 bg-[#007AFF]/10 text-[#007AFF] hover:bg-[#007AFF]/[0.16] dark:bg-[#0A84FF]/20 dark:text-[#0A84FF] dark:hover:bg-[#0A84FF]/[0.28]`}>
                         {testing ? t.testingConn : t.testConnection}
                       </button>
                     </div>

@@ -193,7 +193,7 @@ export function RuntimeNotice({
       </div>
     );
   }
-  if (noticeMode === 'error') return <div className="rounded-xl bg-red-500/8 text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
+  if (noticeMode === 'error') return <div className="rounded-xl bg-red-500/[0.08] text-red-600 dark:text-red-300 px-3 py-2 text-[12px]">{visibleError}</div>;
   return null;
 }
 
