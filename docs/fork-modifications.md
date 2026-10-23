@@ -63,6 +63,8 @@
 - 覆盖：登记头处 8 个 `forkguard_tachyon_*` 测试——tui 侧 `forkguard_tachyon_effort_ladder_never_emits_high`、`forkguard_tachyon_max_maps_to_xhigh`、`forkguard_tachyon_stream_separates_reasoning_for_unknown_model_ids`、`forkguard_tachyon_picker_preserves_normalized_effort_on_reopen`、`forkguard_tachyon_thinking_capability_is_route_scoped`、`forkguard_tachyon_fleet_accepts_explicit_reasoning_for_served_ids`、`forkguard_tachyon_inventory_requires_an_active_or_configured_route`（inventory 仅认活跃/显式配置路线），config 侧 `forkguard_tachyon_only_provider_table_survives_config_store_save`（仅配置 Tachyon 的设置经 ConfigStore save/reload 与二次重写存活；复退旧实现四测失败）；config 侧零上下文窗口拒绝参数化；route_billing 本地免计费回归。forkguard 门禁命令（`cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`）在登记头 `083cebfd9`（Linux）实测 214 过/0 挂；#113 合并评审记录为 212。
 
 ## 0. 当前状态（2026-10-23）
+
+- 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
 - 当前父仓候选：`4bf5e08940fec17b6e86fd0c0fc741580fca3283`，相对 v0.9.12 为 81 个提交，79 个带 DCO；已包含公开维护头 `e9a7f48da169bf89399a11592e4d22a7b721cb39`。来源 CodeWhale#117 当前头 `3bc47717c416e9c9f15ace808a413a968945da67`。本次合并保留原候选历史与来源；既有测试回执保持原执行边界，新组合树 CI 尚待确认。公开维护头不包含此候选，B1/B2 公共对齐门禁仍未满足。
 
 - 当前公开维护头（父仓候选另列）：`e9a7f48da169bf89399a11592e4d22a7b721cb39`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。
