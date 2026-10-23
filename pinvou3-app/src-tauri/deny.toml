@@ -26,7 +26,7 @@ ignore = [
     # 0.41 would trip the advisory and fail CI again — reassess then.
     #
     # RUSTSEC-2026-0367/0368/0369 (zip 8.x extract-family) RETIRED:
-    # calamine 0.37 requires zip ^9, and both parent workspaces now pin
+    # calamine 0.37 requires zip ^9, and all three workspaces now pin
     # calamine = "0.37" — the graph converges on a single zip 9.0.5 and no
     # longer contains a vulnerable zip. The round-30 reachability note (the
     # graph never calls the wholesale `ZipArchive::extract()` /
@@ -42,7 +42,8 @@ ignore = [
     # 0.30). For the record: 0.26.11 was a semver compatibility shim
     # carrying no root data of its own — it re-exported `TLS_SERVER_ROOTS`
     # from webpki-roots 1.0.10, the patched line every parent lock
-    # resolves; no patched 0.26.x release exists (0.26.11 is the last).
+    # resolves; the current DB lists 0.26.11 itself as patched (it is the
+    # last 0.26.x release).
     # If a future advisory-DB revision re-covers the shim, the advisories
     # check fails CI again — re-add an ignore with that justification then,
     # or (the real cleanup) migrate those consumers to webpki-roots 1.x.

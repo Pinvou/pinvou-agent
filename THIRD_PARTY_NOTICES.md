@@ -18,7 +18,7 @@ Their original licenses remain in effect.
 | DOMPurify | 3.4.17 | npm dependency bundled by Vite (`pinvou3-app/package.json`) | Apache-2.0 OR MPL-2.0 | https://github.com/cure53/DOMPurify |
 | @tanstack/react-virtual | 3.14.22 | npm dependency bundled by Vite (`pinvou3-app/package.json`) | MIT | https://github.com/TanStack/virtual |
 | chrome-devtools-mcp | 1.12.0 | Self-contained Windows build vendored at build time into `pinvou3-app/src-tauri/resources/platforms/windows/chrome-devtools-mcp/` (shipped under `runtime/chrome-devtools-mcp`); npm tarball SHA-512-verified; package-internal `build/src/third_party/THIRD_PARTY_NOTICES` preserved | Apache-2.0 | https://github.com/ChromeDevTools/chrome-devtools-mcp |
-| Tailwind CSS | 3.4.17 | npm development dependency; compiled into application CSS by Vite/PostCSS | MIT | https://github.com/tailwindlabs/tailwindcss |
+| Tailwind CSS | 3.4.19 | npm development dependency; compiled into application CSS by Vite/PostCSS | MIT | https://github.com/tailwindlabs/tailwindcss |
 | Material Icon Theme | Iconify snapshot exported 2026-07-29 | 13 SVG file-type glyphs inlined in `pinvou3-app/src/shared/artifact-utils.js` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
 | Material Icon Theme (file/folder icon subset) | Upstream `main` snapshot downloaded 2026-07-30 | 43 SVG file/folder icons vendored in `pinvou3-app/src/file-icons/theme/` | MIT | https://github.com/material-extensions/vscode-material-icon-theme |
 | cc-switch (provider preset data) | Public preset list (trimmed 2026-08-05) | Base URL / protocol presets in `pinvou3-app/src/features/settings/acp-provider-catalog.js` | MIT | https://github.com/farion1231/cc-switch |
