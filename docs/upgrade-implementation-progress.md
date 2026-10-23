@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 13:50 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 16:08 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; T25's bounded offline ASN source-owner component is now delivered.
 Remaining T13/T25/T47 composition and local acceptance are pending.
@@ -107,7 +107,8 @@ test trees permit bounded parallel compilation while retaining resource guards:
   actual review of all source and ELF bytes. Three further current-source Linux
   amd64 unit-test executables also compiled and passed independent static review,
   containing 47 top-level test declarations. None has run on Linux; static test
-  inventory is not a passing-test count. Fresh media preparation remains pending.
+  inventory is not a passing-test count. The current ISO and off-only preparation
+  have since passed independent review; external guest execution is in progress.
 - T25's controlled offline ASN source owner passed independent deep source review:
   initial installation, CAS disable, exact original-request recovery and current
   local lookup preserve the original audit and operation boundaries. Formatting
@@ -14909,7 +14910,8 @@ boundary. The original five-minute MFA, eight-minute setup, sixty-second observa
 64-member, 32 MiB and 4,096-reference limits remain unchanged. Source-only analysis
 identifies repeated validation, integrity/history verification, source collection,
 PostgreSQL work and test observation as measurement candidates, with no verified
-root cause. A minimal CPU diagnostic plan is source preparation only.
+root cause. The subsequent closed CPU diagnostic and focused optimization results appear
+below; neither supersedes these failed capacity experiments.
 
 T34's fresh resolver assembly contained 4,517 exact inputs. All eight normal targeted
 offline Cargo updates returned zero and all trees drained naturally, but the freeze
@@ -14931,7 +14933,86 @@ The next T25 source candidate contains seven event-owner first-SQL-acceptance pa
 current-installed-version attribution, server UTC day/week, original replay/recovery
 and retention/pruning controls. Its 58 paths passed independent deep source review. Forty-six Go source copies
 were formatted under the original process/resource guards, with original sources
-and non-Go copies unchanged. Independent formatting semantic review and a fresh
-whole-source test tree remain pending; no product test or delivery is claimed.
+and non-Go copies unchanged. Independent formatting review and the fresh 2,369-input source assembly
+are complete. Focused pure and primary native results appear below; no delivery
+is claimed for this candidate.
 Trusted network edge input remains unfinished. No
 whole task is advanced by these preparations.
+
+
+## Current-source qualification checkpoint (2026-10-23 16:08)
+
+Task completion remains 5/47 (10.6%) and the equal-task engineering estimate stays
+32.9%. The following scoped results do not complete T10, T25, T34 or T47.
+
+The current T25 accepted-event attribution candidate passed its focused pure
+run: 28 top-level tests, 58 subtests and six packages, with zero skips or failures.
+Independent actual review verified all 2,369 physical source files and their
+before/after identities, complete Go output and exact run/pass sets. All 222
+processes in its original Job exited naturally; resource floors held. The
+primary PostgreSQL run completed with a failure: 24 top-level tests and 60
+subtests passed; one top-level test and three subtests failed, with zero skips
+across two packages. The failed subtests are resume, activation and late-transaction
+in the seven-family attribution test. Independent actual review confirmed natural
+process closure, unchanged current inputs and no resource-floor breach. The
+original failure and null post-failure proof fields are retained. Root corrected
+the HTTP late-event command expectation and added names to the sixteen original
+provisioning steps; independent source review passed this test-only repair.
+Targeted native retesting remains pending. Coverage is explicitly limited to
+seven HTTP event families: the distinct legacy late-only facade still needs its
+own acceptance test. Preserved regressions, fresh retention helper binaries,
+final checks, commit and delivery remain pending for this candidate.
+
+T34's eight full Windows metadata commands completed under the original process
+and resource guards. Independent review verified the 4,517-source graph and
+found 21 of the 25 approved changed lock-edge occurrences in the default Windows
+graph, covering 15 of 16 affected crates. The app's uds_windows occurrence is a
+non-root development dependency; winapi-util in the three download leaf locks is
+reachable through Android JNI or an optional docsrs branch, absent from this
+default Windows graph. The regression plan now correctly names winapi-util for
+those three leaf locks and socket2 among the app's additional dependencies.
+Windows compilation and runtime regression for the approved changes remain
+pending. Metadata materialization alone does not qualify those regressions.
+
+The closed dense CPU capture was parsed with Go's genuine offline pprof tool.
+Independent actual review qualified the original capture and both analysis
+commands while retaining the original failed business test. The profile covers
+485.06 seconds and 481.51 CPU sample seconds. strictjson.Canonical has 41.01%
+cumulative CPU attribution; these nested cumulative percentages overlap and
+must not be added. This profile does not measure PostgreSQL server CPU or waits
+and does not establish the complete timeout cause or a capacity bracket.
+
+A scoped rollout optimization reuses freshly validated canonical plan bytes
+within one synchronous call. Independent production and combined test review
+passed for three production files and three test-only files: eight new top-level
+differential tests, 135 subtests and 16 equal-work benchmark leaves. The old
+validation closure is frozen as a test-only oracle. Closed schemas, semantic
+checks, whole-record/instance limits, public errors and all owner authentication
+and history checks are preserved. Fresh guarded formatting passed with exact
+caller identity and independent token/ASI equivalence; an earlier normalized-
+newline digest record was retained as unqualified and superseded by this fresh
+execution. The focused actual run subsequently passed all eight top-level tests,
+135 subtests and one package with zero skips or failures. Independent actual review
+verified all 2,507 unchanged inputs, complete process closure and all 48 equal-work
+benchmark results (sixteen leaves, three repetitions, ten iterations each). In the
+100-stage ValidateInstance sample, median time changed from 34,116,430 to
+16,490,810 ns/op (-51.66%) and median allocation bytes from 19,014,830 to
+9,530,518 B/op (-49.88%). These are fixed-input microbenchmark measurements, not
+full workflow or capacity results. Original owner/native regressions and the
+unchanged eight-minute dense experiment remain pending; prior failures remain.
+
+The current Linux scanner test ISO was built and independently verified without
+host mounting: ISO9660 and Joliet each contain the exact ten expected members,
+with matching extents and full member digests. This includes the current scanner
+and three current Linux unit executables. The original seven-process off-only
+edit then exited naturally and published a new exclusive preparation record;
+only the optical-media path changed while the VM was off. Independent actual
+review passed this off-only preparation. The final observer packet passed
+independent source review with 24 fields, 79 pinned inputs and all eighteen
+custody identities. Root verified all 79 current inputs and exclusively created
+the exact reviewed observer manifest. The owner has launched the required
+external PowerShell command and confirms it is still running. No live serial,
+source or actual-result inspection is performed before original observer closure.
+The 47 current Linux test titles and 37 expected evidence blobs, including nine
+original native returns, still need closed-run qualification. No Linux runtime
+pass or whole-task acceptance is inferred from construction or compilation.
