@@ -294,7 +294,16 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
                 if canonical == ledger_canonical || canonical == shadow_dir_canonical {
                     continue;
                 }
-                if !skip_dirs.contains(entry.file_name().to_string_lossy().as_ref()) {
+                // r24 B1：跳过集按小写比较——大小写变体构建目录（Dist/）与
+                // info/exclude 的 icase 字符类同向，否则预算遍历与排除语义
+                // 在大小写敏感文件系统上劈叉。
+                if !skip_dirs.contains(
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .as_str(),
+                ) {
                     stack.push(path);
                 }
             } else {
@@ -970,11 +979,15 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     if let Some(parent) = info_attrs.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    // r24 minor 3：与 info/exclude 的 r13-M3 修复同款——非原子写可被并发的
+    // git 进程读到半截钉（半行 = 部分属性不生效）。同目录临时文件 + rename。
+    let attrs_tmp = info_attrs.with_extension("tmp");
     fs::write(
-        &info_attrs,
+        &attrs_tmp,
         "* !filter\n* !diff\n* !merge\n* !working-tree-encoding\n",
     )
-    .context("写入 info/attributes 失败")?;
+    .context("写入 info/attributes 临时文件失败")?;
+    fs::rename(&attrs_tmp, &info_attrs).context("替换 info/attributes 失败")?;
     // r23 M4：`--name-only --get-regexp` 输出的 section/key 一律小写——旧
     // 正则的大小写敏感 `core\.sshCommand` 永不命中（死代码，与 r17 的「输出
     // 形状击败解析器」同类）；subsection 可含点（`remote.evil.x.url` 实证
@@ -1064,22 +1077,36 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
             _ => key,
         };
         if !section.is_empty() {
-            let _ = git(
-                &repo,
-                execution_root,
-                &["config", "--local", "--remove-section", section],
-            );
+            // r24 minor 1：单段顶层键（core.sshcommand）不得 --remove-section
+            // core——那会把 ensure_repo 几行前刚写下的 core.autocrlf /
+            // ignorecase / filemode 钉一并抹掉。顶层节精确 --unset-all 去键，
+            // 多段节（filter.pwn / remote.evil）仍整节移除。
+            if !section.contains('.') {
+                let _ = git(
+                    &repo,
+                    execution_root,
+                    &["config", "--local", "--unset-all", key],
+                );
+            } else {
+                let _ = git(
+                    &repo,
+                    execution_root,
+                    &["config", "--local", "--remove-section", section],
+                );
+            }
         }
     }
-    // 排除列表 = 忽略目录（原样）+ 敏感模式（恒大小写不敏感的字符类形式）。
-    // 三层防护必须同向（评审 B1）：exclude（本文件）让 .ENV 类变体永不进
-    // 快照、且因「被 ignored」不受 clean -fd 波及；purge pathspec（恒 icase）
-    // 清掉存量 index 条目；预览过滤（恒 icase）挡住 legacy 快照里的原文。
-    // 若 exclude 放行而 purge icase，restore 会把移出 index 的真实文件交给
-    // clean 物理删除——这就是 B1 事故链，字符类模式让它在任何文件系统上闭合。
+    // 排除列表 = 忽略目录（恒大小写字符类，r24 B1）+ 敏感模式（同款字符类）。
+    // 三层防护必须同向（评审 B1）：exclude（本文件）让 .ENV 类与大小写变体
+    // 构建目录（Dist/）永不进快照、且因「被 ignored」不受 clean -fd 波及；
+    // purge pathspec（恒 icase）清掉存量 index 条目；预览过滤（恒 icase）
+    // 挡住 legacy 快照里的原文。r24 B1 实证：shadow 腿裸小写时，大小写敏感
+    // 文件系统上的 Dist/ 不被 ignore、被 icase purge 移出 index、restore 的
+    // clean -fd 物理删除会话前就存在的真实文件且预览不可见——字符类让三层
+    // 在任何文件系统上闭合。
     let mut excludes: Vec<String> = SHADOW_EXCLUDES
         .iter()
-        .map(|line| line.to_string())
+        .map(|line| icase_gitignore_pattern(line))
         .chain(
             SECRET_EXCLUDES
                 .iter()
@@ -1719,11 +1746,13 @@ pub fn apply_restore(
 ) -> Result<()> {
     let execution_root = canonical_execution_root(execution_root)?;
     // r23 M3：apply_restore 是唯一不经 ensure_repo 就执行 read-tree /
-    // checkout-index 的窗口——attributes 钉与危险 config 清洗只在 ensure_repo
-    // 建立，而崩溃/对账重放路径直达这里。无竞争的过滤执行窗：被动代理文件
-    // 写可植入工作区 .gitattributes + [filter]/partialClone config，
-    // `checkout-index -f -a` 会执行 smudge 过滤器、read-tree 会触发 promisor
-    // 懒取链（git 2.43 实证，评审 r23 M3）。顶部刷新卫生（幂等，ms 级）。
+    // checkout-index 的窗口（update-ref/gc 的 invalidate 路径同样运行在
+    // ensure_repo 之外、其执行根参数穿线列为 follow-up——r24 minor 2）。
+    // attributes 钉与危险 config 清洗只在 ensure_repo 建立，而崩溃/对账重放
+    // 路径直达这里。无竞争的过滤执行窗：被动代理文件写可植入工作区
+    // .gitattributes + [filter]/partialClone config，`checkout-index -f -a`
+    // 会执行 smudge 过滤器、read-tree 会触发 promisor 懒取链（git 2.43
+    // 实证，评审 r23 M3）。顶部刷新卫生（幂等，ms 级）。
     let repo = ensure_repo(ledger_root, &execution_root)?;
     git_ok(&repo, &execution_root, &["read-tree", &meta.commit])
         .context("读取 checkpoint 快照失败")?;
@@ -1767,6 +1796,13 @@ pub fn apply_restore(
     // checkpoints/** 会把项目无辜同名目录挡在 clean 语义之外，预览与实际
     // 行为背离）。
     let mut clean_args: Vec<String> = vec!["clean".into(), "-fd".into()];
+    // r24 B1：shadow 腿与秘密腿同款 icase 字符类——裸小写在大小写敏感文件
+    // 系统上挡不住 Dist/ 变体，被 icase purge 移出 index 的真实文件会被
+    // clean -fd 物理删除（评审实证，会话前就存在的用户文件）。
+    for pattern in SHADOW_EXCLUDES {
+        clean_args.push("-e".into());
+        clean_args.push(icase_gitignore_pattern(pattern));
+    }
     for pattern in SECRET_EXCLUDES {
         clean_args.push("-e".into());
         clean_args.push(icase_gitignore_pattern(pattern));
@@ -3297,6 +3333,59 @@ mod tests {
             exec.read(".ENV").as_deref(),
             Some("SECRET=after\n"),
             "大写秘密文件必须在 restore 后存活且内容不变"
+        );
+    }
+
+    /// r24 B1 回归：大小写变体构建目录（Dist/，用户配置只排除小写 dist/）
+    /// 在大小写敏感文件系统上曾被「info/exclude 裸小写不命中 + icase purge
+    /// 移出 index + clean -fd 无 shadow -e 腿」三层错位物理删除，且预览不
+    /// 可见。修复后：icase 字符类三层同向——Dist/ 被忽略（不进快照）且
+    /// restore 后存活、内容不变；普通文件照常回退。
+    #[test]
+    fn case_variant_shadow_exclude_dir_survives_restore() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("distcase-ledger");
+        let exec = TestDir::new("distcase-exec");
+        exec.write(".gitignore", "dist/\n");
+        exec.write("Dist/assets.bin", "user asset\n");
+        exec.write("ok.txt", "v1\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        exec.write("ok.txt", "v2\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
+
+        // 大小写变体目录不进快照（exclude 恒 icase）。
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("Dist/assets.bin")),
+            "大小写变体构建目录不得进快照: {tracked}"
+        );
+
+        // 回退到 turn 1：Dist/ 必须存活（此前被 clean -fd 物理删除）。
+        restore_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        assert_eq!(exec.read("ok.txt").as_deref(), Some("v1\n"));
+        assert_eq!(
+            exec.read("Dist/assets.bin").as_deref(),
+            Some("user asset\n"),
+            "大小写变体构建目录必须在 restore 后存活（r24 B1 数据丢失）"
         );
     }
 

@@ -14,6 +14,7 @@
 
 
 import { RotateCcw } from '../../components/icons.jsx';
+import { rewindUndoBodyText } from './checkpoints.js';
 
 
 export function RewindChip({ entry, disabled, copy, onOpen }) {
@@ -52,12 +53,6 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
 // 撤销文案按 state.checkpointId 分流：有绑定回滚点 = 文件+对话一起恢复；
 // null = 被撤销的那次回退是仅对话降级（文件未动过），撤销也只还原对话，
 // 文案必须如实、不得承诺恢复文件。
-function rewindUndoBodyText(copy, state) {
-  return state?.checkpointId
-    ? copy.rewindUndoBody(state.rewoundTurns)
-    : copy.rewindUndoBodyConversationOnly(state.rewoundTurns);
-}
-
 export function RewindUndoChip({ state, disabled, copy, onOpen }) {
   return (
     <div className="my-1 flex justify-center">
