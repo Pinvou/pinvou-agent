@@ -1623,7 +1623,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                   )}
                 </div>
               </div>
-              {selectedConnection.error && <p className="mt-3 rounded-xl bg-[#d63a3a]/[0.08] px-3 py-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{selectedConnection.error}</p>}
+              {selectedConnection.error && <p className="mt-3 rounded-xl bg-[#d63a3a]/[0.08] px-3 py-2 text-[12px] text-[#b72f2f] dark:text-[#ff8a80]">{selectedConnection.error}</p>}
             </section>
 
             <section>

@@ -160,13 +160,19 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'runtime-notice hints must raise contrast in dark mode');
   // Action buttons and detail texts carry their AA-passing recipes: dark ink
   // on the amber fill (white was 2.15:1), red-600 under white (red-500 was
-  // 3.76:1), and the file's red-600 + red-300 pair on error details.
+  // 3.76:1), and the file's red-600 + red-300 pair on error details. The
+  // tinted error banner darkens its light leg to red-700: red-600 sat at
+  // 4.35:1 on the restored red-500/[0.08] tint, below AA.
   assert.match(acpNotices, /bg-amber-500 text-amber-950 text-\[12px\]/,
     'the authorize button must use dark ink on the amber fill');
   assert.match(acpNotices, /rounded-xl bg-red-600 px-3 py-1\.5/,
     'the account switch must use red-600 under white text');
-  assert.ok(count(acpNotices, /text-red-600 dark:text-red-300/g) >= 5,
+  assert.match(acpNotices, /bg-red-500\/\[0\.08\] text-red-700 dark:text-red-300/,
+    'the tinted error banner must darken its light leg to red-700');
+  assert.ok(count(acpNotices, /text-red-600 dark:text-red-300/g) >= 4,
     'error details must use the file red-600 + red-300 pair');
+  assert.match(remoteKnowledge, /bg-\[#d63a3a\]\/\[0\.08\] px-3 py-2 text-\[12px\] text-\[#b72f2f\]/,
+    'the tinted connection-error banner must use the file deep-red ink (d63a3a sat at 4.14:1 on its own tint)');
 });
 
 test('tool store: hint, dialogs, labels, badge, icon', () => {
