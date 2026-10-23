@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 90 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 91 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,8 +7,8 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Review candidate above the published #115/#116/#117 maintenance base.
-EXPECTED_HEAD="c2d5ca61081ed0147dfd4a329f04ca31457424b4"
-EXPECTED_COMMITS=90
+EXPECTED_HEAD="ac8b7e77935a9da3d1df3af585573742ff44dc1e"
+EXPECTED_COMMITS=91
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="ea9fdc90f1c90335554833195eeeb847c83d82dd"
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
@@ -72,6 +72,8 @@ fi
 bold "── Layer 1: registered themes and parent-adaptation fingerprints ──"
 # Format: theme|description|file relative to parent root|grep -F literal
 fingerprints=(
+  "T2|Test metadata summary loss requests recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_run_tests_metadata_summary_cut_requests_recovery"
+  "T2|Child report artifact retains exact bytes and ids|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_report_artifact_keeps_exact_bytes"
   "T2|Deferred subagent report names explicit activation fallback|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn stamp_subagent_summary_truncates_when_over_budget"
   "T2|Legacy spillover names explicit activation fallback|CodeWhale/crates/tui/src/tools/truncate.rs|fn truncation_footer_without_an_artifact_names_the_legacy_retrieval_route"
   "T2|Preserved output activates only allowed retrieval schema|CodeWhale/crates/tui/src/core/engine/tool_catalog/tests.rs|fn forkguard_preserved_output_activates_only_available_retrieval_schema"
