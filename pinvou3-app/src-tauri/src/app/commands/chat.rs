@@ -8,9 +8,9 @@ use crate::features::assistant::engine::TurnReservation;
 use crate::features::assistant::engine_pool::user_display_message;
 use crate::features::assistant::image_capability::{EffectiveImageCapability, ImageInputMode};
 
-/// 原生 chat 车道拒绝 ACP 会话的统一文案：chat() 本体两处、accept_plan、
-/// edit_last_turn、memory 的 web seam 与 remote_control 共六处文本站点共用
-/// （车道不变量的门面）。
+/// 原生 chat 车道拒绝 ACP 会话的统一文案：chat() 本体两处（入口 +
+/// chat_with_reservation 缝内自查）、accept_plan、compact_now、edit_last_turn、
+/// remote_control 的 web seam 共六处文本站点共用（车道不变量的门面）。
 pub(crate) const ACP_CHAT_LANE_REJECTED: &str = "ACP 代码会话必须通过独立代码页面发送";
 
 /// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
@@ -347,6 +347,20 @@ pub(crate) async fn chat_with_reservation(
         let checkpoint_label = super::sessions::strip_session_mention_block(&display_content)
             .trim()
             .to_string();
+        // r23 M1：崩溃对账的重放臂是破坏性的——用真实探针预计算栅栏（压缩在
+        // 飞 / 同根对端忙碌时顺延对账），与 rewind_to_turn 的栅栏同款。
+        let reconcile_gates = super::checkpoints::ReconcileGates {
+            compaction_in_flight: pool.is_compaction_in_flight(&sid),
+            peer_busy: super::checkpoints::same_root_replay_busy(
+                store,
+                &pool,
+                &acp_pool,
+                &sid,
+                &roots.execution,
+            )
+            .await
+            .unwrap_or(true),
+        };
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store,
             &sid,
@@ -354,6 +368,7 @@ pub(crate) async fn chat_with_reservation(
             roots.execution.clone(),
             checkpoint_label,
             "chat",
+            reconcile_gates,
         )
         .await;
     }

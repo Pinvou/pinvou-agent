@@ -192,6 +192,8 @@ check-then-act 窗口为「复检返回 → apply 启动」（毫秒级）；app
 - 定时会话的快照与回退（2026-10-08 门放宽时维持排除：sched- 轮次不走
   chat/accept_plan 快照缝，命令族按 `SessionKind::ScheduledRun` 拒绝；与 fork
   拒绝口径一致）。
+- 辅助会话（aux-）的快照与回退（与定时会话同款维持排除：chat/accept_plan
+  快照缝按 `is_aux_session_id` 跳过；无快照即无回退入口）。
 - turn 内/单文件粒度回退、逐 edit keep/undo。
 - 对话 redo（sidecar 仅留数据）。
 - 按会话归因回退、worktree 会话隔离（v2 独立评估）。

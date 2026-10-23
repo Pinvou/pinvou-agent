@@ -233,6 +233,19 @@ pub async fn accept_plan(
     if store.scheduled_profile(&session_id).is_none()
         && !crate::features::sessions::is_aux_session_id(&session_id)
     {
+        // r23 M1：崩溃对账重放臂的栅栏输入（与 chat() 同款，真实探针预计算）。
+        let reconcile_gates = super::checkpoints::ReconcileGates {
+            compaction_in_flight: pool.is_compaction_in_flight(&session_id),
+            peer_busy: super::checkpoints::same_root_replay_busy(
+                store.inner(),
+                &pool,
+                &acp_pool,
+                &session_id,
+                &roots.execution,
+            )
+            .await
+            .unwrap_or(true),
+        };
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store.inner(),
             &session_id,
@@ -240,6 +253,7 @@ pub async fn accept_plan(
             roots.execution,
             display_content.clone(),
             "accept_plan",
+            reconcile_gates,
         )
         .await;
     }
