@@ -103,6 +103,12 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
 /// Always-load only affects deferral and does not bypass `disallowed`
 /// (deny wins).
 pub const PINVOU3_ALWAYS_LOADED_TOOLS: &[&str] = &[
+    // The shared instructions name this family directly. Deny rules still win.
+    "mcp_app-automations_create_scheduled_task",
+    "mcp_app-automations_list_scheduled_tasks",
+    "mcp_app-automations_read_scheduled_task",
+    "mcp_app-automations_update_scheduled_task",
+    "mcp_app-automations_delete_scheduled_task",
     "request_user_input",
     "image_analyze",
     "load_skill",
@@ -132,4 +138,22 @@ pub fn is_pinvou3_allowed(name: &str) -> bool {
         rule.strip_suffix('*')
             .map_or_else(|| name == rule, |prefix| name.starts_with(prefix))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn scheduled_family_is_available_without_tool_search() {
+        for verb in [
+            "create_scheduled_task",
+            "read_scheduled_task",
+            "list_scheduled_tasks",
+            "update_scheduled_task",
+            "delete_scheduled_task",
+        ] {
+            let name = format!("mcp_app-automations_{verb}");
+            assert!(super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&name.as_str()));
+            assert!(super::is_pinvou3_allowed(&name));
+        }
+    }
 }

@@ -172,8 +172,11 @@
 | `0bc868ff0` | T4 修复 | drain-cap 测试的四个名字（`drain_pipe`/`DRAIN_CAPTURE_CAP`/`DRAIN_CAP_TRUNCATED_NOTE`/`Arc`/`Mutex`）不再经 tests mod 的 unix 门控 glob（#77 同形）解析，改为显式导入：测试本身平台无关（tokio duplex），Windows lib test 编译此前 7 处 E0425/E0433（#95） |
 | `906ffa979` | T5 修复 | Windows 硬链接计数改走稳定句柄 API：`number_of_links` 仍 unstable（`windows_by_handle`），父仓 Windows 腿 E0658；以 `GetFileInformationByHandle` 读取（与 Runtime store 身份检查同机制），无法打开/查询按单链接放行、由归档写入端的流式读取大声暴露真实问题；unix/fallback 臂仅增加未用 path 参数保持单一调用点（#94） |
 | `7624cd3db` | T4 特性 | human-wait 墙钟暂停（自主 #75 剥离，按 12-agent 对抗复审重建）：可交付决策面（runtime API 的 `decide_approval`/`submit_user_input`）上的审批/用户输入等待窗暂停任务墙钟并让 idle 时钟窗闭后全新重计，TUI 私有任务运行时无投递通道故不武装该窗、墙钟照常到期；聚合 24h fail-safe 上限跨整任务求和，超限以 `HumanWaitTimeout` 终态；parked 轮询自 200ms 捕获节奏倍退至 2s 上限、决策到达广播提前唤醒；逐 claim 突变验证红绿互钉（#78） |
+| `7d2636993` | T2 fix | Preserve shell defaults when task environment overlays are merged; explicit Windows names override case-insensitively. CodeWhale#115 adds generic overlay and Windows foreground/background Python stdio regressions; child-env sanitization and public signatures are unchanged. |
+| `e9a7f48da` | T2 fix | Preserve failed tool results as `is_error:true` during history recording. Existing upstream round-trip regression covers HTTP/tool errors, success and schema-loaded non-execution. CodeWhale#116; no public signature/dependency change. |
+| `ea9fdc90f` | T2 help/contract | Document the already supported Web JSONPath subset; one schema-description string changes, with a resultful parser-contract regression. No execution/parser/API/dependency change (CodeWhale#117). |
 
-除 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
+除 #116 squash `e9a7f48da` 与 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
 ## 4. T1 — 宿主嵌入与路由边界
 
@@ -376,3 +379,21 @@
 - 教训登记（2026-10-15）：gh squash 合并自定义 body 只保留主题列表、丢失 sign-off 尾部，使 #107 squash `f27672935` 成为 71 个登记提交中唯一未签者；「全部带签」的失实由 #705 写入、经 #712 延续，跨两个登记批才在 #706 订正。squash 合并必须把 `Signed-off-by:` 尾部写进提交信息；每个登记批必须按 `git rev-list --grep=^Signed-off-by:` 实数签数，不得沿用上一批的计数叙述。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
+
+## 2026-10-23 consumed baseline: Python stdio environment defaults (T2)
+
+CI public-baseline verification detected maintenance head `7d2636993` replacing `083cebfd9`. This parent consumes the already merged CodeWhale#115; it does not create another foundation patch or behavior topic. `CommandSpec::with_env` now merges through `with_env_var` so shell defaults survive empty/nonempty task overlays. On Windows, explicit environment names override earlier spellings case-insensitively; child environment sanitization still applies. Public signatures and dependency files are unchanged, so no app API adapter is needed.
+
+Existing upstream regressions cover generic overlays, Windows shell defaults and both Python execution lanes. Fingerprints pin those tests. Native Windows execution belongs to the corresponding upstream/parent CI; local Linux checks do not claim to exercise those cfg(windows) tests. The immutable r3 closure tag remains `61cb769be`. Recount:77 registered commits /76 commits with a signoff (the historical #107 exception is unchanged).
+
+## 2026-10-23 consumed baseline: failed tool result flags (T2)
+
+The live maintenance head advanced again to `e9a7f48da` (CodeWhale#116) while #115 validation was running. The only production change passes `(!output.success).then_some(true)` into the existing history-content builder instead of discarding the failure flag. The added upstream regression persists/restores HTTP failures, execution errors, success and schema-loaded non-execution. Public signatures, stored schema and dependencies are unchanged; no app adapter or new fork patch is needed. The existing T2 tool-result boundary owns this fix.
+
+Recount at this head:78 registered commits,76 with a signoff; #116's squash message introduces a second missing-footer exception alongside historical #107. This inventory records the public commit as observed; it does not claim an upstream report or rewrite. The parent repository's own commits remain signed. The immutable closure tag is unchanged.
+
+## 2026-10-23 consumed help-only baseline: JSONPath subset (T2)
+
+The public verifier advanced to `ea9fdc90f` (CodeWhale#117) between the parent and child pushes. The entire production delta from `e9a7f48da` is one Web `fields.description` string; execution, parsing, public signatures, dependencies and persisted schema are unchanged. The added resultful test drives advertised selectors through the real parser and verifies unsupported recursive descent/filters. The new fingerprint is under existing T2; no new fork patch/topic is introduced. Recount79 registered/77 signed commits; #107/#116 remain the only missing-footer exceptions.
+
+The preceding e9 execution regressions are retained as such. This help-only update is checked through current consumer compilation, Clippy and the current foundation schema/fork contracts; retained prior full-suite counts must not be presented as fresh runs at this documentation-only head.

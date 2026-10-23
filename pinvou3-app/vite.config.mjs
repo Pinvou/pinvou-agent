@@ -439,7 +439,11 @@ export const lazyChunkContracts = {
   archiveConfirmDialog: ['components/ArchiveConfirmDialog.jsx', 'ArchiveConfirmDialog'],
 };
 
-export function assertLazyChunks(bundle, contracts = lazyChunkContracts) {
+export const lazyToolChunkContracts = {
+  scheduledTaskCard: ['features/tools/scheduled-task-card.jsx', 'ScheduledTaskToolCard'],
+};
+
+export function assertLazyChunks(bundle, contracts = { ...lazyChunkContracts, ...lazyToolChunkContracts }) {
   for (const [modulePath, label] of Object.values(contracts)) {
     const chunks = Object.values(bundle).filter(output => output.type === 'chunk'
       && Object.keys(output.modules).some(moduleId => moduleId.replaceAll('\\', '/')
@@ -501,7 +505,16 @@ function enforceLazyChunks() {
 // 82 B over the 504_000 ceiling this PR last raised. The picker/grouping
 // helpers are render-path synchronous and cannot defer; the ceiling is
 // the measured projection, not padded.
-export const MAIN_ENTRY_BUDGET_BYTES = 505_000;
+//
+// 505_000 → 506_000 (PR #628 follow-ups, measured per policy):
+// The author explicitly approved 506_000 on 2026-10-21 after reviewing
+// both targets. On this branch, npm ci with pinned Vite 8.3.4 / Node 22.23.1
+// produces 505,454 B web and 502,135 B desktop. Review 5596933329 measured
+// its combined tree with main@0baf7fa6c at 505,848 / 502,533 B; that is
+// 152 B web headroom, not a reproduced toolchain-tolerance allowance.
+// The card/parser remain lazy. Future combined trees must pass this gate;
+// this cap does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 506_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex as SyncMutex, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -62,6 +62,8 @@ fn scheduled_execution_limits() -> TaskExecutionLimits {
     }
 }
 
+#[path = "creation_requests.rs"]
+pub(crate) mod creation_requests;
 #[path = "stores.rs"]
 mod stores;
 
@@ -93,6 +95,20 @@ impl ScheduledConversationDeleter for EnginePool {
     }
 }
 
+/// Clone: the creation-request watcher (features/scheduled/creation_requests)
+/// runs on a clone of the state while the panel-facing managed state stays the
+/// original. All heavy handles are Arc-shared; the two scheduler JoinHandles
+/// live in `Arc<SyncMutex<Option<_>>>` slots (EnginePool idle-reaper pattern),
+/// and the watcher guard sits in its own slot (`creation_watch`).
+///
+/// Drop semantics, stated precisely (round-11 MAJOR-1 note): Drop runs on
+/// EVERY dropped clone — it cancels the shared scheduler token and aborts
+/// the scheduler/retention handles — which is safe ONLY while the clone
+/// inventory stays exactly {the managed state, the watcher task}, whose
+/// drops coincide. A third clone would let its drop tear down the
+/// scheduler for everyone (the engine_pool idle-reaper rule: a clone whose
+/// dropping would stop the sweep must not exist).
+#[derive(Clone)]
 pub struct ScheduledTaskState {
     automations: SharedAutomationManager,
     task_manager: Option<SharedTaskManager>,
@@ -102,12 +118,16 @@ pub struct ScheduledTaskState {
     task_kinds: ScheduledTaskKindStore,
     ui_metadata: ScheduledTaskUiMetadataStore,
     history_archive: ScheduledHistoryArchiveStore,
-    operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
+    operation_locks: Arc<ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
     pool: Option<EnginePool>,
     fallback_model: String,
     scheduler_cancel: Option<CancellationToken>,
-    scheduler_handle: Option<tokio::task::JoinHandle<()>>,
-    retention_handle: Option<tokio::task::JoinHandle<()>>,
+    #[allow(dead_code)]
+    scheduler_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
+    #[allow(dead_code)]
+    retention_handle: Arc<SyncMutex<Option<tokio::task::JoinHandle<()>>>>,
+    #[allow(dead_code)]
+    creation_watch: Arc<SyncMutex<Option<creation_requests::CreationWatchGuard>>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -252,7 +272,7 @@ const SCHEDULED_TASK_CHAT_PROMPT: &str = r#"我想创建一个 Pinvou 定时任�
 ```
 输出代码块后不要继续提问，也不要假装自己调用了创建命令；前端会负责创建任务。"#;
 
-fn scheduled_automation_root() -> std::path::PathBuf {
+pub(crate) fn scheduled_automation_root() -> std::path::PathBuf {
     crate::platform::paths::pinvou3_home().join("automations")
 }
 
@@ -281,7 +301,10 @@ impl ScheduledTaskState {
         bridge: &Pinvou3Bridge,
         pool: EnginePool,
         sessions: SessionStore,
+        app: &tauri::AppHandle,
     ) -> Result<Self> {
+        creation_requests::prepare_request_directories()
+            .context("prepare scheduled request directories")?;
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
             ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())?;
@@ -345,7 +368,7 @@ impl ScheduledTaskState {
             read_state.clone(),
             cancel.clone(),
         );
-        Ok(Self {
+        let mut state = Self {
             automations,
             task_manager: Some(task_manager),
             sessions,
@@ -354,13 +377,18 @@ impl ScheduledTaskState {
             task_kinds,
             ui_metadata,
             history_archive,
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: Some(pool),
             fallback_model,
             scheduler_cancel: Some(cancel),
-            scheduler_handle: Some(scheduler_handle),
-            retention_handle: Some(retention_handle),
-        })
+            scheduler_handle: Arc::new(SyncMutex::new(Some(scheduler_handle))),
+            retention_handle: Arc::new(SyncMutex::new(Some(retention_handle))),
+            creation_watch: Arc::new(SyncMutex::new(None)),
+        };
+        // 会话创建定时任务的 spool 排水（features/scheduled/creation_requests）：
+        // 随运行时启动一次，生命周期跟随 state（Drop 取消）。
+        state.start_creation_watcher(app.clone());
+        Ok(state)
     }
 
     fn operation_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -383,6 +411,7 @@ impl ScheduledTaskState {
         input: CreateScheduledTaskInput,
     ) -> Result<ScheduledTaskDto, String> {
         let manager = self.automations.lock().await;
+        let requested_paused = input.paused.unwrap_or(false);
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
         // The kind is validated before any persistence/normalization; junk values are
@@ -396,15 +425,31 @@ impl ScheduledTaskState {
         {
             return Err("memory organize tasks require memory to be enabled".to_string());
         }
+        let mut request = build_create_request(
+            input,
+            current_automation_model(&self.fallback_model),
+            current_yolo_allow_shell(),
+        )?;
+        // Publish scheduling only after workspace/binding/kind are committed.
+        // A crash before that boundary leaves an inert paused record.
+        request.status = Some(AutomationStatus::Paused);
         let created = manager
-            .create_automation(build_create_request(
-                input,
-                current_automation_model(&self.fallback_model),
-                current_yolo_allow_shell(),
-            )?)
+            .create_automation(request)
             .map_err(|err| format!("Failed to create scheduled task: {err}"))?;
-        let created = ensure_automation_workspace(&manager, created)
-            .map_err(|err| format!("Failed to create scheduled task workspace: {err:#}"))?;
+        let created_id = created.id.clone();
+        let created = match ensure_automation_workspace(&manager, created) {
+            Ok(created) => created,
+            Err(error) => {
+                if let Err(rollback) = manager.delete_automation(&created_id) {
+                    log::warn!(
+                        "[scheduled] create workspace rollback failed; record remains paused: {rollback:#}"
+                    );
+                }
+                return Err(format!(
+                    "Failed to create scheduled task workspace: {error:#}"
+                ));
+            }
+        };
         if let Err(error) =
             self.model_bindings
                 .set(&created.id, requested_model_id, created.model.clone())
@@ -437,6 +482,19 @@ impl ScheduledTaskState {
                 return Err(format!("Failed to save scheduled task kind: {error:#}"));
             }
         }
+        let created = if requested_paused {
+            created
+        } else {
+            match manager.resume_automation(&created.id) {
+                Ok(active) => active,
+                Err(error) => {
+                    if let Err(rollback) = manager.delete_automation(&created.id) {
+                        log::warn!("[scheduled] create activation rollback failed: {rollback:#}");
+                    }
+                    return Err(format!("Failed to activate scheduled task: {error:#}"));
+                }
+            }
+        };
         Ok(map_scheduled_task_with_run_state(
             created,
             false,
@@ -450,10 +508,20 @@ impl ScheduledTaskState {
     async fn update_task(
         &self,
         id: String,
-        input: UpdateScheduledTaskInput,
+        mut input: UpdateScheduledTaskInput,
     ) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
+        if input.model_id.is_some()
+            && input.model.is_none()
+            && manager
+                .get_automation(&id)
+                .map_err(|error| format!("Failed to read scheduled task '{id}': {error:#}"))?
+                .model
+                .is_none()
+        {
+            input.model = Some(self.fallback_model.clone());
+        }
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
@@ -468,6 +536,10 @@ impl ScheduledTaskState {
                     .set(&id, requested_model_id, updated.model.clone())
             {
                 if requires_model_binding {
+                    // The binding store restores its own in-memory snapshot
+                    // on persist failure. Do not write an older binding again:
+                    // that redundant rollback could clobber a concurrent CLI
+                    // rebind. Automation fields remain applied and retriable.
                     return Err(format!(
                         "Failed to save scheduled task model binding: {error:#}"
                     ));
@@ -765,9 +837,48 @@ impl ScheduledTaskState {
     async fn delete_task_inner(&self, id: &str) -> Result<DeletedScheduledTaskDto> {
         let original_status = {
             let manager = self.automations.lock().await;
-            let original = manager
-                .get_automation(id)
-                .with_context(|| format!("read automation {id} before deletion"))?;
+            let original = match manager.get_automation(id) {
+                Ok(original) => original,
+                Err(error)
+                    if error.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+                    }) =>
+                {
+                    // Ensure-absent is idempotent, including a crash after the
+                    // original delete. Do not turn IO/parse failures into success.
+                    let archived = self
+                        .history_archive
+                        .archived_tasks()
+                        .into_iter()
+                        .find(|entry| entry.task.id == id);
+                    return Ok(ScheduledTaskDto {
+                        id: id.to_string(),
+                        name: archived
+                            .as_ref()
+                            .map(|entry| entry.task.name.clone())
+                            .unwrap_or_default(),
+                        prompt: String::new(),
+                        rrule: String::new(),
+                        schedule_label: String::new(),
+                        status: "deleted".to_string(),
+                        next_run_at: None,
+                        last_run_at: None,
+                        model: archived.and_then(|entry| entry.task.model),
+                        model_id: None,
+                        kind: None,
+                        has_unread_runs: false,
+                        is_running: false,
+                        pinned: false,
+                        pinned_at: None,
+                    });
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("read automation {id} before deletion"));
+                }
+            };
             manager
                 .pause_automation(id)
                 .with_context(|| format!("pause automation {id}"))?;
@@ -1017,12 +1128,28 @@ impl Drop for ScheduledTaskState {
         if let Some(cancel) = &self.scheduler_cancel {
             cancel.cancel();
         }
-        if let Some(handle) = self.scheduler_handle.take() {
+        if let Some(handle) = self
+            .scheduler_handle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             handle.abort();
         }
-        if let Some(handle) = self.retention_handle.take() {
+        if let Some(handle) = self
+            .retention_handle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             handle.abort();
         }
+        // CreationWatchGuard's own Drop cancels the token (the spawned task
+        // cooperatively stops at the next await; it is cancelled, not aborted).
+        self.creation_watch
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
     }
 }
 
@@ -1933,12 +2060,13 @@ mod tests {
                 .expect("ui metadata"),
             history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
                 .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
             pool: None,
             fallback_model: default_automation_model(None),
             scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
         }
     }
 
@@ -2556,12 +2684,13 @@ mod tests {
                     scheduled_history_archive_path(),
                 )
                 .expect("history archive"),
-                operation_locks: ParkingMutex::new(HashMap::new()),
+                operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
                 pool: None,
                 fallback_model: "cascade-model".to_string(),
                 scheduler_cancel: None,
-                scheduler_handle: None,
-                retention_handle: None,
+                scheduler_handle: Arc::new(SyncMutex::new(None)),
+                retention_handle: Arc::new(SyncMutex::new(None)),
+                creation_watch: Arc::new(SyncMutex::new(None)),
             },
             task_manager,
             automation_id: automation.id,
