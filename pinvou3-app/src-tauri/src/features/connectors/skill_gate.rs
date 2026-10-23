@@ -225,7 +225,17 @@ impl ConnectorGate {
             Ok(crate::features::marketplace::ReliedGrantCommit::GrantLost) => Err(lost(
                 crate::features::marketplace::RELIED_GRANT_LOST_CAUSE.to_string(),
             )),
-            Err(commit_err) => Err(lost(commit_err)),
+            // A persist failure is the OPPOSITE state to GrantLost: the
+            // standing grant + ledger stay effective, so the connector
+            // REMAINS enabled — the disabled/nothing-exposed copy of `lost`
+            // would be false (round-9 review P2). The commit-stage copy says
+            // so and does not drive the frontend's consent-failure latch.
+            Err(commit_err) => Err(
+                crate::features::marketplace::scope::connect_grant_commit_failure_message(
+                    &format!("{} connected", self.id),
+                    &commit_err,
+                ),
+            ),
         }
     }
 
@@ -1835,11 +1845,21 @@ mod tests {
                 let err = result.expect_err(
                     "the connect must fail when its relied-grant commit cannot persist",
                 );
+                // Round-9 review P2: the commit-persist failure must carry
+                // the COMMIT-stage marker, not the deny-first consent-sync
+                // one — the standing grant keeps the connector enabled, so
+                // the disabled/nothing-exposed copy would be false.
                 assert!(
                     err.contains(
+                        crate::features::marketplace::scope::CONNECT_GRANT_COMMIT_FAILURE_MARKER
+                    ),
+                    "the failure must carry the commit-stage marker: {err}"
+                );
+                assert!(
+                    !err.contains(
                         crate::features::marketplace::scope::CONNECT_CONSENT_SYNC_FAILURE_MARKER
                     ),
-                    "the failure must carry the consent-sync marker: {err}"
+                    "the commit-stage failure must not reuse the fail-closed consent-sync copy: {err}"
                 );
                 let raw: serde_json::Value =
                     serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
@@ -2026,6 +2046,11 @@ mod tests {
             crate::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER,
             "persisting their default-off consent state failed",
             "the install channels keep the original marker"
+        );
+        assert_eq!(
+            crate::features::marketplace::scope::CONNECT_GRANT_COMMIT_FAILURE_MARKER,
+            "finalizing the connector's connect-enabled consent failed",
+            "the commit-stage marker is the string the frontend matcher keys on (round-9 review P2: the commit-persist failure leaves the connector enabled, so it must not reuse the fail-closed copy)"
         );
     }
 

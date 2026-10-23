@@ -6,7 +6,12 @@
 // - scope::CONNECT_CONSENT_SYNC_FAILURE_MARKER — the CONNECT channel
 //   (feat/connector-connect-grants-enable: the CLI connector connect flow
 //   records an ENABLE grant, so its persist failure is fail-closed and gets
-//   its own `connect_consent_persist_failed` copy).
+//   its own `connect_consent_persist_failed` copy);
+// - scope::CONNECT_GRANT_COMMIT_FAILURE_MARKER — the CONNECT channel's COMMIT
+//   stage (round-9 review P2): a relied-upon grant's token-clearing commit
+//   that fails to persist leaves the standing grant effective — the connector
+//   REMAINS enabled — so it keys to its own
+//   `connect_consent_commit_incomplete` copy and does NOT latch the banner.
 // A backend or frontend rewording must move both sides in the same commit;
 // these source-text assertions are the frontend legs of that pin.
 import assert from 'node:assert/strict';
@@ -31,6 +36,7 @@ const productionOf = (src) => {
 // cannot survive.
 const INSTALL_MARKER = 'persisting their default-off consent state failed';
 const CONNECT_MARKER = "persisting the connector's connect-enabled consent failed";
+const COMMIT_MARKER = "finalizing the connector's connect-enabled consent failed";
 const uiState = readFileSync(
   join(root, 'src/features/tools/connector-ui-state.js'),
   'utf8',
@@ -44,11 +50,15 @@ assert.ok(
   collapsed(uiState).includes(`export const CONNECT_CONSENT_SYNC_FAILURE_MARKER = "${CONNECT_MARKER}"`),
   'connector-ui-state.js must define the connect consent marker exactly once (update the Rust pin in the same commit if reworded)',
 );
+assert.ok(
+  collapsed(uiState).includes(`export const CONNECT_GRANT_COMMIT_FAILURE_MARKER = "${COMMIT_MARKER}"`),
+  'connector-ui-state.js must define the commit-stage marker exactly once (update the Rust pin in the same commit if reworded)',
+);
 const store = readFileSync(
   join(root, 'src/features/tools/ToolStoreView.jsx'),
   'utf8',
 );
-for (const MARKER of [INSTALL_MARKER, CONNECT_MARKER]) {
+for (const MARKER of [INSTALL_MARKER, CONNECT_MARKER, COMMIT_MARKER]) {
   assert.ok(
     !store.includes(MARKER),
     'the marker literal must be defined only in connector-ui-state.js (import the const instead)',
@@ -67,6 +77,11 @@ assert.strictEqual(
   store.split('includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)').length - 1,
   2,
   'ToolStoreView must key exactly its two connect catch sites on CONNECT_CONSENT_SYNC_FAILURE_MARKER — a site reverted to a stale const, a deleted site, or a hand-rolled literal breaks this pin',
+);
+assert.strictEqual(
+  store.split('includes(CONNECT_GRANT_COMMIT_FAILURE_MARKER)').length - 1,
+  2,
+  'ToolStoreView must key exactly its two connect catch sites on CONNECT_GRANT_COMMIT_FAILURE_MARKER (round-9 review P2) — a site reverted to the fail-closed class, a deleted site, or a hand-rolled literal breaks this pin',
 );
 assert.strictEqual(
   store.split('includes(CONSENT_SYNC_FAILURE_MARKER)').length - 1,
@@ -102,6 +117,15 @@ assert.strictEqual(
   rustMarker('CONNECT_CONSENT_SYNC_FAILURE_MARKER'),
   CONNECT_MARKER,
   'the Rust connect marker constant and the frontend matcher literal have drifted — reword both sides in the same commit',
+);
+assert.ok(
+  rustMarker('CONNECT_GRANT_COMMIT_FAILURE_MARKER'),
+  'scope.rs must define CONNECT_GRANT_COMMIT_FAILURE_MARKER as a plain string literal',
+);
+assert.strictEqual(
+  rustMarker('CONNECT_GRANT_COMMIT_FAILURE_MARKER'),
+  COMMIT_MARKER,
+  'the Rust commit-stage marker constant and the frontend matcher literal have drifted — reword both sides in the same commit',
 );
 
 // The consent-failure copy is SINGLE-SOURCED per channel: each sentence lives
@@ -146,6 +170,7 @@ const pinInterpolation = (src, helperName, markerConst) => {
 };
 pinInterpolation(scopeProduction, 'consent_sync_failure_message', 'CONSENT_SYNC_FAILURE_MARKER');
 pinInterpolation(scopeProduction, 'connect_consent_sync_failure_message', 'CONNECT_CONSENT_SYNC_FAILURE_MARKER');
+pinInterpolation(scopeProduction, 'connect_grant_commit_failure_message', 'CONNECT_GRANT_COMMIT_FAILURE_MARKER');
 
 // (b)/(c) Each channel's emit sites route through its helper (lower bound 1)
 // and neither file may hand-roll its channel's template. Scope of the
@@ -279,8 +304,12 @@ assert.strictEqual(
   'the marker-only latch guard must be gone from both classification sites — an ordinary materialization failure revokes the fresh grant too, so the enabled-by-default banner lied over the disabled backend after dismissal (round-6 review P2)',
 );
 assert.ok(
-  store.includes("if (failure.code !== 'auth_failed') conn.setConsentSyncFailed(true);"),
-  "the awaited branch must latch every post-auth class (anything but the pre-apply auth failures) — restricting the latch to the persist marker re-opens the round-6 P2",
+  store.includes("if (failure.code !== 'auth_failed' && failure.code !== 'connect_consent_commit_incomplete')"),
+  "the awaited branch must latch every fail-closed post-auth class — the round-6 P2 — with exactly ONE exception: the commit-incomplete class leaves the standing grant ENABLED, so the enabled banner is truthful there (round-9 review P2)",
+);
+assert.ok(
+  store.includes("if (failure.code !== 'connect_consent_commit_incomplete') conn.setConsentSyncFailed(true);"),
+  'the fire-and-forget branch must latch every post-auth class except commit-incomplete — its standing grant keeps the enabled banner truthful (round-9 review P2)',
 );
 assert.ok(
   /: \{ code: 'skills_enable_failed' \};[\s\S]{0,1200}?conn\.setConsentSyncFailed\(true\);[\s\S]{0,80}?reportConnectorFailure\(cfg\.key, failure, 'cli'\);/.test(store),

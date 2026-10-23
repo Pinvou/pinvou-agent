@@ -22,6 +22,16 @@ export const CONSENT_SYNC_FAILURE_MARKER =
 export const CONNECT_CONSENT_SYNC_FAILURE_MARKER =
   "persisting the connector's connect-enabled consent failed";
 
+// Round-9 review P2: the COMMIT stage's twin marker, mirroring
+// `scope::CONNECT_GRANT_COMMIT_FAILURE_MARKER`. A relied-upon grant's
+// token-clearing commit that fails to persist leaves the standing grant +
+// ledger effective — the connector REMAINS enabled — so this class keys to
+// its own "stays enabled — reconnect to secure it" copy and must NOT latch
+// the consent-failure banner (the enabled banner is accurate here, unlike
+// the fail-closed persist failure above).
+export const CONNECT_GRANT_COMMIT_FAILURE_MARKER =
+  "finalizing the connector's connect-enabled consent failed";
+
 // Stable machine-readable error codes for user-facing messages.
 // Backends attach a snake_case `code` (or prefix the message with `code: ...`);
 // the UI maps the code to a localized string and never shows raw backend text

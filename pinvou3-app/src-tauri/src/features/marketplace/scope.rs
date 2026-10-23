@@ -1081,6 +1081,27 @@ pub(crate) fn connect_consent_sync_failure_message(subject: &str, error: &str) -
     )
 }
 
+/// Single source of the COMMIT-stage failure copy (round-9 review P2). The
+/// deny-first helper above describes a fail-CLOSED state (the grant never
+/// landed, new sessions keep the connector disabled). A relied-upon grant's
+/// token-clearing commit that fails to PERSIST is the opposite shape: the
+/// standing grant + ledger stay effective, so the connector REMAINS enabled —
+/// asserting "disabled" / "nothing was exposed" here would be false. What is
+/// actually at risk is narrower: the token clear was the disarm of the older
+/// in-flight operation's pending compensating revoke, so a concurrent
+/// operation's failure could still withdraw the consent. The frontend keys
+/// this marker to its own "stays enabled — reconnect to secure it" copy
+/// (consent_marker_frontend.test.mjs cross-compares the literal) and does NOT
+/// latch the consent-failure banner for it (the enabled banner is accurate).
+pub const CONNECT_GRANT_COMMIT_FAILURE_MARKER: &str =
+    "finalizing the connector's connect-enabled consent failed";
+
+pub(crate) fn connect_grant_commit_failure_message(subject: &str, error: &str) -> String {
+    format!(
+        "{subject}, but {CONNECT_GRANT_COMMIT_FAILURE_MARKER}: it stays enabled, but a concurrent operation could still withdraw it — reconnect to secure it: {error}"
+    )
+}
+
 pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
 }
