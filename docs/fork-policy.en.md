@@ -5,7 +5,7 @@
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Current parent candidate: `805b62c377fd1674544b1da9cad9e27647180866`, 88 commits above v0.9.12, 86 DCO-signed; includes public maintenance `ea9fdc90f1c90335554833195eeeb847c83d82dd`. Source CodeWhale#118 head: `805b62c377fd1674544b1da9cad9e27647180866`. The merge preserves candidate history and provenance. Prior test receipts retain their original execution boundaries; combined-tree CI remains pending. Public maintenance does not contain this candidate; the public alignment gate remains blocking.
+- Current parent candidate: `805b62c377fd1674544b1da9cad9e27647180866`, 88 commits above v0.9.12, 86 DCO-signed; includes public maintenance `ea9fdc90f1c90335554833195eeeb847c83d82dd`. Source CodeWhale#118 head: `805b62c377fd1674544b1da9cad9e27647180866`. The merge preserves candidate history and provenance. Prior test receipts retain their original execution boundaries; current foundation source 805b62c37 CI has passed; parent integrated-tree CI remains separate. Public maintenance does not contain this candidate; the public alignment gate remains blocking.
 
 - Public maintenance (parent candidate above): `ea9fdc90f1c90335554833195eeeb847c83d82dd` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance. #117 merged remotely on 2026-10-23 as `ea9fdc90f`.
 - Public-maintenance history: 79 commits above upstream v0.9.12 `dcd4c200f`, 64 above r1 `1fafee7e2`; 77 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
@@ -30,31 +30,6 @@
 
 The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`](fork-modifications.md).
 
-
-## 0. Current maintenance baseline and validation boundary
-
-- Public maintenance and parent gitlink: `ea9fdc90f1c90335554833195eeeb847c83d82dd` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance. #117 merged remotely on 2026-10-23 as `ea9fdc90f`.
-- Measured history: 79 commits above upstream v0.9.12 `dcd4c200f`, 64 above r1 `1fafee7e2`; 77 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
-- Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Measured drift: 504 files, +86011/-37667, net +48344; 231 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
-
-- The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
-- r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
-- Transition exemption (from 2026-09-11): between two rN closures the parent gitlink may advance along `pinvou3-clean` ahead of the immutable tag. During the transition `scripts/verify-public-submodule.sh` asserts gitlink equals the public maintenance-branch head and the immutable tag stays pinned at its closure commit; the next rN closure cuts a fresh immutable tag at the merged head and restores three-way equality.
-- Keep four long-lived topics, three appended reduction topics, and three merged-into-maintenance topics:
-
-  1. Host embedding and routing boundary
-  2. Tool compatibility and command-execution safety
-  3. Embedded context and Skill sources
-  4. Automation and runtime lifecycle
-  5. Session archive export (T5, appended)
-  6. Swarm rate-limit governance (T6, appended)
-  7. Compaction checkpoint role compatibility (T7, merged into the maintenance branch)
-  8. Roster presentation of host profiles (T8, appended)
-  9. Custom-wire runtime route (T9, merged into the maintenance branch)
-  10. Tachyon reasoning-effort dialect (T10, merged into the maintenance branch)
-
-The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`](fork-modifications.md).
 
 
 ## Rules
