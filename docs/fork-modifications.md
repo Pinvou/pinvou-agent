@@ -1,13 +1,5 @@
 # CodeWhale Fork 修改清单
 
-## T2 已合入：保留工具结果失败标志
-
-- 引擎将返回成功封装但 success=false 的工具结果记为失败，同时保留正文与 schema 加载但未执行的成功语义。这里选择性前移上游提交 `2ae7460e4` 的 is_error 映射，并非恢复 v0.9.12 基线曾有的映射；该上游提交的取消 metadata 与 shell receipt 改动不在本候选范围内。
-- 中断且未执行的标记也通过该失败映射记录；恢复后的失败/取消卡片、运行时 Failed 状态与 CLI failure 计数会相应变化。子 Agent 记录器及 TUI SyncSession 镜像原有的失败标志丢失属于已披露的后续项，不声称本候选已覆盖。
-- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
-- 合入前提：先合入对应底座 PR，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单中的候选头替换为实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`，重新计算 `EXPECTED_COMMITS`，同步两份策略/修改清单并协调已合入修复，最后通过 `verify-public-submodule.sh`。候选校验通过不豁免公开维护头门禁，也不允许重打基线 tag；本候选不具备发布资格。
-- 验证证据见承载 PR 及其固定提交自审核。指纹固定 `fn forkguard_tool_failure_flag_survives_recording_and_round_trip`。不包含客户数据、凭证、运行日志或复现会话文件。
-
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
@@ -82,7 +74,9 @@
 
 - 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
 
-- #115 保留 shell 默认环境并合并叠加，Windows 显式变量名按大小写不敏感覆盖；#116 将返回的失败结果标志写入实际历史并验证会话往返。原有执行错误、成功和 schema 加载边界保持原实现。两项均在 T2 内，不增加主题。
+- #115 保留 shell 默认环境并合并叠加，Windows 显式变量名按大小写不敏感覆盖；#116 已以 [`e9a7f48da1`](https://github.com/Pinvou/CodeWhale/commit/e9a7f48da1) 合入，将返回的失败结果标志写入实际历史并验证会话往返。两项均在 T2 内，不增加主题。
+- #116 选择性前移上游 `2ae7460e4` 的 `is_error` 映射；该映射不在 v0.9.12 基线内，上游同一提交的取消 metadata 与 shell receipt 改动未纳入。成功返回但 `success=false` 的结果以及中断且未执行的标记记为失败，正文保留；原有执行错误、成功及 schema 加载但未执行的成功语义不变。
+- 影响面为持久化历史的 `is_error`、恢复后 Anthropic 请求中的失败标志、CLI failure 计数、会话选择器预览及 runtime API 会话 JSON/工具回执。实时工具卡片与 ACP Failed 状态原已依据 `ToolResult.success`，不因这次历史标志映射而改变；恢复历史的渲染器不生成 ToolResult 卡片。子 Agent 记录器（`tools/subagent/mod.rs`）与 TUI `SyncSession` 镜像（`tui/ui/event_loop.rs`）原有的标志丢失仍是后续项，不声称 #116 已覆盖。
 - 指纹同时登记 Windows 默认值/构造器/显式覆盖/原生工具测试及 `forkguard_tool_failure_flag_survives_recording_and_round_trip`。底座合入不等于客户环境或发布验证通过。
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
@@ -232,6 +226,7 @@
 
 ### 关键测试
 
+- `forkguard_tool_failure_flag_survives_recording_and_round_trip`
 - `forkguard_exact_dispatch_rejects_forged_backends`
 - `forkguard_read_only_turn_rejects_write_at_final_dispatch`
 - `forkguard_restricted_tool_audit_redacts_private_payload`
