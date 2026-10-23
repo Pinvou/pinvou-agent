@@ -442,9 +442,10 @@ jobs:
     # 没有 lld)+ deepin beige (glibc 2.38) sysroot。目标基线 = deepin
     # 23/25 + UOS V25 的 glibc 2.38,由工具链/sysroot 决定而非 runner 发行版
     # (与 x64/arm64 的"链接构建机 glibc"模型不同,详见 floor 守护注释)。
-    # 交叉构建显著慢于原生 arm64(arm64 实测 37–47min;本 job 尚无成功
-    # release 实测,典型时长未知)。timeout 按 arm64 上限的 ~1.5x 放大
-    # (arm64 上限 120 → 本 job 180),保持放大规则自洽。
+    # 首次成功 release 实测 2026-10-22(0.10.14 run):54m56s,仅为 arm64
+    # 实测上界(46m22s)的 ~1.2x——"交叉构建显著慢于原生"的旧假设偏悲观。
+    # timeout 仍按 arm64 上限的 ~1.5x 放大(120 → 180,policy test 按联动
+    # 公式钉住),对实测 ~3.3x 余量;样本尚少(n=1),先保持策略比率。
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
