@@ -16,9 +16,10 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 10:08 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 11:25 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
-delivered; remaining T13/T25/T47 source repairs and local acceptance are pending.
+delivered; T25's bounded offline ASN source-owner component is now delivered.
+Remaining T13/T25/T47 composition and local acceptance are pending.
 The combined business workflows have not passed complete acceptance. Candidate
 source remains separate from delivery. Following the owner's new instruction,
 work has resumed after the device restart, with priority given to tests that
@@ -60,11 +61,14 @@ test trees permit bounded parallel compilation while retaining resource guards:
   30,360,919 expanded bytes. Published transfer checks match the expanded CSV;
   the independently pinned SHA-256 is retained privately. Equivalent-format
   adaptation, the controlled local import CLI and their 13-top/81-sub pure-test
-  caller have passed independent source review. The fresh 2,301-input test tree
-  is assembled; no Go or real-data test has run. Two known answers were bound to
-  independent RIPE bulk-AS routing timelines in an isolated data-test interval;
-  this does not approve production freshness, installation or database accuracy.
-  No real lookup or complete T25 qualification is claimed.
+  caller passed independent source review. The successor 2,323-input source
+  passed 25 top-level and 110 subtests, retaining the original 13/81 controls.
+  A fresh CLI build and actual import of the full sample also passed, followed
+  by the original real-dataset Load/two-answer test with zero skips. Independent
+  actual review verified all 477,362 CSV records against the split artifacts
+  and both independently bound RIPE answers in the isolated test interval.
+  This does not approve production freshness, installation or full database
+  accuracy, and does not complete T25.
 - T10's fixed scan-capture owner, durable original intent, fenced claim/renewal,
   once-only native launch permit and final transaction passed scoped independent
   source review. Root repaired a stale-deadline cancellation race and a common
@@ -88,7 +92,10 @@ test trees permit bounded parallel compilation while retaining resource guards:
   outstanding. Management UI and its four-route
   contract extension passed independent source review after Root repaired local
   archive quota recovery, approval-error status and exact filename validation;
-  their 17 UI and seven contract tests remain unexecuted source candidates.
+  the combined T10/T47 interface now passes type checking, a fresh build and
+  all 84 pure UI tests in eight files, retaining the previous 67 and adding
+  these 17. Independent actual review passed. The seven new contract tests
+  and genuine scanner/UI workflow acceptance remain pending.
 - T25's controlled offline ASN source owner passed independent deep source review:
   initial installation, CAS disable, exact original-request recovery and current
   local lookup preserve the original audit and operation boundaries. Formatting
@@ -102,8 +109,13 @@ test trees permit bounded parallel compilation while retaining resource guards:
   also decided to reject a new command
   containing the exact currently installed content without adding a version;
   Root implemented the conflict return and native no-effect regression controls;
-  independent source review passed. Real PostgreSQL execution remains pending.
-  No append, dataset or complete owner runtime acceptance is claimed.
+  independent source review passed. Real PostgreSQL execution now passes
+  fourteen top-level tests and fifteen subtests with zero skips; independent
+  actual review passed. All nine final service checks and two CLI builds also
+  passed independent actual review. The 34-file bounded component is committed
+  and pushed as `0e7ce7ecc99914eae9900adb9d738a6a3152425a`. This supplies
+  explicit import/install/append/disable/original recovery and local lookup;
+  trusted edge input and purpose-qualified privacy consumers remain pending.
 - T34's first Linux material block provides an immutable anonymous copy and an
   explicit native-evidence CLI observation while preserving Windows behavior.
   Root repaired an unsupported-platform test reference and an omitted consumer
@@ -453,8 +465,8 @@ at the latest process check; it is not assumed to remain the current blocker. Li
 scanner native acceptance has not run, the Windows guest's previously observed
 expiry/time faults remain unresolved, and T03 has no approved measured budgets
 or completed four-target 1/10/50 GiB matrix. ASN offline-database grouping is
-approved; trusted source-IP acquisition mode and a real licensed ASN dataset
-remain pending. Production deployment T42 remains explicitly deferred.
+approved; a real publicly licensed ASN research sample is now tested, while
+trusted source-IP acquisition and production source admission remain pending. Production deployment T42 remains explicitly deferred.
 
 | Task | Estimate | Status | Delivery / outstanding dependency |
 |---|---|---|---|
@@ -482,7 +494,7 @@ remain pending. Production deployment T42 remains explicitly deferred.
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 35% | In progress | Independent purpose/week OpenBao material ownership is delivered. Accepted-event attribution, retention and shared recovery candidates passed source review; their complete native acceptance/commit remain pending. First-acceptance model repair is reviewed, offline ASN grouping approved; authenticated edge inputs, purpose-qualified consumption and frozen privacy snapshots remain pending. |
+| T25 | 35% | In progress | Independent purpose/week OpenBao material ownership and the bounded offline ASN import/source-owner component are delivered. The latter passed pure, real PostgreSQL and real-data tests. Accepted-event attribution, retention and shared recovery candidates passed source review; their complete native acceptance/commit remain pending. First-acceptance model repair is reviewed, offline ASN grouping approved; authenticated edge inputs, purpose-qualified consumption and frozen privacy snapshots remain pending. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
 | T28 | 0% | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
@@ -14754,3 +14766,42 @@ This result does not supersede the source, cross-build or synthetic parser
 checks, and does not confer actual Linux scanner qualification. Other builds
 and source work continue without stopping unrelated processes or lowering the
 experiment's resource requirements.
+
+## T25 offline ASN component and combined UI acceptance (2026-10-23)
+
+The bounded offline ASN component is delivered in the separate service repository
+as `0e7ce7ecc99914eae9900adb9d738a6a3152425a`, with DCO and confirmed push. Its
+34 new files preserve the prior 2,289 inputs and provide controlled DB-IP import,
+explicit protected installation, CAS-bound append/disable, exact original-request
+recovery and current local lookup. A same-version correction must select a
+different independently expected manifest digest. A fresh command key for the
+exact current digest conflicts without adding source/history/receipt records,
+including while disabled; actual original-key retransmission restores its exact
+original result without reactivating a disabled source.
+
+Independent source and actual reviews passed for 25 top-level/110 pure subtests,
+14 top-level/15 real PostgreSQL subtests, all nine final service checks and both
+CLI builds. The default service suite passed 1,212 top-level tests and 2,693
+subtests; 920 top-level tests and 771 subtests were skipped. Those opt-in skips
+are reported separately and do not replace the explicit PostgreSQL acceptance.
+The fresh public-data run built the import CLI, imported all 477,362 CSV records
+and passed the original real-dataset test (one top-level test, no subtests or
+skips). Independent review checked every imported record and both pinned RIPE
+known answers. All owned process trees closed naturally; source maps remained
+unchanged and resource floors held. These suites overlap and are not summed.
+
+The real-data test uses an explicitly isolated historical validity interval.
+It does not install a production source or certify freshness, licence policy,
+full database accuracy or final privacy consumption. Known-success COMMIT followed
+by local response cancellation is covered separately from transport ACK loss;
+this batch does not claim a new transport-loss qualification. T25 remains at 35%
+because its authenticated edge inputs, purpose-qualified consumers, event/statistic
+composition, retention and frozen public results still require completion.
+
+The combined T10/T47 interface candidate separately passed strict type checking,
+a fresh build and 84 pure UI tests in eight files, with no retry, skip, failure or
+flaky result. Independent actual review confirmed all 3,647 source inputs, 1,125
+npm dependency files, the previous 67 controls and 17 new scan-capture controls.
+These are synthetic/pure UI checks, not a genuine scanner/browser workflow. The
+combined 190-test contract plan, its generation checks and integration delivery
+remain pending. No task status or percentage is raised by these bounded results.
