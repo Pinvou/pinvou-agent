@@ -514,7 +514,18 @@ function enforceLazyChunks() {
 // 152 B web headroom, not a reproduced toolchain-tolerance allowance.
 // The card/parser remain lazy. Future combined trees must pass this gate;
 // this cap does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 506_000;
+//
+// 506_000 → 507_000 (PR #773, measured per policy): the swarm overlay's
+// structured worker-status merge rides the startup graph; same-base build
+// against main@f1ae1279a measures 505,844 → 506,175 B web (CI node 24:
+// 506,192) and 502,529 → 502,862 B desktop, i.e. +331 B of synchronous
+// event-path merge rules (token precedence, identity guard, ending-token
+// set). The merge runs on the always-mounted overlay and cannot defer
+// without breaking render semantics; the minified delta is all live logic
+// (verified by chunk diff — no comments or dead code ride along). The next
+// thousand step leaves 808 B web headroom at the CI measurement; this cap
+// does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 507_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (
