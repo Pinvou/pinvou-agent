@@ -468,11 +468,11 @@ assert.match(turnsSource,
   'counts_as_user_turn 必须排除步数预算通知——删掉排除条件必须变红（r10-M3 接线锚）');
 
 assert.match(rustCommandBlock(commands, 'chat'),
-  /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{[\s\S]{0,1000}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
-  'chat() must gate the pre-send snapshot on !is_scheduled (scheduled excluded) and skip zero-tool aux side-chats — reverting either leg must fail here');
+  /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{[\s\S]{0,1700}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'chat() must gate the pre-send snapshot on !is_scheduled (scheduled excluded) and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
 assert.match(rustCommandBlock(commands, 'accept_plan'),
-  /if store\.scheduled_profile\(&session_id\)\.is_none\(\)\s*&& !crate::features::sessions::is_aux_session_id\(&session_id\)\s*\{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
-  'accept_plan() must gate the pre-send snapshot on scheduled_profile(&session_id).is_none() and skip zero-tool aux side-chats — reverting either leg must fail here');
+  /if store\.scheduled_profile\(&session_id\)\.is_none\(\)\s*&& !crate::features::sessions::is_aux_session_id\(&session_id\)\s*\{[\s\S]{0,900}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'accept_plan() must gate the pre-send snapshot on scheduled_profile(&session_id).is_none() and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
 assert.match(rustCommandBlock(commands, 'accept_plan'),
   /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'accept_plan() must reject ACP sessions with the shared lane-rejected literal');
@@ -497,6 +497,11 @@ assert.match(rustCommandBlock(commands, 'compact_now'),
 assert.match(rustCommandBlock(commands, 'edit_last_turn'),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'edit_last_turn must reject ACP sessions before the reserve-truncate-resend path runs');
+// r23 变异实证补 pin：chat_with_reservation 缝内自查是「六站点」计数的一员，
+// 删除它其余外置门仍绿（纵深冗余）——接缝必须自持（评审 r9 minor 10）。
+assert.match(rustCommandBlock(commands, 'chat_with_reservation'),
+  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'chat_with_reservation must self-check the ACP lane inside the seam, not only at its callers');
 assert.match(remoteControlCommands,
   /struct WebSavedSession[\s\S]*?metadata: deepseek_tui::session_manager::SessionMetadata[\s\S]*?messages:[\s\S]*?artifacts:[\s\S]*?transcript_revision:/,
   'chunked Web session downloads must use an explicit browser field allowlist');
