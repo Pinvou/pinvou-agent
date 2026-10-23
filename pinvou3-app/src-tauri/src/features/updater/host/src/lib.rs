@@ -80,3 +80,6 @@ mod execution_object;
 pub use execution_object::{
     ExecutionObjectGuard, ObjectBinding, ObjectGeneration, ObjectReference, VerifiedExecutionObject,
 };
+
+mod installed_images;
+pub use installed_images::{InstalledImageObservation, inspect_installed_images};

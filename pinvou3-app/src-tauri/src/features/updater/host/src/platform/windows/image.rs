@@ -17,7 +17,6 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     ptr,
-    sync::atomic::AtomicBool,
 };
 use windows_sys::Win32::{
     Foundation::{
@@ -47,6 +46,15 @@ impl SealedImage {
     ) -> Result<Self> {
         Self::open_role(root, name, reference, seed, false)
     }
+    pub(super) fn open_with_poll(
+        root: &ProtectedDirectory,
+        name: &str,
+        reference: &ImageReference,
+        seed: &Seed,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Self> {
+        Self::open_role_with_poll(root, name, reference, seed, false, cancelled)
+    }
     fn open_role(
         root: &ProtectedDirectory,
         name: &str,
@@ -54,19 +62,37 @@ impl SealedImage {
         seed: &Seed,
         nsis: bool,
     ) -> Result<Self> {
+        Self::open_role_with_poll(root, name, reference, seed, nsis, &mut || false)
+    }
+    fn open_role_with_poll(
+        root: &ProtectedDirectory,
+        name: &str,
+        reference: &ImageReference,
+        seed: &Seed,
+        nsis: bool,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Self> {
+        crate::download_stage::poll(cancelled)?;
         let mut file = root.relative_file(name)?;
         inspect_file(&file, true, None)?;
         let identity = custody::identity(&file).map_err(custody_error)?;
         reference.validate(seed)?;
-        if verify_bytes(&mut file, reference.size, &reference.sha256)? != identity {
+        if verify_bytes_with_poll(&mut file, reference.size, &reference.sha256, cancelled)?
+            != identity
+        {
             return Err(Error::ImageRefused);
         }
         let observation = match seed.certificate_policy()? {
             ImageCertificatePolicy::LegacySelectedSigner(approved) => {
                 let expected = ExpectedFile::new(reference.size, &reference.sha256)
                     .map_err(|_| Error::ImageRefused)?;
-                let observation = native::observe_file(&file, &expected, &AtomicBool::new(false))
-                    .map_err(|_| Error::ImageRefused)?;
+                crate::download_stage::poll(cancelled)?;
+                let collected = native::observe_file_with_poll(&file, &expected, &mut *cancelled);
+                crate::download_stage::poll(cancelled)?;
+                let observation = collected.map_err(|error| match error {
+                    native::Error::Cancelled => Error::StagingCanceled,
+                    _ => Error::ImageRefused,
+                })?;
                 let valid = observation.report().signatures.iter().any(|signature| {
                     signature.verification == Verification::Verified
                         && signature.signer.as_ref().is_some_and(|chain| {
@@ -90,6 +116,7 @@ impl SealedImage {
         }
         require_machine(&mut file, reference.size, nsis)?;
         root.recheck()?;
+        crate::download_stage::poll(cancelled)?;
         Ok(Self {
             file,
             _observation: observation,

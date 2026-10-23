@@ -23,6 +23,8 @@ mod source;
 mod controller;
 
 mod installed;
+mod installed_images;
+pub(crate) use installed_images::{InstalledImages, inspect_images};
 
 mod client;
 
@@ -67,9 +69,9 @@ pub(crate) fn execute_helper(mode: crate::entry::HelperMode) -> Result<()> {
         crate::entry::HelperMode::PrepareRemove => controller::prepare_remove(),
         crate::entry::HelperMode::RemoveTarget => controller::remove_target(),
         crate::entry::HelperMode::LaunchDesktop => controller::launch_desktop(),
-        crate::entry::HelperMode::Profile | crate::entry::HelperMode::InstallLocal => {
-            Err(crate::Error::IpcInvalid)
-        }
+        crate::entry::HelperMode::Profile
+        | crate::entry::HelperMode::InstallLocal
+        | crate::entry::HelperMode::InspectInstalledImages => Err(crate::Error::IpcInvalid),
     }
 }
 pub(crate) fn execute_launcher(id: Option<&str>) -> Result<()> {

@@ -1,7 +1,7 @@
 //! Actual SCM service image/token/registration and startup incarnation owner.
 //! A deserialized registration is only an expectation, never this constructor.
 use super::{
-    image::{SealedImage, verify_bytes},
+    image::SealedImage,
     layout::{Layout, Targets, ordinal_equal},
     pipe::nonce,
     process::{RetainedProcess, seal_host_query_access},
@@ -13,6 +13,158 @@ use crate::{
     profile::{InstallationManifest, Seed},
     registration::{HostRegistration, Phase, StartupAttestation},
 };
+use pinvou_upgrade_custody::Identity;
+use std::fs::File;
+
+/// A real member and its complete held parent chain. Dropping this value keeps
+/// the startup constructor's original snapshot behavior; a diagnostic retains it.
+pub(super) struct HeldAppMember {
+    file: File,
+    identity: Identity,
+    expected: crate::profile::AppFile,
+    parent: Option<super::layout::ProtectedDirectory>,
+    leaf: String,
+}
+impl HeldAppMember {
+    pub(super) fn recheck(
+        &mut self,
+        root: &super::layout::ProtectedDirectory,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<()> {
+        crate::download_stage::poll(cancelled)?;
+        let parent = self.parent.as_ref().unwrap_or(root);
+        parent.recheck()?;
+        if super::image::verify_bytes_with_poll(
+            &mut self.file,
+            self.expected.size,
+            &self.expected.sha256,
+            cancelled,
+        )? != self.identity
+        {
+            return Err(Error::ImageRefused);
+        }
+        let mut reopened = parent.file(&self.leaf)?;
+        if super::image::verify_bytes_with_poll(
+            &mut reopened,
+            self.expected.size,
+            &self.expected.sha256,
+            cancelled,
+        )? != self.identity
+        {
+            return Err(Error::ImageRefused);
+        }
+        parent.recheck()
+    }
+}
+
+pub(super) struct RegisteredImages {
+    pub(super) targets: Targets,
+    pub(super) manifest: InstallationManifest,
+    pub(super) helper_root: super::layout::ProtectedDirectory,
+    pub(super) helper: SealedImage,
+    pub(super) launcher: SealedImage,
+    pub(super) app: SealedImage,
+}
+
+/// Read-only file sealing shared by SCM startup and image diagnostics. This
+/// never creates a ScmDispatch, commits startup or writes a security descriptor.
+pub(super) fn seal_registered_images(
+    seed: &Seed,
+    layout: &Layout,
+    original: &HostRegistration,
+    cancelled: &mut dyn FnMut() -> bool,
+    mut retain: impl FnMut(HeldAppMember),
+) -> Result<RegisteredImages> {
+    crate::download_stage::poll(cancelled)?;
+    let manifest = Store::new(seed).manifest(seed, original)?;
+    if manifest.helper != original.helper
+        || manifest.launcher != original.launcher
+        || manifest.app != original.app
+    {
+        return Err(Error::StateCorrupt);
+    }
+    let sid = original
+        .service_identity
+        .service_sid
+        .as_deref()
+        .ok_or(Error::ServiceIdentityRefused)?;
+    let targets = layout.open_targets_with_poll(sid, cancelled)?;
+    targets.validate_known_contents_with_poll(seed, &manifest, true, cancelled)?;
+    for expected in &manifest.app_files {
+        crate::download_stage::poll(cancelled)?;
+        let (parent, leaf) = targets
+            .app
+            .existing_relative_parent(&expected.relative_name)?;
+        let mut file = parent.as_ref().unwrap_or(&targets.app).file(&leaf)?;
+        let identity = super::image::verify_bytes_with_poll(
+            &mut file,
+            expected.size,
+            &expected.sha256,
+            cancelled,
+        )?;
+        retain(HeldAppMember {
+            file,
+            identity,
+            expected: expected.clone(),
+            parent,
+            leaf,
+        });
+    }
+    let helper_root = targets
+        .code
+        .child_with_poll("helpers", false, false, Some(sid), cancelled)?
+        .child_with_poll(&seed.build_id, false, false, Some(sid), cancelled)?;
+    let helper = SealedImage::open_with_poll(
+        &helper_root,
+        "pinvou-upgrade-helper.exe",
+        &original.helper,
+        seed,
+        cancelled,
+    )?;
+    let launcher = SealedImage::open_with_poll(
+        &targets.code,
+        "pinvou-upgrade-launcher.exe",
+        &original.launcher,
+        seed,
+        cancelled,
+    )?;
+    let app = SealedImage::open_with_poll(
+        &targets.app,
+        "pinvou3-tauri.exe",
+        &original.app,
+        seed,
+        cancelled,
+    )?;
+    crate::download_stage::poll(cancelled)?;
+    Ok(RegisteredImages {
+        targets,
+        manifest,
+        helper_root,
+        helper,
+        launcher,
+        app,
+    })
+}
+
+pub(super) fn check_startup_record(
+    current: &HostRegistration,
+    actual: &crate::identity::ProcessSelector,
+    helper_sha256: &str,
+) -> Result<()> {
+    let startup = current
+        .startup_attestation
+        .as_ref()
+        .ok_or(Error::SetupIncomplete)?;
+    if startup.process_id != actual.process_id
+        || startup.creation_file_time != actual.creation_file_time
+        || startup.host_epoch != current.host_epoch
+        || startup.helper_image_sha256 != helper_sha256
+        || startup.manifest_sha256 != current.genesis_manifest_sha256
+    {
+        return Err(Error::ServiceIdentityRefused);
+    }
+    Ok(())
+}
 
 pub(super) struct InstalledServiceContext {
     pub(super) seed: Seed,
@@ -61,36 +213,16 @@ impl InstalledServiceContext {
         {
             return Err(Error::ServiceIdentityRefused);
         }
-        let manifest = store.manifest(&seed, &original)?;
-        if manifest.helper != original.helper
-            || manifest.launcher != original.launcher
-            || manifest.app != original.app
-        {
-            return Err(Error::StateCorrupt);
-        }
-        let targets = layout.open_targets(sid)?;
-        targets.validate_known_contents(&seed, &manifest, true)?;
-        for entry in &manifest.app_files {
-            let mut file = targets.app.relative_file(&entry.relative_name)?;
-            verify_bytes(&mut file, entry.size, &entry.sha256)?;
-        }
-        let helpers = targets
-            .code
-            .child("helpers", false, false, Some(sid))?
-            .child(&seed.build_id, false, false, Some(sid))?;
-        let helper = SealedImage::open(
-            &helpers,
-            "pinvou-upgrade-helper.exe",
-            &original.helper,
-            &seed,
-        )?;
-        let launcher = SealedImage::open(
-            &targets.code,
-            "pinvou-upgrade-launcher.exe",
-            &original.launcher,
-            &seed,
-        )?;
-        let app = SealedImage::open(&targets.app, "pinvou3-tauri.exe", &original.app, &seed)?;
+        // Preserve startup's original snapshot lifetime: each inventory member
+        // is verified then dropped. Diagnostics supply a retaining sink instead.
+        let RegisteredImages {
+            targets,
+            manifest,
+            helper,
+            launcher,
+            app,
+            helper_root: _helpers,
+        } = seal_registered_images(&seed, &layout, &original, &mut || false, drop)?;
         seal_host_query_access(sid)?;
         Ok(Self {
             seed,
@@ -151,15 +283,12 @@ impl StartedServiceContext {
         if actual.selector != own.process.selector || actual.exited()? {
             return Err(Error::ServiceIdentityRefused);
         }
+        check_startup_record(current, &actual.selector, &own.helper.sha256)?;
         let startup = current
             .startup_attestation
             .as_ref()
             .ok_or(Error::SetupIncomplete)?;
-        if startup.process_id != actual.selector.process_id
-            || startup.creation_file_time != actual.selector.creation_file_time
-            || startup.host_epoch != current.host_epoch
-            || startup.helper_image_sha256 != own.helper.sha256
-            || current.installation_scope_id != own.original.installation_scope_id
+        if current.installation_scope_id != own.original.installation_scope_id
             || current.genesis_manifest_sha256 != own.original.genesis_manifest_sha256
         {
             return Err(Error::ServiceIdentityRefused);

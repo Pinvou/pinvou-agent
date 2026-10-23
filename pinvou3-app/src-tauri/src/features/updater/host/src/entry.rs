@@ -5,6 +5,7 @@ use crate::{Error, error::Result};
 pub(crate) enum HelperMode {
     Profile,
     InstallLocal,
+    InspectInstalledImages,
     Service,
     PrepareInstall,
     PrepareLocalInstall,
@@ -38,6 +39,7 @@ fn helper(values: &[String]) -> Result<HelperMode> {
     {
         ["--profile"] => Ok(HelperMode::Profile),
         ["--install-local"] => Ok(HelperMode::InstallLocal),
+        ["--inspect-installed-images"] => Ok(HelperMode::InspectInstalledImages),
         ["--service"] => Ok(HelperMode::Service),
         ["--installer-stage", stage] => match *stage {
             "prepare-install" => Ok(HelperMode::PrepareInstall),
@@ -102,6 +104,18 @@ pub fn helper_main(values: impl IntoIterator<Item = std::ffi::OsString>) -> std:
                 .map_err(|_| Error::Unavailable)?;
             return Ok(());
         }
+        if mode == HelperMode::InspectInstalledImages {
+            use std::io::Write;
+            // The observation stays alive while its ordinary diagnostic bytes
+            // are written; stdout itself never holds a file/process lease.
+            let observation = crate::inspect_installed_images(|| false)?;
+            let bytes = observation.diagnostic_json()?;
+            std::io::stdout()
+                .lock()
+                .write_all(&bytes)
+                .map_err(|_| Error::Unavailable)?;
+            return Ok(());
+        }
         crate::platform::execute_helper(mode)
     })())
 }
@@ -148,6 +162,21 @@ mod tests {
             helper(&["--install-local".into()]),
             Ok(HelperMode::InstallLocal)
         );
+        assert_eq!(
+            helper(&["--inspect-installed-images".into()]),
+            Ok(HelperMode::InspectInstalledImages)
+        );
+        for values in [
+            vec!["--inspect-installed-images".into(), r"C:\override".into()],
+            vec!["--inspect-installed-images".into(), "--repair".into()],
+            vec!["--inspect-installed-images=production".into()],
+            vec![
+                "--installer-stage".into(),
+                "inspect-installed-images".into(),
+            ],
+        ] {
+            assert_eq!(helper(&values), Err(Error::IpcInvalid));
+        }
         for values in [
             vec!["--install-local".into(), r"C:\package".into()],
             vec!["--install-local".into(), "/S".into()],

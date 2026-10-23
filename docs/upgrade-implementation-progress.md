@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-23 23:58 Asia/Shanghai**.
+Checkpoint: **2026-10-24 00:28 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
@@ -172,6 +172,41 @@ binding; a compatible extension is awaiting the owner's decision. No ETag or QA
 provider assertion is promoted to a production continuity proof. These increments
 do not complete T29; its engineering estimate remains unchanged pending closure.
 
+## Installed-image prerequisite delivered with T29
+
+The host now provides the fixed, no-argument `--inspect-installed-images`
+diagnostic and an opaque `InstalledImageObservation`. An already elevated local
+administrator can inspect only the compiled profile's Ready installation. The
+observation retains the real application inventory, its ancestry, all three role
+images and the service process. Full hashes, identities, complete namespace,
+registration digest/revision and SCM startup incarnation are rechecked before
+return and on refresh. Failed refresh invalidates the diagnostic. Directory
+construction, enumeration, name matching and byte scans support latched
+cancellation. Existing service startup keeps its original ownership and commit
+sequence; this diagnostic performs no installation or state write.
+
+The minimal JSON omits private scope, paths, SIDs, native identities and startup
+nonces. It labels versions as manifest declarations, grants no permission and is
+not a retained lease or complete protocol SourceFacts. Source-semantic detection,
+protected current metadata/time and qualification remain outstanding; neither T27
+nor T29 is completed by this component, and their estimates are unchanged.
+
+Independent source, repair and interface/document reviews passed. Final Windows
+host regression: **99 passed, zero failed, one existing opt-in ignored**. Both
+current standalone roles built; independent byte-matched copies passed PE
+loader/static-runtime gates. The actual helper's public-profile command and exact
+extra-argument/unelevated diagnostic refusals passed. Three affected packaging
+contracts produced **36 passed, zero failed, three existing native opt-ins
+unexecuted**. Formatting, whitespace and architecture checks passed. Resource
+guards remained satisfied and final owned command trees closed naturally.
+Initial compile invocations with leftover MSVC telemetry failed the whole-process
+gate and remain failed history; exact cache-hit reruns established natural closure.
+
+A real Ready installation, replacement races and concurrent registration/service
+changes were not tested in an isolated installed environment. These environment
+E2E gaps are recorded follow-up, not passed tests or delivery blockers. The shared
+build target, current role artifacts and essential logs remain needed and retained.
+
 ## Per-task status
 
 Only T31 changes from the previous estimates. Outstanding environment-only E2E qualification is not a
@@ -205,7 +240,7 @@ completion blocker; outstanding business implementation is.
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | 35% | In progress | Independent purpose/week OpenBao material ownership and the bounded offline ASN import/source-owner component are delivered. The latter passed pure, real PostgreSQL and real-data tests. Accepted-event attribution, retention and shared recovery candidates passed source review; their complete native acceptance/commit remain pending. First-acceptance model repair is reviewed, offline ASN grouping approved; authenticated edge inputs, purpose-qualified consumption and frozen privacy snapshots remain pending. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
-| T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization is delivered under T31; protected current acceptance/time, workflow and qualification integration remain pending |
+| T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
 | T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo caller, original FullPack/native observation, protected staging, authenticated historical Root succession and same-process VerifiedExecutionObject ownership are delivered; production qualification/source continuity/continuation and authorized-executor integration remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |

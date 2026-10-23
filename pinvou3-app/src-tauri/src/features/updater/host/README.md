@@ -165,6 +165,43 @@ same-reference transitions, cancellation and physical-check refusal; they do
 not create fake protected capabilities or claim native E2E. The `handoff`
 compile-fail doctest checks that the moved old owner cannot be reused.
 
+## Read-only installed-image diagnostic
+
+An administrator can run the compiled helper with exactly
+`--inspect-installed-images`. The command requires an already elevated local
+administrator; it never requests elevation. It accepts no path, profile, scope,
+version or repair arguments. Only the compiled profile's existing Ready
+installation is inspected. Missing installation, insufficient permissions,
+unavailable service, changed registration or unknown inventory refuse rather
+than producing a partial success.
+
+`inspect_installed_images(cancelled)` returns a privately constructed
+`InstalledImageObservation`. It retains every actual application-inventory file
+and its protected parent chain, all three sealed role images and the observed
+service process. Before returning, it rechecks complete inventory membership,
+full file hashes, identities and ancestry, and brackets those reads with the
+same registration digest/revision and SCM startup incarnation. `recheck` repeats
+that observation with mandatory latched cancellation; cancellation returns
+`HOST_INSTALLED_IMAGE_INSPECTION_CANCELED`. A failed recheck invalidates the
+diagnostic projection. No startup dispatch, registration/epoch write, ACL repair,
+service mutation, preparation lock or installation operation occurs.
+
+The command's JSON contains only checked role sizes/hashes, explicitly labeled
+`manifestDeclaredVersion` values, inventory count/bytes, manifest hash and host
+revision/epoch. It omits paths, user/service SIDs, installation identifiers,
+startup nonces and native process/file identities. JSON is a diagnostic snapshot;
+it retains no handles or leases. Neither the observation nor its JSON supplies
+complete protocol `SourceFacts`, current qualification, source-registry authority,
+ownership/freeze or installation permission. Original manifest version declarations
+are not presented as independently derived source-semantic descriptors.
+
+Parser, cancellation/refusal mapping, registration/incarnation comparison and
+minimal JSON-projection tests accompany the interface. The existing cancellable
+full-file hash test exercises its shared byte reader. A real Ready installation,
+protected inventory replacement and concurrent service/registration changes need
+an isolated Windows installation; pure tests do not claim those native scenarios.
+Other platforms return `HOST_UNSUPPORTED`.
+
 The build-time Seed accepts explicit `lab` and `production` kinds with the same trust and content checks. Production uses a stable installation `profileId`, independent of each `buildId`. Its service, pipe, source/code/app/state directories, registry keys and mutexes are separate from lab even for the same profile ID. Existing lab names and serialized policies remain unchanged. Production rejects fault profile IDs and `native-acceptance-hooks`; there is no default production Root or runtime profile selector. The project NSIS wrapper requires `PINVOU_HOST_PROFILE_KIND=production` to match a production Seed. See [packaging](../../../../../../docs/windows-host-lab-packaging.md) for its explicit public inputs and source-deployment prerequisite.
 
 The component's library regression is run independently of the GUI build:

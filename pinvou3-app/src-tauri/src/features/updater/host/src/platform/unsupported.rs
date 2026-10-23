@@ -1,5 +1,17 @@
 //! This host profile requires Windows native SCM, process, ACL and TxR semantics.
 use crate::error::{Error, Result};
+pub(crate) struct InstalledImages;
+impl InstalledImages {
+    pub(crate) fn recheck(&mut self, _: &mut dyn FnMut() -> bool) -> Result<()> {
+        Err(Error::Unsupported)
+    }
+    pub(crate) fn diagnostic(&self) -> Result<&crate::installed_images::InstalledImageDiagnostic> {
+        Err(Error::Unsupported)
+    }
+}
+pub(crate) fn inspect_images(_: &mut dyn FnMut() -> bool) -> Result<InstalledImages> {
+    Err(Error::Unsupported)
+}
 pub(crate) struct ProtectedDownloadBytes;
 impl ProtectedDownloadBytes {
     pub(crate) fn seal_reference(&self) -> Result<&crate::ObjectReference> {

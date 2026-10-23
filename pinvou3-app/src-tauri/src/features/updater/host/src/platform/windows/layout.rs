@@ -289,10 +289,29 @@ impl Layout {
         ))
     }
     pub(super) fn open_targets(&self, service_sid: &str) -> Result<Targets> {
+        self.open_targets_with_poll(service_sid, &mut || false)
+    }
+    pub(super) fn open_targets_with_poll(
+        &self,
+        service_sid: &str,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Targets> {
         Ok(Targets {
-            code: ProtectedDirectory::open_existing(&self.code, Some(service_sid))?,
-            app: ProtectedDirectory::open_existing(&self.app, Some(service_sid))?,
-            state: ProtectedDirectory::open_existing(&self.state, Some(service_sid))?,
+            code: ProtectedDirectory::open_existing_with_poll(
+                &self.code,
+                Some(service_sid),
+                cancelled,
+            )?,
+            app: ProtectedDirectory::open_existing_with_poll(
+                &self.app,
+                Some(service_sid),
+                cancelled,
+            )?,
+            state: ProtectedDirectory::open_existing_with_poll(
+                &self.state,
+                Some(service_sid),
+                cancelled,
+            )?,
         })
     }
 }
@@ -374,11 +393,23 @@ impl Targets {
         manifest: &crate::profile::InstallationManifest,
         complete: bool,
     ) -> Result<()> {
+        self.validate_known_contents_with_poll(seed, manifest, complete, &mut || false)
+    }
+    pub(super) fn validate_known_contents_with_poll(
+        &self,
+        seed: &Seed,
+        manifest: &crate::profile::InstallationManifest,
+        complete: bool,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<()> {
+        crate::download_stage::poll(cancelled)?;
         let code = code_inventory(seed, manifest);
-        self.code.validate_inventory_mode(&code, complete)?;
+        self.code
+            .validate_inventory_mode_with_poll(&code, complete, cancelled)?;
         self.app
-            .validate_inventory_mode(&manifest.app_files, complete)?;
-        self.state.validate_inventory(&[])?;
+            .validate_inventory_mode_with_poll(&manifest.app_files, complete, cancelled)?;
+        self.state
+            .validate_inventory_mode_with_poll(&[], true, cancelled)?;
         Ok(())
     }
 }
@@ -404,17 +435,32 @@ impl ProtectedDirectory {
         Ok(value)
     }
     fn open_existing(path: &Path, service_sid: Option<&str>) -> Result<Self> {
+        Self::open_existing_with_poll(path, service_sid, &mut || false)
+    }
+    fn open_existing_with_poll(
+        path: &Path,
+        service_sid: Option<&str>,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Self> {
+        crate::download_stage::poll(cancelled)?;
         verify_local_volume(path)?;
+        crate::download_stage::poll(cancelled)?;
         let directory = custody::directory(path).map_err(custody_error)?;
+        crate::download_stage::poll(cancelled)?;
         let count = directory.retained_directories().len();
         // Every Pinvou-owned component beginning after KnownFolder must itself
         // be protected, not only the final leaf. OS drive/KnownFolder remain
         // actual inspected ancestors under their native policy.
         let components: Vec<_> = path.components().collect();
-        let pinvou = components
-            .iter()
-            .position(|c| c.as_os_str() == OsStr::new("Pinvou"))
-            .ok_or(Error::SecurityRefused)?;
+        let mut pinvou = None;
+        for (index, component) in components.iter().enumerate() {
+            crate::download_stage::poll(cancelled)?;
+            if component.as_os_str() == OsStr::new("Pinvou") {
+                pinvou = Some(index);
+                break;
+            }
+        }
+        let pinvou = pinvou.ok_or(Error::SecurityRefused)?;
         // Directory custody collapses Prefix/Root into its first drive handle.
         let owned_from = pinvou.checked_sub(1).ok_or(Error::SecurityRefused)?;
         if owned_from >= count {
@@ -426,13 +472,20 @@ impl ProtectedDirectory {
             owned_from,
             service_sid: service_sid.map(str::to_owned),
         };
-        value.recheck()?;
+        value.recheck_with_poll(cancelled)?;
         Ok(value)
     }
     pub(super) fn recheck(&self) -> Result<()> {
+        self.recheck_with_poll(&mut || false)
+    }
+    fn recheck_with_poll(&self, cancelled: &mut dyn FnMut() -> bool) -> Result<()> {
+        crate::download_stage::poll(cancelled)?;
         self.directory.recheck(&self.path).map_err(custody_error)?;
+        crate::download_stage::poll(cancelled)?;
         for (index, file) in self.directory.retained_directories().enumerate() {
+            crate::download_stage::poll(cancelled)?;
             inspect_file(file, index >= self.owned_from, self.service_sid.as_deref())?;
+            crate::download_stage::poll(cancelled)?;
         }
         Ok(())
     }
@@ -446,10 +499,21 @@ impl ProtectedDirectory {
         private: bool,
         service_sid: Option<&str>,
     ) -> Result<Self> {
+        self.child_with_poll(name, create, private, service_sid, &mut || false)
+    }
+    pub(super) fn child_with_poll(
+        &self,
+        name: &str,
+        create: bool,
+        private: bool,
+        service_sid: Option<&str>,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Self> {
+        crate::download_stage::poll(cancelled)?;
         if name.contains('/') || !crate::profile::relative_name(name) {
             return Err(Error::SecurityRefused);
         }
-        self.recheck()?;
+        self.recheck_with_poll(cancelled)?;
         let directory = match self.directory.open_dir(OsStr::new(name)) {
             Ok(child) => child,
             Err(custody::Error::NotFound) if create => {
@@ -460,6 +524,7 @@ impl ProtectedDirectory {
             }
             Err(e) => return Err(custody_error(e)),
         };
+        crate::download_stage::poll(cancelled)?;
         let value = Self {
             owned_from: self
                 .owned_from
@@ -470,7 +535,7 @@ impl ProtectedDirectory {
                 .map(str::to_owned)
                 .or_else(|| self.service_sid.clone()),
         };
-        value.recheck()?;
+        value.recheck_with_poll(cancelled)?;
         Ok(value)
     }
     pub(super) fn file(&self, name: &str) -> Result<File> {
@@ -644,9 +709,22 @@ fn catalog_tree(files: &[AppFile]) -> Result<Vec<CatalogNode>> {
     catalog_tree_with(files, crate::profile::relative_name)
 }
 fn catalog_tree_with(files: &[AppFile], valid: fn(&str) -> bool) -> Result<Vec<CatalogNode>> {
-    fn add(nodes: &mut Vec<CatalogNode>, parts: &[&str]) -> Result<()> {
+    catalog_tree_with_poll(files, valid, &mut || false)
+}
+fn catalog_tree_with_poll(
+    files: &[AppFile],
+    valid: fn(&str) -> bool,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Vec<CatalogNode>> {
+    fn add(
+        nodes: &mut Vec<CatalogNode>,
+        parts: &[&str],
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<()> {
+        crate::download_stage::poll(cancelled)?;
         let mut found = None;
         for (i, node) in nodes.iter().enumerate() {
+            crate::download_stage::poll(cancelled)?;
             if ordinal_equal(&node.name, parts[0])? {
                 found = Some(i);
                 break;
@@ -657,7 +735,7 @@ fn catalog_tree_with(files: &[AppFile], valid: fn(&str) -> bool) -> Result<Vec<C
             if node.name != parts[0] || node.file || parts.len() == 1 {
                 return Err(Error::ImageRefused);
             }
-            add(&mut node.children, &parts[1..])
+            add(&mut node.children, &parts[1..], cancelled)
         } else {
             let mut node = CatalogNode {
                 name: parts[0].to_owned(),
@@ -665,22 +743,26 @@ fn catalog_tree_with(files: &[AppFile], valid: fn(&str) -> bool) -> Result<Vec<C
                 children: Vec::new(),
             };
             if parts.len() > 1 {
-                add(&mut node.children, &parts[1..])?;
+                add(&mut node.children, &parts[1..], cancelled)?;
             }
             nodes.push(node);
             Ok(())
         }
     }
     let mut tree = Vec::new();
+    crate::download_stage::poll(cancelled)?;
     for file in files {
+        crate::download_stage::poll(cancelled)?;
         if !valid(&file.relative_name) {
             return Err(Error::ImageRefused);
         }
         add(
             &mut tree,
             &file.relative_name.split('/').collect::<Vec<_>>(),
+            cancelled,
         )?;
     }
+    crate::download_stage::poll(cancelled)?;
     Ok(tree)
 }
 /// Tree checks every ancestor, including nonadjacent file/dir collisions.
@@ -698,35 +780,75 @@ fn match_directory_contents(
     expected: &[CatalogNode],
     complete: bool,
 ) -> Result<()> {
+    match_directory_contents_with_poll(directory, expected, complete, &mut || false)
+}
+fn match_directory_contents_with_poll(
+    directory: &Directory,
+    expected: &[CatalogNode],
+    complete: bool,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<()> {
+    crate::download_stage::poll(cancelled)?;
     let mut seen = vec![false; expected.len()];
-    directory
-        .visit_entries(|entry| {
-            let mut found = None;
-            for (index, node) in expected.iter().enumerate() {
-                if ordinal_equal(&entry.name, &node.name)
-                    .map_err(|_| custody::Error::IoUnavailable)?
-                {
-                    found = Some(index);
-                    break;
-                }
+    // Custody's callback error is only a stop signal. Preserve typed host
+    // cancellation separately so it cannot become an I/O/security refusal.
+    let mut stopped = false;
+    let result = directory.visit_entries(|entry| {
+        callback_poll(cancelled, &mut stopped)?;
+        let mut found = None;
+        for (index, node) in expected.iter().enumerate() {
+            callback_poll(cancelled, &mut stopped)?;
+            if ordinal_equal(&entry.name, &node.name).map_err(|_| custody::Error::IoUnavailable)? {
+                found = Some(index);
+                break;
             }
-            let index = found.ok_or(custody::Error::UnsafeObject)?;
-            let node = &expected[index];
-            if seen[index] || entry.name != node.name || entry.directory == node.file {
-                return Err(custody::Error::UnsafeObject);
+        }
+        let index = found.ok_or(custody::Error::UnsafeObject)?;
+        let node = &expected[index];
+        if seen[index] || entry.name != node.name || entry.directory == node.file {
+            return Err(custody::Error::UnsafeObject);
+        }
+        if node.file {
+            callback_poll(cancelled, &mut stopped)?;
+            let file = directory.file(&entry.name, false, false, false)?;
+            custody::identity(&file)?; // Actual single-link ordinary file.
+            callback_poll(cancelled, &mut stopped)?;
+        }
+        seen[index] = true;
+        callback_poll(cancelled, &mut stopped)
+    });
+    finish_directory_visit(result, stopped, cancelled)?;
+    if complete {
+        for present in seen {
+            crate::download_stage::poll(cancelled)?;
+            if !present {
+                return Err(Error::ImageRefused);
             }
-            if node.file {
-                let file = directory.file(&entry.name, false, false, false)?;
-                custody::identity(&file)?; // Actual single-link ordinary file.
-            }
-            seen[index] = true;
-            Ok(())
-        })
-        .map_err(custody_error)?;
-    if complete && seen.iter().any(|value| !*value) {
-        return Err(Error::ImageRefused);
+        }
     }
-    Ok(())
+    crate::download_stage::poll(cancelled)
+}
+fn callback_poll(
+    cancelled: &mut dyn FnMut() -> bool,
+    stopped: &mut bool,
+) -> std::result::Result<(), custody::Error> {
+    *stopped |= cancelled();
+    if *stopped {
+        Err(custody::Error::IoUnavailable)
+    } else {
+        Ok(())
+    }
+}
+fn finish_directory_visit(
+    result: std::result::Result<(), custody::Error>,
+    stopped: bool,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<()> {
+    if stopped {
+        return Err(Error::StagingCanceled);
+    }
+    crate::download_stage::poll(cancelled)?;
+    result.map_err(custody_error)
 }
 impl ProtectedDirectory {
     pub(super) fn validate_inventory(&self, files: &[AppFile]) -> Result<()> {
@@ -736,13 +858,23 @@ impl ProtectedDirectory {
         self.validate_inventory_mode(files, false)
     }
     fn validate_inventory_mode(&self, files: &[AppFile], complete: bool) -> Result<()> {
-        let tree = catalog_tree(files)?;
+        self.validate_inventory_mode_with_poll(files, complete, &mut || false)
+    }
+    fn validate_inventory_mode_with_poll(
+        &self,
+        files: &[AppFile],
+        complete: bool,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<()> {
+        let tree = catalog_tree_with_poll(files, crate::profile::relative_name, cancelled)?;
         fn walk(
             root: &ProtectedDirectory,
             path: &str,
             nodes: &[CatalogNode],
             complete: bool,
+            cancelled: &mut dyn FnMut() -> bool,
         ) -> Result<()> {
+            crate::download_stage::poll(cancelled)?;
             // Close this actual directory before descending. Retaining every
             // prefix's cloned ancestry recursively would grow handles by n².
             {
@@ -751,11 +883,13 @@ impl ProtectedDirectory {
                 } else {
                     let mut directory: Option<ProtectedDirectory> = None;
                     for part in path.split('/') {
-                        let next = match directory.as_ref().unwrap_or(root).child(
+                        crate::download_stage::poll(cancelled)?;
+                        let next = match directory.as_ref().unwrap_or(root).child_with_poll(
                             part,
                             false,
                             false,
                             root.service_sid.as_deref(),
+                            cancelled,
                         ) {
                             Ok(next) => next,
                             Err(Error::SourceUnavailable) if !complete => return Ok(()),
@@ -766,22 +900,26 @@ impl ProtectedDirectory {
                     directory
                 };
                 let current = current.as_ref().unwrap_or(root);
-                current.recheck()?;
-                match_directory_contents(&current.directory, nodes, complete)?;
+                current.recheck_with_poll(cancelled)?;
+                match_directory_contents_with_poll(&current.directory, nodes, complete, cancelled)?;
             }
-            for node in nodes.iter().filter(|n| !n.file) {
+            for node in nodes {
+                crate::download_stage::poll(cancelled)?;
+                if node.file {
+                    continue;
+                }
                 let child = if path.is_empty() {
                     node.name.clone()
                 } else {
                     format!("{path}/{}", node.name)
                 };
-                walk(root, &child, &node.children, complete)?;
+                walk(root, &child, &node.children, complete, cancelled)?;
             }
-            Ok(())
+            crate::download_stage::poll(cancelled)
         }
-        self.recheck()?;
-        walk(self, "", &tree, complete)?;
-        self.recheck()
+        self.recheck_with_poll(cancelled)?;
+        walk(self, "", &tree, complete, cancelled)?;
+        self.recheck_with_poll(cancelled)
     }
 }
 #[cfg(test)]
@@ -796,6 +934,54 @@ mod tests {
                 sha256: "0".repeat(64),
             })
             .collect()
+    }
+    #[test]
+    fn catalog_cancellation_interrupts_actual_ancestor_matching() {
+        let files: Vec<_> = (0..128)
+            .map(|index| AppFile {
+                relative_name: format!("group/item-{index}/payload"),
+                size: 0,
+                sha256: "0".repeat(64),
+            })
+            .collect();
+        assert!(matches!(
+            catalog_tree_with_poll(&files, crate::profile::relative_name, &mut || true),
+            Err(Error::StagingCanceled)
+        ));
+        let mut polls = 0;
+        assert!(matches!(
+            catalog_tree_with_poll(&files, crate::profile::relative_name, &mut || {
+                polls += 1;
+                polls == 75
+            }),
+            Err(Error::StagingCanceled)
+        ));
+        assert_eq!(polls, 75);
+        let tree = catalog_tree(&files).unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].children.len(), 128);
+    }
+    #[test]
+    fn custody_callback_cancellation_is_not_an_io_or_security_refusal() {
+        let mut stopped = false;
+        assert!(callback_poll(&mut || false, &mut stopped).is_ok());
+        let sentinel = callback_poll(&mut || true, &mut stopped);
+        assert!(sentinel.is_err());
+        // The callback may no longer report true on a subsequent invocation;
+        // its latched cancellation still owns the result after custody returns.
+        assert_eq!(
+            finish_directory_visit(sentinel, stopped, &mut || false),
+            Err(Error::StagingCanceled)
+        );
+        assert_eq!(
+            finish_directory_visit(Err(custody::Error::UnsafeObject), false, &mut || false),
+            Err(Error::SecurityRefused)
+        );
+        assert_eq!(
+            finish_directory_visit(Ok(()), false, &mut || true),
+            Err(Error::StagingCanceled)
+        );
+        assert!(finish_directory_visit(Ok(()), false, &mut || false).is_ok());
     }
     #[test]
     fn actual_ordinal_tree_rejects_every_ancestor_alias() {
