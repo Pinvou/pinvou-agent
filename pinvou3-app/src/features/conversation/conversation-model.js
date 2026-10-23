@@ -366,6 +366,14 @@ export function presentConversationItems(items) {
 }
 
 export function commandExecutionDetails(tool) {
+  return readCommandExecution(tool, true);
+}
+
+export function commandExecutionExitCode(tool) {
+  return readCommandExecution(tool, false);
+}
+
+function readCommandExecution(tool, forDisplay) {
   const rawInput = tool && tool.rawInput;
   const rawOutput = tool && tool.rawOutput;
   const command = rawInput && typeof rawInput === 'object' && rawInput.command != null
@@ -389,14 +397,19 @@ export function commandExecutionDetails(tool) {
     if (code !== undefined && code !== null && code !== '') exitCode = Number(code);
   }
   if (!output && tool && typeof tool.content === 'string') output = tool.content;
-  output = stripTerminalControlSequences(output);
+  // Statistics need no display output. Keep the original property reads and
+  // coercions so malformed inputs still throw in the same order as display.
+  output = forDisplay ? stripTerminalControlSequences(output) : String(output ?? '');
   const commandLines = command.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const normalizedExitCode = Number.isNaN(exitCode) ? null : exitCode;
+  const summary = commandLines[0] || String(tool && tool.title || '执行 Shell 命令');
+  if (!forDisplay) return normalizedExitCode;
   return {
     command,
     cwd,
     output,
-    exitCode: Number.isNaN(exitCode) ? null : exitCode,
-    summary: commandLines[0] || String(tool && tool.title || '执行 Shell 命令'),
+    exitCode: normalizedExitCode,
+    summary,
     commandCount: commandLines.length,
   };
 }
@@ -431,7 +444,7 @@ export function countsAsFailedOperation(item) {
   const input = tool.rawInput ?? (item && item.legacyItem && item.legacyItem.args);
   if (isAgentWaitCall(tool.name, input)) return false;
   const exitCode = item && item.type === 'command_execution'
-    ? commandExecutionDetails(tool).exitCode
+    ? commandExecutionExitCode(tool)
     : null;
   return terminalStatus(item && item.status, exitCode) === 'failed';
 }
