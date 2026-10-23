@@ -103,15 +103,27 @@ test('reader window paints its own dark canvas before first paint and keeps it o
   assert.match(themeBoot, /dataset\.darkBg/, 'theme-boot must take the canvas colour from its script tag');
   assert.match(themeBoot, /classList\.add\('dark'\)/, 'theme-boot must set the dark class pre-paint');
   // index.html keeps an inline copy on the startup critical path; it must stay
-  // on the same key and canvas colour so the two boots never drift apart.
-  assert.match(source('index.html'), new RegExp(COLOR_SCHEME_STORAGE_KEY.replaceAll('.', '\\.')));
-  assert.match(stripComments(source('index.html')), /html\.dark \{ background: #131314; \}/,
+  // on the same key, the same stored-value gate, and the same OS fallback, or
+  // the two boots drift apart (a loosened gate boots a corrupted store as
+  // light; an inverted media query boots an OS-dark machine light).
+  const indexBoot = stripComments(source('index.html'));
+  assert.match(indexBoot, new RegExp(`getItem\\('${COLOR_SCHEME_STORAGE_KEY.replaceAll('.', '\\.')}'\\)`),
+    'index.html inline boot must read the same storage key color-scheme.js exports');
+  assert.match(indexBoot, /stored === 'light' \|\| stored === 'dark'/,
+    'index.html must keep the strict stored-value gate');
+  assert.match(indexBoot, /prefers-color-scheme: dark/,
+    'index.html must fall back to the OS dark preference');
+  assert.match(indexBoot, /html\.dark \{ background: #131314; \}/,
     'index.html canvas must equal the theme-boot.js default dark background');
   // The recipe is more than key + colour: the inline boot must still apply
   // the class, or a dark cold boot paints a white first frame again.
-  assert.match(stripComments(source('index.html')), /if \(dark\) document\.documentElement\.classList\.add\('dark'\)/,
+  assert.match(indexBoot, /if \(dark\) document\.documentElement\.classList\.add\('dark'\)/,
     'index.html inline boot must still apply the dark class pre-paint');
   assert.match(themeBoot, /\|\| '#131314'/, 'theme-boot default must stay equal to the index.html dark canvas');
+  assert.match(themeBoot, /stored === 'light' \|\| stored === 'dark'/,
+    'theme-boot must keep the same strict stored-value gate as the inline boot');
+  assert.match(themeBoot, /prefers-color-scheme: dark/,
+    'theme-boot must fall back to the OS dark preference like the inline boot');
 });
 
 test('web-access primaries and the refresh confirm carry the shared light + dark pairing', () => {
@@ -133,27 +145,31 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
   // The file pairs every error/success text with its dark half (#ff8a80 /
   // #7DD3A8); a bare light-only instance re-opens the unreadable-in-dark
   // class. The lookahead stays inside the className string (no quote may be
-  // crossed) but tolerates dark:bg tokens sitting between the pair.
-  assert.equal(count(remoteKnowledge, /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
+  // crossed) but tolerates dark:bg tokens sitting between the pair. The
+  // negatives run on RAW source: a legal string containing /* makes the
+  // comment stripper swallow whole regions, and a regression inside it must
+  // not go unpinned (same policy as ui_language_coverage round-26 M9).
+  const remoteKnowledgeRaw = source('features/remote-knowledge/RemoteKnowledgeView.jsx');
+  assert.equal(count(remoteKnowledgeRaw, /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
     'every error-red text in remote knowledge must carry its dark pair');
-  assert.equal(count(remoteKnowledge, /text-\[#b72f2f\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
+  assert.equal(count(remoteKnowledgeRaw, /text-\[#b72f2f\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
     'every deep error-red text in remote knowledge must carry its dark pair');
-  assert.equal(count(remoteKnowledge, /text-\[#16894a\](?![^"'`]*dark:text-\[#7DD3A8\])/g), 0,
+  assert.equal(count(remoteKnowledgeRaw, /text-\[#16894a\](?![^"'`]*dark:text-\[#7DD3A8\])/g), 0,
     'every success-green text in remote knowledge must carry its dark pair');
   // The local knowledge view pairs its error reds with the same dark half as
   // the remote one; a bare light-only instance re-opens the class there too.
-  const knowledgeView = stripComments(source('features/knowledge/KnowledgeView.jsx'));
-  assert.equal(count(knowledgeView, /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
+  assert.equal(count(source('features/knowledge/KnowledgeView.jsx'), /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
     'every error-red text in local knowledge must carry its dark pair');
   const acpNotices = stripComments(source('features/codex/AcpRuntimeNotices.jsx'));
+  const acpNoticesRaw = source('features/codex/AcpRuntimeNotices.jsx');
   // Both pair directions are zero-tolerance: a gray-500 without a dark
   // gray-400 half anywhere later in its className string, and any gray-400
   // that is not the dark half of an exact pair (bare, reordered, or riding
   // its own variant chain like dark:hover:) — a count pin would let two
   // hints lose their half and stay green.
-  assert.equal(count(acpNotices, /text-gray-500(?![^"'`]*dark:text-gray-400)/g), 0,
+  assert.equal(count(acpNoticesRaw, /text-gray-500(?![^"'`]*dark:text-gray-400)/g), 0,
     'every gray-500 hint in the runtime notices must carry its dark gray-400 half');
-  const withoutPairs = acpNotices.replaceAll('text-gray-500 dark:text-gray-400', '');
+  const withoutPairs = acpNoticesRaw.replaceAll('text-gray-500 dark:text-gray-400', '');
   assert.equal(count(withoutPairs, /text-gray-400/g), 0,
     'every gray-400 in the runtime notices must be the dark half of a gray-500 pair');
   assert.ok(count(acpNotices, /text-gray-500 dark:text-gray-400/g) >= 8,
@@ -187,8 +203,9 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
   assert.ok(count(toolStore, /w-\[300px\] max-w-full rounded-\[20px\]/g) >= 4,
     'the 300px dialog cards must carry max-w-full');
   // String-bound (not adjacency-bound): an unguarded card written
-  // w-[300px] shadow-2xl rounded-[20px] must fail here too.
-  assert.equal(count(toolStore, /w-\[300px\](?![^"'`]*max-w-full)/g), 0,
+  // w-[300px] shadow-2xl rounded-[20px] must fail here too. Raw source, so
+  // no comment mention can satisfy it either.
+  assert.equal(count(raw, /w-\[300px\](?![^"'`]*max-w-full)/g), 0,
     'no 300px dialog card may lose its max-width guard');
   assert.ok(count(toolStore, /text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider/g) >= 3,
     'detail labels must have a dark variant');
@@ -227,9 +244,12 @@ test('community group name and recycle-bin badge labels exist in all three langu
 });
 
 test('alpha modifiers stay on the opacity scale or use the bracket form', () => {
-  // Tailwind's bare alpha scale covers multiples of 5 only: /8, /16, /18 and
-  // /28 compile to no CSS at all, so the tint silently vanishes in both
-  // themes (the bracket form /[0.08] is the working spelling).
+  // Tailwind's bare alpha scale covers multiples of five only: /8, /12, /88
+  // … all compile to no CSS at all, so the tint silently vanishes in both
+  // themes (the bracket form /[0.08] is the working spelling). The utility
+  // prefix keeps the scan inside class tokens, so a URL like
+  // img/v2/16/logo.png does not trip it.
+  const BARE_ALPHA = /(?:bg|text|border|divide|ring|from|to|via|outline|decoration|accent|caret|fill|stroke)-[^\s'"`]*\/(\d+)(?![\d.%])/g;
   for (const file of [
     'features/remote-knowledge/RemoteKnowledgeView.jsx',
     'features/knowledge/KnowledgeView.jsx',
@@ -237,7 +257,8 @@ test('alpha modifiers stay on the opacity scale or use the bracket form', () => 
     'features/settings/SettingsView.jsx',
   ]) {
     const src = source(file);
-    assert.equal(count(src, /[\]\d]\/(?:8|16|18|28)(?![\d.])/g), 0,
+    const offScale = [...src.matchAll(BARE_ALPHA)].map(m => m[1]).filter(v => Number(v) % 5 !== 0);
+    assert.deepEqual(offScale, [],
       `${file} must not carry alpha modifiers outside tailwind's opacity scale`);
   }
 });
