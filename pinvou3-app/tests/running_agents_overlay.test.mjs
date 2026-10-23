@@ -13,6 +13,7 @@ import {
   pruneOverlayEntries,
   statusPresentation,
 } from '../src/features/multiagent/overlay-model.mjs';
+import { dictZh } from '../src/shared/i18n/zh.js';
 
 // Source pin target: the component glue (session-switch cache discard,
 // revival kick, ledger summary mapping) has no React test harness in this
@@ -24,13 +25,21 @@ const overlaySource = fs.readFileSync(
 );
 
 // Fixture mirrors the zh locale's uiMultiAgent copy verbatim (zh.js
-// agentCard.working / pendingTag): statusPresentation must map ledger tokens
-// into whatever localized copy it is given.
+// agentCard / blockedTag / pendingTag): statusPresentation must map ledger
+// tokens into whatever localized copy it is given, and the assertions below
+// read the real user-facing strings. The parity test keeps the mirror honest —
+// the fixture had silently drifted from zh.js once before.
 const copy = {
-  agentCard: { failed: '失败', completed: '已完成', working: '工作中', interrupted: '已中断', cancelled: '已取消' },
+  agentCard: { working: '工作中', completed: '已完成', failed: '失败', spawnFailed: '派出失败', interrupted: '已中断', cancelled: '已取消' },
   blockedTag: '受阻',
   pendingTag: '排队中',
 };
+
+test('fixture copy mirrors the shipped zh uiMultiAgent copy', () => {
+  assert.deepEqual(copy.agentCard, dictZh.uiMultiAgent.agentCard);
+  assert.equal(copy.blockedTag, dictZh.uiMultiAgent.blockedTag);
+  assert.equal(copy.pendingTag, dictZh.uiMultiAgent.pendingTag);
+});
 
 const entry = (overrides = {}) => ({
   sessionId: 's1',
