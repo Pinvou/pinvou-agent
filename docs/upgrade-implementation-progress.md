@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 12:05 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 13:50 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; T25's bounded offline ASN source-owner component is now delivered.
 Remaining T13/T25/T47 composition and local acceptance are pending.
@@ -104,7 +104,10 @@ test trees permit bounded parallel compilation while retaining resource guards:
   also pass in the full 190-test contract run and their contracts are delivered.
   Genuine scanner/UI workflow acceptance remains pending. Two additional normal
   scanner executable builds now pass for Linux amd64 and arm64, with independent
-  actual review of all source and ELF bytes. Neither executable has run.
+  actual review of all source and ELF bytes. Three further current-source Linux
+  amd64 unit-test executables also compiled and passed independent static review,
+  containing 47 top-level test declarations. None has run on Linux; static test
+  inventory is not a passing-test count. Fresh media preparation remains pending.
 - T25's controlled offline ASN source owner passed independent deep source review:
   initial installation, CAS disable, exact original-request recovery and current
   local lookup preserve the original audit and operation boundaries. Formatting
@@ -129,10 +132,13 @@ test trees permit bounded parallel compilation while retaining resource guards:
   explicit native-evidence CLI observation while preserving Windows behavior.
   Root repaired an unsupported-platform test reference and an omitted consumer
   in the pending lock-update inventory; independent source review passed. Eight
-  normal Cargo lock updates, compilation and actual Linux acceptance remain
-  pending. The 1,070 locked public dependency archives are present; an isolated
-  mirror-derived cache was assembled as source preparation only, without running
-  Cargo or qualifying resolution, build or tests.
+  normal offline Cargo updates all returned zero, but the batch failed its
+  existing registry-edge freeze. Independent actual review confirms 25 Windows
+  edge reselections across four locks, with unchanged package identities and
+  checksums. The owner has approved precisely these edges plus Windows regression.
+  A fresh retry has passed independent actual resolution review; its exact
+  finite graph matches the approval. Failed lock outputs are not reused. Rust
+  compilation and actual Linux acceptance remain pending.
 - The owner explicitly deferred the T03 50 GiB / 500,000-file measurement because
   no current volume meets its approximately 104 GiB free-space precondition.
   Other development and smaller-load/platform measurement work continue. Existing
@@ -14862,8 +14868,70 @@ The earlier VM media binds older production sources and cannot stand in for curr
 source acceptance. Fresh media and evidence bindings must precede another target run.
 
 T47's dense native experiment still has no accepted 32 MiB bracket or exact-boundary
-result. A test-only signed OIDC login/callback/session renewal candidate now preserves
-the five-minute MFA rule and original precise permissions; independent source
-review passed, but it has not compiled or run. Its future narrow authentication control
-must pass before another capacity experiment. Task percentages and totals remain
+result. The signed OIDC login/callback/session renewal candidate preserves the
+five-minute MFA rule and precise permissions. Its narrow actual authentication
+control now passes one top-level test and three subtests, with no skips and
+independent actual review. Two subsequent dense native runs failed during setup
+within the unchanged eight-minute budget. Task percentages and totals remain
 unchanged; the deferred 50 GiB T03 measurement and deployment T42 remain deferred.
+
+## Current-source tests and resolver retry (2026-10-23 13:50)
+
+Three fresh Linux amd64 unit-test executables compiled from the current 2,374-input
+scanner source. Independent actual review verified all source inputs, tool bindings,
+native returns and full ELF bytes. The linked static inventory contains 31 local,
+nine profile and seven CLI top-level test declarations. These 47 declarations have
+not executed on Linux. All build trees drained naturally; source stayed unchanged
+and resource floors held. Current media templates and pure rendered cloud-init
+passed independent source review. ISO construction, fresh powered-off checks,
+preparation and guest execution remain pending. Older media and the earlier
+pre-start memory refusal confer no current-source runtime qualification.
+
+The T47 narrow authentication run used the genuine signed OIDC verifier, callback,
+session cookie and typed identity over 2,504 unchanged inputs. Its one top-level
+test and three subtests passed with independent actual review and no skips. This
+is test-provider evidence, not deployed Keycloak password/OTP acceptance.
+
+The next dense run used one Go worker and a 256 MiB soft Go memory limit, creating
+eight real members in two batches before the ninth creation expired the original
+eight-minute setup context. A high-memory retake used two workers and a 1 GiB soft
+limit, creating nine real members before the tenth creation reached that deadline.
+Both failed one top-level test and its package, with zero subtests and zero skips.
+Independent actual reviews retain both failures and confirm natural Job closure,
+all native predicates, unchanged inputs and no resource-floor breach. MFA was fresh
+at each failed action; neither run proves the underlying performance cause.
+
+Both runs' last accepted paired lookup measured 8,086,659 joined bytes and 146
+references at eight members. The retake's ninth-member required-plan lower bound
+was 8,545,850 bytes and 121 references; it was not an accepted joined lookup. These
+measurements cannot be conflated and establish no 32 MiB bracket or exact rejection
+boundary. The original five-minute MFA, eight-minute setup, sixty-second observation,
+64-member, 32 MiB and 4,096-reference limits remain unchanged. Source-only analysis
+identifies repeated validation, integrity/history verification, source collection,
+PostgreSQL work and test observation as measurement candidates, with no verified
+root cause. A minimal CPU diagnostic plan is source preparation only.
+
+T34's fresh resolver assembly contained 4,517 exact inputs. All eight normal targeted
+offline Cargo updates returned zero and all trees drained naturally, but the freeze
+check rejected 25 real windows-sys edge reselections in four locks, across sixteen
+unique crates. Both old and new choices satisfy original index and checksum-bound
+archive constraints. Package identities/checksums remain unchanged. This is a graph
+change, not serialization; independent actual review confirms correct rejection.
+The owner subsequently authorized exactly these 25 changes and Windows regression.
+No failed lock output is accepted or copied into the repository. A new source tree,
+Cargo home, target and attempt were used. All eight updates and their complete
+finite-record comparison now pass independent actual review: precisely the approved
+25 edge selections, with every other registry record, local record projection and
+header preserved. All 4,517 source inputs match except the eight approved locks;
+the original 2,019 cache files and fresh home seed remain exact. This qualifies
+normal resolution only. Windows regression, Rust compilation, Linux execution and
+source/lock delivery remain pending.
+
+The next T25 source candidate contains seven event-owner first-SQL-acceptance paths,
+current-installed-version attribution, server UTC day/week, original replay/recovery
+and retention/pruning controls. Its 58 paths passed independent deep source review. Forty-six Go source copies
+were formatted under the original process/resource guards, with original sources
+and non-Go copies unchanged. Independent formatting semantic review and a fresh
+whole-source test tree remain pending; no product test or delivery is claimed.
+Trusted network edge input remains unfinished. No
+whole task is advanced by these preparations.
