@@ -7,6 +7,8 @@
 
 use super::*;
 
+use deepseek_tui::skills::install::INSTALLED_FROM_MARKER;
+
 #[cfg(target_os = "linux")]
 fn find_webkit_webdriver() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PINVOU3_WEBKIT_WEBDRIVER_BIN")
@@ -457,7 +459,7 @@ impl Pinvou3Bundle {
             "pinvou-review-final",
         ] {
             let dir = self.skills_dir.join(retired);
-            if dir.join(".installed-from").is_file() {
+            if dir.join(INSTALLED_FROM_MARKER).is_file() {
                 continue; // marketplace 技能占用了该名,保护不删
             }
             let _ = std::fs::remove_dir_all(dir);
@@ -488,13 +490,13 @@ impl Pinvou3Bundle {
             // symlink 读到 upload: 内容并据此保护，硬化读把这一类变成 Err，若
             // fail-open 成空标记会把用户内容连同目录一起删掉。
             let marker = match crate::platform::filesystem::read_private_data_file(
-                &dir.join(".installed-from"),
+                &dir.join(INSTALLED_FROM_MARKER),
             ) {
                 Ok(content) => content,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
                 Err(error) => {
                     log::warn!(
-                        "[pinvou3-app] marketplace skill cleanup preserved '{}' (unreadable .installed-from: {error})",
+                        "[pinvou3-app] marketplace skill cleanup preserved '{}' (unreadable {INSTALLED_FROM_MARKER}: {error})",
                         dir.display()
                     );
                     continue;

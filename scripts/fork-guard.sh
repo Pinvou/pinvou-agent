@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 79 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 79 registered maintenance commits + 15 pending commits (14 upstream #81/#82/#85/#87 topic commits + 1 fork-side adaptation) pinned per EXPECTED_HEAD (PR #653's integration-pin window), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#115 and #116 merged.
-EXPECTED_HEAD="ea9fdc90f1c90335554833195eeeb847c83d82dd"
-EXPECTED_COMMITS=79
+# Public maintenance after CodeWhale#115 and #116 merged; PR #653 pins the
+# re-cut integration head above it (14 upstream PR tip commits + 1 test-only
+# adaptation) while the upstream PRs stay open.
+EXPECTED_HEAD="9082d69f28e40c5a83f2886fbc8ee92e195373bd"
+EXPECTED_COMMITS=94
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="ea9fdc90f1c90335554833195eeeb847c83d82dd"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -29,10 +31,10 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── Layer 0: v0.9.12 registered maintenance topology ──"
+bold "── Layer 0: v0.9.12 registered maintenance topology (integration-pin window) ──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale matches registered review head ${EXPECTED_HEAD}; public maintenance alignment is checked separately"
+  green "  ✓ CodeWhale matches registered review head ${EXPECTED_HEAD} (integration-pin window — registered head / maintenance head / pin semantics in docs/fork-modifications.md §0; public maintenance alignment is checked separately)"
 else
   red "  ✗ CodeWhale HEAD ${actual_head:-<unreadable>} differs from registered head $EXPECTED_HEAD"
   fail=1
