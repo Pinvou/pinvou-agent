@@ -66,7 +66,7 @@ pub mod remote_knowledge;
 pub(crate) mod retirement;
 pub(crate) mod review;
 pub(crate) mod runtime_bundle;
-pub(crate) mod scheduled;
+pub mod scheduled;
 pub mod sessions;
 pub mod shared_knowledge_host;
 pub(crate) mod updater;

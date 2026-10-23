@@ -589,6 +589,7 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                                 prompt=record.get("prompt"),
                                 rrule=record.get("rrule"),
                                 model_id=record.get("model_id"),
+                                target_session=record.get("target_session"),
                                 paused=(
                                     False
                                     if record.get("kind") == "create"
@@ -649,6 +650,25 @@ class CreateSpoolAndResultTests(unittest.TestCase):
             self.assertNotIn("no second task", result["note"])
         finally:
             server.RESULT_WAIT_SECONDS = old_wait
+
+
+    def test_keyed_target_replay_matches_the_fake_watcher_digest(self):
+        sessions = Path(self.tmp) / "sessions"
+        sessions.mkdir()
+        (sessions / "target001.json").write_text("{}")
+        kwargs = self._create_kwargs(sessions_dir=str(sessions), target_session="target001",
+                                     from_session="reqsrc01", idempotency_key="target-key")
+        worker = self._finish_in_background()
+        try:
+            first, error = server.create_scheduled_task(**kwargs)
+        finally:
+            worker.join(timeout=2)
+        self.assertIsNone(error)
+        self.assertEqual(first["taskId"], "task-1")
+        replay, error = server.create_scheduled_task(**kwargs)
+        self.assertIsNone(error)
+        self.assertTrue(replay["duplicate"])
+        self.assertFalse(replay["payload_mismatch"])
 
     def test_failure_marker_redacts_private_roots_before_return(self):
         automations = Path(self.tmp) / "automations"
@@ -929,13 +949,22 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                 "create", name="早报", prompt="汇总",
                 rrule="FREQ=DAILY;BYHOUR=8", paused=False,
             ),
-            "ee13de67c7837ccbb71afbf4c376e6f58bf80509bf7e79744c60c9ed6cd639fe",
+            "e3ee5656710820acad7daa187ed50fe7a2295020d3d66f5bd37fc7afea42f755",
         )
         self.assertEqual(
             server.spool_request_digest(
                 "update", model_id="m1", paused=True, task_id="t-9",
             ),
-            "3e5a7833ac3bd752cf7cc5dd72b0ff4347a65c4155bbe2b69c0fb61673d9bf53",
+            "80d24d63000aa38aa3f4c1866155e42e91d57594189996443d336fc2754bfca6",
+        )
+        # Round-6 minor 6: non-null target_session vector (both sides —
+        # the Rust twin pins the same hex).
+        self.assertEqual(
+            server.spool_request_digest(
+                "update", model_id="m1", paused=True, task_id="t-9",
+                target_session="sess-7777",
+            ),
+            "87f414a68c6034ca1d625fc05f682c8f0811aef01752f9b4cf1d140a5aac6af3",
         )
 
     def test_short_wait_returns_task_ids(self):
@@ -1351,6 +1380,161 @@ class UpdateDeleteRequestTests(unittest.TestCase):
         return sorted(Path(self.requests, "spool").glob("*.json"))
 
 
+class MessageTargetTests(unittest.TestCase):
+    """Scheduled-message mode: target validation and the spool field."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-target-test-")
+        self.requests = Path(self.tmp) / "task-requests"
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        (self.sessions / "target001.json").write_text(
+            json.dumps({"metadata": {"id": "target001", "title": "目标"}, "messages": []}),
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _create(self, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "sessions_dir": str(self.sessions),
+            "name": "定时询问",
+            "prompt": "问一下进展",
+            "rrule": "FREQ=HOURLY;INTERVAL=6",
+            "target_session": "target001",
+        }
+        args.update(overrides)
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.05
+        try:
+            return server.create_scheduled_task(**args)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+
+    def test_valid_target_spools_with_target_field(self):
+        payload, error = self._create()
+        self.assertIsNone(error)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["target_session"], "target001")
+        self.assertEqual(record["kind"], "create")
+
+    def test_isolated_and_unknown_and_junk_targets_rejected(self):
+        # Round-7 minor 4: assert the REJECTION CLASS, not mere presence —
+        # the old form stayed green if the charset branch was deleted (the
+        # charset/length inputs then failed as "not found" instead).
+        isolated = ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1")
+        junk = ("../escape", "with space", "a" * 300)
+        for bad in isolated:
+            payload, error = self._create(target_session=bad)
+            self.assertIsNone(payload, bad)
+            self.assertIsNotNone(error, bad)
+            self.assertIn("isolated or unattended", error, bad)
+        for bad in junk:
+            payload, error = self._create(target_session=bad)
+            self.assertIsNone(payload, bad)
+            self.assertIsNotNone(error, bad)
+            self.assertIn("invalid target_session", error, bad)
+        payload, error = self._create(target_session="no-such-target")
+        self.assertIsNone(payload)
+        self.assertIsNotNone(error)
+        self.assertIn("not found", error)
+
+    def test_case_variant_target_fails_the_probe(self):
+        """Round-15 minor 5: the existence probe is EXACT-NAME, not
+        isfile — on a case-insensitive volume a case-variant typo
+        ("Target001" vs a real "target001.json") would false-pass the FS
+        hit and fail only later at the domain. The listing comparison
+        rejects it right here on every platform."""
+        payload, error = self._create(target_session="Target001")
+        self.assertIsNone(payload)
+        self.assertIsNotNone(error)
+        self.assertIn("not found", error)
+
+    def test_blank_target_errors_in_every_arm(self):
+        """Round-5 M-E: the explicit-blank fix is pinned — create, update
+        (alone and combined), and delete all error, nothing spools, and the
+        error text names the field (the round-4 silent-downgrade mutant
+        turns this red)."""
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.05
+        try:
+            cases = [
+                (dict(kind="create", name="n", prompt="p", rrule="FREQ=DAILY;BYHOUR=8", target_session=""), "create"),
+                (dict(kind="update", task_id="t-1", target_session=""), "update alone"),
+                (dict(kind="update", task_id="t-1", target_session="", name="n2"), "update combined"),
+                (dict(kind="delete", task_id="t-1", target_session=""), "delete"),
+            ]
+            for kwargs, label in cases:
+                payload, error = server.schedule_task_request(
+                    requests_dir=str(self.requests),
+                    sessions_dir=str(self.sessions), **kwargs)
+                self.assertIsNone(payload, label)
+                self.assertIsNotNone(error, label)
+                # Round-6 nit: delete + blank now hits the delete arm FIRST
+                # ("takes no extra fields") instead of the update-worded
+                # blank message; create/update keep "cannot be blank".
+                expected = (
+                    "delete takes no extra fields"
+                    if label == "delete" else "cannot be blank"
+                )
+                self.assertIn(expected, error, label)
+                self.assertIn("target_session", error, label)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertEqual(len(self._spooled()), 0, "no error path may spool")
+
+    def test_uppercase_isolated_target_with_existing_session_rejects_with_reason(self):
+        """Round-5 M-E: a case-variant isolated target that EXISTS as a
+        session file is rejected by the isolation branch (not the existence
+        probe) — the reason names isolation, pinning the case-insensitive
+        prefix check the existence probe would otherwise mask."""
+        (self.sessions / "SCHED-run1.json").write_text(
+            json.dumps({"metadata": {"id": "SCHED-run1", "title": "s"}, "messages": []}),
+            encoding="utf-8",
+        )
+        payload, error = self._create(target_session="SCHED-run1")
+        self.assertIsNone(payload)
+        self.assertIsNotNone(error)
+        self.assertIn("isolated", error.lower(), error)
+
+    def test_update_accepts_target_delete_rejects_it(self):
+        self._create()
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.05
+        try:
+            payload, error = server.schedule_task_request(
+                requests_dir=str(self.requests),
+                kind="update",
+                sessions_dir=str(self.sessions),
+                task_id="task-1",
+                target_session="target001",
+            )
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(error)
+        # Round-5 M-E: select the UPDATE-kind record (uuid-ordered spool may
+        # hold several files; [0] is a coin-flip mutation detector).
+        upd = [f for f in self._spooled() if json.loads(f.read_text(encoding="utf-8")).get("kind") == "update"]
+        self.assertEqual(len(upd), 1, upd)
+        record = json.loads(upd[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["target_session"], "target001")
+
+        payload, error = server.schedule_task_request(
+            requests_dir=str(self.requests),
+            kind="delete",
+            sessions_dir=str(self.sessions),
+            task_id="task-1",
+            target_session="target001",
+        )
+        self.assertIsNone(payload)
+        self.assertIn("no extra fields", error)
+
+    def _spooled(self):
+        return sorted(Path(self.requests, "spool").glob("*.json"))
+
+
 class ListScheduledTasksTests(unittest.TestCase):
     """C5/C6 + prompt non-disclosure: tolerant projection of the store."""
 
@@ -1761,7 +1945,7 @@ class ReviewFollowupInputTests(unittest.TestCase):
         for args in ([], [1], "text", 0, False, None):
             with self.subTest(args=args), patch.object(server, "_error") as error:
                 server._handle_call(1, {"name": "list_scheduled_tasks", "arguments": args},
-                                    "/unused", "/unused", {})
+                                    "/unused", "/unused", "/unused", {})
                 self.assertEqual(error.call_args.args[1], -32602)
 
 
@@ -1778,7 +1962,7 @@ class Round33BoundaryTests(unittest.TestCase):
                 replies = []
                 with patch.object(server, "_send", side_effect=replies.append):
                     server._handle_call(1, {"name": definition["name"], "arguments": {}},
-                                        requests, automations, server.load_tool_features())
+                                        requests, automations, str(Path(tmp, "sessions")), server.load_tool_features())
                 self.assertTrue(replies[0]["result"]["isError"])
                 self.assertIn("feature_disabled", replies[0]["result"]["content"][0]["text"])
             self.assertFalse(Path(requests, "spool").exists())
@@ -1798,8 +1982,8 @@ class Round33BoundaryTests(unittest.TestCase):
         for value in ("x" * 200000, "\ud800", {"bad": "type"}):
             replies = []
             with patch.object(server, "_send", side_effect=replies.append):
-                server._handle({"id": 1, "method": value}, "unused", "unused", {})
-                server._handle_call(2, {"name": value}, "unused", "unused", {})
+                server._handle({"id": 1, "method": value}, "unused", "unused", "unused", {})
+                server._handle_call(2, {"name": value}, "unused", "unused", "unused", {})
             self.assertEqual([r["error"]["code"] for r in replies], [-32601, -32602])
             self.assertLess(len(json.dumps(replies)), 500)
 
@@ -1813,6 +1997,66 @@ class Round33BoundaryTests(unittest.TestCase):
             payload, error = server.read_scheduled_task("unused", "task-1")
         self.assertIsNone(payload)
         self.assertIn("not readable", error)
+
+
+class Round19MessageProjectionTests(unittest.TestCase):
+    def test_read_and_list_expose_kind_and_read_target_without_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_automation(root, "message-1")
+            kinds = root / "task-kinds.json"
+            kinds.write_text(json.dumps({"schema_version": 1, "tasks": {
+                "message-1": {"kind": "session_message", "target_session": "target001"}
+            }}), encoding="utf-8")
+            before = kinds.read_bytes()
+            detail, error = server.read_scheduled_task(tmp, "message-1")
+            self.assertIsNone(error)
+            self.assertEqual(detail["kind"], "session_message")
+            self.assertEqual(detail["targetSession"], "target001")
+            listing, error = server.list_scheduled_tasks(tmp)
+            self.assertIsNone(error)
+            self.assertEqual(listing["tasks"][0]["kind"], "session_message")
+            self.assertNotIn("prompt", listing["tasks"][0])
+            self.assertEqual(kinds.read_bytes(), before)
+            kinds.write_text("{bad", encoding="utf-8")
+            self.assertIn("metadata", server.read_scheduled_task(tmp, "message-1")[1])
+            self.assertIn("metadata", server.list_scheduled_tasks(tmp)[1])
+            self.assertEqual(kinds.read_text(), "{bad")
+            for bad_target in (42, {"bad": "target"}):
+                kinds.write_text(json.dumps({"schema_version": 1, "tasks": {"message-1": {
+                    "kind": "session_message", "target_session": bad_target
+                }}}), encoding="utf-8")
+                self.assertIn("metadata", server.read_scheduled_task(tmp, "message-1")[1])
+                self.assertIn("metadata", server.list_scheduled_tasks(tmp)[1])
+
+    def test_target_requires_an_ordinary_exact_regular_session_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for target in ["agentic_001", "AGENTIC_001", "_session_models", "sched-001"]:
+                (root / (target + ".json")).write_text("{}")
+                self.assertIsNotNone(server.validate_message_target(tmp, target)[1])
+            self.assertIsNotNone(server.validate_message_target(None, "target001")[1])
+            (root / "target001.json").mkdir()
+            self.assertIsNotNone(server.validate_message_target(tmp, "target001")[1])
+            (root / "target001.json").rmdir()
+            (root / "target001.json").write_text("{}")
+            self.assertEqual(server.validate_message_target(tmp, "target001"), ("target001", None))
+            boundary = "x" * 128
+            (root / (boundary + ".json")).write_text("{}")
+            self.assertIsNone(server.validate_message_target(tmp, boundary)[1])
+            self.assertIsNotNone(server.validate_message_target(tmp, "x" * 129)[1])
+            if hasattr(os, "symlink"):
+                (root / "linked001.json").symlink_to(root / "target001.json")
+                self.assertIsNotNone(server.validate_message_target(tmp, "linked001")[1])
+
+    def test_target_digest_uses_the_applied_trimmed_identity(self):
+        self.assertEqual(server.spool_request_digest("create", target_session="  target001  "),
+                         server.spool_request_digest("create", target_session="target001"))
+
+    def test_explicit_session_root_overrides_environment(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"PINVOU3_HOME": "/ignored-home"}):
+            self.assertEqual(server.resolve_sessions_dir(["--sessions-dir", "/explicit-sessions"]), "/explicit-sessions")
 
 
 if __name__ == "__main__":

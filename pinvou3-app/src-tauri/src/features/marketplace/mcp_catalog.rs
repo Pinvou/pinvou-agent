@@ -241,6 +241,8 @@ pub fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<Stri
                 .join("automations")
                 .to_string_lossy()
                 .into_owned(),
+            "--sessions-dir".to_string(),
+            paths::sessions_root().to_string_lossy().into_owned(),
         ]);
     }
     args
@@ -400,6 +402,7 @@ mod tests {
             let manifest = embedded_manifest("app-automations").unwrap().unwrap();
             let args = local_server_args(&manifest, &package_mcp_dir("app-automations"));
             let home = paths::pinvou3_home();
+            assert!(args.windows(2).any(|pair| pair == ["--sessions-dir", home.join("sessions").to_str().unwrap()]));
             assert!(args.windows(2).any(|pair| pair
                 == [
                     "--task-requests-dir",

@@ -809,6 +809,12 @@ def main():
     print("✅ session-reader: 跨会话消息校验/幂等/隔离前缀全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-app-automations-") as home:
+        # A plain session file for the scheduled-message target check.
+        Path(home, "sessions").mkdir(parents=True)
+        Path(home, "sessions", "tgt0001.json").write_text(
+            json.dumps({"metadata": {"id": "tgt0001", "title": "目标"}, "messages": []}),
+            encoding="utf-8",
+        )
         with RpcServer(MCP_ROOT / "app-automations", {"PINVOU3_HOME": home}) as rpc:
             # CRON/分钟级是产品子集外的硬拒（B2/B3）。
             cron = content_json(rpc.call("tools/call", {
@@ -892,6 +898,7 @@ def main():
                                 prompt=request.get("prompt"),
                                 rrule=request.get("rrule"),
                                 model_id=request.get("model_id"),
+                                target_session=request.get("target_session"),
                                 paused=(
                                     False
                                     if request.get("kind") == "create"
@@ -916,12 +923,34 @@ def main():
             assert confirmed.get("taskId", "").startswith("sim-"), confirmed
             assert confirmed.get("taskName") == "晚报", confirmed
             assert confirmed.get("duplicate") is False, confirmed
+            target_file = Path(home, "sessions", "tgt0001.json")
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            target_file.write_text("{}", encoding="utf-8")
+            target_args = {
+                "name": "定时消息", "prompt": "确认", "rrule": "FREQ=HOURLY;INTERVAL=6",
+                "target_session": "tgt0001", "from_session": "src0001",
+                "idempotency_key": "target-smoke",
+            }
+            target_result = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task", "arguments": target_args,
+            }))
+            assert target_result.get("taskId", "").startswith("sim-"), target_result
+            target_replay = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task", "arguments": target_args,
+            }))
+            assert target_replay.get("duplicate") is True, target_replay
+            assert target_replay.get("payload_mismatch") is False, target_replay
             stop.set()
+            # Round-15 minor 4: the watcher must be GONE before the later
+            # journeys run — a thread descheduled between its stop-check and
+            # the spool scan could otherwise drain timeout2's record after
+            # stop.set() and flip the pending/target assertions below. The
+            # bounded join makes its lifetime deterministic.
             watcher_thread.join(timeout=2)
             assert not watcher_thread.is_alive(), "fake watcher must finish before inspecting the spool"
-            # 积压与在途都被排水，spool 清空、.done 留有两条标记。
+            # Both pending and targeted writes drain; three receipts remain.
             assert not list(Path(home, "task-requests", "spool").glob("*.json"))
-            assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
+            assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 3
             # Round-26 M6(c): a keyed replay against a WATCHER-DRAINED key
             # must answer the recorded duplicate with NO payload_mismatch —
             # the marker's digest is the one production's watcher would
@@ -938,6 +967,33 @@ def main():
             assert replay.get("ok") is True and replay.get("taskId", "").startswith("sim-"), replay
             assert replay.get("duplicate") is True, replay
             assert replay.get("payload_mismatch") is False, replay
+            # Scheduled-message mode: isolated targets are hard-rejected
+            # (self-wake = the recursion direction); a valid target carries
+            # target_session into the spool record.
+            isolated = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "自唤醒", "prompt": "x", "rrule": "FREQ=ONCE;AT=2099-06-01T09:30",
+                    "target_session": "sched-run1",
+                },
+            }))
+            assert "isolated" in isolated.get("error", ""), isolated
+            timeout2 = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "定时询问", "prompt": "问一下进展",
+                    "rrule": "FREQ=HOURLY;INTERVAL=6",
+                    "target_session": "tgt0001",
+                },
+            }))
+            assert timeout2.get("delivery") == "pending", timeout2
+            spooled = sorted(Path(home, "task-requests", "spool").glob("*.json"))
+            targets = []
+            for path in spooled:
+                record = json.loads(path.read_text(encoding="utf-8"))
+                if record.get("target_session"):
+                    targets.append(record["target_session"])
+            assert targets == ["tgt0001"], (spooled, targets)
             # list：只投影安全字段，绝不带 prompt（§3.1）；watcher 未真建任务，store 为空。
             listed = content_json(rpc.call("tools/call", {"name": "list_scheduled_tasks"}))
             assert listed.get("ok") is True and listed.get("total") == 0, listed

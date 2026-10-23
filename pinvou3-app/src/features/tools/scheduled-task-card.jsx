@@ -12,6 +12,8 @@ export const ScheduledTaskToolCard = ({ parsed, args, t }) => {
   const copy = t.uiScheduledTaskTool;
   const rrule = typeof args?.rrule === 'string' ? args.rrule.trim() : '';
   const excerpt = scheduledTaskPromptExcerpt(args);
+  const target = !parsed.payloadMismatch && typeof args?.target_session === 'string'
+    ? args.target_session.trim() : '';
   const doneLine = parsed.kind === 'pending' ? null : (
     <div className={parsed.kind === 'deleted' ? 'text-[#C5221F] dark:text-[#F28B82]' : 'text-[#137333] dark:text-[#93D5A6]'}>
       {copy[parsed.kind]}
@@ -35,6 +37,7 @@ export const ScheduledTaskToolCard = ({ parsed, args, t }) => {
           applied outcome (parsed.taskName). */}
       {typeof args?.name === 'string' && args.name.trim() !== '' && parsed.kind === 'updated' ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]"><span data-testid="scheduled-task-updated-name">{copy.updatedName}</span> {parsed.taskName}</div> : null}
       {rrule ? <div className="mt-0.5 break-all font-mono text-[11px] text-[#757575] dark:text-[#8E8E8E]">{rrule}</div> : null}
+      {target ? <div data-testid="scheduled-task-tool-target" className="mt-0.5 break-all font-mono text-[11px] text-[#757575] dark:text-[#8E8E8E]">{t.uiScheduled.targetSession}: {target}</div> : null}
       {excerpt ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.promptLabel}: {excerpt}</div> : null}
       {parsed.kind === 'deleted'
         ? <div className="mt-0.5 text-[#757575] dark:text-[#8E8E8E]">{copy.deletedNote}</div> : null}
