@@ -23,16 +23,19 @@ pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &Path) ->
 /// addition can never silently reopen the CLI surface — the drift the copy's
 /// own doc warned about.
 ///
-/// 引擎清单单源（CodeWhale #87 `sensitive_paths` 模块）：本清单是引擎
-/// `SENSITIVE_DIRECTORY_NAMES` ∪ `SENSITIVE_FILE_NAMES` ∪
-/// `SENSITIVE_COMPONENT_NAMES` 中 Pinvou 摄入门所需子集的登记，下方 `const`
-/// 断言把每项锚定在引擎清单上——引擎侧改名/删除会在编译期失败并强制同步，
+/// 引擎清单单源（CodeWhale #87 `sensitive_paths` 模块）：本清单是引擎清单
+/// 中 Pinvou 摄入门所需子集的登记，下方 `const` 断言把每项锚定在引擎
+/// **组件面** `SENSITIVE_COMPONENT_NAMES` 上（全部 12 项都在该面上；它才是
+/// 与「任意单个路径组件相等」语义对应的面）——引擎侧改名/删除、乃至把
+/// 采纳项迁出组件面（收窄到目录/文件面），都会在编译期失败并强制同步，
 /// 不再靠注释对齐。刻意的引擎残差（不登记）：
 /// 多段目录名（`.config/gcloud` 等——本闸按「任意单个路径组件相等」比较，
 /// 多段字面量永不命中；对应敏感面由引擎 ruleset 按 `~/` 相对拼写承担）、
 /// `.azure`/`.dws`/`.tmeet` 目录、以及仅 home 根敏感的裸文件名
 /// （`credentials`/`secrets`/`.pgp`/`.gpg`/`.netrc`/`.git-credentials`——
-/// 组件面登记会误拦同名工作目录）。`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`
+/// 组件面登记会误拦同名工作目录）。注意这些残差在**本摄入闸不设防**：
+/// 引擎对它们的覆盖只在命令 token 面（如 `cat ~/.netrc` 被拒），文件摄入
+/// 路径不在引擎 ruleset 的语义内。`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`
 /// 已迁移为引擎组件面派生（`ID_COMPONENT_KEYS`：#87 评审轮给引擎补上裸
 /// `id_*` 组件面后，按常量上的预登记迁移点改为从
 /// `SENSITIVE_COMPONENT_NAMES` 编译期锚定；Wave 3 动机即 `~/keys/id_rsa`）。
@@ -143,18 +146,13 @@ pub(crate) const fn inventory_has_joined(inventory: &[&str], prefix: &str, suffi
 /// Wave 3 动机不变：`~/keys/id_rsa` 这类任意目录下的密钥文件。
 const ID_COMPONENT_KEYS: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
 
-const fn all_components_in_engine_inventory(entries: &[&str]) -> bool {
-    let mut i = 0;
-    while i < entries.len() {
-        if !inventory_contains(sensitive_paths::SENSITIVE_DIRECTORY_NAMES, entries[i])
-            && !inventory_contains(sensitive_paths::SENSITIVE_FILE_NAMES, entries[i])
-            && !inventory_contains(sensitive_paths::SENSITIVE_COMPONENT_NAMES, entries[i])
-        {
-            return false;
-        }
-        i += 1;
-    }
-    true
+/// 采纳项逐项锚定在引擎**组件面**上——不是三面 union：本闸按「任意单个
+/// 路径组件相等」阻塞，承重的是引擎组件面（任意 token 语义）。union 断言
+/// 只能保证「仍在某一面上」，引擎把采纳项迁出组件面（例如收窄回目录/文件
+/// 面）会让 app 的组件阻塞比引擎更宽而静默——迁移与改名/删除一样必须
+/// 编译失败、强制有意识同步。
+const fn all_components_in_engine_component_face(entries: &[&str]) -> bool {
+    all_entries_in(entries, sensitive_paths::SENSITIVE_COMPONENT_NAMES)
 }
 
 const fn all_entries_in(entries: &[&str], inventory: &[&str]) -> bool {
@@ -181,8 +179,8 @@ const fn all_in_engine_prefixes(entries: &[&str]) -> bool {
 
 // 子集锚定：引擎清单任何一侧的改名/删除让本 crate 编译失败，强制有意识同步。
 const _: () = assert!(
-    all_components_in_engine_inventory(BLOCKED_COMPONENTS),
-    "BLOCKED_COMPONENTS 必须逐项存在于引擎 sensitive_paths 三份清单（改名/删除需同步本子集）"
+    all_components_in_engine_component_face(BLOCKED_COMPONENTS),
+    "BLOCKED_COMPONENTS 必须逐项保留在引擎 SENSITIVE_COMPONENT_NAMES 组件面上（改名/删除/迁出组件面都需同步本子集）"
 );
 const _: () = assert!(
     all_entries_in(
@@ -328,9 +326,13 @@ mod tests {
                 || SENSITIVE_COMPONENT_NAMES.contains(&entry)
         };
 
-        // 子集方向（编译期断言的镜像）：每项都在引擎三份清单内。
+        // 子集方向（编译期断言的镜像）：每项都在引擎组件面内——迁移出
+        // 组件面（收窄到目录/文件面）同样要在这里红，强制有意识同步。
         for entry in BLOCKED_COMPONENTS {
-            assert!(in_engine(entry), "{entry} 应在引擎清单");
+            assert!(
+                SENSITIVE_COMPONENT_NAMES.contains(&entry),
+                "{entry} 应保留在引擎组件面（迁出组件面须有意识同步本清单）"
+            );
         }
         for entry in BLOCKED_PREFIXES {
             assert!(
