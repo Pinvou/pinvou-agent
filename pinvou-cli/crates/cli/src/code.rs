@@ -5910,8 +5910,9 @@ fn checkpoints_rewind(
     // 重用 P1 恰恰是正确动作（幂等重放），不得按「已完成、仅清理失败」否决
     // ——否则 fresh P2 快照已恢复树、P1（真前态唯一副本）被孤儿化，undo
     // 静默变成 no-op。
-    let reuse = checkpoints::matching_pending_pre_restore(&ledger, &checkpoint.id, keep_turns, &revision)
-        .map_err(|error| {
+    let reuse =
+        checkpoints::matching_pending_pre_restore(&ledger, &checkpoint.id, keep_turns, &revision)
+            .map_err(|error| {
             crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
         })?;
     let (target_meta, undo) =
