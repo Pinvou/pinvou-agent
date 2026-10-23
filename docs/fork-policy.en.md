@@ -1,18 +1,18 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-23. Public maintenance e9a7f48da; parent candidate 4bf5e08940 contains that base; public alignment remains pending candidate integration.
+> Updated: 2026-10-23. Public maintenance ea9fdc90f contains #115/#116/#117; parent gitlink follows the public maintenance head.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Upstream backport candidate and fixed-head evidence: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-pending-maintenance-integration-756). The public maintenance gate and section 6 authorization requirement remain blocking.
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Current parent candidate: `4bf5e08940fec17b6e86fd0c0fc741580fca3283`, 81 commits above v0.9.12, 79 DCO-signed; includes public maintenance `e9a7f48da169bf89399a11592e4d22a7b721cb39`. Source CodeWhale#117 head: `3bc47717c416e9c9f15ace808a413a968945da67`. The merge preserves candidate history and provenance. Prior test receipts retain their original execution boundaries; combined-tree CI remains pending. Public maintenance does not contain this candidate; the public alignment gate remains blocking.
+- Current parent gitlink: `ea9fdc90f1c90335554833195eeeb847c83d82dd`, the public maintenance head; 79 commits above v0.9.12, 77 DCO-signed. #117 was squash-merged remotely; its verified source tree equals the public tree.
 
-- Public maintenance (parent candidate above): `e9a7f48da169bf89399a11592e4d22a7b721cb39` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance.
-- Public-maintenance history: 78 commits above upstream v0.9.12 `dcd4c200f`, 63 above r1 `1fafee7e2`; 76 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Public maintenance (parent candidate above): `ea9fdc90f1c90335554833195eeeb847c83d82dd` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance. #117 merged remotely on 2026-10-23 as `ea9fdc90f`.
+- Public-maintenance history: 79 commits above upstream v0.9.12 `dcd4c200f`, 64 above r1 `1fafee7e2`; 77 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Public-maintenance drift: 504 files, +85973/-37666, net +48307; 230 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+- Public-maintenance drift: 504 files, +86011/-37667, net +48344; 231 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
