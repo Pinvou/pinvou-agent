@@ -1884,16 +1884,27 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     // in the PR body). Quarantine on sight, BEFORE the batch count; no
     // marker is possible (the stem is unnameable), failed/ is the trace.
     let mut sight_warnings: usize = 0;
+    let mut sight_quarantines: usize = 0;
     let listed: Vec<PathBuf> = listed
         .into_iter()
         .filter(|path| {
             if path.file_name().and_then(|n| n.to_str()).is_some() {
                 return true;
             }
-            let _ = quarantine_with_warning(path, &mut sight_warnings);
+            if quarantine_with_warning(path, &mut sight_warnings) {
+                sight_quarantines += 1;
+            }
             false
         })
         .collect();
+    // Round-10 m6: a successful sweep is otherwise log-silent while 256
+    // files land in failed/; one line per pass matches the round-31
+    // per-pass budget pattern.
+    if sight_quarantines > 0 {
+        log::warn!(
+            "[scheduled-creation] quarantined {sight_quarantines} non-UTF-8 spool name(s) on sight"
+        );
+    }
     retries.attempts.retain(|name, _| root.join(name).exists());
     retries.parked.retain(|name, _| root.join(name).exists());
     // #680: the episode map joins the existence retain — a re-spool after
@@ -1932,7 +1943,6 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             // continues — retry only the terminal move, never the domain
             // operation, so parked records still self-heal when the
             // evidence directory recovers.
-            let mut moved = false;
             if let Some(snapshot) = RequestSnapshot::capture(&path) {
                 if snapshot.metadata.modified().ok() == Some(mtime)
                     && snapshot.still_matches(&path)
@@ -1941,22 +1951,23 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     retries.parked.remove(&name);
                     retries.attempts.remove(&name);
                     retries.stuck_episode_audited.remove(&name);
-                    moved = true;
                 }
             }
-            // #680's ensure-presence on the gate path: the re-spool
-            // unlinked the failure marker and the gate keeps the record
-            // parked, so no terminal arm will fire to restore it — answer
-            // the waiting call from here. The SPECIFIC cause stays in the
+            // #680's ensure-presence on the gate path (round-10 R-2: on
+            // every bump, moved or not — the record died unapplied either
+            // way, so a truthful terminal answer is available in both
+            // cases): the re-spool unlinked the failure marker and no
+            // terminal arm will fire for a gated record — answer the
+            // waiting call from here. The SPECIFIC cause stays in the
             // failed/ evidence and the audited episode; this marker states
-            // the parked truth.
-            if bumped && !moved {
+            // the re-spool truth.
+            if bumped {
                 let stem = name.strip_suffix(".json").unwrap_or(&name);
                 if failure_marker_missing(stem) {
                     write_failure_marker(
                         stem,
                         &anyhow::anyhow!(
-                            "the request is stuck on the app side (the quarantine move keeps failing) and its earlier failure marker was removed by the re-spool; check the Scheduled Tasks panel"
+                            "the request could not be re-applied on the app side and its earlier failure marker was removed by the re-spool; check the failed/ evidence and the Scheduled Tasks panel"
                         ),
                     );
                 }
@@ -2048,16 +2059,18 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             // per-pass dead work). A digest-bound recorded ok receipt
             // suppresses the failure marker entirely (the receipt answers
             // the waiting call); a corrupt tail record is "unparseable", an
-            // oversize/unreadable one says so — only the genuinely-over-
-            // ceiling record keeps the ceiling label.
-            let probe = read_regular_bounded(&path, MAX_SPOOL_FILE_BYTES as usize);
+            // unreadable/non-regular/oversize one says so — only the
+            // genuinely-over-ceiling record keeps the ceiling label.
+            let snapshot = RequestSnapshot::capture(&path);
+            let probe = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.bytes.as_deref());
             let parsed = probe
-                .as_deref()
                 .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(bytes).ok());
             let ceiling_error = anyhow::anyhow!(
                 "pending-file ceiling {MAX_PENDING_FILES} exceeded; the record was never applied"
             );
-            let marker_reason: Option<anyhow::Error> = match (&probe, &parsed) {
+            let marker_reason: Option<anyhow::Error> = match (probe, &parsed) {
                 (Some(_), Some(request)) => {
                     let suppressed = result_marker_suppresses(
                         &done_dir().join(format!("{stem}.json")),
@@ -2073,9 +2086,21 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     "pending-ceiling tail record is unparseable",
                 )),
                 (None, _) => Some(anyhow::Error::msg(
-                    "pending-ceiling tail record is unreadable or oversize",
+                    "pending-ceiling tail record is unreadable, not a regular file, or oversize",
                 )),
             };
+            // Round-10 R-1 (#680): the sibling arms re-verify their snapshot
+            // before the terminal move — so does the tail. A replacement
+            // published between the probe and the rename must not be moved
+            // and answered by the OLD bytes' marker/audit; it gets its own
+            // fresh pass (an unreadable entry has no snapshot to diverge
+            // and is moved with the honest label).
+            if snapshot
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.still_matches(&path))
+            {
+                continue;
+            }
             if quarantine_with_warning(&path, &mut quarantine_warnings) {
                 // Best-effort trail: the disposition is audited when the
                 // record parses (the tail can hold legitimate-looking
@@ -2087,11 +2112,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                         .as_ref()
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_else(|| "recorded ok receipt".to_string());
-                    audit_failure(
-                        sessions,
-                        probe.as_deref(),
-                        &anyhow::anyhow!("{audited_reason}"),
-                    );
+                    audit_failure(sessions, probe, &anyhow::anyhow!("{audited_reason}"));
                 }
                 if let Some(reason) = marker_reason {
                     write_failure_marker(&stem, &reason);
@@ -2378,9 +2399,12 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     write_failure_marker(&stem, &error);
                 } else if failure_marker_missing(&stem) {
                     // #680's ensure-presence: the deduped episode still
-                    // restores a marker the server unlinked on re-spool —
-                    // the audit line stays deduped, the waiting call does
-                    // not (write_failure_marker still refuses a landed ok
+                    // repairs a MISSING marker. The reachable trigger is
+                    // the PRIOR pass whose `!still_matches → continue`
+                    // skipped the write after inserting this identity (the
+                    // record was replaced mid-apply); the audit line stays
+                    // deduped, the waiting call does not
+                    // (write_failure_marker still refuses a landed ok
                     // receipt).
                     write_failure_marker(&stem, &error);
                 }
@@ -2461,7 +2485,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     if fresh_episode {
                         write_failure_marker(&stem, &error);
                     } else if failure_marker_missing(&stem) {
-                        // #680's ensure-presence (see the Poison arm).
+                        // #680's ensure-presence (see the Poison arm): the
+                        // deduped episode repairs a marker a prior pass's
+                        // diverged skip never wrote.
                         write_failure_marker(&stem, &error);
                     }
                 } else {
@@ -3747,8 +3773,8 @@ mod tests {
             restored["error"]
                 .as_str()
                 .unwrap()
-                .contains("stuck on the app side"),
-            "the gate-path restore states the parked truth: {:?}",
+                .contains("could not be re-applied"),
+            "the gate-path restore states the re-spool truth: {:?}",
             restored["error"]
         );
         // A quiet pass changes nothing.
@@ -3766,6 +3792,41 @@ mod tests {
             restored_text,
             "the restored marker is not rewritten per pass"
         );
+        // Round-10 R-2: the restore also fires when the SAME bump's move
+        // SUCCEEDS — the record died unapplied either way, and the waiting
+        // call gets its terminal answer.
+        std::fs::remove_file(spool.join("failed")).unwrap();
+        std::fs::write(spool.join("swap.json"), &poison_record).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(spool.join("swap.json"))
+            .unwrap()
+            .set_modified(parked_at + std::time::Duration::from_secs(2))
+            .unwrap();
+        std::fs::remove_file(&marker_path).unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            !spool.join("swap.json").exists() && failed_dir().join("swap.json").exists(),
+            "the bump's move lands once failed/ works"
+        );
+        let restored_after_move: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&marker_path)
+                .expect("the restore fires on the moved path too"),
+        )
+        .unwrap();
+        assert_eq!(restored_after_move["ok"], false);
+        assert_eq!(
+            audit_lines(),
+            1,
+            "the moved same-bytes episode stays deduped in the audit trail"
+        );
+        assert!(retries.stuck_episode_audited.is_empty());
     }
 
     /// #680: the parked episode's identity (and what budget there was)
@@ -3982,7 +4043,7 @@ mod tests {
         .unwrap();
         let error = marker["error"].as_str().unwrap();
         assert!(
-            error.contains("unreadable or oversize"),
+            error.contains("unreadable") && error.contains("oversize"),
             "the marker names the real cause: {error}"
         );
         assert!(
@@ -6323,6 +6384,32 @@ mod tests {
         assert!(
             !snapshot.still_matches(&path),
             "terminal poison guard must preserve the corrected record"
+        );
+    }
+
+    /// Round-10 R-1: the tail arm consults the same divergence predicate
+    /// before its move — a snapshot of the probed bytes must NOT match a
+    /// record replaced afterwards, so the replacement is left for its own
+    /// fresh pass instead of being moved and answered by the old bytes'
+    /// marker. (The interleaving window itself is not injectable from a
+    /// black-box drain test; this pins the predicate the guard and the
+    /// pinned Poison/Retry guards share.)
+    #[test]
+    fn tail_snapshot_divergence_leaves_the_replacement_for_the_next_pass() {
+        let _home = TempHome::new();
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let path = spool_root().join("tail.json");
+        std::fs::write(&path, spool_record_json(&[])).unwrap();
+        let snapshot = RequestSnapshot::capture(&path).expect("capture the probed bytes");
+        assert!(snapshot.still_matches(&path));
+        std::fs::write(
+            &path,
+            spool_record_json(&[("name", serde_json::json!("更正后的记录"))]),
+        )
+        .unwrap();
+        assert!(
+            !snapshot.still_matches(&path),
+            "the tail guard must leave a replacement for its own fresh pass"
         );
     }
     #[tokio::test]
