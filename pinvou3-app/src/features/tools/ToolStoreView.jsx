@@ -599,9 +599,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const TsAlert = ({ alert, onDismiss, onNewChat, onCancelLoading, copy }) => {
       if (!alert.visible && !alert.loading) return null;
       return (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
           <div
-            className="w-[280px] rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]"
+            className="w-[280px] max-w-full rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]"
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
             {alert.loading ? (
