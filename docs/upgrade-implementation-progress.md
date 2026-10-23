@@ -1,11 +1,11 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 02:11 Asia/Shanghai**.
+Checkpoint: **2026-10-24 02:56 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
-The equal-task engineering estimate is **34.0%**. T31 is updated in this batch;
+The equal-task engineering estimate is **34.1%**. T08 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
@@ -17,8 +17,9 @@ reviewed byte-custody and installed-image diagnostic components are pushed;
 the owner has approved a new signed immutable-source binding without legacy
 compatibility. Its implementation is queued behind T08. T08's current increment represents mixed
 genesis/published components and supplies complete authenticated current graphs
-to actual Root/issuer readers. Production publication/refresh and active deny/job
-composition remain pending. First activation still requires T14's real business
+to actual Root/issuer readers. Bounded published-only Target/Snapshot/Timestamp
+refresh is independently reviewed and verified; Release/private renewal, unified
+selection publication and active deny/job composition remain pending. First activation still requires T14's real business
 owner. Work on one main task
 and at most one direct prerequisite; other incomplete tasks are parked. Parallel roles
 implement, independently review, test and integrate this same task. Reuse reviewed
@@ -67,17 +68,41 @@ passed. The subsequent full default run passed **3911 / skipped 1693 / failed 0*
 test records (1218 passing and 922 skipped top-level tests). Dependency
 verification, static analysis, all command builds and the pinned client-contract
 check also passed. All check processes closed naturally without a resource-guard
-breach. The previous failures remain recorded. Runtime
-publication/refresh, active deny/pending jobs and T14 first activation remain
-separate unfinished functionality. T08 remains in progress at 60%.
+breach. The previous failures remain recorded. That A increment alone did not provide runtime publication. Release/private
+renewal, unified selection publication, active deny/pending jobs and T14
+first activation remain unfinished. T08 remains in progress at 65%.
 
 The direct signing prerequisite is also committed and pushed as `4888054` in the
 service repository. Its finite Target/Snapshot/Timestamp preparation passed
 independent review, 94 pure test records, two actual PostgreSQL tests with two
 rollback/fencing subcases, affected static analysis and a server build. One
 original capture and budget cover the linked chain, and actual parent references
-bind verified signed child bytes. This does not implement T08's publication
-transaction or permit first activation.
+bind verified signed child bytes. That signing prerequisite alone does not
+implement the publication transaction or permit first activation.
+
+The bounded published-only refresh transaction is committed and pushed as
+`dbf22f7` in the separate service repository, after independent review and
+verification.
+It signs the complete Target/Snapshot/Timestamp set from one capture, records
+issuance, validates derived changes before the head update, then publishes the
+complete current graph and T06 result/audit/outbox atomically. Retained Release
+and Package bytes/Root provenance, selection generations and private openings
+remain unchanged. Missing business owner state explicitly refuses activation.
+
+Five pure tests with eight subcases and four actual PostgreSQL tests with nine
+subcases passed. A separate actual component-head interleaving test passed:
+a later command commits during the original presign, and the old Snapshot is
+refused without changing the committed successor. Three affected PostgreSQL
+regressions with two subcases passed. Dependency verification, full default Go
+tests (**3954 passed / 1704 skipped / zero failures**), full static analysis,
+all command builds and the pinned contract check passed. The additional
+interleaving test and final affected analysis ran after that full suite without
+production changes. All check processes closed naturally without resource-guard
+breaches. Failed development runs exposed role-name case folding, scalar JSON
+encoding, SQL ambiguity and a late retained-expiry check; each was repaired and
+independently re-reviewed. The failures remain recorded, not environment skips.
+This is an internal publisher component, not whole T08 completion or T14
+business qualification.
 
 ## Completed T31 delivery
 
@@ -267,7 +292,7 @@ completion blocker; outstanding business implementation is.
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 75% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
-| T08 | 60% | In progress | Reviewed genesis/component management, atomic primitives, mixed current storage with complete authenticated Root/issuer reads, and genesis-only signing-key deny; production publication/refresh and active deny/pending jobs remain pending |
+| T08 | 65% | In progress | Reviewed mixed current storage and complete authenticated Root/issuer reads; atomic published-only Target/Snapshot/Timestamp refresh, replay and actual component-head interleaving are verified. Release/private renewal, unified selection publication and active deny/pending jobs remain pending. |
 | T09 | 55% | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
