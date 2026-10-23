@@ -3629,9 +3629,21 @@ mod tests {
         );
         // Corrected (different) payload, still poison; the server unlinks
         // the stale marker on re-spool and the rewrite bumps the mtime.
+        // Deterministic timing (main's own un-park test's pattern): pin the
+        // parked timestamp to a controlled past instant and stamp the
+        // rewrite 1s after it — a fast runner's mtime granularity must not
+        // swallow the bump (the natural write raced the park clock on CI).
+        let parked_at = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        *retries.parked.get_mut("swap.json").expect("parked") = parked_at;
         let corrected =
             spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=0 5 * * *"))]);
         std::fs::write(spool.join("swap.json"), &corrected).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(spool.join("swap.json"))
+            .unwrap()
+            .set_modified(parked_at + std::time::Duration::from_secs(1))
+            .unwrap();
         std::fs::remove_file(&marker_path).unwrap();
         process_pending_spool(
             &StateCreator(&state),
@@ -3697,8 +3709,17 @@ mod tests {
         assert!(retries.parked.contains_key("swap.json"), "poll 1 parks");
         assert_eq!(audit_lines(), 1);
         // Same bytes re-spooled (fresh mtime); the server unlinks the stale
-        // not-ok marker.
+        // not-ok marker. Deterministic timing: see the corrected-respool
+        // test — a natural write raced the park clock on CI.
+        let parked_at = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        *retries.parked.get_mut("swap.json").expect("parked") = parked_at;
         std::fs::write(spool.join("swap.json"), &poison_record).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(spool.join("swap.json"))
+            .unwrap()
+            .set_modified(parked_at + std::time::Duration::from_secs(1))
+            .unwrap();
         std::fs::remove_file(&marker_path).unwrap();
         process_pending_spool(
             &StateCreator(&state),
@@ -3841,7 +3862,17 @@ mod tests {
             "the park stores the attempted record's digest identity"
         );
         // Same bytes re-spooled: the gate must not grant a re-apply.
+        // Deterministic timing: see the corrected-respool test — a natural
+        // write raced the park clock on CI.
+        let parked_at = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        *retries.parked.get_mut("stuck.json").expect("parked") = parked_at;
         std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(spool.join("stuck.json"))
+            .unwrap()
+            .set_modified(parked_at + std::time::Duration::from_secs(1))
+            .unwrap();
         let applies = Arc::new(AtomicUsize::new(0));
         process_pending_spool(
             &CountingStateCreator(&state, applies.clone()),
@@ -3865,6 +3896,12 @@ mod tests {
             ]),
         )
         .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(spool.join("stuck.json"))
+            .unwrap()
+            .set_modified(parked_at + std::time::Duration::from_secs(1))
+            .unwrap();
         process_pending_spool(
             &CountingStateCreator(&state, applies.clone()),
             &state.sessions,
