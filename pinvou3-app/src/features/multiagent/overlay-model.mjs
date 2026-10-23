@@ -155,9 +155,9 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
  * versus Queued/WaitingForUser into OwnerState::Waiting, and its own sidebar
  * lists "model wait" among the live activities — so bucketing it as queued
  * made a working agent read as "queued" and flip against the working label.
- * A multi-word
- * non-terminal phrase is a real-time progress line (e.g. "🔧 Edit (step 3)")
- * and falls back to working; a single unknown token is shown verbatim.
+ * A multi-word non-terminal phrase is a real-time progress line (e.g.
+ * "🔧 Edit (step 3)") and falls back to working; a single unknown token is
+ * shown verbatim.
  */
 export function statusPresentation(entry, copy) {
   const statusToken = String(entry && entry.status || '').toLowerCase();
