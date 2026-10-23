@@ -94,8 +94,11 @@ test('reader window paints its own dark canvas before first paint and keeps it o
   assert.match(themeBoot, /dataset\.darkBg/, 'theme-boot must take the canvas colour from its script tag');
   assert.match(themeBoot, /classList\.add\('dark'\)/, 'theme-boot must set the dark class pre-paint');
   // index.html keeps an inline copy on the startup critical path; it must stay
-  // on the same key so the two windows agree on the boot-time cache.
+  // on the same key and canvas colour so the two boots never drift apart.
   assert.match(source('index.html'), new RegExp(COLOR_SCHEME_STORAGE_KEY.replaceAll('.', '\\.')));
+  assert.match(stripComments(source('index.html')), /html\.dark \{ background: #131314; \}/,
+    'index.html canvas must equal the theme-boot.js default dark background');
+  assert.match(themeBoot, /\|\| '#131314'/, 'theme-boot default must stay equal to the index.html dark canvas');
 });
 
 test('web-access primaries and the refresh confirm carry the shared light + dark pairing', () => {
@@ -110,8 +113,25 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
   const remoteKnowledge = stripComments(source('features/remote-knowledge/RemoteKnowledgeView.jsx'));
   assert.match(remoteKnowledge, /bg-\[#E5E5EA\] dark:bg-\[#39393D\] transition-colors/,
     'remote-KB toggle track must follow the shared Toggle light/dark track colours');
+  assert.match(remoteKnowledge, /rounded-xl bg-\[#F7F9FC\] px-3\.5 py-4 text-\[12px\] dark:bg-white\/\[0\.04\]/,
+    'the empty-state chip must get the same dark tint as its sibling chips');
+  assert.ok(count(remoteKnowledge, /bg-\[#0B57D0\] px-5 text-\[14px\] font-bold text-white[^"']*dark:bg-\[#A8C7FA\]/g) >= 2,
+    'the inline hero primaries must carry the shared light + dark pairing');
+  // The file pairs every error/success text with its dark half (#ff8a80 /
+  // #7DD3A8); a bare light-only instance re-opens the unreadable-in-dark
+  // class. The lookahead stays inside the className string (no quote may be
+  // crossed) but tolerates dark:bg tokens sitting between the pair.
+  assert.equal(count(remoteKnowledge, /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
+    'every error-red text in remote knowledge must carry its dark pair');
+  assert.equal(count(remoteKnowledge, /text-\[#b72f2f\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
+    'every deep error-red text in remote knowledge must carry its dark pair');
+  assert.equal(count(remoteKnowledge, /text-\[#16894a\](?![^"'`]*dark:text-\[#7DD3A8\])/g), 0,
+    'every success-green text in remote knowledge must carry its dark pair');
   const acpNotices = stripComments(source('features/codex/AcpRuntimeNotices.jsx'));
-  assert.equal(count(acpNotices, /(?<!dark:)text-gray-400/g), 0,
+  // Forgive tokens whose variant chain includes dark: (dark:hover:text-gray-400
+  // etc.); a bare or light-only-variant gray-400 is still the unpaired defect.
+  const bareGray400 = acpNotices.replace(/(?:[a-z-]+:)*dark:(?:[a-z-]+:)*text-gray-400/g, '');
+  assert.equal(count(bareGray400, /text-gray-400/g), 0,
     'every gray-400 hint in the runtime notices must be the dark half of a gray-500/gray-400 pair');
   assert.ok(count(acpNotices, /text-gray-500 dark:text-gray-400/g) >= 6,
     'runtime-notice hints must raise contrast in dark mode');
@@ -123,7 +143,11 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
   assert.match(toolStore, /hidden xl:flex min-w-0 items-center gap-1\.5/,
     'drag hint must hide when the chip row cannot fit it');
   assert.match(toolStore, /bg-black\/40 p-4 backdrop-blur-sm/, 'ModalBackdrop must pad its cards away from the viewport edge');
-  assert.equal(count(toolStore, /w-\[300px\] max-w-full rounded-\[20px\]/g), 4, 'all four 300px dialog cards must carry max-w-full');
+  assert.match(toolStore, /z-\[210\] flex items-center justify-center bg-black\/40 p-4 backdrop-blur-sm/,
+    'the TsAlert backdrop must pad its card away from the viewport edge too');
+  assert.match(toolStore, /w-\[280px\] max-w-full rounded-\[20px\]/, 'the TsAlert card must carry the same max-width guard');
+  assert.ok(count(toolStore, /w-\[300px\] max-w-full rounded-\[20px\]/g) >= 4,
+    'the 300px dialog cards must carry max-w-full');
   assert.doesNotMatch(raw, /w-\[300px\] rounded/, 'no 300px dialog card may lose its max-width guard');
   assert.ok(count(toolStore, /text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider/g) >= 3,
     'detail labels must have a dark variant');
