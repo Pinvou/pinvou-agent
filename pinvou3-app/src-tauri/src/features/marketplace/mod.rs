@@ -2533,11 +2533,21 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// Reconcile the single mcp.json entry a local tool owns (keyed by its id).
     /// A healthy entry (usable command, no dead absolute target) is never
-    /// touched. A dead-target entry and a malformed entry (non-object, or no
-    /// usable command — the engine could never have launched it) are rebuilt;
-    /// the rebuild carries the user-owned fields (enabled/timeouts/
-    /// forward-compatible) across in the same single write, so a hand-tuned or
-    /// hand-disabled entry survives the repair.
+    /// touched — including an enabled entry whose required secret env is
+    /// missing: the credential rule is enforced here only where this path
+    /// already writes, so a legacy local entry left enabled-unwired by an
+    /// older build stays enabled (the remote reconcile does migrate its
+    /// counterparts). A dead-target entry and a malformed entry (non-object,
+    /// or no usable command — the engine could never have launched it) are
+    /// rebuilt; the rebuild carries the user-owned fields (enabled/timeouts/
+    /// forward-compatible) across in the same single write, with two
+    /// exceptions: a rebuilt entry whose required credential no longer
+    /// resolves is written `disabled: true` under the credential rule,
+    /// overriding a preserved `disabled: false` — the note discloses it —
+    /// and a rebuilt entry with no credential gap keeps a preserved
+    /// `disabled: true` (the file carries no mark separating a user's hand
+    /// stop from the app's own earlier auto-disable, and a repair is not a
+    /// user request to re-enable) — the note discloses that too.
     fn reconcile_local_mcp_entry(
         &self,
         manifest: &ToolManifest,
@@ -2546,10 +2556,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     ) {
         let Some(entry) = snapshot.get(&manifest.id) else {
             match self.rebuild_local_mcp_entry(manifest, &serde_json::Map::new()) {
-                Ok(()) => actions.push(format!(
-                    "tool '{}': restored missing mcp.json entry",
-                    manifest.id
-                )),
+                Ok(missing_secrets) => {
+                    let mut note =
+                        format!("tool '{}': restored missing mcp.json entry", manifest.id);
+                    if let Some(caveat) = Self::credential_disabled_caveat(&missing_secrets) {
+                        note.push_str(&caveat);
+                    }
+                    actions.push(note);
+                }
                 Err(error) => actions.push(format!(
                     "tool '{}' missing mcp.json entry not restored: {error}",
                     manifest.id
@@ -2587,7 +2601,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             })
             .unwrap_or_default();
         match self.rebuild_local_mcp_entry(manifest, &preserved) {
-            Ok(()) => {
+            Ok(missing_secrets) => {
                 let mut note = format!(
                     "tool '{}': rebuilt mcp.json entry with {reason}",
                     manifest.id
@@ -2598,6 +2612,19 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // actionable — never their values, which may be sensitive.
                 if let Some(caveat) = Self::dropped_local_env_keys(manifest, entry) {
                     note.push_str(&caveat);
+                }
+                if let Some(caveat) = Self::credential_disabled_caveat(&missing_secrets) {
+                    note.push_str(&caveat);
+                } else if entry.get("disabled").and_then(|v| v.as_bool()) == Some(true) {
+                    // No gap and the old entry still carries `disabled: true`:
+                    // the rebuild kept the flag (a hand stop or a previous
+                    // auto-disable — the file cannot say which), so name it —
+                    // otherwise readiness reports Ready while the tool never
+                    // launches.
+                    note.push_str(
+                        "; its preserved disabled flag was kept — the rebuilt \
+                         entry stays disabled",
+                    );
                 }
                 actions.push(note);
             }
@@ -2650,17 +2677,22 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     /// Recreate a local tool's mcp.json entry with the exact fresh-install form,
-    /// merging `preserved` user-owned fields (everything except
-    /// command/args/env) into the same single write (see
+    /// merging `preserved` user-owned fields (everything except command/args/env)
+    /// into the same single write (see
     /// `write_rebuilt_local_entry`). The package is released/verified first, and
     /// the rebuild is refused when the manifest-derived command is empty or its
     /// absolute command/script target would not exist — never write a knowingly
     /// dead entry, and never rewrite the same dead target on every startup.
+    /// Returns the required-credential keys whose wiring could not be
+    /// restored (empty = fully wired); the callers turn a non-empty list
+    /// into the disabled-entry caveat, and a preserved `disabled: true`
+    /// that survives a gapless rebuild into the kept-flag disclosure on
+    /// the note.
     fn rebuild_local_mcp_entry(
         &self,
         manifest: &ToolManifest,
         preserved: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
         mcp_catalog::ensure_package_released(&manifest.id)?;
         let server_dir = mcp_catalog::package_mcp_dir(&manifest.id);
         // Judge exactly the launch target the writer produces, via the same
@@ -2682,6 +2714,25 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
         }
         self.write_rebuilt_local_entry(manifest, &server_dir, preserved.clone())
+    }
+
+    /// The disable-rule caveat appended to local rebuild/restore notes when the
+    /// written entry carries `disabled: true` because a required credential no
+    /// longer resolves: an entry that cannot authenticate must not be enabled
+    /// (enabling it only guarantees auth failures on first use). "Written"
+    /// covers both callers — the entry is restored or rebuilt, and either way
+    /// the flag lands in the same write. Names the keys, never their values,
+    /// and the reinstall fix — the same word the `dropped_local_env_keys`
+    /// caveat uses and the action the store card actually offers (Configure).
+    fn credential_disabled_caveat(missing_secrets: &[String]) -> Option<String> {
+        if missing_secrets.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "; no stored credential for {} — the entry was written disabled; reinstall \
+             the tool to re-enter it and enable",
+            missing_secrets.join(", ")
+        ))
     }
 
     #[cfg(test)]
@@ -3388,6 +3439,12 @@ pub(crate) mod tests {
                 entry["env"]["AMAP_KEY"], "${PINVOU3_MCP_SECRET_AMAP_KEY}",
                 "secret must stay a placeholder, never plaintext"
             );
+            assert!(
+                entry.get("disabled").is_none(),
+                "a rebuilt entry whose credential resolves must stay enabled — the \
+                 disable flag is only for entries whose required secret no longer \
+                 resolves: {entry}"
+            );
             assert_eq!(
                 mcp["servers"]["user-own-tool"], unknown,
                 "entries without an installed tool must be preserved"
@@ -3455,6 +3512,11 @@ pub(crate) mod tests {
             assert_eq!(entry["url"], "https://mcp.example.com/mcp");
             assert_eq!(entry["scopes"], serde_json::json!(["demo:read"]));
             assert_eq!(entry["oauth_resource"], "https://mcp.example.com/mcp");
+            assert!(
+                entry.get("disabled").is_none(),
+                "an OAuth server's login is interactive — a restored OAuth entry must not \
+                 be disabled for lacking a stored key: {entry}"
+            );
             assert!(
                 entry.get("headers").is_none()
                     && entry.get("bearer_token_env_var").is_none()
@@ -3827,8 +3889,11 @@ pub(crate) mod tests {
     }
 
     /// A bearer credential that no longer resolves must not fail the restore nor
-    /// invent half-wiring: the entry restores declaratively (url/scopes/oauth) and
-    /// the resulting auth failure surfaces through the engine's boot receipt.
+    /// invent half-wiring: the entry restores declaratively (url/scopes/oauth)
+    /// and carries `disabled: true` — an entry that cannot authenticate must not
+    /// be enabled, where the only guaranteed outcome is a 401 on first use. The
+    /// reinstall flow writes a fresh entry (clearing the flag) once the key is
+    /// re-entered.
     #[test]
     fn reconcile_restores_bearer_tool_without_resolvable_credential() {
         with_temp_home(|| {
@@ -3849,14 +3914,20 @@ pub(crate) mod tests {
                 actions,
                 vec![
                     "tool 'cf-y': restored missing remote entry 'cf-remote-y'; no stored \
-                      credential for LOST_KEY — restored without that auth wiring; reinstall \
-                      the tool to re-enter it"
+                      credential for LOST_KEY — an entry without its credential cannot \
+                      authenticate, so it was restored disabled; reinstall the tool to \
+                      re-enter it and enable"
                         .to_string()
                 ],
-                "the restore note must disclose the degraded credential channel"
+                "the restore note must disclose the degraded credential channel and the disable"
             );
             let entry = &read_mcp_json()["servers"]["cf-remote-y"];
             assert_eq!(entry["url"], "https://cf.example.com/mcp");
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless entry must not be restored enabled: {entry}"
+            );
             assert!(
                 entry.get("bearer_token_env_var").is_none()
                     && entry.get("env_headers").is_none()
@@ -3864,8 +3935,8 @@ pub(crate) mod tests {
                 "no credential wiring may be invented when nothing resolves: {entry}"
             );
 
-            // Idempotent: the declarative restore matches the manifest on the
-            // second run, which writes nothing.
+            // Idempotent: the disabled declarative restore matches the manifest on
+            // the second run, which writes nothing.
             let mcp_path = paths::mcp_config_path();
             assert_reconcile_idempotent(&manager, &mcp_path);
         });
@@ -4017,27 +4088,39 @@ pub(crate) mod tests {
 
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(actions.len(), 1, "{actions:?}");
-            assert!(actions[0].contains("rebuilt"), "{actions:?}");
+            assert!(
+                actions[0].contains("rebuilt")
+                    && actions[0].contains("written disabled")
+                    && actions[0].contains("AMAP_KEY"),
+                "the note must disclose the disable and name the missing key: {actions:?}"
+            );
 
             let entry = &read_mcp_json()["servers"]["lostkey-x"];
             assert_eq!(
                 entry["command"],
                 serde_json::Value::String(paths::python_command())
             );
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "an unresolvable required secret must leave the entry disabled, not enabled \
+                 without its wiring: {entry}"
+            );
             assert!(
                 entry.get("env").is_none(),
                 "an unresolvable secret must not be written, nor fail the rebuild: {entry}"
             );
 
-            // Idempotent: the degraded entry is healthy on the second run.
+            // Idempotent: the disabled rebuilt entry is healthy on the second run.
             assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
     /// The remote counterpart of the uniform startup secret policy: a
     /// `secret_headers` tool whose keyring entry was wiped restores
-    /// declaratively (no invented wiring) instead of the whole-tool restore
-    /// re-failing on every startup.
+    /// declaratively (no invented wiring) and `disabled: true` — the entry
+    /// cannot authenticate, so it must not boot enabled (the only guaranteed
+    /// outcome of enabling it is a 401 on first use).
     #[test]
     fn reconcile_restores_secret_headers_tool_without_resolvable_credential() {
         with_temp_home(|| {
@@ -4058,14 +4141,20 @@ pub(crate) mod tests {
                 actions,
                 vec![
                     "tool 'sh-y': restored missing remote entry 'sh-remote-y'; no stored \
-                      credential for SH_LOST_KEY — restored without that auth wiring; reinstall \
-                      the tool to re-enter it"
+                      credential for SH_LOST_KEY — an entry without its credential cannot \
+                      authenticate, so it was restored disabled; reinstall the tool to \
+                      re-enter it and enable"
                         .to_string()
                 ],
                 "the restore must degrade, not skip the whole tool, and say so"
             );
             let entry = &read_mcp_json()["servers"]["sh-remote-y"];
             assert_eq!(entry["url"], "https://sh.example.com/mcp");
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless entry must not be restored enabled: {entry}"
+            );
             assert!(
                 entry.get("headers").is_none()
                     && entry.get("env_headers").is_none()
@@ -4073,8 +4162,1147 @@ pub(crate) mod tests {
                 "no credential wiring may be invented when nothing resolves: {entry}"
             );
 
-            // Idempotent: the declarative restore matches the manifest on the
-            // second run, which writes nothing.
+            // Idempotent: the disabled declarative restore matches the manifest on
+            // the second run, which writes nothing.
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// An OAuth-first remote tool with an OPTIONAL bearer key restores enabled
+    /// even with no stored key at all: its login is interactive (the engine
+    /// drives OAuth on use), so there is no API key whose absence could prove
+    /// the entry unusable — disabling it would break every OAuth-only user
+    /// (the qcc shape).
+    #[test]
+    fn reconcile_restores_oauth_tool_with_optional_key_stays_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "qcc-y",
+                "qcc-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"qcc-remote-y","url":"https://qcc.example.com/mcp",
+                                "scopes":["mcp:tools"],
+                                "oauth_resource":"https://qcc.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"QCC_Y_KEY","label":"key","required":false,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["qcc-y".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'qcc-y': restored missing remote entry 'qcc-remote-y'".to_string()]
+            );
+            let entry = &read_mcp_json()["servers"]["qcc-remote-y"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "an OAuth-first tool must restore enabled without its optional key: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// Legacy migration of the credential rule: an ENABLED entry left by an
+    /// earlier restore (or a hand edit) without its required auth wiring is
+    /// flipped to `disabled: true` on the next reconcile — enabled without its
+    /// credential, the only guaranteed outcome is a 401 on every use.
+    #[test]
+    fn reconcile_disables_legacy_enabled_entry_without_auth_wiring() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-y",
+                "cf-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-y".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-y": {"url": "https://cf.example.com/mcp"}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'cf-y': disabled remote entry 'cf-remote-y' — required credential \
+                      LOST_KEY has no auth wiring; reinstall the tool to re-enter it and \
+                      enable"
+                        .to_string()
+                ],
+                "the legacy flip must be disclosed with the missing key and the fix"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-y"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the legacy enabled-but-unwired entry must be disabled: {entry}"
+            );
+
+            // Converged: the disabled entry is exempt on the second run.
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The realign flip must not disable hand-authored auth wiring: a literal
+    /// `Authorization` header is wiring the manifest cannot judge, so the
+    /// entry stays exactly as the user wrote it.
+    #[test]
+    fn reconcile_leaves_hand_wired_authorization_entry_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-y",
+                "cf-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-y".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-y": {
+                    "url": "https://cf.example.com/mcp",
+                    "headers": {"Authorization": "Bearer hand-written"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "hand-authored auth wiring must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-y"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a hand-wired entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A missing local entry whose required secret no longer resolves is
+    /// restored `disabled: true` — the same credential rule the remote
+    /// restore applies — with the note naming the key and the reinstall fix.
+    #[test]
+    fn reconcile_restores_missing_local_entry_disabled_without_credential() {
+        with_temp_home(|| {
+            write_local_tool_fixture("lostrs-x", true);
+            write_installed_ids(&["lostrs-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'lostrs-x': restored missing mcp.json entry; no stored credential \
+                      for AMAP_KEY — the entry was written disabled; reinstall the tool \
+                      to re-enter it and enable"
+                        .to_string()
+                ]
+            );
+            let entry = &read_mcp_json()["servers"]["lostrs-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless local entry must not be restored enabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The reinstall half of the credential rule: installing a tool whose
+    /// entry a previous restore had disabled writes a fresh entry with the
+    /// credential wiring and WITHOUT the disabled flag — the connector is
+    /// enabled again the moment its key is present. This is the write the
+    /// store card's Configure action performs.
+    #[test]
+    fn reinstall_over_a_disabled_entry_reenables_with_wiring() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-z",
+                "cf-z",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-z","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"CF_Z_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            // The state a previous keyless restore leaves behind.
+            seed_mcp_json(serde_json::json!({
+                "cf-remote-z": {"url": "https://cf.example.com/mcp", "disabled": true}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut config = std::collections::HashMap::new();
+            config.insert("CF_Z_KEY".to_string(), "fresh-token".to_string());
+            let manifest = manager.load_manifest("cf-z").unwrap();
+            manager
+                .add_to_mcp_json(
+                    &manifest,
+                    &config,
+                    &mcp_catalog::package_mcp_dir("cf-z"),
+                    None,
+                )
+                .unwrap();
+
+            let entry = &read_mcp_json()["servers"]["cf-remote-z"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                serde_json::Value::String(mcp_secret_env_var("CF_Z_KEY")),
+                "the reinstall must write the credential wiring: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "a fresh wired entry must not inherit the disabled flag: {entry}"
+            );
+        });
+    }
+
+    /// The hand-wiring exemption beyond the literal `Authorization` shape: a
+    /// foreign auth header (`X-Api-Key` and friends) is wiring the manifest
+    /// cannot judge — the entry may authenticate through it, so the rule
+    /// leaves it exactly as the user wrote it.
+    #[test]
+    fn reconcile_leaves_hand_wired_foreign_header_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-h",
+                "cf-h",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-h","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-h".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-h": {
+                    "url": "https://cf.example.com/mcp",
+                    "headers": {"X-Api-Key": "hand-written-key"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a foreign hand-wired auth header must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-h"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a hand-wired entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// HTTP header names are case-insensitive and the writers compare them
+    /// with `eq_ignore_ascii_case`: a lowercase `authorization` header is the
+    /// same hand-authored wiring the exact-case exemption covers.
+    #[test]
+    fn reconcile_leaves_lowercase_authorization_header_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-l",
+                "cf-l",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-l","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-l".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-l": {
+                    "url": "https://cf.example.com/mcp",
+                    "headers": {"authorization": "Bearer hand-written"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a case-variant hand-wired Authorization must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-l"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a hand-wired entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The host resolver serves whatever env-var name a wiring value names,
+    /// so an `env_headers` value outside the manifest's secret namespace is
+    /// hand wiring the rule cannot judge — the entry stays enabled.
+    #[test]
+    fn reconcile_leaves_foreign_env_header_wiring_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-e",
+                "cf-e",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-e","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-e".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-e": {
+                    "url": "https://cf.example.com/mcp",
+                    "env_headers": {"X-Api-Key": "MY_OWN_ENV_VAR"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "foreign env-var wiring must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-e"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a hand-wired entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A user-set `oauth` block on an entry whose manifest does not declare
+    /// one is the documented client override: its login is interactive, so
+    /// the entry is exempt from the disable rule even with a required secret
+    /// missing.
+    #[test]
+    fn reconcile_leaves_user_oauth_block_entry_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-o",
+                "cf-o",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-o","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-o".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-o": {
+                    "url": "https://cf.example.com/mcp",
+                    "oauth": {"client_id": "hand-set-client"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a user-set oauth block must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-o"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "an oauth-override entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// An explicit `disabled: false` on a legacy enabled-unwired entry does
+    /// not exempt it: the rule's converged-state exemption covers
+    /// `disabled: true` only, so a hand re-enable is flipped back with the
+    /// same disclosure.
+    #[test]
+    fn reconcile_disables_legacy_entry_with_explicit_disabled_false() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-f",
+                "cf-f",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-f","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-f".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-f": {"url": "https://cf.example.com/mcp", "disabled": false}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'cf-f': disabled remote entry 'cf-remote-f' — required credential \
+                      LOST_KEY has no auth wiring; reinstall the tool to re-enter it and \
+                      enable"
+                        .to_string()
+                ],
+                "an explicit disabled:false must not exempt an unwired entry"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-f"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the rule wins over a preserved disabled:false: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// An OAuth-declared server with an OPTIONAL secret_headers credential
+    /// restores enabled with the bare note: the optional channel's absence is
+    /// a legitimate outcome (an OAuth-only user never needed the key), so it
+    /// is neither disabled nor named as a missing credential.
+    #[test]
+    fn reconcile_restores_oauth_tool_with_optional_secret_headers_stays_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "sh-o",
+                "sh-o",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"sh-remote-o","url":"https://sh.example.com/mcp",
+                                "scopes":["mcp:tools"]}],
+                    "secret_headers":[
+                    {"header":"X-Key","scheme":"","source_key":"OPT_KEY","provider":"p","required":false}
+                    ]"#,
+            );
+            write_installed_ids(&["sh-o".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'sh-o': restored missing remote entry 'sh-remote-o'".to_string()],
+                "an optional secret_headers key must not be named as missing"
+            );
+            let entry = &read_mcp_json()["servers"]["sh-remote-o"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "an OAuth tool with an optional secret_headers key stays enabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// An OAuth-declared server that additionally declares a REQUIRED secret
+    /// stays enabled when the credential is gone — the OAuth exemption is
+    /// blanket — but the restore note still names the missing key and the
+    /// fix, so the gap is disclosed even though the entry is not disabled.
+    #[test]
+    fn reconcile_restores_oauth_tool_with_required_secret_names_it_and_stays_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-r",
+                "cf-r",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-r","url":"https://cf.example.com/mcp",
+                                "scopes":["mcp:tools"]}],
+                    "config_fields":[
+                    {"key":"REQ_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-r".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'cf-r': restored missing remote entry 'cf-remote-r'; no stored \
+                      credential for REQ_KEY — restored without that auth wiring; \
+                      reinstall the tool to re-enter it"
+                        .to_string()
+                ],
+                "the OAuth-exempt restore must still disclose the missing key"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-r"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "the OAuth exemption is blanket: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The remote legacy-env channel, writer side: a manifest whose only
+    /// credentials are two sensitive `manifest.env` keys (both resolvable)
+    /// wires exactly the first — and the entry then authenticates, so it must
+    /// restore enabled with no disable and no missing-credential note. The
+    /// second key was never attempted (`break`), so counting it as a gap
+    /// would flip-war a working entry.
+    #[test]
+    fn reconcile_restores_legacy_env_manifest_with_resolvable_keys_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-m",
+                "cf-m",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-m","url":"https://cf.example.com/mcp"}],
+                    "env":{"Y1_API_KEY":"","Y2_API_KEY":""}"#,
+            );
+            write_installed_ids(&["cf-m".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("cf-m", "header", "Y1_API_KEY"), "t1")
+                .unwrap();
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("cf-m", "header", "Y2_API_KEY"), "t2")
+                .unwrap();
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'cf-m': restored missing remote entry 'cf-remote-m'".to_string()],
+                "both legacy keys resolvable: the entry authenticates via the first \
+                 and must restore enabled"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-m"];
+            let wired = entry["bearer_token_env_var"].as_str().unwrap_or_default();
+            assert_eq!(
+                wired,
+                mcp_secret_env_var("Y1_API_KEY"),
+                "the writer wires the sorted-first resolving legacy key (the choice must \
+                 not depend on manifest.env's HashMap iteration order): {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "a fully authenticated entry must not be disabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The remote legacy-env channel, migration side: an existing entry wired
+    /// via its secret channel is never flipped for unwired legacy env keys —
+    /// the writer's fallback never ran when other wiring exists, so the
+    /// legacy channel says nothing about the entry's ability to authenticate.
+    #[test]
+    fn reconcile_keeps_wired_entry_enabled_despite_unwired_legacy_env_keys() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-w",
+                "cf-w",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-w","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"MAIN_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ],
+                    "env":{"Y1_API_KEY":""}"#,
+            );
+            write_installed_ids(&["cf-w".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-w": {
+                    "url": "https://cf.example.com/mcp",
+                    "bearer_token_env_var": mcp_secret_env_var("MAIN_KEY")
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "legacy env keys beside other wiring must not flip the entry: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-w"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a wired entry must not be disabled for unwired legacy keys: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The engine's typed round-trip materializes `"command": null` on remote
+    /// entries (`McpServerConfig` serializes its options without
+    /// `skip_serializing_if`). A null marker must not count as a local entry
+    /// shape: a wired remote entry of a manifest that also declares local
+    /// channels stays enabled instead of being flipped for keys the remote
+    /// form never wires.
+    #[test]
+    fn reconcile_ignores_engine_null_markers_on_remote_entry() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-n",
+                "cf-n",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-n","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"MAIN_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ],
+                    "secret_env":[{"key":"LOC_KEY","provider":"p","required":true}]"#,
+            );
+            write_installed_ids(&["cf-n".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-n": {
+                    "url": "https://cf.example.com/mcp",
+                    "command": null,
+                    "bearer_token_env_var": mcp_secret_env_var("MAIN_KEY")
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a null command marker must not turn the remote entry local: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-n"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a wired remote entry with an engine-written null marker stays \
+                 enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A required secret key whose env-var name is a strict prefix of another
+    /// wired key's name (`PFX_KEY` inside `PINVOU3_MCP_SECRET_PFX_KEY_V2`)
+    /// must still be counted as a gap: the wiring scan matches each key's
+    /// name EXACTLY against its own declared slot (`bearer_token_env_var` /
+    /// the declared header's entry / the exact local `${NAME}` token), so a
+    /// prefix collision cannot mask a missing credential.
+    #[test]
+    fn reconcile_names_required_key_when_only_prefix_wired() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-p",
+                "cf-p",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-p","url":"https://cf.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"X-A","scheme":"","source_key":"PFX_KEY","provider":"p","required":true},
+                    {"header":"X-B","scheme":"","source_key":"PFX_KEY_V2","provider":"p","required":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-p".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(
+                    &mcp_secret_reference("cf-p", "header", "PFX_KEY_V2"),
+                    "wired-token",
+                )
+                .unwrap();
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("PFX_KEY")
+                    && actions[0].contains("restored disabled")
+                    && !actions[0].contains("PFX_KEY_V2"),
+                "the note must name exactly the unwired key: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-p"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a required key missing while its prefix twin is wired must still \
+                 disable the entry: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A local entry rebuilt over a preserved `disabled: false` whose required
+    /// secret no longer resolves: the credential rule wins — the rule exists
+    /// to prevent the enabled-but-unwired state a hand re-enable would
+    /// recreate — and the note discloses the disable.
+    #[test]
+    fn reconcile_rebuilds_entry_over_preserved_enabled_flag() {
+        with_temp_home(|| {
+            write_local_tool_fixture("loclp-x", true);
+            write_installed_ids(&["loclp-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "loclp-x": {"command": "python3", "args": ["/x/w.py"], "disabled": false}
+            }));
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("rebuilt")
+                    && actions[0].contains("written disabled")
+                    && actions[0].contains("AMAP_KEY"),
+                "the note must disclose the disable over the preserved flag: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["loclp-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the rule must win over a preserved disabled:false: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A missing local entry whose required secret RESOLVES is restored
+    /// enabled with its wiring and no caveat: the disable flag is only for
+    /// entries whose credential is gone.
+    #[test]
+    fn reconcile_restores_local_entry_with_resolvable_credential_stays_enabled() {
+        with_temp_home(|| {
+            write_local_tool_fixture("loclr-x", true);
+            write_installed_ids(&["loclr-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(
+                    &mcp_secret_reference("loclr-x", "env", "AMAP_KEY"),
+                    "stored-key",
+                )
+                .unwrap();
+            seed_mcp_json(serde_json::json!({}));
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'loclr-x': restored missing mcp.json entry".to_string()],
+                "a fully wired restore must carry no disable caveat"
+            );
+            let entry = &read_mcp_json()["servers"]["loclr-x"];
+            assert_eq!(
+                entry["env"]["AMAP_KEY"], "${PINVOU3_MCP_SECRET_AMAP_KEY}",
+                "the credential must be wired as a placeholder: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "a resolvable credential must leave the entry enabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A hand-edited hybrid entry (string `url` AND string `command`) is
+    /// judged by the channel that can affect it: the engine launches the URL
+    /// whenever it is set, so an unwired local `secret_env` channel must not
+    /// disable a URL-authenticated entry — and the note must not name a key
+    /// no remote writer could ever wire.
+    #[test]
+    fn reconcile_keeps_hybrid_entry_enabled_for_remote_channel() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "hy-x",
+                "hy-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"hy-remote-x","url":"https://hy.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"MAIN_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ],
+                    "secret_env":[{"key":"LOC_KEY","provider":"p","required":true}]"#,
+            );
+            write_installed_ids(&["hy-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "hy-remote-x": {
+                    "url": "https://hy.example.com/mcp",
+                    "command": "python3",
+                    "bearer_token_env_var": mcp_secret_env_var("MAIN_KEY")
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a URL-launched hybrid entry must not be disabled for its unwired local \
+                 channel: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["hy-remote-x"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "the engine launches the URL when it is set — the entry authenticates via \
+                 MAIN_KEY and must stay enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// An OPTIONAL secret_env key is excluded from the local channel's gap
+    /// count, mirroring secret_headers: its absence is a legitimate outcome,
+    /// so a keyless restore stays enabled and the note must not name the key.
+    #[test]
+    fn reconcile_restores_optional_secret_env_stays_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "oe-x",
+                "oe-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"OPT_ENV","provider":"p","required":false}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("oe-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["oe-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'oe-x': restored missing mcp.json entry".to_string()],
+                "an optional secret_env key must not be named as missing"
+            );
+            let entry = &read_mcp_json()["servers"]["oe-x"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "an optional secret_env key must not disable the entry: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The bearer twin of the foreign env-header exemption: a
+    /// `bearer_token_env_var` naming an env var outside the manifest's secret
+    /// namespace is hand wiring the rule cannot judge — the entry stays
+    /// enabled even though a required channel shows a gap.
+    #[test]
+    fn reconcile_leaves_foreign_bearer_env_var_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-b",
+                "cf-b",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-b","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-b".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-b": {
+                    "url": "https://cf.example.com/mcp",
+                    "bearer_token_env_var": "MY_OWN_ENV_VAR"
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "foreign bearer env-var wiring must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-b"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a hand-wired entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The local legacy-`env` channel counts per key (the local builder wires
+    /// every sensitive key): two sensitive `manifest.env` keys with no stored
+    /// credential leave both gaps, and the rebuilt entry is disabled with the
+    /// note naming both.
+    #[test]
+    fn reconcile_rebuilds_local_legacy_env_entry_disabled_naming_both_keys() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "lg-x",
+                "lg-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"LG1_API_KEY":"","LG2_API_KEY":""}"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("lg-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["lg-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("restored missing mcp.json entry")
+                    && actions[0].contains("LG1_API_KEY")
+                    && actions[0].contains("LG2_API_KEY"),
+                "both unresolvable legacy keys must be named: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["lg-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a legacy-env local entry without any resolvable key must be disabled: \
+                 {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The local env-config channel counts a required field that is
+    /// sensitive-named even when `secret` is false — the builder's own
+    /// secret-treatment predicate is the same disjunct, so an unresolvable
+    /// `MY_API_KEY` leaves the rebuilt entry disabled with the key named.
+    #[test]
+    fn reconcile_names_required_sensitive_env_config_field() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "sn-x",
+                "sn-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"MY_API_KEY","label":"key","required":true,"target":"env","secret":false}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("sn-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["sn-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("MY_API_KEY"),
+                "a required sensitive-named env field must be named as missing: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["sn-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "an unresolvable sensitive-named env field must disable the entry: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A disabled restore suppresses the non-secret-bearer note: the entry
+    /// carries a required secret channel's gap, and the reinstall action
+    /// re-collects every field in one dialog, so stacking the second remedy
+    /// on the disabled note would name a fix the flag already covers.
+    #[test]
+    fn reconcile_disabled_restore_suppresses_non_secret_bearer_note() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "nb-x",
+                "nb-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"nb-remote-x","url":"https://nb.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"NEED_KEY","label":"key","required":true,"target":"bearer","secret":true},
+                    {"key":"PLAIN_KEY","label":"plain","required":true,"target":"bearer","secret":false}
+                    ]"#,
+            );
+            write_installed_ids(&["nb-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("restored disabled") && actions[0].contains("NEED_KEY"),
+                "the restore must be disclosed as disabled with its missing key: {actions:?}"
+            );
+            assert!(
+                !actions[0].contains("non-secret bearer"),
+                "the disabled note must not stack the non-secret-bearer remedy: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["nb-remote-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the entry must be disabled for its missing secret: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The engine's own disable flag is respected: doctor-fix and the /mcp
+    /// toggle write `enabled: false` without touching `disabled`, and the
+    /// engine's `is_enabled()` refuses both — such an entry boots for nobody,
+    /// so the credential rule leaves it to the writer that set it.
+    #[test]
+    fn reconcile_leaves_engine_enabled_false_entry_untouched() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "ef-x",
+                "ef-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"ef-remote-x","url":"https://ef.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["ef-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "ef-remote-x": {"url": "https://ef.example.com/mcp", "enabled": false}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "an engine-disabled entry must not be re-flagged: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["ef-remote-x"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "the rule must not write disabled over the engine's enabled:false: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A header map whose values are all empty wires nothing (the host
+    /// resolver skips empty header values): on a legacy-only manifest the
+    /// dead `Authorization` header must not mask the legacy channel, so the
+    /// entry is disabled with the key named instead of staying
+    /// enabled-unwired silently.
+    #[test]
+    fn reconcile_disables_legacy_entry_behind_dead_authorization_header() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "dl-x",
+                "dl-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"dl-remote-x","url":"https://dl.example.com/mcp"}],
+                    "env":{"DL_API_KEY":""}"#,
+            );
+            write_installed_ids(&["dl-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "dl-remote-x": {
+                    "url": "https://dl.example.com/mcp",
+                    "headers": {"Authorization": ""}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("DL_API_KEY"),
+                "the dead header must not mask the legacy channel gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["dl-remote-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the entry behind a dead header must be disabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The wiring scan matches each key's name EXACTLY against its own
+    /// declared slot (`bearer_token_env_var` / the declared header's entry /
+    /// the exact local `${NAME}` token): a required key whose env-var name is
+    /// a strict suffix of another wired key's name (`ABA` inside
+    /// `PINVOU3_MCP_SECRET_XPINVOU3_MCP_SECRET_ABA`) must still count as a
+    /// gap.
+    #[test]
+    fn reconcile_names_required_key_when_only_suffix_twin_wired() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "sx-x",
+                "sx-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"ABA_API_KEY":"","XPINVOU3_MCP_SECRET_ABA_API_KEY":""}"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("sx-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["sx-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(
+                    &mcp_secret_reference("sx-x", "env", "XPINVOU3_MCP_SECRET_ABA_API_KEY"),
+                    "wired-token",
+                )
+                .unwrap();
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("ABA_API_KEY") && actions[0].contains("written disabled"),
+                "the suffix-embedded twin must not mask ABA_API_KEY's gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["sx-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a required key missing while its suffix twin is wired must still \
+                 disable the entry: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The optional-channel exclusion is not an OAuth privilege: a non-OAuth
+    /// tool whose only credential is an OPTIONAL secret_headers key restores
+    /// enabled with the bare note — the user never needed the key, so naming
+    /// it would send them hunting for a credential the tool does not require.
+    #[test]
+    fn reconcile_restores_non_oauth_optional_secret_headers_stays_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "no-x",
+                "no-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"no-remote-x","url":"https://no.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"X-Key","scheme":"","source_key":"OPT_KEY","provider":"p","required":false}
+                    ]"#,
+            );
+            write_installed_ids(&["no-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'no-x': restored missing remote entry 'no-remote-x'".to_string()],
+                "an optional secret_headers key must not be named as missing"
+            );
+            let entry = &read_mcp_json()["servers"]["no-remote-x"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "an optional secret_headers key must not disable the entry: {entry}"
+            );
+
             let mcp_path = paths::mcp_config_path();
             assert_reconcile_idempotent(&manager, &mcp_path);
         });
@@ -8850,6 +10078,66 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-4 review MAJOR-1c: a manifest whose ONLY secret channel is a
+    /// sensitive-named non-secret `config_fields` key is a secret channel to
+    /// the builders and the credential rule, so the recycle-restore supply
+    /// gate must route it the same way — previously
+    /// `manifest_secret_targets` enumerated `field.secret` alone, the gate
+    /// passed as "no secrets", and the supply ran into an entry the rule
+    /// could never see. Red on the pre-fix tree (the widened refusal inside
+    /// the supply turns the restore into an error there).
+    #[test]
+    fn restore_recycled_sensitive_named_config_field_flags_credentials_required() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "sn-rec",
+                "SnRec",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"MY_API_KEY","label":"key","required":true,"target":"env","secret":false}
+                    ]"#,
+            );
+            let store = MemoryCredentialStore::default();
+            store
+                .set(
+                    &mcp_secret_reference("sn-rec", "env", "MY_API_KEY"),
+                    &secret_value("sn"),
+                )
+                .unwrap();
+            let mgr = MarketplaceManager::with_store(store.clone());
+            // Upload-source install (empty user_config): the store fallback
+            // wires the key, exactly like the secret_env package above — and
+            // an Upload uninstall recycles the whole package, which is the
+            // flow this gate guards.
+            mgr.install_upload(
+                "sn-rec",
+                store::BundleSource::Upload("sn-rec.zip".to_string()),
+            )
+            .unwrap();
+
+            mgr.uninstall("sn-rec").unwrap();
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference("sn-rec", "env", "MY_API_KEY"))
+                    .unwrap(),
+                None,
+                "uninstall must delete the sensitive-named field's stored credential"
+            );
+
+            let result = recycle_bin::restore_plugin("sn-rec").unwrap();
+            assert!(
+                result.credentials_required,
+                "the sensitive-named channel must flag credentials required"
+            );
+            assert!(
+                !MarketplaceManager::new()
+                    .installed_ids()
+                    .contains(&"sn-rec".to_string()),
+                "缺凭据时跳过 MCP 供给（不写 installed.json，避免半安装态）"
+            );
+        });
+    }
+
     /// 上传/导入路径禁用 pip 自动安装（供应链安全）：`install_upload` 遇非空
     /// `pip_dependencies` 不执行 pip install（若执行，不存在的包名会让安装失败），
     /// 只提示用户自行安装，供给照常完成。
@@ -9862,6 +11150,44 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-4 review F2 (pre-existing, fixed alongside MAJOR-1c): the same
+    /// `manifest_secret_targets` widening feeds `sync_secret_values`, so a
+    /// wired `${PINVOU3_MCP_SECRET_MY_API_KEY}` on a sensitive-named
+    /// non-secret config field is rehydrated after a restart instead of
+    /// being wiped by the clear-and-rebuild (silent auth loss). Red on the
+    /// pre-fix tree.
+    #[test]
+    fn sync_rehydrates_sensitive_named_config_field_credential() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "syn-x",
+                "SynX",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"MY_API_KEY","label":"key","required":true,"target":"env","secret":false}
+                    ]"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let value = secret_value("syn");
+            store
+                .set(
+                    &mcp_secret_reference("syn-x", "env", "MY_API_KEY"),
+                    &value.clone(),
+                )
+                .unwrap();
+            write_installed_ids(&["syn-x".to_string()]);
+            let manager = MarketplaceManager::with_store(store);
+
+            manager.sync_secret_values().unwrap();
+            let env_var = mcp_secret_env_var("MY_API_KEY");
+            assert_eq!(
+                snapshot_secret_values().get(&env_var).map(String::as_str),
+                Some(value.as_str()),
+                "the sensitive-named field's credential must survive the restart rehydration"
+            );
+        });
+    }
+
     /// Round-25 minor 10 (review #455; the pin was explicitly requested last
     /// round) / round-26 minor 2: an unreadable `installed.json` must NOT
     /// clear the in-process secret registry — every `${ENV}` placeholder
@@ -10631,6 +11957,1584 @@ pub(crate) mod tests {
                 reader
             });
             reader.join().expect("reader thread should finish");
+        });
+    }
+
+    /// The gap scan consults only auth-wiring values: a manifest-authored
+    /// string that embeds the secret env-var name (the `url` path suffix
+    /// here) is data no writer puts a secret name into, so it cannot mask
+    /// the required key's gap — the keyless restore is disabled and names
+    /// the key.
+    #[test]
+    fn reconcile_disables_keyless_restore_when_manifest_url_embeds_secret_name() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "mask-u",
+                "mask-u",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"mask-remote-u","url":"https://mask.example.com/mcp/PINVOU3_MCP_SECRET_CLOAK_KEY"}],
+                    "config_fields":[
+                    {"key":"CLOAK_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["mask-u".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'mask-u': restored missing remote entry 'mask-remote-u'; no stored \
+                      credential for CLOAK_KEY — an entry without its credential cannot \
+                      authenticate, so it was restored disabled; reinstall the tool to \
+                      re-enter it and enable"
+                        .to_string()
+                ],
+                "a url-embedded secret name must not mask the required key: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["mask-remote-u"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a name embedded in manifest-authored data cannot authenticate the entry: \
+                 {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A manifest's own `secret_headers[].header` NAME is entry data, not
+    /// wiring: naming a header after another key's env var cannot serve that
+    /// key — the store-resolved channel stays wired (A_SRC) while B_KEY's
+    /// gap is named and the entry is disabled.
+    #[test]
+    fn reconcile_names_gap_behind_secret_named_header() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "mask-h",
+                "mask-h",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"mask-remote-h","url":"https://mask.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"X-PINVOU3_MCP_SECRET_B_KEY","scheme":"","source_key":"A_SRC","provider":"p","required":true},
+                    {"header":"X-B","scheme":"","source_key":"B_KEY","provider":"p","required":true}
+                    ]"#,
+            );
+            write_installed_ids(&["mask-h".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("mask-h", "header", "A_SRC"), "t1")
+                .unwrap();
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("B_KEY") && !actions[0].contains("A_SRC"),
+                "only the genuinely missing key is named: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["mask-remote-h"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a header NAME that embeds another key's env var is not wiring: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The engine deserializes `env_http_headers` as an alias of
+    /// `env_headers` (a config copied from another tool keeps working), so a
+    /// foreign alias value is hand auth the rule cannot judge — the entry is
+    /// left exactly as the user wrote it.
+    #[test]
+    fn reconcile_leaves_alias_wired_foreign_entry_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "al-x",
+                "al-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"al-remote-x","url":"https://al.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"PROBE_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["al-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "al-remote-x": {
+                    "url": "https://al.example.com/mcp",
+                    "env_http_headers": {"X-Api-Key": "MY_OWN_VAR"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "alias-spelled hand wiring must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["al-remote-x"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "the engine serves env_http_headers — a wired entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The remote channel is judged SLOT-BOUND: the engine resolves each
+    /// `env_headers`/`env_http_headers` entry's value under THAT entry's
+    /// header name, so a manifest-namespace name parked under a header the
+    /// manifest never declares (`X-Key` for a Bearer manifest) is sent
+    /// where the server does not read it — it wires nothing and masks
+    /// nothing. (The alias KEY itself is still served: the foreign-alias
+    /// test stays enabled because its value is hand auth.) The entry is
+    /// disabled and the gap named, like any other keyless entry.
+    #[test]
+    fn reconcile_disables_alias_value_under_undeclared_header() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "al-w",
+                "al-w",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"al-remote-w","url":"https://al.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"MAIN_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ],
+                    "env":{"Y1_API_KEY":""}"#,
+            );
+            write_installed_ids(&["al-w".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "al-remote-w": {
+                    "url": "https://al.example.com/mcp",
+                    "env_http_headers": {"X-Key": mcp_secret_env_var("MAIN_KEY")}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'al-w': disabled remote entry 'al-remote-w' — required credential \
+                      MAIN_KEY has no auth wiring; reinstall the tool to re-enter it and enable"
+                        .to_string()
+                ],
+                "an undeclared header slot must not count as wiring: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["al-remote-w"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "wiring the server never reads cannot authenticate the entry: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A preserved `disabled: true` survives even a fully-wired rebuild:
+    /// the flag a keyless restore wrote is byte-identical to a user's hand
+    /// stop in mcp.json, the file carries no mark to tell them apart, and a
+    /// repair is not a user request to re-enable — so the rebuild keeps the
+    /// flag and the note discloses it. The wired path back is an explicit
+    /// user action: the store card's Configure reinstall (fresh-install
+    /// form, no preserved fields) or the engine toggle.
+    #[test]
+    fn reconcile_rebuild_fully_wired_keeps_preserved_disabled_flag() {
+        with_temp_home(|| {
+            write_local_tool_fixture("reclr-x", true);
+            write_installed_ids(&["reclr-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // Boot 1: the keyless restore writes the entry disabled.
+            let boot1 = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                boot1.iter().any(|a| a.contains("written disabled")),
+                "{boot1:?}"
+            );
+            assert_eq!(
+                read_mcp_json()["servers"]["reclr-x"]["disabled"],
+                serde_json::Value::Bool(true),
+                "setup: the keyless restore must be disabled"
+            );
+            // The credential re-enters the store out of band; the entry's
+            // recorded target goes stale (python bump, home move) while the
+            // package script still exists — the dead-target repair trigger.
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("reclr-x", "env", "AMAP_KEY"), "k1")
+                .unwrap();
+            let mut stale = read_mcp_json()["servers"]["reclr-x"].clone();
+            stale["args"] = serde_json::json!(["/nonexistent/stale/server.py"]);
+            let mcp_path = seed_mcp_json(serde_json::json!({ "reclr-x": stale }));
+
+            let boot2 = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(boot2.len(), 1, "{boot2:?}");
+            assert!(
+                boot2[0].contains("rebuilt") && boot2[0].contains("kept"),
+                "the rebuild must disclose that the preserved flag stands: {boot2:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["reclr-x"];
+            assert_eq!(
+                entry["env"]["AMAP_KEY"],
+                serde_json::Value::String(format!("${{{}}}", mcp_secret_env_var("AMAP_KEY"))),
+                "the rebuilt entry must still be fully wired: {entry}"
+            );
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the preserved flag is kept even though every credential resolves: \
+                 {entry}"
+            );
+            assert!(
+                entry.get("enabled").is_none(),
+                "the rebuild must not invent an enabled stamp beside the kept flag: \
+                 {entry}"
+            );
+
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The rebuild judges the FINAL entry form: a preserved hand-added
+    /// `url` makes the rebuilt entry a hybrid the engine launches remotely,
+    /// so the required `secret_headers` channel counts even though the
+    /// manifest has no local secret channels — the keyless rebuild is
+    /// disabled.
+    #[test]
+    fn reconcile_rebuild_judges_final_hybrid_form() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "hyb-r",
+                "hyb-r",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_headers":[
+                    {"header":"X-Key","scheme":"","source_key":"H_KEY","provider":"p","required":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("hyb-r").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["hyb-r".to_string()]);
+            // A hand edit added `url`; the recorded script target went stale.
+            seed_mcp_json(serde_json::json!({
+                "hyb-r": {
+                    "command": "python3",
+                    "args": ["/nonexistent/stale/server.py"],
+                    "url": "https://hyb.example.com/mcp"
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("written disabled") && actions[0].contains("H_KEY"),
+                "the final hybrid form must be judged by its remote channel: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["hyb-r"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the engine launches the URL — the unwired remote channel disables: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The documented local asymmetry: a HEALTHY local entry whose required
+    /// secret env is missing stays enabled — the rule is enforced only where
+    /// this path already writes (a dead/malformed rebuild), never on the
+    /// healthy pass, and never by touching the credential store.
+    #[test]
+    fn reconcile_keeps_healthy_local_entry_missing_secret_untouched() {
+        with_temp_home(|| {
+            write_local_tool_fixture("asym-x", true);
+            write_installed_ids(&["asym-x".to_string()]);
+            let script = mcp_catalog::package_mcp_dir("asym-x")
+                .join("server.py")
+                .to_string_lossy()
+                .into_owned();
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "asym-x": {"command": paths::python_command(), "args": [script]}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a healthy local entry must never be rewritten for a missing secret: \
+                 {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["asym-x"];
+            assert!(
+                entry.get("disabled").is_none() && entry.get("env").is_none(),
+                "the healthy pass is zero-writes even when the credential is gone: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// Round-4 review MAJOR-1 (comment 5594553635): the import/upload path
+    /// installs with an empty user_config, so an omitted REQUIRED secret
+    /// `config_fields` key must fail the install loud — silently skipping it
+    /// landed the entry enabled-unwired (the exact state the credential rule
+    /// exists to prevent), and unlike the remote analog nothing ever healed
+    /// it. Probe-proven on the pre-fix tree; this pin is red on it.
+    #[test]
+    fn install_upload_refuses_local_required_secret_config_field() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cfg-i",
+                "CfgI",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"X_API_KEY","label":"key","required":true,"target":"env","secret":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("cfg-i").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let error = manager
+                .install_upload(
+                    "cfg-i",
+                    store::BundleSource::Upload("cfg-i.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("X_API_KEY") && error.contains("missing secret"),
+                "the refusal must name the missing required key: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// The startup counterpart of the refusal above: with every legacy key
+    /// unresolvable, the reconcile-time builder must NOT refuse — the
+    /// unwired declarative entry is what falls through to the restore's gap
+    /// scan, which lands the promised `disabled: true` entry with the note
+    /// naming the keys. An unconditional refusal aborted the whole restore
+    /// before any write and repeated on every startup. Store faults still
+    /// refuse in both modes (the builder's `Err` arm is untouched); the
+    /// direct-install refusal keeps its own test above.
+    #[test]
+    fn reconcile_restores_legacy_env_tool_without_resolvable_credential() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-r",
+                "LegR",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-r-remote","url":"https://leg-r.example.com/mcp"}],
+                    "env":{"AAA_API_KEY":"","ZZZ_API_KEY":""}"#,
+            );
+            write_installed_ids(&["leg-r".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            let note = &actions[0];
+            assert!(
+                note.contains("restored missing remote entry 'leg-r-remote'")
+                    && note.contains("AAA_API_KEY")
+                    && note.contains("ZZZ_API_KEY")
+                    && note.contains("restored disabled"),
+                "the degrade note must name every missing legacy key and the disable: \
+                 {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["leg-r-remote"];
+            assert_eq!(entry["url"], "https://leg-r.example.com/mcp");
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless legacy entry must not be restored enabled: {entry}"
+            );
+            assert!(
+                entry.get("bearer_token_env_var").is_none()
+                    && entry.get("env_headers").is_none()
+                    && entry.get("headers").is_none(),
+                "no credential wiring may be invented when no legacy key resolves: {entry}"
+            );
+
+            // Idempotent: the disabled declarative restore matches the manifest
+            // on the second run, which writes nothing.
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The green counterpart: the same required secret config field provided
+    /// through the store card's config dialog wires the entry exactly like
+    /// the other secret channels — the refusal is only for omitted keys.
+    #[test]
+    fn install_wires_local_required_secret_config_field_when_input_provides_it() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cfg-w",
+                "CfgW",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"X_API_KEY","label":"key","required":true,"target":"env","secret":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("cfg-w").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut config = std::collections::HashMap::new();
+            config.insert("X_API_KEY".to_string(), secret_value("t1").clone());
+
+            manager
+                .install("cfg-w", &config)
+                .expect("a provided required key must install");
+            let entry = &read_mcp_json()["servers"]["cfg-w"];
+            assert_eq!(
+                entry["env"]["X_API_KEY"], "${PINVOU3_MCP_SECRET_X_API_KEY}",
+                "the provided key must be wired as the store placeholder: {entry}"
+            );
+        });
+    }
+
+    /// Round-4 review MINOR (inert-text masking): a manifest plain `env`
+    /// value that merely MENTIONS a required key's env-var name — no
+    /// `${...}` placeholder, so the engine expands nothing — must not mask
+    /// that key's credential gap. Without the placeholder-exact local scan
+    /// this restores enabled with the gap suppressed.
+    #[test]
+    fn restore_ignores_inert_env_text_sharing_a_secret_name() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "inert-x",
+                "InertX",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"NOTE":"see PINVOU3_MCP_SECRET_BARE_KEY"},
+                    "secret_env":[{"key":"BARE_KEY","provider":"p","required":true}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("inert-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["inert-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("BARE_KEY"),
+                "the inert mention must not mask the gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["inert-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the keyless entry must still be written disabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The deliberate boundary the placeholder-exact scan keeps: a plain
+    /// `env` value that COMPOSES the placeholder (`x${NAME}y`) is real
+    /// wiring — the engine's env expansion resolves that token, and an
+    /// absent credential fails the spawn loudly naming the variable. The
+    /// static oracle therefore spares the entry; this pins that sparing so
+    /// tightening the scan later cannot silently break composed manifests
+    /// (a placeholder's name is always `}`-terminated, so the exact-token
+    /// scan is strictly tighter than the remote boundary check, never
+    /// looser).
+    #[test]
+    fn restore_placeholder_composition_in_plain_env_still_wires() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "comp-x",
+                "CompX",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"NOTE":"x${PINVOU3_MCP_SECRET_COMP_KEY}y"},
+                    "secret_env":[{"key":"COMP_KEY","provider":"p","required":true}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("comp-x").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            write_installed_ids(&["comp-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                !actions[0].contains("written disabled"),
+                "a composed placeholder is live wiring and must not disable: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["comp-x"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "the composed entry stays enabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// Converged-state precedence over resolvability: an existing
+    /// `disabled: true` entry is never probed against the store, so a key
+    /// that re-enters out of band cannot re-enable it — only the reinstall
+    /// writer does (the toggle's re-enable is the user's own write).
+    #[test]
+    fn reconcile_keeps_disabled_entry_disabled_when_credential_reenters() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cnv-x",
+                "cnv-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cnv-remote-x","url":"https://cnv.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cnv-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cnv-remote-x": {"url": "https://cnv.example.com/mcp", "disabled": true}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("cnv-x", "bearer", "LOST_KEY"), "k1")
+                .unwrap();
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a converged disabled entry must not be re-judged against the store: \
+                 {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cnv-remote-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "only the reinstall writer re-enables: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// Realign and the credential rule land in the same pass: an entry whose
+    /// manifest-derived url drifted AND whose auth wiring is gone is
+    /// realigned and disabled in one write, with both disclosures.
+    #[test]
+    fn reconcile_disables_after_realign_in_same_pass() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "rg-x",
+                "rg-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"rg-remote-x","url":"https://new.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"RG_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["rg-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "rg-remote-x": {"url": "https://old.example.com/mcp"}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            let note = &actions[0];
+            let realign = note.find("realigned");
+            let disable = note.find("disabled remote entry");
+            assert!(
+                realign.is_some()
+                    && disable.is_some()
+                    && realign.unwrap() < disable.unwrap()
+                    && note.contains("RG_KEY"),
+                "realign first, then the credential flip naming the key: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["rg-remote-x"];
+            assert_eq!(entry["url"], "https://new.example.com/mcp");
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the gap is judged on the post-realign entry: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// Exemptions are judged per server, not per manifest: one restore pass
+    /// restores the OAuth-declared server enabled and its non-OAuth sibling
+    /// — whose required secret is gone — disabled, each note naming its own
+    /// outcome.
+    #[test]
+    fn reconcile_restores_mixed_manifest_per_server() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "mix-y",
+                "mix-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[
+                    {"name":"mix-oauth-y","url":"https://oauth.example.com/mcp",
+                     "scopes":["mcp:tools"],"oauth_resource":"https://oauth.example.com/mcp"},
+                    {"name":"mix-key-y","url":"https://key.example.com/mcp"}
+                    ],
+                    "config_fields":[
+                    {"key":"MIX_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["mix-y".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            let note = &actions[0];
+            assert!(
+                note.contains("restored missing remote entry 'mix-oauth-y'"),
+                "the OAuth server restores with the bare note: {actions:?}"
+            );
+            assert!(
+                note.contains("restored missing remote entry 'mix-key-y'")
+                    && note.contains("MIX_KEY")
+                    && note.contains("restored disabled"),
+                "the non-OAuth sibling is disabled naming its key: {actions:?}"
+            );
+            let servers = read_mcp_json()["servers"].clone();
+            assert!(
+                servers["mix-oauth-y"].get("disabled").is_none(),
+                "the OAuth exemption is per server: {servers}"
+            );
+            assert_eq!(
+                servers["mix-key-y"]["disabled"],
+                serde_json::Value::Bool(true),
+                "the keyless sibling must not boot enabled: {servers}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The engine's own disable stamp in its toggle shape: the /mcp toggle
+    /// and the runtime API write `enabled: false` AND `disabled: true`
+    /// together (only doctor-fix writes `enabled: false` alone) —
+    /// `is_enabled()` refuses both, so the converged entry is never
+    /// re-judged or rewritten.
+    #[test]
+    fn reconcile_leaves_engine_toggled_entry_untouched() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "tg-x",
+                "tg-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"tg-remote-x","url":"https://tg.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"TG_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["tg-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "tg-remote-x": {
+                    "url": "https://tg.example.com/mcp",
+                    "enabled": false,
+                    "disabled": true
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "an engine-toggled entry is another writer's converged state: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["tg-remote-x"];
+            assert_eq!(entry["enabled"], serde_json::Value::Bool(false));
+            assert_eq!(entry["disabled"], serde_json::Value::Bool(true));
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A whitespace-only `bearer_token_env_var` wires nothing (the host
+    /// resolver cannot resolve it), so it must not mask the legacy channel's
+    /// gap — the entry is disabled naming the key.
+    #[test]
+    fn reconcile_names_legacy_gap_behind_whitespace_bearer_env_var() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "ws-x",
+                "ws-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"ws-remote-x","url":"https://ws.example.com/mcp"}],
+                    "env":{"WS_API_KEY":""}"#,
+            );
+            write_installed_ids(&["ws-x".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "ws-remote-x": {
+                    "url": "https://ws.example.com/mcp",
+                    "bearer_token_env_var": "   "
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("disabled") && actions[0].contains("WS_API_KEY"),
+                "whitespace wiring must not mask the legacy gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["ws-remote-x"];
+            assert_eq!(entry["disabled"], serde_json::Value::Bool(true), "{entry}");
+
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The remote channel is slot-bound: a value carrying the manifest's own
+    /// env-var name parked under a header the manifest never declares is
+    /// sent where the server does not read it (the engine resolves each
+    /// `env_headers` entry's value under THAT entry's header name), so it
+    /// wires nothing — the keyless entry is migrated to `disabled: true`
+    /// with the gap named, and the converged file is never rewritten.
+    #[test]
+    fn reconcile_disables_wiring_parked_under_a_foreign_slot() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "slot-p",
+                "slot-p",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"slot-remote","url":"https://slot.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"Bearer","source_key":"K","provider":"demo"}
+                    ]"#,
+            );
+            write_installed_ids(&["slot-p".to_string()]);
+            seed_mcp_json(serde_json::json!({
+                "slot-remote": {
+                    "url": "https://slot.example.com/mcp",
+                    "env_headers": { "X-Sentinel": mcp_secret_env_var("K") }
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'slot-p': disabled remote entry 'slot-remote' — required credential \
+                      K has no auth wiring; reinstall the tool to re-enter it and enable"
+                        .to_string()
+                ],
+                "a value under an undeclared header must not mask the gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["slot-remote"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the entry cannot authenticate the declared Authorization channel: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The slot binding covers the custom-header leg too: a manifest-namespace
+    /// value parked under a header the manifest does not declare (`X-Other`
+    /// for an `X-Api-Key` channel) is sent where the server does not read it —
+    /// it wires nothing and masks nothing, like the bearer-leg twin above.
+    #[test]
+    fn reconcile_disables_value_under_undeclared_custom_header_slot() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "slot-c",
+                "slot-c",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"slot-remote-c","url":"https://slot-c.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"X-Api-Key","scheme":"","source_key":"K","provider":"demo"}
+                    ]"#,
+            );
+            write_installed_ids(&["slot-c".to_string()]);
+            seed_mcp_json(serde_json::json!({
+                "slot-remote-c": {
+                    "url": "https://slot-c.example.com/mcp",
+                    "env_headers": { "X-Other": mcp_secret_env_var("K") }
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'slot-c': disabled remote entry 'slot-remote-c' — required credential \
+                      K has no auth wiring; reinstall the tool to re-enter it and enable"
+                        .to_string()
+                ],
+                "a value under an undeclared custom header must not mask the gap: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["slot-remote-c"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the entry cannot authenticate the declared X-Api-Key channel: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A blank hand header wires nothing on any channel (the same doctrine
+    /// `remote_entry_has_auth_wiring` applies), so it is neither hand auth
+    /// nor wiring: the keyless entry is disabled like its bare sibling.
+    #[test]
+    fn reconcile_ignores_blank_foreign_header_when_judging_gap() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "blk-h",
+                "blk-h",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"blk-remote","url":"https://blk.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"Bearer","source_key":"BK","provider":"demo"}
+                    ]"#,
+            );
+            write_installed_ids(&["blk-h".to_string()]);
+            seed_mcp_json(serde_json::json!({
+                "blk-remote": {
+                    "url": "https://blk.example.com/mcp",
+                    "headers": { "X-Blank": "" }
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("BK") && actions[0].contains("disabled"),
+                "a blank foreign header must not exempt the entry: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["blk-remote"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a blank header authenticates nothing: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The writer preempts the bearer slot when the same source_key is also
+    /// declared on an Authorization secret_headers entry (the historical
+    /// Tencent Docs shape: raw-token auth must not gain a Bearer prefix), so
+    /// a restore's `env_headers.Authorization` wiring IS that required
+    /// bearer field's wiring — the entry is restored enabled, not disabled
+    /// by a slot demand the writer never fills.
+    #[test]
+    fn reconcile_restores_preempted_bearer_field_by_its_raw_authorization_header() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "preempt-r",
+                "Preempt",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"preempt-remote","url":"https://preempt.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"","source_key":"RAW_TOKEN","provider":"p","required":true}],
+                    "config_fields":[
+                    {"key":"RAW_TOKEN","label":"Token","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["preempt-r".to_string()]);
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("preempt-r");
+            store
+                .set(
+                    &mcp_secret_reference("preempt-r", "header", "RAW_TOKEN"),
+                    &secret,
+                )
+                .unwrap();
+            let manager = MarketplaceManager::with_store(store);
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'preempt-r': restored missing remote entry 'preempt-remote'".to_string()
+                ],
+                "the raw Authorization header wires the preempted key: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["preempt-remote"];
+            assert_eq!(
+                entry["env_headers"]["Authorization"],
+                mcp_secret_env_var("RAW_TOKEN"),
+                "the writer's raw-header form: {entry}"
+            );
+            assert!(
+                entry.get("bearer_token_env_var").is_none(),
+                "the preempted slot stays unfilled: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "a writer-shaped, fully wired entry must not be disabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A successful install of the preempted shape followed by reconciliation
+    /// converges: the install writer's `env_headers.Authorization` is judged
+    /// as the key's wiring, so the entry is never disabled — reconfiguring
+    /// re-emits the same valid raw header, so a slot demand here would create
+    /// an install → disable → reinstall flapping loop with no exit.
+    #[test]
+    fn reconcile_keeps_installed_raw_authorization_entry_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "preempt-i",
+                "Preempt",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"preempt-remote-i","url":"https://preempt-i.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"","source_key":"RAW_TOKEN","provider":"p","required":true}],
+                    "config_fields":[
+                    {"key":"RAW_TOKEN","label":"Token","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            let store = MemoryCredentialStore::default();
+            let secret = secret_value("preempt-i");
+            store
+                .set(
+                    &mcp_secret_reference("preempt-i", "header", "RAW_TOKEN"),
+                    &secret,
+                )
+                .unwrap();
+            let manager = MarketplaceManager::with_store(store);
+            let mut user_config = std::collections::HashMap::new();
+            user_config.insert("RAW_TOKEN".to_string(), secret.clone());
+            manager.install("preempt-i", &user_config).unwrap();
+            assert!(
+                read_mcp_json()["servers"]["preempt-remote-i"]
+                    .get("bearer_token_env_var")
+                    .is_none(),
+                "the install writes the raw-header form"
+            );
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "a freshly installed, fully wired entry must converge: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["preempt-remote-i"];
+            assert_eq!(
+                entry["env_headers"]["Authorization"],
+                mcp_secret_env_var("RAW_TOKEN"),
+                "the entry is left exactly as installed: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "no startup pass may flip the installed form: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The remote twin of the local required-field refusal: the import/upload
+    /// path installs with an empty config and no dialog, so a REQUIRED secret
+    /// bearer config field whose credential is absent must refuse the
+    /// install loud — silence would land the entry enabled-unwired, the
+    /// state the credential rule exists to prevent.
+    #[test]
+    fn install_upload_refuses_remote_required_secret_bearer_config_field() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "rem-r",
+                "rem-r",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"rem-remote-r","url":"https://rem.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"RB_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let error = manager
+                .install_upload(
+                    "rem-r",
+                    store::BundleSource::Upload("rem-r.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("RB_KEY") && error.contains("missing secret"),
+                "the refusal must name the missing required key: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// An OPTIONAL secret config field the user deliberately left empty (the
+    /// config dialog invites exactly that) installs without the wiring in
+    /// every mode — the store dialog gates only required fields, the gap
+    /// scan excludes optional channels, and the store fallback still serves
+    /// a re-install over a configured tool.
+    #[test]
+    fn install_upload_skips_optional_secret_config_field() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "opt-i",
+                "opt-i",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"OPT_API_KEY","label":"key","required":false,"target":"env","secret":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("opt-i").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "opt-i",
+                    store::BundleSource::Upload("opt-i.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("an omitted OPTIONAL key must not fail the install: {error}")
+                });
+            let entry = &read_mcp_json()["servers"]["opt-i"];
+            assert!(
+                entry.get("env").is_none(),
+                "the skipped optional key must not invent wiring: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "an optional channel's absence is not a credential gap: {entry}"
+            );
+        });
+    }
+
+    /// A preserved engine-toggle stamp (`enabled: false` + `disabled: true`)
+    /// is another writer's converged state: even a fully-wired rebuild keeps
+    /// the pair intact, and the note discloses the kept flag instead of a
+    /// clearing that no longer happens (the entry still boots for nobody).
+    #[test]
+    fn reconcile_rebuild_keeps_engine_disabled_stamp_pair() {
+        with_temp_home(|| {
+            write_local_tool_fixture("stamp-x", true);
+            write_installed_ids(&["stamp-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // Boot 1: the keyless restore writes the entry disabled.
+            let boot1 = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                boot1.iter().any(|a| a.contains("written disabled")),
+                "{boot1:?}"
+            );
+            // The key re-enters out of band; the recorded target goes stale
+            // (the dead-target repair trigger) while the user's disable —
+            // the toggle's both-flags stamp — stands.
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("stamp-x", "env", "AMAP_KEY"), "k1")
+                .unwrap();
+            let mut stale = read_mcp_json()["servers"]["stamp-x"].clone();
+            stale["args"] = serde_json::json!(["/nonexistent/stale/server.py"]);
+            stale["enabled"] = serde_json::Value::Bool(false);
+            stale["disabled"] = serde_json::Value::Bool(true);
+            let mcp_path = seed_mcp_json(serde_json::json!({ "stamp-x": stale }));
+
+            let boot2 = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(boot2.len(), 1, "{boot2:?}");
+            assert!(
+                boot2[0].contains("rebuilt")
+                    && boot2[0].contains("kept")
+                    && !boot2[0].contains("cleared"),
+                "a converged stamp must be kept and disclosed, never cleared: {boot2:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["stamp-x"];
+            assert_eq!(
+                entry["env"]["AMAP_KEY"],
+                serde_json::Value::String(format!("${{{}}}", mcp_secret_env_var("AMAP_KEY"))),
+                "the rebuilt entry must be fully wired: {entry}"
+            );
+            assert_eq!(
+                entry["enabled"],
+                serde_json::Value::Bool(false),
+                "the preserved enabled flag is another writer's state: {entry}"
+            );
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the stamp pair stays converged: {entry}"
+            );
+
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A user's bare `disabled: true` — the engine's valid hand-edit stop
+    /// (`is_enabled` is `enabled && !disabled`, an omitted `enabled`
+    /// defaulting to true) — survives a dead-target repair of a
+    /// credential-free tool: the file carries no mark separating that hand
+    /// stop from the app's own earlier auto-disable, and a repair is not a
+    /// user request to re-enable. Main's repair preserves the same input.
+    #[test]
+    fn reconcile_repair_keeps_a_disabled_only_entry_disabled() {
+        with_temp_home(|| {
+            write_local_tool_fixture("keepd-x", false);
+            write_installed_ids(&["keepd-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "keepd-x": {
+                    "command": "python3",
+                    "args": ["/nonexistent/stale/server.py"],
+                    "disabled": true
+                }
+            }));
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(actions.len(), 1, "{actions:?}");
+            assert!(
+                actions[0].contains("rebuilt") && actions[0].contains("kept"),
+                "the note must disclose that the preserved disable stands: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["keepd-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a user's explicit disable must survive repair: {entry}"
+            );
+            assert!(
+                entry.get("enabled").is_none(),
+                "the repair must not invent an enabled stamp beside it: {entry}"
+            );
+
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    // ===== Round-6 review fix pins (comment 5607809034) =====
+
+    /// A typed-then-cleared OPTIONAL env secret config field (the dialog
+    /// submits the cleared field as an empty string) must take the same
+    /// omitted path as a never-typed key: its absence is legitimate, and
+    /// treating the blank as "a credential the user gave" fails the whole
+    /// install with "missing secret". The remote bearer arm has guarded
+    /// this exact hazard since round 5; the local arm now does too.
+    #[test]
+    fn install_treats_a_cleared_optional_env_secret_input_as_absent() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "opt-blank-f",
+                "OptBlankF",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
+                    {"key":"OPT_API_KEY","label":"key","required":false,"target":"env","secret":true}
+                    ]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("opt-blank-f").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut config = std::collections::HashMap::new();
+            config.insert("OPT_API_KEY".to_string(), "".to_string());
+
+            manager
+                .install("opt-blank-f", &config)
+                .unwrap_or_else(|error| {
+                    panic!("a CLEARED optional key must not fail the install: {error}")
+                });
+            let entry = &read_mcp_json()["servers"]["opt-blank-f"];
+            assert!(
+                entry.get("env").is_none() || entry["env"].get("OPT_API_KEY").is_none(),
+                "the cleared optional key must not invent wiring: {entry}"
+            );
+        });
+    }
+
+    /// The legacy remote channel is existential and its wiring choice must
+    /// be DETERMINATE: with every sensitive legacy key resolvable, the
+    /// sorted-first key is wired, not whichever `manifest.env`'s HashMap
+    /// happens to yield.
+    #[test]
+    fn install_wires_the_sorted_first_resolving_legacy_key() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-s",
+                "LegS",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-s-remote","url":"https://leg-s.example.com/mcp"}],
+                    "env":{"ZZZ_API_KEY":"tok-zzz","AAA_API_KEY":"tok-aaa"}"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "leg-s",
+                    store::BundleSource::Upload("leg-s.zip".to_string()),
+                )
+                .expect("a resolvable legacy key must serve the install");
+            let entry = &read_mcp_json()["servers"]["leg-s-remote"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                mcp_secret_env_var("AAA_API_KEY"),
+                "the sorted-first resolvable key must be wired: {entry}"
+            );
+        });
+    }
+
+    /// With mixed resolvability the install must skip the dead key and wire
+    /// the resolving one — the same existential judgment the gap scan
+    /// applies at startup. Under the order-dependent writer this install
+    /// failed whenever the unresolvable key was iterated first.
+    #[test]
+    fn install_skips_unresolvable_legacy_key_when_another_resolves() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-m",
+                "LegM",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-m-remote","url":"https://leg-m.example.com/mcp"}],
+                    "env":{"AAA_API_KEY":"","ZZZ_API_KEY":"tok-zzz"}"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "leg-m",
+                    store::BundleSource::Upload("leg-m.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("one resolvable legacy key must serve the install: {error}")
+                });
+            let entry = &read_mcp_json()["servers"]["leg-m-remote"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                mcp_secret_env_var("ZZZ_API_KEY"),
+                "the resolving key must be wired: {entry}"
+            );
+        });
+    }
+
+    /// The fail-loud contract survives the existential rewrite: when NO
+    /// legacy key resolves, a direct install still refuses, naming every
+    /// missing key (sorted, so the message is deterministic).
+    #[test]
+    fn install_still_refuses_when_no_legacy_key_resolves() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "leg-n",
+                "LegN",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"leg-n-remote","url":"https://leg-n.example.com/mcp"}],
+                    "env":{"AAA_API_KEY":"","ZZZ_API_KEY":""}"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let error = manager
+                .install_upload(
+                    "leg-n",
+                    store::BundleSource::Upload("leg-n.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("missing secret AAA_API_KEY, ZZZ_API_KEY"),
+                "the refusal must name every missing legacy key in sorted order: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// Two secret_headers declaring the SAME header for DIFFERENT source
+    /// keys can never be represented — one env-var slot serves one header —
+    /// and the writer's former silent overwrite landed a colliding entry
+    /// that the credential rule disabled at the very next startup, with a
+    /// reinstall fix that never converged. The install now refuses loud,
+    /// mirroring the Bearer arm's conflicting-name refusal.
+    #[test]
+    fn install_refuses_duplicate_custom_secret_headers() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "dup-h",
+                "DupH",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"dup-h-remote","url":"https://dup-h.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"X-Api-Key","scheme":"","source_key":"K1","provider":"p"},
+                    {"header":"X-Api-Key","scheme":"","source_key":"K2","provider":"p"}
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("dup-h", "header", "K1"), "t1")
+                .unwrap();
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("dup-h", "header", "K2"), "t2")
+                .unwrap();
+
+            let error = manager
+                .install_upload(
+                    "dup-h",
+                    store::BundleSource::Upload("dup-h.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("multiple secrets for header 'X-Api-Key'"),
+                "the refusal must name the contested header: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// A blank secret-header NAME is refused at install instead of landing
+    /// `env_headers[""]` — a slot no engine request can send and the
+    /// slot-bound oracle would count as wiring, i.e. an installed entry
+    /// that can never authenticate.
+    #[test]
+    fn install_refuses_blank_secret_header_name() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "blank-h",
+                "BlankH",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"blank-h-remote","url":"https://blank-h.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":" ","scheme":"","source_key":"K1","provider":"p"}
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            manager
+                .credential_store
+                .set(&mcp_secret_reference("blank-h", "header", "K1"), "t1")
+                .unwrap();
+
+            let error = manager
+                .install_upload(
+                    "blank-h",
+                    store::BundleSource::Upload("blank-h.zip".to_string()),
+                )
+                .unwrap_err();
+            assert!(
+                error.contains("header name is blank"),
+                "the refusal must state the blank header name: {error}"
+            );
+            assert!(
+                !crate::platform::paths::mcp_config_path().exists(),
+                "a refused first install must not leave an mcp.json at all"
+            );
+        });
+    }
+
+    /// An OPTIONAL secret_env channel whose key is absent installs without
+    /// the wiring — the same doctrine the config-field arms apply. Under
+    /// the required-blind resolver this install failed loud.
+    #[test]
+    fn install_skips_absent_optional_secret_env() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "ose-i",
+                "OseI",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"OPT_SE_KEY","provider":"p","required":false}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("ose-i").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "ose-i",
+                    store::BundleSource::Upload("ose-i.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("an absent OPTIONAL secret_env key must not fail the install: {error}")
+                });
+            let entry = &read_mcp_json()["servers"]["ose-i"];
+            assert!(
+                entry.get("env").is_none() || entry["env"].get("OPT_SE_KEY").is_none(),
+                "the skipped optional channel must not invent wiring: {entry}"
+            );
+        });
+    }
+
+    /// Same doctrine for an OPTIONAL secret_headers channel on the remote
+    /// side: absent key, install succeeds, no auth wiring invented.
+    #[test]
+    fn install_skips_absent_optional_secret_header() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "osh-i",
+                "OshI",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"osh-remote","url":"https://osh.example.com/mcp"}],
+                    "secret_headers":[
+                    {"header":"Authorization","scheme":"Bearer","source_key":"OPT_SH_KEY","provider":"p","required":false}
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            manager
+                .install_upload(
+                    "osh-i",
+                    store::BundleSource::Upload("osh-i.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "an absent OPTIONAL secret_headers key must not fail the install: {error}"
+                    )
+                });
+            let entry = &read_mcp_json()["servers"]["osh-remote"];
+            assert!(
+                entry.get("bearer_token_env_var").is_none() && entry.get("env_headers").is_none(),
+                "the skipped optional channel must not invent wiring: {entry}"
+            );
+        });
+    }
+
+    /// An OPTIONAL channel tolerates exactly one store error at install —
+    /// [`SecretResolveError::UndeterminableMiss`], the keyring-less-host
+    /// case where absence cannot be proven — matching the config-field
+    /// arms. A real fault still fails the build.
+    #[test]
+    fn install_tolerates_undeterminable_miss_for_optional_secret_env() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "ose-u",
+                "OseU",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"OPT_U_KEY","provider":"p","required":false}]"#,
+            );
+            std::fs::write(
+                mcp_catalog::package_mcp_dir("ose-u").join("server.py"),
+                "print('fixture')\n",
+            )
+            .unwrap();
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
+            });
+
+            manager
+                .install_upload(
+                    "ose-u",
+                    store::BundleSource::Upload("ose-u.zip".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "an undeterminable miss on an OPTIONAL channel must not block the \
+                            install on a keyring-less host: {error}"
+                    )
+                });
+        });
+    }
+
+    /// A servers-map key holding a non-object value is PRESENT, not missing:
+    /// the heal overwrites the malformed shape and the note must say so.
+    #[test]
+    fn reconcile_replaces_malformed_remote_entry_with_truthful_note() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "rp-x",
+                "rp-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"rp-remote","url":"https://rp.example.com/mcp"}]"#,
+            );
+            seed_mcp_json(serde_json::json!({ "rp-remote": "hand-garbage" }));
+            write_installed_ids(&["rp-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'rp-x': replaced malformed remote entry 'rp-remote'".to_string()],
+                "the note must not claim the entry was missing: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["rp-remote"];
+            assert_eq!(entry["url"], "https://rp.example.com/mcp", "{entry}");
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A parseable mcp.json that merely LACKS the servers map is healed
+    /// instead of failing every tool's reconcile on every boot; the heal
+    /// inserts an empty map (destroying nothing) and other top-level keys
+    /// survive. A `servers` key present but not an object stays refused.
+    #[test]
+    fn reconcile_heals_mcp_json_missing_servers_map() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "heal-x",
+                "heal-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"heal-remote","url":"https://heal.example.com/mcp"}]"#,
+            );
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            std::fs::write(&mcp_path, "{\n  \"other_config\": true\n}\n").unwrap();
+            write_installed_ids(&["heal-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions
+                    .iter()
+                    .any(|a| a.contains("restored missing remote entry 'heal-remote'")),
+                "the restore must proceed on the healed file: {actions:?}"
+            );
+            let healed = read_mcp_json();
+            assert_eq!(
+                healed["servers"]["heal-remote"]["url"], "https://heal.example.com/mcp",
+                "{healed}"
+            );
+            assert_eq!(
+                healed["other_config"], true,
+                "the heal must not destroy unrelated top-level keys: {healed}"
+            );
+
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 }

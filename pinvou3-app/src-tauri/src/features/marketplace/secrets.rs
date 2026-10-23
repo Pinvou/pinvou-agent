@@ -125,6 +125,17 @@ pub(super) fn set_remote_secret_header(
     key: &str,
 ) -> Result<(), String> {
     let env_var = mcp_secret_env_var(key);
+    // A blank header NAME is as unrepresentable as a blank value: the entry
+    // would carry `env_headers[""]`, a slot the engine cannot send and the
+    // slot-bound oracle would count as wiring — an installed entry that can
+    // never authenticate. Fail the install loud, mirroring the unsupported-
+    // scheme refusal below.
+    if header.trim().is_empty() {
+        return Err(
+            "a remote MCP secret header name is blank; use Bearer Authorization or name the custom header"
+                .to_string(),
+        );
+    }
     if header.eq_ignore_ascii_case("authorization") && scheme.eq_ignore_ascii_case("bearer") {
         if let Some(existing) = bearer_token_env_var.as_deref() {
             if existing != env_var {
@@ -137,7 +148,28 @@ pub(super) fn set_remote_secret_header(
         return Ok(());
     }
     if scheme.trim().is_empty() {
-        env_headers.insert(header.to_string(), serde_json::Value::String(env_var));
+        let existing = env_headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(header))
+            .map(|(_, value)| value.clone());
+        match existing {
+            // Idempotent re-declaration (same key resolved twice) is fine;
+            // a DIFFERENT credential behind the same header can never be
+            // represented — one env-var slot serves one header — and a
+            // silent overwrite would land an entry the credential rule
+            // disables at the very next startup (the dropped key unwired),
+            // with the reinstall fix never converging. Fail loud instead,
+            // mirroring the Bearer arm's conflicting-name refusal.
+            Some(existing) if existing.as_str() != Some(env_var.as_str()) => {
+                return Err(format!(
+                    "a remote MCP server does not support multiple secrets for header '{header}'"
+                ));
+            }
+            Some(_) => {}
+            None => {
+                env_headers.insert(header.to_string(), serde_json::Value::String(env_var));
+            }
+        }
         return Ok(());
     }
     Err(format!(
@@ -208,6 +240,14 @@ impl std::fmt::Display for SecretResolveError {
 /// `sync_secret_values` clear-and-rebuild — silent 401s from the first
 /// restart. The registry is keyed by env-var name only, so when both targets
 /// of the same key ever hold values, the later (Bearer) registration wins.
+///
+/// The `config_fields` leg uses the same disjunct as the entry builders and
+/// the credential rule's oracle — `field.secret || is_sensitive_key_name` —
+/// not `field.secret` alone: a required field that is only sensitive-named is
+/// a secret channel to every writer that matters. With the narrow form, a
+/// manifest whose only such channel slipped the recycle-restore supply gate
+/// (installing enabled-unwired) and its credential was never rehydrated after
+/// a restart (silent auth loss on a wired entry).
 pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut push = |target: &str, key: &str| {
@@ -235,7 +275,7 @@ pub(super) fn manifest_secret_targets(manifest: &ToolManifest) -> Vec<(String, S
         );
     }
     for f in &manifest.config_fields {
-        if f.secret {
+        if f.secret || is_sensitive_key_name(&f.key) {
             let target = if f.target == "bearer" {
                 bundle::keyring_target(bundle::CredentialTarget::Bearer)
             } else {
@@ -474,6 +514,32 @@ mod tests {
         assert_eq!(targets.len(), 2, "AMAP/QCC each deduplicated once");
         assert!(targets.contains(&("env".to_string(), "AMAP_KEY".to_string())));
         assert!(targets.contains(&("header".to_string(), "QCC_API_KEY".to_string())));
+    }
+
+    #[test]
+    fn manifest_secret_targets_includes_sensitive_named_config_fields() {
+        // The config_fields leg uses the builders' disjunct — `secret` OR a
+        // sensitive key NAME — so a required field declared plain but named
+        // like a secret is enumerated (the recycle-restore gate and the
+        // restart rehydration both consume this list), while a genuinely
+        // non-sensitive field stays out.
+        let manifest: ToolManifest = serde_json::from_str(
+            r#"{
+            "id":"t","name":"T","description":"","version":"1","icon":"","category":"",
+            "mcp_tools":[],"command":"","args":[],
+            "config_fields":[
+                {"key":"MY_API_KEY","label":"","required":true,"target":"env","secret":false},
+                {"key":"REGION","label":"","required":true,"target":"env","secret":false}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let targets = manifest_secret_targets(&manifest);
+        assert!(targets.contains(&("env".to_string(), "MY_API_KEY".to_string())));
+        assert!(
+            !targets.iter().any(|(_, key)| key == "REGION"),
+            "non-sensitive config fields are not secrets"
+        );
     }
 
     #[test]
