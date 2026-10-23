@@ -1894,6 +1894,148 @@ fn connect_over_standing_consent_commits_the_relied_grant() {
     );
 }
 
+/// Round-8 review P2, CLI parity of the lost-reliance schedule: the gates
+/// capture a standing ownership token, but by commit time the grant entry is
+/// GONE (the owner operation's compensating revoke won the race, a teardown
+/// swept it, or a user verdict consumed it — the seeded shape is the
+/// grant-consumed one: the verdict-protecting ledger pairs stand, the grant
+/// and its token do not). The connect must FAIL with the lost-reliance cause
+/// instead of reporting a connection whose consent computes OFF, and the
+/// declined commit must not write. (Ignoring `GrantLost` — the old
+/// best-effort behavior — turns the failure legs red.)
+#[test]
+#[cfg(unix)]
+fn connect_fails_when_the_relied_grant_is_gone_at_commit() {
+    let _env = common::env_lock();
+    let home = HomeGuard::new("connect-relied-grant-lost");
+    let bin = fake_bin_dir("connect-relied-grant-lost");
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_CONNECT_FAKE);
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // The grant-consumed shape: the ledger pairs stand (a verdict write's
+    // reconnect-proof, or the remains of a swept grant era), the ownership
+    // token is still captured by the gate, but the grant entry itself is
+    // gone — nothing stands behind this connect's completion.
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{},"hidden_scopes":{},"default_off_scopes":{},"initialized":[],"install_default_synced":["plain:dingtalk","code:dingtalk"],"connect_granted":[],"connect_grant_tokens":{"dingtalk":"op-a-token"}}"#,
+    )
+    .unwrap();
+
+    let error = common::expect_failed(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert!(
+        error.to_string().contains("no longer standing"),
+        "the failure must name the lost reliance: {error}"
+    );
+
+    // The lost report writes nothing: the consumed shape stands untouched,
+    // so the next verdict/boot refresh sees exactly the pre-connect state.
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
+            .expect("disabled_bundles.json stays valid JSON");
+    assert_eq!(
+        persisted["connect_grant_tokens"]["dingtalk"],
+        serde_json::json!("op-a-token"),
+        "the declined commit must leave the standing token alone: {persisted}"
+    );
+    assert!(
+        persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.is_empty()),
+        "no grant may appear behind the failed connect: {persisted}"
+    );
+    assert_eq!(
+        persisted["install_default_synced"],
+        serde_json::json!(["plain:dingtalk", "code:dingtalk"]),
+        "the verdict-protecting ledger pairs must survive: {persisted}"
+    );
+}
+
+/// Round-8 review P2, CLI parity of the commit persist fault: the relied-upon
+/// token is standing, the gate captures it, but the commit's save cannot land
+/// (the home directory is read-only — the lock file is pre-created so the
+/// failure lands on the data-file write, the same fixture the app-side pins
+/// use). The connect must fail instead of reporting a connection whose
+/// ownership claim never cleared, and the store stays byte-identical (the
+/// owner operation's compensating revoke still matches).
+#[test]
+#[cfg(unix)]
+fn connect_fails_when_the_relied_grant_commit_cannot_persist() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = common::env_lock();
+    let home = HomeGuard::new("connect-relied-commit-fault");
+    let bin = fake_bin_dir("connect-relied-commit-fault");
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_CONNECT_FAKE);
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{},"hidden_scopes":{},"default_off_scopes":{},"initialized":[],"install_default_synced":["plain:dingtalk","code:dingtalk"],"connect_granted":["dingtalk"],"connect_grant_tokens":{"dingtalk":"op-a-token"}}"#,
+    )
+    .unwrap();
+    // Pre-create the lock file so the failure lands on the data-file write,
+    // not on the lock open (an existing file opens fine in a read-only dir).
+    std::fs::write(home.0.path().join("disabled_bundles.json.lock"), b"").unwrap();
+
+    // Read-only DIRECTORY (0o555). Root is not constrained by 0555: probe and
+    // skip loudly rather than exercise nothing (same doctrine as the app
+    // suite's `dir_read_only_or_skip`).
+    std::fs::set_permissions(home.0.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = home.0.path().join(".root-probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(home.0.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("ROOT-SKIP[connect_relied_commit_fault]: running as root - read-only home not exercisable");
+        return;
+    }
+
+    let error = common::expect_failed(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert!(
+        error.to_string().contains("committing the relied-upon connect grant failed"),
+        "the failure must name the unpersistable commit: {error}"
+    );
+
+    // Restore before the guard drops: a read-only home cannot be cleaned up.
+    std::fs::set_permissions(home.0.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
+            .expect("disabled_bundles.json stays valid JSON");
+    assert_eq!(
+        persisted["connect_grant_tokens"]["dingtalk"],
+        serde_json::json!("op-a-token"),
+        "the failed save must leave the ownership claim standing: {persisted}"
+    );
+    assert!(
+        persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "the relied-upon grant must survive the failed commit: {persisted}"
+    );
+}
+
 /// Shared dws fake-CLI body for the connect-consent pins: `--version`
 /// answers, `auth login` prints the login URL plus the user-code line,
 /// `auth status` reports authenticated — `connect` completes through the
