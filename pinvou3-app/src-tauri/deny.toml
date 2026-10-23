@@ -42,18 +42,25 @@ ignore = [
     # 0.30). For the record: 0.26.11 was a semver compatibility shim
     # carrying no root data of its own — it re-exported `TLS_SERVER_ROOTS`
     # from webpki-roots 1.0.10, the patched line every parent lock
-    # resolves; the current DB lists 0.26.11 itself as patched (it is the
-    # last 0.26.x release).
+    # resolves; the current DB lists 0.26.11 under `unaffected` (its
+    # `patched` range is `>= 1.0.10`; 0.26.11 is the last 0.26.x release).
     # If a future advisory-DB revision re-covers the shim, the advisories
     # check fails CI again — re-add an ignore with that justification then,
     # or (the real cleanup) migrate those consumers to webpki-roots 1.x.
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深
-# (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
-# glib VariantStrIter(unsound)、number_prefix、proc-macro-error、unic-* 等良性/上游锁定
-# 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
+# (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 bincode、
+# basic-toml、number_prefix、paste、proc-macro-error、yaml-rust 以及 zbus 5 系的
+# zbus_names/zvariant/zvariant_derive 等良性/上游锁定的条目并 fail CI(2026-10 探针)。
+# 这些非本仓可修(等 tauri/gtk-rs/atspi 升级),"workspace" 仅报 workspace crate,
 # 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
 unmaintained = "workspace"
+# unsound 是独立的 informational 类别,cargo-deny 0.20 默认同为 "workspace";
+# 写明以示有意为之:它(而非上面的 unmaintained 行)屏蔽的是传递依赖里的
+# glib 0.18.5 RUSTSEC-2024-0429(VariantStrIter unsound,Dependabot #13/#35),
+# 由 wry 0.57 → gtk ^0.18 钉住,修复版 glib 0.20 要等 GTK3 hold 解除;
+# unsound="all" 探针恰好只命中它。GTK hold 移动时在此重评。
+unsound = "workspace"
 # Restored to "deny": the supported non-yanked dependency update this block
 # waited for has landed — calamine 0.37 with a single zip 9.0.5 in the graph —
 # so yanked releases are denied again. Reassess immediately if an advisory

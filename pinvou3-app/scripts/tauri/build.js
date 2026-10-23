@@ -309,7 +309,7 @@ function windowsBundleTargets(args) {
  * least one was present.
  *
  * `none` is a value owned by this wrapper, not by the Tauri CLI: the pinned
- * @tauri-apps/cli 2.11.4 rejects it at arg-parse time ("error: invalid value
+ * @tauri-apps/cli 2.12.4 rejects it at arg-parse time ("error: invalid value
  * 'none'" — its `--bundles` possible values on Linux are deb/rpm/appimage),
  * and tauri-bundler could not bundle it anyway (`binary_arch()` has no
  * LoongArch variant and panics on the loongarch64 triple). It means "run the
@@ -381,8 +381,8 @@ function bundlesNoneConflictError() {
 }
 
 /**
- * Bundle-type words the pinned @tauri-apps/cli 2.11.4 accepts for `--bundles`:
- * the `PackageType::short_name()` values of tauri-bundler 2.9.4, exposed as
+ * Bundle-type words the pinned @tauri-apps/cli 2.12.4 accepts for `--bundles`:
+ * the `PackageType::short_name()` values of tauri-bundler 2.10.4, exposed as
  * the CLI's BundleFormat value enum (verified against the CLI source; the
  * --help listing filters them by host platform and hides `updater`, but the
  * value parser accepts the full set on every host). The wrapper needs the
@@ -835,7 +835,7 @@ function prepareTauriArgs(
   // --no-bundle there) and for a contradictory second spelling, and `dev`
   // falls through on purpose (it never bundles, so stripping IS the
   // requested semantics). Translate the absorbed `--bundles none` request
-  // into the flag the pinned @tauri-apps/cli 2.11.4 actually accepts
+  // into the flag the pinned @tauri-apps/cli 2.12.4 actually accepts
   // (verified against `tauri build --help`: `--no-bundle`, "Skip the
   // bundling step even if `bundle > active` is `true`"). The compiled
   // binary stays at the cargo target dir (`target/<triple>/release/`) for

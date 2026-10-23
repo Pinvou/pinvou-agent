@@ -109,6 +109,10 @@ export default defineConfig([
       // cycle graph instead of one edge at a time.
 
       // ---- jsdoc: check what exists, don't demand new prose ----
+      // eslint-plugin-jsdoc is pinned exactly (65.3.2) in package.json: 65.4.x
+      // drags in four lagging duplicate families (@es-joy/jsdoccomment,
+      // comment-parser, jsdoc-type-pratt-parser, source-map) for a lint-only
+      // minor. Bump it deliberately and recount lock duplicates when you do.
       ...jsdoc.configs['recommended-typescript-flavor'].rules,
       'jsdoc/require-jsdoc': 'off', // retrofitting ~1.9k doc blocks is churn, not signal
       'jsdoc/require-param': 'off',

@@ -91,7 +91,7 @@ uuid = { version = "1.11", features = ["v4", "v5"] }
 # 外部 Agent ACP 客户端：只负责协议连接与 typed schema。Agent 本体由
 # Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
 # unstable_elicitation 在 2.1.0 已转正（feature 被移除），2.2 直接带稳定
-# elicitation；不再加 feature 开关。3.x（当前 3.4.0）改了 feature 命名与
+# elicitation；不再加 feature 开关。3.x（2026-10 已到 3.5.0）改了 feature 命名与
 # 协议 schema，留给独立 PR 评估，本仓暂不升级。
 # 钉死 =2.2.0：协议 schema crate，wire 兼容由锁文件可复现；浮动的 "2.2"
 # 会允许 cargo update 静默漂到未评审的 2.x minor（本块旧注释对 2.0.0 的
@@ -206,7 +206,9 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand = "0.10"
-# Keep 0.22: age and codewhale-tui still require 0.22 (hyper-util has since moved to 0.23); a solo 0.23 bump would only add a second copy. Revisit once upstreams align.
+# Keep 0.22: age, codewhale-tui, wry 0.57, reqwest 0.12, ureq 2.12, oauth2 5,
+# hf-hub, ort-sys and rmcp 2 all still require 0.22 (only hyper-util has moved
+# to 0.23); a solo 0.23 bump would only add a second copy. Revisit once upstreams align.
 base64 = "0.22"
 tempfile = "3"
 age = { version = "0.12", default-features = false }
@@ -360,6 +362,11 @@ javascriptcore = { package = "javascriptcore-rs", version = "1.1" }
 atspi = "0.30"
 # Computer Use Wayland input injection (features/computer_use): xdg-desktop-portal
 # RemoteDesktop (D-Bus). The feature set matches atspi, sharing the same zbus compilation.
+# Held on 5.x even though zbus 6.0.0 (2026-10, MSRV 1.89) exists: atspi 0.30 pins
+# zbus ^5.5 and secret-service keeps the 4.4 copy in the lock, so a direct 6 would
+# be a third zbus major; the 5.x companion crates (zbus_names/zvariant) now carry
+# unmaintained advisories, suppressed by unmaintained="workspace" in deny.toml.
+# Move together with atspi.
 zbus = { version = "5.5", default-features = false, features = ["async-io"] }
 # Tauri's unstable Wry plugin API lets the browser feature pre-register its
 # dedicated WebKit context with automation enabled. Keep this exact version
