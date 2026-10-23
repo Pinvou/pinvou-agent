@@ -613,7 +613,24 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         return thread
 
     def test_queued_create_retry_discloses_the_inflight_duplicate_window(self):
+        from unittest.mock import patch
         old_wait = server.RESULT_WAIT_SECONDS
+        original_replace = server.os.replace
+
+        def publish_after_replace(source, target):
+            original_replace(source, target)
+            path = Path(target)
+            record = json.loads(path.read_text(encoding="utf-8"))
+            marker = path.parent / ".done" / path.name
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps({
+                "ok": True, "task_id": "retry-task", "task_name": record["name"],
+                "request_digest": server.spool_request_digest(
+                    "create", name=record["name"], prompt=record["prompt"],
+                    rrule=record["rrule"], model_id=record.get("model_id"),
+                    paused=bool(record.get("paused"))),
+            }), encoding="utf-8")
+
         try:
             server.RESULT_WAIT_SECONDS = 0
             first, error = server.create_scheduled_task(
@@ -621,12 +638,11 @@ class CreateSpoolAndResultTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(first["delivery"], "pending")
             server.RESULT_WAIT_SECONDS = 1
-            worker = self._finish_in_background()
-            try:
+            # Publish only AFTER the retry has observed a pending entry and
+            # replaced it. No thread can publish before entry classification.
+            with patch.object(server.os, "replace", side_effect=publish_after_replace):
                 result, error = server.create_scheduled_task(
                     **self._create_kwargs(from_session="reqsrc01", idempotency_key="inflight"))
-            finally:
-                worker.join(timeout=3)
             self.assertIsNone(error)
             self.assertTrue(result["duplicate"])
             self.assertIn("earlier request may also have been applied", result["note"])
