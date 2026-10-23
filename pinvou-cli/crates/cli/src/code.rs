@@ -5903,23 +5903,17 @@ fn checkpoints_rewind(
     //    only copy of the pre-rewind state (undo would silently no-op).
     let revision = pinvou3_lib::features::sessions::transcript_revision(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error:#}")))?;
-    let reuse =
-        checkpoints::matching_pending_pre_restore(&ledger, &checkpoint.id, keep_turns, &revision)
-            .map_err(|error| {
-                crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
-            })?
-            .filter(|pre_restore_id| {
-                // Stale-pending guard (mirror of the GUI): a PreRestore already bound
-                // by a completed rewind's backup record means the rewind finished and
-                // only the clear failed — do not reuse.
-                !store
-                    .latest_rewound_turns_record(session)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|record| {
-                        record.pre_restore_checkpoint_id.as_deref() == Some(pre_restore_id.as_str())
-                    })
-            });
+    // r25 MAJOR-3：`matching_pending_pre_restore` 的 revision 匹配本身就是
+    // 提交判定器——completed rewind 的 truncate 已改写 transcript，revision
+    // 必然前进、matcher 返回 None。能走到 Some（revision 仍匹配）的唯一绑定
+    // 记录形态是 **persist 分裂窗**（sidecar 记录已写、截断持久化失败）：此刻
+    // 重用 P1 恰恰是正确动作（幂等重放），不得按「已完成、仅清理失败」否决
+    // ——否则 fresh P2 快照已恢复树、P1（真前态唯一副本）被孤儿化，undo
+    // 静默变成 no-op。
+    let reuse = checkpoints::matching_pending_pre_restore(&ledger, &checkpoint.id, keep_turns, &revision)
+        .map_err(|error| {
+            crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+        })?;
     let (target_meta, undo) =
         checkpoints::prepare_restore(&ledger, &execution, &checkpoint.id, reuse.as_deref())
             .map_err(|error| {
