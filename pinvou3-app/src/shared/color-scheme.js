@@ -27,6 +27,24 @@ export function normalizeColorScheme(value) {
   return value === 'light' || value === 'dark' ? value : 'system';
 }
 
+/**
+ * Read the persisted scheme from web localStorage with exactly the rule the
+ * pre-paint boot recipes implement (the index.html inline script, and the
+ * classic shared/theme-boot.js, which cannot import this module): stored
+ * light/dark wins, anything else — missing, 'system', unknown, storage
+ * unavailable — follows the OS. React roots seed their state from this so a
+ * correct pre-paint class survives until real settings arrive; seeding from
+ * plain 'system' would strip the class again whenever the stored pick differs
+ * from the OS.
+ * @returns {'system' | 'light' | 'dark'} The persisted color-scheme preference.
+ */
+export function readStoredColorScheme() {
+  try {
+    return normalizeColorScheme(window.localStorage.getItem(COLOR_SCHEME_STORAGE_KEY));
+  } catch { /* storage may be unavailable */ }
+  return 'system';
+}
+
 /** Whether the system is currently dark. Returns false when matchMedia is unavailable — undeterminable means light, a product rule rather than a degradation. */
 export function systemPrefersDark() {
   return typeof window !== 'undefined'

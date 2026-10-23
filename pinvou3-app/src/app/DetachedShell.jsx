@@ -22,7 +22,7 @@ const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</
 import { useBridgeState } from '../hooks/useBridge.js';
 import { setStreamFadePreference } from '../features/conversation/stream-fade.js';
 import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
-import { normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
+import { normalizeColorScheme, readStoredColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
 import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG, zhDict } from '../shared/i18n.js';
@@ -42,9 +42,14 @@ function useDetachedBase() {
   // Same color-scheme semantics as the main window: `system` follows the OS
   // live (light when undeterminable). Detached windows have no settings entry,
   // so the preference is read once from the main settings at bootstrap and
-  // keeps following system flips afterwards (while on `system`).
+  // keeps following system flips afterwards (while on `system`). Seed from
+  // the persisted scheme (readStoredColorScheme, same as main.jsx/ReaderApp):
+  // the detached window loads index.html, whose pre-paint script already
+  // applied the stored scheme's class, and reconciling from plain 'system'
+  // would strip it again until the bootstrap settings arrive whenever the
+  // stored pick differs from the OS.
   const systemDark = useSystemDarkMode();
-  const [colorScheme, setColorScheme] = useState('system');
+  const [colorScheme, setColorScheme] = useState(readStoredColorScheme);
   const activeTheme = resolveTheme(colorScheme, systemDark);
   const [, setPersonaI18nTick] = useState(0);
   const initRef = useRef(false);

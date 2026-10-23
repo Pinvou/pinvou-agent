@@ -77,8 +77,16 @@ test('reader window paints its own dark canvas before first paint and keeps it o
   const readerApp = stripComments(source('features/reader/ReaderApp.jsx'));
   assert.match(readerApp, new RegExp(`bg-white dark:bg-\\[${darkBg}\\]`),
     'the pre-paint canvas colour must equal the reader root dark background (no shade pop at mount)');
-  assert.match(readerApp, /useState\(\(\) => \{[\s\S]*?localStorage\.getItem\(COLOR_SCHEME_STORAGE_KEY\)[\s\S]*?return 'system';\s*\}\)/,
-    'ReaderApp must seed its colour scheme from the stored value or it strips the pre-paint class on mount');
+  // Every React root that reconciles the pre-paint class must seed from the
+  // stored scheme (shared readStoredColorScheme); the detached shell loads
+  // index.html, so its root strips the class exactly like the reader's did.
+  for (const seed of ['app/main.jsx', 'features/reader/ReaderApp.jsx', 'app/DetachedShell.jsx']) {
+    assert.match(stripComments(source(seed)), /useState\(readStoredColorScheme\)/,
+      `${seed} must seed its colour scheme from the stored value or it strips the pre-paint class on mount`);
+  }
+  const colorSchemeModule = stripComments(source('shared/color-scheme.js'));
+  assert.match(colorSchemeModule, /normalizeColorScheme\(window\.localStorage\.getItem\(COLOR_SCHEME_STORAGE_KEY\)\)/,
+    'readStoredColorScheme must apply the same normalize rule the pre-paint scripts implement');
 
   const themeBoot = stripComments(source('shared/theme-boot.js'));
   assert.match(themeBoot, new RegExp(`getItem\\('${COLOR_SCHEME_STORAGE_KEY.replaceAll('.', '\\.')}'\\)`),

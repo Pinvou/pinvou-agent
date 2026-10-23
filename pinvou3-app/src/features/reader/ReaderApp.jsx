@@ -6,7 +6,7 @@ import { pathBasename } from '../../shared/path-utils.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
 import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
-import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
+import { normalizeColorScheme, readStoredColorScheme, resolveTheme } from '../../shared/color-scheme.js';
 import { dict, zhDict } from '../../shared/i18n.js';
 import {
   CodeViewerContent,
@@ -48,17 +48,12 @@ export function ReaderApp() {
   // Appearance follows the app preference; while it is `system` the reader must
   // track OS theme flips live, same as the main and detached windows.
   const systemDark = useSystemDarkMode();
-  const [colorScheme, setColorScheme] = useState(() => {
-    // Seed from the persisted scheme so the class the theme-boot pre-paint
-    // script applied survives until real settings arrive (same as main.jsx):
-    // reconciling from plain 'system' first would strip a correct pre-paint
-    // class whenever the stored pick differs from the OS at boot.
-    try {
-      const stored = window.localStorage.getItem(COLOR_SCHEME_STORAGE_KEY);
-      if (stored === 'light' || stored === 'dark') return stored;
-    } catch { /* storage may be unavailable */ }
-    return 'system';
-  });
+  // Seed from the persisted scheme (readStoredColorScheme mirrors the
+  // pre-paint recipe) so the class the theme-boot pre-paint script applied
+  // survives until real settings arrive (same as main.jsx): reconciling from
+  // plain 'system' first would strip a correct pre-paint class whenever the
+  // stored pick differs from the OS at boot.
+  const [colorScheme, setColorScheme] = useState(readStoredColorScheme);
   const onMainWindowSettings = useCallback(
     (settings) => setColorScheme(normalizeColorScheme(settings?.color_scheme)),
     [],
