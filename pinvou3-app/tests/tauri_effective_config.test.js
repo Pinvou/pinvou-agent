@@ -47,7 +47,7 @@ const {
 assert.equal(ADAPTER_VERSION, "pinvou-target-id-v2");
 assert.equal(
   ADAPTED_RESPONSE_SHA256,
-  "e348995ef1aaa11c89bf1f07baa54bcfd10a2cc48831d9c14718258d648589e9",
+  "34ca75e0e02f94d55385cd29567cd2ad51570606bb64e63fd6877b45a303c6d6",
 );
 const thirdPartyNotices = fs.readFileSync(
   path.join(__dirname, "..", "..", "THIRD_PARTY_NOTICES.md"),

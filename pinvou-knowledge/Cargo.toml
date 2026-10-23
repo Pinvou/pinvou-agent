@@ -5,9 +5,10 @@ description = "Pinvou 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
 # edition 2024: aligned with the CodeWhale foundation and pinvou3-app;
-# requires rustc >= 1.85 — MSRV 1.89 unchanged.
+# requires rustc >= 1.85 — MSRV 1.90 aligned with the sibling workspaces
+# (the tauri 2.12 line sets their floor).
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.90"
 default-run = "pinvou-knowledge-server"
 
 [lib]
@@ -46,7 +47,7 @@ anyhow = "1.0"
 # graph also carries a 0.23 copy via pem 4 (rcgen 0.14.10) and reqwest 0.13.
 # Revisit the split once the upstreams realign on one line.
 base64 = "0.22"
-calamine = "0.36"
+calamine = "0.37"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 encoding_rs = "0.8"
 parking_lot = "0.12"
@@ -84,10 +85,11 @@ wait-timeout = { version = "0.2", optional = true }
 # explicit "unsupported on this platform" Embedder stub instead. Windows keeps
 # its dynamic-load wiring unchanged.
 # fastembed applies to BOTH target tables below (same version hold; only the
-# feature set differs per platform). fastembed 5+ pulls ort rc.10-rc.13 prebuilt
-# ONNX Runtime: rc.10 macOS minos 13.3, rc.11+ drops the x86_64-apple-darwin
-# prebuilt, rc.13 needs glibc 2.38 — all violate the macOS 11 / Ubuntu 22.04
-# (glibc 2.35) floors. Held at 4 until ort prebuilts comply.
+# feature set differs per platform). fastembed 5+ (7.3.0 as of 2026-10) pins
+# ort 2.0.0-rc.10..rc.15 prebuilt ONNX Runtime: rc.10 macOS minos 13.3, rc.11+
+# drops the x86_64-apple-darwin prebuilt, rc.13 needs glibc 2.38, and rc.14/15
+# additionally declare rust-version 1.92 > MSRV 1.90 — all violate the macOS 11
+# / Ubuntu 22.04 (glibc 2.35) / MSRV floors. Held at 4 until ort prebuilts comply.
 [target.'cfg(windows)'.dependencies]
 fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
 

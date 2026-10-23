@@ -1097,7 +1097,7 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
         "wecom-cli 1.2.0",
         "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"show\" ]; then echo \"authorized\"; exit 0; fi\n",
     );
-    // tmeet 1.0.10 sits below the 1.0.18 baseline; its `auth status` falls
+    // tmeet 1.0.10 sits below the 1.0.19 baseline; its `auth status` falls
     // through to the script's trailing exit 1 with no "Logged in" line, so
     // the probe reports not-logged-in.
     write_fake_cli(&bin, "tmeet", "tmeet version 1.0.10", "");
@@ -1395,7 +1395,7 @@ fn a_vendor_cli_that_outproduces_the_drain_cap_still_completes() {
     write_fake_cli(
         &bin,
         "tmeet",
-        "tmeet version 1.0.18",
+        "tmeet version 1.0.19",
         "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo \"Logged in as someone@example.com\"; yes x | head -c 9961472; exit 0; fi\n",
     );
     let _path = VendorCliGuard::new_at(bin.clone());
@@ -1451,7 +1451,7 @@ fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then /bin/chmod 000 {}; echo \"tmeet version 1.0.18\"; exit 0; fi\nexit 1\n",
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then /bin/chmod 000 {}; echo \"tmeet version 1.0.19\"; exit 0; fi\nexit 1\n",
             script.display()
         ),
     )
@@ -1465,7 +1465,7 @@ fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
         "the version gate answered, so the connector is installed: {entry}"
     );
     assert_eq!(
-        entry["version"], "tmeet version 1.0.18",
+        entry["version"], "tmeet version 1.0.19",
         "the known version must survive the degrade: {entry}"
     );
     assert_eq!(
@@ -1489,7 +1489,7 @@ fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
     assert!(
         outcome
             .stdout
-            .contains("installed=yes(tmeet version 1.0.18)"),
+            .contains("installed=yes(tmeet version 1.0.19)"),
         "the human row must keep the installed verdict: {}",
         outcome.stdout
     );
@@ -1521,7 +1521,7 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
     write_fake_cli_logged(
         &bin,
         "tmeet",
-        "tmeet version 1.0.18",
+        "tmeet version 1.0.19",
         "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then exit 0; fi\n",
         Some(&args_file),
     );
@@ -1654,7 +1654,7 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     write_fake_cli(
         &prefix.join("bin"),
         "tmeet",
-        "1.0.18",
+        "1.0.19",
         "if [ \"$1\" = \"auth\" ]; then echo \"Logged in as someone@example.com\"; exit 0; fi\n",
     );
     // Panic-safe restore: without the guard a failing assert would leak the

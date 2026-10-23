@@ -272,7 +272,7 @@ assert_loongarch_elf "$ASR_ENGINE"
 
 # ---- 5. tauri app cross build (no bundling: see the header) --------------------
 # build.js owns the flag translation: `--bundles none` is absorbed before the
-# tauri CLI sees it (the pinned @tauri-apps/cli 2.11.4 rejects `--bundles none`
+# tauri CLI sees it (the pinned @tauri-apps/cli 2.12.4 rejects `--bundles none`
 # at arg-parse time — verified: "error: invalid value 'none'") and becomes the
 # CLI's official `--no-bundle`, "Skip the bundling step".
 log "step 5: tauri app cross build (no bundling; the deb is hand-assembled below)"

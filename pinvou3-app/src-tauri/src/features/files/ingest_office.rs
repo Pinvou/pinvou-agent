@@ -189,7 +189,13 @@ fn spreadsheet_text_from_bytes(
     for name in names {
         let range = match wb.worksheet_range(&name) {
             Ok(r) => r,
-            Err(_) => continue,
+            // calamine 0.37 turns some malformed cells (e.g. boolean text
+            // other than 0/1/true/false) into a whole-range read error;
+            // keep the remaining sheets, but never drop one silently.
+            Err(error) => {
+                log::warn!("spreadsheet sheet {name} skipped: {error}");
+                continue;
+            }
         };
         if range.is_empty() {
             continue;

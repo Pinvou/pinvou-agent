@@ -19,10 +19,10 @@ const { finished, pipeline } = require("node:stream/promises");
 const { setTimeout: delay } = require("node:timers/promises");
 const { APP_ROOT } = require("./platform-config.js");
 
-const VERSION = "1.11.0";
-// npm registry integrity for chrome-devtools-mcp@1.11.0 (SHA-512 base64 without `sha512-`).
+const VERSION = "1.12.0";
+// npm registry integrity for chrome-devtools-mcp@1.12.0 (SHA-512 base64 without `sha512-`).
 const INTEGRITY_SHA512 =
-  "CytJ/5tnzrS+J/74be2P5aCOsS/mmGRHys/Si+IYC4ucrbnWAmES/dYdxGJjeUCECRcoFUilZAysdjlwqUjXIA==";
+  "lAGpH0zXT1ZdaPefP1KK/MvxwihOlu7VGQ7p4wbhD9OhN17vUC4KWk/ImUYR9DE4s+7r4r0ySV4xr2OkTa7ZMA==";
 const TARBALL_URL = `https://registry.npmjs.org/chrome-devtools-mcp/-/chrome-devtools-mcp-${VERSION}.tgz`;
 const DOWNLOAD_ATTEMPTS = 4;
 const DOWNLOAD_RETRY_DELAY_MS = 2_000;
@@ -30,11 +30,11 @@ const DOWNLOAD_TIMEOUT_MS = 60_000;
 const MAX_DOWNLOAD_REDIRECTS = 5;
 const MARKER_NAME = ".vendor-version.json";
 const ADAPTER_VERSION = "pinvou-target-id-v2";
-// SHA-256 of chrome-devtools-mcp@1.11.0 build/src/McpResponse.js after the
+// SHA-256 of chrome-devtools-mcp@1.12.0 build/src/McpResponse.js after the
 // guarded target_id adapter below has been applied. The tarball integrity
 // anchors the upstream input; this digest anchors the exact rewritten output.
 const ADAPTED_RESPONSE_SHA256 =
-  "e348995ef1aaa11c89bf1f07baa54bcfd10a2cc48831d9c14718258d648589e9";
+  "34ca75e0e02f94d55385cd29567cd2ad51570606bb64e63fd6877b45a303c6d6";
 
 const PLATFORM_DIR = { darwin: "macos", linux: "linux", win32: "windows" };
 
@@ -112,7 +112,7 @@ function assertTargetIdAdapterIntegrity(
  * host tracks conversation and tab ownership by Chromium targetId. Without this join key,
  * a restarted MCP process could only guess pages by URL and might act across conversations.
  *
- * The adapter strictly matches one source fragment from version 1.11.0. A version upgrade or
+ * The adapter strictly matches one source fragment from version 1.12.0. A version upgrade or
  * upstream structural change fails the vendor build and requires review. It performs no
  * fuzzy replacement and does not change tool behavior.
  */

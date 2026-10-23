@@ -99,7 +99,7 @@ const USAGE: &str =
 
 // Round-51 review: the per-connector semantic-version floors are imported
 // from the app crate's own gates (wecom.rs 1.3.4 skill baseline, tmeet.rs
-// 1.0.18 npm spec, feishu.rs 1.0.98 lock baseline) instead of re-declared —
+// 1.0.19 npm spec, feishu.rs 1.0.98 lock baseline) instead of re-declared —
 // a GUI-side raise moves the CLI's `upgrade_required` gates with it (the
 // same single-sourcing shape as the skill-dir and lock-JSON tables). The
 // feishu and wecom floors are the live ones: the same sync raised them with

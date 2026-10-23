@@ -1902,7 +1902,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # (4) md5sums cover every data file; (5) Installed-Size mirrors the
         # bundler's total_dir_size — every data-root entry with DEBIAN
         # pruned, directory inodes included (verified against the pinned
-        # tauri-cli-v2.11.4 sources), //1024; (6) the data tree is
+        # tauri-cli-v2.12.4 sources), //1024; (6) the data tree is
         # normalized to the bundler's deterministic 0755/0644 (+exec set)
         # under umask 022 before packing; (7) resource-tree symlinks are
         # materialized first (the bundler's copy path dereferences).
@@ -1942,7 +1942,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn(r"sed 's#^\([0-9a-f]\{32\}  \)\./#\1#'", packager)
         # Installed-Size mirrors the bundler's total_dir_size byte for byte:
         # it sums EVERY WalkDir entry of the data root — directory inodes
-        # included (verified against the pinned tauri-cli-v2.11.4 sources,
+        # included (verified against the pinned tauri-cli-v2.12.4 sources,
         # debian.rs total_dir_size: WalkDir with no file filter) — with
         # DEBIAN pruned, //1024 per Debian policy. The prune shape must stay
         # distinct from the md5sums find above: md5sums is files-only by

@@ -67,7 +67,7 @@ export function parseAuxQuotedMessage(text) {
   const raw = String(text || '');
   if (!raw) return { visibleText: '', quotes: [] };
   const quotes = [];
-  const visible = raw.replace(QUOTE_BLOCK_PATTERN, (match, body) => {
+  const visible = raw.replaceAll(QUOTE_BLOCK_PATTERN, (match, body) => {
     try {
       const parsed = JSON.parse(body);
       if (!Array.isArray(parsed)) return match;

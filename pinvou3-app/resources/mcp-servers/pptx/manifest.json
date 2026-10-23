@@ -42,17 +42,17 @@
           },
           {
             "name": "Pillow",
-            "version": "12.3.0",
-            "filename": "pillow-12.3.0-cp313-cp313-win_amd64.whl",
-            "url": "https://files.pythonhosted.org/packages/a6/9b/7a58e61d62be561da3a356fe2384d4059a6345fc130e23ef1c36a5b81d24/pillow-12.3.0-cp313-cp313-win_amd64.whl",
-            "sha256": "1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8"
+            "version": "13.0.0",
+            "filename": "pillow-13.0.0-cp313-cp313-win_amd64.whl",
+            "url": "https://files.pythonhosted.org/packages/d7/ed/1b16fb66a37e1b9e41370b93b2c614c7da761a5b2a41dc333f7af4639962/pillow-13.0.0-cp313-cp313-win_amd64.whl",
+            "sha256": "9dda0788a9932776a75d8bcc020076edc308ce2508b51f6739a45e3158b3fc42"
           },
           {
             "name": "XlsxWriter",
-            "version": "3.2.9",
-            "filename": "xlsxwriter-3.2.9-py3-none-any.whl",
-            "url": "https://files.pythonhosted.org/packages/3a/0c/3662f4a66880196a590b202f0db82d919dd2f89e99a27fadef91c4a33d41/xlsxwriter-3.2.9-py3-none-any.whl",
-            "sha256": "9a5db42bc5dff014806c58a20b9eae7322a134abb6fce3c92c181bfb275ec5b3"
+            "version": "3.3.0",
+            "filename": "xlsxwriter-3.3.0-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/packages/ce/9d/3d30eaaa7e06bdb6172f938b2661d64f8d899bdca54120384ecf3759488a/xlsxwriter-3.3.0-py3-none-any.whl",
+            "sha256": "5f04772d43281da5109af66f39b65153359a203e896847c416476e709b024469"
           }
         ]
       }

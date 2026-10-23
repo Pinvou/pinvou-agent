@@ -1546,7 +1546,7 @@ async function discoverWorkspacePages(listResult, state, externalRequestId = nul
     // URL fragment may turn it into an owned target.
     if (page.targetId) continue;
 
-    // Official chrome-devtools-mcp@1.11.0 does not yet expose raw targetId in
+    // Official chrome-devtools-mcp (through 1.12.0) does not expose raw targetId in
     // list_pages. Within one MCP process, retain only pageId bindings established
     // by an authoritative target or a controlled about:blank marker. After a
     // wrapper/MCP restart, fail when neither targetId nor marker exists; never

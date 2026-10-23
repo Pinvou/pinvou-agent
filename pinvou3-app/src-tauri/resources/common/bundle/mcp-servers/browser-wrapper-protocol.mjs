@@ -426,7 +426,7 @@ export function adaptBrowserCatalog(value) {
       // the user. Keep screenshots hidden until the visual-result pipeline is
       // connected, avoiding wasted context and false claims of visual review.
       // catalog-shim is captured before browser startup and does not include
-      // the runtime page-id routing flag. Upstream 1.11.0 enables pageId
+      // the runtime page-id routing flag. Upstream 1.11.0+ (1.12.0 vendored) enables pageId
       // routing by default and already carries pageId in its tool schemas;
       // the shim stays idempotent so the Agent always sees the explicit
       // pageId contract either way.

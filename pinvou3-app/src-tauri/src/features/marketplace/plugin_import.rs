@@ -341,11 +341,21 @@ pub(crate) fn read_zip_entry_bounded(
     declared_size: u64,
     what: &str,
 ) -> Result<Vec<u8>, String> {
+    // zip ≥9 自校验「解压超过头声明大小」（crc32.rs 的 size_limit）并在本函数
+    // 的边界生效前就让读取失败；把该错误归一成与下方守卫同一措辞，使拒绝文案
+    // （及 CLI 对它的翻译锚）不随 zip 大版本漂移。字符串取自 zip 9.0.5 原文。
+    const ZIP9_OVERSIZE: &str = "larger than its declared uncompressed size";
     let mut buf = Vec::new();
     entry
         .take(declared_size.saturating_add(1))
         .read_to_end(&mut buf)
-        .map_err(|e| format!("读{what}: {e}"))?;
+        .map_err(|e| {
+            if e.to_string().contains(ZIP9_OVERSIZE) {
+                format!("{what}{}", REJECT_FORGED_HEADER)
+            } else {
+                format!("读{what}: {e}")
+            }
+        })?;
     if buf.len() as u64 > declared_size {
         return Err(format!("{what}{}", REJECT_FORGED_HEADER));
     }
