@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct StopOnDrop(Arc<AtomicBool>);
+pub(crate) struct StopOnDrop(pub(crate) Arc<AtomicBool>);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
@@ -118,7 +118,7 @@ struct AttemptInput {
 fn run_on_worker(
     input: AttemptInput,
     runtime: &tokio::runtime::Handle,
-    mut observe: impl FnMut(Notice) -> Result<(), Error>,
+    observe: impl FnMut(Notice) -> Result<(), Error>,
     stop: &AtomicBool,
 ) -> Result<Snapshot, Error> {
     let AttemptInput {
@@ -128,7 +128,18 @@ fn run_on_worker(
         consent,
         restart,
     } = input;
-    let mut job = Job::open(&path, &pin)?;
+    let job = Job::open(&path, &pin)?;
+    run_open_job(job, import, consent, restart, runtime, observe, stop)
+}
+pub(crate) fn run_open_job(
+    mut job: Job,
+    import: Import,
+    consent: NetworkConsent,
+    restart: bool,
+    runtime: &tokio::runtime::Handle,
+    mut observe: impl FnMut(Notice) -> Result<(), Error>,
+    stop: &AtomicBool,
+) -> Result<Snapshot, Error> {
     if job.journal.phase == Phase::Cancelled {
         return Err(Error::Cancelled);
     }

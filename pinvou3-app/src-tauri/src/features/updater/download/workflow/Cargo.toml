@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 pinvou-upgrade-custody = { path = "../../platform/custody" }
 pinvou-upgrade-codec = { path = "../../protocol/codec" }
+pinvou-upgrade-control-http = { path = "../../protocol/http" }
 pinvou-upgrade-verifier = { path = "../../protocol/verify" }
 pinvou-upgrade-transfer = { path = "../transfer" }
 pinvou-upgrade-file-http = { path = "../http" }

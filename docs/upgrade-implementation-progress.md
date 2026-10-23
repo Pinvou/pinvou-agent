@@ -11,9 +11,12 @@ measured hours or release readiness.
 
 ## Delivery rules and active work
 
-**T31 Windows helper/launcher host is implemented** in this delivery batch. The
-next main task is selected after this batch is committed and pushed. Work on one
-main task and at most one direct prerequisite; other incomplete tasks are parked. Parallel roles
+**T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
+The next main task is **T29 download and protected byte handoff**. Its fixed
+control caller and protected staging work share this task's boundary; T07/T08
+remain parked because their missing active publication/first-activation owners
+cannot be replaced by the existing genesis-only sources. Work on one main task
+and at most one direct prerequisite; other incomplete tasks are parked. Parallel roles
 implement, independently review, test and integrate this same task. Reuse reviewed
 foundations and test tools; review changed behavior and its impact after repairs.
 Do not start a fresh runner or historical evidence-review chain for a small patch.
@@ -87,6 +90,29 @@ still need complete OSS/COS adapters and switching acceptance: preserve package
 identity, size and SHA-256, verify migrated bytes, and retain old paths for active
 or resumable downloads. This remains queued, not a second active development task.
 
+## Current T29 increment
+
+The explicit QA/support cache tool now obtains DownloadInfo through the fixed
+control POST. It verifies the original Decision before sending, then correlates
+both response credentials and the exact Package before opening a new payload.
+One real job writer stays held across POST and GET. Supplied time remains a QA
+observation; no current qualification or immutable-source continuity is invented.
+
+Independent scoped source review passed. Windows regression: download workflow
+22 library and two process tests passed; control transport three passed / one
+opt-in ignored; native inspection two library and thirteen process tests passed /
+three existing opt-ins ignored. Final invocations all closed naturally with no
+resource-floor failure. Earlier compilation invocations with a leftover MSVC
+telemetry process failed the whole-process gate and remain failed history; a
+cache-hit rerun established natural closure without discarding compiler outputs.
+No registry package version/checksum changed in the two affected locks.
+
+Protected byte staging is the next increment of this same task. Its review found
+missing cooperative cancellation and genuine Root/Package binding controls;
+repairs are in progress and not yet accepted or delivered. Current production
+qualification, source continuity/continuation and VerifiedExecutionObject
+composition remain unfinished. This increment does not complete T29.
+
 ## Per-task status
 
 Only T31 changes from the previous estimates. Outstanding environment-only E2E qualification is not a
@@ -122,7 +148,7 @@ completion blocker; outstanding business implementation is.
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization is delivered under T31; protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
-| T29 | 65% | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
+| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo control caller and original production-job FullPack/native observation are delivered; production qualification/source continuity/continuation and protected staging remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |

@@ -37,6 +37,40 @@ The relative-handle filesystem adapter is shared through updater-local
 APIs, fixed error codes and Identity JSON; it adds no native authentication,
 trusted journal ownership, installation permission or protected staging.
 
+## Fixed control acquisition
+
+An existing job can obtain DownloadInfo through the fixed control service before
+its next file attempt:
+
+```text
+upgrade-download-cache run-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON
+upgrade-download-cache restart-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON
+```
+
+`CONTROL_JSON` contains exactly `request` (the original DownloadInfo request JSON
+string) and `suppliedTimeMillis` (an explicitly supplied safe integer). The pinned
+Root, original Decision signature, Package and retained workflow/stage projection
+are checked before the POST. The real response must pass signature, correlation,
+Package and time checks before a new payload file is opened. The caller cannot
+supply a response, endpoint, CA, headers, retry policy or continuity assertion.
+
+The same writer lock remains held across the POST and file attempt. Elapsed
+control-request time is included in the supplied observation; it does not create
+a total download deadline. Every new attempt still starts a fresh exclusive file
+from zero because this tool has no protected immutable-source continuity owner.
+`restart-control` also starts fresh when an earlier cache was complete. Without
+restart, a complete cache is scanned again and reused without a control POST.
+
+Dropping the library future requests local cancellation, not a successful close
+acknowledgment or proof that the remote service did nothing. Await the result for
+local worker closure. Before the file-attempt run ID is emitted, the CLI's
+`pause`/`cancel` commands cannot acknowledge stopping a control request.
+
+These remain explicit QA/support operations. Supplied time is not trusted time;
+results retain `currentQualificationChecked: false`, `nativeAuthenticated: false`
+and `verifiedExecutionObject: false`. This does not provide current eligibility,
+protected staging, installation permission or whole-T29 completion.
+
 The extraction compatibility control accepts an independently retained old
 production executable; it creates an old job, compares new status/cache scans,
 and preserves a damaged journal until exact source restoration:

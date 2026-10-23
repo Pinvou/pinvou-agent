@@ -1,12 +1,14 @@
 //! Explicit QA cache acquisition, not a protected upgrade owner or install API.
 //! Every persisted byte is untrusted. Callers retain the independently returned
 //! manifest digest; no journal field can confer source continuity or authority.
+mod control;
 mod journal;
 mod manifest;
 mod platform;
 mod runner;
 mod store;
 
+pub use control::{ControlAttempt, run_control};
 pub use manifest::{Import, NetworkConsent};
 pub use runner::{Notice, run};
 pub use store::{
@@ -39,6 +41,8 @@ pub enum Error {
     ByteMismatch,
     NetworkUnknown,
     SourceRefused,
+    ControlUnavailable,
+    ControlRefused,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -58,6 +62,8 @@ impl std::fmt::Display for Error {
             Self::ByteMismatch => "DOWNLOAD_JOB_BYTES_MISMATCH",
             Self::NetworkUnknown => "DOWNLOAD_JOB_NETWORK_UNKNOWN",
             Self::SourceRefused => "DOWNLOAD_JOB_SOURCE_REFUSED",
+            Self::ControlUnavailable => "DOWNLOAD_JOB_CONTROL_UNAVAILABLE",
+            Self::ControlRefused => "DOWNLOAD_JOB_CONTROL_REFUSED",
         })
     }
 }

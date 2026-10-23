@@ -66,3 +66,6 @@ fn unsupported_adapter_does_not_touch_files() {
         Err(Error::Unsupported)
     ));
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_control_tests;

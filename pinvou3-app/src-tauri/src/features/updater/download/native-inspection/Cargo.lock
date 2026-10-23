@@ -1049,6 +1049,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-control-http"
+version = "0.0.0"
+dependencies = [
+ "pinvou-upgrade-codec",
+ "reqwest",
+ "serde_json",
+]
+
+[[package]]
 name = "pinvou-upgrade-custody"
 version = "0.0.0"
 dependencies = [
@@ -1062,6 +1071,7 @@ version = "0.0.0"
 dependencies = [
  "pinvou-upgrade-byte-check",
  "pinvou-upgrade-codec",
+ "pinvou-upgrade-control-http",
  "pinvou-upgrade-custody",
  "pinvou-upgrade-file-http",
  "pinvou-upgrade-transfer",
