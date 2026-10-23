@@ -57,6 +57,20 @@ export function isNeutralEndingStatus(status) {
 }
 
 /**
+ * Ending tokens of the worker-ledger vocabulary (the foundation's
+ * agent_worker_status_name): completed/failed plus the two neutral endings.
+ * A progress event carrying one is the engine's end-of-run announcement,
+ * emitted just before the ordered completion event — not a live state.
+ * Overriding the label with it would render raw untranslated English
+ * ("completed"/"failed") on a not-yet-done row, so endings resolve through
+ * done/blocked/failed plus the completion event and the ledger instead.
+ */
+export function isWorkerEndingToken(status) {
+  const token = String(status || '').toLowerCase();
+  return token === 'completed' || token === 'failed' || isNeutralEndingStatus(token);
+}
+
+/**
  * Single-entry merge (the pure logic behind the component's mergeEntry):
  * - Terminal ratchet: the persisted terminal state is authoritative; a late
  *   non-terminal real-time event must not flip an entry back to running (the
@@ -89,8 +103,13 @@ export function mergeOverlayEntry(previous, detail, sessionIdIn, now) {
   // column) outranks the free-text progress phrase: with only the phrase, the
   // ledger token and the event phrase overwrote each other and the status
   // label flickered between "queued" and "working" for a steadily working
-  // agent.
-  if (detail.workerStatus) next.status = detail.workerStatus;
+  // agent. Ending tokens are excluded: the engine ends every run with a
+  // progress event that carries the terminal token milliseconds ahead of the
+  // ordered completion event, and stamping it onto a not-yet-done row would
+  // flash raw English ("completed") with a live dot — the phrase (a
+  // multi-word line falls back to the working copy) holds the line until the
+  // completion event or the ledger resolves the ending.
+  if (detail.workerStatus && !isWorkerEndingToken(detail.workerStatus)) next.status = detail.workerStatus;
   // A real-time completion carries no status token (the bridge sends
   // status: null because the engine event cannot distinguish endings) and
   // reports blocked: false, so the spread alone would whiten three neutral

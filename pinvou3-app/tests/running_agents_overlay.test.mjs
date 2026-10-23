@@ -281,6 +281,43 @@ test('mergeOverlayEntry: a structured workerStatus token outranks the progress p
   assert.equal(statusPresentation(legacy, copy).text, '工作中');
 });
 
+test('mergeOverlayEntry: an ending token on a live entry does not replace the label', () => {
+  // The engine ends every run with an AgentProgress carrying a terminal
+  // token (completed/failed, or cancelled/interrupted on operator stop)
+  // milliseconds before the ordered AgentComplete, and these events are
+  // never dropped by the foundation's headroom guard. The bridge stamps them
+  // done:false, so letting the token take over the label would flash raw
+  // untranslated English ("completed") with a live dot on a not-yet-done
+  // row; the ending resolves through the completion event (or the 3s ledger
+  // poll if that event is lost) instead.
+  const running = mergeOverlayEntry(null, ledgerRead({ status: 'running_tool', done: false, failed: false }), 's1', 10_000);
+  const ending = mergeOverlayEntry(
+    running,
+    { sessionId: 's1', agentId: 'agent_1', status: '20/20: complete', workerStatus: 'completed', done: false, failed: false, source: 'realtime' },
+    's1',
+    10_500,
+  );
+  assert.equal(ending.status, '20/20: complete', 'an ending token is an announcement, not a live-state refinement');
+  assert.deepEqual(statusPresentation(ending, copy), { text: '工作中', dot: 'running' }, 'the localized working copy holds until the completion lands');
+  // The neutral endings behave the same: no raw token on a live row.
+  const cancelled = mergeOverlayEntry(
+    running,
+    { sessionId: 's1', agentId: 'agent_1', status: 'cancelling worker', workerStatus: 'cancelled', done: false, failed: false, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(cancelled.status, 'cancelling worker');
+  assert.equal(statusPresentation(cancelled, copy).text, '工作中');
+  // The ordered completion still settles the ending right after.
+  const settled = mergeOverlayEntry(
+    ending,
+    { sessionId: 's1', agentId: 'agent_1', done: true, failed: false, status: null, source: 'realtime' },
+    's1',
+    11_000,
+  );
+  assert.equal(statusPresentation(settled, copy).text, '已完成', 'the completion event owns the ending presentation');
+});
+
 test('isUnknownLedgerRow: orphan transcripts (done=false, no status token) are not live agents', () => {
   // transcripts.rs projects transcripts whose worker-ledger record was pruned
   // (foundation 256-record cap) as done=false/status=null unknown rows; the
