@@ -1779,9 +1779,13 @@ turn {pronoun} off in the tools list: {error}",
 /// error message is the scope layer's single-source copy (persist failures
 /// already carry `CONNECT_CONSENT_SYNC_FAILURE_MARKER`; refusals carry their
 /// policy reason), so no CLI-side rewording can desynchronize the surfaces.
-fn sync_consent_after_connect(id: &str, show: bool) -> Result<bool, CliError> {
+/// The full outcome is returned (not just `granted`) so the finish side
+/// effects can COMMIT a relied-upon consent (round-7 review P2).
+fn sync_consent_after_connect(
+    id: &str,
+    show: bool,
+) -> Result<pinvou3_lib::features::marketplace::ConnectGrantOutcome, CliError> {
     pinvou3_lib::features::marketplace::deny_first_register_connector(id, show)
-        .map(|outcome| outcome.granted)
         .map_err(CliError::failed)
 }
 
@@ -1796,6 +1800,13 @@ fn sync_consent_after_connect(id: &str, show: bool) -> Result<bool, CliError> {
 /// row, so explicit verdicts survive `apply-skills` regardless of ledger
 /// backing; a never-consented connector still converges to the
 /// connected=enabled shape (`apply_skills_show_branch_grants_the_enable`).
+///
+/// Deliberately NO relied-grant commit (round-7 review P2): the standalone
+/// maintenance run materializes nothing app-side (its show direction's unpack
+/// requires the desktop app), so its completion proves nothing about the
+/// relied-upon consent's usability — committing there would disarm an
+/// in-flight operation's fail-closed compensation over a failed
+/// materialization. Only the connect gesture commits what it relied on.
 fn sync_consent_after_maintenance(id: &str, show: bool) -> Result<bool, CliError> {
     pinvou3_lib::features::marketplace::deny_first_register_connector_refresh(id, show)
         .map(|outcome| outcome.granted)
@@ -3289,7 +3300,28 @@ fn finish_connect_side_effects(spec: &VendorSpec, consent_show: bool) -> Result<
     // instead of reporting a connection whose consent never landed — the
     // scope layer logs nothing on write failure, so the error carries the
     // reason.
-    sync_consent_after_connect(spec.id, consent_show)
+    let outcome = sync_consent_after_connect(spec.id, consent_show)?;
+    // Round-7 review P2: a declined write here is a RELIED-UPON consent, not
+    // a no-op — the gates found another connect's standing ledger and this
+    // connect completed on top of it. Commit the relied-upon grant so that
+    // (possibly still in-flight) operation's pending compensating revoke
+    // stops matching: without the commit, its late materialization failure
+    // would strip the grant + ledger this successful connect relied on. The
+    // commit re-validates under the write lock (a teardown + regrant
+    // mid-window keeps a newer owner's compensation armed) and is
+    // best-effort — a failed commit leaves the pre-fix window open rather
+    // than failing an already-successful connect.
+    if !outcome.granted && !outcome.relied_grant_token.is_empty() {
+        if let Err(error) = pinvou3_lib::features::marketplace::commit_relied_connect_grant(
+            spec.id,
+            &outcome.relied_grant_token,
+        ) {
+            note!(
+                "pinvou: warning: connectors connect: committing the relied-upon connect grant failed: {error}"
+            );
+        }
+    }
+    Ok(outcome.granted)
 }
 
 fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliOutcome, CliError> {

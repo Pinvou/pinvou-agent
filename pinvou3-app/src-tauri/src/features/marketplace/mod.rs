@@ -691,10 +691,10 @@ pub use types::{
 // callers) are test-only now and are `cfg(test)` along with their
 // implementations.
 pub use crate::features::marketplace::scope::{
-    ConnectGrantOutcome, deny_first_register_connector, deny_first_register_connector_refresh,
-    load_disabled_bundles_for, load_disabled_bundles_startup, load_hidden_bundles_for,
-    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
-    unavailable_bundles_for,
+    ConnectGrantOutcome, commit_relied_connect_grant, deny_first_register_connector,
+    deny_first_register_connector_refresh, load_disabled_bundles_for,
+    load_disabled_bundles_startup, load_hidden_bundles_for, save_disabled_bundles_for,
+    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
 };
 // The bare grant/revoke/refresh writers stay crate-internal: every connect
 // consent write must reach them through `deny_first_register_connector` /
@@ -706,8 +706,7 @@ pub use crate::features::marketplace::scope::{
 // command with no connect gesture behind it must never lift a stored
 // no-ledger verdict (round-3 review).
 pub(crate) use crate::features::marketplace::scope::{
-    commit_relied_connect_grant, grant_connect_enable, grant_connect_enable_refresh,
-    revoke_connect_enable,
+    grant_connect_enable, grant_connect_enable_refresh, revoke_connect_enable,
 };
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
