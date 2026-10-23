@@ -5572,7 +5572,6 @@ mod tests {
             ],
         );
         assert_eq!(batch, vec![root.join("fresh.json")]);
-
     }
 
     #[test]

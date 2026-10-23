@@ -421,8 +421,11 @@ definition backup, undo system, or new authorization protocol is added here.
   Cancellation is selected before a ready delivery result; after the delivery
   future returns success there is no await that could turn it into Canceled in
   this executor. Cancellation/timeout stops waiting on an in-flight future; it
-  cannot promise to retract effects already handed to another task. No specific
-  cancel-after-success or timeout-after-success window is asserted as verified.
+  cannot promise to retract effects already handed to another task. If delivery
+  and cancellation are both ready, the biased cancellation branch can record
+  Canceled even after the engine accepted the message. This follows from branch
+  ordering; the live acceptance did not exercise that race. No specific
+  timeout-after-success window is asserted as verified.
 - An accepted steer can still be lost before the target consumes it. This inherited
   EnginePool window permits Completed without consumption. A crash between engine
   acceptance and durable task/run reconciliation is not an exactly-once receipt;
