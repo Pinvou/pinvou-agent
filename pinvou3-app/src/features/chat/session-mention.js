@@ -208,7 +208,7 @@ export function sessionMentionTriggerAt(text, enabled = true) {
  * @param {Array<{id: string, title?: string}>} sessions bridge snapshot session list (newest first)
  * @param {{ query?: string, excludeIds?: Iterable<string>, limit?: number }} options
  *   excludeIds excludes the current session and already-referenced ones;
- *   isolated sessions (sched-/eval_/aux-, case-insensitive — the same
+ *   isolated sessions (sched-/eval_/aux-/agentic_, case-insensitive — the same
  *   isolation semantics as dedupeSessionRefs) are always excluded so a listed
  *   candidate is always an acceptable pick (a no-op pick would still consume
  *   the typed trigger text).
@@ -238,7 +238,7 @@ export function filterSessionMentionCandidates(sessions, options = {}) {
 
 /**
  * Normalize a pending reference list: dedupe (by sessionId, order preserved),
- * drop isolated sessions (sched-/eval_/aux-, case-insensitive), and cap the
+ * drop isolated sessions (sched-/eval_/aux-/agentic_, case-insensitive), and cap the
  * length. This is the shared choke point for every add path (@ panel pick,
  * sidebar drag-drop, edit-resend rebuild) and for rendering refs parsed out
  * of historical messages (dirty data cannot blow up the UI).

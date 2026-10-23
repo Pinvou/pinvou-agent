@@ -310,14 +310,22 @@ class CreateValidationTests(unittest.TestCase):
 
     def test_invalid_sender_ids_are_rejected(self):
         # Round-15 REQUIRED-1: the case variants pin the server's
-        # case-insensitive isolation matching on aux/eval origins. The
-        # headless agentic_ run joins the isolated senders (never an
-        # interactive continuation) — both case forms pin the folding.
-        for bad in ("../escape", "with space", "a" * 300, "eval_b1", "aux-x1",
-                    "EVAL_b1", "AUX-x1", "agentic_7", "AGENTIC_x"):
+        # case-insensitive isolation matching on eval_/aux-/agentic_ origins.
+        # The headless agentic_ run joins the isolated senders (never an
+        # interactive continuation) — both case forms pin the folding. The
+        # isolated families additionally assert the rejection class (the
+        # sender-gate's own typed refusal), not just error presence — the
+        # malformed-shape cases keep the looser assertion.
+        for bad in ("../escape", "with space", "a" * 300):
             payload, error = self.create(from_session=bad)
             self.assertIsNone(payload, bad)
             self.assertIsNotNone(error, bad)
+        for bad in ("eval_b1", "aux-x1", "EVAL_b1", "AUX-x1",
+                    "agentic_7", "AGENTIC_x"):
+            payload, error = self.create(from_session=bad)
+            self.assertIsNone(payload, bad)
+            self.assertIsNotNone(error, bad)
+            self.assertIn("cannot request task creation", error, bad)
 
     def test_interactive_scheduled_origin_supports_keyed_retries(self):
         old_wait = server.RESULT_WAIT_SECONDS

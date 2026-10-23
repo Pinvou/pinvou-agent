@@ -234,7 +234,8 @@ pub fn build_session_message_block(
 /// rules as the MCP server; the Rust side re-checks because the spool
 /// directory is user-writable). Isolated prefixes are rejected as sender or
 /// target: sched- sessions are subsystem-owned (Scheduled Tasks), aux-
-/// sessions are cross-session isolated by design, eval_ is benchmark-private.
+/// sessions are cross-session isolated by design, eval_ is benchmark-private,
+/// and agentic_ headless runs are never interactive participants.
 fn check_participant_id(session_id: Option<&String>, label: &str) -> Result<()> {
     let Some(id) = session_id else {
         return Ok(());

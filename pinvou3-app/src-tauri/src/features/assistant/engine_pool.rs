@@ -370,9 +370,9 @@ pub(crate) fn turn_restrict_tools(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuxToolSurface {
     /// The legacy zero-tool aux engine. Also the fail-closed fallback:
-    /// isolated-prefix parents (`aux-sched-x` / `aux-aux-x` / `aux-eval_x`)
-    /// and per-aux scoped-config write failures demote here — byte-identical
-    /// to the pre-ADR-0024 behavior.
+    /// isolated-prefix parents (`aux-sched-x` / `aux-aux-x` / `aux-eval_x` /
+    /// `aux-agentic_x`) and per-aux scoped-config write failures demote here —
+    /// byte-identical to the pre-ADR-0024 behavior.
     ZeroTool,
     /// Scoped read-only parent context: exactly one model-visible tool (the
     /// session-reader `read_session`), pinned at spawn time to the parent
@@ -393,8 +393,8 @@ pub(crate) const AUX_SCOPED_READ_TOOL: &str = "mcp_session-reader_read_session";
 /// argument as `is_aux_session_id`). `None` for non-aux ids, an empty parent
 /// part, isolated-prefix parents, a parent part that fails the session-id
 /// charset, or a parent longer than the server's id length cap: aux creation
-/// rejects sched-/aux-prefixed parents (and `eval_` sessions have no aux
-/// entry point), but the surface decision must not trust construction —
+/// rejects sched-/aux-/agentic_-prefixed parents (and `eval_` sessions have
+/// no aux entry point), but the surface decision must not trust construction —
 /// those ids fail closed to the ZeroTool fallback (a charset-invalid or
 /// over-long parent could never name a real record, and the scoped server's
 /// own startup validation would refuse the pin).
@@ -5307,7 +5307,10 @@ mod scheduled_model_tests {
         }
         assert_eq!(aux_parent_session_id("AUX-Case01"), Some("Case01"));
         // Isolated-prefix parents fail closed (case-insensitive, matching the
-        // server's ISOLATED_SESSION_PREFIXES set).
+        // server's ISOLATED_SESSION_PREFIXES set). The aux-agentic_ rows are
+        // the spawn-time backstop's red arm (r1 MAJOR-2): deleting the
+        // `agentic_` conjunct from aux_parent_session_id's loop turns these
+        // two rows red while every other suite stays green.
         for id in [
             "aux-sched-x",
             "AUX-SCHED-x",
@@ -5315,6 +5318,8 @@ mod scheduled_model_tests {
             "Aux-Aux-x",
             "aux-eval_x",
             "aux-EVAL_x",
+            "aux-agentic_4242_0",
+            "AUX-AGENTIC_x",
             // Degenerate shapes: bare prefix, empty parent, non-aux ids.
             "aux-",
             "sched-1",
