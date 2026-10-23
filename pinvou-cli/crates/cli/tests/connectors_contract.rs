@@ -1998,7 +1998,9 @@ fn connect_fails_when_the_relied_grant_commit_cannot_persist() {
     if std::fs::write(&probe, b"").is_ok() {
         let _ = std::fs::remove_file(&probe);
         std::fs::set_permissions(home.0.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        eprintln!("ROOT-SKIP[connect_relied_commit_fault]: running as root - read-only home not exercisable");
+        eprintln!(
+            "ROOT-SKIP[connect_relied_commit_fault]: running as root - read-only home not exercisable"
+        );
         return;
     }
 
@@ -2011,7 +2013,9 @@ fn connect_fails_when_the_relied_grant_commit_cannot_persist() {
         "30",
     ]);
     assert!(
-        error.to_string().contains("committing the relied-upon connect grant failed"),
+        error
+            .to_string()
+            .contains("committing the relied-upon connect grant failed"),
         "the failure must name the unpersistable commit: {error}"
     );
 
