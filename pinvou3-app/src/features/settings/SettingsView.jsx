@@ -281,11 +281,11 @@ function hasStoredCredential(record) {
                 disabled={!webAccess.url}
                 className={`px-3.5 py-2 rounded-full text-[13px] bg-black/5 hover:bg-black/10 disabled:opacity-40 dark:bg-white/10 dark:hover:bg-white/15 dark:disabled:opacity-40`}>{remoteCopy.copy}</button>
               {webAccessActive && !hostWorkspaceAuthorized && <button type="button" disabled={actionBusy} onClick={handleRetryWebAccess}
-                className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#8AB4F8]">{remoteCopy.allowWorkspace}</button>}
+                className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#c2d8fb]">{remoteCopy.allowWorkspace}</button>}
               {webAccessActive ? <button type="button" disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
                 className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15`}>{remoteCopy.refresh}</button>
                 : <button type="button" disabled={actionBusy} onClick={handleRetryWebAccess}
-                  className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#8AB4F8]">{remoteCopy.enable}</button>}
+                  className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-50 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#c2d8fb]">{remoteCopy.enable}</button>}
             </div>
             {refreshConfirmOpen && (
               // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
@@ -298,7 +298,7 @@ function hasStoredCredential(record) {
                   <div className={`text-[13px] leading-relaxed mt-2 text-[#5F6368] dark:text-[#B7BBC0]`}>{remoteCopy.refreshDesc}</div>
                   <div className="mt-5 flex justify-end gap-2">
                     <button type="button" disabled={actionBusy} onClick={() => setRefreshConfirmOpen(false)} className={`px-4 py-2 rounded-lg text-[13px] bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10`}>{t.cancel}</button>
-                    <button type="button" disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-60 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#8AB4F8]">{actionBusy ? remoteCopy.refreshing : remoteCopy.refresh}</button>
+                    <button type="button" disabled={actionBusy} onClick={handleRotateWebAccess} className="px-4 py-2 rounded-lg text-[13px] font-medium bg-[#0B57D0] text-white hover:bg-[#0842A0] disabled:opacity-60 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#c2d8fb]">{actionBusy ? remoteCopy.refreshing : remoteCopy.refresh}</button>
                   </div>
                 </div>
               </div>
