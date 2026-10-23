@@ -1,26 +1,24 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 03:34 Asia/Shanghai**.
+Checkpoint: **2026-10-24 05:56 Asia/Shanghai**.
 
-There are 47 tasks: six completed, twenty in progress, twenty not completed,
-and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
-The equal-task engineering estimate is **34.3%**. T07, T08 and T31 reflect their current delivery;
+There are 47 tasks: seven completed, nineteen in progress, twenty not completed,
+and T42 explicitly deferred. The strict completion ratio is **7/47 (14.9%)**.
+The equal-task engineering estimate is **35.0%**. T07, T08 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T08 atomic current metadata publication**. T29's
-reviewed byte-custody and installed-image diagnostic components are pushed;
-the owner has approved a new signed immutable-source binding without legacy
-compatibility. Its implementation is queued behind T08. T08's current increment represents mixed
-genesis/published components and supplies complete authenticated current graphs
-to actual Root/issuer readers. Bounded published-only Target/Snapshot/Timestamp
-refresh is independently reviewed and verified; Release/private renewal, unified
-selection publication and active deny/job composition remain pending. First activation still requires T14's real business
-owner. Work on one main task
+The current main task is **T29 download continuation and immutable-source binding**.
+T08's internal atomic publication, renewal, deny/pending and durable worker
+module is complete. Trusted host composition must explicitly start, cancel and
+join the callable worker; actual first activation requires T14's business owner. T29's
+reviewed byte-custody and installed-image components are delivered, and the
+owner has approved mandatory signed source binding without legacy compatibility.
+Work on one main task
 and at most one direct prerequisite; other incomplete tasks are parked. Parallel roles
 implement, independently review, test and integrate this same task. Reuse reviewed
 foundations and test tools; review changed behavior and its impact after repairs.
@@ -37,94 +35,65 @@ Independently usable components may be committed after their own review and
 applicable checks. A component, source review, build or single-platform test does
 not complete its enclosing task. T42 deployment and T03's 50 GiB / 500,000-file
 measurement remain explicitly deferred. Downloads have no fixed total deadline.
-The 32 MiB limit applies to joined business metadata, not package downloads.
+The 32 MiB limit applies to the joined new publication-signing batch; stored
+graphs and package downloads have separate bounds.
 
-## Current T08 increment
+## Completed T08 internal publication delivery
 
-The complete current storage/read increment is committed and pushed in the
-separate service repository as `9fca399`. It does not complete T08 publication.
+The complete internal metadata publication owner is committed and pushed in the
+separate service repository as `316090d0801b10c6fe288511e13437dee0f51626`. T08 is complete within its
+publication/fencing boundary. The sole component head remains authoritative;
+one original T06 transaction commits business writes, affected generations,
+the complete Release/Target/Snapshot/Timestamp graph, current pointers, issuance,
+result, audit and outbox. Private renewal preserves immutable Package bytes and
+archives retired Release/Package closures with their actual historical Root.
 
-The mixed current storage/read owner and the Root compatibility repair passed
-independent source and repair reviews. Three pure owner tests, two Root
-compatibility tests, three real PostgreSQL current tests and nine affected
-regressions with four subcases passed. Six existing actual signing-transaction
-tests with thirteen subcases also passed, covering atomic recording, SQL/runtime
-guards, final expiry, Stop during presigning and multiple Target scopes.
-The reference-model private Package and
-per-object expiry repair passed 29 tests; the architecture guard also passed.
-That reference repair is committed and pushed as `eed20df6d`.
-The initial read-budget error-mapping defect and incorrect reference-test error
-expectation were repaired, and both failed runs remain recorded.
+Active signing-key deny atomically records deny, affected pending generations
+and one durable reconciliation job. Missing business ownership keeps selections
+unavailable while the worker records persistent backoff and alerts. The callable
+worker scans independently of signing every 30 seconds, caps retry backoff at
+five minutes and emits durable alerts after 15 minutes. Trusted host composition
+must start, cancel and join it explicitly; the current server executable does
+not automatically start this worker.
 
-The initial service full default run completed with 3909 passed, 1693 skipped and two
-failed test records (one existing Windows process-fixture parent and subtest).
-An isolated repeat failed the other subcase of the same unchanged fixture. Its
-late PID lookup does not retain the original process identity, so source review
-cannot distinguish PID reuse from a termination-completion window. This is not
-reported as an environment skip or a passed full run. The owner approved a
-test-only repair that retains the original live process handles and waits for
-their termination. Independent repair review and three consecutive fixture runs
-passed. The subsequent full default run passed **3911 / skipped 1693 / failed 0**
-test records (1218 passing and 922 skipped top-level tests). Dependency
-verification, static analysis, all command builds and the pinned client-contract
-check also passed. All check processes closed naturally without a resource-guard
-breach. The previous failures remain recorded. That A increment alone did not provide runtime publication. Release/private
-renewal, unified selection publication, active deny/pending jobs and T14
-first activation remain unfinished. T08 remains in progress at 65%.
+The native business-source registration binds actual fixed SQL functions and
+physical records. A schema-owner fixture, matching interface or qualification
+boolean cannot provide T14 eligibility. Real first activation and the later
+dynamic endpoint composition remain with their owning tasks.
 
-The direct signing prerequisite is also committed and pushed as `4888054` in the
-service repository. Its finite Target/Snapshot/Timestamp preparation passed
-independent review, 94 pure test records, two actual PostgreSQL tests with two
-rollback/fencing subcases, affected static analysis and a server build. One
-original capture and budget cover the linked chain, and actual parent references
-bind verified signed child bytes. That signing prerequisite alone does not
-implement the publication transaction or permit first activation.
+Independent deep source, repair and completion-boundary reviews passed. Native
+PostgreSQL tests verify original-transaction publication, full graph/archive
+readback, multi-channel all-or-nothing changes, private renewal, fresh opening
+entropy, stale input/owner refusal, permissions, split-commit refusal, lease
+takeover and exact replay. Real TLS/OIDC/MFA/dual-review tests cover active deny,
+pending jobs, missing-owner retries/alerts and late authorization rollback.
+Pure tests cover graph planning, historical key dependencies, independent bounded
+copies and worker scanning during blocked signing.
 
-The bounded published-only refresh transaction is committed and pushed as
-`dbf22f7` in the separate service repository, after independent review and
-verification.
-It signs the complete Target/Snapshot/Timestamp set from one capture, records
-issuance, validates derived changes before the head update, then publishes the
-complete current graph and T06 result/audit/outbox atomically. Retained Release
-and Package bytes/Root provenance, selection generations and private openings
-remain unchanged. Missing business owner state explicitly refuses activation.
+The final migration regression verifies the exact genesis-v2/active-v3 chain,
+reinitialization without downgrade, native body/default/volatility/digest
+tampering, unknown migrations and published-head refusal without active support.
+A half-upgraded original profile fails runtime readiness until explicit schema
+initialization; its migration preserves actual native identity and business
+state. The original HTTPS/issuer/ACK regression and real Chrome workflow passed,
+including three languages, dual review, damaged saved input refusal and original
+lost-ACK recovery. Admin build and three response-profile parser contracts passed.
 
-Five pure tests with eight subcases and four actual PostgreSQL tests with nine
-subcases passed. A separate actual component-head interleaving test passed:
-a later command commits during the original presign, and the old Snapshot is
-refused without changing the committed successor. Three affected PostgreSQL
-regressions with two subcases passed. Dependency verification, full default Go
-tests (**3954 passed / 1704 skipped / zero failures**), full static analysis,
-all command builds and the pinned contract check passed. The additional
-interleaving test and final affected analysis ran after that full suite without
-production changes. All check processes closed naturally without resource-guard
-breaches. Failed development runs exposed role-name case folding, scalar JSON
-encoding, SQL ambiguity and a late retained-expiry check; each was repaired and
-independently re-reviewed. The failures remain recorded, not environment skips.
-This is an internal publisher component, not whole T08 completion or T14
-business qualification.
+Final full default Go tests passed **4038 / skipped 1736 / failed 0** test
+records (1264 passing and 946 skipped top-level tests). Dependency verification,
+full static analysis, all command builds and the pinned contract check passed.
+All qualifying invocations closed naturally without resource-floor breaches.
 
-The complete finite publication-signing prerequisite is committed and pushed as
-`5c2dc4a` in the service repository. One captured T06/Root/issuer context now
-prepares and records Release(s), Target(s), Snapshot and Timestamp with actual
-signed child references. The new bounded proof header and framed slot rows
-preserve the 32 MiB new-batch limit without imposing that limit on stored graphs.
-Private opening hashes derive from actual signed Release bytes. Original
-Package bytes and Root provenance remain unchanged.
+Failed development runs remain recorded. This includes the discovered legacy
+SQL schema mismatch that allowed preparation but refused commit; the additive
+migration repairs it without changing original schema bytes or granting active
+ports to a genesis-only runtime. Functional failures are not environment skips.
 
-Independent source and repair reviews passed. Six new pure tests with eight
-subcases, five actual PostgreSQL tests with five subcases, all affected signing
-package tests and an actual legacy refresh on the extended schema passed.
-Full default Go tests passed **3970 / skipped 1714 / failed 0** test records
-(1239 passing and 929 skipped top-level tests); dependency verification, full
-static analysis, all command builds and the pinned contract check passed.
-All check processes closed naturally without resource-guard breaches. Initial
-native failures exposed PostgreSQL NUL extraction in legal Release notes; the
-repair changes only a temporary header-reading copy and preserves original
-signed bytes. Those failures remain recorded. This signing layer does not
-provide selection business eligibility, a production publisher or whole T08
-completion. The remaining unified publisher and active deny/job composition
-are the current work.
+Earlier delivered milestones remain part of T08: complete current reads and
+the approved Windows fixture repair (`9fca399`), finite three-role preparation
+(`4888054`), bounded published-only refresh (`dbf22f7`) and complete finite
+publication signing (`5c2dc4a`). The related reference-model repair is committed
+in the client repository as `eed20df6d`.
 
 ## Completed T31 delivery
 
@@ -261,7 +230,7 @@ production qualification, source continuity/continuation and integration with
 the later authorized executor remain unfinished business implementation. The
 existing DownloadInfo wire lacks an authenticated immutable-source object/version
 binding. The owner approved a new signed immutable-source binding without legacy
-compatibility; implementation is queued after T08. No ETag or QA
+compatibility; this is now the main implementation work. No ETag or QA
 provider assertion is promoted to a production continuity proof. These increments
 do not complete T29; its engineering estimate remains unchanged pending closure.
 
@@ -313,8 +282,8 @@ completion blocker; outstanding business implementation is.
 | T04 | 65% | In progress | Offline tools, Windows post-build npm adapter and role-specific NSIS inspection are delivered; the integrated source passed default regression and current-CLI normal/wrong-Root cases. Complete provenance, product build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | 80% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and finite atomic multi-Release publication signing; active deny and emergency publication composition remain pending |
-| T08 | 65% | In progress | Reviewed mixed current storage and complete authenticated Root/issuer reads; atomic published-only Target/Snapshot/Timestamp refresh, replay and actual component-head interleaving are verified. Release/private renewal, unified selection publication and active deny/pending jobs remain pending. |
+| T07 | 80% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and finite atomic multi-Release publication signing; T08 now supplies active deny/publication composition; full T07 lifecycle acceptance remains pending |
+| T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
 | T09 | 55% | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
