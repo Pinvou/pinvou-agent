@@ -258,8 +258,9 @@
 | I4 | update 校验 | 缺 task_id / 零字段 / CRON rrule 均拒绝 | ◇python + ◇Rust `update_request_validation_requires_target_and_a_field` | P0 |
 | I5 | delete 校验 | 缺 task_id、带多余字段均拒绝 | ◇python + ◇Rust `delete_request_validation_rejects_extra_fields` | P1 |
 | I6 | Ask 规则扩展 | 规则集含 update/delete 两条 Ask；read/list 不含 | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` 扩展 | P0 |
+| I7 | 排水加固（#680 波） | pending 超过 256 时排序尾部被隔离且不落库：尾部记录在移动前探测真实原因（损坏为 unparseable、超大/不可读为 unreadable or oversize），仅真正超限的记录保留 ceiling 标签；digest 绑定的 ok 回执抑制失败标记（回执照常应答），可解析尾部的处置留审计行。卡住 episode（Poison/重试耗尽/尾部臂）的审计行与失败标记每次事件只写一次，身份为 payload digest：同字节重发体保持去重，更正后的重发体（服务端会解除旧 ok:false 标记）按身份变化重开新 episode；被解除的标记在保持审计去重的同时补写（ensure-presence，含 park 门控路径的 parked 状态说明）。停放记录的 un-park 由 payload 变化决定而非时钟：同字节 mtime bump 保持 parked 且零次重应用，更正体重绑并应用；各终态臂与 maintenance 在记录移动时清理 episode 身份。非 UTF-8 文件名在计数前先行隔离，不占用枚举窗口与批槽位 | ◇Rust `poison_park_corrected_respool_opens_a_fresh_episode` / `poison_park_same_bytes_bump_stays_parked_and_marker_is_restored` / `retry_park_same_bytes_bump_never_reapplies_corrected_payload_rebinds` / `poison_park_episode_clears_when_the_quarantine_finally_succeeds` / `poison_arm_clears_the_episode_entry_when_its_quarantine_succeeds` / `retry_arm_clears_the_episode_entry_when_its_quarantine_succeeds` / `corrupt_ceiling_tail_names_the_real_cause` / `oversize_ceiling_tail_names_the_real_cause` / `ceiling_tail_with_landed_receipt_writes_no_failure_marker` / `non_utf8_squatters_do_not_starve_legitimate_records` | P1 |
 
-§6 测试映射相应扩展：python 套件覆盖 I3/I4/I5，smoke 旅程覆盖 read/update/delete 校验路径，渲染卡测试覆盖三操作结果解析。
+§6 测试映射相应扩展：python 套件覆盖 I3/I4/I5，smoke 旅程覆盖 read/update/delete 校验路径，渲染卡测试覆盖三操作结果解析；I7 的排水加固波由 Rust 套件覆盖。
 
 ## 评审补充：排水边界与证据保留
 

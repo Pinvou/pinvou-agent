@@ -714,8 +714,12 @@ enum Processed {
     ReceiptPending(String, serde_json::Value),
     /// Permanent rejection: quarantine now.
     Poison(anyhow::Error),
-    /// Transient creation failure: retry.
-    Retry(anyhow::Error),
+    /// Transient creation failure: retry. Carries the attempted record's
+    /// payload digest when one was computable — the parked episode's
+    /// identity input (#680: the un-park is admitted by a payload CHANGE,
+    /// so the identity must be the bytes the apply consumed, not whatever
+    /// a post-apply re-read would find there).
+    Retry(anyhow::Error, Option<String>),
 }
 
 fn build_create_input(request: &SpooledCreationRequest) -> CreateScheduledTaskInput {
@@ -1146,7 +1150,7 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
             if is_permanent_domain_error(&format!("{error:#}")) {
                 Processed::Poison(error)
             } else {
-                Processed::Retry(error)
+                Processed::Retry(error, Some(expected_digest))
             }
         }
     }
@@ -1525,6 +1529,60 @@ fn write_failure_marker(stem: &str, error: &anyhow::Error) {
     }
 }
 
+/// Whether the record's result marker is currently ABSENT. The server
+/// unlinks a not-ok marker right after re-spooling the same name (its
+/// stale-marker unlink), so a stuck episode's "once per episode" marker
+/// dedupe must still restore a marker that vanished this way — the dedupe
+/// exists to stop per-pass rewrites, never to leave a waiting call without
+/// an answer (#680's ensure-presence). The ok:true refusal in
+/// [`write_failure_marker`] keeps a restored marker from ever clobbering a
+/// landed receipt.
+fn failure_marker_missing(stem: &str) -> bool {
+    !done_dir().join(format!("{stem}.json")).exists()
+}
+
+/// The payload digest of the record currently sitting at `path`, when one
+/// is computable under the gated+bounded read (None: unreadable or
+/// unparseable).
+fn record_digest(path: &Path) -> Option<String> {
+    read_regular_bounded(path, MAX_SPOOL_FILE_BYTES as usize)
+        .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok())
+        .map(|request| spool_request_digest(&request))
+}
+
+/// Whether the record now sitting at a parked name is a payload CHANGE
+/// against the parked episode's audited identity — the un-park gate's
+/// input (#680): a same-bytes mtime bump does NOT rebind (the gate, not
+/// the clock, admits a replacement), a corrected payload does, and a
+/// record that parses while the audited episode stored no digest does
+/// (the gate arm's round-4 m-A rule). No recorded identity (a park the
+/// pre-#680 code left behind, or an externally seeded one) admits as
+/// before.
+fn parked_episode_rebinds(name: &str, root: &Path, retries: &RetryState) -> bool {
+    let Some(audited) = retries.stuck_episode_audited.get(name) else {
+        return true;
+    };
+    match record_digest(&root.join(name)).as_deref() {
+        Some(current) => audited.is_empty() || audited != current,
+        None => !audited.is_empty(),
+    }
+}
+
+/// Whether this poison/exhaustion opens a FRESH stuck episode for the name:
+/// no recorded identity, or an identity that differs from the record's
+/// current digest (a corrected re-spool, or a record that parses while the
+/// audited episode was unparseable-empty, or one that stopped parsing while
+/// the audited one had a digest). A same-bytes re-poison stays deduped.
+fn opens_fresh_episode(audited: Option<&String>, current: Option<&str>) -> bool {
+    match audited {
+        None => true,
+        Some(audited) => match current {
+            Some(current) => audited.is_empty() || audited != current,
+            None => !audited.is_empty(),
+        },
+    }
+}
+
 /// Age-based retention for terminal state (see [`STATE_RETENTION`]): prune
 /// stale markers in `.done/` and evidence in `failed/`, and sweep stray
 /// `*.tmp` files left by a crash between mkstemp and rename on the server
@@ -1674,7 +1732,9 @@ impl RequestSnapshot {
 /// deterministic sha256 name is replaced after the park (the
 /// retry-after-fix re-spool writes fresh bytes with a newer mtime) or
 /// vanishes; the quarantine failure applied to the previous bytes, not
-/// these.
+/// these. #680: the un-park is admitted by the record's PAYLOAD DIGEST
+/// (see `stuck_episode_audited`), not by the clock alone — a same-bytes
+/// mtime bump stays parked.
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, u32>,
@@ -1689,16 +1749,36 @@ struct RetryState {
     parked: HashMap<String, std::time::SystemTime>,
     receipts: HashMap<String, (String, serde_json::Value)>,
     storage_backpressure_logged: bool,
+    /// #680: stuck records whose episode already appended its audit line
+    /// and wrote its failure marker — a stuck record used to append one
+    /// jsonl line and rewrite the marker EVERY pass (a parked record
+    /// re-spooled with the same bytes un-parks, re-poisons, and re-appends
+    /// forever). The value is the audited record's PAYLOAD DIGEST where one
+    /// was computable (poison episodes, park identity, retry-exhaustion
+    /// episodes), and empty when no digest was computable (unparseable
+    /// record): an empty identity rebinds as soon as the record at the name
+    /// parses. The map is the UN-PARK GATE's input too — a same-bytes
+    /// re-spool matches the parked identity and stays parked; a corrected
+    /// payload differs and rebinds onto a fresh episode (fresh audit line +
+    /// marker) instead of being silenced by the stale entry. Entries clear
+    /// when the record finally moves (every terminal arm), and the pass's
+    /// existence retain drops entries whose file was deleted externally.
+    stuck_episode_audited: HashMap<String, String>,
 }
 
 /// Retain active retries at the head. Parked records and unpublished receipts
 /// have their own maintenance paths and never consume apply/tail slots.
 fn pending_batch(root: &Path, retries: &RetryState, mut listed: Vec<PathBuf>) -> Vec<PathBuf> {
+    // #680: a name whose file vanished this pass (the parked-maintenance
+    // move above, or an external delete after the retains) must not enter
+    // the batch — a ghost poisons as "unreadable" and would open a junk
+    // episode for a name that may legitimately return.
     let mut selected: Vec<_> = retries
         .attempts
         .keys()
         .filter(|name| !retries.parked.contains_key(*name) && !retries.receipts.contains_key(*name))
         .map(|name| root.join(name))
+        .filter(|path| path.exists())
         .collect();
     selected.sort();
     selected.dedup();
@@ -1706,6 +1786,9 @@ fn pending_batch(root: &Path, retries: &RetryState, mut listed: Vec<PathBuf>) ->
     for path in listed {
         if selected.len() >= MAX_PENDING_FILES + MAX_TAIL_QUARANTINES {
             break;
+        }
+        if !path.exists() {
+            continue;
         }
         let skipped = path
             .file_name()
@@ -1793,8 +1876,32 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         .map(|name| root.join(name))
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .collect();
+    // #680 (the messaging sibling's round-4 C5 guard, ported): a non-UTF-8
+    // name can never be processed or keyed, but it passed the extension
+    // filter and consumes an enumeration window AND batch slot — planted
+    // squatters starve legitimately named records of apply slots (the
+    // bounded listing window itself is a further base residual, disclosed
+    // in the PR body). Quarantine on sight, BEFORE the batch count; no
+    // marker is possible (the stem is unnameable), failed/ is the trace.
+    let mut sight_warnings: usize = 0;
+    let listed: Vec<PathBuf> = listed
+        .into_iter()
+        .filter(|path| {
+            if path.file_name().and_then(|n| n.to_str()).is_some() {
+                return true;
+            }
+            let _ = quarantine_with_warning(path, &mut sight_warnings);
+            false
+        })
+        .collect();
     retries.attempts.retain(|name, _| root.join(name).exists());
     retries.parked.retain(|name, _| root.join(name).exists());
+    // #680: the episode map joins the existence retain — a re-spool after
+    // an externally deleted file starts clean instead of inheriting the
+    // stale identity.
+    retries
+        .stuck_episode_audited
+        .retain(|name, _| root.join(name).exists());
     // Retry only the terminal move, never the domain operation, when the
     // evidence directory recovers. Otherwise parked identities wedge forever.
     let parked: Vec<_> = retries
@@ -1811,9 +1918,21 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             continue;
         };
         let now = std::time::SystemTime::now();
-        if mtime > parked_at && mtime < now {
+        let bumped = mtime > parked_at && mtime < now;
+        // #680: a mtime bump un-parks only on a payload CHANGE — a
+        // same-bytes re-spool matches the parked episode's digest identity
+        // and stays parked (the gate, not the clock, admits a
+        // replacement; an mtime-keyed fresh apply would let a 1 Hz
+        // mtime-bumper recreate one duplicate apply per pass forever).
+        let admitted = bumped && parked_episode_rebinds(&name, &root, retries);
+        if admitted {
             retries.parked.remove(&name);
-        } else if mtime <= parked_at && mtime <= now {
+        } else if mtime <= parked_at && mtime <= now || bumped {
+            // Same bytes (or an unchanged-payload bump): the parked episode
+            // continues — retry only the terminal move, never the domain
+            // operation, so parked records still self-heal when the
+            // evidence directory recovers.
+            let mut moved = false;
             if let Some(snapshot) = RequestSnapshot::capture(&path) {
                 if snapshot.metadata.modified().ok() == Some(mtime)
                     && snapshot.still_matches(&path)
@@ -1821,6 +1940,25 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 {
                     retries.parked.remove(&name);
                     retries.attempts.remove(&name);
+                    retries.stuck_episode_audited.remove(&name);
+                    moved = true;
+                }
+            }
+            // #680's ensure-presence on the gate path: the re-spool
+            // unlinked the failure marker and the gate keeps the record
+            // parked, so no terminal arm will fire to restore it — answer
+            // the waiting call from here. The SPECIFIC cause stays in the
+            // failed/ evidence and the audited episode; this marker states
+            // the parked truth.
+            if bumped && !moved {
+                let stem = name.strip_suffix(".json").unwrap_or(&name);
+                if failure_marker_missing(stem) {
+                    write_failure_marker(
+                        stem,
+                        &anyhow::anyhow!(
+                            "the request is stuck on the app side (the quarantine move keeps failing) and its earlier failure marker was removed by the re-spool; check the Scheduled Tasks panel"
+                        ),
+                    );
                 }
             }
         }
@@ -1904,16 +2042,62 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
-            let error = anyhow::anyhow!(
+            // #680: probe the REAL cause BEFORE the move (the record leaves
+            // the spool afterwards, and this is the only pass that will ever
+            // handle it — the probe is structurally once per record, not
+            // per-pass dead work). A digest-bound recorded ok receipt
+            // suppresses the failure marker entirely (the receipt answers
+            // the waiting call); a corrupt tail record is "unparseable", an
+            // oversize/unreadable one says so — only the genuinely-over-
+            // ceiling record keeps the ceiling label.
+            let probe = read_regular_bounded(&path, MAX_SPOOL_FILE_BYTES as usize);
+            let parsed = probe
+                .as_deref()
+                .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(bytes).ok());
+            let ceiling_error = anyhow::anyhow!(
                 "pending-file ceiling {MAX_PENDING_FILES} exceeded; the record was never applied"
             );
+            let marker_reason: Option<anyhow::Error> = match (&probe, &parsed) {
+                (Some(_), Some(request)) => {
+                    let suppressed = result_marker_suppresses(
+                        &done_dir().join(format!("{stem}.json")),
+                        &spool_request_digest(request),
+                    );
+                    if suppressed {
+                        None
+                    } else {
+                        Some(ceiling_error)
+                    }
+                }
+                (Some(_), None) => Some(anyhow::Error::msg(
+                    "pending-ceiling tail record is unparseable",
+                )),
+                (None, _) => Some(anyhow::Error::msg(
+                    "pending-ceiling tail record is unreadable or oversize",
+                )),
+            };
             if quarantine_with_warning(&path, &mut quarantine_warnings) {
-                // Best-effort receipt: the record may not even parse
-                // (hostile growth), in which case no marker is written —
-                // the failed/ evidence and the streak warn above are the
-                // trace.
-                write_failure_marker(&stem, &error);
+                // Best-effort trail: the disposition is audited when the
+                // record parses (the tail can hold legitimate-looking
+                // records — the trail must show where they went and why);
+                // hostile bytes keep the failed/ evidence and the streak
+                // warn as the trace.
+                if parsed.is_some() {
+                    let audited_reason = marker_reason
+                        .as_ref()
+                        .map(|e| format!("{e:#}"))
+                        .unwrap_or_else(|| "recorded ok receipt".to_string());
+                    audit_failure(
+                        sessions,
+                        probe.as_deref(),
+                        &anyhow::anyhow!("{audited_reason}"),
+                    );
+                }
+                if let Some(reason) = marker_reason {
+                    write_failure_marker(&stem, &reason);
+                }
                 retries.attempts.remove(&name);
+                retries.stuck_episode_audited.remove(&name);
             } else {
                 // Persisted rename failure: leave the record queued and
                 // say so; it stays outside this pass's budget either way.
@@ -1965,12 +2149,20 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // retry-after-fix shape) writes fresh bytes with a newer mtime
         // and un-parks; a vanished name un-parks too. The quarantine
         // failure that parked the name applied to the previous bytes.
+        // #680: the un-park is admitted by the PAYLOAD DIGEST, not the
+        // clock — a same-bytes mtime bump matches the parked episode's
+        // identity and stays parked (the maintenance loop keeps retrying
+        // only the terminal move for it); a corrected payload rebinds.
         if let Some(parked_at) = retries.parked.get(&name).copied() {
             match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
                 // A restored/future timestamp is not proof of a new request:
                 // it would otherwise unpark again on every failed pass.
                 Ok(mtime) if mtime > parked_at && mtime < std::time::SystemTime::now() => {
-                    retries.parked.remove(&name);
+                    if parked_episode_rebinds(&name, &root, retries) {
+                        retries.parked.remove(&name);
+                    } else {
+                        continue;
+                    }
                 }
                 Ok(_) => continue,
                 // The name left the spool; nothing to keep skipping.
@@ -2024,7 +2216,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                         );
                     }
                 }
-                Processed::Retry(anyhow::anyhow!("processing panicked: {panic:?}"))
+                Processed::Retry(anyhow::anyhow!("processing panicked: {panic:?}"), None)
             }
         };
         match outcome {
@@ -2126,13 +2318,39 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                         "[scheduled-creation] further poison quarantines this pass are summarized; failed/ carries each record"
                     );
                 }
-                audit_failure(
-                    sessions,
-                    snapshot
-                        .as_ref()
-                        .and_then(|snapshot| snapshot.bytes.as_deref()),
-                    &error,
+                // #680: the audit line + failure marker fire ONCE per stuck
+                // episode (a parked record re-spooled with the same bytes
+                // un-parks, re-poisons, and used to re-append the jsonl and
+                // rewrite the marker every pass). The episode identity is
+                // the payload digest from the pre-read snapshot, and the
+                // gate-arm rebind rule applies: a corrected same-name
+                // re-spool — whose stale ok:false marker the SERVER unlinks
+                // — differs and opens a fresh episode (fresh audit line +
+                // marker) instead of being silenced by the stale entry.
+                let current_digest = snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.bytes.as_deref())
+                    .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(bytes).ok())
+                    .map(|request| spool_request_digest(&request));
+                let fresh_episode = opens_fresh_episode(
+                    retries.stuck_episode_audited.get(&name),
+                    current_digest.as_deref(),
                 );
+                if fresh_episode {
+                    // The inserted identity is also the PARK's digest
+                    // identity: the un-park gate (maintenance + skip
+                    // branches) reads this same map.
+                    retries
+                        .stuck_episode_audited
+                        .insert(name.clone(), current_digest.unwrap_or_default());
+                    audit_failure(
+                        sessions,
+                        snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.bytes.as_deref()),
+                        &error,
+                    );
+                }
                 if !snapshot
                     .as_ref()
                     .is_some_and(|snapshot| snapshot.still_matches(&path))
@@ -2145,6 +2363,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 // (and re-auditing) it every poll.
                 if quarantine_with_warning(&path, &mut quarantine_warnings) {
                     retries.attempts.remove(&name);
+                    retries.stuck_episode_audited.remove(&name);
                 } else {
                     retries
                         .parked
@@ -2155,9 +2374,18 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     .and_then(|s| s.to_str())
                     .unwrap_or(&name)
                     .to_string();
-                write_failure_marker(&stem, &error);
+                if fresh_episode {
+                    write_failure_marker(&stem, &error);
+                } else if failure_marker_missing(&stem) {
+                    // #680's ensure-presence: the deduped episode still
+                    // restores a marker the server unlinked on re-spool —
+                    // the audit line stays deduped, the waiting call does
+                    // not (write_failure_marker still refuses a landed ok
+                    // receipt).
+                    write_failure_marker(&stem, &error);
+                }
             }
-            Processed::Retry(error) => {
+            Processed::Retry(error, applied_digest) => {
                 let count = {
                     let attempt = retries.attempts.entry(name.clone()).or_insert(0);
                     *attempt += 1;
@@ -2167,13 +2395,35 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     log::warn!(
                         "[scheduled-creation] quarantining {name} after {count} create attempts: {error:#}"
                     );
-                    audit_failure(
-                        sessions,
+                    // #680: the terminal audit + marker fire once per stuck
+                    // episode (same rule as the Poison arm); the identity is
+                    // the APPLIED bytes' digest, carried back from
+                    // process_spool_file.
+                    let current_digest = applied_digest.or_else(|| {
                         snapshot
                             .as_ref()
-                            .and_then(|snapshot| snapshot.bytes.as_deref()),
-                        &error,
+                            .and_then(|snapshot| snapshot.bytes.as_deref())
+                            .and_then(|bytes| {
+                                serde_json::from_slice::<SpooledCreationRequest>(bytes).ok()
+                            })
+                            .map(|request| spool_request_digest(&request))
+                    });
+                    let fresh_episode = opens_fresh_episode(
+                        retries.stuck_episode_audited.get(&name),
+                        current_digest.as_deref(),
                     );
+                    if fresh_episode {
+                        retries
+                            .stuck_episode_audited
+                            .insert(name.clone(), current_digest.clone().unwrap_or_default());
+                        audit_failure(
+                            sessions,
+                            snapshot
+                                .as_ref()
+                                .and_then(|snapshot| snapshot.bytes.as_deref()),
+                            &error,
+                        );
+                    }
                     if !snapshot
                         .as_ref()
                         .is_some_and(|snapshot| snapshot.still_matches(&path))
@@ -2187,17 +2437,33 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     // now parks the name instead (see RetryState.parked).
                     if quarantine_with_warning(&path, &mut quarantine_warnings) {
                         retries.attempts.remove(&name);
+                        // #680: the episode entry clears on the move like
+                        // every other terminal arm — a lingering identity
+                        // would silence a fresh same-name episode that
+                        // lands within this pass's retain window.
+                        retries.stuck_episode_audited.remove(&name);
                     } else {
                         retries
                             .parked
                             .insert(name.clone(), std::time::SystemTime::now());
+                        // The parked episode's identity: the applied bytes'
+                        // digest — the un-park gate (not the mtime) decides
+                        // what a re-spool admits.
+                        retries
+                            .stuck_episode_audited
+                            .insert(name.clone(), current_digest.unwrap_or_default());
                     }
                     let stem = path
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or(&name)
                         .to_string();
-                    write_failure_marker(&stem, &error);
+                    if fresh_episode {
+                        write_failure_marker(&stem, &error);
+                    } else if failure_marker_missing(&stem) {
+                        // #680's ensure-presence (see the Poison arm).
+                        write_failure_marker(&stem, &error);
+                    }
                 } else {
                     log::warn!(
                         "[scheduled-creation] create attempt {count} for {name} failed (will retry): {error:#}"
@@ -3286,6 +3552,607 @@ mod tests {
                 .len(),
             0,
             "a poisoned record never applies"
+        );
+    }
+
+    /// Counts create() calls and delegates to the real domain pipeline —
+    /// the un-park gate's pin must observe the DOMAIN re-apply, not just
+    /// the final list.
+    struct CountingStateCreator<'a>(&'a ScheduledTaskState, Arc<AtomicUsize>);
+
+    impl TaskCreator for CountingStateCreator<'_> {
+        async fn create(
+            &self,
+            input: CreateScheduledTaskInput,
+        ) -> std::result::Result<ScheduledTaskDto, String> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            self.0.create_task(input).await
+        }
+
+        async fn update(
+            &self,
+            task_id: &str,
+            input: UpdateScheduledTaskInput,
+        ) -> std::result::Result<ScheduledTaskDto, String> {
+            self.0.update_task(task_id.to_string(), input).await
+        }
+
+        async fn delete(&self, task_id: &str) -> std::result::Result<ScheduledTaskDto, String> {
+            self.0.delete_task(task_id.to_string()).await
+        }
+    }
+
+    /// #680 (R2's reproduced-red case): a poison-parked record whose caller
+    /// re-spools a DIFFERENT payload — the server unlinks the stale
+    /// ok:false marker, the fresh mtime un-parks, and the parked episode's
+    /// digest identity must REBIND: a fresh audit line + fresh marker, not
+    /// the stale entry's silence.
+    #[tokio::test]
+    async fn poison_park_corrected_respool_opens_a_fresh_episode() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|content| content.lines().count())
+                .unwrap_or(0)
+        };
+        let poison_a =
+            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=* * * * *"))]);
+        std::fs::write(spool.join("swap.json"), &poison_a).unwrap();
+        let marker_path = done_dir().join("swap.json");
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(retries.parked.contains_key("swap.json"), "poll 1 parks");
+        assert_eq!(audit_lines(), 1, "poll 1 audits the episode");
+        std::fs::read_to_string(&marker_path).expect("poll 1 writes the marker");
+        let audited_before = retries
+            .stuck_episode_audited
+            .get("swap.json")
+            .cloned()
+            .expect("poll 1 stores the poison's digest identity");
+        assert!(
+            !audited_before.is_empty(),
+            "a parseable poison stores a REAL digest identity"
+        );
+        // Corrected (different) payload, still poison; the server unlinks
+        // the stale marker on re-spool and the rewrite bumps the mtime.
+        let corrected =
+            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=0 5 * * *"))]);
+        std::fs::write(spool.join("swap.json"), &corrected).unwrap();
+        std::fs::remove_file(&marker_path).unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            audit_lines(),
+            2,
+            "the corrected payload rebinds: a fresh episode appends its own audit line"
+        );
+        let rebound: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&marker_path).expect("the fresh episode's marker"),
+        )
+        .unwrap();
+        assert_eq!(rebound["ok"], false);
+        let corrected_request =
+            serde_json::from_slice::<SpooledCreationRequest>(corrected.as_bytes()).unwrap();
+        assert_eq!(
+            retries.stuck_episode_audited.get("swap.json"),
+            Some(&spool_request_digest(&corrected_request)),
+            "the episode identity rebinds onto the corrected payload's digest"
+        );
+        assert!(
+            retries.parked.contains_key("swap.json"),
+            "the fresh episode parks again (failed/ still blocked)"
+        );
+    }
+
+    /// #680: a poison-parked record whose caller re-spools the SAME bytes
+    /// — the un-park gate keeps it parked (no second audit line), and the
+    /// marker the server unlinked is RESTORED for the waiting call.
+    #[tokio::test]
+    async fn poison_park_same_bytes_bump_stays_parked_and_marker_is_restored() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|content| content.lines().count())
+                .unwrap_or(0)
+        };
+        let poison_record =
+            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=* * * * *"))]);
+        std::fs::write(spool.join("swap.json"), &poison_record).unwrap();
+        let marker_path = done_dir().join("swap.json");
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(retries.parked.contains_key("swap.json"), "poll 1 parks");
+        assert_eq!(audit_lines(), 1);
+        // Same bytes re-spooled (fresh mtime); the server unlinks the stale
+        // not-ok marker.
+        std::fs::write(spool.join("swap.json"), &poison_record).unwrap();
+        std::fs::remove_file(&marker_path).unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            retries.parked.contains_key("swap.json"),
+            "the same-bytes bump does NOT un-park (the gate, not the clock)"
+        );
+        assert_eq!(
+            audit_lines(),
+            1,
+            "the same-bytes re-poison stays deduped in the audit trail"
+        );
+        let restored: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&marker_path)
+                .expect("the unlinked marker is restored for the waiting call"),
+        )
+        .unwrap();
+        assert_eq!(restored["ok"], false);
+        assert!(
+            restored["error"]
+                .as_str()
+                .unwrap()
+                .contains("stuck on the app side"),
+            "the gate-path restore states the parked truth: {:?}",
+            restored["error"]
+        );
+        // A quiet pass changes nothing.
+        let restored_text = std::fs::read_to_string(&marker_path).unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(audit_lines(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&marker_path).unwrap(),
+            restored_text,
+            "the restored marker is not rewritten per pass"
+        );
+    }
+
+    /// #680: the parked episode's identity (and what budget there was)
+    /// clears when the terminal move finally succeeds — a lingering
+    /// identity would silence a fresh same-name episode.
+    #[tokio::test]
+    async fn poison_park_episode_clears_when_the_quarantine_finally_succeeds() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|content| content.lines().count())
+                .unwrap_or(0)
+        };
+        std::fs::write(
+            spool.join("swap.json"),
+            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=* * * * *"))]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(retries.parked.contains_key("swap.json"), "poll 1 parks");
+        // failed/ unlocks; no re-spool — the parked record's terminal move
+        // is retried by the maintenance path itself.
+        std::fs::remove_file(spool.join("failed")).unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            !spool.join("swap.json").exists() && failed_dir().join("swap.json").exists(),
+            "the parked record's move is retried and lands"
+        );
+        assert_eq!(
+            audit_lines(),
+            1,
+            "the maintenance move does not re-audit the episode"
+        );
+        assert!(retries.attempts.is_empty(), "the move clears the budget");
+        assert!(retries.parked.is_empty(), "the move clears the park");
+        assert!(
+            retries.stuck_episode_audited.is_empty(),
+            "the move clears the episode entry"
+        );
+    }
+
+    /// #680: the retry-exhausted park feeds the same gate — a same-bytes
+    /// mtime bumper buys ZERO re-applies forever (the storm the gate
+    /// exists to stop), while a corrected payload rebinds and applies.
+    #[tokio::test]
+    async fn retry_park_same_bytes_bump_never_reapplies_corrected_payload_rebinds() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(failed_dir(), b"blocked\n").unwrap();
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        for _ in 0..MAX_CREATE_ATTEMPTS {
+            process_pending_spool(
+                &FailingCreator,
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+        }
+        assert!(
+            retries.parked.contains_key("stuck.json"),
+            "the exhausted record parks (quarantine blocked)"
+        );
+        assert!(
+            !retries
+                .stuck_episode_audited
+                .get("stuck.json")
+                .map(String::is_empty)
+                .unwrap_or(true),
+            "the park stores the attempted record's digest identity"
+        );
+        // Same bytes re-spooled: the gate must not grant a re-apply.
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        let applies = Arc::new(AtomicUsize::new(0));
+        process_pending_spool(
+            &CountingStateCreator(&state, applies.clone()),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            applies.load(Ordering::SeqCst),
+            0,
+            "a same-bytes mtime bump buys exactly zero re-applies"
+        );
+        assert!(retries.parked.contains_key("stuck.json"));
+        // A corrected payload is a different digest: it rebinds and applies.
+        std::fs::write(
+            spool.join("stuck.json"),
+            spool_record_json(&[
+                ("idempotency_key", serde_json::json!("k-corrected")),
+                ("name", serde_json::json!("更正后的名字")),
+            ]),
+        )
+        .unwrap();
+        process_pending_spool(
+            &CountingStateCreator(&state, applies.clone()),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            applies.load(Ordering::SeqCst),
+            1,
+            "the corrected payload rebinds and applies"
+        );
+        assert!(
+            !spool.join("stuck.json").exists(),
+            "the corrected record is consumed"
+        );
+    }
+
+    /// #680: a CORRUPT tail record's marker names the real cause, not the
+    /// ceiling label.
+    #[tokio::test]
+    async fn corrupt_ceiling_tail_names_the_real_cause() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        for i in 0..MAX_PENDING_FILES {
+            std::fs::write(spool.join(format!("f{i:04}.json")), spool_record_json(&[])).unwrap();
+        }
+        std::fs::write(spool.join("f9999.json"), b"not json{").unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(failed_dir().join("f9999.json").exists());
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("f9999.json")).expect("failure marker"),
+        )
+        .unwrap();
+        assert!(
+            marker["error"].as_str().unwrap().contains("unparseable"),
+            "the marker names the real cause: {marker}"
+        );
+    }
+
+    /// #680: an oversize tail record's marker names the real cause.
+    #[tokio::test]
+    async fn oversize_ceiling_tail_names_the_real_cause() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        for i in 0..MAX_PENDING_FILES {
+            std::fs::write(spool.join(format!("f{i:04}.json")), spool_record_json(&[])).unwrap();
+        }
+        let mut oversize = spool_record_json(&[]);
+        oversize.insert_str(
+            oversize.len() - 1,
+            &format!(",\"pad\":\"{}\"", "x".repeat(MAX_SPOOL_FILE_BYTES as usize)),
+        );
+        std::fs::write(spool.join("f9999.json"), oversize).unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(failed_dir().join("f9999.json").exists());
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("f9999.json")).expect("failure marker"),
+        )
+        .unwrap();
+        let error = marker["error"].as_str().unwrap();
+        assert!(
+            error.contains("unreadable or oversize"),
+            "the marker names the real cause: {error}"
+        );
+        assert!(
+            !error.contains("pending-file ceiling"),
+            "the ceiling label must not mask the real cause: {error}"
+        );
+    }
+
+    /// #680: a ceiling-tail record whose digest-bound ok receipt already
+    /// landed writes NO failure marker (the receipt answers it), and the
+    /// disposition still leaves an audit line.
+    #[tokio::test]
+    async fn ceiling_tail_with_landed_receipt_writes_no_failure_marker() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        for i in 0..MAX_PENDING_FILES {
+            std::fs::write(spool.join(format!("f{i:04}.json")), spool_record_json(&[])).unwrap();
+        }
+        let tail_request =
+            serde_json::from_slice::<SpooledCreationRequest>(spool_record_json(&[]).as_bytes())
+                .unwrap();
+        let digest = spool_request_digest(&tail_request);
+        std::fs::write(
+            done_dir().join("f9999.json"),
+            serde_json::json!({"ok": true, "task_id": "already-there", "request_digest": digest})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(spool.join("f9999.json"), spool_record_json(&[])).unwrap();
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            failed_dir().join("f9999.json").exists(),
+            "the tail is still quarantined (ceiling is terminal either way)"
+        );
+        let receipt: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("f9999.json")).expect("receipt intact"),
+        )
+        .unwrap();
+        assert_eq!(
+            receipt["ok"], true,
+            "the landed receipt is not overwritten by a failure marker"
+        );
+        let audit = std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+            .expect("the tail disposition is audited");
+        assert!(
+            audit.contains("recorded ok receipt"),
+            "the receipt-answered tail's audit names the suppression: {audit}"
+        );
+    }
+
+    /// #680 (the messaging sibling's round-4 C5 guard, ported): non-UTF-8
+    /// spool names are quarantined ON SIGHT, before the batch count — they
+    /// can never be processed or keyed, and counting them let planted
+    /// squatters starve legitimately named records.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_utf8_squatters_do_not_starve_legitimate_records() {
+        use std::os::unix::ffi::OsStringExt;
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let mut squatters = Vec::new();
+        for i in 0..MAX_PENDING_FILES {
+            // A trailing 0xFF byte is never valid UTF-8; the .json suffix
+            // passes the extension filter.
+            let mut name_bytes = format!("sq{i:03}").into_bytes();
+            name_bytes.push(0xFF);
+            name_bytes.extend_from_slice(b".json");
+            let name = std::ffi::OsString::from_vec(name_bytes);
+            squatters.push(spool.join(&name));
+            std::fs::write(spool.join(&name), b"{}\n").unwrap();
+        }
+        // Sorts after every squatter: without the on-sight quarantine it
+        // falls past the batch window into the quarantined tail (or beyond
+        // the enumeration window entirely).
+        std::fs::write(spool.join("zzz.json"), spool_record_json(&[])).unwrap();
+        let notify_count = Arc::new(AtomicUsize::new(0));
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(notify_count.clone()),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            notify_count.load(Ordering::SeqCst),
+            1,
+            "the legitimate record applies — squatters did not consume its slot"
+        );
+        assert!(
+            !spool.join("zzz.json").exists(),
+            "the legitimate record is consumed, not tail-quarantined"
+        );
+        for squatter in &squatters {
+            assert!(
+                !squatter.exists() && failed_dir().join(squatter.file_name().unwrap()).exists(),
+                "the non-UTF-8 squatter is quarantined on sight: {squatter:?}"
+            );
+        }
+        assert!(
+            retries.attempts.is_empty() && retries.stuck_episode_audited.is_empty(),
+            "no keyed state leaks from the unnameable records"
+        );
+    }
+
+    /// #680: the Poison arm's OWN post-move clear (quarantine succeeds on
+    /// the same pass the episode opens) — a lingering identity would
+    /// silence a fresh same-name episode. The maintenance-path clear has
+    /// its own pin; this is the arm's.
+    #[tokio::test]
+    async fn poison_arm_clears_the_episode_entry_when_its_quarantine_succeeds() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|content| content.lines().count())
+                .unwrap_or(0)
+        };
+        std::fs::write(
+            spool.join("swap.json"),
+            spool_record_json(&[("rrule", serde_json::json!("FREQ=CRON;EXPR=* * * * *"))]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        // failed/ works: the poison arm quarantines on the same pass.
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            !spool.join("swap.json").exists() && failed_dir().join("swap.json").exists(),
+            "the poison quarantines immediately"
+        );
+        assert_eq!(audit_lines(), 1, "exactly one episode audit line");
+        assert!(
+            retries.attempts.is_empty()
+                && retries.parked.is_empty()
+                && retries.stuck_episode_audited.is_empty(),
+            "the arm's own move clears the budget, park, and episode state"
+        );
+        assert!(
+            !retries.stuck_episode_audited.contains_key("swap.json"),
+            "no episode identity outlives the move"
+        );
+    }
+
+    /// #680: the retry-exhausted arm's OWN post-move clear — the review's
+    /// "the only terminal arm without the post-move episode clear" finding,
+    /// closed for every arm.
+    #[tokio::test]
+    async fn retry_arm_clears_the_episode_entry_when_its_quarantine_succeeds() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        retries
+            .attempts
+            .insert("stuck.json".to_string(), MAX_CREATE_ATTEMPTS);
+        // failed/ works: the exhausted record's terminal move succeeds on
+        // the same pass the episode opens.
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            !spool.join("stuck.json").exists() && failed_dir().join("stuck.json").exists(),
+            "the exhausted record quarantines immediately"
+        );
+        assert!(
+            retries.attempts.is_empty()
+                && retries.parked.is_empty()
+                && retries.stuck_episode_audited.is_empty(),
+            "the arm's own move clears the budget, park, and episode state"
         );
     }
 
@@ -5478,15 +6345,25 @@ mod tests {
     }
     #[test]
     fn changing_listing_cannot_displace_tracked_requests_or_grow_state() {
-        let root = Path::new("spool");
+        let _home = TempHome::new();
+        // Real files: #680's ghost filter drops batch entries whose file
+        // vanished this pass, so the fixture must exist on disk.
+        let root = spool_root();
+        std::fs::create_dir_all(&root).unwrap();
         let mut state = RetryState::default();
         for i in 0..MAX_PENDING_FILES {
-            state.attempts.insert(format!("zzz-{i:04}.json"), 1);
+            let name = format!("zzz-{i:04}.json");
+            std::fs::write(root.join(&name), b"{}\n").unwrap();
+            state.attempts.insert(name, 1);
         }
         let listing = (0..(MAX_PENDING_FILES + MAX_TAIL_QUARANTINES + 2))
-            .map(|i| root.join(format!("aaa-new-{i:04}.json")))
+            .map(|i| {
+                let path = root.join(format!("aaa-new-{i:04}.json"));
+                std::fs::write(&path, b"{}\n").unwrap();
+                path
+            })
             .collect();
-        let batch = pending_batch(root, &state, listing);
+        let batch = pending_batch(&root, &state, listing);
         assert_eq!(batch.len(), MAX_PENDING_FILES + MAX_TAIL_QUARANTINES);
         assert!(
             batch[..MAX_PENDING_FILES].iter().all(|path| state
@@ -5567,7 +6444,11 @@ mod tests {
 
     #[test]
     fn parked_and_receipt_names_never_displace_fresh_apply_slots() {
-        let root = Path::new("spool");
+        let _home = TempHome::new();
+        // Real files: #680's ghost filter drops batch entries whose file
+        // vanished this pass.
+        let root = spool_root();
+        std::fs::create_dir_all(&root).unwrap();
         let mut retries = RetryState::default();
         for i in 0..MAX_PENDING_FILES {
             retries
@@ -5578,8 +6459,11 @@ mod tests {
             "receipt.json".into(),
             ("digest".into(), serde_json::json!({})),
         );
+        for name in ["parked-0.json", "receipt.json", "fresh.json"] {
+            std::fs::write(root.join(name), b"{}\n").unwrap();
+        }
         let batch = pending_batch(
-            root,
+            &root,
             &retries,
             vec![
                 root.join("parked-0.json"),
