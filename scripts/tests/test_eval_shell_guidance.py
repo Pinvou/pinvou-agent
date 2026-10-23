@@ -89,6 +89,51 @@ class ShellGuidanceEvalTests(unittest.TestCase):
                     if paired:
                         self.assertEqual(prompts[0], prompts[1])
 
+    def test_new_failure_modes_are_selectable_without_expanding_default_calls(self):
+        fixture = {"name": "Bash", "shell": "powershell", "description": "fixture",
+                   "input_schema": {"type": "object", "properties": {}}}
+        environment = {"SHELL_EVAL_BASE_URL": "http://127.0.0.1:1/v1",
+                       "SHELL_EVAL_MODEL": "synthetic-model"}
+        added = ["verified_interpreter_reuse", "script_transport", "probe_outcomes"]
+        defaults = ["http_preview", "json_fields", "csv_sum", "quoted_path"]
+        for selection in (None, added):
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as temp:
+                directory = Path(temp)
+                fixture_path = directory / "fixture.json"
+                fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+                output = directory / "results"
+                args = [str(SCRIPT), "--fixture", str(fixture_path), "--output", str(output),
+                        "--arms", "after", "--repeats", "1", "--workers", "1"]
+                if selection:
+                    args += ["--tasks", *selection]
+                requests = []
+
+                def respond(request, timeout):
+                    requests.append(json.loads(request.data))
+                    return io.StringIO(json.dumps({"choices": [{"message": {"tool_calls": [
+                        {"function": {"name": "Bash", "arguments": "{}"}}
+                    ]}}]}))
+
+                with patch("sys.argv", args), patch.dict(os.environ, environment, clear=True), \
+                        patch.object(EVAL.urllib.request, "urlopen", side_effect=respond), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    EVAL.main()
+                expected = selection or defaults
+                generation = json.loads((output / "generation.json").read_text(encoding="utf-8"))
+                self.assertEqual(sorted(run["task"] for run in generation["runs"]), sorted(expected))
+                self.assertEqual(len(requests), len(expected))
+                self.assertTrue(all("arguments" in run for run in generation["runs"]))
+                if selection:
+                    tasks = [request["messages"][1]["content"] for request in requests]
+                    self.assertIn("C:/shell-eval/python/python.exe", tasks[0])
+                    self.assertIn("不可运行的占位符", tasks[0])
+                    self.assertIn("stdin", tasks[1])
+                    self.assertIn("$text = @'\nspace \"quote\" $HOME\n第二行\n'@\n", tasks[1])
+                    self.assertIn("不连接 SSH", tasks[1])
+                    self.assertIn("必需 B", tasks[2])
+                    self.assertIn("非零退出", tasks[2])
+                    self.assertIn("可选 C", tasks[2])
+
 
 if __name__ == "__main__":
     unittest.main()

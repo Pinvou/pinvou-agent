@@ -185,13 +185,20 @@ test('shared shell instructions preserve interpreter, transport, and probe safet
     'utf8',
   );
 
-  // These are model-visible contracts, not proof that a model follows them.
-  assert.match(shared, /先确认解释器,再复用同一入口/);
+  // Guard the unusable-alias prescription, opaque script transport and masked
+  // required failures. These text contracts do not prove model adherence.
+  assert.match(shared, /算术 \/ 跑脚本用实际可用的解释器/);
+  assert.match(shared, /先确认解释器[，,]再复用同一入口/);
   assert.match(shared, /找到有效入口后停止探测.*不要因另一个别名失败而宣称 Python 或依赖未安装/);
   assert.doesNotMatch(shared, /python3\s+-c\b/);
 
   assert.match(shared, /跨 shell 传递脚本要保全文本/);
+  assert.match(shared, /通过工具的 `stdin` 参数或文件输入传给目标 shell[，,]保留可检查的明文/);
+  assert.match(shared, /不要把脚本编码后在目标端解码执行/);
+  assert.doesNotMatch(shared, /可传递明确编码的载荷[，,]在目标端解码后执行/);
   assert.match(shared, /文本传输明确双方编码.*不要依赖 PowerShell 管道的默认编码/);
+  assert.match(shared, /不要用反斜杠保护 PowerShell 中的/);
+  assert.match(shared, /先用无副作用的参数回显确认.*再执行远端操作/);
   assert.match(shared, /编码不改变命令含义或授权要求/);
 
   assert.match(shared, /每项探针独立报告结果.*区分必需检查和可选检查/);

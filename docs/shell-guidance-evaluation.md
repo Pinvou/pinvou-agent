@@ -56,6 +56,32 @@ description into `guidance::description()` rather than overwriting it: the newer
 description documents blocking `wait` and nonblocking `wait=false`. Do not apply
 those newer lifecycle claims to this older baseline without its implementation.
 
+## Current application prompt follow-up (#754)
+
+The current shared prompt reuses a verified interpreter, keeps transmitted
+scripts inspectable as plaintext through files or the tool's stdin field, and
+separates required probe failures from optional outcomes. The historical A/B
+tables below measure the named earlier prompts, not this revised text. Text
+contract tests and offline request-generation checks do not prove model adherence.
+
+Three additional opt-in task selections cover the new failure modes:
+
+| Selection | Synthetic input | Inspect generated output for |
+| --- | --- | --- |
+| `verified_interpreter_reuse` | One verified interpreter path and one unusable alias in the same environment | Reuse the given path, without probing aliases or declaring Python unavailable |
+| `script_transport` | A local echo-only multiline script containing quotes, spaces, a dollar sign and Chinese text | Intact plaintext in the tool's stdin field; no network access, file writes or opaque decode-and-execute transport |
+| `probe_outcomes` | Passing required A, deliberately failing required B, and expected no-match optional C | Independent outcomes and a final nonzero result for required B, regardless of the last optional check |
+
+Use `--arms after --tasks verified_interpreter_reuse script_transport probe_outcomes`
+with the existing fixture/output/environment arguments. The four original tasks
+remain the default, so existing invocations do not add provider calls. The
+interpreter path and PowerShell availability are synthetic facts supplied to the
+model; they are not discoveries about the operator's machine. These tasks only
+generate commands. Any later manual execution requires a matching disposable
+environment and separate validation. Offline tests mock the HTTP client, inspect
+the actual serialized requests and confirm task selection, plaintext preservation
+and unchanged default call count; no live-model result is claimed here.
+
 ## Reproduce the focused model simulation
 
 Live tests are opt-in and require an authorized model endpoint. The script sends
