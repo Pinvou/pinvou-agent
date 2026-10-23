@@ -1,10 +1,10 @@
 # CodeWhale Fork 修改清单
 
-## T2 审核候选：保留工具结果失败标志
+## T2 已合入：保留工具结果失败标志
 
 - 引擎将返回成功封装但 success=false 的工具结果记为失败，同时保留正文与 schema 加载但未执行的成功语义。这里选择性前移上游提交 `2ae7460e4` 的 is_error 映射，并非恢复 v0.9.12 基线曾有的映射；该上游提交的取消 metadata 与 shell receipt 改动不在本候选范围内。
 - 中断且未执行的标记也通过该失败映射记录；恢复后的失败/取消卡片、运行时 Failed 状态与 CLI failure 计数会相应变化。子 Agent 记录器及 TUI SyncSession 镜像原有的失败标志丢失属于已披露的后续项，不声称本候选已覆盖。
-- 候选 gitlink：`687c151e0d8e5cbc5d41048ec41f77e0ac2cd363`（v0.9.12 之上共 77 个提交），基于公开维护头 `083cebfd9aac5f6b9993ed610383fe2b38c6785f`。下文登记的公开维护分支和不可变 tag 尚未改变；本候选是独立分支，不包含其他会话工具候选修复。
+- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
 - 合入前提：先合入对应底座 PR，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单中的候选头替换为实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`，重新计算 `EXPECTED_COMMITS`，同步两份策略/修改清单并协调已合入修复，最后通过 `verify-public-submodule.sh`。候选校验通过不豁免公开维护头门禁，也不允许重打基线 tag；本候选不具备发布资格。
 - 验证证据见承载 PR 及其固定提交自审核。指纹固定 `fn forkguard_tool_failure_flag_survives_recording_and_round_trip`。不包含客户数据、凭证、运行日志或复现会话文件。
 

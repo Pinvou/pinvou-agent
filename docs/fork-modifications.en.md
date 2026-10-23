@@ -1,11 +1,11 @@
 # CodeWhale Fork Modification Register
 
-## T2 review candidate: Preserve failed tool-result flags
+## T2 integrated: Preserve failed tool-result flags
 
 - The engine records unsuccessful returned tool payloads as failed in session history, retaining error bodies and successful schema-hydration semantics. This adopts the upstream mapping rather than adding HTTP heuristics.
 - Selective forward-port of upstream `2ae7460e4`, not a mapping present in the v0.9.12 baseline. Cancellation metadata and shell receipt changes from that upstream commit are outside this candidate. Interrupted, unexecuted markers also acquire the failure flag, affecting restored cards, runtime Failed states and CLI failure counts. Pre-existing child-recorder and TUI SyncSession flag loss remain separate follow-ups.
-- Candidate gitlink: `687c151e0d8e5cbc5d41048ec41f77e0ac2cd363` (77 commits above the v0.9.12 base), based on public maintenance head `083cebfd9aac5f6b9993ed610383fe2b38c6785f`. The maintenance branch and immutable tag below remain unchanged. This is an independent candidate, not a cumulative branch containing the other session-tool fixes.
-- Merge dependency: first merge its foundation PR, then replace the candidate gitlink, `EXPECTED_HEAD` and both register heads with the actual public maintenance SHA; verify `EXPECTED_UPSTREAM`, recount `EXPECTED_COMMITS`, synchronize both policy/register pairs, reconcile any already-landed fixes and pass `verify-public-submodule.sh`. Do not weaken that gate or retag the baseline. This candidate is not release eligible.
+- Current gitlink: `ea9fdc90f1c90335554833195eeeb847c83d82dd`, the public maintenance head containing #115/#116/#117 (79 commits, 77 DCO-signed).
+- The foundation dependency has merged. Parent gitlink, counts, both policy/register pairs and fingerprints follow the actual maintenance head. The public verifier is retained; final integrated CI and formal re-review remain required. No release qualification is claimed.
 - Verification is recorded in the carrying PR and its exact-commit self-review. The guard pins `fn forkguard_tool_failure_flag_survives_recording_and_round_trip`. Customer data, credentials, runtime logs and reproduction session files are excluded.
 
 ## Merged into the maintenance branch: compaction checkpoint role compatibility
