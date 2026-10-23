@@ -76,7 +76,7 @@
 
 - #115 保留 shell 默认环境并合并叠加，Windows 显式变量名按大小写不敏感覆盖；#116 已以 [`e9a7f48da1`](https://github.com/Pinvou/CodeWhale/commit/e9a7f48da1) 合入，将返回的失败结果标志写入实际历史并验证会话往返。两项均在 T2 内，不增加主题。
 - #116 选择性前移上游 `2ae7460e4` 的 `is_error` 映射；该映射不在 v0.9.12 基线内，上游同一提交的取消 metadata 与 shell receipt 改动未纳入。成功返回但 `success=false` 的结果以及中断且未执行的标记记为失败，正文保留；原有执行错误、成功及 schema 加载但未执行的成功语义不变。
-- 影响面为持久化历史的 `is_error`、恢复后 Anthropic 请求中的失败标志、CLI failure 计数、会话选择器预览及 runtime API 会话 JSON/工具回执。实时工具卡片与 ACP Failed 状态原已依据 `ToolResult.success`，不因这次历史标志映射而改变；恢复历史的渲染器不生成 ToolResult 卡片。子 Agent 记录器（`tools/subagent/mod.rs`）与 TUI `SyncSession` 镜像（`tui/ui/event_loop.rs`）原有的标志丢失仍是后续项，不声称 #116 已覆盖。
+- 影响面为持久化历史的 `is_error`、恢复后 Anthropic 请求中的失败标志、CLI failure 计数、会话选择器预览、runtime API 会话 JSON/工具回执，以及 Pinvou 应用恢复工具卡片时由 `!is_error` 回填的成功状态（`bridge-shared-helpers.js`）。实时工具卡片与 ACP Failed 状态原已依据 `ToolResult.success`，不因这次历史标志映射而改变；CodeWhale TUI 恢复历史的渲染器不生成 ToolResult 卡片。子 Agent 记录器（`tools/subagent/mod.rs`）与 TUI `SyncSession` 镜像（`tui/ui/event_loop.rs`）原有的标志丢失仍是后续项，不声称 #116 已覆盖。
 - 指纹同时登记 Windows 默认值/构造器/显式覆盖/原生工具测试及 `forkguard_tool_failure_flag_survives_recording_and_round_trip`。底座合入不等于客户环境或发布验证通过。
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
