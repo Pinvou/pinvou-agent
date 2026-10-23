@@ -1,12 +1,13 @@
 //! Original compiled anchor and Package byte binding; no current-time owner.
-use super::DownloadedPackageSource;
+use super::{DownloadedPackageSource, poll, validate_root_successors};
 use crate::{
     error::{Error, Result},
     profile::{ByteReference, Seed},
 };
 use pinvou_upgrade_codec::{Document, InputKind, decode_canonical_envelope};
 use pinvou_upgrade_verifier::{
-    VerificationInputs, verify_archived_package, verify_with_supplied_root,
+    VerificationError, VerificationInputs, verify_archived_package, verify_root_chain_source,
+    verify_with_supplied_root,
 };
 
 fn document(bytes: &[u8]) -> Result<Document> {
@@ -23,7 +24,9 @@ pub(crate) struct BoundPackage {
 pub(crate) fn bind_package(
     source: &DownloadedPackageSource<'_>,
     seed: &Seed,
+    cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<BoundPackage> {
+    poll(cancelled)?;
     // Expectations belong to the compiled host, never the ordinary cache.
     let expected = document(
         &serde_json::to_vec(&serde_json::json!({
@@ -35,7 +38,7 @@ pub(crate) fn bind_package(
     let bytes = expected
         .canonical_bytes()
         .map_err(|_| Error::ImageRefused)?;
-    let checked = verify_bound_package(
+    let checked = verify_bound_package_with_roots(
         HostAnchor {
             bytes: seed.original_root_bytes(),
             reference: &seed.original_root,
@@ -50,6 +53,8 @@ pub(crate) fn bind_package(
             target: &seed.target_key,
             historical_time: source.historical_time,
         },
+        source.root_successors,
+        cancelled,
     )?;
     Ok(BoundPackage {
         document: checked,
@@ -76,7 +81,26 @@ struct PackageInput<'a> {
     historical_time: u64,
 }
 
+#[cfg(test)]
 fn verify_bound_package(host: HostAnchor<'_>, source: PackageInput<'_>) -> Result<Document> {
+    verify_bound_package_with_roots(host, source, &[], &mut || false)
+}
+
+fn verify_bound_package_with_roots(
+    host: HostAnchor<'_>,
+    source: PackageInput<'_>,
+    successors: &[&[u8]],
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Document> {
+    // Latch even a transient cancellation from any reader/kernel boundary. The
+    // typed cancellation is checked before mapping a kernel's signature error.
+    let mut stopped = false;
+    let mut stop = || {
+        stopped |= cancelled();
+        stopped
+    };
+    poll(&mut stop)?;
+    validate_root_successors(successors)?;
     if !host.reference.matches(host.bytes) {
         return Err(Error::InitialTrustUnavailable);
     }
@@ -92,9 +116,10 @@ fn verify_bound_package(host: HostAnchor<'_>, source: PackageInput<'_>) -> Resul
         .signed()
         .root_policy_shape()
         .map_err(|_| Error::InitialTrustUnavailable)?;
-    // The job pins canonical Root CLAIMS, while Seed pins the original envelope.
-    // These are intentionally different pins; never compare their raw digests.
-    if source.root_claims_pin != crate::json::sha256(root.canonical_bytes()) {
+    // Preserve the original empty-chain pin gate (and refusal precedence).
+    if successors.is_empty()
+        && source.root_claims_pin != crate::json::sha256(root.canonical_bytes())
+    {
         return Err(Error::InitialTrustUnavailable);
     }
     let expected_root = document(
@@ -112,11 +137,13 @@ fn verify_bound_package(host: HostAnchor<'_>, source: PackageInput<'_>) -> Resul
     .map_err(|_| Error::InitialTrustUnavailable)?;
     // Same deterministic self-threshold integrity basis as the bootstrap owner;
     // signed issuedAt is never promoted to an observed trusted current clock.
-    verify_with_supplied_root(
+    poll(&mut stop)?;
+    let anchor_check = verify_with_supplied_root(
         host.bytes,
         VerificationInputs::new(&root, &expected_root, &issued),
-    )
-    .map_err(|_| Error::InitialTrustUnavailable)?;
+    );
+    poll(&mut stop)?;
+    anchor_check.map_err(|_| Error::InitialTrustUnavailable)?;
 
     let expected = document(source.expected)?;
     require_host_context(expected.value(), host.product, host.component, host.target)?;
@@ -126,8 +153,47 @@ fn verify_bound_package(host: HostAnchor<'_>, source: PackageInput<'_>) -> Resul
     let time = document(source.historical_time.to_string().as_bytes())?
         .protocol_time_shape()
         .map_err(|_| Error::ImageRefused)?;
-    verify_archived_package(source.envelope, &root, &expected, &time)
-        .map_err(|_| Error::ImageRefused)?;
+    let chain = if successors.is_empty() {
+        None
+    } else {
+        let checked = verify_root_chain_source(
+            successors.len(),
+            |index| {
+                if stop() {
+                    return Err(VerificationError::RootChainInvalid);
+                }
+                let original = successors[index];
+                // Length was checked without parsing/owning the chain. Repeat
+                // before allocation so no unbounded object enters the kernel.
+                if original.is_empty() || original.len() > crate::json::RECORD_MAX {
+                    return Err(VerificationError::RootChainInvalid);
+                }
+                let owned = original.to_vec();
+                if stop() {
+                    return Err(VerificationError::RootChainInvalid);
+                }
+                Ok(owned)
+            },
+            &root,
+            &expected_root,
+            &time,
+        );
+        poll(&mut stop)?;
+        Some(checked.map_err(|_| Error::InitialTrustUnavailable)?)
+    };
+    let final_root = chain
+        .as_ref()
+        .map(|checked| checked.checked_final_root())
+        .unwrap_or(&root);
+    // The input pins final canonical Root CLAIMS, while compiled Seed pins the
+    // initial raw envelope. No received object chooses the initial trust root.
+    if source.root_claims_pin != crate::json::sha256(final_root.canonical_bytes()) {
+        return Err(Error::InitialTrustUnavailable);
+    }
+    poll(&mut stop)?;
+    let package_check = verify_archived_package(source.envelope, final_root, &expected, &time);
+    poll(&mut stop)?;
+    package_check.map_err(|_| Error::ImageRefused)?;
     document(source.envelope)
 }
 

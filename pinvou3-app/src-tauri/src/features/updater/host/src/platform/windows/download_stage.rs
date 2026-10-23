@@ -223,7 +223,7 @@ pub(crate) fn stage_download_bytes(
     poll(cancelled)?;
     let seed = Seed::embedded()?;
     // All metadata signature/host bindings precede protected object creation.
-    let bound = bind_package(source, &seed)?;
+    let bound = bind_package(source, &seed, cancelled)?;
     let package = &bound.document;
     poll(cancelled)?;
     let signed = &package.value()["signed"];

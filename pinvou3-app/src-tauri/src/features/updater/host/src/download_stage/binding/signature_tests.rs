@@ -133,3 +133,139 @@ fn historical_root_expiry_does_not_grant_current_rights_or_erase_package_bytes()
         Err(Error::ImageRefused)
     ));
 }
+
+fn rotation_text(key: &str) -> &'static str {
+    fixture()["rotation"][key].as_str().unwrap()
+}
+fn rotated_source() -> PackageInput<'static> {
+    let mut value = source();
+    value.root_claims_pin = rotation_text("root3ClaimsPin");
+    value.envelope = rotation_text("package3").as_bytes();
+    value.historical_time = fixture()["rotation"]["now"].as_u64().unwrap();
+    value
+}
+
+#[test]
+fn historical_package_accepts_real_root_and_package_key_rotations() {
+    let pin = anchor();
+    let steps = [
+        rotation_text("root2").as_bytes(),
+        rotation_text("root3").as_bytes(),
+    ];
+    // The new Package key is NOT authorized by the original anchor alone.
+    assert!(verify_bound_package(host(&pin), rotated_source()).is_err());
+    assert!(
+        verify_bound_package_with_roots(host(&pin), rotated_source(), &steps, &mut || false)
+            .is_ok()
+    );
+    let mut once = rotated_source();
+    once.root_claims_pin = rotation_text("root2ClaimsPin");
+    once.envelope = rotation_text("package2").as_bytes();
+    assert!(verify_bound_package_with_roots(host(&pin), once, &steps[..1], &mut || false).is_ok());
+}
+
+#[test]
+fn host_rotation_requires_both_thresholds_continuity_product_and_final_pin() {
+    let pin = anchor();
+    let last = rotation_text("root3").as_bytes();
+    for invalid_first in [
+        "missingOldThreshold",
+        "missingNewThreshold",
+        "wrongProduct",
+        "root3",
+    ] {
+        let steps = [rotation_text(invalid_first).as_bytes(), last];
+        assert!(
+            matches!(
+                verify_bound_package_with_roots(host(&pin), rotated_source(), &steps, &mut || {
+                    false
+                }),
+                Err(Error::InitialTrustUnavailable)
+            ),
+            "{invalid_first}"
+        );
+    }
+    let reversed = [last, rotation_text("root2").as_bytes()];
+    assert!(
+        verify_bound_package_with_roots(host(&pin), rotated_source(), &reversed, &mut || false)
+            .is_err()
+    );
+    let steps = [rotation_text("root2").as_bytes(), last];
+    let mut wrong_pin = rotated_source();
+    wrong_pin.root_claims_pin = text("claimsPin");
+    assert!(matches!(
+        verify_bound_package_with_roots(host(&pin), wrong_pin, &steps, &mut || false),
+        Err(Error::InitialTrustUnavailable)
+    ));
+    let mut old_package = rotated_source();
+    old_package.envelope = text("package").as_bytes();
+    assert!(matches!(
+        verify_bound_package_with_roots(host(&pin), old_package, &steps, &mut || false),
+        Err(Error::ImageRefused)
+    ));
+}
+
+#[test]
+fn rotation_allows_expired_intermediate_but_requires_final_root_fresh_at_historical_time() {
+    let pin = anchor();
+    let steps = [
+        rotation_text("expiredIntermediate").as_bytes(),
+        rotation_text("root3").as_bytes(),
+    ];
+    assert!(
+        verify_bound_package_with_roots(host(&pin), rotated_source(), &steps, &mut || false)
+            .is_ok()
+    );
+    let expired = [
+        rotation_text("root2").as_bytes(),
+        rotation_text("expiredFinal").as_bytes(),
+    ];
+    assert!(matches!(
+        verify_bound_package_with_roots(host(&pin), rotated_source(), &expired, &mut || false),
+        Err(Error::InitialTrustUnavailable)
+    ));
+}
+
+#[test]
+fn rotation_cancellation_at_each_observed_boundary_stays_typed_and_latched() {
+    let pin = anchor();
+    let steps = [
+        rotation_text("root2").as_bytes(),
+        rotation_text("root3").as_bytes(),
+    ];
+    let mut boundaries = 0;
+    assert!(
+        verify_bound_package_with_roots(host(&pin), rotated_source(), &steps, &mut || {
+            boundaries += 1;
+            false
+        })
+        .is_ok()
+    );
+    assert!(boundaries >= 4); // Includes actual reader and kernel-return boundaries.
+    for cancel_at in 1..=boundaries {
+        let mut observed = 0;
+        let result =
+            verify_bound_package_with_roots(host(&pin), rotated_source(), &steps, &mut || {
+                observed += 1;
+                observed == cancel_at // The next observation would be false again.
+            });
+        assert!(
+            matches!(result, Err(Error::StagingCanceled)),
+            "boundary {cancel_at}"
+        );
+    }
+}
+
+#[test]
+fn explicit_empty_chain_preserves_original_historical_package_behavior() {
+    let pin = anchor();
+    let first = verify_bound_package(host(&pin), source()).unwrap();
+    let second = verify_bound_package_with_roots(host(&pin), source(), &[], &mut || false).unwrap();
+    assert_eq!(
+        first.canonical_bytes().unwrap(),
+        second.canonical_bytes().unwrap()
+    );
+    let mut late = source();
+    late.historical_time = fixture()["expiresAt"].as_u64().unwrap() + 1;
+    assert!(verify_bound_package_with_roots(host(&pin), late, &[], &mut || false).is_ok());
+}

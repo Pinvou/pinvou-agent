@@ -43,10 +43,33 @@ are the other closed roles. There is no new IPC/CLI request, cache slot producer
 automatic updater or install handler. The ordinary job remains QA/support data;
 the host independently rechecks its signed Package under the compiled original
 Root. Exact product/component/target expectations come only from the compiled
-Seed, and artifact facts come from that same verified Package. A different
-Root-claims pin refuses; no rotation chain is inferred or adopted. Original Root
-self-threshold integrity uses signed issuance time only, and the retained Package
-time remains a supplied historical semantic input, never trusted current time.
+Seed, and artifact facts come from that same verified Package. The original
+constructor supplies an empty Root chain and preserves its original pin and
+historical verification behavior. Original Root self-threshold integrity uses
+signed issuance time only, and the retained Package time remains a supplied
+historical semantic input, never trusted current time.
+
+For a Package signed after legitimate key rotation, use
+`DownloadedPackageSource::new_with_root_successors(file, package_envelope,
+final_root_claims_pin, supplied_historical_time, &successors)`, where successors
+is a borrowed ordered slice of original Root-envelope byte slices. The compiled
+original raw Root pin and self threshold remain the only starting anchor. The
+existing Root-chain kernel checks continuous versions, original and successor
+thresholds and compiled product context. Only nonfinal successor Roots may be
+expired; the final Root must be fresh at the supplied historical time, and its
+canonical claims hash must equal the supplied final pin before Package checking.
+This historical authentication neither adopts a protected Root nor establishes
+current high waters, active-set compatibility, non-denied keys or install rights.
+
+The constructor checks only count and individual byte lengths for the Root
+chain: at most 4,096 successors, each nonempty and at most the original one-MiB
+metadata limit. It does not parse or own all successors and adds no aggregate
+chain-size cap. Cancellable staging copies and verifies one bounded object per
+step through the original source-based kernel. Cancellation is checked before
+and after each reader copy and after kernel return, remains latched, and returns
+`HOST_BYTE_STAGING_CANCELED` rather than a signature-refusal diagnostic. Missing,
+reordered, discontinuous, wrong-product or insufficiently signed chains refuse;
+there is no network Root lookup or implicit repair.
 
 `StagingLimits::new(archive_limits, reserve_bytes)` takes validated `ArchiveLimits`
 and a positive disk reserve from trusted composition. It does not impose a fixed
@@ -90,6 +113,11 @@ platforms return `HOST_UNSUPPORTED`.
 The ordinary host library tests cover genuine Root/Package signatures, independent
 envelope/claims pins, scope and threshold failures, historical Root expiry,
 ambiguous native selection, resource policy and cancellation of a real file hash.
+Host composition tests also use ephemeral real signing keys for rotated Package
+acceptance, missing old/new thresholds, chain order/version/product/pin failures,
+expired intermediate versus final Roots, cancellation boundaries and empty-chain
+compatibility. They reuse the original reference fixture/signing implementation;
+the underlying kernel owns its broader transition matrix.
 The actual protected-copy, ACL/reparse,
 disk-exhaustion and replacement scenarios require an isolated Windows environment
 with an independently embedded public profile and real signed FullPack input;
@@ -106,7 +134,8 @@ or freeze, T32 consume, installation permission or an execution grant. Historica
 Package authentication under the original compiled Root remains historical.
 
 `ObjectBinding` is derived inside the actual staging adapter from the same
-signature-checked Package and compiled Seed. It retains the Root-claims pin,
+signature-checked Package and compiled Seed. It retains the verified final
+Root-claims pin (with the independent initial anchor bound by the compiled Seed),
 original Package-envelope hash, compiled product/component/target/profile/Seed,
 appVersion, FullPack packageId/size/hash and exact native role/claim/size/hash.
 `ObjectGeneration` includes that complete binding and both actual protected file

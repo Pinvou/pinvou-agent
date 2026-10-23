@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-23 23:42 Asia/Shanghai**.
+Checkpoint: **2026-10-23 23:58 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
@@ -127,14 +127,24 @@ likewise keeps the same owner alive. There is no path/handle/launch interface,
 cross-process transfer, restart adoption, current qualification or install grant.
 Object custody does not require or create a preparation/freeze lock.
 
+Historical caches may now supply a borrowed Root successor chain. Verification
+always starts at the exact compiled anchor and checks every consecutive
+dual-threshold transition before binding the final Root-claims pin and Package.
+Only intermediate expiry is tolerated; the final Root must be valid at the
+supplied historical observation. The original empty-chain behavior is retained.
+At most 4096 original objects of 1 MiB each are processed one at a time with
+latched cancellation; no aggregate allocation, persistent Root adoption,
+high-water advance or assertion of current qualification is introduced.
+
 Independent deep and repair reviews passed, including fixes for cooperative
 cancellation, genuine threshold/signature controls and a private Artifact type
 import. The object-ownership increment also passed independent deep review with
 no findings. The host depends on narrow byte/archive libraries rather than the QA
-workflow or its HTTP stack. Latest Windows host tests: **88 passed, zero failed,
-one existing opt-in ignored**; this includes four genuine Root/Package binding
-controls and five pure object-generation/transition tests. One compile-fail
-doctest passed, proving the moved old owner cannot be reused. These pure tests do
+workflow or its HTTP stack. Latest Windows host tests: **94 passed, zero failed,
+one existing opt-in ignored**; this includes nine genuine Root/Package/rotation
+controls, the Root-input bounds test and five pure object-generation/transition
+tests. The unchanged ownership API retains its preceding one passing compile-fail
+doctest, proving the moved old owner cannot be reused. These pure tests do
 not manufacture a native sealed capability or replace physical E2E.
 Native-evidence sources were unchanged during these final increments;
 their preceding qualified **9 library + 2 process** passes are reused, with one
@@ -197,7 +207,7 @@ completion blocker; outstanding business implementation is.
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization is delivered under T31; protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
-| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo caller, original FullPack/native observation, protected staging and same-process VerifiedExecutionObject ownership are delivered; production qualification/source continuity/continuation and authorized-executor integration remain pending. |
+| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo caller, original FullPack/native observation, protected staging, authenticated historical Root succession and same-process VerifiedExecutionObject ownership are delivered; production qualification/source continuity/continuation and authorized-executor integration remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
