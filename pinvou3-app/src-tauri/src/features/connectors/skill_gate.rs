@@ -292,11 +292,11 @@ impl ConnectorGate {
                         self.display_name
                     )
                 })?;
-                // Round-7 review P2: the refresh completed on top of the
-                // standing consent (the gate declined a fresh grant) — commit
-                // it so a concurrent connect's compensating revoke cannot
-                // strip the consent this refresh just proved usable.
-                self.commit_relied_grant_best_effort(&grant);
+            // Round-7 review P2: the refresh completed on top of the
+            // standing consent (the gate declined a fresh grant) — commit
+            // it so a concurrent connect's compensating revoke cannot
+            // strip the consent this refresh just proved usable.
+            self.commit_relied_grant_best_effort(&grant);
         }
         Ok(show)
     }
@@ -1268,8 +1268,7 @@ mod tests {
             );
             // B's tail grant is skipped the same way (the ledger stands), so
             // nothing of B's own lands — B succeeds on A's standing state.
-            let tail_b =
-                crate::features::marketplace::grant_connect_enable("feishu").unwrap();
+            let tail_b = crate::features::marketplace::grant_connect_enable("feishu").unwrap();
             assert!(
                 !tail_b,
                 "fixture: B's tail grant skips over the standing consent"
