@@ -22,6 +22,8 @@ const source = relative => readFileSync(sourceUrl(relative), 'utf8');
 const stripComments = text => text
   .replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\n]/g, ''))
   .split('\n')
+  // A `//` inside a string literal would be stripped too; keep `//` out of
+  // any line an anchor below reads (none of the current anchor lines have one).
   .map(line => line.replace(/\/\/.*$/, ''))
   .join('\n');
 const count = (text, re) => (text.match(re) || []).length;
@@ -40,6 +42,13 @@ test('chat markdown: long tokens wrap with a Safari-14 fallback and tables keep 
     baseCss,
     /\.msg-md th,\.msg-md td,\.codex-markdown th,\.codex-markdown td,\.persona-body th,\.persona-body td \{ overflow-wrap:normal; \}/,
     'table cells must opt back out of anywhere so wide tables scroll instead of collapsing',
+  );
+  // The persona modal body renders LLM markdown too: without its own
+  // block-table recipe its cells squeeze per-character instead of scrolling.
+  assert.match(
+    baseCss,
+    /\.persona-body table \{[^}]*display:block; width:max-content; max-width:100%; overflow-x:auto; \}/,
+    'persona-body tables must keep the block-table scroll box',
   );
 });
 
@@ -98,14 +107,18 @@ test('reader window paints its own dark canvas before first paint and keeps it o
   assert.match(source('index.html'), new RegExp(COLOR_SCHEME_STORAGE_KEY.replaceAll('.', '\\.')));
   assert.match(stripComments(source('index.html')), /html\.dark \{ background: #131314; \}/,
     'index.html canvas must equal the theme-boot.js default dark background');
+  // The recipe is more than key + colour: the inline boot must still apply
+  // the class, or a dark cold boot paints a white first frame again.
+  assert.match(stripComments(source('index.html')), /if \(dark\) document\.documentElement\.classList\.add\('dark'\)/,
+    'index.html inline boot must still apply the dark class pre-paint');
   assert.match(themeBoot, /\|\| '#131314'/, 'theme-boot default must stay equal to the index.html dark canvas');
 });
 
 test('web-access primaries and the refresh confirm carry the shared light + dark pairing', () => {
   const settingsView = stripComments(source('features/settings/SettingsView.jsx'));
-  assert.match(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-60 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\]/,
+  assert.match(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-60 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\] dark:hover:bg-\[#c2d8fb\]/,
     'refresh confirm button must carry light + dark primary styling');
-  assert.ok(count(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-50 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\]/g) >= 2,
+  assert.ok(count(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-50 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\] dark:hover:bg-\[#c2d8fb\]/g) >= 2,
     'the allow-workspace and enable primaries in the same panel must carry the dark pairing too');
 });
 
@@ -127,14 +140,33 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'every deep error-red text in remote knowledge must carry its dark pair');
   assert.equal(count(remoteKnowledge, /text-\[#16894a\](?![^"'`]*dark:text-\[#7DD3A8\])/g), 0,
     'every success-green text in remote knowledge must carry its dark pair');
+  // The local knowledge view pairs its error reds with the same dark half as
+  // the remote one; a bare light-only instance re-opens the class there too.
+  const knowledgeView = stripComments(source('features/knowledge/KnowledgeView.jsx'));
+  assert.equal(count(knowledgeView, /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
+    'every error-red text in local knowledge must carry its dark pair');
   const acpNotices = stripComments(source('features/codex/AcpRuntimeNotices.jsx'));
-  // Forgive tokens whose variant chain includes dark: (dark:hover:text-gray-400
-  // etc.); a bare or light-only-variant gray-400 is still the unpaired defect.
-  const bareGray400 = acpNotices.replace(/(?:[a-z-]+:)*dark:(?:[a-z-]+:)*text-gray-400/g, '');
-  assert.equal(count(bareGray400, /text-gray-400/g), 0,
-    'every gray-400 hint in the runtime notices must be the dark half of a gray-500/gray-400 pair');
-  assert.ok(count(acpNotices, /text-gray-500 dark:text-gray-400/g) >= 6,
+  // Both pair directions are zero-tolerance: a gray-500 without a dark
+  // gray-400 half anywhere later in its className string, and any gray-400
+  // that is not the dark half of an exact pair (bare, reordered, or riding
+  // its own variant chain like dark:hover:) — a count pin would let two
+  // hints lose their half and stay green.
+  assert.equal(count(acpNotices, /text-gray-500(?![^"'`]*dark:text-gray-400)/g), 0,
+    'every gray-500 hint in the runtime notices must carry its dark gray-400 half');
+  const withoutPairs = acpNotices.replaceAll('text-gray-500 dark:text-gray-400', '');
+  assert.equal(count(withoutPairs, /text-gray-400/g), 0,
+    'every gray-400 in the runtime notices must be the dark half of a gray-500 pair');
+  assert.ok(count(acpNotices, /text-gray-500 dark:text-gray-400/g) >= 8,
     'runtime-notice hints must raise contrast in dark mode');
+  // Action buttons and detail texts carry their AA-passing recipes: dark ink
+  // on the amber fill (white was 2.15:1), red-600 under white (red-500 was
+  // 3.76:1), and the file's red-600 + red-300 pair on error details.
+  assert.match(acpNotices, /bg-amber-500 text-amber-950 text-\[12px\]/,
+    'the authorize button must use dark ink on the amber fill');
+  assert.match(acpNotices, /rounded-xl bg-red-600 px-3 py-1\.5/,
+    'the account switch must use red-600 under white text');
+  assert.ok(count(acpNotices, /text-red-600 dark:text-red-300/g) >= 5,
+    'error details must use the file red-600 + red-300 pair');
 });
 
 test('tool store: hint, dialogs, labels, badge, icon', () => {
@@ -148,10 +180,14 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
   assert.match(toolStore, /w-\[280px\] max-w-full rounded-\[20px\]/, 'the TsAlert card must carry the same max-width guard');
   assert.ok(count(toolStore, /w-\[300px\] max-w-full rounded-\[20px\]/g) >= 4,
     'the 300px dialog cards must carry max-w-full');
-  assert.doesNotMatch(raw, /w-\[300px\] rounded/, 'no 300px dialog card may lose its max-width guard');
+  // String-bound (not adjacency-bound): an unguarded card written
+  // w-[300px] shadow-2xl rounded-[20px] must fail here too.
+  assert.equal(count(toolStore, /w-\[300px\](?![^"'`]*max-w-full)/g), 0,
+    'no 300px dialog card may lose its max-width guard');
   assert.ok(count(toolStore, /text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider/g) >= 3,
     'detail labels must have a dark variant');
   assert.match(toolStore, /\(storeCopy\.recycleKinds \|\| \{\}\)\[item\.kind\]/, 'recycle badge must use the singular type labels');
+  assert.doesNotMatch(toolStore, /type: 'Skill'/, 'card type labels must resolve through the localized dictionaries');
   assert.match(toolStore, /wb-qq-mail\.jpg/, 'QQ-mail icon asset must be referenced by its real jpeg extension');
 
   const jpg = sourceUrl('assets/tool-icons/wb-qq-mail.jpg');
@@ -179,4 +215,20 @@ test('community group name and recycle-bin badge labels exist in all three langu
   assert.match(stripComments(communityPanel), /copy\.communityGroupName/, 'the community panel must render the localized group name');
   assert.doesNotMatch(communityPanel, /COMMUNITY_QQ_GROUP_NAME/, 'the raw Chinese constant must not come back');
   assert.doesNotMatch(source('features/settings/community-config.js'), /COMMUNITY_QQ_GROUP_NAME/, 'community-config must not export the name');
+});
+
+test('alpha modifiers stay on the opacity scale or use the bracket form', () => {
+  // Tailwind's bare alpha scale covers multiples of 5 only: /8, /16, /18 and
+  // /28 compile to no CSS at all, so the tint silently vanishes in both
+  // themes (the bracket form /[0.08] is the working spelling).
+  for (const file of [
+    'features/remote-knowledge/RemoteKnowledgeView.jsx',
+    'features/knowledge/KnowledgeView.jsx',
+    'features/codex/AcpRuntimeNotices.jsx',
+    'features/settings/SettingsView.jsx',
+  ]) {
+    const src = source(file);
+    assert.equal(count(src, /[\]\d]\/(?:8|16|18|28)(?![\d.])/g), 0,
+      `${file} must not carry alpha modifiers outside tailwind's opacity scale`);
+  }
 });
