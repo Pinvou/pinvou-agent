@@ -1405,7 +1405,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       </button>
                     )}
                     <div className={`mt-3 text-[12px] ${muted}`}>{t.kbModelFoot}</div>
-                    {(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && <div className="mt-2 text-[12px] text-[#d63a3a]">{kbm.error || effectiveKbModel.error}</div>}
+                    {(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && <div className="mt-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{kbm.error || effectiveKbModel.error}</div>}
                   </div>
                 ))}
               </div>
@@ -1468,7 +1468,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                 )}
 
                 {importError && (
-                  <div data-testid="kb-import-error" role="alert" className="mb-3 rounded-xl border border-[#d63a3a]/30 bg-[#d63a3a]/10 px-4 py-3 text-[12px] text-[#d63a3a]">
+                  <div data-testid="kb-import-error" role="alert" className="mb-3 rounded-xl border border-[#d63a3a]/30 bg-[#d63a3a]/10 px-4 py-3 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">
                     {importError}
                   </div>
                 )}
@@ -1510,7 +1510,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                             <div key={file.itemId} className="flex items-center gap-3 text-[12px]">
                               <div className="min-w-0 flex-1">
                                 <div className={`truncate font-medium ${ink}`} title={file.path}>{file.name}</div>
-                                <div className="truncate text-[#d63a3a]" title={file.error}>{file.error}</div>
+                                <div className="truncate text-[#d63a3a] dark:text-[#ff8a80]" title={file.error}>{file.error}</div>
                               </div>
                               <button type="button" onClick={() => retryImportFile(file.itemId)} disabled={indexing || failedFilesLoading}
                                 className={`shrink-0 rounded-full px-3 py-1.5 font-medium ${soft} ${indexing || failedFilesLoading ? 'cursor-default opacity-50' : ''}`}>
@@ -1646,7 +1646,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       </div>
                       );
                     })()}
-                    {removeDocError && <div role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/8 px-3 py-2 text-[12px] text-[#d63a3a]">{removeDocError}</div>}
+                    {removeDocError && <div role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/[0.08] px-3 py-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{removeDocError}</div>}
                   </div>
                 )}
 
