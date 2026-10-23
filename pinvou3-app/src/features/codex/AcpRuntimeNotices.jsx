@@ -51,7 +51,7 @@ export function RuntimeNotice({
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{isCodex ? copy.bridgeUnavailable : copy.setupRequired}</div>
           <div className="mt-1 text-[12px] text-gray-500 dark:text-gray-400">{setupHintText(copy, status.setup_hint) || copy.bridgeRepair}</div>
-          {visibleError && <div className="mt-2 text-[11px] text-red-500">{visibleError}</div>}
+          {visibleError && <div className="mt-2 text-[11px] text-red-600 dark:text-red-300">{visibleError}</div>}
         </div>
         {!isCodex && (
           <button type="button" onClick={onRefresh} className="px-3 py-1.5 rounded-xl border border-red-500/20 text-[12px] font-medium">
@@ -93,7 +93,7 @@ export function RuntimeNotice({
                   : copy.cliMissing(agentName)}
           </div>
           <div className="mt-0.5 text-[12px] text-gray-500 dark:text-gray-400">{hint}</div>
-          {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
+          {visibleError && <div className="mt-1 text-[11px] text-red-600 dark:text-red-300">{visibleError}</div>}
         </div>
         {managementAvailable && canAutoUpgrade ? (
           <div className="flex shrink-0 items-center gap-2">
@@ -172,7 +172,7 @@ export function RuntimeNotice({
               </button>
             </form>
           )}
-          {visibleError && <div className="mt-1 text-[11px] text-red-500">{visibleError}</div>}
+          {visibleError && <div className="mt-1 text-[11px] text-red-600 dark:text-red-300">{visibleError}</div>}
         </div>
         {managementAvailable ? (
           <>
@@ -181,7 +181,7 @@ export function RuntimeNotice({
                 {copy.reopenAuth}
               </button>
             )}
-            <button type="button" onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-white text-[12px] font-medium disabled:opacity-50">
+            <button type="button" onClick={onLogin} disabled={working || waitingForLogin} className="px-3 py-1.5 rounded-xl bg-amber-500 text-amber-950 text-[12px] font-medium disabled:opacity-50">
               {waitingForLogin ? copy.waitAuth : copy.authorize}
             </button>
           </>
@@ -235,7 +235,7 @@ export function AgentServiceFailureNotice({
           <div className="mt-1 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{description}</div>
           <details className="mt-2">
             <summary className="cursor-pointer text-[11px] text-gray-500 dark:text-gray-400">{copy.errorDetails}</summary>
-            <div className="mt-1 break-words text-[11px] text-red-500">{failure.detail}</div>
+            <div className="mt-1 break-words text-[11px] text-red-600 dark:text-red-300">{failure.detail}</div>
           </details>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -244,7 +244,7 @@ export function AgentServiceFailureNotice({
               type="button"
               onClick={onSwitchAccount}
               disabled={working}
-              className="rounded-xl bg-red-500 px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
+              className="rounded-xl bg-red-600 px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-50"
             >
               {copy.switchAccount}
             </button>
@@ -320,7 +320,7 @@ export function AgentRuntimeNotice({
           {notice.detail && (
             <details className="mt-2">
               <summary className="cursor-pointer text-[11px] text-gray-500 dark:text-gray-400">{copy.errorDetails}</summary>
-              <div className="mt-1 break-words text-[11px] text-amber-600 dark:text-amber-300">{notice.detail}</div>
+              <div className="mt-1 break-words text-[11px] text-amber-700 dark:text-amber-300">{notice.detail}</div>
             </details>
           )}
         </div>
