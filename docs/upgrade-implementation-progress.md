@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 16:08 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 18:54 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; T25's bounded offline ASN source-owner component is now delivered.
 Remaining T13/T25/T47 composition and local acceptance are pending.
@@ -106,9 +106,14 @@ test trees permit bounded parallel compilation while retaining resource guards:
   scanner executable builds now pass for Linux amd64 and arm64, with independent
   actual review of all source and ELF bytes. Three further current-source Linux
   amd64 unit-test executables also compiled and passed independent static review,
-  containing 47 top-level test declarations. None has run on Linux; static test
-  inventory is not a passing-test count. The current ISO and off-only preparation
-  have since passed independent review; external guest execution is in progress.
+  containing 47 top-level test declarations. Actual Linux guest execution has now
+  passed all 47 top-level tests and 113 subtests with zero failures, skips or
+  retries, confirmed by independent scoped result review. The first scanner
+  execution case then failed with cleanup unproven; subsequent scanner cases
+  were not attempted. The guest stopped naturally and native-process records
+  were reviewed, but the exact cleanup failure cause remains unconfirmed. The
+  overall guest acceptance remains failed; the unit result does not qualify
+  real scanner execution, coverage, cgroups or full T10 acceptance.
 - T25's controlled offline ASN source owner passed independent deep source review:
   initial installation, CAS disable, exact original-request recovery and current
   local lookup preserve the original audit and operation boundaries. Formatting
@@ -138,8 +143,20 @@ test trees permit bounded parallel compilation while retaining resource guards:
   edge reselections across four locks, with unchanged package identities and
   checksums. The owner has approved precisely these edges plus Windows regression.
   A fresh retry has passed independent actual resolution review; its exact
-  finite graph matches the approval. Failed lock outputs are not reused. Rust
-  compilation and actual Linux acceptance remain pending.
+  finite graph matches the approval. Failed lock outputs are not reused. Broader Rust
+  compilation and actual Linux acceptance remain pending. Windows metadata
+  review found 21 of the 25 approved edges in the default target graph, with
+  four absent from the default Windows graph. This is resolution evidence only.
+  The original two leaf-library test commands have passed source preparation
+  review. Both host Windows commands subsequently returned zero: 42 tests
+  passed and one genuine original ignore was retained, with exact titles and
+  independent actual review. The wrapper then failed its generic artifact
+  snapshot on Cargo-generated hardlinks; that original failure is retained.
+  A separate read-only check of all 677 target files, the 15 complete internal
+  hardlink groups and empty test TEMP has passed independent actual review.
+  The combined scoped result qualifies the two Windows `--lib` test runs, retaining the
+  original wrapper failure and its incomplete fields. Broader Windows edge regression remains pending;
+  these two leaf libraries cover none of the 25 approved dependency edges.
 - The owner explicitly deferred the T03 50 GiB / 500,000-file measurement because
   no current volume meets its approximately 104 GiB free-space precondition.
   Other development and smaller-load/platform measurement work continue. Existing
@@ -460,6 +477,41 @@ test trees permit bounded parallel compilation while retaining resource guards:
   genuine HTTP/browser controls have scoped source reviews. The UI's original
   request terminal-proof gap remains open. No complete T47 workflow delivery,
   native HTTP/UI acceptance or whole-task completion is claimed.
+- The T25 accepted-event attribution candidate passed 28 pure top-level tests
+  and 58 subtests across six packages, with independent actual review. Its
+  complete native run failed in original initialization and one HTTP assertion.
+  After the reviewed test assertion correction, the focused three-family run
+  passed the late-transaction HTTP case but still failed resume provisioning
+  and activation runtime initialization. Independent review retained both
+  failures and confirmed natural process closure and unchanged source. A
+  minimal test-only query diagnostic has passed source and formatting review,
+  followed by independent actual review of its fresh guarded source assembly.
+  Its focused diagnostic native run has completed with failures; the
+  late-transaction case passed, while resume and activation failed in session
+  reception initialization. Independent actual review confirmed those
+  failures, the unchanged source and natural process closure. No permissions or production
+  checks have been relaxed and no complete T25 acceptance is claimed.
+- T47's scoped serialization repair passed eight new top-level tests and 135
+  subtests, plus 48 fixed-work benchmark rows. Independent review confirmed
+  the actual inputs and results. For the 100-plan ValidateInstance benchmark,
+  median time fell about 51.7% and allocations about 49.9%; these measurements
+  do not establish the dense composition capacity or its earlier failure cause.
+  The original pure and cross-language regression then passed 29 top-level
+  tests and 15 subtests across two packages with zero failures or skips,
+  including both genuine Node reference-model tests. Independent actual review
+  confirmed unchanged source, reference inputs and natural process closure.
+  The optimized dense high-memory rerun remains failed: ten members completed,
+  then the eleventh composition creation exhausted the original eight-minute
+  preparation budget. The last accepted lookup still contained eight members,
+  8,086,659 bytes and 146 references; no 32 MiB bracket was established. Root
+  confirmed natural process closure, unchanged inputs and no resource-floor
+  trip. Independent actual review confirmed the failed result and those
+  properties. The earlier failures remain recorded and the complete T47
+  workflow is not accepted. The owner approved a separate 30-minute capacity
+  preparation experiment while retaining the original eight-minute performance
+  failure. Its separate test entry, execution wrapper and fresh source assembly have
+  passed independent review. The capacity measurement is now in progress,
+  with the same business checks, MFA, resources and 32 MiB cap.
 - T29's fixed control-POST-to-file caller candidate passed 22 unit tests and two
   actual process tests, formatting and Clippy. An adjacent binary check first
   exposed omitted original source files in the isolated test tree. After those
@@ -481,7 +533,8 @@ floors; recent closed T20/T25/T47 runs stayed above them. The existing Linux
 scanner VM observer retains its separate 9 GiB startup and 6 GiB active floor.
 The earlier unrelated Rust build was left running as requested and was absent
 at the latest process check; it is not assumed to remain the current blocker. Linux
-scanner native acceptance has not run, the Windows guest's previously observed
+scanner native acceptance has failed its first execution case. The Windows
+guest's previously observed
 expiry/time faults remain unresolved, and T03 has no approved measured budgets
 or completed four-target 1/10/50 GiB matrix. ASN offline-database grouping is
 approved; a real publicly licensed ASN research sample is now tested, while
