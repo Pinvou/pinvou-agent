@@ -9,7 +9,7 @@
 - R4 范围决定：仅能恢复到达引擎的正文。工具生产端上限仍保留：`git.rs`、`git_history.rs` 为 40,000 字符，`test_runner.rs` 每条输出流为 40,000 字符，`verifier.rs` 每项 gate 的 stdout/stderr 各为 16,000 字符。工具内部已经丢弃的尾部不会到达引擎，不能由本切片恢复；移除这些上限明确延后，不冒称本次已回移该部分上游变更。
 - 独立的搜索决定：native-search 回答链仍维持既有 2,048/4,096 token 上限，本次不新增 provider length-stop 标记；其上限和终止原因合同延后到单独审核的底座切片。正常新执行的 Responses 请求使用引擎视图，但本次未增加其历史消息 wire 兜底；Chat Completions 的旧历史兜底仍与路由无关，不声称所有 provider wire 均有同等兜底。
 - 保留的非阻塞边界：路由预算缩小时 Web envelope artifact 尚不会重新发布为恢复引用；缺少原始行数的旧预览仍采用保守的可见行回退。既有 /status 的 raw-over-cap 文案和会话相对路径 artifact 大小观测另作后续项。不声称新增打包宿主或真实 provider 验证。
-- 当前候选 gitlink：`a9486154a68a2682773650c7d0b3fb0f6ecdae55`（86 个提交、84 个带 DCO），已合并公开维护头 `e9a7f48da1`，包含 #115 Python 环境与 #116 失败标志；不包含独立 #117 JSONPath 候选。公开维护头仍为 e9a7f48da，尚不包含本输出恢复候选。
+- 当前候选 gitlink：`805b62c377fd1674544b1da9cad9e27647180866`（88 个提交、86 个带 DCO），已合并公开维护头 `ea9fdc90f1`，包含 #115 Python 环境与 #116 失败标志；现已包含合入的 #117 JSONPath 修复。公开维护头仍为 ea9fdc90f，尚不包含本输出恢复候选。
 - 合入前提：先合入 CodeWhale#118，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单的候选头换成实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`、重算 `EXPECTED_COMMITS`，协调其他已合入修复并同步两份策略/修改清单。通过未放宽的 `verify-public-submodule.sh` 后，还须审核最终集成树。候选检查不豁免公开门禁；草稿不具备合并或发布资格。
 - 验证见承载 PR 的固定提交记录。十六项输出恢复指纹覆盖 header-padding Web、完整/截断结构化结果、adaptive 行数、损坏预览 metadata、重复未保存的 wire 预览、gate-stream DTO、interrupted-coordination 字段、真实 taskless-gate/interrupted-child 生产端，串行/并行/信封 turn-loop 保存接线，以及三条路径完整结果不写 artifact。六项调度测试通过 `execute_planned_tools` 执行已注册工具，核对 outcome/UI 引用并检索原始字节；大输入超过模型视图但不会触发工具执行阶段 spillover；完整小输入不得产生 artifact metadata 或文件。基线执行、禁用 helper/串行/并行/信封调用，以及始终保全变异的反例记录对应 PR 中的固定源码和验证提交。未增加 changelog：CodeWhale `CONTRIBUTING.md` 明确要求在 main 合并时统一登记，不在 PR 分支改写。排除客户数据、凭证及运行/会话日志。
 
@@ -68,12 +68,12 @@
 ## 0. 当前状态（2026-10-23）
 
 - 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
-- 当前父仓候选：`a9486154a68a2682773650c7d0b3fb0f6ecdae55`，相对 v0.9.12 为 86 个提交，84 个带 DCO；已包含公开维护头 `e9a7f48da169bf89399a11592e4d22a7b721cb39`。来源 CodeWhale#118 当前头 `a9486154a68a2682773650c7d0b3fb0f6ecdae55`。本次合并保留原候选历史与来源；既有测试回执保持原执行边界，新组合树 CI 尚待确认。公开维护头不包含此候选，B1/B2 公共对齐门禁仍未满足。
+- 当前父仓候选：`805b62c377fd1674544b1da9cad9e27647180866`，相对 v0.9.12 为 88 个提交，86 个带 DCO；已包含公开维护头 `ea9fdc90f1c90335554833195eeeb847c83d82dd`。来源 CodeWhale#118 当前头 `805b62c377fd1674544b1da9cad9e27647180866`。本次合并保留原候选历史与来源；既有测试回执保持原执行边界，新组合树 CI 尚待确认。公开维护头不包含此候选，B1/B2 公共对齐门禁仍未满足。
 
-- 当前公开维护头（父仓候选另列）：`e9a7f48da169bf89399a11592e4d22a7b721cb39`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。
-- 公开维护历史：上游 v0.9.12 `dcd4c200f` 之上 78 个提交，r1 `1fafee7e2` 之上 63 个；76 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头（父仓候选另列）：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
+- 公开维护历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 公开维护头实测 drift：504 files, +85973/-37666，净增 48307；230 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 公开维护头实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）

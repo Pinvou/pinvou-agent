@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 86 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 88 review-candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="a9486154a68a2682773650c7d0b3fb0f6ecdae55"
-EXPECTED_COMMITS=86
+EXPECTED_HEAD="805b62c377fd1674544b1da9cad9e27647180866"
+EXPECTED_COMMITS=88
 # The registered review head must descend from the immutable r1 closure.
 # Candidate validation does not assert public maintenance-head alignment;
 # scripts/verify-public-submodule.sh enforces that separate merge gate.
@@ -74,6 +74,8 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|Web JSONPath schema agrees with parser results|CodeWhale/crates/tui/src/tools/web/contract.rs|fn forkguard_web_fields_description_matches_parser"
+  "T2|Document the Web JSONPath subset|CodeWhale/crates/tui/src/tools/web_tool.rs|Recursive descent (..) and filters are not supported"
   "T2|Preserve failed tool-result flags|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_tool_failure_flag_survives_recording_and_round_trip"
   "T2|Windows Python stdio environment end-to-end|CodeWhale/crates/tui/src/sandbox/mod.rs|fn forkguard_windows_shell_env_overlays_keep_python_stdio_utf8"
   "T2|Windows explicit environment override casing|CodeWhale/crates/tui/src/sandbox/mod.rs|fn windows_shell_env_explicit_override_is_case_insensitive"
