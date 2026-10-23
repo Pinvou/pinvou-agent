@@ -54,7 +54,7 @@ test('chat markdown: long tokens wrap with a Safari-14 fallback and tables keep 
 
 test('reload hydration joins adjacent assistant text blocks with a blank line (both lanes)', () => {
   const shared = stripComments(source('shared/bridge-shared-helpers.js'));
-  assert.match(shared, /textBuf = textBuf \? textBuf \+ "\\n\\n" \+ b\.text : b\.text/,
+  assert.match(shared, /textBuf = textBuf \? textBuf \+ "\\n\\n" \+ \(b\.text \|\| ""\) : \(b\.text \|\| ""\)/,
     'shared rerender must join adjacent text blocks with a blank line');
   const codeLane = stripComments(source('features/codex/code-native-lane.js'));
   assert.match(codeLane, /textBuf = textBuf \? `\$\{textBuf\}\\n\\n\$\{blockText\}` : blockText/,

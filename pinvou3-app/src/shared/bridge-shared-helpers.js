@@ -5235,7 +5235,7 @@
           // the scheduled-draft flattener in flushAssistantMessageToHistory, which
           // joins them with a blank line); raw concatenation glues a following
           // table onto the previous line and it never parses.
-          textBuf = textBuf ? textBuf + "\n\n" + b.text : b.text;
+          textBuf = textBuf ? textBuf + "\n\n" + (b.text || "") : (b.text || "");
         } else if (b.type === "thinking") {
           if (textBuf) {
             addChatItem({ type: "assistant", text: textBuf, html: lane.renderMarkdown(textBuf), time: "", streaming: false });
