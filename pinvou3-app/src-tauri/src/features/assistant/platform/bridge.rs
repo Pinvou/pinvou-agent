@@ -384,6 +384,29 @@ fn removed_cap_env_warning(gate: &std::sync::OnceLock<()>) -> bool {
 pub type WorkspaceRootsResolver =
     std::sync::Arc<dyn Fn(&str) -> Vec<std::path::PathBuf> + Send + Sync>;
 
+/// Full model-visible name of the scheduled-task creation tool (server key
+/// app-automations, tool create_scheduled_task; docs/app-automations-定时任务创建工具-设计与验收.md).
+/// Same L1 treatment as `MESSAGING_SEND_TOOL`: a typed Ask rule is
+/// registered, but it does not prompt under the current full-auto approval
+/// (the engine consults ask rules for exec_shell and the file tools only) —
+/// it is the latent pin for the approval-mode split. The deterministic
+/// unattended recursion shield is the engine-side deny channel
+/// (unattended_disallowed_tools); the audit trail is written by
+/// features::scheduled::creation_requests (plus the shadow audit under the
+/// automation store root).
+pub const SCHEDULED_TASK_CREATE_TOOL: &str = "mcp_app-automations_create_scheduled_task";
+
+/// Full model-visible name of the scheduled-task update tool (server key
+/// app-automations). Same L1 treatment as [`SCHEDULED_TASK_CREATE_TOOL`].
+pub const SCHEDULED_TASK_UPDATE_TOOL: &str = "mcp_app-automations_update_scheduled_task";
+
+/// Full model-visible name of the scheduled-task delete tool (server key
+/// app-automations). Destructive (archive + remove); same latent-pin
+/// posture as the create/update rules (no prompt under the current
+/// full-auto approval) — the review surfaces are the audit trail and the
+/// Scheduled Tasks panel.
+pub const SCHEDULED_TASK_DELETE_TOOL: &str = "mcp_app-automations_delete_scheduled_task";
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -2649,6 +2672,12 @@ impl Pinvou3Bridge {
         cfg.workspace = roots.execution;
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
+        if !is_aux {
+            cfg.instructions.push(InstructionSource::Inline {
+                name: "runtime:scheduled-request-origin".to_string(),
+                content: format!("Current session id: {session_id}. For app-automations keyed retries use this exact id as from_session and reuse the same idempotency_key only for the same operation. The claim is audit provenance, not authorization. Plan mode does not support this MCP family, including reads."),
+            });
+        }
         // Aux sessions skip the main instruction stack entirely: the aux
         // branch below replaces it with the minimal persona, while
         // session_instructions walks the AGENTS.md ancestors and writes the
@@ -2757,6 +2786,8 @@ impl Pinvou3Bridge {
         //     takes the global mcp path — the global file is NEVER a
         //     fallback for the scoped surface (it would boot user servers
         //     for an aux engine: a scope escape, ADR-0024 clause 3).
+        // Unattended delegation is scoped by the run's spawn policy in
+        // AppEngine, rather than by the persisted sched- session identity.
         let mut scoped_aux_mcp_path: Option<std::path::PathBuf> = None;
         if is_aux {
             use crate::features::assistant::engine_pool::{AuxToolSurface, aux_tool_surface};
@@ -2998,6 +3029,22 @@ impl Pinvou3Bridge {
         // single-sourced here (messaging imports it — dependency direction
         // messaging -> assistant, never the reverse).
         rules.push(codewhale_execpolicy::ToolAskRule::new(MESSAGING_SEND_TOOL));
+        // Scheduled-task family (docs/builtin-toolset-contract.md §5 L1,
+        // same pattern — and the same honest posture as the send rule
+        // above): the Ask rules are latent pins for the approval-mode
+        // split; they never prompt under the current full-auto approval
+        // (the engine consults ask rules for exec_shell and the file tools
+        // only). The deterministic unattended recursion shield is the
+        // engine-side deny channel (unattended_disallowed_tools). The read
+        // tools (list/read) have no app Ask rule; feature/scope and Plan
+        // mode gates still apply to this MCP family.
+        for tool in [
+            SCHEDULED_TASK_CREATE_TOOL,
+            SCHEDULED_TASK_UPDATE_TOOL,
+            SCHEDULED_TASK_DELETE_TOOL,
+        ] {
+            rules.push(codewhale_execpolicy::ToolAskRule::new(tool));
+        }
         crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
@@ -4991,11 +5038,12 @@ mod tests {
 
         use crate::features::marketplace::ConnectorScope;
         // plain has no disables → no CLI deny rules of its own. The always-on
-        // rules are exactly the cross-session messaging Ask rule (contract
-        // §5 L1); a dev machine's installed skills additionally contribute
-        // their exec_shell deny rules under the plain DenyAll fallback
-        // (#455), so the Ask-action set is pinned here and the rest is
-        // pinned to stay deny-action below — never an exact list equality.
+        // rules are exactly the L1 Ask rules (cross-session messaging send +
+        // the scheduled-task write family, contract §5 L1); a dev machine's
+        // installed skills additionally contribute their exec_shell deny
+        // rules under the plain DenyAll fallback (#455), so the Ask-action
+        // set is pinned here and the rest is pinned to stay deny-action
+        // below — never an exact list equality.
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         assert_eq!(
             rs.ask_rules
@@ -5003,15 +5051,23 @@ mod tests {
                 .filter(|r| r.action == codewhale_execpolicy::PermissionAction::Ask)
                 .map(|r| r.tool.as_str())
                 .collect::<Vec<_>>(),
-            [MESSAGING_SEND_TOOL],
-            "the only Ask-action rule on a plain session is the messaging rule"
+            [
+                MESSAGING_SEND_TOOL,
+                SCHEDULED_TASK_CREATE_TOOL,
+                SCHEDULED_TASK_UPDATE_TOOL,
+                SCHEDULED_TASK_DELETE_TOOL,
+            ],
+            "the only Ask-action rules on a plain session are the L1 write-family rules"
         );
         assert!(
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
+            "every non-L1 rule stays a deny"
         );
         // Deny command list when all 4 built-in CLI binaries are denied (bare
         // name plus one .exe/.cmd variant each, R4).
@@ -5066,8 +5122,11 @@ mod tests {
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
+            "every non-L1 rule stays a deny"
         );
 
         // code uninitialized → all 4 built-in CLI binaries denied by default (the
@@ -5079,8 +5138,11 @@ mod tests {
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
+            "every non-L1 rule stays a deny"
         );
 
         // code explicitly disables only dingtalk → only dws remains hard-denied
@@ -5294,6 +5356,55 @@ mod tests {
                 .any(|tool| tool == MESSAGING_SEND_TOOL),
             "the Ask rule's tool name must match the manifest registration"
         );
+    }
+
+    /// Scheduled-task creation (docs/builtin-toolset-contract.md §5 L1, the
+    /// app-automations family): the composed ruleset always carries the typed
+    /// Ask rule. Like the messaging rule, it is a latent pin for the pending
+    /// approval-mode split — the engine consults ask rules for exec_shell
+    /// and the file tools only, so it does not prompt under the current
+    /// full-auto posture. The unattended recursion shield is the
+    /// `scheduled_disallowed_tools` channel (engine-side), not this rule;
+    /// the working gates are validation, audit, and the unattended deny
+    /// (see the engine tests). Mirrors the messaging-send test above.
+    #[test]
+    fn scope_deny_ruleset_asks_for_scheduled_task_create() {
+        let bridge = fixture_bridge();
+        let ruleset = bridge.scope_deny_ruleset("sess-plain");
+        let rule = ruleset
+            .ask_rules
+            .iter()
+            .find(|r| r.tool == SCHEDULED_TASK_CREATE_TOOL)
+            .expect("the scheduled task create tool must carry a typed Ask rule");
+        assert_eq!(rule.action, codewhale_execpolicy::PermissionAction::Ask);
+        assert!(
+            rule.command.is_none(),
+            "the ask rule matches any invocation"
+        );
+        // Drift pin: byte-identical to the manifest registration (see the
+        // messaging test for why this lives in assistant).
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("app-automations")
+                .unwrap()
+                .expect("app-automations is in the embedded catalog");
+        assert!(
+            manifest
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == SCHEDULED_TASK_CREATE_TOOL),
+            "the Ask rule's tool name must match the manifest registration"
+        );
+        // The L0 read tools carry no Ask rule: they are read-only and must
+        // not nag the user (only the state-changing tools are gated).
+        for read_tool in [
+            "mcp_app-automations_list_scheduled_tasks",
+            "mcp_app-automations_read_scheduled_task",
+        ] {
+            assert!(
+                !ruleset.ask_rules.iter().any(|r| r.tool == read_tool),
+                "the L0 {read_tool} must stay ungated"
+            );
+        }
     }
 
     /// Channel 3 data source: script directories of scope-disabled skills
@@ -7292,6 +7403,51 @@ mod tests {
     /// and a caller passing `restrict_tools=false` is still pressed to the
     /// scoped list — never the full catalog — by the `aux-` prefix.
     /// Ordinary sessions are enforced on neither side.
+    /// Round-8 M1(a) (#628), revised per round-33 M8 / round-34 M4: the
+    /// recursion shield rides the engine's disallowed_tools, which a
+    /// model-supplied `agent(inherit_disallowed_tools=false)` would
+    /// otherwise shed (the child keeps MCP + auto_approve while the
+    /// posture lists do not cover the app-automations write tools).
+    /// Round-33 M8 scoped the disable to the UNATTENDED run engine — an
+    /// interactive continuation rebuilds with normal delegation, so this
+    /// test pins that interactive scheduled sessions KEEP subagents. The
+    /// unattended spawn config's disable is pinned at its engine.rs site
+    /// (`unattended_spawn_disables_subagents_in_source`).
+    #[test]
+    fn scheduled_session_spawns_without_subagents() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-sched-no-subagents-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = |name: &str| SessionRoots {
+            execution: root.join(format!("{name}-exec")),
+            ledger: root.join(format!("{name}-ledger")),
+            bound: false,
+        };
+        let sched_cfg = bridge.build_engine_config_for_session_roots("sched-run1", roots("sched"));
+        assert!(
+            sched_cfg.subagents_enabled,
+            "interactive scheduled sessions keep the ordinary delegation catalog"
+        );
+        // An ordinary session keeps the delegation surface (the pin's
+        // contrast arm — only the unattended class loses it).
+        let chat_cfg = bridge.build_engine_config_for_session_roots("chat0001", roots("chat"));
+        assert!(
+            chat_cfg.subagents_enabled,
+            "ordinary sessions keep subagents"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn aux_session_tools_are_scoped_read_only_on_spawn_and_send() {
         // The scoped spawn writes the per-aux config under pinvou3_home —

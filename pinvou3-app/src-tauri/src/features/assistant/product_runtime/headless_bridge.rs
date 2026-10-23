@@ -1619,6 +1619,13 @@ pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<E
     });
     let tool_policy: ToolPolicy = Arc::new(|app| {
         let mut tools = crate::features::marketplace::unavailable_tool_names();
+        // No ScheduledTaskState/watcher is hosted here. Refuse pending writes
+        // rather than advertising requests that can never drain in this host.
+        tools.extend([
+            "automation".to_owned(),
+            "send_later".to_owned(),
+            "mcp_app-automations_*".to_owned(),
+        ]);
         // The GUI's single-source predicate (KnowledgeService::kb_tools_usable
         // via lib.rs): visibility tracks CONTENT/CONNECTIONS, deliberately not
         // the embedding model's load state — a visibility that fluctuates with
@@ -1661,6 +1668,27 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
+
+    #[test]
+    fn headless_host_denies_the_undrainable_automation_family() {
+        let source = include_str!("headless_bridge.rs");
+        let body = source
+            .split("let tool_policy: ToolPolicy =")
+            .nth(1)
+            .unwrap()
+            .split("EnginePool::new_with_dependencies")
+            .next()
+            .unwrap();
+        let body: String = body
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(body.contains("tools.extend([\"automation\".to_owned(),\"send_later\".to_owned(),\"mcp_app-automations_*\".to_owned(),]);"));
+    }
 
     #[test]
     fn landed_bytes_sums_the_staged_workspace() {

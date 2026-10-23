@@ -42,6 +42,8 @@ export class ViewErrorBoundary extends React.Component {
 
   render() {
     if (this.state.error) {
+      // Tool cards may preserve their raw-output slot on a chunk failure.
+      if (this.props.fallback !== undefined) return this.props.fallback;
       const copy = (this.props.t && this.props.t.uiMainApp) || {};
       const message = String((this.state.error && this.state.error.message) || this.state.error);
       if (this.props.variant === 'panel') {

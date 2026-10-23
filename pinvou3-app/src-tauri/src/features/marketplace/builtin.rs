@@ -172,6 +172,27 @@ fn disabled_feature_ids() -> BTreeSet<String> {
         .collect()
 }
 
+/// Read only the authoritative switches, without loading or migrating any
+/// unrelated preferences or credentials. Background drains pause on malformed
+/// settings and let their caller rate-limit the diagnostic.
+pub(crate) fn feature_enabled_for_background_drain(id: &str) -> anyhow::Result<bool> {
+    #[derive(serde::Deserialize)]
+    struct Switches {
+        #[serde(default)]
+        disabled_builtin_features: Vec<String>,
+    }
+    let raw = match crate::platform::filesystem::read_private_data_file(&paths::settings_path()) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error.into()),
+    };
+    let switches: Switches = serde_json::from_str(&raw)?;
+    Ok(!switches
+        .disabled_builtin_features
+        .iter()
+        .any(|feature| feature == id))
+}
+
 /// Feature switch (docs/builtin-toolset-contract.md §3.3): writes
 /// `UserPrefs::disabled_builtin_features` (field-level transaction), then
 /// atomically writes the state file for MCP servers, and returns the fresh
@@ -398,8 +419,10 @@ mod tests {
 
     /// Feature registry: session-reader's tool_features aggregate into
     /// session-mention / long-memory (the two read tools) and
-    /// session-messaging (the send tool) with correct plugin and tool
-    /// ownership; everything is enabled by default.
+    /// session-messaging (the send tool); app-automations' five tools
+    /// aggregate into scheduled-task-automation — the registry is the union
+    /// over all builtin manifests, so the new family must appear alongside
+    /// the session-reader features without disturbing them.
     #[test]
     fn registry_aggregates_session_reader_features() {
         crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
@@ -407,11 +430,23 @@ mod tests {
             let ids: Vec<&str> = registry.iter().map(|f| f.id.as_str()).collect();
             assert_eq!(
                 ids,
-                ["long-memory", "session-mention", "session-messaging"],
+                [
+                    "long-memory",
+                    "scheduled-task-automation",
+                    "session-mention",
+                    "session-messaging"
+                ],
                 "sorted output"
             );
             for feature in &registry {
-                assert_eq!(feature.plugins, ["session-reader".to_string()]);
+                if feature.id != "scheduled-task-automation" {
+                    assert_eq!(
+                        feature.plugins,
+                        ["session-reader".to_string()],
+                        "{} is owned by session-reader",
+                        feature.id
+                    );
+                }
                 assert!(feature.enabled, "default (no state) is all enabled");
             }
             let read_tools = [
@@ -429,6 +464,23 @@ mod tests {
             assert_eq!(
                 messaging.tools,
                 ["mcp_session-reader_send_message_to_session".to_string()]
+            );
+            // The app-automations family: all five tools under one feature,
+            // owned by the app-automations plugin only.
+            let scheduled = registry
+                .iter()
+                .find(|f| f.id == "scheduled-task-automation")
+                .unwrap();
+            assert_eq!(scheduled.plugins, ["app-automations".to_string()]);
+            assert_eq!(
+                scheduled.tools,
+                [
+                    "mcp_app-automations_create_scheduled_task".to_string(),
+                    "mcp_app-automations_delete_scheduled_task".to_string(),
+                    "mcp_app-automations_list_scheduled_tasks".to_string(),
+                    "mcp_app-automations_read_scheduled_task".to_string(),
+                    "mcp_app-automations_update_scheduled_task".to_string(),
+                ]
             );
         });
     }
@@ -673,6 +725,19 @@ mod tests {
 
     /// The feature-removal list merges into the engine-gate aggregation
     /// (unavailable_tool_names_for).
+    /// Round-31 minor 15: default-on membership is pinned by CONTENT —
+    /// removing "app-automations" from DEFAULT_INSTALLED_MCP_TOOLS used to
+    /// leave the entire suite green (the seed test iterates the const, so
+    /// an empty/shrunken const self-satisfies).
+    #[test]
+    fn default_installed_tools_name_the_automations_package() {
+        let installed = crate::features::marketplace::DEFAULT_INSTALLED_MCP_TOOLS;
+        assert!(
+            installed.contains(&"app-automations"),
+            "the app-automations package must be default-on: {installed:?}"
+        );
+    }
+
     #[test]
     fn feature_removal_flows_into_unavailable_tool_names() {
         crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
@@ -687,6 +752,45 @@ mod tests {
             );
             assert!(plain.contains(&"mcp_session-reader_read_session".to_string()));
             assert!(plain.contains(&"mcp_session-reader_list_sessions".to_string()));
+        });
+    }
+
+    /// Disabling only the scheduled-task-automation feature removes exactly
+    /// the five app-automations tools (they all flow into the engine's
+    /// disallowed list, lowercased); session-reader's tools are untouched —
+    /// the union semantics are per-feature, never per-plugin or global.
+    #[test]
+    fn scheduled_task_feature_removal_is_scoped_to_its_family() {
+        // Round-30 rebase: main's dead-code sweep (#701) removed this
+        // module's local zero-arg with_temp_home helper — the surviving
+        // calls use the shared platform helper directly.
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
+            set_feature_enabled("scheduled-task-automation", false).unwrap();
+            let removed = feature_disabled_tool_names();
+            assert_eq!(
+                removed,
+                [
+                    "mcp_app-automations_create_scheduled_task".to_string(),
+                    "mcp_app-automations_delete_scheduled_task".to_string(),
+                    "mcp_app-automations_list_scheduled_tasks".to_string(),
+                    "mcp_app-automations_read_scheduled_task".to_string(),
+                    "mcp_app-automations_update_scheduled_task".to_string(),
+                ],
+                "exactly the app-automations tools are removed"
+            );
+            let plain = crate::features::marketplace::unavailable_tool_names_for(
+                crate::features::marketplace::ConnectorScope::Plain,
+            );
+            for name in &removed {
+                assert!(
+                    plain.contains(name),
+                    "{name} must flow into the unavailable tool names"
+                );
+            }
+            assert!(
+                !plain.iter().any(|n| n.contains("session-reader")),
+                "session-reader tools must be unaffected: {plain:?}"
+            );
         });
     }
 }

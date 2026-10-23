@@ -8,6 +8,7 @@ import createViteConfig, {
   assertLazyChunks,
   assertMainEntryBudget,
   lazyChunkContracts,
+  lazyToolChunkContracts,
 } from '../vite.config.mjs';
 
 function chunk({ name, modules = {}, isEntry = false, code = '' }) {
@@ -17,10 +18,9 @@ function chunk({ name, modules = {}, isEntry = false, code = '' }) {
 const mainSource = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
 
 test('startup gates remain active in desktop and web production builds', () => {
-  // Round-21 B-1 + this PR's rebase raise, both measured per policy — see the
-  // budget comment in vite.config.mjs (main's #627+#714 web entry = 500.69 kB
-  // local; this PR's feature net +2.10 kB → 502.79 local / ≈503.7 CI-project).
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 505_000);
+  // PR #628's 506_000 decision is measured and explicitly approved;
+  // the config comment preserves both platform measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 506_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
     const pluginNames = new Set(config.plugins.flat(Infinity).filter(Boolean).map(plugin => plugin.name));
@@ -41,6 +41,20 @@ test('every view loader has an explicit lazy chunk contract', () => {
     Object.keys(lazyChunkContracts).toSorted((left, right) => left.localeCompare(right)),
     Object.keys(VIEW_LOADERS).toSorted((left, right) => left.localeCompare(right)),
   );
+});
+
+test('scheduled task cards have a production lazy-chunk gate', () => {
+  assert.deepEqual(lazyToolChunkContracts.scheduledTaskCard,
+    ['features/tools/scheduled-task-card.jsx', 'ScheduledTaskToolCard']);
+  const views = Object.fromEntries(Object.entries(lazyChunkContracts).map(([key, [suffix, name]]) =>
+    [key, chunk({ name, modules: { [`/repo/src/${suffix}`]: {} } })]));
+  assert.doesNotThrow(() => assertLazyChunks(views, lazyChunkContracts));
+  assert.throws(() => assertLazyChunks(views), /ScheduledTaskToolCard lazy module was not emitted/);
+  const complete = { ...views, scheduledTaskCard: chunk({ name: 'ScheduledTaskToolCard',
+    modules: { '/repo/src/features/tools/scheduled-task-card.jsx': {} } }) };
+  assert.doesNotThrow(() => assertLazyChunks(complete));
+  complete.scheduledTaskCard.isEntry = true;
+  assert.throws(() => assertLazyChunks(complete), /non-entry lazy chunk/);
 });
 
 test('rare global overlays stay out of the startup module graph', () => {

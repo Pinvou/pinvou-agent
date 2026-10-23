@@ -66,6 +66,8 @@ mod libc {
     // ABI. In particular, Linux/aarch64 assigns O_DIRECTORY and O_NOFOLLOW
     // different bits than Linux/x86_64.
     pub(crate) const O_RDONLY: c_int = super::platform_libc::O_RDONLY;
+    pub(crate) const O_WRONLY: c_int = super::platform_libc::O_WRONLY;
+    pub(crate) const O_APPEND: c_int = super::platform_libc::O_APPEND;
     pub(crate) const O_RDWR: c_int = super::platform_libc::O_RDWR;
     pub(crate) const O_CREAT: c_int = super::platform_libc::O_CREAT;
     pub(crate) const O_EXCL: c_int = super::platform_libc::O_EXCL;
@@ -929,6 +931,14 @@ impl PrivateFileDirectory {
         private_file_directory_unsupported()
     }
 
+    pub(crate) fn entry_names_up_to(&self, _limit: usize) -> io::Result<Vec<std::ffi::OsString>> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn open_append_file(&self, _name: &std::ffi::OsStr) -> io::Result<File> {
+        private_file_directory_unsupported()
+    }
+
     pub(crate) fn create_delete_on_close_file(&self, _name: &str) -> io::Result<File> {
         private_file_directory_unsupported()
     }
@@ -1110,7 +1120,17 @@ impl PrivateFileDirectory {
     }
 
     pub(crate) fn entry_names(&self) -> io::Result<Vec<std::ffi::OsString>> {
-        entry_names_impl(self)
+        entry_names_impl(self, usize::MAX)
+    }
+
+    /// Bound enumeration before allocating names; callers can drain in batches.
+    pub(crate) fn entry_names_up_to(&self, limit: usize) -> io::Result<Vec<std::ffi::OsString>> {
+        entry_names_impl(self, limit)
+    }
+
+    pub(crate) fn open_append_file(&self, name: &std::ffi::OsStr) -> io::Result<File> {
+        validate_private_file_name(name)?;
+        open_append_file_impl(self, name)
     }
 
     /// Create a private read/write file and immediately remove its directory
@@ -1930,7 +1950,10 @@ fn next_unix_directory_entry(
     target_os = "macos",
     all(target_os = "linux", target_pointer_width = "64")
 ))]
-fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
+fn entry_names_impl(
+    directory: &PrivateFileDirectory,
+    limit: usize,
+) -> io::Result<Vec<std::ffi::OsString>> {
     use std::os::fd::AsRawFd as _;
 
     // The literal "." contains no NUL, so the CString construction cannot fail;
@@ -1965,7 +1988,10 @@ fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi
     }
     let stream = UnixDirectoryStream(stream);
     let mut names = Vec::new();
-    while let Some(name) = next_unix_directory_entry(&stream)? {
+    while names.len() < limit {
+        let Some(name) = next_unix_directory_entry(&stream)? else {
+            break;
+        };
         if name != "." && name != ".." {
             names.push(name);
         }
@@ -1974,8 +2000,12 @@ fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi
 }
 
 #[cfg(windows)]
-fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
+fn entry_names_impl(
+    directory: &PrivateFileDirectory,
+    limit: usize,
+) -> io::Result<Vec<std::ffi::OsString>> {
     std::fs::read_dir(&directory.canonical_path)?
+        .take(limit)
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect()
 }
@@ -2753,7 +2783,7 @@ pub(crate) mod tests {
             block
                 .matches("private_file_directory_unsupported()")
                 .count(),
-            13
+            15
         );
         for forbidden in [
             "std::fs::",
@@ -3750,4 +3780,98 @@ pub(crate) mod tests {
             "a drifted mode must be re-tightened"
         );
     }
+
+    #[test]
+    fn windows_bounded_directory_listing_and_anchored_append() {
+        use std::ffi::OsStr;
+        use std::io::{Read as _, Write as _};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bounded");
+        let directory = open_private_file_directory(&path).unwrap();
+        for i in 0..100 {
+            directory
+                .atomic_write_private_file(OsStr::new(&format!("{i}.json")), b"value")
+                .unwrap();
+        }
+        assert!(directory.entry_names_up_to(0).unwrap().is_empty());
+        assert_eq!(directory.entry_names_up_to(7).unwrap().len(), 7);
+        assert_eq!(directory.entry_names().unwrap().len(), 100);
+        for text in [b"one\n", b"two\n"] {
+            directory
+                .open_append_file(OsStr::new("audit.jsonl"))
+                .unwrap()
+                .write_all(text)
+                .unwrap();
+        }
+        let mut contents = String::new();
+        directory
+            .open_plain_file(OsStr::new("audit.jsonl"))
+            .unwrap()
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "one\ntwo\n");
+    }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn open_append_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let name = unix_name(name)?;
+    // SAFETY: the owned directory fd and NUL-terminated name outlive openat.
+    // No-follow/nonblocking and the fstat below reject links and special files.
+    let fd = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY
+                | libc::O_APPEND
+                | libc::O_CREAT
+                | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW
+                | libc::O_NONBLOCK,
+            0o600 as std::os::raw::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a fresh owned descriptor, adopted exactly once.
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audit entry is not a regular file",
+        ));
+    }
+    use std::os::unix::fs::PermissionsExt as _;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn open_append_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(directory.canonical_path.join(name))?;
+    if !metadata_is_plain_file(&file.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audit entry is a reparse point or non-file",
+        ));
+    }
+    Ok(file)
 }

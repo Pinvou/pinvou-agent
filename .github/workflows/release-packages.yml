@@ -4,7 +4,9 @@ name: release-packages
 #
 # 触发条件:
 # - push main 且 VERSION 被修改;
-# - workflow_dispatch 手动触发:无条件全量构建(用于补打/重打或显式验证)。
+# - workflow_dispatch 手动触发:全量构建(用于补打/重打或显式验证)。例外:
+#   build-windows-x64 仅在 main ref 上运行(仅由其 if 条件强制;windows-release
+#   Environment 只是发布边界,不含分支保护规则),非 main ref 手动触发时产出 4/5 平台。
 # 普通 PR 不进入本工作流；版本/打包脚本的轻量契约由 pr-check.yml 验证。
 #
 # 版本号单一事实来源 = 根目录 VERSION 文件。gate job 先跑
@@ -53,10 +55,14 @@ jobs:
       build_required: ${{ steps.release.outputs.build_required }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      # fetch-depth:0 确保 push 事件的 before commit 可用于整段 push 范围比较。
+      # 本 job 只做文件级版本比对(sync-version --check 与其测试),不读 git
+      # 历史(此前 fetch-depth:0 注释声称的 push 范围比较并不存在),浅克隆即可。
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          # 同 header 凭据策略:纯文件级版本比对,不初始化子模块、无 git
+          # 网络操作,不保留 job token。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -144,6 +150,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -240,8 +248,9 @@ jobs:
         working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
         run: |
           set -euo pipefail
-          SRC=$(ls pinvou3_*_amd64.deb)
+          SRC="pinvou3_${VERSION}_amd64.deb"
           DST="pinvou-agent_${VERSION}-linux-x64.deb"
+          test -f "$SRC" || { echo "❌ deb 产物不存在: $SRC"; ls -la; exit 1; }
           mv "$SRC" "$DST"
           SHA=$(sha256sum "$DST" | awk '{print $1}')
           echo "deb sha256: $SHA"
@@ -274,7 +283,13 @@ jobs:
     # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35),
     # runner 钉在 ubuntu-22.04-arm,升级前先确认新基线决策。
     runs-on: ubuntu-22.04-arm
-    timeout-minutes: 90
+    # 2026-10 实测:近 19 次完全成功的 release 构建 37m12s–46m22s
+    # (历史观测峰值 48m14s 出自一次被取消 run 中的 arm64 job),
+    # 旧上限 90 本有约 2x 余量。放宽到 120 为工具链滚动、缓存冷启动等
+    # 长尾留余量,代价只是真挂死时多 30min 才被取消(成功时长不受影响)。
+    # 本次仅放宽有实测样本的 arm64(与按 1.5x 联动的 loong64);
+    # windows 150 与 macos 360 的余量比例更紧,见各自 job 注释观察。
+    timeout-minutes: 120
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # release profile 已在 Cargo.toml 设为 thin LTO(原 fat 在 ubuntu 16GB 上
@@ -306,6 +321,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -411,7 +428,7 @@ jobs:
   build-linux-loongarch64:
     name: 构建 Linux loongarch64 deb
     needs: check-version-bump
-    # 触发合同:只有手动触发或 push 到 main 才进入这个 135 分钟重交叉构建。
+    # 触发合同:只有手动触发或 push 到 main 才进入这个重交叉构建。
     # gate 无条件置 build_required=true;一旦本 workflow 的触发面扩大
     # (如引入 pull_request 做发布链路轻量契约验证),缺这层守卫就会让每个
     # 触碰发布链路的 PR 都发起 loong64 交叉构建。
@@ -425,9 +442,12 @@ jobs:
     # 没有 lld)+ deepin beige (glibc 2.38) sysroot。目标基线 = deepin
     # 23/25 + UOS V25 的 glibc 2.38,由工具链/sysroot 决定而非 runner 发行版
     # (与 x64/arm64 的"链接构建机 glibc"模型不同,详见 floor 守护注释)。
-    # 交叉构建显著慢于原生 arm64(90min),timeout 按 ~1.5x 放大。
+    # 首次成功 release 实测 2026-10-22(0.10.14 run):54m56s,仅为 arm64
+    # 实测上界(46m22s)的 ~1.2x——"交叉构建显著慢于原生"的旧假设偏悲观。
+    # timeout 仍按 arm64 上限的 ~1.5x 放大(120 → 180,policy test 按联动
+    # 公式钉住),对实测 ~3.3x 余量;样本尚少(n=1),先保持策略比率。
     runs-on: ubuntu-22.04
-    timeout-minutes: 135
+    timeout-minutes: 180
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # 与 x64/arm64 同源风险:release(thin-LTO O3) 编译 codewhale-tui 的
@@ -458,6 +478,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -664,7 +686,15 @@ jobs:
         run: |
           set -euo pipefail
           probe="$(mktemp -d)"
+          trap 'rm -rf "$probe"' EXIT
           echo 'fn main() {}' > "$probe/probe.rs"
+          # --remap-path-prefix normalizes build-machine absolute paths
+          # embedded in the artifact (panic locations etc.), same as the
+          # job-level RUSTFLAGS of the x64/arm64/macOS jobs. It is a top-level
+          # rustc flag (NOT -C); both separator variants are exported because
+          # the embedded form follows whatever cargo passed to rustc.
+          ws="${GITHUB_WORKSPACE}"
+          ws_fwd="${ws//\\//}"
           if rustc -C linker-features=+lld -o "$probe/probe.exe" "$probe/probe.rs" 2>"$probe/a.err"; then
             flags="-C linker-features=+lld"
           elif rustc -C linker=rust-lld -C linker-flavor=lld-link \
@@ -675,6 +705,7 @@ jobs:
             cat "$probe/a.err" "$probe/b.err" >&2 || true
             exit 1
           fi
+          flags="$flags --remap-path-prefix=$ws=/ --remap-path-prefix=$ws_fwd=/"
           echo "probed RUSTFLAGS=$flags"
           echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
 
@@ -781,6 +812,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+          # header 凭据策略:运行时仓库公开,按锁定 gitlink 匿名拉取,不保留 job token(同 build-windows-x64)。
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -852,7 +885,7 @@ jobs:
             echo "✓ 手动 dmg 打包完成(无 Finder 图标美化)"
           fi
 
-          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
+          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; ls -la "$(dirname "$DMG")"; exit 1; }
 
           # Compression upgrade: the tauri dmg (bundler's bundle_dmg) is
           # UDZO/zlib and passes no -imagekey zlib-level, so hdiutil uses its

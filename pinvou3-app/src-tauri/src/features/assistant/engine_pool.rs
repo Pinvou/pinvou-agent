@@ -2555,7 +2555,8 @@ impl EnginePool {
                     prepared.requires_rebuild_from(&entry.runtime_model),
                     entry.mcp_config_revision,
                     mcp_config_revision,
-                ) {
+                ) && entry.engine.scheduled_run_engine == scheduled_unattended
+                {
                     (
                         Some(entry.engine.clone()),
                         entry.native_window_pending.clone(),
@@ -2729,6 +2730,7 @@ impl EnginePool {
             shell_manager,
             turn_shell_tasks,
             steer_incarnation,
+            scheduled_unattended,
         )
         .await?;
         let spawn_engine_ms = elapsed_ms(spawn_engine_started);
@@ -4540,10 +4542,22 @@ impl EnginePool {
             // sessions keep present_artifact hidden), and the entries lock is
             // released before sending, avoiding holding the global engine
             // table lock across awaits.
+            // Round-9 M2(b) (#628): compose the unattended shield for
+            // active unattended runs — CodeWhale applies the op as a
+            // plain OVERWRITE of config.disallowed_tools, so the un-gated
+            // broadcast replaced a live scheduled run's shield with the
+            // ordinary catalog (turns after the toggle ran unshielded).
+            let shaped = if engine.scheduled_unattended.load(Ordering::Acquire) {
+                crate::features::assistant::engine::unattended_disallowed_tools(
+                    &self.bridge.shape_disallowed_tools(&sid, tools.clone()),
+                )
+            } else {
+                self.bridge.shape_disallowed_tools(&sid, tools.clone())
+            };
             if let Err(e) = engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: Some(self.bridge.shape_disallowed_tools(&sid, tools.clone())),
+                    tools: Some(shaped),
                 })
                 .await
             {
@@ -10833,6 +10847,98 @@ mod probed_facts_wiring_tests {
         assert!(
             unkeyed.workspace_roots.is_empty(),
             "no snapshot = single-root semantics"
+        );
+    }
+
+    /// Round-9 M2(b) (#628): the toggle broadcast COMPOSES the unattended
+    /// shield for sched- sessions — CodeWhale applies SetDisallowedTools as
+    /// a plain overwrite, so an un-gated broadcast replaced a live
+    /// scheduled run's shield with the ordinary catalog. Source pin: the
+    /// set_disallowed_all body routes sched- ids through
+    /// unattended_disallowed_tools; deleting the branch turns this red.
+    #[test]
+    fn toggle_broadcast_composes_the_shield_for_sched_sessions() {
+        let source = include_str!("engine_pool.rs");
+        let fn_start = source
+            .find("pub async fn set_disallowed_all")
+            .expect("set_disallowed_all must exist");
+        let fn_end = source[fn_start..]
+            .find("\n    /// execpolicy")
+            .map(|offset| fn_start + offset)
+            .expect("next method boundary");
+        let fn_body = source[fn_start..fn_end]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact: String = fn_body.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("letshaped=ifengine.scheduled_unattended.load(Ordering::Acquire){crate::features::assistant::engine::unattended_disallowed_tools("),
+            "the positive unattended branch must compose the shield, not merely mention it");
+        let gate = fn_body
+            .find("engine.scheduled_unattended.load(Ordering::Acquire)")
+            .expect("the active unattended branch exists");
+        let compose = fn_body
+            .find("unattended_disallowed_tools")
+            .expect("the composition");
+        assert!(
+            gate < compose,
+            "only active unattended engines receive the shield on broadcast"
+        );
+        // Round-24 minor 12: the composition must reach the op — the
+        // ordering assert above stays green if the send is reverted to the
+        // raw catalog. The engine.rs counterpart pin checks dataflow; this
+        // asserts the broadcast carries `Some(shaped)`, the composed value.
+        let send = fn_body
+            .find("Op::SetDisallowedTools {")
+            .expect("the broadcast send exists");
+        let carries = fn_body[send..]
+            .find("tools: Some(shaped)")
+            .expect("the broadcast must carry the composed shield value");
+        assert!(
+            compose < send + carries,
+            "the composed value (not the raw catalog) reaches Op::SetDisallowedTools"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Round-35 M1: the unattended/interactive pool-reuse clause is
+    /// load-bearing — it is the only thing preventing an interactive
+    /// continuation of a sched session from reusing the run engine
+    /// (subagents disabled, spawn-pinned scheduled model, stale shield
+    /// entries). Deleting the second leg kept the whole serial suite
+    /// green (reviewer mutation, re-confirmed by the round-36 subagent
+    /// review). Source-pin BOTH legs and their conjunction at the reuse
+    /// site: engine_pool.rs carries production code after its scattered
+    /// cfg(test) modules, so the span is the reuse function's own body
+    /// (up to the next item), which excludes the test module at the
+    /// file's end.
+    #[test]
+    fn pool_reuse_requires_the_same_engine_class() {
+        let source = include_str!("engine_pool.rs");
+        let span = source
+            .split("fn get_or_spawn_with_policy")
+            .nth(1)
+            .expect("the pool-reuse function present")
+            .split("fn ")
+            .next()
+            .expect("the reuse gate present")
+            // Round-36 review: strip line comments — a comment-anchored
+            // revert of the clause must not self-satisfy the pin (the
+            // same mutation class its three sibling pins defend against).
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            span.contains("entry_is_fresh("),
+            "the freshness leg must stay in the reuse gate"
+        );
+        assert!(
+            span.contains(") && entry.engine.scheduled_run_engine == scheduled_unattended"),
+            "reuse must be CONJOINED with the run-engine class — the clause \
+             that keeps interactive continuations off the run engine (round-35 M1)"
         );
     }
 }
