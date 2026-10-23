@@ -2846,14 +2846,13 @@ pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), S
 /// mutation — grant, ledger, and rows are untouched, so the verdict rules are
 /// not engaged. With no token standing (the steady state after a commit, a
 /// consumed grant, or a legacy store) this is a no-op, so the steady-state
-/// reconnect/refresh tail adds no store write. Crate-internal: like the bare
-/// grant/revoke writers, every production caller sits behind a command
-/// body's own success path (the connect/refresh tails in
-/// `features/connectors/skill_gate.rs`).
-pub(crate) fn commit_relied_connect_grant(
-    package_id: &str,
-    relied_token: &str,
-) -> Result<bool, String> {
+/// reconnect/refresh tail adds no store write. Not crate-internal despite
+/// the bare grant/revoke writers being so: the CLI's `connect` finish side
+/// effects drive the same gated entry cross-crate and must commit the
+/// consent they relied on (`pub` like
+/// `deny_first_register_connector` — a consent-affecting caller routes
+/// through the gate entry it sits behind, never here directly).
+pub fn commit_relied_connect_grant(package_id: &str, relied_token: &str) -> Result<bool, String> {
     if relied_token.is_empty() {
         return Ok(false);
     }
