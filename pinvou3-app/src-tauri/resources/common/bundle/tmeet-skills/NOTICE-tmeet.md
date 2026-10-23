@@ -53,8 +53,8 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
   释放到运行时技能目录。
 - `tmeet` CLI(`@tencentcloud/tmeet`)不随包内置,由
   `pinvou3-app/src-tauri/src/features/connectors/tmeet.rs` 的 npm 钉扎
-  (`TMEET_NPM_SPEC`,随本次同步已升至 `@tencentcloud/tmeet@1.0.18`,与技能
-  基线一致)在线安装;SKILL.md 的
+  (`TMEET_NPM_SPEC`,当前为 `@tencentcloud/tmeet@1.0.19`;技能内容基线仍为
+  v1.0.18,CLI 钉扎可先于技能基线推进,以 `tmeet.rs` 为准)在线安装;SKILL.md 的
   「安装与初始化」节已按下方登记第 4 条改写为品悟代管口径,上游的
   `npm install -g @tencentcloud/tmeet@latest` 教学不再出现在技能正文,实际版本
   以 Rust 层钉扎为准。
@@ -244,9 +244,10 @@ description、认证节、命令树新增 `minutes` / `app` / `event` 三个子�
   三个新命令族均覆盖。第 5 条的免登录例外清单按上游 v1.0.18 补齐
   `event list` / `event schema` / `event status` / `event stop`（与上游
   认证节一致）。
-- frontmatter `version` 随基线更新为 `1.0.18`（钉扎上游 tag 基线；与
-  `tmeet.rs` 的 `TMEET_NPM_SPEC` 本次已同步升至 `@tencentcloud/tmeet@1.0.18`,
-  两者一致）。
+- frontmatter `version` 随基线更新为 `1.0.18`（钉扎上游 tag 基线）。
+  `tmeet.rs` 的 `TMEET_NPM_SPEC` 在本次同步时为 `@tencentcloud/tmeet@1.0.18`,
+  2026-10 已单独升至 `1.0.19`（上游仅新增隐藏的 `auth exchange-code` 子命令并把
+  错误输出改到 stderr,技能内容基线不变）；CLI 钉扎与技能基线不再要求一致。
 - 命令树收口核验（2026-09-15）:本次同步后已对 v1.0.18 全部命令树（含新增
   `minutes` / `app` / `event` 三域与 `auth login --no-browser`）对照 1.0.18
   实测 help 逐项复核,与文档一致;登记首段「对照 tmeet 1.0.15 实测 help
@@ -260,9 +261,9 @@ description、认证节、命令树新增 `minutes` / `app` / `event` 三个子�
   口径补行并登记为新本地修改。
 
 上游其余内容（含 `auth login` 交互式登录教学等）保持上游原样；品悟实际安装
-版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（本次同步后即为
-`@tencentcloud/tmeet@1.0.18`），实际登录由 `auth login --no-browser` 完成
-（该 flag 在 1.0.15/1.0.18 help 中均存在），文档描述与品悟用法不矛盾。
+版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（当前为
+`@tencentcloud/tmeet@1.0.19`），实际登录由 `auth login --no-browser` 完成
+（该 flag 在 1.0.15/1.0.18/1.0.19 help 中均存在），文档描述与品悟用法不矛盾。
 
 
 ## 2026-10-18 本地修改（模型侧文案复审,下次 sync 需重放）
