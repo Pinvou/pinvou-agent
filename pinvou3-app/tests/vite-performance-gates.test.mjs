@@ -18,9 +18,9 @@ function chunk({ name, modules = {}, isEntry = false, code = '' }) {
 const mainSource = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
 
 test('startup gates remain active in desktop and web production builds', () => {
-  // PR #628's 506_000 decision is measured and explicitly approved;
-  // the config comment preserves both platform measurements.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 506_000);
+  // PR #628's 506_000 and PR #773's 507_000 decisions are measured per
+  // policy; the config comment preserves both platforms' measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 507_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
     const pluginNames = new Set(config.plugins.flat(Infinity).filter(Boolean).map(plugin => plugin.name));

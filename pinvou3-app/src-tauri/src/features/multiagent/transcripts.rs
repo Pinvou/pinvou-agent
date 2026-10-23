@@ -24,7 +24,9 @@ pub struct SubagentTranscriptSummary {
     /// 前端据此忽略占位值并继续走任务标题/类型兜底。
     pub session_name: Option<String>,
     pub role: Option<String>,
-    /// 底座 canonical Fleet 类型（worker/scout/planner/reviewer/builder/verifier/custom）。
+    /// 底座 canonical Fleet 类型（general/explore/planner/reviewer/implement/
+    /// test/advisor/custom，即 FleetRole::as_str；worker/scout 等只是反序列化
+    /// 侧的 legacy 别名，新记录不会出现）。
     /// 普通对话通常不传 role/profile，界面靠它避免全部显示成“通用执行者”。
     pub agent_type: Option<String>,
     /// 直接父代理 ID；None 表示由主对话直接派出。用于把多级代理恢复成树，
@@ -851,6 +853,32 @@ mod tests {
         assert!(!listed[0].has_transcript, "面板据此显示排队中而不是空任务");
         assert!(!listed[0].done);
         assert!(!listed[0].blocked);
+        // 前端按 snake_case 原样消费这些键（overlay 的 ledger 适配读
+        // summary.agent_type/role/status/...；transcript 面板与树状还原读
+        // session_name/parent_run_id/error/objective/has_transcript）：serde
+        // 若改名或加 skip_serializing_if，JS 套件依然全绿而运行时静默丢字段
+        // （role-less 行丢类型标签、树退化成平铺）。把前端消费的线上键名钉死；
+        // spawn_depth 目前仅 Rust 侧序列化、前端未读，不在此列。
+        let wire = serde_json::to_value(&listed[0]).expect("summary serializes");
+        for key in [
+            "agent_id",
+            "session_name",
+            "role",
+            "agent_type",
+            "parent_run_id",
+            "status",
+            "error",
+            "done",
+            "failed",
+            "blocked",
+            "objective",
+            "has_transcript",
+        ] {
+            assert!(
+                wire.get(key).is_some(),
+                "wire key `{key}` must not be renamed: the frontend reads it verbatim"
+            );
+        }
     }
 
     #[test]

@@ -860,12 +860,19 @@ pub(crate) fn spawn_event_forwarder(
                     owner_session_id,
                     id,
                     status,
+                    activity,
                     ..
                 } if owner_session_id == session_id => {
                     let payload = json!({
                         "session_id": session_id,
                         "agent_id": id,
                         "status": status,
+                        // 结构化生命周期态（与 worker ledger 同一词表）：展示层
+                        // 不得从自由文本 progress 短语反推状态，否则台账令牌与
+                        // 实时短语互相覆盖，运行中子智能体的状态标签来回闪烁。
+                        "worker_status": deepseek_tui::tools::subagent::agent_worker_status_name(
+                            activity.worker_status,
+                        ),
                     });
                     // Web 端没有 chat:tool_start 的子智能体等价事件， bridge 靠该进展
                     // 文本调度 shell 快照轮询（发现子 agent 的后台任务），必须转发。
@@ -883,7 +890,7 @@ pub(crate) fn spawn_event_forwarder(
                     message,
                     ..
                 } if owner_session_id == session_id => {
-                    use deepseek_tui::tools::subagent::MailboxMessage as MM;
+                    use deepseek_tui::tools::subagent::{AgentWorkerStatus, MailboxMessage as MM};
                     // 审计是应用账本：绑了项目目录的原生代码会话写会话私有目录，
                     // 不污染用户项目；其余会话账本根与执行根相同，行为不变。
                     let ws = bridge.audit_workspace(&session_id, &execution_workspace);
@@ -929,6 +936,12 @@ pub(crate) fn spawn_event_forwarder(
                                 "session_id": session_id,
                                 "agent_id": agent_id,
                                 "status": format!("🔧 {tool_name} (step {step})"),
+                                // 与 AgentProgress 臂同词表：工具执行中。经
+                                // agent_worker_status_name 派生而非手写字面量，
+                                // 底座改词表时两臂一起变而非静默分叉。
+                                "worker_status": deepseek_tui::tools::subagent::agent_worker_status_name(
+                                    AgentWorkerStatus::RunningTool,
+                                ),
                             });
                             // 同 AgentProgress：Web 端靠它发现子 agent 的后台 shell 任务。
                             let _ = app.emit("multiagent:agent_progress", payload.clone());
