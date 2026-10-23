@@ -1,14 +1,19 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-22. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch, again to `3118c36b8a` with the 2026-10-12/13 batch (upstream absorptions #90/#91/#93/#97/#98), and to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108), and to `c08c8c022` with the 2026-10-17 batch (#105/#106/#111), and to `083cebfd9` with the 2026-10-20 batch (#112/#113) — the published-state parent gitlink tracks the maintenance branch and leads the tag; the current upstream-backport candidate and verification status are recorded in the modification register; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
+> Updated: 2026-10-23. Public maintenance e9a7f48da; parent candidate 4bf5e08940 contains that base; public alignment remains pending candidate integration.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Upstream backport candidate and fixed-head evidence: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-pending-maintenance-integration-756). The public maintenance gate and section 6 authorization requirement remain blocking.
 
-## Baseline
+## 0. Current maintenance baseline and validation boundary
 
-- Upstream: `Hmbown/CodeWhale` `v0.9.12` at `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`.
-- Current fork baseline: `Pinvou/CodeWhale:pinvou3-clean` at head `083cebfd9aac5f6b9993ed610383fe2b38c6785f` (leading the immutable tag `pinvou-v0.9.12-r3`, which stays pinned at its closure `61cb769be`), with seventy-six registered commits, seventy-five of them DCO-signed-off (the sole unsigned one: the #107 squash `f27672935`, whose merge commit message dropped the sign-off trailer — an upstream merge-message gap reported to the maintainers — see CodeWhale#107; later batches must recount and record the then-actual signed count); the immutable tag `pinvou-v0.9.12-r1` stays pinned at the r1 closure `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf` (fifteen commits formed through CodeWhale PR #44 and fast-follow PR #46), followed by sixty-one squash-merged PRs: thirteen from the 2026-09-10/11 backlog batch, five from the 2026-09-17 batch (#56/#58/#59/#60/#61), three from the 2026-09-18 batch (#55/#57/#62), one from the 2026-09-20 batch (#66), two from the 2026-09-21 batch (#64/#67), ten from the 2026-09-22/23 batch (#63/#65/#68/#69/#70/#71/#72/#73/#76, plus windows-compile fix #77), one from the 2026-10-02 batch (#80), seven from the 2026-10-08/09 batch (#79/#88/#89/#75/#78/#94/#95), five from the 2026-10-12/13 batch (#90/#91/#93/#97/#98), six from the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), two from the 2026-10-14 batch (#54/#107), one from the 2026-10-15 batch (#108), three from the 2026-10-17 batch (#105/#106/#111), and two from the 2026-10-20 batch (#112/#113).
+- Current parent candidate: `4bf5e08940fec17b6e86fd0c0fc741580fca3283`, 81 commits above v0.9.12, 79 DCO-signed; includes public maintenance `e9a7f48da169bf89399a11592e4d22a7b721cb39`. Source CodeWhale#117 head: `3bc47717c416e9c9f15ace808a413a968945da67`. The merge preserves candidate history and provenance. Prior test receipts retain their original execution boundaries; combined-tree CI remains pending. Public maintenance does not contain this candidate; the public alignment gate remains blocking.
+
+- Public maintenance (parent candidate above): `e9a7f48da169bf89399a11592e4d22a7b721cb39` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance.
+- Public-maintenance history: 78 commits above upstream v0.9.12 `dcd4c200f`, 63 above r1 `1fafee7e2`; 76 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
+- Public-maintenance drift: 504 files, +85973/-37666, net +48307; 230 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
 - Transition exemption (from 2026-09-11): between two rN closures the parent gitlink may advance along `pinvou3-clean` ahead of the immutable tag. During the transition `scripts/verify-public-submodule.sh` asserts gitlink equals the public maintenance-branch head and the immutable tag stays pinned at its closure commit; the next rN closure cuts a fresh immutable tag at the merged head and restores three-way equality.
@@ -26,6 +31,7 @@ Upstream backport candidate and fixed-head evidence: [modification register](for
   10. Tachyon reasoning-effort dialect (T10, merged into the maintenance branch)
 
 The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`](fork-modifications.md).
+
 
 ## Rules
 
