@@ -851,6 +851,24 @@ mod tests {
         assert!(!listed[0].has_transcript, "面板据此显示排队中而不是空任务");
         assert!(!listed[0].done);
         assert!(!listed[0].blocked);
+        // 前端桥按 snake_case 原样消费这些键（overlay 的 ledger 适配读
+        // summary.agent_type/role/status/...）：serde 若改名，两套件依然
+        // 全绿而 role-less 行在运行时丢失类型标签。把线上的键名钉死。
+        let wire = serde_json::to_value(&listed[0]).expect("summary serializes");
+        for key in [
+            "agent_id",
+            "role",
+            "agent_type",
+            "status",
+            "done",
+            "failed",
+            "blocked",
+        ] {
+            assert!(
+                wire.get(key).is_some(),
+                "wire key `{key}` must not be renamed: the frontend overlay reads it verbatim"
+            );
+        }
     }
 
     #[test]

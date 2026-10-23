@@ -239,12 +239,24 @@ test('mergeOverlayEntry: a real-time event without identity cannot wipe the ledg
   // The ledger stays authoritative: its rows still set (or clear) identity.
   const afterLedger = mergeOverlayEntry(
     afterEvent,
-    ledgerRead({ role: 'builder', agentType: 'worker', status: 'running' }),
+    ledgerRead({ role: 'builder', agentType: 'worker', status: 'running', done: false }),
     's1',
     12_000,
   );
   assert.equal(afterLedger.role, 'builder');
   assert.equal(afterLedger.agentType, 'worker');
+  // Clearing is the half the guard could silently break: the exemption is
+  // for ledger rows only, so a ledger row without identity (spawn record
+  // pruned or migrated) must reset the fields instead of preserving them
+  // forever.
+  const afterClear = mergeOverlayEntry(
+    afterLedger,
+    ledgerRead({ role: null, agentType: null, status: 'running', done: false }),
+    's1',
+    13_000,
+  );
+  assert.equal(afterClear.role, null, 'the ledger can clear identity; the guard must not resurrect it');
+  assert.equal(afterClear.agentType, null);
 });
 
 test('mergeOverlayEntry: a structured workerStatus token outranks the progress phrase (no queued/working flicker)', () => {
