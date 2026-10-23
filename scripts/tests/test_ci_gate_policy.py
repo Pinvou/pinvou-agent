@@ -68,6 +68,34 @@ def _without_yaml_comments(block):
     )
 
 
+def _without_inline_comments(block):
+    """整行与行尾 `#` 注释都剥掉(引号内的 `#` 保留)。
+
+    Round-4 review R3 of PR #745: `_without_yaml_comments` 只剥整行注释,
+    一个从 node --test 列表里删掉、却仍被某条活行行尾注提及的套件
+    (`... a.test.mjs # still runs b.test.mjs`)能让成员/全集 pin 继续假绿。
+    剥掉行尾注释后,注释里的路径进不了任何提取结果;良性尾注只是被剥掉,
+    不会造成假红。
+    """
+    stripped_lines = []
+    for line in block.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        quote = None
+        cut = len(line)
+        for index, char in enumerate(line):
+            if quote is not None:
+                if char == quote:
+                    quote = None
+            elif char in ("'", '"'):
+                quote = char
+            elif char == "#" and index > 0 and line[index - 1] in (" ", "\t"):
+                cut = index
+                break
+        stripped_lines.append(line[:cut].rstrip())
+    return "\n".join(stripped_lines)
+
+
 def _is_covered_by_trigger(entry, trigger_paths):
     """entry 被 trigger path 覆盖:完全相同,或 trigger 是其上层 `/**` 目录 glob。
 
@@ -673,10 +701,11 @@ class CiGatePolicyTests(unittest.TestCase):
             frontend_paths,
             "webui wrapper 不在 frontend filter 中,wrapper-only PR 会静默跳过 frontend-test",
         )
-        # Comment-stripped: a commented-out list entry must not satisfy the
-        # membership pin (round-3 review of PR #745: the bare substring
-        # stayed green under `# scripts/tests/run-webui-smoke.test.mjs`).
-        version_consistency = _without_yaml_comments(
+        # Inline-stripped (round-4 review R3 of PR #745): whole-line
+        # stripping alone lets a suite that was removed from the live list
+        # survive as a trailing comment on another list line, keeping this
+        # membership pin green while version-consistency never runs it.
+        version_consistency = _without_inline_comments(
             self.pr_workflow.split(
                 "\n  version-consistency:", maxsplit=1
             )[1].split("\n  changes:", maxsplit=1)[0]
@@ -695,7 +724,10 @@ class CiGatePolicyTests(unittest.TestCase):
         # every suite on disk must be listed (a forgotten new suite
         # silently never runs), and every listed scripts/tests entry must
         # exist (a renamed suite must not leave a dead entry green).
-        version_consistency = _without_yaml_comments(
+        # Inline-stripped (round-4 review R3 of PR #745): a trailing
+        # comment on a live list line must not count a removed suite as
+        # "listed" — whole-line stripping alone left that hole open.
+        version_consistency = _without_inline_comments(
             self.pr_workflow.split("\n  version-consistency:", maxsplit=1)[1].split(
                 "\n  changes:", maxsplit=1
             )[0]
