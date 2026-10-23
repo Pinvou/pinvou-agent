@@ -1,0 +1,38 @@
+# Windows bootstrap host component
+
+This standalone leaf owns the original-source first installation, the single LocalSystem SCM helper, and the ordinary-user launcher. Application wiring is opt-in through the mutually exclusive `upgrade-host-lab` and `upgrade-host-production` features. A build without an embedded bootstrap profile refuses host operations. The build embeds independently supplied public bootstrap Seed/Root bytes; runtime JSON, a manifest, or a caller PID cannot construct an installed/source context. This batch supports Windows x64, NTFS, per-machine NSIS only. Other platforms return `HOST_UNSUPPORTED`.
+
+The standalone helper and launcher require a separate leaf build with an explicit `--target x86_64-pc-windows-msvc` and `-C target-feature=+crt-static` applied consistently to all target dependencies. Their binary entrypoints reject a Windows MSVC build without this target feature. Use an isolated role target directory and supply the resulting two PE images to `PINVOU_HOST_HELPER_BINARY` and `PINVOU_HOST_LAUNCHER_BINARY`; these flags must not be applied to the GUI project build. Normal and fault profiles use the same CRT policy, with separately bound Seed/artifact bytes.
+
+Both role images also carry `/DEPENDENTLOADFLAG:0x800`, restricting static DLL imports to System32 before Rust entry on supported Windows versions. Later dynamic loads retain their independent runtime hardening. Packaging must inspect the actual role PE load policy and reject dynamic VC/UCRT imports, and must verify exact file identities, sizes and hashes. Native code-signing certificates are optional; metadata signatures and authenticated source bindings remain mandatory. The GUI and NSIS images retain their own build configuration. A Windows loader refusal is not the helper's prerequisite exit code 15: the standalone roles must reach their own checks even when GUI VC prerequisites are absent, allowing authenticated same-source maintenance.
+
+The two standalone executables use closed arguments:
+
+- `pinvou-upgrade-helper --profile` describes public compiled inputs only.
+- `pinvou-upgrade-helper --service` enters the real SCM dispatcher only.
+- `pinvou-upgrade-helper --installer-stage <stage>` accepts only `prepare-install`, `prepare-local-install`, `prepare-metadata-upgrade`, `verify-files`, `start-service`, `prepare-remove`, `remove-target`, or `launch-desktop`, from the actual independently protected original source installer. `prepare-metadata-upgrade` currently refuses with `InitialTrustUnavailable` until its authenticated producer is implemented; it never falls back to local installation.
+- `pinvou-upgrade-launcher` starts the fixed registered app as its ordinary interactive user. Its only additional mode is `--restart-handoff <restart-id>`, authenticated against the actual original association.
+
+The private manifest version 2 binds the complete application inventory through at most eight separately parsed shards (each at most 1 MiB and 4,096 files). Root and every shard are embedded before NSIS archive/CRC construction, and atomically persisted with the original registry intent. Missing, changed, swapped, extra or wrong-language shards refuse. Unpublished inline manifest version 1 is not adopted. The assembled inventory is never serialized as one oversized metadata input.
+
+The original source installer establishes a native intent before target creation. Files are created with protected security descriptors, flushed, reopened and checked by retained identity/hash. SCM creation starts DISABLED, checks the real default security, seals the service, and only then configures automatic startup. Service RUNNING is separate from the authenticated registration Ready transition. The registry stores synchronous transacted CAS history; an uncertain post-commit outcome remains unknown. Recovery preserves the original scope, Root, creation history and epochs. Unknown files, references or conflicting services are preserved and refused.
+
+First-install admission only reads installed prerequisites and legacy markers. The VC++ floor comes from the actual selected MSVC linker toolset. Machine-wide WebView2 Runtime must already exist. Both machine registry views and every loaded ordinary-user hive are checked for known legacy Pinvou installations. Every user profile in the actual machine ProfileList must have a readable loaded hive; offline, unknown or inaccessible profiles return unsupported/unavailable, rather than being assumed clean. No hive is loaded automatically and no legacy uninstaller is executed. This bootstrap does not migrate or qualify user data. Existing same-source repair and removal do not require missing GUI prerequisites.
+
+App restart preserves one authenticated association while existing app cleanup runs. A real matching live launcher must be ready before cleanup and exit commit. Only a definite matching commit acknowledgment within its original monotonic grace permits app exit. Cancellation, timeouts, process death and lost replies cannot create a new grant or trigger fallback. The broker never launches a GUI as System. Optional installer finish dispatch uses the real ordinary desktop Explorer automation route; success means dispatch only, not an observed child or health.
+
+`native-acceptance-hooks` is a separate, default-off guest fault-test feature requiring a distinct lab fault profile. It opens two fixed protected native event pairs at the actual post-CreateService and post-seal/pre-AUTO boundaries. It accepts no runtime fault arguments, paths or environment switches. Instrumented profiles are not shipping acceptance evidence. The normal profile must independently pass installation/restart/repair/removal tests in the isolated guest, including the supported unsigned-package path.
+
+Fixed English diagnostics contain no sensitive paths or native error payloads. Exit codes: 0 success, 10 disabled/unsupported/trust unavailable, 11 invalid identity/context/input, 12 busy/referenced, 13 corrupt/repair required, 14 outcome unknown, 15 unavailable/incomplete prerequisites. No service, certificate root, clock or machine registry test changes are permitted on the development host.
+
+This workflow does not establish Artifact validity, production Publisher mapping, ApprovedRegistry, current upgrade qualification, trusted wall time, data freeze/backup readiness, or install/consume permissions. Those owners remain independent.
+
+The build-time Seed accepts explicit `lab` and `production` kinds with the same trust and content checks. Production uses a stable installation `profileId`, independent of each `buildId`. Its service, pipe, source/code/app/state directories, registry keys and mutexes are separate from lab even for the same profile ID. Existing lab names and serialized policies remain unchanged. Production rejects fault profile IDs and `native-acceptance-hooks`; there is no default production Root or runtime profile selector. The project NSIS wrapper requires `PINVOU_HOST_PROFILE_KIND=production` to match a production Seed. See [packaging](../../../../../../docs/windows-host-lab-packaging.md) for its explicit public inputs and source-deployment prerequisite.
+
+The component's library regression is run independently of the GUI build:
+
+```sh
+cargo test --manifest-path pinvou3-app/src-tauri/src/features/updater/host/Cargo.toml --offline --locked --target x86_64-pc-windows-msvc --lib -- --test-threads=1
+```
+
+Passing these tests or compiling the standalone roles does not qualify SCM installation, authenticated IPC, multiple users or crash recovery. Those scenarios require the isolated Windows guest; do not install or exercise the service on the development host.

@@ -232,7 +232,7 @@ const path = require("node:path");
 const BUILD_SCRIPT_SOURCE = fs.readFileSync(
   path.join(__dirname, "..", "scripts", "tauri", "build.js"),
   "utf8",
-);
+).replaceAll("\r\n", "\n");
 
 test("main() computes both skip switches once and passes them down", () => {
   // The gate and the overlay removal must share one decision. Reading the

@@ -17,9 +17,9 @@ async_command_passthrough!(
         app: AppHandle,
     ) -> Result<(), String>
 );
-async_command_passthrough!(
-    updater_domain,
-    restart_app(app: AppHandle) -> Result<(), String>
-);
+#[tauri::command]
+pub async fn restart_app(app: AppHandle) -> Result<(), String> {
+    crate::app::lifecycle::restart_application(app).await
+}
 sync_command_passthrough!(updater_domain, cancel_download());
 async_command_passthrough!(updater_domain, report_pending_update_result() -> Result<PendingUpdateReportResult, String>);

@@ -1,7 +1,8 @@
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const { writeEffectiveArtifacts } = require("./effective-config.js");
+const { composeEffectiveConfig, writeEffectiveArtifacts } = require("./effective-config.js");
+const { validateHostApplicationConfig } = require("./windows-host-profile.js");
 const {
   prepareCodexBridge,
   prepareWindowsCodexBridge,
@@ -21,6 +22,7 @@ const { prepareLinuxAsrRuntime } = require("./linux-asr-runtime.js");
 const { prepareKnowledgeHost } = require("./knowledge-host.js");
 const { WRAPPER_ENV } = require("./require-wrapper.js");
 const { stageWindowsInstaller } = require("./windows-installer.js");
+const { prepareHostBuild, finishHostBuild } = require("./windows-host-build.js");
 const {
   stageWindowsOnnxRuntime,
   stageWindowsRuntime,
@@ -991,11 +993,22 @@ function chromeDevtoolsMcpEnvironment(
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  let args = process.argv.slice(2);
   const validateOnly = args[0] === "--validate-only";
   if (validateOnly) args.shift();
 
   if (validateOnly) return;
+
+  const hostBuild = await prepareHostBuild(args, { appRoot: APP_ROOT });
+  if (hostBuild) {
+    args = hostBuild.args;
+    // Refuse caller identity overlays before toolchain/sidecar preparation can
+    // compile anything. Windows automatic identity overlays are composed too;
+    // generated runtime resources are checked again in the final artifacts.
+    const identityArgs = prepareTauriArgs(args, { stageRuntime: () => null });
+    validateHostApplicationConfig(hostBuild.profile,
+      composeEffectiveConfig(configSpecs(identityArgs)).effectiveConfig);
+  }
 
   const isDev = args.includes("dev");
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
@@ -1033,7 +1046,7 @@ async function main() {
       : null;
   const windowsDevRuntime =
     isDev && process.platform === "win32" ? stageWindowsOnnxRuntime() : null;
-  if (windowsRuntime && hasTauriBuildCommand) {
+  if (windowsRuntime && hasTauriBuildCommand && !hostBuild) {
     stageWindowsInstaller({
       bundleTargets: windowsBundleTargets(args),
       runtime: windowsRuntime,
@@ -1117,8 +1130,10 @@ async function main() {
     skipLinuxAsr,
     skipKnowledgeHost,
   });
+  let artifacts;
   if (hasTauriBuildCommand) {
-    const artifacts = writeEffectiveArtifacts(configSpecs(preparedArgs));
+    artifacts = writeEffectiveArtifacts(configSpecs(preparedArgs));
+    if (hostBuild) validateHostApplicationConfig(hostBuild.profile, artifacts.effectiveConfig);
     console.log(`[build] 有效 Tauri 配置: ${artifacts.effectiveConfigPath}`);
     console.log(
       `[build] 安装包资源清单: ${artifacts.resourceManifestPath} (${artifacts.resourceManifest.resourceFileCount} files)`,
@@ -1131,6 +1146,9 @@ async function main() {
   );
   prepareWindowsRustcStackWrapper({ environment: tauriEnvironment });
   process.exitCode = await runTauri(preparedArgs, { environment: tauriEnvironment });
+  if (hostBuild && process.exitCode === 0) {
+    await finishHostBuild(hostBuild, artifacts, { appRoot: APP_ROOT, environment: tauriEnvironment });
+  }
 }
 
 if (require.main === module) {
@@ -1141,7 +1159,11 @@ async function runBuild() {
   try {
     await main();
   } catch (error) {
-    console.error(`[build] ${error.message}`);
+    const hostInputs = process.env.PINVOU_HOST_BOOTSTRAP_SEED !== undefined
+      || process.env.PINVOU_HOST_INITIAL_ROOT !== undefined;
+    const message = hostInputs && !/^HOST_[A-Z_]+$/u.test(error.message)
+      ? "HOST_BUILD_FAILED" : error.message;
+    console.error(`[build] ${message}`);
     process.exitCode = 1;
   }
 }

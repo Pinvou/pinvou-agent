@@ -147,14 +147,6 @@ pub async fn install_update(
     Ok(())
 }
 
-/// 重启应用使新版本生效（exec 新 inode）。restart 跳过 RunEvent::Exit，
-/// Synchronously close the browser host and reap ACP/connector child processes first so
-/// native surfaces and orphan processes do not remain resident.
-pub async fn restart_app(app: AppHandle) -> Result<(), String> {
-    crate::prepare_app_restart(&app).await;
-    app.restart();
-}
-
 /// 置位取消标志，让正在跑的 `download_update` 循环下一轮自行退出并清理半成品。
 /// 仅对下载阶段有效；install 阶段(pkexec/apt)已交给系统，不在此中断。
 pub fn cancel_download() {

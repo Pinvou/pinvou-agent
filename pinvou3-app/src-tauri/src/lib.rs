@@ -616,9 +616,10 @@ pub(crate) async fn harvest_child_processes(app: &tauri::AppHandle) {
     }
 }
 
-/// Every `app.restart()` call must pass through this funnel. The browser first saves
-/// restore manifests and destroys native surfaces, then asynchronous children are
-/// harvested. The caller invokes the non-returning restart immediately afterward.
+/// The shared application restart lifecycle calls this after any host arm ACK.
+/// The browser saves restore manifests and destroys native surfaces before child
+/// processes are harvested. Host commit can still fail afterward and keep this
+/// process alive; cleanup does not promise to restore the stopped components.
 pub(crate) async fn prepare_app_restart(app: &tauri::AppHandle) {
     if let Some(browser) = app.try_state::<features::browser::BrowserManager>() {
         browser.shutdown_before_restart().await;

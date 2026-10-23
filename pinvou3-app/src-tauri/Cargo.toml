@@ -45,6 +45,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 default = ["local-embed"]
 local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
+upgrade-host-lab = ["dep:pinvou-upgrade-host"]
+upgrade-host-production = ["dep:pinvou-upgrade-host"]
 benchmark-hooks = ["dep:agent-backend-api", "deepseek-tui/benchmark-eval-controls"]
 
 [build-dependencies]
@@ -62,6 +64,7 @@ tokio = { version = "1.49", features = ["test-util"] }
 filetime = "0.2.29"
 
 [dependencies]
+pinvou-upgrade-host = { path = "src/features/updater/host", optional = true }
 pinvou-upgrade-codec = { path = "src/features/updater/protocol/codec" }
 pinvou-upgrade-verifier = { path = "src/features/updater/protocol/verify" }
 pinvou-upgrade-control-http = { path = "src/features/updater/protocol/http" }

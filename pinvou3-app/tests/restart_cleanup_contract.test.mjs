@@ -12,15 +12,23 @@ function source(relativePath) {
   return fs.readFileSync(path.join(rustRoot, relativePath), 'utf8');
 }
 
-test('every direct Tauri restart passes through the unified cleanup funnel', () => {
+test('both restart commands use the same application lifecycle funnel', () => {
   const settings = source(path.join('app', 'commands', 'settings.rs'));
+  const command = source(path.join('app', 'commands', 'updater.rs'));
   const updater = source(path.join('features', 'updater', 'mod.rs'));
-  const combined = `${settings}\n${updater}`;
+  const lifecycle = source(path.join('app', 'lifecycle.rs'));
+  const combined = `${settings}\n${command}\n${updater}`;
 
-  // settings.rs persists through the shared persist_and_restart helper, so
-  // the two settings restarts collapse into one funnel call site (+ updater).
-  assert.equal((combined.match(/app\.restart\(\);/g) || []).length, 2);
-  assert.equal((combined.match(/crate::prepare_app_restart\(&app\)\.await;/g) || []).length, 2);
+  // Both public commands must route through the host-aware application layer;
+  // adding another direct restart would bypass the armed/commit ordering.
+  for (const entry of [settings, command]) {
+    assert.match(entry, /crate::app::lifecycle::restart_application\(app\)\.await/);
+  }
+  assert.doesNotMatch(combined, /^\s*app\.restart\(/m);
+  assert.equal((lifecycle.match(/app\.restart\(\);/g) || []).length, 1);
+  assert.match(lifecycle, /#\[cfg\(not\(any\(feature = "upgrade-host-lab", feature = "upgrade-host-production"\)\)\)\][\s\S]*?crate::prepare_app_restart\(&app\)\.await;\s*app\.restart\(\);/);
+  assert.match(lifecycle, /cfg\(all\(feature = "upgrade-host-lab", feature = "upgrade-host-production"\)\)/);
+  assert.match(lifecycle, /compile_error!/);
   assert.doesNotMatch(combined, /crate::harvest_child_processes\(&app\)\.await;[\s\S]{0,80}app\.restart\(\);/);
 });
 

@@ -39,11 +39,26 @@ pub struct Identity {
     created_high: u32,
     created_low: u32,
 }
+/// One observed ordinary directory member. It attests no owner or host policy.
+/// Reparse objects are refused by the native visitor rather than followed.
+pub struct DirectoryEntry {
+    pub name: String,
+    pub directory: bool,
+}
+
 pub struct Directory {
     _handles: Vec<File>,
 }
 mod platform;
-pub use platform::{directory, identity, read_identity};
+pub use platform::{CreationSecurity, directory, identity, read_identity};
+
+impl Directory {
+    /// Borrow the ACTUAL retained ancestry for caller-specific inspection. This
+    /// ordinary handle view attests no owner/DACL policy or protected capability.
+    pub fn retained_directories(&self) -> impl ExactSizeIterator<Item = &File> {
+        self._handles.iter()
+    }
+}
 
 pub fn read(file: &mut File, maximum: usize) -> Result<Vec<u8>, Error> {
     use std::io::{Read, Seek, SeekFrom};

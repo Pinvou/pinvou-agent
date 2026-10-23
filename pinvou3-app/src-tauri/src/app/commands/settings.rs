@@ -1548,13 +1548,12 @@ pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, St
     .await
 }
 
-/// Post-save restart finalization — call only after the save has committed: a failed persist must
-/// never restart. Restart bypasses RunEvent::Exit, so close the browser host and reap child
-/// processes before exiting; `saved_label` only keeps each command's own log wording.
+/// Request restart only after the save has committed; a failed persist never
+/// restarts. The shared lifecycle handles cleanup and, in host builds, the
+/// original handoff. A host failure may return while the saved settings remain.
 async fn restart_after_save(app: tauri::AppHandle, saved_label: &str) -> Result<(), String> {
-    eprintln!("[pinvou3-app] {saved_label} saved, restarting app...");
-    crate::prepare_app_restart(&app).await;
-    app.restart();
+    eprintln!("[pinvou3-app] {saved_label} saved, requesting app restart...");
+    crate::app::lifecycle::restart_application(app).await
 }
 
 /// 仅保存搜索配置后重启，避免搜索设置覆盖同时发生变化的模型列表。

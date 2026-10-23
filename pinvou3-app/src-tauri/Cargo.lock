@@ -6682,6 +6682,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-custody"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pinvou-upgrade-file-http"
 version = "0.0.0"
 dependencies = [
@@ -6690,6 +6698,32 @@ dependencies = [
  "pinvou-upgrade-transfer",
  "reqwest 0.13.4",
  "tokio",
+]
+
+[[package]]
+name = "pinvou-upgrade-host"
+version = "0.0.0"
+dependencies = [
+ "find-msvc-tools",
+ "pinvou-upgrade-codec",
+ "pinvou-upgrade-custody",
+ "pinvou-upgrade-native-evidence",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "pinvou-upgrade-native-evidence"
+version = "0.0.0"
+dependencies = [
+ "pinvou-upgrade-custody",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6769,6 +6803,7 @@ dependencies = [
  "pinvou-upgrade-codec",
  "pinvou-upgrade-control-http",
  "pinvou-upgrade-file-http",
+ "pinvou-upgrade-host",
  "pinvou-upgrade-package-check",
  "pinvou-upgrade-timing",
  "pinvou-upgrade-transfer",
