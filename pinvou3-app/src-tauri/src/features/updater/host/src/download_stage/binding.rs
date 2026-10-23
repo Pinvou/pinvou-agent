@@ -16,6 +16,8 @@ fn document(bytes: &[u8]) -> Result<Document> {
 pub(crate) struct BoundPackage {
     pub(crate) document: Document,
     pub(crate) expected: Document,
+    pub(crate) envelope_sha256: String,
+    pub(crate) root_claims_sha256: String,
 }
 
 pub(crate) fn bind_package(
@@ -52,6 +54,8 @@ pub(crate) fn bind_package(
     Ok(BoundPackage {
         document: checked,
         expected,
+        envelope_sha256: crate::json::sha256(source.envelope),
+        root_claims_sha256: source.root_claims_pin.to_owned(),
     })
 }
 

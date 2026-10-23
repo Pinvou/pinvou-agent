@@ -2,6 +2,9 @@
 use crate::error::{Error, Result};
 pub(crate) struct ProtectedDownloadBytes;
 impl ProtectedDownloadBytes {
+    pub(crate) fn seal_reference(&self) -> Result<&crate::ObjectReference> {
+        Err(Error::Unsupported)
+    }
     pub(crate) fn size(&self) -> u64 {
         0
     }

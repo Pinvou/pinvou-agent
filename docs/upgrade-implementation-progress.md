@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-23 23:21 Asia/Shanghai**.
+Checkpoint: **2026-10-23 23:42 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
@@ -114,18 +114,35 @@ The host creates a fresh fixed protected leaf, copies and completely verifies
 the package and selected native member, closes writers and reopens the same
 objects through held ancestry. The resulting capability offers bounded reads
 and cancellable full rechecks, with no path, handle, launch or install interface.
-It is not a VerifiedExecutionObject or current installation qualification.
+The byte capability alone is not a VerifiedExecutionObject or current
+installation qualification.
+
+The next delivered component wraps that capability in a real same-process
+`VerifiedExecutionObject` after another complete physical recheck. Its generation
+contains both actual file identities, including creation fields, and the entire
+authenticated Package/compiled Seed binding. Read-only references do not grant
+authority. Handoff consumes the unique owner and rechecks the exact reference
+and physical objects while retaining all original handles; an action borrow
+likewise keeps the same owner alive. There is no path/handle/launch interface,
+cross-process transfer, restart adoption, current qualification or install grant.
+Object custody does not require or create a preparation/freeze lock.
 
 Independent deep and repair reviews passed, including fixes for cooperative
 cancellation, genuine threshold/signature controls and a private Artifact type
-import. The host depends on narrow byte/archive libraries rather than the QA
-workflow or its HTTP stack. Final Windows host tests: **83 passed, zero failed,
+import. The object-ownership increment also passed independent deep review with
+no findings. The host depends on narrow byte/archive libraries rather than the QA
+workflow or its HTTP stack. Latest Windows host tests: **88 passed, zero failed,
 one existing opt-in ignored**; this includes four genuine Root/Package binding
-controls. Native-evidence sources were unchanged during the final API narrowing;
+controls and five pure object-generation/transition tests. One compile-fail
+doctest passed, proving the moved old owner cannot be reused. These pure tests do
+not manufacture a native sealed capability or replace physical E2E.
+Native-evidence sources were unchanged during these final increments;
 their preceding qualified **9 library + 2 process** passes are reused, with one
-existing opt-in ignored. Both current standalone binaries built; byte-matched
-independent artifact copies passed PE loader/static-runtime gates, and the actual
-helper's public profile command passed. Rust formatting, normal lock resolution,
+existing opt-in ignored. The preceding protected-staging increment built both
+standalone binaries; byte-matched independent artifact copies passed PE
+loader/static-runtime gates, and the actual helper's public profile command
+passed. The subsequent ownership-only API adds no dependency or loader change.
+Rust formatting, normal lock resolution,
 whitespace and architecture checks passed. Existing registry package identities
 and edges are unchanged; the app lock only adds internal host dependency edges.
 
@@ -138,9 +155,12 @@ remain diagnostic records. No resource-floor failure occurred.
 Actual protected-copy ACL/reparse, replacement and disk-exhaustion E2E remain
 unexecuted without a qualified isolated Windows input/environment; they are
 environment follow-ups, not passed tests or completion blockers. Current
-production qualification, source continuity/continuation and T03 execution-object
-composition remain unfinished business implementation. This increment does not
-complete T29; its engineering estimate remains unchanged pending that closure.
+production qualification, source continuity/continuation and integration with
+the later authorized executor remain unfinished business implementation. The
+existing DownloadInfo wire lacks an authenticated immutable-source object/version
+binding; a compatible extension is awaiting the owner's decision. No ETag or QA
+provider assertion is promoted to a production continuity proof. These increments
+do not complete T29; its engineering estimate remains unchanged pending closure.
 
 ## Per-task status
 
@@ -177,7 +197,7 @@ completion blocker; outstanding business implementation is.
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization is delivered under T31; protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
-| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo caller, original FullPack/native observation and independently reviewed protected byte staging are delivered; production qualification/source continuity/continuation and T03 execution-object composition remain pending. |
+| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo caller, original FullPack/native observation, protected staging and same-process VerifiedExecutionObject ownership are delivered; production qualification/source continuity/continuation and authorized-executor integration remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |

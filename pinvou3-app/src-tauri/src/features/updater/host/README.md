@@ -82,10 +82,10 @@ destination readback.
 object identities and signed bindings. It offers size/hash/role facts, bounded
 reads (at most 64 KiB per call) and a full cancellable `recheck`; it has no Clone/Serialize, raw path/handle, execution
 or installation API. It is **not** a `VerifiedExecutionObject`, a current
-qualification, a publisher mapping, a live owner or an installation grant.
+qualification, a publisher mapping, a preparation/freeze owner or an installation grant.
 Missing current T27 capabilities must still refuse at any future execution
-composition. This component does not add resume/source renewal or the T03
-execution handoff. Unsupported platforms return `HOST_UNSUPPORTED`.
+composition. This component does not add resume/source renewal. Unsupported
+platforms return `HOST_UNSUPPORTED`.
 
 The ordinary host library tests cover genuine Root/Package signatures, independent
 envelope/claims pins, scope and threshold failures, historical Root expiry,
@@ -95,6 +95,46 @@ disk-exhaustion and replacement scenarios require an isolated Windows environmen
 with an independently embedded public profile and real signed FullPack input;
 they do not require installing a service on the development machine. No such
 environmental scenario is implied by library compilation or pure-test success.
+
+## Same-process execution-object ownership
+
+`ProtectedByteCapability::into_execution_object(cancelled)` consumes the staged
+byte capability and completely rechecks its protected files and ancestry before
+returning a `VerifiedExecutionObject`. The object verifies identity/custody only;
+it does not establish a current non-denied key, T27 eligibility, T28 preparation
+or freeze, T32 consume, installation permission or an execution grant. Historical
+Package authentication under the original compiled Root remains historical.
+
+`ObjectBinding` is derived inside the actual staging adapter from the same
+signature-checked Package and compiled Seed. It retains the Root-claims pin,
+original Package-envelope hash, compiled product/component/target/profile/Seed,
+appVersion, FullPack packageId/size/hash and exact native role/claim/size/hash.
+`ObjectGeneration` includes that complete binding and both actual protected file
+identities, including creation fields. It is not a PID, generated directory name,
+wall-clock token, preparation epoch or persisted adoption permission.
+
+`ObjectReference` can be cloned as read-only identification data. It has no public
+constructor or deserialization and never keeps an owner alive. Use
+`owner.handoff(&expected_reference, cancelled)` to consume and move the same owner:
+an exact reference/generation/binding match and complete physical recheck precede
+the returned owner. All original protected handles remain continuously held.
+Failure returns no replacement owner and leaves retained staging unadopted.
+
+`owner.before_action(&expected_reference, cancelled)` performs the same checks
+and returns a narrow borrow guard holding `&mut` access to that owner. The guard
+offers only the reference and bounded byte reads. It does not expose a raw path,
+handle, launch/install method or arbitrary execution closure. Future T31/T36
+composition must retain the owner/borrow and separately prove its own current
+action authority. A cloned old reference never substitutes for that borrow.
+
+There is no Clone/Deserialize implementation on the owner, cross-process
+handoff, restart adoption or reference registry. Process exit ends the capability;
+the retained directory is not a way to resurrect it. Cancellation is mandatory
+and latched around physical rechecks, without creating or resetting a budget.
+Pure tests cover identity-creation generations, complete metadata mismatches,
+same-reference transitions, cancellation and physical-check refusal; they do
+not create fake protected capabilities or claim native E2E. The `handoff`
+compile-fail doctest checks that the moved old owner cannot be reused.
 
 The build-time Seed accepts explicit `lab` and `production` kinds with the same trust and content checks. Production uses a stable installation `profileId`, independent of each `buildId`. Its service, pipe, source/code/app/state directories, registry keys and mutexes are separate from lab even for the same profile ID. Existing lab names and serialized policies remain unchanged. Production rejects fault profile IDs and `native-acceptance-hooks`; there is no default production Root or runtime profile selector. The project NSIS wrapper requires `PINVOU_HOST_PROFILE_KIND=production` to match a production Seed. See [packaging](../../../../../../docs/windows-host-lab-packaging.md) for its explicit public inputs and source-deployment prerequisite.
 

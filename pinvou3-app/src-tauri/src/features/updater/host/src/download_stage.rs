@@ -7,7 +7,7 @@ use pinvou_upgrade_archive::ArchiveLimits;
 use std::fs::File;
 
 mod binding;
-pub(crate) use binding::{bind_package, unique_member};
+pub(crate) use binding::{BoundPackage, bind_package, unique_member};
 
 /// Untrusted borrowed input, not cache ownership, writer retirement or custody.
 /// The host independently verifies the signed envelope and protected copy.
@@ -113,6 +113,19 @@ pub struct ProtectedByteCapability {
     sha256: String,
 }
 impl ProtectedByteCapability {
+    /// Consume this byte owner into a verified same-process object owner after
+    /// complete physical revalidation. This adds no current upgrade permission.
+    pub fn into_execution_object(
+        self,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<crate::VerifiedExecutionObject> {
+        crate::execution_object::VerifiedExecutionObject::from_staged(self, cancelled)
+    }
+
+    pub(crate) fn seal_reference(&self) -> Result<&crate::ObjectReference> {
+        self.inner.seal_reference()
+    }
+
     pub fn role(&self) -> NativeRole {
         self.role
     }

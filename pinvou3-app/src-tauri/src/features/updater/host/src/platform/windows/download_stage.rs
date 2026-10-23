@@ -46,8 +46,23 @@ pub(crate) struct ProtectedDownloadBytes {
     _root_claims_sha256: String,
     _member_name: String,
     _native_claim: Vec<u8>,
+    reference: crate::ObjectReference,
 }
 impl ProtectedDownloadBytes {
+    pub(crate) fn seal_reference(&self) -> Result<&crate::ObjectReference> {
+        let generation = self.reference.generation();
+        let binding = self.reference.binding();
+        if generation.package_identity() != &self.package_id
+            || generation.native_identity() != &self.native_id
+            || binding.full_pack_size() != self.package_size
+            || binding.full_pack_sha256() != self.package_sha256
+            || binding.native_size() != self.native_size
+            || binding.native_sha256() != self.native_sha256
+        {
+            return Err(Error::ImageRefused);
+        }
+        Ok(&self.reference)
+    }
     pub(crate) fn size(&self) -> u64 {
         self.native_size
     }
@@ -388,6 +403,9 @@ pub(crate) fn stage_download_bytes(
         _root_claims_sha256: source.root_claims_pin.to_owned(),
         _member_name: member_name,
         _native_claim: declared_native.canonical_bytes().to_vec(),
+        reference: crate::execution_object::reference_from_seal(
+            &seed, &bound, role, written_id, native_id,
+        )?,
     };
     result.recheck(cancelled)?;
     Ok(result)

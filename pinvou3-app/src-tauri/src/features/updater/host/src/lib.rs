@@ -75,3 +75,8 @@ pub use download_stage::{
     DownloadedPackageSource, NativeRole, ProtectedByteCapability, StagingLimits,
     stage_retained_download,
 };
+
+mod execution_object;
+pub use execution_object::{
+    ExecutionObjectGuard, ObjectBinding, ObjectGeneration, ObjectReference, VerifiedExecutionObject,
+};
