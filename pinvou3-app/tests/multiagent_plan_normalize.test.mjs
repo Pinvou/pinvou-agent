@@ -300,11 +300,13 @@ test('forwarder 必须转发结构化 worker_status，展示层不得解析进�
     /"worker_status": deepseek_tui::tools::subagent::agent_worker_status_name\(\s*activity\.worker_status,?\s*\)/,
     'AgentProgress 臂必须把 activity.worker_status 折成 ledger 词表令牌随 payload 下发',
   );
-  // mailbox 的 ToolCallStarted 合成事件同样必须带令牌（工具执行中）。
+  // mailbox 的 ToolCallStarted 合成事件同样必须带令牌（工具执行中），且经
+  // agent_worker_status_name 从枚举派生：手写 "running_tool" 字面量会在底座
+  // 改词表时静默分叉。
   assert.match(
     forwarderSource,
-    /MM::ToolCallStarted \{[\s\S]{0,600}"worker_status": "running_tool"/,
-    'ToolCallStarted 合成 payload 必须携带 running_tool 令牌',
+    /MM::ToolCallStarted \{[\s\S]{0,900}agent_worker_status_name\(\s*AgentWorkerStatus::RunningTool,?\s*\)/,
+    'ToolCallStarted 合成 payload 必须携带经枚举派生的 running_tool 令牌',
   );
 });
 
