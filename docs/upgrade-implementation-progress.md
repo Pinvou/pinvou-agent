@@ -1,11 +1,11 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 02:56 Asia/Shanghai**.
+Checkpoint: **2026-10-24 03:34 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
-The equal-task engineering estimate is **34.1%**. T08 and T31 reflect their current delivery;
+The equal-task engineering estimate is **34.3%**. T07, T08 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
@@ -103,6 +103,28 @@ encoding, SQL ambiguity and a late retained-expiry check; each was repaired and
 independently re-reviewed. The failures remain recorded, not environment skips.
 This is an internal publisher component, not whole T08 completion or T14
 business qualification.
+
+The complete finite publication-signing prerequisite is committed and pushed as
+`5c2dc4a` in the service repository. One captured T06/Root/issuer context now
+prepares and records Release(s), Target(s), Snapshot and Timestamp with actual
+signed child references. The new bounded proof header and framed slot rows
+preserve the 32 MiB new-batch limit without imposing that limit on stored graphs.
+Private opening hashes derive from actual signed Release bytes. Original
+Package bytes and Root provenance remain unchanged.
+
+Independent source and repair reviews passed. Six new pure tests with eight
+subcases, five actual PostgreSQL tests with five subcases, all affected signing
+package tests and an actual legacy refresh on the extended schema passed.
+Full default Go tests passed **3970 / skipped 1714 / failed 0** test records
+(1239 passing and 929 skipped top-level tests); dependency verification, full
+static analysis, all command builds and the pinned contract check passed.
+All check processes closed naturally without resource-guard breaches. Initial
+native failures exposed PostgreSQL NUL extraction in legal Release notes; the
+repair changes only a temporary header-reading copy and preserves original
+signed bytes. Those failures remain recorded. This signing layer does not
+provide selection business eligibility, a production publisher or whole T08
+completion. The remaining unified publisher and active deny/job composition
+are the current work.
 
 ## Completed T31 delivery
 
@@ -291,7 +313,7 @@ completion blocker; outstanding business implementation is.
 | T04 | 65% | In progress | Offline tools, Windows post-build npm adapter and role-specific NSIS inspection are delivered; the integrated source passed default regression and current-CLI normal/wrong-Root cases. Complete provenance, product build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | 75% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
+| T07 | 80% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and finite atomic multi-Release publication signing; active deny and emergency publication composition remain pending |
 | T08 | 65% | In progress | Reviewed mixed current storage and complete authenticated Root/issuer reads; atomic published-only Target/Snapshot/Timestamp refresh, replay and actual component-head interleaving are verified. Release/private renewal, unified selection publication and active deny/pending jobs remain pending. |
 | T09 | 55% | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
