@@ -193,7 +193,10 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
   assert.ok(count(toolStore, /text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider/g) >= 3,
     'detail labels must have a dark variant');
   assert.match(toolStore, /\(storeCopy\.recycleKinds \|\| \{\}\)\[item\.kind\]/, 'recycle badge must use the singular type labels');
-  assert.doesNotMatch(toolStore, /type: 'Skill'/, 'card type labels must resolve through the localized dictionaries');
+  // Raw (not comment-stripped): a ternary leg like `: 'Skill'` must fail too,
+  // not only a whole-property `type: 'Skill'` literal.
+  assert.doesNotMatch(raw, /:\s*'Skill'/, 'card type labels must resolve through the localized dictionaries');
+  assert.doesNotMatch(raw, /:\s*'MCP Server'/, 'the MCP card badge must resolve through the localized dictionary too');
   assert.match(toolStore, /wb-qq-mail\.jpg/, 'QQ-mail icon asset must be referenced by its real jpeg extension');
 
   const jpg = sourceUrl('assets/tool-icons/wb-qq-mail.jpg');

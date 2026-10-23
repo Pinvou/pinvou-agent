@@ -1373,7 +1373,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const bf = (bs && bs.bundle) || null;
           const base = {
             id: 'mcp-' + x.id, backendId: x.id, title: (bf && bf.name) || x.name || x.id, subtitle: '',
-            category: 'other', type: 'MCP Server', mcpServer: true,
+            category: 'other', type: (storeCopy.typeGroups || {}).mcp || 'MCP Server', mcpServer: true,
             version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
             latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
@@ -1479,7 +1479,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             // (getToolTypeGroup 据此归 Skill 组),业务维度由 getToolBusinessGroup
             // 落「其他」(初步设计,见 tool-common 注释)。
             category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
-            type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
+            type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : ((storeCopy.typeGroups || {}).skill || 'Skill'),
             companionBundle: !!mcpId,
             exportable: ownerExportable,
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
