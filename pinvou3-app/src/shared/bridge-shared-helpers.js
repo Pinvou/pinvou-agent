@@ -5117,6 +5117,15 @@
     "code_execution_tool_result",
   ];
 
+  // 运行时图片标记文本块（CodeWhale image_attach.rs / turn_loop.rs
+  // tool_result_message_content：`<image path="…">` 开、`</image>` 闭，夹
+  // ImageUrl 块）。它们是载体的组成部分而非用户话语；混合消息里剥掉它们
+  // 之后剩下的才算用户文本（r22 集成修复，见下方 toolResultCarrier 处）。
+  const IMAGE_MARKER_TEXT_RE = /^<\/?image(?:\s+path="[^"]*")?>$/;
+  function isImageMarkerTextBlock(b) {
+    return !!b && b.type === "text" && IMAGE_MARKER_TEXT_RE.test(String(b.text || "").trim());
+  }
+
   // web+tauriMain 共享（FE14 wave 5：rerenderFromMessages 共享核心）。
   // 重放主体两侧逐字一致；仅剩的 lane 差异点全部经 lane hooks 注入：
   //   itemIdSeq                重放前清零（cell）
@@ -5252,7 +5261,18 @@
         // persistence alignment still carry the engine-baked <turn_meta>
         // block on mid-turn steered messages, and without the filter the
         // hydrated bubble rendered the raw envelope after a restart.
-        const utext = toolResultCarrier ? "" : lane.userMessageDisplayText(blocks, true);
+        // r22 集成修复（main #749 重放口径）：载体不再一刀切吞气泡——先剥掉
+        // 运行时图片标记文本块，剩下的才是用户话语。纯载体（r9 M5 截图回传
+        // [ToolResult, Text("<image …>"), ImageUrl, Text]）剥完为空 → 依旧无
+        // 气泡；混合形态（tool_result + 真实文本，main 重放测试的合成形态）
+        // 保留气泡与 user 边界——main 的 artifact 续接边界依赖 user 项
+        // （updatePresentedArtifact 扫到 user 项即拒绝原地续写，改为追加新卡）。
+        // 已知张力（PR 说明披露）：后端 classify 对混合形态仍判 NotPrompt
+        // （runtime_handoff.rs ToolResult-first），前端出气泡而 ledger 不计
+        // turn；真实引擎流不产生混合消息（tool_result_message_content 只拼
+        // ToolResult + 图片标记），仅合成历史可触发，如需彻底对齐需上游决策。
+        const utext = lane.userMessageDisplayText(
+          toolResultCarrier ? blocks.filter(b => !isImageMarkerTextBlock(b)) : blocks, true);
         // 步数预算通知（r10 M3）：过滤气泡，与 Rust 计数侧（counts_as_user_turn）
         // 同口径——否则调和门序号错位 / 假用户气泡。
         const stepBudgetNotice = utext && (utext.indexOf("Step budget soft landing:") === 0 || utext.indexOf("Your model-step budget was exhausted") === 0);

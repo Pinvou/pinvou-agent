@@ -203,7 +203,9 @@ const EXPECTED_SURFACE = {
   // +1 (316): isCompactionCarrierBlocks — internal predicate of
   // rerenderFromMessagesCore (work-mode rewind filter; references no deps,
   // not exported from any cluster literal).
-  sharedFnCount: 316,
+  // +1 (317): isImageMarkerTextBlock — 仅被 rerenderFromMessagesCore 的
+  // user 分支调用（基座内局部名，不进 deps 集合），纯谓词、无副作用。
+  sharedFnCount: 317,
 };
 
 assert.equal(
@@ -471,6 +473,7 @@ const EXPECTED_CLUSTER_KEYS = {
     'latestShellToolIsWaitObserver',
     'normalizeTerminalTail',
     'notify',
+    'publishShellSnapshots',
     'runSyncOnSession',
     'shellPollState',
     'state',
