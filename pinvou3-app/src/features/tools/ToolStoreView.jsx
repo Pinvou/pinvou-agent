@@ -14,7 +14,7 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { companionPackageMap } from '../../shared/companion-packages.js';
-import { applyConnectorFailure, CONNECT_CONSENT_SYNC_FAILURE_MARKER, CONSENT_SYNC_FAILURE_MARKER, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
+import { applyConnectorFailure, CONNECT_CONSENT_SYNC_FAILURE_MARKER, CONNECT_GRANT_COMMIT_FAILURE_MARKER, CONSENT_SYNC_FAILURE_MARKER, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
 
 // 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
 // 超过旧值 90s)。后端本地回调等待自身有 300s 上限,到时后端先显式失败;
@@ -407,7 +407,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               const msg = String(e && e.message ? e.message : e);
               const failure = msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
                 ? { code: 'connect_consent_persist_failed' }
-                : { code: 'skills_enable_failed' };
+                : msg.includes(CONNECT_GRANT_COMMIT_FAILURE_MARKER)
+                  ? { code: 'connect_consent_commit_incomplete' }
+                  : { code: 'skills_enable_failed' };
               // Latch on the store BEFORE the flow write: the card may already be closed (the write
               // below null-guards to a no-op) and the latch must survive that — plus any remount and
               // dismissal — so the connected banner keeps the title-only copy (review #741 P2).
@@ -416,7 +418,11 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               // either way the backend is not enabled-by-default, and the marker-only latch left the
               // enabled-by-default banner showing over a disabled connector once the error card was
               // dismissed.
-              conn.setConsentSyncFailed(true);
+              // Round-9 review P2: the commit-incomplete class does NOT
+              // latch — its standing grant keeps the connector enabled, so
+              // the enabled banner stays truthful for it (unlike both
+              // fail-closed classes).
+              if (failure.code !== 'connect_consent_commit_incomplete') conn.setConsentSyncFailed(true);
               reportConnectorFailure(cfg.key, failure, 'cli');
               // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
               conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
@@ -466,14 +472,17 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               ? e
               : msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
                 ? { code: 'connect_consent_persist_failed' }
-                : { code: 'skills_enable_failed' };
+                : msg.includes(CONNECT_GRANT_COMMIT_FAILURE_MARKER)
+                  ? { code: 'connect_consent_commit_incomplete' }
+                  : { code: 'skills_enable_failed' };
             // Latch on the store BEFORE the flow write — same closed-card/remount reasoning as the
             // fire-and-forget branch above (review #741 P2). Both post-auth classes latch (round-6
             // review P2): an ordinary materialization failure revokes the fresh grant exactly like
             // a persist failure, so the banner keeps the title-only copy for either. Only the
             // pre-apply auth failures (authIncomplete, tmeet's readiness re-check) stay unlatched —
             // no grant was attempted, the backend state is untouched.
-            if (failure.code !== 'auth_failed') conn.setConsentSyncFailed(true);
+            if (failure.code !== 'auth_failed' && failure.code !== 'connect_consent_commit_incomplete')
+              conn.setConsentSyncFailed(true);
             reportConnectorFailure(cfg.key, failure, 'qr');
             // Same null guard: a failure landing after the card was closed must not fabricate one.
             conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'qr') : f));
