@@ -157,8 +157,10 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   the whole headless host run, so other mutating scheduled commands fail fast
   with `scheduled_store_busy` (exit 1) instead of sitting silent behind a
   minutes-long hold; retry after the run finishes. A GUI turn or GUI
-  rewind takes none of these locks (the app's guards are process-local) — do not
-  rewind while its GUI Code session may be mid-turn. Similarly, `agent run
+  rewind takes none of these locks (the app's guards are process-local) — and an
+  idle GUI engine still holding the pre-rewind transcript is equally invisible:
+  its next persist resurrects the rewound-away turns (r23 minor 5). Do not
+  rewind a session whose GUI Code session may be mid-turn or merely open. Similarly, `agent run
   --session` does not lock the session against concurrent GUI use. Remaining
   shared stores (plugins `installed.json` and the memory JSONL files —
   round-41 review: `settings.json` and the rewind-backup map

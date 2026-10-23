@@ -729,15 +729,17 @@ fn secret_pathspecs() -> Vec<String> {
 }
 
 /// SHADOW_EXCLUDES 的 pathspec 全集（r22 R1）：与 secret_pathspecs 同款
-/// icase + `**/` 双形状——pathspec 锚定整条路径，裸形态不跨 `/`，依赖/构建
-/// 目录的嵌套内容必须靠 `**/<dir>/` 命中。
+/// icase；根腿 `<dir>/` 命中根级目录，嵌套腿 `**/<dir>/**` 命中任意深度
+/// 下的内容——r23 minor 实证 `**/<dir>/` 形状在 `rm -r --cached` 的 pathspec
+/// 匹配里是空集（index 里只有文件条目、目录条目不落 index），必须是内容
+/// 形状 `**` 结尾；`**/` 前缀可匹配零层目录，根级内容两腿都覆盖。
 fn shadow_exclude_pathspecs() -> Vec<String> {
     let mut patterns: Vec<String> = SHADOW_EXCLUDES
         .iter()
         .map(|line| format!(":(icase){line}"))
         .collect();
     for line in SHADOW_EXCLUDES {
-        patterns.push(format!(":(icase)**/{line}"));
+        patterns.push(format!(":(icase)**/{line}**"));
     }
     patterns
 }
@@ -973,7 +975,12 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         "* !filter\n* !diff\n* !merge\n* !working-tree-encoding\n",
     )
     .context("写入 info/attributes 失败")?;
-    let dangerous_keys = git_ok(
+    // r23 M4：`--name-only --get-regexp` 输出的 section/key 一律小写——旧
+    // 正则的大小写敏感 `core\.sshCommand` 永不命中（死代码，与 r17 的「输出
+    // 形状击败解析器」同类）；subsection 可含点（`remote.evil.x.url` 实证
+    // 逃逸 `[^.]+`），放宽为 `.+`。
+    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.)";
+    let dangerous_keys = match git(
         &repo,
         execution_root,
         &[
@@ -981,10 +988,31 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
             "--local",
             "--name-only",
             "--get-regexp",
-            r"^(filter\.|diff\.|extensions\.partialclone|remote\.[^.]+\.promisor|remote\.[^.]+\.url|core\.sshCommand|protocol\.)",
+            SCRUB_DANGEROUS_KEYS_RE,
         ],
-    )
-    .unwrap_or_default();
+    ) {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+        // exit 1 = 无匹配（get-regexp 语义），非失败。
+        Ok(output) if output.status.code() == Some(1) => String::new(),
+        Ok(output) => {
+            // r23 M4：清洗探针失败不再静默吞掉（fail-open 但必须响亮）——
+            // 影子 config 本轮保留未清洗的危险键，下轮 ensure_repo 重试。
+            log::error!(
+                "[checkpoints] dangerous-config scrub probe failed (exit {:?}); unscrubbed keys remain this round: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            String::new()
+        }
+        Err(error) => {
+            log::error!(
+                "[checkpoints] dangerous-config scrub probe could not run; unscrubbed keys remain this round: {error:#}"
+            );
+            String::new()
+        }
+    };
     for line in dangerous_keys.lines() {
         let key = line.trim();
         if key.is_empty() {
@@ -1009,7 +1037,9 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
                     "required",
                     "url",
                     "promisor",
-                    "sshCommand",
+                    // `--name-only --get-regexp` 输出恒小写（r23 M4）：混合
+                    // 大小写的 "sshCommand" 永不命中。
+                    "sshcommand",
                     "partialclone",
                     "allow",
                     // r20 M1：diff 驱动键族（diff.external 顶层 / diff.<driver>.
@@ -1688,7 +1718,13 @@ pub fn apply_restore(
     meta: &CheckpointMeta,
 ) -> Result<()> {
     let execution_root = canonical_execution_root(execution_root)?;
-    let repo = repo_dir(ledger_root);
+    // r23 M3：apply_restore 是唯一不经 ensure_repo 就执行 read-tree /
+    // checkout-index 的窗口——attributes 钉与危险 config 清洗只在 ensure_repo
+    // 建立，而崩溃/对账重放路径直达这里。无竞争的过滤执行窗：被动代理文件
+    // 写可植入工作区 .gitattributes + [filter]/partialClone config，
+    // `checkout-index -f -a` 会执行 smudge 过滤器、read-tree 会触发 promisor
+    // 懒取链（git 2.43 实证，评审 r23 M3）。顶部刷新卫生（幂等，ms 级）。
+    let repo = ensure_repo(ledger_root, &execution_root)?;
     git_ok(&repo, &execution_root, &["read-tree", &meta.commit])
         .context("读取 checkpoint 快照失败")?;
     // read-tree 整体替换 index：迁移前打的旧快照 tree 里可能仍含敏感文件，
@@ -4452,10 +4488,14 @@ mod tests {
         // r21 M3 的缺失 pin（r22 R1 补）：`!node_modules/` 否定行击穿
         // info/exclude 后 add -A 照收依赖条目——必须被 rm --cached 摘除而非
         // bail；快照存活、依赖内容不进树、第二回合自愈复用同一树。
+        // r23 minor：嵌套依赖（`packages/app/node_modules/...`）由
+        // `**/<dir>/**` 嵌套腿摘除——旧的 `**/<dir>/` 形状在 rm --cached 的
+        // pathspec 匹配里是空集（probe 实证），此处一并钉住。
         let ledger = TestDir::new("pierce-ledger");
         let exec = TestDir::new("pierce-exec");
         exec.write(".gitignore", "!node_modules/\n");
         exec.write("node_modules/pkg/index.js", "dep\n");
+        exec.write("packages/app/node_modules/lib/index.js", "nested dep\n");
         exec.write("src/a.rs", "a\n");
         let first = create_checkpoint(
             ledger.path(),
@@ -4468,10 +4508,8 @@ mod tests {
         let repo = repo_dir(ledger.path());
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
         assert!(
-            !tracked
-                .lines()
-                .any(|line| line.starts_with("node_modules/")),
-            "击穿条目不得留在影子 index/树中: {tracked}"
+            !tracked.lines().any(|line| line.contains("node_modules/")),
+            "击穿条目（根级与嵌套）不得留在影子 index/树中: {tracked}"
         );
         exec.write("node_modules/pkg/index.js", "dep2\n");
         let second = create_checkpoint(

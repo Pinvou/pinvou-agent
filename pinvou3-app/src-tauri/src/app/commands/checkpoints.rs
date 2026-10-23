@@ -43,19 +43,97 @@ fn resolve_native_session_roots(
     Ok((roots.ledger, roots.execution))
 }
 
+/// r23 M1：replay 臂的破坏性栅栏输入。压缩不持 turn 预约、ACP 同根忙碌在
+/// EnginePool 视野外——二者都会让破坏性重放（force-checkout + `clean -fd` +
+/// truncate）踩到在飞写入，与 rewind_to_turn 的栅栏同类（r22 R2 / r21 M4）。
+/// 命令层用真实 pool/ACP 探针预计算；测试传 default（全空 = 不设防，仅供
+/// 无并发 fixture 使用）。
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct ReconcileGates {
+    pub compaction_in_flight: bool,
+    pub peer_busy: bool,
+}
+
+/// r23 M1：同根对端忙碌探针——`reject_if_peer_busy` 的枚举内核、只回结论
+/// （对账顺延路径不给发送路径塞拒绝文案；两者必须同向演化，改动枚举口径时
+/// 同步检查）。`None` = 探针本身失败（fail-closed，按忙碌顺延）。
+pub(super) async fn same_root_replay_busy(
+    store: &SessionStore,
+    pool: &EnginePool,
+    acp_pool: &AcpPool,
+    session_id: &str,
+    execution: &std::path::Path,
+) -> Option<bool> {
+    let store_gate = store.clone();
+    let session_id_gate = session_id.to_string();
+    let execution_gate = execution.to_path_buf();
+    let pool_gate = pool.clone();
+    let acp_store = store.clone();
+    let acp_session = session_id.to_string();
+    let acp_execution = execution.to_path_buf();
+    let agents_probe = acp_pool.agents().clone();
+    let agents_peers = acp_pool.agents().clone();
+    let (busy, acp_peers) = match tauri::async_runtime::spawn_blocking(move || {
+        let busy = busy_peer_on_same_execution_root(
+            &store_gate,
+            &session_id_gate,
+            &execution_gate,
+            production_execution_root_resolver(agents_probe, store_gate.clone()),
+            |id| pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id),
+        )?;
+        let peers = peers_on_same_execution_root(
+            &acp_store,
+            &acp_session,
+            &acp_execution,
+            production_execution_root_resolver(agents_peers, acp_store.clone()),
+        )?;
+        Ok::<_, String>((busy, peers))
+    })
+    .await
+    {
+        Ok(Ok(pair)) => pair,
+        _ => return None,
+    };
+    if busy.is_some() {
+        return Some(true);
+    }
+    let acp_peer_ids: Vec<String> = acp_peers
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .filter(|id| acp_pool.is_acp(id))
+        .map(str::to_string)
+        .collect();
+    if acp_peer_ids.is_empty() {
+        return Some(false);
+    }
+    let blocking = acp_pool.rebind_blocking_sessions(&acp_peer_ids).await;
+    Some(match blocking {
+        None => true,
+        Some(blocking) => !blocking.is_empty(),
+    })
+}
+
 /// r19 M6 崩溃对账：回退协议（apply → truncate → clear）中途进程死亡后暂记
 /// 留在盘上——代码可能已恢复而 transcript 未截断（revision 仍等于暂记值）。
 /// 不在此收口，下一轮快照会把混合树拍进影子库、revision 前进，pending 复用
 /// 门与 undo 绑定双双永久失效（崩溃那次的 PreRestore——真前态的唯一副本——
-/// 从此不可达）。规则：revision 仍匹配 → 截断未提交，幂等重放 apply + 完成
-/// 截断（绑定暂记的 PreRestore）+ 作废被截分支快照；revision 已前进 → 截断
-/// 已提交、仅清理失败的残留，清掉暂记。返回 false = 本轮快照必须阻断
-/// （对账未完成时把混合状态固化进历史是更坏的失败模式）。
+/// 从此不可达）。
+/// 规则（r23 M2 重写）：「截断已提交」的判定器是 sidecar 记录而非 revision——
+/// `truncate_to_user_turn` 在持久化之前先写绑定本次 `pre_restore_id` 的
+/// `RewoundTurnsRecord`（先备份后落盘），故存在绑定记录 ⇔ 已提交（仅清暂记）；
+/// 缺失 ⇔ 未提交（崩溃**或 live-abort**），进入重放臂——即使 revision 已被
+/// 非协议写（headless 引擎持久化、压缩 persist、远程编辑）推进，截断以
+/// keep_turns 的 turn 计数锚定、与 revision 无关。pending 在飞期间新回退
+/// 被拒，`latest` 记录即唯一候选。重放臂是破坏性的（r23 M1）：压缩在飞或
+/// 同根对端忙碌时顺延对账（阻断本轮快照，下一轮重试，混合态保持未固化）。
+/// 返回 false = 本轮快照必须阻断（对账未完成时把混合状态固化进历史是更坏
+/// 的失败模式）。
 async fn reconcile_pending_rewind(
     store: &SessionStore,
     session_id: &str,
     ledger: &std::path::Path,
     execution: &std::path::Path,
+    gates: ReconcileGates,
 ) -> bool {
     let pending = match checkpoints::live_pending_rewind(ledger) {
         Ok(Some(pending)) => pending,
@@ -88,10 +166,34 @@ async fn reconcile_pending_rewind(
             return false;
         }
     };
-    if current_revision != pending.transcript_revision {
-        // 截断已提交（revision 前进）、仅清理失败的残留——清掉暂记即可。
+    // r23 M2：sidecar 是真正的提交判定器（见函数头注释）。
+    let committed = match store.latest_rewound_turns_record(session_id) {
+        Ok(Some(record)) => {
+            record.pre_restore_checkpoint_id.as_deref() == Some(pending.pre_restore_id.as_str())
+        }
+        Ok(None) => false,
+        Err(error) => {
+            log::error!(
+                "[pinvou3][checkpoints] rewind sidecar read failed, blocking this turn's snapshot sid={session_id}: {error:#}"
+            );
+            return false;
+        }
+    };
+    if current_revision != pending.transcript_revision && committed {
+        // 已提交、仅清理失败的残留——清掉暂记即可。
         checkpoints::clear_pending_rewind(ledger);
         return true;
+    }
+    // r23 M1：重放臂破坏性且调用点（快照前奏）不持预约、无任何栅栏——
+    // live-abort（ACP 复查失败 / apply / join 失败）留下的 pending 若无门
+    // 重放，等于让用户看着失败掉的回退在下一条消息发送时静默完成。
+    if gates.compaction_in_flight || gates.peer_busy {
+        log::warn!(
+            "[pinvou3][checkpoints] pending rewind replay deferred (compaction_in_flight={} peer_busy={}), blocking this turn's snapshot sid={session_id}",
+            gates.compaction_in_flight,
+            gates.peer_busy
+        );
+        return false;
     }
     // 半程态：幂等重放 apply（覆盖「写暂记后、apply 前死亡」与「apply 后、
     // 截断前死亡」两种崩溃点），随后完成截断。
@@ -177,9 +279,11 @@ pub(super) async fn create_turn_checkpoint(
     execution: std::path::PathBuf,
     label: String,
     caller: &str,
+    gates: ReconcileGates,
 ) -> Option<String> {
     // r19 M6：快照前先对账中断的回退（收口混合态；未完成则跳过本轮快照）。
-    if !reconcile_pending_rewind(store, session_id, &ledger, &execution).await {
+    // r23 M1：栅栏输入由命令层以真实 pool/ACP 探针预计算（ReconcileGates）。
+    if !reconcile_pending_rewind(store, session_id, &ledger, &execution, gates).await {
         return None;
     }
     let store_count = store.clone();
@@ -2279,6 +2383,7 @@ mod tests {
             execution.clone(),
             "第一轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("turn 1 snapshot");
@@ -2292,6 +2397,7 @@ mod tests {
             execution.clone(),
             "第二轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("turn 2 snapshot");
@@ -2346,6 +2452,7 @@ mod tests {
             execution.clone(),
             "第一轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("t1");
@@ -2359,6 +2466,7 @@ mod tests {
             execution.clone(),
             "第二轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("t2");
@@ -2429,6 +2537,7 @@ mod tests {
             execution.clone(),
             "第一轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("turn 1 snapshot");
@@ -2443,6 +2552,7 @@ mod tests {
             execution.clone(),
             "第二轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("turn 2 snapshot");
@@ -2488,6 +2598,7 @@ mod tests {
             execution.clone(),
             "第三轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("reconcile 后本轮快照必须照常登记");
@@ -2523,6 +2634,309 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ledger);
     }
 
+    /// r23 M1：live-abort（回退在 ACP 复查/apply/join 失败后放弃）与崩溃留下
+    /// 同样的盘上状态——但 live-abort 时用户可能继续与同根对端/压缩并发。对账
+    /// 的破坏性重放臂必须在压缩在飞或同根对端忙碌时顺延（阻断本轮快照、
+    /// 混合态保持未固化、暂记保留），栅栏解除后下一次发送照常完成协议。
+    #[tokio::test]
+    async fn reconcile_replay_defers_while_compaction_or_peers_busy() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("reconcile-defer");
+        std::fs::write(execution.join("code.txt"), "v1\n").expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        std::fs::write(execution.join("code.txt"), "v2\n").expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed turn 2");
+
+        // 模拟 live-abort 留下的状态：pending + 代码已恢复 + 对话未截断。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let target = checkpoints::find_checkpoint(&ledger, &first).expect("target");
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
+
+        for gates in [
+            ReconcileGates {
+                compaction_in_flight: true,
+                peer_busy: false,
+            },
+            ReconcileGates {
+                compaction_in_flight: false,
+                peer_busy: true,
+            },
+        ] {
+            let deferred = format!("deferred-{gates:?}");
+            let snapshot = create_turn_checkpoint(
+                &store,
+                &id,
+                ledger.clone(),
+                execution.clone(),
+                deferred,
+                "chat",
+                gates,
+            )
+            .await;
+            assert!(
+                snapshot.is_none(),
+                "栅栏在飞时对账必须顺延（阻断本轮快照）: {gates:?}"
+            );
+            assert!(
+                checkpoints::live_pending_rewind(&ledger)
+                    .expect("pending read")
+                    .is_some(),
+                "顺延不得清掉暂记: {gates:?}"
+            );
+            assert_eq!(
+                checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+                2,
+                "顺延不得执行破坏性截断: {gates:?}"
+            );
+        }
+        // 栅栏解除：下一次发送照常完成协议（重放 + 截断 + 本轮快照）。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("栅栏解除后本轮快照必须照常登记");
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            1,
+            "重放必须完成截断（保留第一轮）"
+        );
+        assert!(!snapshot.is_empty(), "本轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// r23 M2：revision 前进 ≠ 截断已提交——非协议写（headless 引擎持久化、
+    /// 压缩 persist、远程编辑）同样推进 revision。提交判定器是 sidecar 绑定
+    /// 记录：截断失败（truncate 未跑、无绑定记录）后用户继续聊天，下一条
+    /// 发送的对账必须**重放**协议，而不是误判已提交、清掉暂记，留下
+    /// 「文件已回退 + 对话未回退 + undo 永久不可用」的静默分叉。
+    #[tokio::test]
+    async fn reconcile_replays_when_revision_advanced_without_commit() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("reconcile-m2");
+        std::fs::write(execution.join("code.txt"), "v1\n").expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        std::fs::write(execution.join("code.txt"), "v2\n").expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+
+        // live-abort：apply 完成、truncate 未跑（sidecar 无绑定记录）。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let target = checkpoints::find_checkpoint(&ledger, &first).expect("target");
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
+
+        // 用户继续聊天：非协议写推进 revision（截断从未发生、sidecar 为空）。
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                    user_msg("第三轮"),
+                ],
+            )
+            .expect("keep chatting");
+
+        // 下一次发送：对账必须重放协议（截断到第 1 轮），而非清暂记了事。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第四轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("重放后本轮快照必须照常登记");
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            1,
+            "无绑定记录 ⇒ 未提交 ⇒ 必须重放截断"
+        );
+        assert!(
+            !ledger.join("pending_rewind.json").exists(),
+            "协议完成后暂记清除"
+        );
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).unwrap(),
+            "v1\n",
+            "重放的 apply 不得破坏已恢复状态"
+        );
+        assert!(!snapshot.is_empty(), "本轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// r23 M2 对照腿：截断已提交（sidecar 有绑定记录）但暂记未清（truncate
+    /// 持久化之后、clear 之前崩溃）——对账必须只清暂记，不得重放破坏性恢复。
+    #[tokio::test]
+    async fn reconcile_clears_pending_without_replay_when_commit_recorded() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("reconcile-committed");
+        std::fs::write(execution.join("code.txt"), "v1\n").expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        std::fs::write(execution.join("code.txt"), "v2\n").expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed turn 2");
+
+        // 走完整协议到「截断已持久化、暂记未清」的崩溃点。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let target = checkpoints::find_checkpoint(&ledger, &first).expect("target");
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
+        store
+            .truncate_to_user_turn(&id, 1, Some(undo.id.clone()))
+            .expect("truncate commits, binding the sidecar record");
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            1,
+            "截断已提交"
+        );
+
+        // 下一次发送：committed 判定命中 → 只清暂记，不得再次恢复/截断。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("committed 分支本轮快照必须照常登记");
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            1,
+            "不得对已提交的截断重放（重复恢复/截断）"
+        );
+        assert!(!ledger.join("pending_rewind.json").exists(), "暂记必须清除");
+        assert!(!snapshot.is_empty(), "本轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
     /// F2：工作模式快照沿用 code_checkpoints 的内容策略——秘密文件与可再生
     /// 目录不进快照（diff 预览的可见面同理），普通源文件照常纳入。
     #[tokio::test]
@@ -2546,6 +2960,7 @@ mod tests {
             execution.clone(),
             "第一轮".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("turn 1 snapshot");
@@ -2673,6 +3088,7 @@ mod tests {
             execution.clone(),
             "给个方案".into(),
             "chat",
+            ReconcileGates::default(),
         )
         .await
         .expect("plan turn snapshot");
@@ -2692,6 +3108,7 @@ mod tests {
             execution.clone(),
             "✅ 就这么干".into(),
             "accept_plan",
+            ReconcileGates::default(),
         )
         .await
         .expect("approval turn snapshot");
