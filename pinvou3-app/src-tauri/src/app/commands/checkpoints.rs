@@ -48,7 +48,7 @@ fn resolve_native_session_roots(
 /// 的栅栏同类（r22 R2 / r21 M4）。
 /// r24 minor 5：`pools` 让对端探针与执行根互斥惰性化——仅当 pending 存在且
 /// 走到重放臂时才消费（`None` = 单元夹具无池：对端探针跳过、根互斥跳过，
-/// 生产接线由 production-body pin 锚定，见 `destructive_checkpoint_gates_*`）。
+/// 生产接线由 production-body pin 锚定，见 `send_preludes_wire_reconcile_gates_to_real_probes`）。
 #[derive(Default, Clone, Copy)]
 pub(super) struct ReconcileGates<'a> {
     pub compaction_in_flight: bool,
@@ -121,7 +121,9 @@ pub(super) async fn same_root_replay_busy(
 /// 从此不可达）。
 /// 规则（r23 M2 重写）：「截断已提交」的判定器是 sidecar 记录而非 revision——
 /// `truncate_to_user_turn` 在持久化之前先写绑定本次 `pre_restore_id` 的
-/// `RewoundTurnsRecord`（先备份后落盘），故存在绑定记录 ⇔ 已提交（仅清暂记）；
+/// `RewoundTurnsRecord`（先备份后落盘），故「绑定记录 **且 revision 已前进**」
+/// ⇔ 已提交（二者缺一不可：persist 分裂窗内记录已写而截断持久化失败，
+/// revision 仍匹配 → 落入重放臂，幂等重放 + 重复记录无害，r25 MAJOR-3）；
 /// 缺失 ⇔ 未提交（崩溃**或 live-abort**），进入重放臂——即使 revision 已被
 /// 非协议写（headless 引擎持久化、压缩 persist、远程编辑）推进，截断以
 /// keep_turns 的 turn 计数锚定、与 revision 无关。pending 在飞期间新回退
@@ -206,26 +208,19 @@ async fn reconcile_pending_rewind(
     // r23 M1：重放臂破坏性且调用点（快照前奏）不持预约、无任何栅栏——
     // live-abort（ACP 复查失败 / apply / join 失败）留下的 pending 若无门
     // 重放，等于让用户看着失败掉的回退在下一条消息发送时静默完成。
-    // r24 minor 5：对端探针惰性化——仅当 pending 存在且走到重放臂时才枚举。
-    let peer_busy = match gates.pools {
-        Some((pool, acp_pool)) => {
-            same_root_replay_busy(store, pool, acp_pool, session_id, execution)
-                .await
-                .unwrap_or(true)
-        }
-        None => false,
-    };
-    if gates.compaction_in_flight || peer_busy {
+    // 压缩闩是会话内的即时读，先查。
+    if gates.compaction_in_flight {
         log::warn!(
-            "[pinvou3][checkpoints] pending rewind replay deferred (compaction_in_flight={} peer_busy={peer_busy}), blocking this turn's snapshot sid={session_id}",
-            gates.compaction_in_flight
+            "[pinvou3][checkpoints] pending rewind replay deferred (compaction_in_flight), blocking this turn's snapshot sid={session_id}"
         );
         return false;
     }
-    // r24 M3：重放臂与手动回退/反悔同款持有执行根互斥——否则探针通过后、
-    // 重放进行中，同根对端可预约新 turn（reserve_turn 只查重放臂从未置位的
-    // 标志）并被 checkout-index / clean 清掉写入（单向栅栏，r7 同类）。
+    // r24 M3 + r25 MAJOR-1：**先置执行根互斥标志、后探对端忙碌**——
+    // `busy_peer_on_same_execution_root` 的契约要求 flag-then-check（探针通过
+    // 后、置位前，同根原生对端的 reserve_turn 会被放行，重放的
+    // checkout-index / clean 会清掉其在飞写入；手动路径均为先置位再探）。
     // 拿不到标志 = 另一回退在飞，与手动路径同款顺延。
+    // r24 minor 5：对端探针惰性化——仅当 pending 存在且走到重放臂时才枚举。
     let _root_guard = match gates.pools {
         Some((pool, _)) => match pool.begin_execution_root_rewind(execution) {
             Ok(guard) => Some(guard),
@@ -238,19 +233,33 @@ async fn reconcile_pending_rewind(
         },
         None => None,
     };
+    let peer_busy = match gates.pools {
+        Some((pool, acp_pool)) => {
+            same_root_replay_busy(store, pool, acp_pool, session_id, execution)
+                .await
+                .unwrap_or(true)
+        }
+        None => false,
+    };
+    if peer_busy {
+        log::warn!(
+            "[pinvou3][checkpoints] pending rewind replay deferred (peer_busy={peer_busy}), blocking this turn's snapshot sid={session_id}"
+        );
+        return false;
+    }
     // 半程态：幂等重放 apply（覆盖「写暂记后、apply 前死亡」与「apply 后、
     // 截断前死亡」两种崩溃点），随后完成截断。
     let target = match checkpoints::find_checkpoint(ledger, &pending.checkpoint_id) {
         Ok(meta) => meta,
+        // r25 minor 1：淘汰（目标不在索引）已由 live_pending_rewind 前置清理，
+        // 这里残余的 Err 是索引/IO 读取失败——按瞬态处理阻断本轮快照，
+        // 不得误判为淘汰而清掉暂记。
         Err(error) => {
-            // 目标已被 LRU 淘汰：该回退永远无法完成，清掉暂记解除阻断；
-            // 真前态若仍在索引则由用户经 CLI 恢复（如实披露的残余）。
             log::error!(
-                "[pinvou3][checkpoints] pending rewind target evicted, dropping pending sid={session_id} target={}: {error:#}",
+                "[pinvou3][checkpoints] pending rewind target lookup failed, blocking this turn's snapshot sid={session_id} target={}: {error:#}",
                 pending.checkpoint_id
             );
-            checkpoints::clear_pending_rewind(ledger);
-            return true;
+            return false;
         }
     };
     let apply_ledger = ledger.to_path_buf();
@@ -1412,6 +1421,36 @@ mod tests {
         assert!(
             src.contains(".unwrap_or(true)"),
             "same_root_replay_busy 的探针失败必须 fail-closed 顺延（r24 M1）"
+        );
+    }
+
+    /// r25 MAJOR-1 pin：重放臂必须先置执行根互斥标志、后探对端忙碌
+    /// （flag-then-check，busy_peer_on_same_execution_root 的契约；顺序颠倒
+    /// 留下「探针通过 → 置位前」窗口，同根原生对端的 reserve_turn 会被放行、
+    /// 其在飞写入被重放的 checkout-index/clean 清掉）。变异实证：交换两块
+    /// 顺序或将 begin_execution_root_rewind 整块删除，必须在此变红。
+    #[test]
+    fn replay_arm_takes_the_root_flag_before_probing_peers() {
+        let src = include_str!("checkpoints.rs");
+        let src = &src[..src
+            .find(
+                "#[cfg(test)]
+mod tests {",
+            )
+            .expect("test module marker must exist")];
+        let fn_start = src
+            .find("async fn reconcile_pending_rewind(")
+            .expect("reconcile fn must exist");
+        let body = &src[fn_start..];
+        let guard_at = body
+            .find("begin_execution_root_rewind")
+            .expect("replay arm must hold the execution-root flag (r24 M3)");
+        let probe_at = body
+            .find("same_root_replay_busy")
+            .expect("replay arm must probe same-root peers (r23 M1)");
+        assert!(
+            guard_at < probe_at,
+            "重放臂必须先置执行根互斥标志、后探对端忙碌（r25 MAJOR-1：flag-then-check）"
         );
     }
 
@@ -2770,7 +2809,8 @@ mod tests {
 
         // r24 minor 5 后：对端探针与根互斥由 `pools` 引用惰性消费（单元夹具
         // 无池 = 跳过），其对端/互斥顺延腿由 production-body pin 锚定生产接线
-        // （destructive_checkpoint_send_preludes_gate_reconcile）；此处单测钉
+        // （send_preludes_wire_reconcile_gates_to_real_probes +
+        // replay_arm_takes_the_root_flag_before_probing_peers）；此处单测钉
         // 压缩闩腿——压缩在飞时重放必须顺延。
         let gates = ReconcileGates {
             compaction_in_flight: true,

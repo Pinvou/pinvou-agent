@@ -1358,6 +1358,10 @@ fn validate_no_sensitive_paths_staged(
     // `rm --cached` 摘除（create 与 diff 两路对称），排除语义恢复为「不进
     // 快照」；秘密与账本腿保持 fail-closed bail（原文入影子 objects / 账本
     // 自毁是不可逆伤害，bail 相称）。
+    // ledger 腿本身已是 icase 前缀形状（见 ledger_guard_pathspecs）——r25
+    // minor 2 所述「verbatim」与树不符，复核后维持现状：icase 匹配带来的
+    // 大小写变体过度保护（无辜同名目录也触发 bail）是 fail-closed 方向、
+    // 仅影响未绑定布局的罕见形状，如实记录不改。
     pathspecs.extend(ledger_guard_pathspecs(&ledger_guard_paths(
         ledger_root,
         work_tree,
@@ -1688,8 +1692,13 @@ pub fn clear_pending_rewind(ledger_root: &Path) {
 /// 处理。损坏文件沿既有约定隔离（删除 + None）。
 pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
     let path = pending_rewind_path(ledger_root);
-    let Ok(bytes) = fs::read(&path) else {
-        return Ok(None);
+    // r25 minor 1：NotFound（无暂记）与真实 IO 错误必须区分——后者映射为
+    // None 会把对账的「暂记不可读 → 阻断快照」分支变成死代码，瞬态 EACCES
+    // 后照常快照可能固化混合态。
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
     };
     let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
         let _ = fs::remove_file(&path);

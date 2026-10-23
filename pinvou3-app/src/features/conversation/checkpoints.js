@@ -12,7 +12,7 @@
 // 快照创建失败的 turn 只是入口变体不同，不会错位——回退前的 diff 预览展示的
 // 始终是真实差异。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { invokeTauri as invoke } from '../../platform/tauri/client.js';
 import { canInvoke } from '../../shared/platform.js';
 
@@ -258,8 +258,11 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   // （openRewindDialog → preview），与列表刷新解耦。
   // 会话切换瞬间同步清空列表/可反悔状态：否则旧会话的 checkpoints 会在新 fetch
   // 返回前对齐到新会话的 turns 上，入口变体短暂错判（可点击但 preview 必败）。
+  // r25 minor 6：useLayoutEffect 在提交前清空——post-commit 的 useEffect 会让
+  // 一次 commit 先用旧会话列表对新会话时间线做调和（r24 M4 的 steer 容忍
+  // 恰好可能放行该错位对齐）。
   const previewSessionRef = useRef(sessionId);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (previewSessionRef.current !== sessionId) {
       previewSessionRef.current = sessionId;
       setPreviews({});
