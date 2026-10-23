@@ -143,6 +143,11 @@ impl ConnectorGate {
                             &e,
                         )
                     })?;
+                // Round-7 review P2: the completion succeeded on top of the
+                // standing consent (the gate declined a fresh grant) — commit
+                // it so the older in-flight operation's revoke cannot strip
+                // what this connect just proved usable.
+                self.commit_relied_grant_best_effort(&grant);
             }
             Ok(show)
         })
@@ -171,6 +176,34 @@ impl ConnectorGate {
         })
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))?
+    }
+
+    /// Round-7 review P2: a completion that succeeded on top of STANDING
+    /// consent it does not own (its gate hit the ledger short-circuit and
+    /// captured the relied-upon token instead of granting fresh) commits that
+    /// grant, so the older in-flight operation's pending compensating revoke
+    /// stops matching and can no longer strip the consent this successful
+    /// connect/refresh just proved usable. Best-effort: a failed commit leaves
+    /// the pre-fix window open (the older revoke may still win) rather than
+    /// failing an already-successful completion; the steady state after a
+    /// commit is token-less, so this is a no-op write-wise for plain
+    /// reconnects over long-standing consent.
+    fn commit_relied_grant_best_effort(
+        &self,
+        grant: &crate::features::marketplace::ConnectGrantOutcome,
+    ) {
+        if grant.relied_grant_token.is_empty() {
+            return;
+        }
+        if let Err(commit_err) = crate::features::marketplace::commit_relied_connect_grant(
+            self.id,
+            &grant.relied_grant_token,
+        ) {
+            log::warn!(
+                "[{}] committing the relied-upon connect grant failed: {commit_err}",
+                self.id
+            );
+        }
     }
 
     /// `refresh_connector_auth_gates` 的单连接器步骤(在线程池里跑):
@@ -259,6 +292,11 @@ impl ConnectorGate {
                         self.display_name
                     )
                 })?;
+                // Round-7 review P2: the refresh completed on top of the
+                // standing consent (the gate declined a fresh grant) — commit
+                // it so a concurrent connect's compensating revoke cannot
+                // strip the consent this refresh just proved usable.
+                self.commit_relied_grant_best_effort(&grant);
         }
         Ok(show)
     }
@@ -1192,8 +1230,173 @@ mod tests {
         });
     }
 
-    /// Round-3 review MINOR: the compensating revoke runs best-effort AFTER
-    /// materialization, and a verdict write can land in that window. A
+    /// Round-7 review P2: an overlapping completion must not lose its consent
+    /// to the older in-flight operation's compensation. A's refresh grants on
+    /// a fresh home and materializes (in flight); B's connect gate hits the
+    /// ledger short-circuit, relies on the standing consent, and captures A's
+    /// token; B completes successfully (its own tail grant is skipped by the
+    /// known-bundle clause — no fresh token of B's) and commits the
+    /// relied-upon grant. A's late materialization failure must then find the
+    /// standing entry owned by no pending claim and leave B's consent state
+    /// (grant + ledger + computed-ON) untouched. (Reverting the reliance
+    /// capture or the commit fails the capture leg, or the preservation legs:
+    /// the stale revoke deletes the grant + ledger and the connector computes
+    /// OFF again behind B's successful `visible:true`.)
+    #[test]
+    fn committed_relied_grant_survives_the_in_flight_revoke() {
+        use crate::features::marketplace::{
+            ConnectorScope, deny_first_register_connector, deny_first_register_connector_refresh,
+            load_disabled_bundles_for,
+        };
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-commit-relied", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            // Operation A: the refresh grant lands on the fresh home (its
+            // materialization is now in flight).
+            let grant_a = deny_first_register_connector_refresh("feishu", true).unwrap();
+            assert!(grant_a.granted, "fixture: A's refresh grant lands");
+            // Operation B overlaps: the gate finds A's ledger and relies on
+            // the standing consent, capturing A's token instead of granting.
+            let gate_b = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                !gate_b.granted,
+                "fixture: B's gate declines a fresh grant over the standing ledger"
+            );
+            assert_eq!(
+                gate_b.relied_grant_token, grant_a.grant_token,
+                "B must capture the token of the grant it relies on: {gate_b:?}"
+            );
+            // B's tail grant is skipped the same way (the ledger stands), so
+            // nothing of B's own lands — B succeeds on A's standing state.
+            let tail_b =
+                crate::features::marketplace::grant_connect_enable("feishu").unwrap();
+            assert!(
+                !tail_b,
+                "fixture: B's tail grant skips over the standing consent"
+            );
+            // B completes successfully: the relied-upon grant is committed,
+            // ending A's pending ownership claim.
+            let committed = crate::features::marketplace::commit_relied_connect_grant(
+                "feishu",
+                &gate_b.relied_grant_token,
+            )
+            .unwrap();
+            assert!(committed, "the relied-upon grant must commit");
+
+            // A's materialization failure arrives late: its revoke must no
+            // longer match and must leave B's consent state alone.
+            crate::features::marketplace::revoke_connect_enable(&grant_a).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the stale revoke must not delete the committed grant: {raw}"
+            );
+            assert!(
+                raw["install_default_synced"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
+                "the ledger pair B's success relied on must survive: {raw}"
+            );
+            assert!(
+                raw["connect_grant_tokens"]["feishu"].is_null(),
+                "the commit cleared the pending ownership token: {raw}"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the connector must still compute ON after the stale revoke"
+            );
+
+            // A retry of the same commit is a no-op (the token is gone), and
+            // an empty relied token never writes.
+            assert!(
+                !crate::features::marketplace::commit_relied_connect_grant(
+                    "feishu",
+                    &gate_b.relied_grant_token
+                )
+                .unwrap(),
+                "the commit is once-only"
+            );
+            assert!(
+                !crate::features::marketplace::commit_relied_connect_grant("feishu", "").unwrap(),
+                "an empty relied token declines without touching the store"
+            );
+        });
+    }
+
+    /// Round-7 review P2 negative: the commit must not survive a change of
+    /// owner. Between B's reliance capture and its completion, a teardown +
+    /// fresh reconnect (operation C) lands a NEW grant under the same package
+    /// id; B's commit must then decline (the standing token is C's, not the
+    /// relied-upon one), so C's own failure compensation still strips C's
+    /// grant in full. (Committing unconditionally over the standing token
+    /// fails the decline leg and leaves C's grant standing behind C's
+    /// failure — the fail-open direction.)
+    #[test]
+    fn stale_commit_leaves_a_replacement_owner_alone() {
+        use crate::features::marketplace::{
+            ConnectorScope, deny_first_register_connector, deny_first_register_connector_refresh,
+            load_disabled_bundles_for,
+        };
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-commit-stale", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            let grant_a = deny_first_register_connector_refresh("feishu", true).unwrap();
+            assert!(grant_a.granted, "fixture: A's refresh grant lands");
+            let gate_b = deny_first_register_connector("feishu", true).unwrap();
+            assert_eq!(
+                gate_b.relied_grant_token, grant_a.grant_token,
+                "fixture: B relies on A's grant"
+            );
+            // Mid-flight: the teardown sweeps A's consent entirely, then C
+            // reconnects and grants afresh under the same package id.
+            crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact("feishu")
+                .unwrap();
+            let grant_c = deny_first_register_connector("feishu", true).unwrap();
+            assert!(grant_c.granted, "fixture: C's reconnect grants afresh");
+            assert_ne!(
+                grant_c.grant_token, grant_a.grant_token,
+                "fixture: distinct operations must own distinct tokens"
+            );
+            // B completes and tries to commit — against the token it relied
+            // on. The standing entry is C's now, so the commit must decline.
+            let committed = crate::features::marketplace::commit_relied_connect_grant(
+                "feishu",
+                &gate_b.relied_grant_token,
+            )
+            .unwrap();
+            assert!(!committed, "the commit must decline over a replaced owner");
+
+            // C's own failure compensation still works in full.
+            crate::features::marketplace::revoke_connect_enable(&grant_c).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu"))
+                    && !raw["install_default_synced"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu")))
+                    && raw["connect_grant_tokens"]["feishu"].is_null(),
+                "the owning revoke strips C's grant, ledger, and token: {raw}"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "C's failed connect ends fail-closed"
+            );
+        });
+    }
     /// composer toggle-off naming the id strips the grant and writes an
     /// UNMARKED row while the grant's ledger pairs survive — the exact shape
     /// that makes the verdict reconnect-proof. The revoke's grant-consumed
