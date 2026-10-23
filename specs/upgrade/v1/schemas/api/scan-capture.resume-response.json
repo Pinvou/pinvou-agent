@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:scan-capture.resume-response",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "requestId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "result": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.lookup"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "requestId",
+    "result"
+  ],
+  "additionalProperties": false
+}

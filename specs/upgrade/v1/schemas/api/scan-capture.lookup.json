@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:scan-capture.lookup",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "state": {
+          "const": "unresolved"
+        },
+        "queued": {
+          "type": "null"
+        },
+        "observation": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "state",
+        "queued",
+        "observation"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "launch_authorized",
+            "unknown"
+          ]
+        },
+        "queued": {
+          "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.queued"
+        },
+        "observation": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "state",
+        "queued",
+        "observation"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "state": {
+          "const": "recorded"
+        },
+        "queued": {
+          "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.queued"
+        },
+        "observation": {
+          "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.observation"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "state",
+        "queued",
+        "observation"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

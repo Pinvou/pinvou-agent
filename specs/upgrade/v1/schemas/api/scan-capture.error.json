@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:scan-capture.error",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "CONTRACT_INVALID"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "CREDENTIAL_INVALID"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "PERMISSION_DENIED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "MFA_REQUIRED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "APPROVAL_REQUIRED"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "IDEMPOTENCY_CONFLICT"
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "REVISION_CONFLICT"
+        },
+        "retryable": {
+          "const": true
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "requestId": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+        },
+        "code": {
+          "const": "SERVICE_UNAVAILABLE"
+        },
+        "retryable": {
+          "const": true
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "requestId",
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

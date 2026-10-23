@@ -11507,6 +11507,979 @@
         }
       }
     },
+    "/v1/admin/supply-chain/scan-captures/context": {
+      "post": {
+        "operationId": "scan-capture-context",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T10",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "MFA_REQUIRED",
+          "APPROVAL_REQUIRED",
+          "IDEMPOTENCY_CONFLICT",
+          "REVISION_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "scanCaptureSecureSession": []
+          },
+          {
+            "scanCaptureDevelopmentSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Must exactly match the configured management Origin; forwarded headers are not authority."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Actual current session-bound CSRF token, including on read-only POSTs."
+          }
+        ],
+        "description": "Read installed template identity and new-admission flag for one concrete scope. It does not select a material or grant scan permission. All bodies are closed canonical JSON within the existing 1MiB/depth32/member4096 limits; duplicate decoded keys and unsafe integer values are rejected. Actual T05 current fullscope grants, original material/source MACs, T06 read-set/cipher limits and 32MiB/4096 current logical source union are checked separately. Reported-only-unassessed observations are not formal coverage, Artifact validity, risk approval or publication authority.",
+        "x-current-scoped-permissions": [
+          "commands.release",
+          "change.read"
+        ],
+        "x-fresh-mfa-required": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.scan-capture.context-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated current context, permanent original queued receipt, or same-original observation. Queue receipt is not scan completion. No speculative response escapes an unknown transaction outcome.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.scan-capture.context-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CONTRACT_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CREDENTIAL_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "PERMISSION_DENIED",
+                            "MFA_REQUIRED",
+                            "APPROVAL_REQUIRED"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "IDEMPOTENCY_CONFLICT",
+                            "REVISION_CONFLICT"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "SERVICE_UNAVAILABLE"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/supply-chain/scan-captures/queue": {
+      "post": {
+        "operationId": "scan-capture-queue",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T10",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "MFA_REQUIRED",
+          "APPROVAL_REQUIRED",
+          "IDEMPOTENCY_CONFLICT",
+          "REVISION_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "scanCaptureSecureSession": []
+          },
+          {
+            "scanCaptureDevelopmentSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Must exactly match the configured management Origin; forwarded headers are not authority."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Actual current session-bound CSRF token, including on read-only POSTs."
+          }
+        ],
+        "description": "Persist this immutable original material capture intent and return its permanent queued receipt. OS execution remains exclusively in the separate fixed root-owned CLI. All bodies are closed canonical JSON within the existing 1MiB/depth32/member4096 limits; duplicate decoded keys and unsafe integer values are rejected. Actual T05 current fullscope grants, original material/source MACs, T06 read-set/cipher limits and 32MiB/4096 current logical source union are checked separately. Reported-only-unassessed observations are not formal coverage, Artifact validity, risk approval or publication authority.",
+        "x-current-scoped-permissions": [
+          "commands.release",
+          "change.create"
+        ],
+        "x-fresh-mfa-required": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.scan-capture.queue-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated current context, permanent original queued receipt, or same-original observation. Queue receipt is not scan completion. No speculative response escapes an unknown transaction outcome.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.scan-capture.queue-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CONTRACT_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CREDENTIAL_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "PERMISSION_DENIED",
+                            "MFA_REQUIRED",
+                            "APPROVAL_REQUIRED"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "IDEMPOTENCY_CONFLICT",
+                            "REVISION_CONFLICT"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "SERVICE_UNAVAILABLE"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/supply-chain/scan-captures/lookup": {
+      "post": {
+        "operationId": "scan-capture-lookup",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T10",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "MFA_REQUIRED",
+          "APPROVAL_REQUIRED",
+          "IDEMPOTENCY_CONFLICT",
+          "REVISION_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "scanCaptureSecureSession": []
+          },
+          {
+            "scanCaptureDevelopmentSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Must exactly match the configured management Origin; forwarded headers are not authority."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Actual current session-bound CSRF token, including on read-only POSTs."
+          }
+        ],
+        "description": "Read the same actor/scope/key/full original request. Absent or still-processing originals are unresolved; neither is a no-effect proof. All bodies are closed canonical JSON within the existing 1MiB/depth32/member4096 limits; duplicate decoded keys and unsafe integer values are rejected. Actual T05 current fullscope grants, original material/source MACs, T06 read-set/cipher limits and 32MiB/4096 current logical source union are checked separately. Reported-only-unassessed observations are not formal coverage, Artifact validity, risk approval or publication authority.",
+        "x-current-scoped-permissions": [
+          "commands.release",
+          "change.read"
+        ],
+        "x-fresh-mfa-required": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.scan-capture.lookup-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated current context, permanent original queued receipt, or same-original observation. Queue receipt is not scan completion. No speculative response escapes an unknown transaction outcome.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.scan-capture.lookup-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CONTRACT_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CREDENTIAL_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "PERMISSION_DENIED",
+                            "MFA_REQUIRED",
+                            "APPROVAL_REQUIRED"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "IDEMPOTENCY_CONFLICT",
+                            "REVISION_CONFLICT"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "SERVICE_UNAVAILABLE"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/supply-chain/scan-captures/resume": {
+      "post": {
+        "operationId": "scan-capture-resume",
+        "tags": [
+          "management"
+        ],
+        "x-owner-task": "T10",
+        "x-purpose": "management",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "CREDENTIAL_INVALID",
+          "PERMISSION_DENIED",
+          "MFA_REQUIRED",
+          "APPROVAL_REQUIRED",
+          "IDEMPOTENCY_CONFLICT",
+          "REVISION_CONFLICT",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [
+          {
+            "scanCaptureSecureSession": []
+          },
+          {
+            "scanCaptureDevelopmentSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Must exactly match the configured management Origin; forwarded headers are not authority."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Actual current session-bound CSRF token, including on read-only POSTs."
+          }
+        ],
+        "description": "Recover only an existing original metadata request with the same actor, scope, key and exact wire. This never starts an OS scanner, creates an absent original, changes the old material, or relaunches an unknown native attempt. All bodies are closed canonical JSON within the existing 1MiB/depth32/member4096 limits; duplicate decoded keys and unsafe integer values are rejected. Actual T05 current fullscope grants, original material/source MACs, T06 read-set/cipher limits and 32MiB/4096 current logical source union are checked separately. Reported-only-unassessed observations are not formal coverage, Artifact validity, risk approval or publication authority.",
+        "x-current-scoped-permissions": [
+          "commands.release",
+          "change.read"
+        ],
+        "x-fresh-mfa-required": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.scan-capture.resume-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated current context, permanent original queued receipt, or same-original observation. Queue receipt is not scan completion. No speculative response escapes an unknown transaction outcome.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.scan-capture.resume-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CONTRACT_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "CREDENTIAL_INVALID"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "PERMISSION_DENIED",
+                            "MFA_REQUIRED",
+                            "APPROVAL_REQUIRED"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "IDEMPOTENCY_CONFLICT",
+                            "REVISION_CONFLICT"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Existing safe machine error; never a terminal no-effect proof. Retain the exact original key and bytes.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/api.scan-capture.error"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "SERVICE_UNAVAILABLE"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-recovery-permission": "Recovering a still-processing original also requires actual current change.create before original Engine.Execute; an already queued result is a protected original read."
+      }
+    },
     "/v1/admin/path-policy/floor-drafts/context": {
       "post": {
         "operationId": "support-floor-draft-context",
@@ -14525,7 +15498,7 @@
             "description": "Actual current session-bound CSRF token; required on every POST, including reads."
           }
         ],
-        "description": "Read the same actor's original create/abort identity. Only create may return not_committable, after full protected predicate and known-success COMMIT. Accepted/retired original results take precedence; unresolved/errors never authorize local release. All POSTs require actual management session, exact Origin and session CSRF; current fullscope authorization and source validation run in the original transaction. Bodies are strict JSON <=1MiB, no unknown/duplicate members, safe integer domain, depth<=32 and per-object/array member limits<=4096. Current logical source union<=32MiB/4096 refs and original T06 read-set/cipher frame limits remain independent. No transport/schema validity grants permission or complete T47/F1 qualification.",
+        "description": "Read the same actor's original create/abort identity. Create and absent-original abort have separate not_committable variants after their complete protected predicates and known-success COMMIT. Abort processing remains unresolved until separately qualified; only actual irreversible child closure establishes its initial basis. Accepted/retired original results take precedence; unresolved/errors never authorize local release. All POSTs require actual management session, exact Origin and session CSRF; current fullscope authorization and source validation run in the original transaction. Bodies are strict JSON <=1MiB, no unknown/duplicate members, safe integer domain, depth<=32 and per-object/array member limits<=4096. Current logical source union<=32MiB/4096 refs and original T06 read-set/cipher frame limits remain independent. No transport/schema validity grants permission or complete T47/F1 qualification.",
         "x-current-scoped-permissions": [
           "commands.release",
           "change.read"
@@ -14973,6 +15946,18 @@
         "in": "cookie",
         "name": "pinvou-upgrade-session",
         "description": "Existing management auth session cookie. Only the cookie name selected by configured SecureCookies is accepted, not both or a caller override. Secure production uses the __Host cookie; the non-__Host name is for explicitly configured local development. Current principal/grants/session expiry are rechecked by the server."
+      },
+      "scanCaptureSecureSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-pinvou-upgrade-session",
+        "description": "Existing management session. Only the name selected by configured SecureCookies is accepted; development is explicitly configured. Current principal and session expiry are independently rechecked."
+      },
+      "scanCaptureDevelopmentSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "pinvou-upgrade-session",
+        "description": "Existing management session. Only the name selected by configured SecureCookies is accepted; development is explicitly configured. Current principal and session expiry are independently rechecked."
       }
     },
     "schemas": {
@@ -28328,6 +29313,645 @@
         ],
         "additionalProperties": false
       },
+      "api.scan-capture.scope": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "product": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "component": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/common/$defs/channel"
+          },
+          "targetKey": {
+            "$ref": "#/components/schemas/common/$defs/targetKey"
+          }
+        },
+        "required": [
+          "product",
+          "component",
+          "channel",
+          "targetKey"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.material-ref": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "supplyChainMaterial"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^material-[a-f0-9]{64}$",
+            "minLength": 73,
+            "maxLength": 73
+          },
+          "revision": {
+            "const": 1
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "revision",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.context-request": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.scan-capture.scope"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.queue-request": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.scan-capture.scope"
+          },
+          "material": {
+            "$ref": "#/components/schemas/api.scan-capture.material-ref"
+          },
+          "templateSHA256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "commandKey",
+          "scope",
+          "material",
+          "templateSHA256"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.lookup-request": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.scan-capture.scope"
+          },
+          "material": {
+            "$ref": "#/components/schemas/api.scan-capture.material-ref"
+          },
+          "templateSHA256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "commandKey",
+          "scope",
+          "material",
+          "templateSHA256"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.resume-request": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.scan-capture.scope"
+          },
+          "material": {
+            "$ref": "#/components/schemas/api.scan-capture.material-ref"
+          },
+          "templateSHA256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "commandKey",
+          "scope",
+          "material",
+          "templateSHA256"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.context": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.scan-capture.scope"
+          },
+          "templateSHA256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "admission": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "scope",
+          "templateSHA256",
+          "admission"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.queued": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "resultId": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "state": {
+            "const": "queued"
+          },
+          "queuedAt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "originalSHA256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "resultId",
+          "state",
+          "queuedAt",
+          "originalSHA256"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "not": {
+              "pattern": "[^A-Za-z0-9._-]"
+            }
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.observation": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "completedAt": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "coverage": {
+            "const": "reported-only-unassessed"
+          },
+          "sealSHA256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "report": {
+            "$ref": "#/components/schemas/api.scan-capture.output"
+          },
+          "normalized": {
+            "$ref": "#/components/schemas/api.scan-capture.output"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "completedAt",
+          "coverage",
+          "sealSHA256",
+          "report",
+          "normalized"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.lookup": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "state": {
+                "const": "unresolved"
+              },
+              "queued": {
+                "type": "null"
+              },
+              "observation": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "state",
+              "queued",
+              "observation"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "state": {
+                "enum": [
+                  "queued",
+                  "launch_authorized",
+                  "unknown"
+                ]
+              },
+              "queued": {
+                "$ref": "#/components/schemas/api.scan-capture.queued"
+              },
+              "observation": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "state",
+              "queued",
+              "observation"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "state": {
+                "const": "recorded"
+              },
+              "queued": {
+                "$ref": "#/components/schemas/api.scan-capture.queued"
+              },
+              "observation": {
+                "$ref": "#/components/schemas/api.scan-capture.observation"
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "state",
+              "queued",
+              "observation"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "api.scan-capture.error": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "CONTRACT_INVALID"
+              },
+              "retryable": {
+                "const": false
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "CREDENTIAL_INVALID"
+              },
+              "retryable": {
+                "const": false
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "PERMISSION_DENIED"
+              },
+              "retryable": {
+                "const": false
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "MFA_REQUIRED"
+              },
+              "retryable": {
+                "const": false
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "APPROVAL_REQUIRED"
+              },
+              "retryable": {
+                "const": false
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "IDEMPOTENCY_CONFLICT"
+              },
+              "retryable": {
+                "const": false
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "REVISION_CONFLICT"
+              },
+              "retryable": {
+                "const": true
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "requestId": {
+                "$ref": "#/components/schemas/common/$defs/identifier"
+              },
+              "code": {
+                "const": "SERVICE_UNAVAILABLE"
+              },
+              "retryable": {
+                "const": true
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "requestId",
+              "code",
+              "retryable"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "api.scan-capture.context-response": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.scan-capture.context"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.queue-response": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.scan-capture.queued"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.lookup-response": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.scan-capture.lookup"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
+      "api.scan-capture.resume-response": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "result": {
+            "$ref": "#/components/schemas/api.scan-capture.lookup"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "requestId",
+          "result"
+        ],
+        "additionalProperties": false
+      },
       "api.floor-draft.scope": {
         "type": "object",
         "properties": {
@@ -30755,9 +32379,12 @@
           },
           {
             "$ref": "#/components/schemas/api.deployment-rollout.create-not-committable"
+          },
+          {
+            "$ref": "#/components/schemas/api.deployment-rollout.abort-not-committable"
           }
         ],
-        "description": "Direct owner JSON. deployment.create.v1 allows unresolved/committed/not_committable; rollout.abort.v1 allows unresolved/committed only. No requestId/result wrapper is added.",
+        "description": "Direct owner JSON. Create and abort have distinct closed not_committable proof variants. The initial abort variant is absent-original plus authenticated irreversible child closure only; processing abort remains unresolved. Permanent accepted/retired original locators take precedence. No requestId/result wrapper is added.",
         "x-request-command-variants": {
           "deployment.create.v1": [
             "#/components/schemas/api.deployment-rollout.lookup-unresolved",
@@ -30766,7 +32393,8 @@
           ],
           "rollout.abort.v1": [
             "#/components/schemas/api.deployment-rollout.lookup-unresolved",
-            "#/components/schemas/api.deployment-rollout.lookup-abort-committed"
+            "#/components/schemas/api.deployment-rollout.lookup-abort-committed",
+            "#/components/schemas/api.deployment-rollout.abort-not-committable"
           ]
         }
       },
@@ -31065,6 +32693,106 @@
           }
         ],
         "description": "Existing machineError envelope: exactly protocolVersion/requestId/code/retryable; no SQL, paths, provider errors or secrets. Original route does not add retryAfterMs. A generic error never releases pending or proves no admission."
+      },
+      "api.deployment-rollout.rollout-closed-basis": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "rollout_closed"
+          },
+          "original": {
+            "$ref": "#/components/schemas/api.deployment-rollout.draft-child-ref"
+          },
+          "current": {
+            "$ref": "#/components/schemas/api.deployment-rollout.aborted-child-ref"
+          },
+          "closingResultId": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          }
+        },
+        "required": [
+          "kind",
+          "original",
+          "current",
+          "closingResultId"
+        ],
+        "additionalProperties": false,
+        "description": "The same actual child was irreversibly closed by another authenticated original abort. The original request names revision 1 and current names the same child at the actual aborted revision 2. closingResultId identifies that other committed closing result; it is never an ACK or result locator for this original request.",
+        "x-server-invariants": [
+          "original equals the complete original public request rollout reference, including kind/id/revision/hash.",
+          "current has the same kind/id as original and authenticates the actual aborted revision 2.",
+          "The complete creation, association, closing original result, native operation/receipt/output and all charged protected sources are authenticated in the same original transaction.",
+          "No parent edit, principal revision, elapsed retention, absent key, lease, processing state or unauthenticated claimed closure establishes this basis."
+        ]
+      },
+      "api.deployment-rollout.abort-proof": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "const": "abort"
+          },
+          "command": {
+            "const": "rollout.abort.v1"
+          },
+          "actorId": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/api.deployment-rollout.scope"
+          },
+          "commandKey": {
+            "$ref": "#/components/schemas/common/$defs/identifier"
+          },
+          "publicRequestSha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "internalWireSha256": {
+            "$ref": "#/components/schemas/common/$defs/hash"
+          },
+          "basis": {
+            "$ref": "#/components/schemas/api.deployment-rollout.rollout-closed-basis"
+          }
+        },
+        "required": [
+          "operation",
+          "command",
+          "actorId",
+          "scope",
+          "commandKey",
+          "publicRequestSha256",
+          "internalWireSha256",
+          "basis"
+        ],
+        "additionalProperties": false,
+        "description": "Absent-original abort-only irreversible observation. Public hash covers the canonical complete original AbortComposedDraftRequest, including its approval and references; internal hash covers actual BindCompositionAbort Wire and is distinct from the public hash and T06 digest. This variant neither executes nor terminates the original and grants no ACK or current authority.",
+        "x-server-invariants": [
+          "Current authenticated actor/fullscope/key and canonical public original must match exactly.",
+          "Only an absent original key may return this initial abort-proof variant. A processing original remains unresolved until a separately qualified complete original cipher/context path exists.",
+          "An accepted original, including a retired response, takes precedence over any closing basis. A same-key different original retains conflict.",
+          "The original child reference at revision 1 is permanently superseded by its authenticated aborted revision 2 and another committed closing result.",
+          "Key-first ledger synchronization, native MVCC admission fence, current read authorization, complete source/cipher census, independent 1MiB/4096-ref/32MiB/T06 limits and known-success original Store COMMIT are mandatory. Uncertain COMMIT/errors return no proof."
+        ]
+      },
+      "api.deployment-rollout.abort-not-committable": {
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "status": {
+            "const": "not_committable"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/api.deployment-rollout.abort-proof"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "status",
+          "proof"
+        ],
+        "additionalProperties": false,
+        "description": "Only rollout.abort.v1 with an absent original and the authenticated rollout_closed basis may return this variant. The original remains unchanged. Any future explicit local correction must freshly re-query this exact operation, preserve complete original/proof diagnostics, and clear only matching local pending. Create, preparation and review predicates must not be substituted."
       }
     }
   }

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-not-committable",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "not_committable"
+    },
+    "proof": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-proof"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "status",
+    "proof"
+  ],
+  "additionalProperties": false,
+  "description": "Only rollout.abort.v1 with an absent original and the authenticated rollout_closed basis may return this variant. The original remains unchanged. Any future explicit local correction must freshly re-query this exact operation, preserve complete original/proof diagnostics, and clear only matching local pending. Create, preparation and review predicates must not be substituted."
+}

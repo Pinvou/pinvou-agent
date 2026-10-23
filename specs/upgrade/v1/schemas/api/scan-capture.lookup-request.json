@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:scan-capture.lookup-request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.scope"
+    },
+    "material": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.material-ref"
+    },
+    "templateSHA256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "commandKey",
+    "scope",
+    "material",
+    "templateSHA256"
+  ],
+  "additionalProperties": false
+}

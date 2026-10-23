@@ -4,6 +4,7 @@ import { schemas as trustSchemas } from './build-schemas.mjs';
 import { API_SCHEMAS, API_BASE, ERROR_DEFINITIONS } from './api-shapes.mjs';
 import { OPERATIONS } from './api-operations.mjs';
 import './api-management.mjs';
+import { SCAN_CAPTURE_SECURITY } from './api-scan-captures.mjs';
 import { DRAFT_WORKFLOW_SCHEMAS, DRAFT_WORKFLOW_SECURITY } from './api-draft-workflows.mjs';
 
 // Bundle URI references into ordinary OpenAPI-local references for generic
@@ -56,6 +57,7 @@ export const openapi = { openapi: '3.1.0', jsonSchemaDialect: 'https://json-sche
 // Preserve fixed owner-specific OpenAPI annotations and transport contracts.
 Object.assign(openapi.components.schemas, DRAFT_WORKFLOW_SCHEMAS);
 Object.assign(openapi.components.securitySchemes, DRAFT_WORKFLOW_SECURITY);
+Object.assign(openapi.components.securitySchemes, SCAN_CAPTURE_SECURITY);
 
 export { API_SCHEMAS, API_BASE, OPERATIONS };
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

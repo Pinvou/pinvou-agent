@@ -13,7 +13,10 @@
     },
     {
       "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.create-not-committable"
+    },
+    {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-not-committable"
     }
   ],
-  "description": "Direct owner JSON. deployment.create.v1 allows unresolved/committed/not_committable; rollout.abort.v1 allows unresolved/committed only. No requestId/result wrapper is added."
+  "description": "Direct owner JSON. Create and abort have distinct closed not_committable proof variants. The initial abort variant is absent-original plus authenticated irreversible child closure only; processing abort remains unresolved. Permanent accepted/retired original locators take precedence. No requestId/result wrapper is added."
 }

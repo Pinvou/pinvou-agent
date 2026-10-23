@@ -3018,7 +3018,7 @@
             "description": "Actual current session-bound CSRF token; required on every POST, including reads."
           }
         ],
-        "description": "Read the same actor's original create/abort identity. Only create may return not_committable, after full protected predicate and known-success COMMIT. Accepted/retired original results take precedence; unresolved/errors never authorize local release. All POSTs require actual management session, exact Origin and session CSRF; current fullscope authorization and source validation run in the original transaction. Bodies are strict JSON <=1MiB, no unknown/duplicate members, safe integer domain, depth<=32 and per-object/array member limits<=4096. Current logical source union<=32MiB/4096 refs and original T06 read-set/cipher frame limits remain independent. No transport/schema validity grants permission or complete T47/F1 qualification.",
+        "description": "Read the same actor's original create/abort identity. Create and absent-original abort have separate not_committable variants after their complete protected predicates and known-success COMMIT. Abort processing remains unresolved until separately qualified; only actual irreversible child closure establishes its initial basis. Accepted/retired original results take precedence; unresolved/errors never authorize local release. All POSTs require actual management session, exact Origin and session CSRF; current fullscope authorization and source validation run in the original transaction. Bodies are strict JSON <=1MiB, no unknown/duplicate members, safe integer domain, depth<=32 and per-object/array member limits<=4096. Current logical source union<=32MiB/4096 refs and original T06 read-set/cipher frame limits remain independent. No transport/schema validity grants permission or complete T47/F1 qualification.",
         "x-current-scoped-permissions": [
           "commands.release",
           "change.read"
@@ -5875,9 +5875,12 @@
         },
         {
           "$ref": "#/components/schemas/api.deployment-rollout.create-not-committable"
+        },
+        {
+          "$ref": "#/components/schemas/api.deployment-rollout.abort-not-committable"
         }
       ],
-      "description": "Direct owner JSON. deployment.create.v1 allows unresolved/committed/not_committable; rollout.abort.v1 allows unresolved/committed only. No requestId/result wrapper is added.",
+      "description": "Direct owner JSON. Create and abort have distinct closed not_committable proof variants. The initial abort variant is absent-original plus authenticated irreversible child closure only; processing abort remains unresolved. Permanent accepted/retired original locators take precedence. No requestId/result wrapper is added.",
       "x-request-command-variants": {
         "deployment.create.v1": [
           "#/components/schemas/api.deployment-rollout.lookup-unresolved",
@@ -5886,7 +5889,8 @@
         ],
         "rollout.abort.v1": [
           "#/components/schemas/api.deployment-rollout.lookup-unresolved",
-          "#/components/schemas/api.deployment-rollout.lookup-abort-committed"
+          "#/components/schemas/api.deployment-rollout.lookup-abort-committed",
+          "#/components/schemas/api.deployment-rollout.abort-not-committable"
         ]
       }
     },
@@ -6185,6 +6189,106 @@
         }
       ],
       "description": "Existing machineError envelope: exactly protocolVersion/requestId/code/retryable; no SQL, paths, provider errors or secrets. Original route does not add retryAfterMs. A generic error never releases pending or proves no admission."
+    },
+    "api.deployment-rollout.rollout-closed-basis": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "rollout_closed"
+        },
+        "original": {
+          "$ref": "#/components/schemas/api.deployment-rollout.draft-child-ref"
+        },
+        "current": {
+          "$ref": "#/components/schemas/api.deployment-rollout.aborted-child-ref"
+        },
+        "closingResultId": {
+          "$ref": "#/components/schemas/common/$defs/hash"
+        }
+      },
+      "required": [
+        "kind",
+        "original",
+        "current",
+        "closingResultId"
+      ],
+      "additionalProperties": false,
+      "description": "The same actual child was irreversibly closed by another authenticated original abort. The original request names revision 1 and current names the same child at the actual aborted revision 2. closingResultId identifies that other committed closing result; it is never an ACK or result locator for this original request.",
+      "x-server-invariants": [
+        "original equals the complete original public request rollout reference, including kind/id/revision/hash.",
+        "current has the same kind/id as original and authenticates the actual aborted revision 2.",
+        "The complete creation, association, closing original result, native operation/receipt/output and all charged protected sources are authenticated in the same original transaction.",
+        "No parent edit, principal revision, elapsed retention, absent key, lease, processing state or unauthenticated claimed closure establishes this basis."
+      ]
+    },
+    "api.deployment-rollout.abort-proof": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "abort"
+        },
+        "command": {
+          "const": "rollout.abort.v1"
+        },
+        "actorId": {
+          "$ref": "#/components/schemas/common/$defs/identifier"
+        },
+        "scope": {
+          "$ref": "#/components/schemas/api.deployment-rollout.scope"
+        },
+        "commandKey": {
+          "$ref": "#/components/schemas/common/$defs/identifier"
+        },
+        "publicRequestSha256": {
+          "$ref": "#/components/schemas/common/$defs/hash"
+        },
+        "internalWireSha256": {
+          "$ref": "#/components/schemas/common/$defs/hash"
+        },
+        "basis": {
+          "$ref": "#/components/schemas/api.deployment-rollout.rollout-closed-basis"
+        }
+      },
+      "required": [
+        "operation",
+        "command",
+        "actorId",
+        "scope",
+        "commandKey",
+        "publicRequestSha256",
+        "internalWireSha256",
+        "basis"
+      ],
+      "additionalProperties": false,
+      "description": "Absent-original abort-only irreversible observation. Public hash covers the canonical complete original AbortComposedDraftRequest, including its approval and references; internal hash covers actual BindCompositionAbort Wire and is distinct from the public hash and T06 digest. This variant neither executes nor terminates the original and grants no ACK or current authority.",
+      "x-server-invariants": [
+        "Current authenticated actor/fullscope/key and canonical public original must match exactly.",
+        "Only an absent original key may return this initial abort-proof variant. A processing original remains unresolved until a separately qualified complete original cipher/context path exists.",
+        "An accepted original, including a retired response, takes precedence over any closing basis. A same-key different original retains conflict.",
+        "The original child reference at revision 1 is permanently superseded by its authenticated aborted revision 2 and another committed closing result.",
+        "Key-first ledger synchronization, native MVCC admission fence, current read authorization, complete source/cipher census, independent 1MiB/4096-ref/32MiB/T06 limits and known-success original Store COMMIT are mandatory. Uncertain COMMIT/errors return no proof."
+      ]
+    },
+    "api.deployment-rollout.abort-not-committable": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "status": {
+          "const": "not_committable"
+        },
+        "proof": {
+          "$ref": "#/components/schemas/api.deployment-rollout.abort-proof"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "status",
+        "proof"
+      ],
+      "additionalProperties": false,
+      "description": "Only rollout.abort.v1 with an absent original and the authenticated rollout_closed basis may return this variant. The original remains unchanged. Any future explicit local correction must freshly re-query this exact operation, preserve complete original/proof diagnostics, and clear only matching local pending. Create, preparation and review predicates must not be substituted."
     }
   },
   "securitySchemes": {

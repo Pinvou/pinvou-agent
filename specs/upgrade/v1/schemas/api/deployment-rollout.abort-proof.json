@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.abort-proof",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "const": "abort"
+    },
+    "command": {
+      "const": "rollout.abort.v1"
+    },
+    "actorId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "scope": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.scope"
+    },
+    "commandKey": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/identifier"
+    },
+    "publicRequestSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "internalWireSha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "basis": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.rollout-closed-basis"
+    }
+  },
+  "required": [
+    "operation",
+    "command",
+    "actorId",
+    "scope",
+    "commandKey",
+    "publicRequestSha256",
+    "internalWireSha256",
+    "basis"
+  ],
+  "additionalProperties": false,
+  "description": "Absent-original abort-only irreversible observation. Public hash covers the canonical complete original AbortComposedDraftRequest, including its approval and references; internal hash covers actual BindCompositionAbort Wire and is distinct from the public hash and T06 digest. This variant neither executes nor terminates the original and grants no ACK or current authority."
+}

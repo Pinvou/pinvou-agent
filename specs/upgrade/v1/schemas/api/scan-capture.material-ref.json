@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:scan-capture.material-ref",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "supplyChainMaterial"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^material-[a-f0-9]{64}$",
+      "minLength": 73,
+      "maxLength": 73
+    },
+    "revision": {
+      "const": 1
+    },
+    "sha256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "kind",
+    "id",
+    "revision",
+    "sha256"
+  ],
+  "additionalProperties": false
+}

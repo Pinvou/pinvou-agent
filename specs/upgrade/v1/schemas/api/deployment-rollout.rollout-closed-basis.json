@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:deployment-rollout.rollout-closed-basis",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "rollout_closed"
+    },
+    "original": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.draft-child-ref"
+    },
+    "current": {
+      "$ref": "urn:pinvou:upgrade:v1:api:deployment-rollout.aborted-child-ref"
+    },
+    "closingResultId": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    }
+  },
+  "required": [
+    "kind",
+    "original",
+    "current",
+    "closingResultId"
+  ],
+  "additionalProperties": false,
+  "description": "The same actual child was irreversibly closed by another authenticated original abort. The original request names revision 1 and current names the same child at the actual aborted revision 2. closingResultId identifies that other committed closing result; it is never an ACK or result locator for this original request."
+}

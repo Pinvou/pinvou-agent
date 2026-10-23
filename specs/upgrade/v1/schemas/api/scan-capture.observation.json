@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:api:scan-capture.observation",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "completedAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "coverage": {
+      "const": "reported-only-unassessed"
+    },
+    "sealSHA256": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/hash"
+    },
+    "report": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.output"
+    },
+    "normalized": {
+      "$ref": "urn:pinvou:upgrade:v1:api:scan-capture.output"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "completedAt",
+    "coverage",
+    "sealSHA256",
+    "report",
+    "normalized"
+  ],
+  "additionalProperties": false
+}
