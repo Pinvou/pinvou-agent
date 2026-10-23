@@ -1,13 +1,13 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> Updated: 2026-10-23. Consumed maintenance head: `e9a7f48da169bf89399a11592e4d22a7b721cb39` (CodeWhale#115/#116). The immutable `pinvou-v0.9.12-r3` tag remains at `61cb769be`; the public verifier requires the parent gitlink to track the maintenance head during this transition.
+> Updated: 2026-10-23. Consumed maintenance head: `ea9fdc90f1c90335554833195eeeb847c83d82dd` (CodeWhale#115/#116/#117). The immutable `pinvou-v0.9.12-r3` tag remains at `61cb769be`; the public verifier tracks the maintenance head during this transition.
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
 ## 0. 当前基线
 
 - 上游：`Hmbown/CodeWhale` tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5`。
-- 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `e9a7f48da169bf89399a11592e4d22a7b721cb39`（领先不可变 tag `pinvou-v0.9.12-r3`，tag 仍钉在其收口 `61cb769be`），共 78 个登记提交，其中 76 个带 DCO sign-off（历史未签：#107 squash `f27672935` 的合并提交信息未保留 sign-off 尾部，属上游合并信息缺口，已留言知会上游维护者——见 CodeWhale#107；后续登记批按实数签数登记）；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交），其后 63 个提交为 2026-09-10/11 backlog 批次、2026-09-17 批次、2026-09-18 批次、2026-09-20 批次、2026-09-21 批次（#64/#67）、2026-09-22/23 批次（#63/#65/#68/#69/#70/#71/#72/#73/#76，另含 Windows 编译修复 #77）、2026-10-02 批次（#80）、2026-10-08/09 批次（#79/#88/#89/#75/#78/#94/#95）、2026-10-12/13 批次（#90/#91/#93/#97/#98）、2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）、2026-10-14 批次（#54/#107）、2026-10-15 批次（#108）、2026-10-17 批次（#105/#106/#111）与 2026-10-20 批次（#112/#113）经 PR squash 合入。 The 2026-10-23 CodeWhale#115 batch preserves shell defaults when task environment overlays are applied; it stays within T2. CodeWhale#116 is a second unsigned squash-message exception; 76 of78 commits have signoffs. No upstream rewrite or report is claimed here.
+- Current fork baseline: `Pinvou/CodeWhale:pinvou3-clean` at `ea9fdc90f1c90335554833195eeeb847c83d82dd`:79 registered commits above upstream `dcd4c200f`,77 with signoffs. The two missing squash-footer exceptions remain #107 (`f27672935`) and #116 (`e9a7f48da`); #117 is signed. There are64 post-r1 commits after `1fafee7e2`. The immutable r3 closure remains `61cb769be`. #117 changes only Web JSONPath help and its parser contract; #115/#116 provide the already recorded environment and failed-tool flag fixes under T2.
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
 - 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
