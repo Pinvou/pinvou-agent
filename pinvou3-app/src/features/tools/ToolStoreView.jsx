@@ -1493,7 +1493,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
         // 用户上传技能无业务归属元数据,业务分组落「其他」;类型分组仍按 userUploaded 归 Skill。
-        category: 'other', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
+        category: 'other', type: (storeCopy.typeGroups || {}).skill || 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
         actions: actionsOf(bundleStates[x.id]),
       }));
