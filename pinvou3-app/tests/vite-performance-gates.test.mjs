@@ -46,7 +46,15 @@ test('every view loader has an explicit lazy chunk contract', () => {
 test('scheduled task cards have a production lazy-chunk gate', () => {
   assert.deepEqual(lazyToolChunkContracts.scheduledTaskCard,
     ['features/tools/scheduled-task-card.jsx', 'ScheduledTaskToolCard']);
-  assert.throws(() => assertLazyChunks({}), /lazy module was not emitted/);
+  const views = Object.fromEntries(Object.entries(lazyChunkContracts).map(([key, [suffix, name]]) =>
+    [key, chunk({ name, modules: { [`/repo/src/${suffix}`]: {} } })]));
+  assert.doesNotThrow(() => assertLazyChunks(views, lazyChunkContracts));
+  assert.throws(() => assertLazyChunks(views), /ScheduledTaskToolCard lazy module was not emitted/);
+  const complete = { ...views, scheduledTaskCard: chunk({ name: 'ScheduledTaskToolCard',
+    modules: { '/repo/src/features/tools/scheduled-task-card.jsx': {} } }) };
+  assert.doesNotThrow(() => assertLazyChunks(complete));
+  complete.scheduledTaskCard.isEntry = true;
+  assert.throws(() => assertLazyChunks(complete), /non-entry lazy chunk/);
 });
 
 test('rare global overlays stay out of the startup module graph', () => {

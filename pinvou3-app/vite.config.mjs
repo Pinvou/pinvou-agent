@@ -506,7 +506,7 @@ function enforceLazyChunks() {
 // helpers are render-path synchronous and cannot defer; the ceiling is
 // the measured projection, not padded.
 //
-// 505_000 → 506_000 (PR #628 follow-ups, measured per policy): on
+// 505_000 → 506_000 (PR #628 follow-ups, measured per policy):
 // The author explicitly approved 506_000 on 2026-10-21 after reviewing
 // both targets. On this branch, npm ci with pinned Vite 8.3.4 / Node 22.23.1
 // produces 505,454 B web and 502,135 B desktop. Review 5596933329 measured

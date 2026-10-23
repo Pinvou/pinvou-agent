@@ -612,6 +612,28 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         thread.start()
         return thread
 
+    def test_queued_create_retry_discloses_the_inflight_duplicate_window(self):
+        old_wait = server.RESULT_WAIT_SECONDS
+        try:
+            server.RESULT_WAIT_SECONDS = 0
+            first, error = server.create_scheduled_task(
+                **self._create_kwargs(from_session="reqsrc01", idempotency_key="inflight"))
+            self.assertIsNone(error)
+            self.assertEqual(first["delivery"], "pending")
+            server.RESULT_WAIT_SECONDS = 1
+            worker = self._finish_in_background()
+            try:
+                result, error = server.create_scheduled_task(
+                    **self._create_kwargs(from_session="reqsrc01", idempotency_key="inflight"))
+            finally:
+                worker.join(timeout=3)
+            self.assertIsNone(error)
+            self.assertTrue(result["duplicate"])
+            self.assertIn("earlier request may also have been applied", result["note"])
+            self.assertNotIn("no second task", result["note"])
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+
     def test_failure_marker_redacts_private_roots_before_return(self):
         automations = Path(self.tmp) / "automations"
         raw = ("permission denied: %s/private.json; %s/private.json; %s/secret.txt" %
@@ -1488,11 +1510,11 @@ class StdioContractTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="pinvou-stdio-test-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
-    def _spawn(self):
+    def _spawn(self, extra_args=()):
         env = dict(os.environ)
         env["PINVOU3_HOME"] = self.tmp
         return subprocess.Popen(
-            [sys.executable, str(SERVER_PATH)],
+            [sys.executable, str(SERVER_PATH), *extra_args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1511,6 +1533,22 @@ class StdioContractTests(unittest.TestCase):
         line = proc.stdout.readline()
         self.assertTrue(line, "server should have responded")
         return json.loads(line)
+
+    def test_stdio_disabled_family_uses_the_request_root(self):
+        Path(self.tmp, "marketplace").mkdir()
+        Path(self.tmp, "marketplace", "builtin_features.json").write_text(
+            json.dumps({"disabled_features": ["scheduled-task-automation"]}), encoding="utf-8")
+        proc = self._spawn(["--automations-dir", str(Path(self.tmp, "automations", "automations"))])
+        try:
+            response = self._rpc(proc, "tools/call", {"name": "create_scheduled_task", "arguments": {}})
+            self.assertTrue(response["result"]["isError"])
+            self.assertIn("feature_disabled", response["result"]["content"][0]["text"])
+            self.assertFalse(Path(self.tmp, "task-requests", "spool").exists())
+        finally:
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
 
     def test_stdio_roundtrip(self):
         proc = self._spawn()
@@ -1715,16 +1753,19 @@ class Round33BoundaryTests(unittest.TestCase):
     def test_dispatcher_feature_gate_blocks_every_tool(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
+            requests = str(Path(tmp, "task-requests"))
+            automations = str(Path(tmp, "automations", "automations"))
             Path(tmp, "marketplace").mkdir()
             Path(tmp, "marketplace", "builtin_features.json").write_text(
-                json.dumps({"disabledFeatures": ["scheduled-task-automation"]}), encoding="utf-8")
-            # Use the same mirror shape as the existing feature tests.
+                json.dumps({"disabled_features": ["scheduled-task-automation"]}), encoding="utf-8")
             for definition in server.TOOL_DEFS:
                 replies = []
-                with patch.object(server, "feature_gate_error", return_value={"code": "feature_disabled"}), patch.object(server, "_send", side_effect=replies.append):
-                    server._handle_call(1, {"name": definition["name"], "arguments": {}}, tmp, tmp, {})
+                with patch.object(server, "_send", side_effect=replies.append):
+                    server._handle_call(1, {"name": definition["name"], "arguments": {}},
+                                        requests, automations, server.load_tool_features())
                 self.assertTrue(replies[0]["result"]["isError"])
                 self.assertIn("feature_disabled", replies[0]["result"]["content"][0]["text"])
+            self.assertFalse(Path(requests, "spool").exists())
 
     def test_non_string_and_surrogate_payloads_fail_before_io(self):
         with tempfile.TemporaryDirectory() as tmp:

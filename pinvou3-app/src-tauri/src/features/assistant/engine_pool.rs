@@ -10866,7 +10866,14 @@ mod probed_facts_wiring_tests {
             .find("\n    /// execpolicy")
             .map(|offset| fn_start + offset)
             .expect("next method boundary");
-        let fn_body = &source[fn_start..fn_end];
+        let fn_body = source[fn_start..fn_end]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact: String = fn_body.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("letshaped=ifengine.scheduled_unattended.load(Ordering::Acquire){crate::features::assistant::engine::unattended_disallowed_tools("),
+            "the positive unattended branch must compose the shield, not merely mention it");
         let gate = fn_body
             .find("engine.scheduled_unattended.load(Ordering::Acquire)")
             .expect("the active unattended branch exists");

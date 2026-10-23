@@ -1670,6 +1670,27 @@ mod tests {
     use tokio::sync::Notify;
 
     #[test]
+    fn headless_host_denies_the_undrainable_automation_family() {
+        let source = include_str!("headless_bridge.rs");
+        let body = source
+            .split("let tool_policy: ToolPolicy =")
+            .nth(1)
+            .unwrap()
+            .split("EnginePool::new_with_dependencies")
+            .next()
+            .unwrap();
+        let body: String = body
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(body.contains("tools.extend([\"automation\".to_owned(),\"send_later\".to_owned(),\"mcp_app-automations_*\".to_owned(),]);"));
+    }
+
+    #[test]
     fn landed_bytes_sums_the_staged_workspace() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(

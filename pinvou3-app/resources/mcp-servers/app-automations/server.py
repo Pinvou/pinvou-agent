@@ -1378,8 +1378,10 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         if not duplicate else
                         "This key was still queued when the retry arrived; the "
                         "queued request was REPLACED and the new values have now "
-                        "been applied (the result above is this retry's — no "
-                        "second task)."
+                        "been applied (the result above is this retry's). The "
+                        "earlier request may also have been applied if the "
+                        "watcher was already processing it; inspect the panel "
+                        "for duplicates before retrying again."
                         if entry_had_pending_spool else
                         "A request with the same idempotency key was already "
                         "processed; returning its recorded result — no second task "

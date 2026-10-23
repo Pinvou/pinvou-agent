@@ -1601,17 +1601,16 @@ struct RetryState {
     ceiling_warn_logged: bool,
     parked: HashMap<String, std::time::SystemTime>,
     receipts: HashMap<String, (String, serde_json::Value)>,
+    storage_backpressure_logged: bool,
 }
 
-/// Retain tracked records at the head even when directory iteration changes.
-/// This bounds retry/park/receipt identities to the apply budget across passes,
-/// not just the size of an individual directory listing.
+/// Retain active retries at the head. Parked records and unpublished receipts
+/// have their own maintenance paths and never consume apply/tail slots.
 fn pending_batch(root: &Path, retries: &RetryState, mut listed: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut selected: Vec<_> = retries
         .attempts
         .keys()
-        .chain(retries.parked.keys())
-        .chain(retries.receipts.keys())
+        .filter(|name| !retries.parked.contains_key(*name) && !retries.receipts.contains_key(*name))
         .map(|name| root.join(name))
         .collect();
     selected.sort();
@@ -1621,7 +1620,13 @@ fn pending_batch(root: &Path, retries: &RetryState, mut listed: Vec<PathBuf>) ->
         if selected.len() >= MAX_PENDING_FILES + MAX_TAIL_QUARANTINES {
             break;
         }
-        if !selected.contains(&path) {
+        let skipped = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                retries.parked.contains_key(name) || retries.receipts.contains_key(name)
+            });
+        if !skipped && !selected.contains(&path) {
             selected.push(path);
         }
     }
@@ -1703,6 +1708,49 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         .collect();
     retries.attempts.retain(|name, _| root.join(name).exists());
     retries.parked.retain(|name, _| root.join(name).exists());
+    // Retry only the terminal move, never the domain operation, when the
+    // evidence directory recovers. Otherwise parked identities wedge forever.
+    let parked: Vec<_> = retries
+        .parked
+        .iter()
+        .map(|(name, at)| (name.clone(), *at))
+        .collect();
+    // The original terminal failure already logged the IO cause; maintenance
+    // must not repeat one warning per parked record on every poll.
+    let mut maintenance_warnings = POISON_WARN_PER_PASS + 1;
+    for (name, parked_at) in parked {
+        let path = root.join(&name);
+        let Ok(mtime) = std::fs::metadata(&path).and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        let now = std::time::SystemTime::now();
+        if mtime > parked_at && mtime < now {
+            retries.parked.remove(&name);
+        } else if mtime <= parked_at && mtime <= now {
+            if let Some(snapshot) = RequestSnapshot::capture(&path) {
+                if snapshot.metadata.modified().ok() == Some(mtime)
+                    && snapshot.still_matches(&path)
+                    && quarantine_with_warning(&path, &mut maintenance_warnings)
+                {
+                    retries.parked.remove(&name);
+                    retries.attempts.remove(&name);
+                }
+            }
+        }
+    }
+    // Bounded in-memory evidence is backpressure, not a false terminal
+    // ceiling failure for fresh work. Maintenance above releases it after IO
+    // repair without an app restart or re-applying an exhausted operation.
+    if retries.parked.len() + retries.receipts.len() >= MAX_PENDING_FILES {
+        if !retries.storage_backpressure_logged {
+            log::warn!(
+                "[scheduled-creation] terminal evidence IO is blocked; fresh requests remain queued until storage recovers"
+            );
+            retries.storage_backpressure_logged = true;
+        }
+        return;
+    }
+    retries.storage_backpressure_logged = false;
     let mut files = pending_batch(&root, retries, listed);
     if files.is_empty() {
         retries.ceiling_warn_logged = false;
@@ -1810,6 +1858,19 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             continue;
         }
         if retries.receipts.len() >= MAX_PENDING_FILES {
+            break;
+        }
+        let tracked = retries.attempts.contains_key(&name) || retries.receipts.contains_key(&name);
+        if !tracked
+            && retries
+                .attempts
+                .keys()
+                .chain(retries.parked.keys())
+                .chain(retries.receipts.keys())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                >= MAX_PENDING_FILES
+        {
             break;
         }
         // Round-24 minor 3: parked names skip until their record moves —
@@ -4867,5 +4928,92 @@ mod tests {
                 .unwrap()
                 .starts_with("aaa-new-")
         }));
+    }
+    #[tokio::test]
+    async fn parked_debris_preserves_fresh_work_and_recovers_after_storage_repair() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        std::fs::write(failed_dir(), b"blocked evidence directory").unwrap();
+        let mut retries = RetryState::default();
+        for i in 0..MAX_PENDING_FILES {
+            let name = format!("parked-{i:04}.json");
+            std::fs::write(spool_root().join(&name), b"poison").unwrap();
+            retries
+                .parked
+                .insert(name.clone(), std::time::SystemTime::now());
+            retries.attempts.insert(name, MAX_CREATE_ATTEMPTS);
+        }
+        let fresh = spool_root().join("fresh.json");
+        std::fs::write(&fresh, spool_record_json(&[])).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let notifier = CountingNotifier(count.clone());
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &notifier,
+            &mut retries,
+        )
+        .await;
+        assert!(
+            fresh.exists(),
+            "IO backpressure must leave fresh work queued"
+        );
+        assert!(
+            !done_dir().join("fresh.json").exists(),
+            "no false ceiling receipt"
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(retries.parked.len(), MAX_PENDING_FILES);
+        std::fs::remove_file(failed_dir()).unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &notifier,
+            &mut retries,
+        )
+        .await;
+        assert!(retries.parked.is_empty());
+        assert!(retries.attempts.is_empty());
+        assert!(!fresh.exists());
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(done_dir().join("fresh.json")).unwrap()).unwrap();
+        assert_eq!(receipt["ok"], true);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "only fresh work applies");
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn parked_and_receipt_names_never_displace_fresh_apply_slots() {
+        let root = Path::new("spool");
+        let mut retries = RetryState::default();
+        for i in 0..MAX_PENDING_FILES {
+            retries
+                .parked
+                .insert(format!("parked-{i}.json"), std::time::SystemTime::now());
+        }
+        retries.receipts.insert(
+            "receipt.json".into(),
+            ("digest".into(), serde_json::json!({})),
+        );
+        let batch = pending_batch(
+            root,
+            &retries,
+            vec![
+                root.join("parked-0.json"),
+                root.join("receipt.json"),
+                root.join("fresh.json"),
+            ],
+        );
+        assert_eq!(batch, vec![root.join("fresh.json")]);
     }
 }

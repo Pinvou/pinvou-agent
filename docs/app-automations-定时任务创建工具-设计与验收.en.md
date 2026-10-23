@@ -314,7 +314,7 @@ Tested the candidate on Linux arm64 in the actual Tauri/Wry development window w
 
 This acceptance covers the Linux development desktop. Native Windows/macOS, the packaged release UI and the Web client were not manually exercised in this run. Existing deterministic gates and CI remain separate evidence.
 
-Additional failure boundaries: tracked retry/park/receipt names take precedence within the bounded batch, so bookkeeping cannot grow by rotating directory order. Create persists Paused until workspace, model binding and kind are committed, then resumes only when requested active; workspace failure rolls the inert record back. If evidence timestamps cannot be changed, it is preserved as .untimed-* for manual cleanup instead of being prematurely pruned.
+Additional failure boundaries: active retries take precedence within the bounded apply batch; parked records and unpublished receipts use separate maintenance paths, with bounded tracking backpressure. Create persists Paused until workspace, model binding and kind are committed, then resumes only when requested active; workspace failure rolls the inert record back. If evidence timestamps cannot be changed, it is preserved as .untimed-* for manual cleanup instead of being prematurely pruned.
 
 ### Deletion product decision and comparison
 
@@ -325,3 +325,10 @@ The user explicitly accepts direct deletion for a clear request and unambiguous 
 ### Ambiguous target and direct deletion: actual model acceptance
 
 In the rebuilt Linux desktop, two paused fixtures had the same name and different hourly intervals. A normal request to delete that name caused the real model to list both and ask which one the user intended; no mutation tool was called and both records remained. After the user specified “delete the every-two-hours task and keep the hourly one,” the model made one delete call with the correct ID, received the app's successful receipt and reported completion. The actual store and IPC list showed exactly that target removed and the hourly fixture plus unrelated decoys preserved. No additional confirmation card appeared. All remaining fixtures were paused. This demonstrates the observed model behavior, not a guarantee that every model always interprets intent correctly.
+
+
+### Round-36 queue recovery and keyed replacement
+
+Parked terminal records and unpublished receipts do not consume apply or tail-quarantine slots. Each poll retries the identity-checked terminal move for unchanged parked records, without another domain apply; a genuine newer replacement retains its filename-scoped spent retry budget. When the bounded in-memory evidence capacity is exhausted, fresh requests stay queued until storage recovers, with a streak warning, rather than receiving a false ceiling failure. Successful evidence moves automatically release capacity without restart. Directory enumeration remains bounded; flood starvation is not solved by this change.
+
+Replacing a keyed request while the watcher is already applying the previous payload can apply both payloads. This is a separate at-least-once window even without a crash. The retry result describes its own apply and explicitly warns that the earlier request may also have applied; inspect the panel before retrying again. No exactly-once or in-flight cancellation guarantee is made.
