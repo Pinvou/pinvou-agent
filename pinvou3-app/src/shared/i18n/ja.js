@@ -965,6 +965,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
     auth_failed:'ログイン認証が完了していません。再接続してください。',
     consent_persist_failed:'接続は完了しましたが、デフォルトOFFの同意状態の保存に失敗しました。入力欄のツールリストでコネクタをオフにしてから、再接続してください。',
     connect_consent_persist_failed:'認証は完了しましたが、コネクタの有効状態の保存に失敗しました。外部には何も公開されていません。再接続して再試行してください。',
+    connect_consent_commit_incomplete:'認証は完了しましたが、コネクタの有効状態の確定に失敗しました。現在も有効ですが、並行して実行中の操作によって取り消される可能性があります。確定するには再接続してください。',
     skills_enable_failed:'認証は完了しましたが、スキルを有効化できませんでした。再試行してください。',
     cli_data_access_disabled:'組織のDingTalk CLIデータアクセスが有効になっていません。組織の管理者に、DingTalkオープンプラットフォームの開発者設定で「Allow members to access their personal data via CLI」を有効にするよう依頼し、再度サインインしてください。',
     unknown:'接続に失敗しました。後で再試行してください。',

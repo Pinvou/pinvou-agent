@@ -962,6 +962,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
     auth_failed:'Sign-in authorization was not completed. Reconnect and try again.',
     consent_persist_failed:'Authorization completed, but persisting the default-off consent failed. Turn the connector off in the composer tools list, then reconnect.',
     connect_consent_persist_failed:'Authorization completed, but persisting the connector’s enabled state failed. Nothing was exposed — reconnect to try again.',
+    connect_consent_commit_incomplete:'Authorization completed, but finalizing the connector’s enabled state failed. It stays enabled, but a concurrent operation could still withdraw it — reconnect to secure it.',
     skills_enable_failed:'Authorization completed, but enabling the skill failed. Try again.',
     cli_data_access_disabled:'Your organization has not enabled CLI data access for DingTalk. Ask your organization admin to enable “Allow members to access their personal data via CLI” in the DingTalk open-platform developer settings, then sign in again.',
     unknown:'Connection failed. Try again later.',
