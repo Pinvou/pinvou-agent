@@ -16,7 +16,7 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 18:54 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 19:25 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; T25's bounded offline ASN source-owner component is now delivered.
 Remaining T13/T25/T47 composition and local acceptance are pending.
@@ -113,7 +113,11 @@ test trees permit bounded parallel compilation while retaining resource guards:
   were not attempted. The guest stopped naturally and native-process records
   were reviewed, but the exact cleanup failure cause remains unconfirmed. The
   overall guest acceptance remains failed; the unit result does not qualify
-  real scanner execution, coverage, cgroups or full T10 acceptance.
+  real scanner execution, coverage, cgroups or full T10 acceptance. The private
+  failure-observation harness and a fresh-media source integration have since
+  passed independent source review. A separate zero-child render passed actual
+  source review of all five outputs and the embedded cloud-init scripts. No new
+  ISO, VM start or scanner-runtime result is included in that source result.
 - T25's controlled offline ASN source owner passed independent deep source review:
   initial installation, CAS disable, exact original-request recovery and current
   local lookup preserve the original audit and operation boundaries. Formatting
@@ -490,7 +494,10 @@ test trees permit bounded parallel compilation while retaining resource guards:
   late-transaction case passed, while resume and activation failed in session
   reception initialization. Independent actual review confirmed those
   failures, the unchanged source and natural process closure. No permissions or production
-  checks have been relaxed and no complete T25 acceptance is claimed.
+  checks have been relaxed and no complete T25 acceptance is claimed. The
+  observed final owner query was rollback, so a further test-only diagnostic now
+  retains the last non-rollback query separately. Its source and actual formatting
+  passed independent review; no next diagnostic native result is claimed.
 - T47's scoped serialization repair passed eight new top-level tests and 135
   subtests, plus 48 fixed-work benchmark rows. Independent review confirmed
   the actual inputs and results. For the 100-plan ValidateInstance benchmark,
@@ -509,9 +516,18 @@ test trees permit bounded parallel compilation while retaining resource guards:
   properties. The earlier failures remain recorded and the complete T47
   workflow is not accepted. The owner approved a separate 30-minute capacity
   preparation experiment while retaining the original eight-minute performance
-  failure. Its separate test entry, execution wrapper and fresh source assembly have
-  passed independent review. The capacity measurement is now in progress,
-  with the same business checks, MFA, resources and 32 MiB cap.
+  failure. Its separate test entry, execution wrapper and fresh source assembly
+  passed independent review. The new capacity run then failed after 735.63
+  seconds: 12 members completed, and the thirteenth composition creation
+  returned management-unavailable with no outer context cancellation. The last
+  accepted lookup contained 11,519,839 bytes and 198 references; the completed
+  members' separate required-plan floor was 11,109,566 bytes and 157 references.
+  Preparation had not reached 30 minutes and reported MFA ages were below five
+  minutes. These observations do not identify the refusal cause or qualify
+  production MFA. Independent actual review confirmed the failure, unchanged
+  inputs, natural process closure and no resource-floor trip. No 32 MiB bracket
+  or performance acceptance was established; both earlier eight-minute failures
+  and this separate capacity failure remain recorded.
 - T29's fixed control-POST-to-file caller candidate passed 22 unit tests and two
   actual process tests, formatting and Clippy. An adjacent binary check first
   exposed omitted original source files in the isolated test tree. After those
