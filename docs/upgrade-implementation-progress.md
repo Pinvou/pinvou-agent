@@ -16,19 +16,23 @@ for tasks without their own business implementation. Counting deferred T42 as
 zero in the 47-task denominator gives an equal-task average of 32.9%; the strict
 completed-task ratio remains 5/47 (10.6%).
 
-Current checkpoint: **2026-10-23 07:36 Asia/Shanghai**. Estimates and delivered
+Current checkpoint: **2026-10-23 09:18 Asia/Shanghai**. Estimates and delivered
 task totals remain unchanged. T20's bounded read-only Session-retention batch is
 delivered; remaining T13/T25/T47 source repairs and local acceptance are pending.
 The combined business workflows have not passed complete acceptance. Candidate
-source remains separate from delivery. At the owner's subsequent request,
-development and tests are stopped for a device restart. Incomplete UI/contract
-work is preserved as unreviewed WIP, the owned test database was shut down
-normally, and work will resume only after a new instruction:
+source remains separate from delivery. Following the owner's new instruction,
+work has resumed after the device restart, with priority given to tests that
+previously lacked memory. The owned test database is running again. Independent
+test trees permit bounded parallel compilation while retaining resource guards:
 
 - The abort-recovery UI candidate passed strict type checking, a fresh build
   and all 67 pure tests, retaining the original 40 controls. Independent actual
   review confirmed unchanged inputs and the three fresh assets. The six-case
-  create/abort browser preparation passed source review; it has not run.
+  create/abort browser preparation passed source review. Its second actual run
+  passed five top-level tests, 54 subtests and all six real browser scenarios
+  across English, Simplified Chinese and Japanese, without retries or skips.
+  Independent actual review confirmed natural process closure and unchanged
+  inputs. The first run's database-configuration failure remains recorded.
 - The combined abort/unknown-commit native run passed eight top-level tests and
   41 subtests, with one top-level and one subtest failure and zero skips. Both
   real unknown-COMMIT cases passed with the repaired transport oracle. The only
@@ -36,7 +40,14 @@ normally, and work will resume only after a new instruction:
   violates the table's matching-wire CHECK before reaching the intended observer.
   Root repaired this test to change canonical wire and matching self-hash
   together. Independent review passed the repair and fresh 9/42 preparation;
-  the four production files are unchanged and the corrected run remains pending.
+  the four production files are unchanged. The corrected actual run now passes
+  all nine top-level tests and 42 subtests with zero skips. Independent actual
+  review confirmed natural process closure, unchanged inputs and that the wire
+  corruption control reached the intended observer. This does not complete the
+  remaining dense-budget work. The follow-up dispatch regression also passed
+  eight top-level tests and 46 subtests across two packages, with independent
+  actual review: four native create tests and nineteen subtests, plus four
+  pure pending-cipher tests and twenty-seven subtests. No skips were accepted.
 - T04's Linux adapter candidate passed 19 top-level and 15 subtests on Windows,
   with zero skips and independent actual review. This is pure adapter acceptance,
   not real Linux packaging, DSSE authentication or complete T04 acceptance.
@@ -61,16 +72,35 @@ normally, and work will resume only after a new instruction:
   The regression control now establishes the former timer wait using an isolated
   test-local scheduling bubble. The coherent server source has 57 production and
   30 test files over 2,374 exact inputs. Its pure test plan retains all original
-  24/61 controls and adds 12/42, plus server wiring compilation. No Go compilation,
-  PostgreSQL acceptance, Linux scanner or new test execution has occurred.
-  Management UI and the four-interface contract extension remain in development.
+  24/61 controls and adds 12/42, plus server wiring compilation. This Windows
+  pure run now passes all 36 top-level tests and 103 subtests across eight
+  packages; the server package also compiles without executing its native test.
+  Independent actual review confirmed natural closure, unchanged inputs and
+  retention of the original controls. Six Linux cross-compiles passed across
+  amd64 and arm64. The next owner-test compile exposed a Linux-only test using
+  a ReaderAt capability as a Reader; Root repaired that adapter and independent
+  source review passed. Both owner-test cross-compiles then passed in a separate
+  run. No target executable ran. A real PostgreSQL acceptance run also passed
+  three top-level tests and thirteen subtests for common-engine wiring, original
+  queue recovery and HTTP actor/wire/read-permission preservation. Independent
+  actual review passed for both new runs. The eight compile results span two
+  source variants and runs; the first failure is retained. Linux scanner execution remains
+  outstanding. Management UI and its four-route
+  contract extension passed independent source review after Root repaired local
+  archive quota recovery, approval-error status and exact filename validation;
+  their 17 UI and seven contract tests remain unexecuted source candidates.
 - T25's controlled offline ASN source owner passed independent deep source review:
   initial installation, CAS disable, exact original-request recovery and current
   local lookup preserve the original audit and operation boundaries. Formatting
   passed independent semantic-delta review. Following the new owner decision,
-  explicit same-version/different-digest revisions are approved and await
-  implementation; no append, dataset or complete owner runtime acceptance is
-  claimed.
+  explicit same-version/different-digest revisions are approved. Their source
+  candidate is now authored. Independent review found a missing lifecycle
+  regression control; Root added real install/disable/append coverage with
+  independent head and source revisions. Independent source re-review passed;
+  execution remains pending. The owner also decided to reject a new command
+  containing the exact currently installed content without adding a version;
+  the corresponding conflict return and no-effect controls remain to be completed.
+  No append, dataset or complete owner runtime acceptance is claimed.
 - T34's first Linux material block provides an immutable anonymous copy and an
   explicit native-evidence CLI observation while preserving Windows behavior.
   Root repaired an unsupported-platform test reference and an omitted consumer
@@ -87,21 +117,21 @@ normally, and work will resume only after a new instruction:
   incorrectly conflated different history revisions with the same kind and ID.
   Root repaired its test-only identity to include revision and added seven
   focused controls. Independent source review passed. The three pure top-level
-  tests and fourteen subtests have not run; no new native capacity bracket,
+  tests and fourteen subtests now pass with independent actual review and zero
+  skips; all seven revision-identity controls ran. No new native capacity bracket,
   exact 32 MiB boundary or whole-task acceptance is established.
 - Source comparison found no confirmed cause for the normal runtime-permission
   refusal. A fresh 2,408-input tree for the unchanged one-top/three-sub retake
   is assembled and its caller passed independent source review. It excludes all
   private instrumentation and has not run; the private diagnostic pass remains
   separate from normal acceptance and from a production repair.
-- Recent available memory fell below the unchanged 7 GiB test-start floor;
-  execution still requires 6 GiB and VM startup 9 GiB. The combined native run
-  naturally closed without a resource trip; its earlier attempt was refused
-  before launching a child. Source work continues while a usable local testing
-  window is pending. The owner chose to arrange that window by reducing other
-  applications' memory use; the latest host observation was approximately
-  4.9 GiB available, below the start floor. No new test child was launched, no
-  unrelated process was stopped and no download deadline was added.
+- Before the restart, approximately 4.9 GiB available memory was below the
+  unchanged 7 GiB test-start floor, so a new test attempt was refused before
+  launching a child. The owner arranged a local testing window and then resumed
+  work after restarting the device. The actual runs above now used that window
+  without lowering resource guards: tests retain their 7 GiB startup and 6 GiB
+  active floors; VM startup requires 9 GiB. No unrelated process was stopped and
+  no download deadline was added.
 
 - Normal T13/T25/T20 integration preserves all thirteen delivered T20 files.
   Its combined PostgreSQL run passed thirty-one top-level tests and sixty-one
@@ -386,6 +416,11 @@ normally, and work will resume only after a new instruction:
   not close naturally; that run remains failed and its mutable tree/cache are
   excluded from reuse. A compile-only local-option probe also failed process
   closure. No host compiler files or process-drain limits were changed. The
+  fresh post-restart check also failed closure: its main process returned zero,
+  but `vctip.exe` remained after the original natural-drain allowance and the
+  guard forced cleanup. Independent review confirmed this unsafe result from
+  the original close and raw process records only; logs and mutable source/cache
+  were not inspected or reused. Memory stayed above the required floor. The
   caller and private TLS E2E candidate remain uncommitted and full T29 remains
   incomplete.
 

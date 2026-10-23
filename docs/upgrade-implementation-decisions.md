@@ -461,6 +461,12 @@ recovery and current-source CAS requirements still apply. Source-IP acquisition
 remains a separate pending choice. Implementation and runtime acceptance are
 tracked in the progress document.
 
+For a new command key that supplies the exact currently installed content, the
+owner chose refusal without adding another version record. Retransmission of
+the same original command continues to recover its original result; this choice
+does not create a replacement command or reinterpret historical receipts as
+current-source use rights.
+
 ## Deferred large T03 experiment (2026-10-23)
 
 The owner deferred the 50 GiB / 500,000-file measurement and requested continued
