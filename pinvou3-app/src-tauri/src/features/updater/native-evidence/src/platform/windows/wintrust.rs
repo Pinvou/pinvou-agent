@@ -2,7 +2,9 @@
 //! Box addresses; native state is CLOSED before those allocations or File die.
 use super::provider;
 use crate::{ChainEvidence, Error, SignatureEvidence, Verification, cancelled};
-use std::{fs::File, mem::size_of, os::windows::io::AsRawHandle, sync::atomic::AtomicBool};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+use std::{fs::File, mem::size_of, os::windows::io::AsRawHandle};
 use windows_sys::Win32::Security::WinTrust::*;
 
 const MAX_SIGNATURES: u32 = 16;
@@ -214,7 +216,7 @@ impl Drop for State<'_> {
 }
 fn inspect_with_path(
     file: &File,
-    cancel: &AtomicBool,
+    cancel: &mut dyn FnMut() -> bool,
     path: Vec<u16>,
     mut after_verify: impl FnMut(),
 ) -> Result<Vec<SignatureEvidence>, Error> {
@@ -248,7 +250,10 @@ fn inspect_with_path(
     }
     Ok(evidence)
 }
-pub(super) fn inspect(file: &File, cancel: &AtomicBool) -> Result<Vec<SignatureEvidence>, Error> {
+pub(super) fn inspect(
+    file: &File,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Vec<SignatureEvidence>, Error> {
     inspect_with_path(file, cancel, Vec::new(), || {})
 }
 
@@ -260,7 +265,7 @@ pub(super) fn supplied_path_for_test(
     use std::os::windows::ffi::OsStrExt;
     let mut path: Vec<u16> = path.as_os_str().encode_wide().collect();
     path.push(0);
-    inspect_with_path(file, &AtomicBool::new(false), path, || {})
+    inspect_with_path(file, &mut || false, path, || {})
 }
 
 #[cfg(test)]
@@ -270,7 +275,10 @@ pub(super) fn cancel_after_actual_native_call(
 ) -> Result<Vec<SignatureEvidence>, Error> {
     // The hook changes only cancellation AFTER genuine native completion. It
     // cannot replace a signature, provider result, file, clock or authority.
-    inspect_with_path(file, cancel, Vec::new(), || {
-        cancel.store(true, std::sync::atomic::Ordering::Release)
-    })
+    inspect_with_path(
+        file,
+        &mut || cancel.load(std::sync::atomic::Ordering::Acquire),
+        Vec::new(),
+        || cancel.store(true, std::sync::atomic::Ordering::Release),
+    )
 }

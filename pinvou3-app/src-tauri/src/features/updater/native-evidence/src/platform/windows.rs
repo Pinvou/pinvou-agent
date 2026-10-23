@@ -85,7 +85,10 @@ pub(crate) fn lock(file: &File) -> Result<File, Error> {
     }
     Ok(locked)
 }
-pub(crate) fn inspect(file: &File, cancel: &AtomicBool) -> Result<Vec<SignatureEvidence>, Error> {
+pub(crate) fn inspect(
+    file: &File,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Vec<SignatureEvidence>, Error> {
     wintrust::inspect(file, cancel)
 }
 

@@ -6705,11 +6705,16 @@ name = "pinvou-upgrade-host"
 version = "0.0.0"
 dependencies = [
  "find-msvc-tools",
+ "pinvou-upgrade-archive",
+ "pinvou-upgrade-byte-check",
  "pinvou-upgrade-codec",
  "pinvou-upgrade-custody",
  "pinvou-upgrade-metadata-owner",
  "pinvou-upgrade-native-evidence",
  "pinvou-upgrade-ownership",
+ "pinvou-upgrade-package-check",
+ "pinvou-upgrade-transfer",
+ "pinvou-upgrade-verifier",
  "serde",
  "serde_json",
  "sha2 0.11.0",

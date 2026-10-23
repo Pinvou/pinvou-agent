@@ -3,7 +3,10 @@ use std::{fs::File, sync::atomic::AtomicBool};
 pub(crate) fn lock(_: &File) -> Result<File, Error> {
     Err(Error::Unsupported)
 }
-pub(crate) fn inspect(_: &File, _: &AtomicBool) -> Result<Vec<SignatureEvidence>, Error> {
+pub(crate) fn inspect(
+    _: &File,
+    _: &mut dyn FnMut() -> bool,
+) -> Result<Vec<SignatureEvidence>, Error> {
     Err(Error::Unsupported)
 }
 pub struct ConsoleCancellation;

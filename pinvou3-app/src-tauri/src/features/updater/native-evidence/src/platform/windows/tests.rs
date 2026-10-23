@@ -60,7 +60,7 @@ fn actual_hfile_overrides_opposite_signed_path_and_null_path_matches() {
     let f = Fixture::new();
     let signed = super::lock(&raw_reader(&f.signed)).unwrap();
     let unsigned = super::lock(&raw_reader(&f.unsigned)).unwrap();
-    let ordinary = super::wintrust::inspect(&signed, &AtomicBool::new(false)).unwrap();
+    let ordinary = super::wintrust::inspect(&signed, &mut || false).unwrap();
     let wrong_path = super::wintrust::supplied_path_for_test(&signed, &f.unsigned).unwrap();
     assert_eq!(ordinary[0].native_status, wrong_path[0].native_status);
     assert_eq!(ordinary.len(), wrong_path.len());
@@ -88,7 +88,7 @@ fn actual_hfile_overrides_opposite_signed_path_and_null_path_matches() {
     assert_eq!(inverse[0].native_status, "800b0100");
     assert_eq!(inverse[0].verification, Verification::Unsigned);
     assert_eq!(
-        super::wintrust::inspect(&unsigned, &AtomicBool::new(false)).unwrap()[0].verification,
+        super::wintrust::inspect(&unsigned, &mut || false).unwrap()[0].verification,
         Verification::Unsigned
     );
     // Each State has been moved into a Vec and dropped after explicit CLOSE in

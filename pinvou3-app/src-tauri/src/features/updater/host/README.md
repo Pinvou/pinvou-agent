@@ -30,6 +30,72 @@ Fixed English diagnostics contain no sensitive paths or native error payloads. E
 
 This workflow does not establish Artifact validity, production Publisher mapping, ApprovedRegistry, current upgrade qualification, trusted wall time, data freeze/backup readiness, or install/consume permissions. Those owners remain independent.
 
+## Retained download byte staging
+
+Trusted in-process composition can create `DownloadedPackageSource::new(file,
+package_envelope, root_claims_pin, supplied_historical_time)` and call
+`stage_retained_download(&source, NativeRole::FinalInstaller, &limits, cancelled)`.
+The source is untrusted borrowed input, not cache ownership or retired writers.
+A cache caller retains its `ObservedCache` and borrows its file and Package
+inputs for the synchronous call; the host does not depend on the QA workflow or
+its HTTP runtime. `ExecutionHelper` and `Launcher`
+are the other closed roles. There is no new IPC/CLI request, cache slot producer,
+automatic updater or install handler. The ordinary job remains QA/support data;
+the host independently rechecks its signed Package under the compiled original
+Root. Exact product/component/target expectations come only from the compiled
+Seed, and artifact facts come from that same verified Package. A different
+Root-claims pin refuses; no rotation chain is inferred or adopted. Original Root
+self-threshold integrity uses signed issuance time only, and the retained Package
+time remains a supplied historical semantic input, never trusted current time.
+
+`StagingLimits::new(archive_limits, reserve_bytes)` takes validated `ArchiveLimits`
+and a positive disk reserve from trusted composition. It does not impose a fixed
+package-size ceiling or a total download deadline. Available disk space
+must cover the full package, selected native member and reserve before creation;
+it is checked again before extraction and at completion. This is an actual
+capacity observation, not a reserved or authenticated preparation budget. A full
+or concurrently consumed disk fails without returning a capability. The caller
+must supply its cancellation/validation-budget poll; staging and full `recheck`
+latch cancellation and check it throughout streaming operations. They do not
+start or reset a budget. Native certificate-provider calls are checked before
+and after return, rather than being unsafely terminated. Cancellation preserves
+partial bytes and returns `HOST_BYTE_STAGING_CANCELED` without a capability.
+
+The fixed private namespace is `%ProgramFiles%/Pinvou/UpdaterDownloadStaging/`
+`<compiled-profile-id>/bytes-<generated-id>/` for production, or the separate
+`UpdaterDownloadStagingLab` namespace for lab. Every invocation exclusively creates
+a new leaf. Existing or partial leaves are never adopted, repaired, overwritten
+or automatically removed. It is a sibling of T31 code/source/state inventories;
+normal T31 verification and uninstall do not scavenge these objects. Unknown
+objects retain the original refusal/retention policy.
+
+The source FullPack is checked before copying. The protected copy is flushed,
+closed, reopened by the held parent and checked by object ID and complete hash.
+The complete protected FullPack is inspected again, and the exact declared native
+role must match one unique safe ZIP member; duplicate byte-identical candidates
+refuse. The native copy is likewise flushed, reopened and verified, with the
+existing PE-machine and certificate policy. All extraction uses the original
+bounded safe-archive parser. No ordinary source hash substitutes for protected
+destination readback.
+
+`ProtectedByteCapability` retains the protected FullPack/native files, ancestry,
+object identities and signed bindings. It offers size/hash/role facts, bounded
+reads (at most 64 KiB per call) and a full cancellable `recheck`; it has no Clone/Serialize, raw path/handle, execution
+or installation API. It is **not** a `VerifiedExecutionObject`, a current
+qualification, a publisher mapping, a live owner or an installation grant.
+Missing current T27 capabilities must still refuse at any future execution
+composition. This component does not add resume/source renewal or the T03
+execution handoff. Unsupported platforms return `HOST_UNSUPPORTED`.
+
+The ordinary host library tests cover genuine Root/Package signatures, independent
+envelope/claims pins, scope and threshold failures, historical Root expiry,
+ambiguous native selection, resource policy and cancellation of a real file hash.
+The actual protected-copy, ACL/reparse,
+disk-exhaustion and replacement scenarios require an isolated Windows environment
+with an independently embedded public profile and real signed FullPack input;
+they do not require installing a service on the development machine. No such
+environmental scenario is implied by library compilation or pure-test success.
+
 The build-time Seed accepts explicit `lab` and `production` kinds with the same trust and content checks. Production uses a stable installation `profileId`, independent of each `buildId`. Its service, pipe, source/code/app/state directories, registry keys and mutexes are separate from lab even for the same profile ID. Existing lab names and serialized policies remain unchanged. Production rejects fault profile IDs and `native-acceptance-hooks`; there is no default production Root or runtime profile selector. The project NSIS wrapper requires `PINVOU_HOST_PROFILE_KIND=production` to match a production Seed. See [packaging](../../../../../../docs/windows-host-lab-packaging.md) for its explicit public inputs and source-deployment prerequisite.
 
 The component's library regression is run independently of the GUI build:

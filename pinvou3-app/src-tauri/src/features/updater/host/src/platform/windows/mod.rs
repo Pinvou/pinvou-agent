@@ -7,8 +7,10 @@ pub(crate) fn native_supported() -> Result<()> {
     Ok(())
 }
 
+mod download_stage;
 mod image;
 mod package_stage;
+pub(crate) use download_stage::{ProtectedDownloadBytes, stage_download_bytes};
 pub(crate) fn install_local() -> Result<u32> {
     package_stage::install_local()
 }

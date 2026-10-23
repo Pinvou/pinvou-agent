@@ -235,6 +235,16 @@ fn require_machine(file: &mut File, size: u64, nsis: bool) -> Result<()> {
 
 /// Size/hash identity verification also supports ordinary zero-byte resources.
 pub(super) fn verify_bytes(file: &mut File, size: u64, hash: &str) -> Result<custody::Identity> {
+    verify_bytes_with_poll(file, size, hash, &mut || false)
+}
+
+pub(super) fn verify_bytes_with_poll(
+    file: &mut File,
+    size: u64,
+    hash: &str,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<custody::Identity> {
+    crate::download_stage::poll(cancelled)?;
     let before = custody::identity(file).map_err(custody_error)?;
     if file.metadata().map_err(|_| Error::Unavailable)?.len() != size || !json::digest(hash) {
         return Err(Error::ImageRefused);
@@ -245,7 +255,9 @@ pub(super) fn verify_bytes(file: &mut File, size: u64, hash: &str) -> Result<cus
     let mut total = 0u64;
     let mut buffer = [0u8; 65536];
     loop {
+        crate::download_stage::poll(cancelled)?;
         let n = file.read(&mut buffer).map_err(|_| Error::Unavailable)?;
+        crate::download_stage::poll(cancelled)?;
         if n == 0 {
             break;
         }
@@ -264,6 +276,7 @@ pub(super) fn verify_bytes(file: &mut File, size: u64, hash: &str) -> Result<cus
     {
         return Err(Error::ImageRefused);
     }
+    crate::download_stage::poll(cancelled)?;
     Ok(before)
 }
 /// Intent must be committed by the only caller before invoking this writer.
@@ -619,12 +632,28 @@ pub(super) fn verify_package_role(
     seed: &Seed,
     nsis: bool,
 ) -> Result<()> {
-    let identity = verify_bytes(file, size, hash)?;
+    verify_package_role_with_poll(file, size, hash, seed, nsis, &mut || false)
+}
+
+pub(super) fn verify_package_role_with_poll(
+    file: &mut File,
+    size: u64,
+    hash: &str,
+    seed: &Seed,
+    nsis: bool,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<()> {
+    let identity = verify_bytes_with_poll(file, size, hash, cancelled)?;
     require_machine(file, size, nsis)?;
+    crate::download_stage::poll(cancelled)?;
     if let ImageCertificatePolicy::LegacySelectedSigner(approved) = seed.certificate_policy()? {
         let expected = ExpectedFile::new(size, hash).map_err(|_| Error::ImageRefused)?;
-        let observation = native::observe_file(file, &expected, &AtomicBool::new(false))
-            .map_err(|_| Error::ImageRefused)?;
+        let observation = native::observe_file_with_poll(file, &expected, &mut *cancelled)
+            .map_err(|error| match error {
+                native::Error::Cancelled => Error::StagingCanceled,
+                _ => Error::ImageRefused,
+            })?;
+        crate::download_stage::poll(cancelled)?;
         if !observation.report().signatures.iter().any(|signature| {
             signature.verification == Verification::Verified
                 && signature.signer.as_ref().is_some_and(|chain| {
@@ -640,5 +669,47 @@ pub(super) fn verify_package_role(
     if custody::identity(file).map_err(custody_error)? != identity {
         return Err(Error::ImageRefused);
     }
+    crate::download_stage::poll(cancelled)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod staging_poll_tests {
+    use super::*;
+    use std::fs::{self, OpenOptions};
+
+    #[test]
+    fn cancellation_interrupts_a_real_hash_without_changing_source_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-byte-poll-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bytes = vec![17u8; 2 * 65_536];
+        let hash = crate::json::sha256(&bytes);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+        let mut polls = 0;
+        assert!(matches!(
+            verify_bytes_with_poll(&mut file, bytes.len() as u64, &hash, &mut || {
+                polls += 1;
+                polls >= 4
+            }),
+            Err(Error::StagingCanceled)
+        ));
+        assert_eq!(file.stream_position().unwrap(), 65_536);
+        assert!(verify_bytes(&mut file, bytes.len() as u64, &hash).is_ok());
+        drop(file);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(path).unwrap();
+    }
 }

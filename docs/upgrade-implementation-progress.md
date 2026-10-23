@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-23 22:05 Asia/Shanghai**.
+Checkpoint: **2026-10-23 23:21 Asia/Shanghai**.
 
 There are 47 tasks: six completed, twenty in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **6/47 (12.8%)**.
@@ -107,11 +107,40 @@ telemetry process failed the whole-process gate and remain failed history; a
 cache-hit rerun established natural closure without discarding compiler outputs.
 No registry package version/checksum changed in the two affected locks.
 
-Protected byte staging is the next increment of this same task. Its review found
-missing cooperative cancellation and genuine Root/Package binding controls;
-repairs are in progress and not yet accepted or delivered. Current production
-qualification, source continuity/continuation and VerifiedExecutionObject
-composition remain unfinished. This increment does not complete T29.
+Protected byte staging is now implemented in the Windows host. Ordinary borrowed
+file/metadata inputs grant no trust: compiled Seed/Root establish the exact
+Package context, and only that verified Package supplies artifact/native claims.
+The host creates a fresh fixed protected leaf, copies and completely verifies
+the package and selected native member, closes writers and reopens the same
+objects through held ancestry. The resulting capability offers bounded reads
+and cancellable full rechecks, with no path, handle, launch or install interface.
+It is not a VerifiedExecutionObject or current installation qualification.
+
+Independent deep and repair reviews passed, including fixes for cooperative
+cancellation, genuine threshold/signature controls and a private Artifact type
+import. The host depends on narrow byte/archive libraries rather than the QA
+workflow or its HTTP stack. Final Windows host tests: **83 passed, zero failed,
+one existing opt-in ignored**; this includes four genuine Root/Package binding
+controls. Native-evidence sources were unchanged during the final API narrowing;
+their preceding qualified **9 library + 2 process** passes are reused, with one
+existing opt-in ignored. Both current standalone binaries built; byte-matched
+independent artifact copies passed PE loader/static-runtime gates, and the actual
+helper's public profile command passed. Rust formatting, normal lock resolution,
+whitespace and architecture checks passed. Existing registry package identities
+and edges are unchanged; the app lock only adds internal host dependency edges.
+
+First compile invocations with lingering MSVC telemetry failed process closure;
+unchanged cache-hit retries passed with natural closure. A direct PE check on
+Cargo's hardlinked cache output refused as designed; independently copied and
+byte-verified artifacts passed the same unchanged gate. These failed invocations
+remain diagnostic records. No resource-floor failure occurred.
+
+Actual protected-copy ACL/reparse, replacement and disk-exhaustion E2E remain
+unexecuted without a qualified isolated Windows input/environment; they are
+environment follow-ups, not passed tests or completion blockers. Current
+production qualification, source continuity/continuation and T03 execution-object
+composition remain unfinished business implementation. This increment does not
+complete T29; its engineering estimate remains unchanged pending that closure.
 
 ## Per-task status
 
@@ -148,7 +177,7 @@ completion blocker; outstanding business implementation is.
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization is delivered under T31; protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
-| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo control caller and original production-job FullPack/native observation are delivered; production qualification/source continuity/continuation and protected staging remain pending. |
+| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo caller, original FullPack/native observation and independently reviewed protected byte staging are delivered; production qualification/source continuity/continuation and T03 execution-object composition remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |

@@ -69,3 +69,9 @@ pub use entry::{helper_main, launcher_main};
 mod inventory;
 
 mod package_resource;
+
+mod download_stage;
+pub use download_stage::{
+    DownloadedPackageSource, NativeRole, ProtectedByteCapability, StagingLimits,
+    stage_retained_download,
+};

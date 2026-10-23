@@ -173,8 +173,8 @@ impl Observation {
         &self.report
     }
 }
-fn cancelled(cancel: &AtomicBool) -> Result<(), Error> {
-    if cancel.load(Ordering::Acquire) {
+fn cancelled(cancel: &mut dyn FnMut() -> bool) -> Result<(), Error> {
+    if cancel() {
         Err(Error::Cancelled)
     } else {
         Ok(())
@@ -183,7 +183,7 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), Error> {
 fn full_hash(
     file: &mut File,
     expected: &ExpectedFile,
-    cancel: &AtomicBool,
+    cancel: &mut dyn FnMut() -> bool,
 ) -> Result<String, Error> {
     file.seek(SeekFrom::Start(0))
         .map_err(|_| Error::IoUnavailable)?;
@@ -193,6 +193,7 @@ fn full_hash(
     loop {
         cancelled(cancel)?;
         let n = file.read(&mut buffer).map_err(|_| Error::IoUnavailable)?;
+        cancelled(cancel)?;
         if n == 0 {
             break;
         }
@@ -238,6 +239,29 @@ pub fn observe_file(
     file: &File,
     expected: &ExpectedFile,
     cancel: &AtomicBool,
+) -> Result<Observation, Error> {
+    observe_file_with_poll(file, expected, || cancel.load(Ordering::Acquire))
+}
+
+/// Cooperative cancellation for callers with an original validation budget.
+/// Polls surround native calls and every hash chunk; a native call is never
+/// forcefully interrupted. This creates no deadline or execution authority.
+pub fn observe_file_with_poll(
+    file: &File,
+    expected: &ExpectedFile,
+    mut poll: impl FnMut() -> bool,
+) -> Result<Observation, Error> {
+    let mut stopped = false;
+    observe_file_polled(file, expected, &mut || {
+        stopped |= poll();
+        stopped
+    })
+}
+
+fn observe_file_polled(
+    file: &File,
+    expected: &ExpectedFile,
+    cancel: &mut dyn FnMut() -> bool,
 ) -> Result<Observation, Error> {
     cancelled(cancel)?;
     let mut locked = platform::lock(file)?;
@@ -289,7 +313,7 @@ pub fn observe_path(
     expected: &ExpectedFile,
     cancel: &AtomicBool,
 ) -> Result<Observation, Error> {
-    cancelled(cancel)?;
+    cancelled(&mut || cancel.load(Ordering::Acquire))?;
     let path = std::path::absolute(path).map_err(|_| Error::InvalidInput)?;
     let parent = pinvou_upgrade_custody::directory(path.parent().ok_or(Error::InvalidInput)?)?;
     let file = parent.file(
@@ -301,6 +325,61 @@ pub fn observe_path(
     let mut observation = observe_file(&file, expected, cancel)?;
     observation._directory = Some(parent);
     Ok(observation)
+}
+
+#[cfg(test)]
+mod hash_poll_tests {
+    use super::*;
+    use std::{
+        fs::{self, OpenOptions},
+        io::Write,
+    };
+
+    #[test]
+    fn actual_hash_checks_cancellation_between_chunks_and_keeps_input_intact() {
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-native-hash-poll-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bytes = vec![23u8; 2 * 65_536];
+        let hash: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let expected = ExpectedFile::new(bytes.len() as u64, &hash).unwrap();
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+        let mut polls = 0;
+        assert!(matches!(
+            full_hash(&mut file, &expected, &mut || {
+                polls += 1;
+                polls >= 3
+            }),
+            Err(Error::Cancelled)
+        ));
+        assert_eq!(file.stream_position().unwrap(), 65_536);
+        assert_eq!(
+            full_hash(&mut file, &expected, &mut || false).unwrap(),
+            hash
+        );
+        assert!(matches!(
+            observe_file_with_poll(&file, &expected, || true),
+            Err(Error::Cancelled)
+        ));
+        drop(file);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(path).unwrap();
+    }
 }
 
 /// CLI-only process cancellation registration. Native verification is synchronous:

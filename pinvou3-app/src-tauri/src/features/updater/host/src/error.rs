@@ -27,6 +27,7 @@ pub enum Error {
     RestartCanceled,
     RestartNotReady,
     RestartConflict,
+    StagingCanceled,
 }
 impl Error {
     pub(crate) fn from_code(code: &str) -> Option<Self> {
@@ -57,6 +58,7 @@ impl Error {
             Error::RestartCanceled,
             Error::RestartNotReady,
             Error::RestartConflict,
+            Error::StagingCanceled,
         ];
         ALL.iter().copied().find(|error| error.code() == code)
     }
@@ -88,6 +90,7 @@ impl Error {
             Self::RestartCanceled => "HOST_RESTART_CANCELED",
             Self::RestartNotReady => "HOST_RESTART_NOT_READY",
             Self::RestartConflict => "HOST_RESTART_CONFLICT",
+            Self::StagingCanceled => "HOST_BYTE_STAGING_CANCELED",
         }
     }
 }

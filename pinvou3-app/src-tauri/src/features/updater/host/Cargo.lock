@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -123,6 +129,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,6 +205,17 @@ name = "find-msvc-tools"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
+
+[[package]]
+name = "flate2"
+version = "1.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
+dependencies = [
+ "crc32fast",
+ "miniz_oxide",
+ "zlib-rs",
+]
 
 [[package]]
 name = "fluent-uri"
@@ -459,6 +485,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
 
 [[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
+
+[[package]]
 name = "num"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -578,6 +614,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "pinvou-upgrade-archive"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "pinvou-upgrade-byte-check",
+ "pinvou-upgrade-transfer",
+ "sha2",
+]
+
+[[package]]
+name = "pinvou-upgrade-byte-check"
+version = "0.0.0"
+dependencies = [
+ "pinvou-upgrade-cache-object",
+ "pinvou-upgrade-transfer",
+ "sha2",
+]
+
+[[package]]
+name = "pinvou-upgrade-cache-object"
+version = "0.0.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pinvou-upgrade-codec"
 version = "0.0.0"
 dependencies = [
@@ -602,11 +665,16 @@ name = "pinvou-upgrade-host"
 version = "0.0.0"
 dependencies = [
  "find-msvc-tools",
+ "pinvou-upgrade-archive",
+ "pinvou-upgrade-byte-check",
  "pinvou-upgrade-codec",
  "pinvou-upgrade-custody",
  "pinvou-upgrade-metadata-owner",
  "pinvou-upgrade-native-evidence",
  "pinvou-upgrade-ownership",
+ "pinvou-upgrade-package-check",
+ "pinvou-upgrade-transfer",
+ "pinvou-upgrade-verifier",
  "serde",
  "serde_json",
  "sha2",
@@ -644,6 +712,21 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "pinvou-upgrade-package-check"
+version = "0.0.0"
+dependencies = [
+ "pinvou-upgrade-archive",
+ "pinvou-upgrade-cache-object",
+ "pinvou-upgrade-codec",
+ "pinvou-upgrade-transfer",
+ "serde_json",
+]
+
+[[package]]
+name = "pinvou-upgrade-transfer"
+version = "0.0.0"
 
 [[package]]
 name = "pinvou-upgrade-verifier"
@@ -864,6 +947,12 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "simd-adler32"
+version = "0.3.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "smallvec"
@@ -1332,6 +1421,12 @@ dependencies = [
  "quote",
  "syn 3.0.9",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmij"
