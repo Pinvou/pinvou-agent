@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 79 registered maintenance commits + 15 pending upstream #81/#82/#85/#87 commits pinned per EXPECTED_HEAD (PR #653's integration-pin window), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 79 registered maintenance commits + 15 pending commits (14 upstream #81/#82/#85/#87 topic commits + 1 fork-side adaptation) pinned per EXPECTED_HEAD (PR #653's integration-pin window), ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
