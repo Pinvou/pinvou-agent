@@ -466,6 +466,7 @@ const EXPECTED_CLUSTER_KEYS = {
     'latestShellToolIsWaitObserver',
     'normalizeTerminalTail',
     'notify',
+    'publishShellSnapshots',
     'runSyncOnSession',
     'shellPollState',
     'state',

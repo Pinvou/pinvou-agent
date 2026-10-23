@@ -37,8 +37,11 @@
 //! Concurrency: `checkpoints rewind` / `undo` and `workspace checkout`
 //! serialize through a cross-process advisory lock under
 //! `~/.pinvou3/locks/` (CLI×CLI). The GUI's busy guards are process-local
-//! and cannot be observed from the CLI, so a GUI turn running on the same
-//! session is not detectable — see the `checkpoints rewind` doc comment.
+//! and cannot be observed from the CLI, so neither a GUI turn running on
+//! the same session nor an idle GUI engine holding the pre-rewind
+//! transcript is detectable — an idle engine's next persist resurrects the
+//! rewound-away turns (r22 minor 5); see the `checkpoints rewind` doc
+//! comment.
 //! - run/permissions/respond → stable honest errors: driving the ACP adapter
 //!   (async protocol client, adapter process, pending-permission store) is
 //!   bound to the product host; the pending-permission store is process-local
@@ -4149,8 +4152,10 @@ static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 /// guards (`is_turn_active`, `begin_execution_root_rewind`,
 /// `busy_peer_on_same_execution_root`) are process-local and therefore
 /// invisible to the CLI; this lock closes the CLI×CLI race, while a
-/// concurrent GUI turn on the same session remains undetectable here
-/// (documented in the command docs and `docs/pinvou-cli.md`).
+/// concurrent GUI turn — or an idle GUI engine still holding the
+/// pre-rewind transcript in memory, whose next persist resurrects the
+/// rewound-away turns — remains undetectable here (r22 minor 5;
+/// documented in the command docs and `docs/pinvou-cli.md`).
 /// Callers must keep the returned lock alive alongside its write guard.
 /// The two `{action}_lock: cannot create/open ...` closures both code
 /// mutation locks pass to `support::family_lock` (FnOnce there, so the pair
@@ -4211,7 +4216,8 @@ fn session_mutation_lock(
 /// per-session lock above cannot serialize those. This second lock (keyed by
 /// a hash of the canonical execution root) closes the preventable CLI×CLI
 /// half. The GUI-vs-CLI residual (a GUI turn or rewind in the desktop process
-/// takes no CLI lock) remains undetectable and stays documented.
+/// takes no CLI lock; an idle GUI engine's in-memory transcript persists over
+/// a CLI rewind, r22 minor 5) remains undetectable and stays documented.
 fn execution_root_lock(
     root: &Path,
     action: &str,
@@ -5819,9 +5825,11 @@ fn resolve_rewind_plan(
 /// sidecar backup, and invalidation of the abandoned branch snapshots.
 /// The GUI's busy gates (EnginePool turn reservation, execution-root mutex)
 /// only exist inside the running app; the cross-process advisory lock
-/// serializes CLI×CLI mutations, but a GUI turn running on the same session
-/// cannot be detected here — do not rewind a session whose GUI Code session
-/// may be mid-turn.
+/// serializes CLI×CLI mutations, but neither a GUI turn running on the
+/// same session nor an idle GUI engine holding the pre-rewind transcript
+/// (whose next persist resurrects the rewound-away turns, r22 minor 5)
+/// can be detected here — do not rewind a session whose GUI Code session
+/// may be mid-turn or merely open.
 fn checkpoints_rewind(
     session: &str,
     keep_turns: u32,

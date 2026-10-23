@@ -728,6 +728,20 @@ fn secret_pathspecs() -> Vec<String> {
     patterns
 }
 
+/// SHADOW_EXCLUDES 的 pathspec 全集（r22 R1）：与 secret_pathspecs 同款
+/// icase + `**/` 双形状——pathspec 锚定整条路径，裸形态不跨 `/`，依赖/构建
+/// 目录的嵌套内容必须靠 `**/<dir>/` 命中。
+fn shadow_exclude_pathspecs() -> Vec<String> {
+    let mut patterns: Vec<String> = SHADOW_EXCLUDES
+        .iter()
+        .map(|line| format!(":(icase){line}"))
+        .collect();
+    for line in SHADOW_EXCLUDES {
+        patterns.push(format!(":(icase)**/{line}"));
+    }
+    patterns
+}
+
 /// 账本路径在执行根内的真实相对位置（r19 M1/M4）。`ledger_prefix`：账本根
 /// 位于执行根内时的相对前缀（两根相同 = 空串；在外 = None，绑定会话）。
 /// `checkpoint_rel`：checkpoints 目录的相对路径（不在执行根内 = None）。
@@ -836,6 +850,35 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
     if !output.status.success() {
         bail!(
             "git rm --cached 敏感文件失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// 从影子 index 清除被否定行击穿而暂存的 SHADOW_EXCLUDES 条目（r22 R1）。
+/// 与秘密腿不同：依赖/构建目录命中不 bail——标准 keepfile 惯用法
+/// （`dist/*` + `!dist/.gitkeep`）会把无辜 keepfile 送进 pathspec 命中集，
+/// bail 等于让该会话快照永久停摆。这里只 `rm --cached`（只动影子 index、
+/// 不碰工作区），把排除语义恢复为「不进快照」而非「拒绝快照」；秘密腿的
+/// fail-closed 仍由 validate 的 bail 承担。apply_restore 有意不用本函数：
+/// r21 前的旧快照 tree 可能合法含依赖内容，恢复必须保真（见 1652 注）。
+fn purge_shadow_excludes_from_index(repo: &Path, work_tree: &Path) -> Result<()> {
+    let patterns = shadow_exclude_pathspecs();
+    let mut arguments: Vec<&str> = vec![
+        "rm",
+        "-r",
+        "--cached",
+        "--ignore-unmatch",
+        "--quiet",
+        "-f",
+        "--",
+    ];
+    arguments.extend(patterns.iter().map(String::as_str));
+    let output = git(repo, work_tree, &arguments)?;
+    if !output.status.success() {
+        bail!(
+            "git rm --cached 影子排除目录失败: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
@@ -1251,14 +1294,13 @@ fn validate_no_sensitive_paths_staged(
         pathspecs.push(format!(":(icase){pattern}"));
         pathspecs.push(format!(":(icase)**/{pattern}"));
     }
-    // r21 M3：SHADOW_EXCLUDES（依赖/构建目录）同样会被 worktree 否定行击穿
-    // ——击穿后 add -A 照收 node_modules 等，绕过 2GB 体积门的估算豁免、撑爆
-    // 影子库，且 clean -fd 在 restore 时删掉中途生成的未跟踪依赖文件。与
-    // 秘密同款 bail（拒绝快照直到否定行移除）。
-    for pattern in SHADOW_EXCLUDES {
-        pathspecs.push(format!(":(icase){pattern}"));
-        pathspecs.push(format!(":(icase)**/{pattern}"));
-    }
+    // r22 R1：SHADOW_EXCLUDES 不再进 bail 集——标准 keepfile 惯用法
+    // （`dist/*` + `!dist/.gitkeep`）把无辜 keepfile 送进 `:(icase)dist/` 的
+    // 命中集，r21 M3 的同款 bail 让该会话快照每回合全废（指数级劣于收益）。
+    // 击穿的依赖条目改由 add -A 之后的 purge_shadow_excludes_from_index
+    // `rm --cached` 摘除（create 与 diff 两路对称），排除语义恢复为「不进
+    // 快照」；秘密与账本腿保持 fail-closed bail（原文入影子 objects / 账本
+    // 自毁是不可逆伤害，bail 相称）。
     pathspecs.extend(ledger_guard_pathspecs(&ledger_guard_paths(
         ledger_root,
         work_tree,
@@ -1275,7 +1317,7 @@ fn validate_no_sensitive_paths_staged(
         // read-tree --empty 只动 index：下一轮 add -A 全量重建，无正确性损失。
         let _ = git(repo, work_tree, &["read-tree", "--empty"]);
         bail!(
-            "checkpoint staged excluded path {path} detected: worktree .gitignore negation pierced a secret/shadow exclusion; refusing to snapshot until the negation is removed",
+            "checkpoint staged excluded path {path} detected: worktree .gitignore negation pierced a secret or ledger exclusion; refusing to snapshot until the negation is removed",
         );
     }
     Ok(())
@@ -1315,6 +1357,9 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
+    // r22 R1：被否定行击穿而暂存的依赖/构建条目在此摘除（每回合幂等自愈，
+    // 存量被击穿 index 无需迁移 marker），排除语义=「不进快照」而非 bail。
+    purge_shadow_excludes_from_index(&repo, &execution_root)?;
     validate_no_sensitive_paths_staged(ledger_root, &repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()
@@ -1925,6 +1970,9 @@ pub fn diff_checkpoint(
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // add -A 让影子 index 反映当前执行根，diff --cached <commit> 即「快照→现在」。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
+    // r22 R1：与 create 路对称——击穿条目先摘除再校验，diff 预览不再把依赖
+    // 目录误报为「回滚将删除」，也不把击穿 index 留给后续快照。
+    purge_shadow_excludes_from_index(&repo, &execution_root)?;
     // r17 M1(c)：diff 路径的 add -A 同样需要 staged 校验——被否定的 index
     // 持久留存会让后续每个快照的校验都 bail（无自愈）。
     validate_no_sensitive_paths_staged(ledger_root, &repo, &execution_root)?;
@@ -4354,6 +4402,87 @@ mod tests {
         exec.write("node_modules/pkg/new.js", "new dep\n");
         restore_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
         assert!(exec.read("node_modules/pkg/new.js").is_some());
+    }
+
+    #[test]
+    fn keepfile_idiom_does_not_kill_snapshots() {
+        if !git_available() {
+            return;
+        }
+        // r22 R1 回归 pin：标准 keepfile 惯用法（`dist/*` + `!dist/.gitkeep`）
+        // 曾被 r21 M3 的 `:(icase)dist/` staged bail 每回合判死（warn-only、
+        // index 被清、会话静默失去回退）。快照必须存活，且 keepfile 不进
+        // 快照——排除语义是「不进」而非「拒绝」。
+        let ledger = TestDir::new("keepfile-ledger");
+        let exec = TestDir::new("keepfile-exec");
+        exec.write(".gitignore", "dist/*\n!dist/.gitkeep\n");
+        exec.write("dist/.gitkeep", "");
+        exec.write("src/a.rs", "a\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .expect("keepfile 惯用法不得使快照 bail");
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked.lines().any(|line| line.starts_with("dist/")),
+            "keepfile 不得进快照: {tracked}"
+        );
+        exec.write("src/a.rs", "a2\n");
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .expect("后续回合快照必须继续存活");
+        assert_ne!(first.commit, second.commit);
+    }
+
+    #[test]
+    fn pierced_shadow_exclude_is_purged_not_fatal() {
+        if !git_available() {
+            return;
+        }
+        // r21 M3 的缺失 pin（r22 R1 补）：`!node_modules/` 否定行击穿
+        // info/exclude 后 add -A 照收依赖条目——必须被 rm --cached 摘除而非
+        // bail；快照存活、依赖内容不进树、第二回合自愈复用同一树。
+        let ledger = TestDir::new("pierce-ledger");
+        let exec = TestDir::new("pierce-exec");
+        exec.write(".gitignore", "!node_modules/\n");
+        exec.write("node_modules/pkg/index.js", "dep\n");
+        exec.write("src/a.rs", "a\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .expect("击穿的依赖条目必须被 purge 而非 bail");
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.starts_with("node_modules/")),
+            "击穿条目不得留在影子 index/树中: {tracked}"
+        );
+        exec.write("node_modules/pkg/index.js", "dep2\n");
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t",
+        )
+        .unwrap();
+        assert_eq!(first.commit, second.commit);
     }
 
     /// P0 修复：回退后作废旧分支 Turn 快照——只移除 turn > keep_turns 的 Turn
