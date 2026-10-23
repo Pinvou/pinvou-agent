@@ -86,7 +86,7 @@
     // 全量并集，按 cluster 首次出现排序；与函数声明同名的依赖名不在此解构（见 FORWARDER_DEP_NAMES）。
     const {
       state, invoke, restoreEvictedSessionDraft, evictedSessionDrafts, MAX_EVICTED_SESSION_DRAFT_CHARS, MAX_EVICTED_SESSION_DRAFTS, pruneScheduledSessionBuffers, pruneSessionBuffers,
-      recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, persistScheduledTaskTemplateSources,
+      recordAuthoritySyncDiagnostic, runSyncOnSession, notify, publishShellSnapshots, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, persistScheduledTaskTemplateSources,
       scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, addChatItem, enterDraft,
       switchToSessionInternal, openScheduledRunChatOnce, purgeSessionBuffer, refreshHistoryList,
       normalizeTerminalTail, latestShellToolIsWaitObserver, clearMonitorBaseline,
@@ -2257,6 +2257,7 @@
   function applyShellSnapshots(sid, jobs) {
     let anyRunning = false;
     let changed = false;
+    let ordinaryRunningOutput = true;
     const runningCommandCounts = {};
     (jobs || []).forEach(function (job) {
       if (String(job.status || "").toLowerCase() !== "running") return;
@@ -2327,9 +2328,21 @@
           };
           addChatItem(item);
           changed = true;
+          ordinaryRunningOutput = false;
         }
         const snapshotKey = shellSnapshotKey(job);
         if (item.shellSnapshotKey === snapshotKey) return;
+        // Only output refreshes of an already bound, unchanged running job
+        // may consume a redundant host publication. Classify each changed job:
+        // a completed sibling must not inherit another job's running status.
+        if (!running || typeof job.id !== "string" || !job.id ||
+            !item.shellSnapshotKey || item.taskId !== job.id || item.sessionId !== sid ||
+            item.shellStatus !== job.status || item.state !== "running" || item.success !== null ||
+            item.exitCode !== job.exit_code || job.exit_code != null ||
+            item.originToolCallId !== (job.origin_tool_call_id || null) ||
+            item.originTurnId !== (job.origin_turn_id || null)) {
+          ordinaryRunningOutput = false;
+        }
         item.taskId = job.id;
         item.sessionId = sid;
         item.shellStatus = job.status;
@@ -2346,7 +2359,10 @@
         changed = true;
       });
     });
-    if (changed) notify();
+    if (changed) {
+      if (typeof publishShellSnapshots === "function") publishShellSnapshots(sid, ordinaryRunningOutput);
+      else notify();
+    }
     return anyRunning;
   }
 
