@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 11:27 Asia/Shanghai**.
+Checkpoint: **2026-10-24 11:42 Asia/Shanghai**.
 
 There are 47 tasks: seven completed, nineteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **7/47 (14.9%)**.
@@ -97,9 +97,26 @@ whitespace checks passed. Earlier stale-fixture, missing-dependency and MSVC
 auxiliary-process cleanup failures remain recorded as unsuccessful runs.
 Final qualifying commands closed naturally without resource-floor breaches.
 
-The service's four source-binding test adaptations are integrated, but the
-committed contract export and service regression are the next step. This
-increment does not supply production current qualification, protected checkpoint
+The separate service pins the committed client contract
+`5122bc7fd0e28f80b35fa0c54394ba1f97823ef1`; its contract and test adaptations
+are committed and pushed as `378af2ea06b4666187d4ba842a89de05cd817640`. The normal export also includes
+earlier committed scan-capture routes and Rollout abort-proof variants; copying
+these descriptors introduces no new business owner. Fixed cryptographic vectors
+remain unchanged. The old inventory assertions now require 59 routes and 84
+floor/Rollout schemas, with exact checks for the four scan-capture operations.
+
+The qualifying service default result combines **120 unchanged successful
+packages** with the final repaired contracts package: **4,054 passing test
+records**. The original complete run failed its two inventory assertions and
+remains failed. Its **1,736 skipped records** are not passes. Two subsequent
+targeted opt-ins each passed without skips: actual Node claims/Schema parity and
+real isolated OpenBao Transit purpose-bound signing. Module integrity, all-package
+`go vet`, all command builds and changed-file Go formatting passed. Final owned
+command trees closed naturally without resource-floor breaches.
+Test-owned compiled outputs and temporary directories remain locally because
+automatic approval review rejected cleanup; no deletion was executed.
+
+This increment does not supply production current qualification, protected checkpoint
 storage or the authorized executor. T27's protected current acceptance and T26's
 proven time source remain real production prerequisites; ordinary QA clock inputs
 and cache observations do not replace them. Existing host staging and same-process
@@ -370,7 +387,7 @@ completion blocker; outstanding business implementation is.
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
-| T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; service contract export/regression, protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |
+| T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; the service pins the committed contract and passes cross-language/real-Transit verification; protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
