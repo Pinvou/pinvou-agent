@@ -1,11 +1,11 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 12:48 Asia/Shanghai**.
+Checkpoint: **2026-10-24 14:24 Asia/Shanghai**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **35.6%**. T07, T08, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **35.9%**. T07, T08, T09, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
@@ -125,6 +125,62 @@ proven time source remain real production prerequisites; ordinary QA clock input
 and cache observations do not replace them. Existing host staging and same-process
 VerifiedExecutionObject custody are reused. T29 remains in progress at **75%**;
 real remote file-service and installed-host E2E gaps remain explicitly unexecuted.
+
+## Current T09 validation queue and storage increment
+
+The durable validation owner imports an authenticated original received receipt,
+creates one Artifact/job under the original T06 command, and retains exact
+acknowledgment recovery. Physical upload uniqueness is enforced before a new
+processing request can survive. Status/history keep their scoped read rights;
+write-only uploaders can recover their own exact request. Jobs retain the same
+native attempt across genuine lease expiry and renew while work is confirmable.
+There is no total validation or download deadline.
+
+Actual malformed ZIP bytes now commit a rejected Artifact, terminal job, result,
+history and outbox together. Rootless products can reject objectively corrupt
+archives; a sound archive without current trust remains blocked. Missing complete
+admission evidence also remains blocked. No Artifact-valid writer is exposed.
+The original received acknowledgment and receipt are unchanged.
+
+Independent source/repair reviews passed. An actual PostgreSQL failure exposed a
+PL/pgSQL variable/column name collision in the rejection commit; the three-reference
+rename was independently reviewed and the four affected native scenarios passed.
+Together with the four unaffected successful native scenarios, this covers eight
+top-level native cases plus one subcase. The earlier failed invocation remains
+failed. A real TLS/OIDC/T05/T06/PostgreSQL browser workflow passed all five cases
+without skips or retries and checked the exact original business inventory.
+The subsequent diagnostic-directory and fail-fast test-only changes preserve the
+same strict five-case success condition.
+
+Separate focused verification passed: replica proof 8 top-level / 36 total test
+records; provenance/scanner admission 22 / 96; 11 pure admin contracts plus
+TypeScript and the admin build. Three Linux packages cross-compiled successfully;
+no native Linux execution is claimed. Related domain/configuration/management
+checks passed 136 top-level / 360 total records before the final SQL repair;
+those pure checks do not certify native database behavior.
+
+The official AWS S3 adapter passed independent source review, compilation and
+7 top-level / 36 total unit records. It verifies actual owner, region and enabled
+versioning, performs conditional writes and exact-version full readback, and
+rechecks current object identity. The normal Go tools added eleven AWS/Smithy
+modules without changing existing dependency versions/checksums. Its 5 GiB
+single-PUT capacity is an adapter capability, never permanent package invalidity.
+Actual AWS permissions/topology/persistence tests remain unexecuted. Aliyun OSS,
+Tencent COS, WORM and production topology are not claimed by this adapter.
+
+Final common checks passed: **4,272 passing / 1,737 skipped / zero failed**
+Go test records (1,331 passing and 949 skipped top-level tests), all-package vet,
+module integrity, every command build, the client contract pin and whitespace.
+All qualifying command trees closed naturally without resource-floor breaches.
+Skipped records are not passes. Automatic approval review rejected cleanup of
+this increment's task-owned compiled outputs before execution (`blocked by
+policy`); no inventory or deletion ran and the outputs remain locally. The
+component is committed and pushed in the service repository as
+`5b3d80d25f096821977940288dd16036368f0c6b`; the remote tracking revision
+matches and the service tree is clean at this delivery boundary.
+T09 is estimated at **65%**, not complete: true uploading birth/join, combined
+valid admission and all-reference quarantine remain outstanding. Genuine T46
+and protected current-source composition cannot be replaced by fixtures.
 
 ## Completed T07 managed-purpose lifecycle
 
@@ -423,7 +479,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 55% | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
+| T09 | 65% | In progress | Prior inspection/intake plus durable validation queue, exact original-request recovery, scoped status/history and three-language administration; actual corrupt bytes produce atomic rejection, absent evidence remains blocked. Admission provenance/scanner archives and replica proof components plus the official S3 adapter are reviewed and tested separately; genuine uploading birth/join, combined valid admission/current qualification and all-reference quarantine remain pending. Certificates remain optional. |
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
