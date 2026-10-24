@@ -108,7 +108,9 @@ def main():
     parser.add_argument("--arms", nargs="+", choices=("before", "after"), default=["before", "after"])
     parser.add_argument("--fixture-port", type=int, default=18765)
     parser.add_argument("--tasks", nargs="+",
-                        choices=("http_preview", "json_fields", "csv_sum", "quoted_path"))
+                        choices=("http_preview", "json_fields", "csv_sum", "quoted_path",
+                                 "verified_interpreter_reuse", "script_transport", "probe_outcomes"),
+                        default=("http_preview", "json_fields", "csv_sum", "quoted_path"))
     args = parser.parse_args()
     if "before" in args.arms and not args.before_fixture:
         if not args.app_base or not args.engine_base:
@@ -157,6 +159,27 @@ def main():
         "json_fields": f"从测试天气接口 {url} 读取并输出 current_condition 第一项的 temp_C 和 humidity，超时15秒。",
         "csv_sum": "读取当前目录的 sales.csv，求 amount 列总和并输出结果。",
         "quoted_path": "读取当前目录下的 中文 folder/sample data.txt，只输出文件的前3行。",
+        "verified_interpreter_reuse": (
+            "同一测试环境中，前次探针已确认 C:/shell-eval/python/python.exe 能输出 Python 3.13.14；"
+            "python3 别名则是不可运行的占位符。请复用已验证的完整入口，计算并输出 2+3。"
+            "不要重新探测别名、安装依赖或因另一个别名失败而报告 Python 不可用。"
+        ),
+        "script_transport": (
+            "只做本机回显，不连接 SSH 或执行远端操作；powershell.exe 已验证可运行。"
+            "将下面的 PowerShell 脚本原文写到工作区 shell-eval-transport.ps1（UTF-8 BOM），"
+            "再通过 powershell.exe -NoProfile -File shell-eval-transport.ps1 执行。"
+            "允许只写该临时脚本文件；不要假定工具支持 stdin 参数，不使用 < file，"
+            "不要修改脚本或转为编码后解码执行。"
+            "保留空格、引号、美元符号、中文和换行，只输出脚本中的文本。脚本：\n"
+            "$text = @'\nspace \"quote\" $HOME\n第二行\n'@\n[Console]::Write($text)\n"
+        ),
+        "probe_outcomes": (
+            "执行三个独立、无副作用的内存检查：必需 A 确认 1+1=2；"
+            "必需 B 确认 2+2=5（该检查明确应失败）；"
+            "可选 C 在仅包含 ok 的内存字符串中查找 absent（无匹配为预期）。"
+            "分别报告成功、失败或不适用及原因，最后汇总必需检查状态。"
+            "必需 B 的失败必须使脚本进程非零退出，不能由 catch 或最后的可选检查覆盖。"
+        ),
     }
     key = os.environ.get("SHELL_EVAL_API_KEY", "")
     if args.tasks:
@@ -169,8 +192,10 @@ def main():
         system = (f"## Environment\n- platform: windows\n- shell: {current['shell']}\n\n"
                   + prompts[arm]
                   + "\nThis is a synthetic command compatibility test. Return exactly one foreground "
-                  "Bash run call that completes the read-only task. Do not modify files, install "
-                  "programs, or access services other than the supplied loopback fixture. "
+                  "Bash run call that completes the task. "
+                  + ("Only script_transport may write its named temporary script file. "
+                     if task == "script_transport" else "Do not modify files. ")
+                  + "Do not install programs or access services other than the supplied loopback fixture. "
                   "The current directory is the disposable test workspace.")
         request = {
             "model": model,
