@@ -1640,6 +1640,23 @@ pub fn write_pending_rewind(
     pre_restore_id: &str,
     transcript_revision: &str,
 ) -> Result<()> {
+    // r31 MAJOR-2：把文档不变量落地为真——「pending 在飞期间新回退被拒」。
+    // 仅同边界（同目标 + 同 keepTurns + 同 revision，即错误信息引导的同一
+    // 重试）允许重写；其它新回退在此如实拒绝。否则 fresh PreRestore 会快照
+    // 已半恢复的树成为新绑定，而 P1（真前态唯一副本）既不被暂记引用也不被
+    // sidecar 引用，应用内从此不可达（standalone restore 已移除）。
+    if let Ok(Some(existing)) = live_pending_rewind(ledger_root) {
+        let same_boundary = existing.checkpoint_id == checkpoint_id
+            && existing.keep_turns == keep_turns
+            && existing.transcript_revision == transcript_revision;
+        if !same_boundary {
+            bail!(
+                "存在未完成的回退暂记（目标 {}，保留 {} 轮）：请先按错误信息重试同一回退完成截断，或撤销后重试；本次目标不同，已拒绝覆盖",
+                existing.checkpoint_id,
+                existing.keep_turns
+            );
+        }
+    }
     let pending = PendingRewind {
         checkpoint_id: checkpoint_id.to_string(),
         keep_turns,
@@ -2977,6 +2994,57 @@ mod tests {
             "plain basename 嵌套命中"
         );
         assert!(!secret_path_matches("src/main.rs"), "非秘密路径不误报");
+    }
+
+    /// r31 MAJOR-2 行为 pin：活暂记在飞时，非同边界的新回退写入被拒绝
+    /// （文档不变量「pending 在飞期间新回退被拒」落地为真）；同边界重试
+    /// （同目标/同 keepTurns/同 revision）照常写。
+    #[test]
+    fn write_pending_rewind_refuses_a_mismatched_live_pending() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("pending-refuse-ledger");
+        let exec = TestDir::new("pending-refuse-exec");
+        exec.write(
+            "a.txt", "v1
+",
+        );
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        write_pending_rewind(ledger.path(), &first.id, 1, "p1", "rev-a").unwrap();
+        // 不同边界（不同目标）→ 拒绝且原暂记原样保留。
+        let refused = write_pending_rewind(ledger.path(), "c-other", 2, "p2", "rev-a");
+        assert!(refused.is_err(), "不同边界的新回退必须被拒绝");
+        let pending = live_pending_rewind(ledger.path()).unwrap().unwrap();
+        assert_eq!(pending.checkpoint_id, first.id);
+        assert_eq!(pending.pre_restore_id, "p1");
+        // 同边界重试 → 照常重写。
+        write_pending_rewind(ledger.path(), &first.id, 1, "p1", "rev-a").unwrap();
+        let pending = live_pending_rewind(ledger.path()).unwrap().unwrap();
+        assert_eq!(pending.pre_restore_id, "p1");
+    }
+
+    /// r31 MAJOR-1 行为 pin：主匹配器（matching_pending_pre_restore，GUI 与
+    /// CLI 回退复用共用）的 IO fail-closed——pending 路径被目录占用（读取 =
+    /// 非 NotFound 的真实 IO 错误）必须 Err，不得映射为「无暂记」（否则
+    /// 引导重试 fresh PreRestore 快照已恢复树、孤儿化 P1）。
+    #[test]
+    fn matching_pending_pre_restore_fails_closed_on_io_errors() {
+        let ledger = TestDir::new("matcher-io-ledger");
+        let pending_path = ledger.path().join("pending_rewind.json");
+        fs::create_dir_all(&pending_path).unwrap();
+        let result = matching_pending_pre_restore(ledger.path(), "c1", 1, "rev");
+        assert!(
+            result.is_err(),
+            "真实 IO 错误必须 fail-closed（r31 MAJOR-1 变异实证：映射 None 时全绿）"
+        );
     }
 
     /// r30 MAJOR-2 行为 pin：降级匹配器的 IO fail-closed——pending 路径被

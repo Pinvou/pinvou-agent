@@ -6244,13 +6244,11 @@ mod tests {
             !body.contains("latest_rewound_turns_record"),
             "the CLI rewind reuse decision must not consult the sidecar record (r28 M2)"
         );
-        // r27 P2-1 pin: the pending read must distinguish NotFound from real
-        // IO errors - failing open (mapping to None) mints a fresh PreRestore
-        // of the already-restored tree during a guided retry.
-        assert!(
-            src.contains("ErrorKind::NotFound => return Ok(None)"),
-            "the pending read must distinguish NotFound from real IO errors (r27 P2-1 fail-closed)"
-        );
+        // r31 MAJOR-1: the previous assert here was vacuous (the needle only
+        // occurred inside the assert literal). The NotFound/real-IO
+        // fail-closed split of matching_pending_pre_restore is now pinned
+        // behaviorally in the app crate (mod.rs, mirrored on the degraded
+        // twin); nothing falsifiable remains to assert at this layer.
     }
 
     /// Round-52 review: an unknown `--model-slot` slot used to parse fine
