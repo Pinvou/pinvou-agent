@@ -1,6 +1,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use pinvou_upgrade_codec::{Document, InputKind};
-use pinvou_upgrade_verifier::{DownloadVerificationInputs, verify_download_info_response};
+use pinvou_upgrade_verifier::{
+    DownloadVerificationInputs, SignatureCheckedDownloadSource, verify_download_info_response,
+};
 use serde_json::Value;
 use std::{path::Path, process::Command, sync::OnceLock};
 fn document(value: &Value) -> Document {
@@ -58,6 +60,29 @@ fn check_group(group: &str, count: usize) {
                 assert!(std::ptr::eq(proof.supplied_request(), &request));
                 assert_eq!(proof.supplied_time_millis(), now.as_millis());
                 assert_eq!(proof.original_response_bytes(), response);
+                let signed = proof.download_credential().envelope().signed().value();
+                let source = proof.source_identity();
+                assert_eq!(
+                    source.source_id(),
+                    signed["sourceBinding"]["sourceId"].as_str().unwrap()
+                );
+                assert_eq!(
+                    source.object_id(),
+                    signed["sourceBinding"]["objectId"].as_str().unwrap()
+                );
+                assert_eq!(
+                    source.object_version(),
+                    signed["sourceBinding"]["objectVersion"].as_str().unwrap()
+                );
+                assert_eq!(source.package_id(), signed["packageId"].as_str().unwrap());
+                assert_eq!(
+                    source.size() as f64,
+                    signed["package"]["size"].as_f64().unwrap()
+                );
+                assert_eq!(
+                    source.sha256(),
+                    signed["package"]["sha256"].as_str().unwrap()
+                );
                 let transport = Document::parse(&response, InputKind::Metadata).unwrap();
                 let original = document(&request.value()["decision"])
                     .canonical_bytes()
@@ -116,4 +141,44 @@ fn current_decision_new_download_and_url_windows() {
 #[test]
 fn complete_contract_wire_and_resource_limits() {
     check_group("wire", 6);
+}
+
+#[test]
+fn mandatory_signed_source_and_exact_url_binding() {
+    check_group("source", 8);
+}
+fn source_identity(name: &str) -> SignatureCheckedDownloadSource {
+    let case = cases().iter().find(|case| case["name"] == name).unwrap();
+    assert_eq!(case["accepted"], true);
+    let root = document(&case["trustedRoot"]).root_policy_shape().unwrap();
+    let now = document(&case["now"]).protocol_time_shape().unwrap();
+    let request = STANDARD
+        .decode(case["requestBytes"].as_str().unwrap())
+        .unwrap();
+    let request = Document::parse(&request, InputKind::Metadata).unwrap();
+    let response = STANDARD
+        .decode(case["responseBytes"].as_str().unwrap())
+        .unwrap();
+    verify_download_info_response(
+        &response,
+        DownloadVerificationInputs::new(&root, &request, &now),
+    )
+    .unwrap()
+    .source_identity()
+    .clone()
+}
+#[test]
+fn refreshed_signed_url_keeps_only_the_same_object_identity() {
+    let original = source_identity("signed-download-info");
+    assert!(original == source_identity("fresh-signed-url-same-object"));
+    for name in [
+        "new-signed-sourceId",
+        "new-signed-objectId",
+        "new-signed-objectVersion",
+    ] {
+        assert!(
+            original != source_identity(name),
+            "changed immutable identity {name}"
+        );
+    }
 }

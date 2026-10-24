@@ -5,12 +5,14 @@ mod control;
 mod journal;
 mod manifest;
 mod platform;
+mod resume;
 mod runner;
 mod store;
 
-pub use control::{ControlAttempt, run_control};
+pub use control::{ControlAttempt, run_control, run_control_with_resume};
 pub use manifest::{Import, NetworkConsent};
-pub use runner::{Notice, run};
+pub use resume::ResumeCheckpointPin;
+pub use runner::{Notice, run, run_with_resume};
 pub use store::{
     Job, ObservedCache, RetainedPackage, Snapshot, StopRequest, create, observe_retained,
     request_stop,

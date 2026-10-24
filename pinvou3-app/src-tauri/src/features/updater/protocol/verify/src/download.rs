@@ -51,11 +51,48 @@ impl<'a> DownloadVerificationInputs<'a> {
         self
     }
 }
+/// The immutable source and original package identity asserted by a checked
+/// Download credential. Equality deliberately excludes its URL, credential ID
+/// and lifetime, so a newly authenticated URL may name the same object.
+///
+/// This is a signed statement, not native destination ownership, a retained
+/// prefix proof, current qualification or permission to fetch/install. Only the
+/// response verifier constructs it; deserializing a cache record cannot do so.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignatureCheckedDownloadSource {
+    source_id: String,
+    object_id: String,
+    object_version: String,
+    package_id: String,
+    size: u64,
+    sha256: String,
+}
+impl SignatureCheckedDownloadSource {
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+    pub fn object_id(&self) -> &str {
+        &self.object_id
+    }
+    pub fn object_version(&self) -> &str {
+        &self.object_version
+    }
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+}
 /// Checked canonical Decision/Download and exact original transport bytes.
 /// This is no native/metadata/Registry/workflow/destination/artifact/rights proof.
 pub struct SignatureCheckedDownloadResponse<'a> {
     decision: SchemaCheckedEnvelope,
     download: SchemaCheckedEnvelope,
+    source: SignatureCheckedDownloadSource,
     response_bytes: Vec<u8>,
     request: &'a Document,
     root: &'a RootPolicyShape,
@@ -67,6 +104,9 @@ impl SignatureCheckedDownloadResponse<'_> {
     }
     pub fn download_credential(&self) -> &SchemaCheckedEnvelope {
         &self.download
+    }
+    pub fn source_identity(&self) -> &SignatureCheckedDownloadSource {
+        &self.source
     }
     pub fn original_response_bytes(&self) -> &[u8] {
         &self.response_bytes
@@ -172,9 +212,29 @@ pub fn verify_download_info_response<'a>(
     if inputs.now.as_millis() >= expires {
         return Err(DownloadVerificationError::UrlExpired);
     }
+    let text = |value: Option<&str>| {
+        value
+            .map(str::to_owned)
+            .ok_or(DownloadVerificationError::Response(
+                DownloadInfoContractError::InvalidContract,
+            ))
+    };
+    let binding = &download_claims["sourceBinding"];
+    let source = SignatureCheckedDownloadSource {
+        source_id: text(binding["sourceId"].as_str())?,
+        object_id: text(binding["objectId"].as_str())?,
+        object_version: text(binding["objectVersion"].as_str())?,
+        package_id: text(download_claims["packageId"].as_str())?,
+        // The checked credential Schema already proves a positive safe integer.
+        size: download_claims["package"]["size"].as_f64().ok_or(
+            DownloadVerificationError::Response(DownloadInfoContractError::InvalidContract),
+        )? as u64,
+        sha256: text(download_claims["package"]["sha256"].as_str())?,
+    };
     Ok(SignatureCheckedDownloadResponse {
         decision,
         download,
+        source,
         response_bytes: response_bytes.to_vec(),
         request: inputs.request,
         root: inputs.root,

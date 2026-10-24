@@ -25,8 +25,10 @@ for (const role of ['decision', 'download']) {
 f.claims.download.package = identity;
 const scope = {product:'pinvou',component:'app',installId:'install-1',...f.claims.decision.scope};
 const request = {protocolVersion:1,scope,decision:JSON.parse(text(f.sign(f.claims.decision))),downloadKey:'download-key-1',packageId:'package-2'};
+const url = process.argv[4] ?? 'https://127.0.0.1:1/file';
+f.claims.download.sourceBinding.urlSha256 = createHash('sha256').update(Buffer.from(url,'utf8')).digest('hex');
 const response = {protocolVersion:1,requestId:'qa-request',credential:JSON.parse(text(f.sign(f.claims.download))),packageId:'package-2',...identity,
-  url:process.argv[4] ?? 'https://127.0.0.1:1/file',expiresAt:f.claims.download.exp,fileSourceClass:'isolated-qa'};
+  url,expiresAt:f.claims.download.exp,fileSourceClass:'isolated-qa'};
 const root = text(canonicalize(f.metadata.root));
 function alternate(kind) {
   const decision = structuredClone(f.claims.decision), download = structuredClone(f.claims.download);

@@ -3,7 +3,8 @@ use pinvou_upgrade_codec::{Document, InputKind};
 use pinvou_upgrade_file_http::{DestinationPolicy, FileOrigin};
 use pinvou_upgrade_transfer::Artifact;
 use pinvou_upgrade_verifier::{
-    DownloadVerificationInputs, verify_archived_package, verify_download_info_response,
+    DownloadVerificationInputs, SignatureCheckedDownloadSource, verify_archived_package,
+    verify_download_info_response,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -98,7 +99,24 @@ impl Manifest {
         Ok(target)
     }
     pub fn imported_url(&self, import: &Import) -> Result<String, Error> {
-        if import.supplied_time_millis < self.initial_supplied_time_millis {
+        self.imported_source(import).map(|(url, _)| url)
+    }
+    pub(crate) fn imported_source(
+        &self,
+        import: &Import,
+    ) -> Result<(String, SignatureCheckedDownloadSource), Error> {
+        self.imported_source_at(import, import.supplied_time_millis)
+    }
+    // Reuse every original signature, correlation, Package and source gate at
+    // an explicitly advanced local observation; this does not establish time trust.
+    pub(crate) fn imported_source_at(
+        &self,
+        import: &Import,
+        supplied_time_millis: u64,
+    ) -> Result<(String, SignatureCheckedDownloadSource), Error> {
+        if supplied_time_millis < import.supplied_time_millis
+            || supplied_time_millis < self.initial_supplied_time_millis
+        {
             return Err(Error::BindingMismatch);
         }
         let target = self.target()?;
@@ -106,7 +124,7 @@ impl Manifest {
             .root_policy_shape()
             .map_err(|_| Error::InvalidInput)?;
         let request = document(&import.request)?;
-        let now = time(import.supplied_time_millis)?;
+        let now = time(supplied_time_millis)?;
         let checked = verify_download_info_response(
             import.response.as_bytes(),
             DownloadVerificationInputs::new(&root, &request, &now),
@@ -131,10 +149,11 @@ impl Manifest {
             return Err(Error::BindingMismatch);
         }
         let response = document(&import.response)?;
-        response.value()["url"]
+        let url = response.value()["url"]
             .as_str()
             .map(str::to_owned)
-            .ok_or(Error::InvalidInput)
+            .ok_or(Error::InvalidInput)?;
+        Ok((url, checked.source_identity().clone()))
     }
 }
 pub(crate) fn qualification(request: &Document) -> Result<String, Error> {

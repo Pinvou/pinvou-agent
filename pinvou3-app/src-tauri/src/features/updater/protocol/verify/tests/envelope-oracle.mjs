@@ -10,6 +10,7 @@ const { sha256 } = await import(new URL('./digests.mjs', base));
 const { publicKeyDescriptor, signEnvelope, verifyEnvelope, verifyRootSuccessor,
   validateTrustedRoot } = await import(new URL('./signatures.mjs', base));
 const inventory = JSON.parse(readFileSync(new URL('../vectors/crypto/envelopes.json', base)));
+const { createFixtureSet } = await import(new URL('./tests/fixtures.mjs', base));
 const clone = structuredClone;
 const rows = [];
 const original = (name) => {
@@ -31,6 +32,10 @@ function append(group, name, bytes, options, code = null, rustCode = code) {
 }
 function synthetic(name, threshold = 1) {
   const { vector, envelope } = original(name);
+  if (name === 'download') {
+    // Use a new complete credential body; never attach fields to an old signature.
+    envelope.signed = createFixtureSet({ clock: vector.now }).claims.download;
+  }
   const pairs = Array.from({ length: 3 }, () => generateKeyPairSync('ed25519'))
     .map((pair) => ({ ...pair, descriptor: publicKeyDescriptor(pair.publicKey) }))
     .sort((a, b) => a.descriptor.keyId.localeCompare(b.descriptor.keyId));
@@ -49,7 +54,9 @@ const signWith = (signed, pairs) => Buffer.from(signEnvelope(signed, pairs.map((
 
 for (const vector of inventory.vectors) {
   append('fixed', vector.name, Buffer.from(vector.envelopeBase64Url, 'base64url'),
-    { trustedRoot: inventory.trustedRoot, expected: vector.expectedContext, now: vector.now });
+    { trustedRoot: inventory.trustedRoot, expected: vector.expectedContext, now: vector.now },
+    vector.name === 'download' ? 'SCHEMA_INVALID' : null,
+    vector.name === 'download' ? 'ENVELOPE_SCHEMA_INVALID' : null);
 }
 
 const timestamp = synthetic('timestamp', 2);

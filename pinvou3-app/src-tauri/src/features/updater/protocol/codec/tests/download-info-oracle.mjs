@@ -6,7 +6,10 @@ const{assertApiContract,assertApiShape}=await import(new URL('./api-registry.mjs
 const{checkSemantics}=await import(new URL('./semantics.mjs',root));
 const{parseJson,canonicalize}=await import(new URL('./canonical-json.mjs',root));
 const{createFixtureSet}=await import(new URL('./tests/fixtures.mjs',root));
-const f=createFixtureSet();const credential=parseJson(f.sign(f.claims.download));
+const {sha256}=await import(new URL('./digests.mjs',root));
+const f=createFixtureSet();const claims=structuredClone(f.claims.download);
+claims.sourceBinding.urlSha256=sha256(Buffer.from('https://example.invalid/file','utf8'));
+const credential=parseJson(f.sign(claims));
 const b={protocolVersion:1,requestId:'request-1',credential,packageId:credential.signed.packageId,
  size:credential.signed.package.size,sha256:credential.signed.package.sha256,url:'https://example.invalid/file',
  expiresAt:credential.signed.exp,fileSourceClass:'primary'};
@@ -21,6 +24,7 @@ emit('complete-positive',b);
 bind('packageId-mismatch',v=>v.packageId='other-package');
 bind('size-mismatch',v=>v.size++);
 bind('hash-mismatch',v=>v.sha256='0'.repeat(64));
+bind('unsigned-url-replacement',v=>v.url='https://example.invalid/other');
 bind('expiry-after-credential',v=>v.expiresAt=v.credential.signed.exp+1);
 bind('expiry-at-nbf',v=>v.expiresAt=v.credential.signed.nbf);
 bind('expiry-before-nbf',v=>v.expiresAt=v.credential.signed.nbf-1);
@@ -29,7 +33,7 @@ mutate('future-nbf-positive',v=>v.credential.signed.nbf++);
 for(const [name,url]of Object.entries({'opaque-url-positive':'https://','scheme-only-with-newline-positive':'https://\n',
  'maximum-ascii-url-positive':'https://'+'a'.repeat(8184),'over-ascii-url-negative':'https://'+'a'.repeat(8185),
  'maximum-unicode-url-positive':'https://'+'\u{1F600}'.repeat(8184),'over-unicode-url-negative':'https://'+'\u{1F600}'.repeat(8185),
- 'http-negative':'http://example.invalid/file'}))mutate(name,v=>v.url=url);
+ 'http-negative':'http://example.invalid/file'}))mutate(name,v=>{v.url=url;v.credential.signed.sourceBinding.urlSha256=sha256(Buffer.from(url,'utf8'));});
 mutate('independent-source-request-positive',v=>{v.fileSourceClass='another-source';v.requestId='another-request';});
 mutate('zero-signature-positive',v=>v.credential.signatures[0].signature='A'.repeat(86));
 mutate('duplicate-signature-positive',v=>v.credential.signatures.push(structuredClone(v.credential.signatures[0])));

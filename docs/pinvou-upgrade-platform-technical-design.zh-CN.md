@@ -384,11 +384,11 @@ StagedRecord 固定原预安装事务、scope/channelRevision、Deployment/hop�
 
 ## 15. 文件服务
 
-download-info返回HTTPS URL、packageId、size、sha256、有效期和对象一致性条件。URL15min是访问资格窗口，不是下载时长预算；重新取得当前资格及地址后可断点续接精确相同内容，Range/ETag不替代最终签名大小/哈希验证。
+download-info返回HTTPS URL、packageId、size、sha256、有效期和对象一致性条件；签名 `download.sourceBinding` 是必需封闭对象，仅含 `sourceId`、`objectId`、`objectVersion`、`urlSha256`。前三项是供应商中立的不透明逻辑标识，T18 真实存储所有者固定映射到不可变实际对象/版本；不得泄露物理路径、bucket 或凭据。`urlSha256` 对响应外层 URL 的原始 UTF-8 字节求 SHA-256，不规范化或重新编码 URL；重定向仍单独执行目的地政策。新客户端严格拒绝无此绑定的旧凭据，无协商或兼容回退。URL15min是访问资格窗口，不是下载时长预算；重新取得当前资格及地址后可断点续接精确相同内容，Range/ETag不替代最终签名大小/哈希验证。
 
 - URL 可以属于第三方服务，客户端不从控制面域名推导文件地址。
-- 文件服务切换只能改变 URL，不能改变制品身份。
-- 断点续传要求字节范围与同一不可变对象绑定；无法证明同一对象时从头下载。
+- 文件服务切换不能改变制品身份；URL 变化要求新的合法签名凭据。只有 `sourceId/objectId/objectVersion` 三元组完全不变，才能继续使用同一部分缓存；ETag 相同不证明源身份相同。
+- 续传前核对独立可信保留依据绑定的缓存/前缀 checkpoint：可信 Manifest/Package、源三元组、物理对象身份、已刷入长度、前缀 SHA-256 及原强 ETag，并在持有实际对象时重读校验前缀。普通 journal 自哈希、调用方自报身份或长度不能单独证明可信连续性；缺少可信依据或三元组变化时，保留旧部分字节，另建独占对象从偏移 0 开始。完整缓存按可信 Package 全量大小/哈希及内容身份复验后可复用，不产生当前安装权。这里规定接口要求，不表示生产受保护 checkpoint 存储已实现。
 - 下载请求不携带 SN、installId、installationScopeId 或升级 API 凭据。
 - 文件服务不得访问管理后台或授权数据库。
 

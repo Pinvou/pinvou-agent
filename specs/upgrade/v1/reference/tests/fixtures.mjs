@@ -7,6 +7,7 @@ import { DAY } from '../semantics.mjs';
 export const NOW = 1_700_000_000_000;
 export const TARGET = 'linux-x86_64-deb-perMachine';
 export const HASH = 'a'.repeat(64);
+export const DOWNLOAD_URL = 'https://example.test/package';
 export const native = (format, identity = format) => ({ size: 123, sha256: HASH,
   identity, publisher: 'test-publisher', format });
 export const byteIdentity = () => ({ size: 123, sha256: HASH });
@@ -95,7 +96,9 @@ export function createFixtureSet({ component = 'app', clock = NOW, signingKeys =
     decision: credential('decision', 'upgrade-control', 'check', { ...qualification,
       exp: clock + 900_000, requestNonce: 'nonce-1', updateAvailable: true, update, reason: null }),
     download: credential('download', 'upgrade-download-info', 'download', { ...qualification,
-      exp: clock + 900_000, update, packageId: 'package-2', package: byteIdentity() }),
+      exp: clock + 900_000, update, packageId: 'package-2', package: byteIdentity(),
+      sourceBinding: { sourceId: 'source-1', objectId: 'object-1', objectVersion: 'version-1',
+        urlSha256: sha256(Buffer.from(DOWNLOAD_URL, 'utf8')) } }),
     'helper-cleanup': credential('helper-cleanup', 'upgrade-helper-cleanup', 'cleanup', {
       exp: clock + 120_000, installId: 'install-1', registryVersion: 1, selectionGeneration: 1,
       beforeFactsDigest: HASH, afterFactsDigest: HASH, preparation: { ownerEpoch: 1, scopeRevision: 1 },

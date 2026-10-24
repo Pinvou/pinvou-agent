@@ -45,21 +45,32 @@ its next file attempt:
 ```text
 upgrade-download-cache run-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON
 upgrade-download-cache restart-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON
+upgrade-download-cache resume-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON INDEPENDENT_CHECKPOINT_SHA256
 ```
 
 `CONTROL_JSON` contains exactly `request` (the original DownloadInfo request JSON
 string) and `suppliedTimeMillis` (an explicitly supplied safe integer). The pinned
 Root, original Decision signature, Package and retained workflow/stage projection
 are checked before the POST. The real response must pass signature, correlation,
-Package and time checks before a new payload file is opened. The caller cannot
+Package, time and mandatory signed immutable-source/literal-URL binding checks
+before a new payload file is opened. The caller cannot
 supply a response, endpoint, CA, headers, retry policy or continuity assertion.
 
 The same writer lock remains held across the POST and file attempt. Elapsed
 control-request time is included in the supplied observation; it does not create
-a total download deadline. Every new attempt still starts a fresh exclusive file
-from zero because this tool has no protected immutable-source continuity owner.
-`restart-control` also starts fresh when an earlier cache was complete. Without
-restart, a complete cache is scanned again and reused without a control POST.
+a total download deadline. `run-control` starts a new exclusive file from zero.
+`resume-control` takes an explicit independently retained checkpoint digest from
+a prior actual flush/scan notice; it never discovers that digest in the journal.
+It verifies the current signed source tuple and the actual held prefix, then
+copies checked bytes to a new exclusive attempt before Range. Before GET it
+rechecks the complete import with the supplied time plus local verification and
+prefix-preparation elapsed time; expiry or overflow refuses the attempt without
+limiting an ongoing download. This is not a trusted clock. Equal ETags alone
+cannot authorize continuation. A changed source tuple starts fresh; a forged
+checkpoint or damaged prefix is refused. `restart-control` starts fresh even when
+an earlier cache was complete. Without restart, a complete cache is scanned again
+and reused without a control POST. See the linked workflow document for the
+checkpoint's exact bindings and failure behavior.
 
 Dropping the library future requests local cancellation, not a successful close
 acknowledgment or proof that the remote service did nothing. Await the result for

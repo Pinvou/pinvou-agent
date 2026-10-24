@@ -12,6 +12,8 @@
 
 Source Facts Registry 是服务端内部、强一致的已安装来源事实账本，用于判断当前来源能否执行完整包、helper 迁移、launcher 迁移和旧 helper 清理。它不是 Root/Snapshot/Target 元数据的一部分，不直接下发给客户端，也不能替代客户端实时采集的本机事实。
 
+本Registry的 `sourceProfileId` 描述已安装来源画像，不是文件下载凭据 `download.sourceBinding.sourceId`。后者连同 `objectId/objectVersion` 是T18真实存储所有者映射的不可变文件源逻辑身份，`urlSha256`另绑定响应外层原始URL字节；不能用已安装来源画像、相同ETag或客户端自报替代该绑定。文件续传与完整缓存复验遵循凭据规范§3.1，不因此授予本Registry匹配结果或当前安装权。
+
 ## 2. 作用域与画像
 
 Registry 快照按 `product + component + targetKey` 维护一个单调递增的 `registryVersion`。同一 `canonicalAppVersion` 可以同时存在多个合法来源画像；每条画像记录按 `product + component + targetKey + canonicalAppVersion + sourceProfileId` 唯一定位，包含：

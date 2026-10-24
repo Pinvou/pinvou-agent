@@ -657,19 +657,34 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(dead_code)]
+    mod download_fixture {
+        include!("codec/tests/support/download_fixture.rs");
+    }
 
     #[test]
-    fn feature_facade_verifies_all_original_signatures_and_refuses_denied_signers() {
+    fn feature_facade_verifies_nineteen_original_and_current_download_signatures_and_refuses_denied_signers()
+     {
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         let inventory: serde_json::Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
         )))
         .unwrap();
-        let root =
-            decode_root_policy_shape(&serde_json::to_vec(&inventory["trustedRoot"]).unwrap())
-                .unwrap();
-        for vector in inventory["vectors"].as_array().unwrap() {
+        let reference = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../specs/upgrade/v1/reference/canonical-json.mjs");
+        let mut current = inventory["vectors"].as_array().unwrap().clone();
+        download_fixture::replace_legacy_download(&mut current, &reference);
+        for vector in &current {
+            let root = decode_root_policy_shape(
+                &serde_json::to_vec(
+                    vector
+                        .get("trustedRoot")
+                        .unwrap_or(&inventory["trustedRoot"]),
+                )
+                .unwrap(),
+            )
+            .unwrap();
             let bytes = URL_SAFE_NO_PAD
                 .decode(vector["envelopeBase64Url"].as_str().unwrap())
                 .unwrap();
@@ -2013,17 +2028,9 @@ mod tests {
     fn feature_facade_binds_download_info_without_approving_destination_or_fetch_rights() {
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         use pinvou_upgrade_codec::DownloadInfoContractError;
-        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
-        )))
-        .unwrap();
-        let v = vectors["vectors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|v| v["name"] == "download")
-            .unwrap();
+        let reference = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../specs/upgrade/v1/reference/canonical-json.mjs");
+        let v = download_fixture::current_download_for_url(&reference, Some("https://"));
         let credential: serde_json::Value = serde_json::from_slice(
             &URL_SAFE_NO_PAD
                 .decode(v["envelopeBase64Url"].as_str().unwrap())

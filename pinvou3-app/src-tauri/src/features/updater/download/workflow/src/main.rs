@@ -1,8 +1,8 @@
 //! Thin explicit QA/operator interface. No app install command, CA override,
 //! updater namespace, credential logging or high-privilege execution is exposed.
 use pinvou_upgrade_download_job::{
-    ControlAttempt, Error, Import, Job, NetworkConsent, StopRequest, create, observe_retained,
-    request_stop, run, run_control,
+    ControlAttempt, Error, Import, Job, NetworkConsent, ResumeCheckpointPin, StopRequest, create,
+    observe_retained, request_stop, run, run_control, run_control_with_resume, run_with_resume,
 };
 use std::path::Path;
 
@@ -68,6 +68,40 @@ fn execute(args: &[String]) -> Result<(), Error> {
                 &serde_json::json!({"protocolVersion":1,"requestStored":true,"writerJoined":false}),
             )
         }
+        Some("resume" | "resume-control") if args.len() == 6 => {
+            // This explicit independently retained digest is never discovered
+            // from the untrusted cache/journal, and is not native authority.
+            let checkpoint = ResumeCheckpointPin::from_independently_retained_sha256(&args[5])?;
+            let consent: NetworkConsent = decode(&args[4])?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| Error::IoUnavailable)?;
+            let result = if args[0] == "resume-control" {
+                let input: ControlAttempt = decode(&args[3])?;
+                runtime.block_on(run_control_with_resume(
+                    args[1].clone().into(),
+                    args[2].clone(),
+                    input,
+                    consent,
+                    false,
+                    Some(checkpoint),
+                    |notice| emit(&notice),
+                ))?
+            } else {
+                let import: Import = decode(&args[3])?;
+                runtime.block_on(run_with_resume(
+                    args[1].clone().into(),
+                    args[2].clone(),
+                    import,
+                    consent,
+                    false,
+                    Some(checkpoint),
+                    |notice| emit(&notice),
+                ))?
+            };
+            emit(&result)
+        }
         Some("run-control" | "restart-control") if args.len() == 5 => {
             let input: ControlAttempt = decode(&args[3])?;
             let consent: NetworkConsent = decode(&args[4])?;
@@ -104,7 +138,7 @@ fn execute(args: &[String]) -> Result<(), Error> {
         }
         Some("help") if args.len() == 1 => {
             println!(
-                "Explicit QA cache tool; no current qualification or install rights.\ncreate JOB ROOT_JSON ROOT_SHA256 PACKAGE_JSON EXPECTED_JSON IMPORT_JSON\nstatus JOB MANIFEST_SHA256\ncheck JOB MANIFEST_SHA256\ncheck-retained JOB MANIFEST_SHA256 ATTEMPT_NUMBER\nrun|restart JOB MANIFEST_SHA256 IMPORT_JSON NETWORK_JSON\nrun-control|restart-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON\nFixed control service DownloadInfo POST; supplied time is not trusted time.\npause|cancel JOB MANIFEST_SHA256 RUN_ID\nNetwork use requires explicit exact host/port/address consent. No total download deadline.\nCancel/pause stores an attempt request; only the joined run result confirms stopped handles."
+                "Explicit QA cache tool; no current qualification or install rights.\ncreate JOB ROOT_JSON ROOT_SHA256 PACKAGE_JSON EXPECTED_JSON IMPORT_JSON\nstatus JOB MANIFEST_SHA256\ncheck JOB MANIFEST_SHA256\ncheck-retained JOB MANIFEST_SHA256 ATTEMPT_NUMBER\nrun|restart JOB MANIFEST_SHA256 IMPORT_JSON NETWORK_JSON\nrun-control|restart-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON\nresume JOB MANIFEST_SHA256 IMPORT_JSON NETWORK_JSON INDEPENDENT_CHECKPOINT_SHA256\nresume-control JOB MANIFEST_SHA256 CONTROL_JSON NETWORK_JSON INDEPENDENT_CHECKPOINT_SHA256\nCheckpoint notices follow actual flush/scan; retain their digest independently. No native authority.\nFixed control service DownloadInfo POST; supplied time is not trusted time.\npause|cancel JOB MANIFEST_SHA256 RUN_ID\nNetwork use requires explicit exact host/port/address consent. No total download deadline.\nCancel/pause stores an attempt request; only the joined run result confirms stopped handles."
             );
             Ok(())
         }

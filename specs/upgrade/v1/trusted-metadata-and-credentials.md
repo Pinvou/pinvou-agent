@@ -42,6 +42,7 @@ Root 轮换只使用产品级 PublishRootChange。Release 续签和不改变可�
 ## 3. 文件资格与三用途授权
 
 - 文件资格/实际URL最长15min，继承当前决定、scope/installId、渠道修订/generation、metadataSet/Registry、双链及唯一package/精确字节身份。releaseVisibleAt后且未到installNotAfter可展示/下载，installNotBefore不挡下载或preinstall。URL与下载总时长分开，到期重新取得当前资格，不延原URL、不转发控制凭据/安装标识/环境隐式认证到文件服务，所有重定向按安全要求§7。
+- 文件下载凭据必须签入封闭 `download.sourceBinding`，恰含 `sourceId/objectId/objectVersion/urlSha256`；前三项为供应商中立不透明逻辑标识，由T18真实存储所有者固定映射不可变实际对象及版本，不暴露物理路径/bucket/凭据。`urlSha256=SHA-256(UTF8(响应外层原始URL))`，不做URL规范化/解码/重编码；新客户端拒绝缺失、多字段、错绑及旧格式凭据，无协商或兼容回退。重定向仍独立按原政策验证。
 - 三用途授权各最长5min，封闭purpose=preinstall|install|activate和专用credentialType/audience，完整绑定product/component、scope/installId、decision/session/workflow/authorizationJti/transactionId、当前来源/平台/updater事实、两链/元数据/Registry/资格修订、渠道/generation、Package/最终字节、模式、目标helper及本次准备所有权代次。
 - install/activate在安装区间，权限/全范围冻结及required备份已验证，授权绑定本次freezeEpoch/backup摘要。preinstall只允许既有helper权限下指定非活动槽，无活动数据备份摘要；irreversible不可用notRequired。activate另绑定原预安装transactionId、waiting stagedRevision、slotIdentity/stagedAt/原期限；消费CAS比较waiting修订并创建新事务。
 - helper清理许可最长2min，绑定实际前后事实、Registry/generation、精确删除身份集合；行动前重新核对准备/执行/对账/槽引用和所有权，不能删后来接管所需helper。
@@ -54,6 +55,8 @@ Root 轮换只使用产品级 PublishRootChange。Release 续签和不改变可�
 URL/决定/遥测会话仍有原短期窗口，不能续签旧凭据或接收过期事件。新check/refresh在当前资格有效时建立新的有期限会话/凭据，续接同一逻辑workflow的未来下载进度和结果：绑定原workflowId及原首次资格阶段/分组、前后会话、scope/channelRevision、来源、endpoint/hop、Package/字节身份和upgradeType/mode，服务端核对原workflow仍未终结（会话expired不等于workflow终结）、唯一当前会话关联及当前事实后才关联；同workflow同时最多一个可写下载续接会话，新会话以原修订CAS转交未来动作，旧会话只合法补报/诊断，丢ACK恢复原新会话，不能双写。原workflow已确认失败/取消/资格终结不得续接覆盖旧结果，只能独立新流程并保留原失败样本。current元数据/灰度阶段或candidate→baseline变化使用新决定的当前正向链与endpointKind，不将历史资格当执行权；只在原实体/字节/类型/模式仍精确匹配时关联原质量阶段。旧会话终态保留、新会话不重签过去发生事件，不移动阶段或增加样本；normal精确同一已确认实际hop可继续原用户意愿，改选/类型或目标改变须新流程及适用确认，缓存只有精确可信字节可安全复用。
 
 部分缓存仅用于断点续传，不视为可信完整制品；本地分段hash/Range/ETag只校对缓存/对象一致性，所有字节完成后仍须可信元数据签名声明的完整大小/SHA-256及最终安装器/平台格式、架构和同一对象验证。升级包、安装器、helper/launcher不强制原生代码签名或发布者证书；可选原生签名观察不替代客户端Root、已交付元数据/Manifest和在线授权校验；构建来源DSSE签名及SBOM仍由服务端供应链闸门验证，不要求客户端下载未随子包交付的证明。完整缓存只有这些强制验证成功且当前对象未被替换才可复用校验结果，不因续接跳过安全验证。
+
+URL轮换取得新合法签名凭据后，只有 `sourceId/objectId/objectVersion` 三元组完全不变，且独立可信保留的checkpoint绑定原Manifest/Package、三元组、实际缓存物理身份、已刷入长度、前缀SHA-256与原强ETag，并在持有实际对象时重读前缀一致，才可追加。普通journal自哈希、ETag或调用方自报不能单独提供该信任。三元组任一项改变即使ETag相同也保留旧部分字节，另建独占对象从0开始；完整缓存按原可信Package大小/哈希及内容身份复验可独立复用。缓存/续传身份不构成当前安装权，URL或凭据到期不终结逻辑下载、不新增总时限；当前资格仍按原规则重新取得。
 
 新会话使用明确download_resume_context进入download_started，记录原阶段首次开始及下载缓存事实；校验/权限/冻结/备份/授权前重新完成对应当前会话的合法前置事件，旧冻结或备份不沿用。换源/续接/重复事件仍一个样本，旧会话过期不伪造下载失败；质量状态按需求§8.2.1：有可信进度/可确认网络等待或暂停为未完成，按审批的有限上报/失联间隔无有效状态才未知；24h会话到期不自动冻结/失败，不终止客户端下载。key deny不能补签旧事件，新的合法会话仅记录新动作，不把缺失的旧证据推定成功。无法合法验证旧workflow关联时原结果保持未知，建立独立新流程可使用重新校验的相同缓存，不因关联丢失强制重下或改写旧失败。
 

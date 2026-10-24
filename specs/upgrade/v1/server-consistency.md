@@ -82,6 +82,8 @@ check 首先读取 SelectionScope。若为 unactivated，固定返回 HTTP 409�
 
 `download-info` 必须在签发 URL 并提交幂等结果的同一原子边界复核决定修订、endpointKind、hopKind、channelRevision、完整 metadataSet、generation、Registry 画像、即时 deny、基线指针、endpointChain 与 hopChain 各自的正向实体状态/修订/安装有效期/SupplyChainApproval，以及 hopChain packageId；endpointKind=candidate 时复核 Rollout ID/revision/state/策略修订，hopKind=bridge 时复核 BridgeEligibility ID/revision/state，candidate-bridge 同时复核两组。任一失配均不得签发新 URL。已签发 URL 不主动延长，最多残留原 15 分钟；后续 validate/consume 仍失败关闭。
 
+同一结果还必须绑定真实T18存储所有者固定映射的不可变对象/版本及实际返回URL：签名 `download.sourceBinding` 恰含 `sourceId/objectId/objectVersion/urlSha256`，前三项供应商中立且不暴露物理路径/bucket/凭据，后者摘要响应外层URL原始UTF-8字节。不能签一个源身份却返回另一URL；已提交结果重放保留原绑定和原URL期限，不因重放延长；URL轮换须新当前资格/凭据。客户端严格拒绝无绑定旧凭据，无协商降级；续传按凭据规范§3.1验证三元组和实际缓存checkpoint，ETag不提供源身份或执行权。
+
 `validate` 和 `consume` 也必须在最终提交前复核决定/授权绑定的 endpointKind、hopKind、channelRevision、完整 metadataSet、generation、Registry 画像、即时 deny、基线指针、endpointChain 与 hopChain 各自的正向实体状态/修订/安装有效期/SupplyChainApproval，并按 endpointKind/hopKind 分别复核 Rollout 和 BridgeEligibility；candidate-bridge 必须同时通过两组复核。复核还含ordinary路径审批、purpose/mode、准备所有权及本次冻结/备份；activate比较waiting修订/原预安装完成/原期限。metadata续签或任一链失配要求新check；install/activate紧前在线复核后才越界，preinstall无活动写入。全部时间可信UTC且分层使用visible/start/end，end=null不比较；消费后资格/渠道收紧按需求§6.2用途×边界矩阵，不泛化为强杀或继续所有用途。
 
 ## 5. validate 协调

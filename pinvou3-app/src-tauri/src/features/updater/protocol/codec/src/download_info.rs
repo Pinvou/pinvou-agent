@@ -4,6 +4,7 @@ use crate::{
 };
 use jsonschema::{Draft, Retrieve, Uri, Validator};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,9 +152,19 @@ impl Document {
         let nbf = claims["nbf"]
             .as_f64()
             .ok_or(DownloadInfoContractError::InvalidContract)?;
+        // Bind the exact transport URL bytes. URI normalization would permit a
+        // different signed query, escape spelling or destination to be substituted.
+        let url = value["url"]
+            .as_str()
+            .ok_or(DownloadInfoContractError::InvalidContract)?;
+        let url_hash: String = Sha256::digest(url.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         if value["packageId"] != claims["packageId"]
             || value["size"] != claims["package"]["size"]
             || value["sha256"] != claims["package"]["sha256"]
+            || claims["sourceBinding"]["urlSha256"] != url_hash
             || expires > exp
             || expires <= nbf
         {

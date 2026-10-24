@@ -18,6 +18,7 @@
 
 - 检查创建 `decision_received → no_update|update_offered|expired`；no_update 为终态。`update_offered ↔ deferred`，只有 normal 可由本次实际 hop 的明确用户点击进入 user_confirmed；silent/forced 使用服务器已绑定的自动流程事实，不伪造用户确认。
 - 下载用途 install/preinstall：normal 必须 `update_offered|deferred → user_confirmed → download_started`；silent/forced 在资格有效时 `update_offered|deferred → download_started`。`download_started → download_succeeded|download_failed|cancelled|expired`；`download_succeeded → verification_started → verification_succeeded|verification_failed|cancelled|expired`。短期会话到期只终结会话，下载缓存及逻辑流程按凭据规范的续接规则处理，不设置下载总时长终止条件。
+- URL/下载凭据轮换本身不产生逻辑下载终态。客户端先验证必需签名sourceBinding及URL摘要；只有源三元组不变且独立可信checkpoint和实际持有前缀重读一致才追加，三元组变化即使同ETag也保留旧部分字节并新建独占对象从0开始。完整缓存按可信Package全量复验可复用；这些缓存动作不复活旧会话/终态、不产生当前安装权，也不延长原校验或执行预算。旧格式凭据严格拒绝，无协商兼容。
 - activate 不重复下载：用户应用重启或系统重启触发，新 check 精确选择原 staged hop，服务端确认原预安装 staging_completed、槽及原期限/渠道仍有效后 `update_offered → staged_verified`。staged_verified 与 verification_succeeded 均可进入 `preflight_started → preflight_succeeded|preflight_failed`。
 - `preflight_succeeded → permission_checked → permission_granted|permission_denied`；normal/forced 在冻结前完成必要 OS 权限确认，silent 只核对既有 helper 权限，缺权不自动提权。preinstall 从 permission_granted 直接进入 preparation_ready，且不得冻结/备份活动数据。
 - install/activate 从 permission_granted 在协调写入者前取得唯一准备所有权，进入 `preparation_started → writers_frozen|preparation_failed`。required 时 `writers_frozen → backup_started → backup_succeeded|backup_failed`，验证本次冻结快照后进入 preparation_ready；notRequired 直接 `writers_frozen → preparation_ready`，不生成备份记录/成功事件；irreversible+notRequired 拒绝。

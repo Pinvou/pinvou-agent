@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "support/download_fixture.rs"]
+mod download_fixture;
+
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -17,13 +21,18 @@ fn root() -> PathBuf {
         .to_owned()
 }
 fn fixtures() -> Vec<Value> {
-    serde_json::from_slice::<Value>(
+    let mut vectors = serde_json::from_slice::<Value>(
         &std::fs::read(root().join("specs/upgrade/v1/vectors/crypto/envelopes.json")).unwrap(),
     )
     .unwrap()["vectors"]
         .as_array()
         .unwrap()
-        .clone()
+        .clone();
+    download_fixture::replace_legacy_download(
+        &mut vectors,
+        &root().join("specs/upgrade/v1/reference/canonical-json.mjs"),
+    );
+    vectors
 }
 fn kind(role: &str) -> InputKind {
     if [
@@ -56,7 +65,8 @@ fn accepted(raw: &[u8], role: &str) -> bool {
         .is_ok()
 }
 #[test]
-fn all_twenty_full_schemas_preserve_original_bytes_without_signature_or_time_validation() {
+fn nineteen_original_and_current_download_schemas_preserve_bytes_without_signature_or_time_validation()
+ {
     for vector in fixtures() {
         let raw = URL_SAFE_NO_PAD
             .decode(vector["envelopeBase64Url"].as_str().unwrap())

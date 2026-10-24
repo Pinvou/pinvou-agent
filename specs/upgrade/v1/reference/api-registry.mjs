@@ -111,7 +111,9 @@ export function assertApiContract(operationName, direction, value) {
     if (operationName === 'download-info') {
       const claims = value.credential.signed;
       requireCondition(value.packageId === claims.packageId && value.size === claims.package.size && value.sha256 === claims.package.sha256
-        && value.expiresAt <= claims.exp && value.expiresAt > claims.nbf, 'API_RESPONSE_MISMATCH');
+        && value.expiresAt <= claims.exp && value.expiresAt > claims.nbf
+        // Bind the supplied URL string, without URL parsing or normalization.
+        && claims.sourceBinding.urlSha256 === sha256(Buffer.from(value.url, 'utf8')), 'API_RESPONSE_MISMATCH');
     }
     if (operationName.startsWith('consume-') && operationName !== 'consume-status') requireCondition(
       value.transactionId === value.transactionCredential.signed.transactionId, 'API_RESPONSE_MISMATCH');

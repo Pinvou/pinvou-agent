@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "support/download_fixture.rs"]
+mod download_fixture;
+
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -246,9 +250,14 @@ fn signatures_require_strict_original_order_and_full_container_bounds() {
     ));
 }
 #[test]
-fn original_node_parser_and_encoding_helpers_match_unchanged_valid_body_domain() {
+fn original_node_parser_and_encoding_helpers_match_current_valid_body_domain() {
     let mut cases = Vec::new();
-    for vector in fixtures() {
+    let mut vectors = fixtures();
+    download_fixture::replace_legacy_download(
+        &mut vectors,
+        &root().join("specs/upgrade/v1/reference/canonical-json.mjs"),
+    );
+    for vector in vectors {
         let raw = URL_SAFE_NO_PAD
             .decode(vector["envelopeBase64Url"].as_str().unwrap())
             .unwrap();

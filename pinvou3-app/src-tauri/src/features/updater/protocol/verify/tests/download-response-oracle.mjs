@@ -1,11 +1,17 @@
 // Frozen contracts + both actual verifications + explicit normative inheritance.
 import {pathToFileURL} from 'node:url';
+import {sign as cryptoSign} from 'node:crypto';
 const reference=pathToFileURL(process.argv[1]);
 const {createFixtureSet,NOW}=await import(new URL('./tests/fixtures.mjs',reference));
 const {assertApiContract}=await import(new URL('./api-registry.mjs',reference));
-const {verifyEnvelope,signEnvelope}=await import(reference);
+const {verifyEnvelope,signEnvelope,signingInput}=await import(reference);
 const {parseJson,canonicalize}=await import(new URL('./canonical-json.mjs',reference));
+const {sha256}=await import(new URL('./digests.mjs',reference));
 const fixture=createFixtureSet(),clone=structuredClone,rows=[];
+// Genuine signatures over deliberately legacy/malformed claims bypass only
+// signing preflight, so these controls target the receiving verifier's schema.
+const rawSignDownload=s=>canonicalize({signed:s,signatures:[{keyId:fixture.descriptors[3].keyId,
+ signature:cryptoSign(null,signingInput(s),fixture.keys[3]).toString('base64url')}]});
 const inherited=['product','component','scope','installId','decisionId','decisionRevision','telemetrySessionId',
  'currentVersion','host','selectionGeneration','metadataSet','registryVersion','sourceProfileId',
  'clientFactsDigest','updaterFactsDigest','helperFactsDigest','launcherFactsDigest','forwardPath','update'];
@@ -29,6 +35,7 @@ function make(group,name,{decisionChange=()=>{},downloadChange=()=>{},rootChange
  signDecision=s=>fixture.sign(s),signDownload=s=>fixture.sign(s),accepted=false}={}) {
  const root=clone(fixture.metadata.root);rootChange(root);
  const decision=clone(fixture.claims.decision),download=clone(fixture.claims.download);
+ download.sourceBinding.urlSha256=sha256(Buffer.from('https://files.example.invalid/artifact?ticket=public-test','utf8'));
  decisionChange(decision);downloadChange(download);
  const request={protocolVersion:1,scope:{product:'pinvou',component:'app',installId:'install-1',...clone(fixture.claims.decision.scope)},
  decision:parseJson(signDecision(decision)),downloadKey:'download-key-1',packageId:'package-2'};requestChange(request);
@@ -103,4 +110,12 @@ make('wire','credential-closed-schema',{envelopeChange:(q,r)=>{r.credential.sign
 make('wire','duplicate-outer-key',{responseWire:b=>Buffer.from('{"protocolVersion":1,'+b.toString().slice(1))});
 make('wire','response-over-one-mib',{responseWire:b=>Buffer.concat([b,Buffer.alloc(1048577-b.length,32)])});
 make('wire','embedded-over-64k',{envelopeChange:(q,r)=>{const sig=clone(r.credential.signatures[0]);while(canonicalize(r.credential).length<=65536)r.credential.signatures.push(clone(sig));}});
+
+make('source','url-replaced-without-new-signature',{responseChange:r=>{r.url='https://files.example.invalid/other';}});
+make('source','fresh-signed-url-same-object',{downloadChange:d=>{d.sourceBinding.urlSha256=sha256(Buffer.from('https://files.example.invalid/artifact?ticket=rotated','utf8'));},responseChange:r=>{r.url='https://files.example.invalid/artifact?ticket=rotated';},accepted:true});
+for(const field of ['sourceId','objectId','objectVersion'])make('source','new-signed-'+field,{downloadChange:d=>{d.sourceBinding[field]='another-object-record';},accepted:true});
+make('source','missing-mandatory-binding',{downloadChange:d=>{delete d.sourceBinding;},signDownload:rawSignDownload});
+make('source','unknown-binding-field',{downloadChange:d=>{d.sourceBinding.extra=true;},signDownload:rawSignDownload});
+make('source','signed-wrong-url-hash',{downloadChange:d=>{d.sourceBinding.urlSha256='0'.repeat(64);}});
+
 console.log(JSON.stringify(rows));

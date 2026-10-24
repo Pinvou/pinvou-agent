@@ -5,6 +5,7 @@ const root=pathToFileURL(process.argv[1]);
 const{OPERATIONS}=await import(new URL('./build-api.mjs',root));
 const{assertApiContract,assertApiShape}=await import(new URL('./api-registry.mjs',root));
 const{parseJson}=await import(new URL('./canonical-json.mjs',root));
+const{sha256}=await import(new URL('./digests.mjs',root));
 const{checkSemantics}=await import(new URL('./semantics.mjs',root));
 const{createFixtureSet}=await import(new URL('./tests/fixtures.mjs',root));
 const f=createFixtureSet();
@@ -18,9 +19,12 @@ function baseline(operation) {
     v.decision=envelope('decision');v.telemetryCredential=envelope('telemetry-event');
     if(operation==='refresh'){v.workflowRevision=0;v.writableSessionId=v.decision.signed.telemetrySessionId;}
   } else if(operation==='download-info') {
-    v.credential=envelope('download');const c=v.credential.signed;
+    const url='https://example.invalid/file';
+    const download=structuredClone(f.claims.download);
+    download.sourceBinding.urlSha256=sha256(Buffer.from(url,'utf8'));
+    v.credential=parseJson(f.sign(download));const c=v.credential.signed;
     Object.assign(v,{packageId:c.packageId,size:c.package.size,sha256:c.package.sha256,
-      url:'https://example.invalid/file',expiresAt:c.exp,fileSourceClass:'primary'});
+      url,expiresAt:c.exp,fileSourceClass:'primary'});
   } else if(operation.startsWith('validate-')) {
     v.authorization=envelope('authorization-'+operation.slice('validate-'.length));v.authorizationRevision=0;
   } else if(operation==='consume-status') {

@@ -23,6 +23,7 @@ The commands are:
 upgrade-download-cache create JOB ROOT_JSON ROOT_SHA256 PACKAGE_JSON EXPECTED_JSON IMPORT_JSON
 upgrade-download-cache status JOB MANIFEST_SHA256
 upgrade-download-cache run JOB MANIFEST_SHA256 IMPORT_JSON NETWORK_JSON
+upgrade-download-cache resume JOB MANIFEST_SHA256 IMPORT_JSON NETWORK_JSON INDEPENDENT_CHECKPOINT_SHA256
 upgrade-download-cache pause JOB MANIFEST_SHA256 RUN_ID
 upgrade-download-cache cancel JOB MANIFEST_SHA256 RUN_ID
 upgrade-download-cache check JOB MANIFEST_SHA256
@@ -43,11 +44,17 @@ the **original JSON strings** for DownloadInfo, and `suppliedTimeMillis` is the
 operator's explicitly supplied protocol-time observation. Original strings reach
 the existing bounded codec before duplicate keys could be erased. The verifier
 checks both actual Decision/Download signatures, original request correlation,
-scope, package bytes and the exact hop Package reference. Expired credentials or
+scope, package bytes, the exact hop Package reference and mandatory signed
+`sourceBinding`. Its `urlSha256` binds the exact outer URL UTF-8 bytes; its
+`sourceId`, `objectId` and `objectVersion` name an immutable logical storage object.
+These opaque identifiers disclose no bucket, path, credential or provider choice.
+Old source-unbound credentials are refused without a compatibility fallback.
+Expired credentials or
 URL windows at that supplied time are refused. The tool supplies no trusted clock,
 current denial inventory, protected bootstrap, high-water store or current online
-qualification. An offline import does not itself authenticate the origin of the
-outer control response or approve its URL.
+qualification. An offline import does not authenticate the control transport or
+provide production destination approval, even though the credential's signature
+binds the literal URL.
 
 The job retains a fixed qualification fingerprint including the complete
 `update.workflowId`, `update.originalStage`, hop/endpoint and metadata projection.
@@ -66,7 +73,8 @@ operator-supplied input and process memory: neither goes into job records, tool
 diagnostics or file-plane headers. Operators must separately protect/remove their
 input files; the cache directory is not secret storage.
 
-Network access occurs only on explicit `run`/`restart`. `NETWORK_JSON` is a closed
+Network access occurs only on explicit `run`, `restart`, `resume` and their
+fixed-control variants. `NETWORK_JSON` is a closed
 operator-consent object, for example:
 
 ```json
@@ -91,12 +99,47 @@ attempt, not successful download evidence.
 
 There is no download-wide or cumulative deadline or retry-count cap. Existing
 individual DNS/connection/read-idle limits remain distinct. A later invocation
-continues the local job without resetting its static inputs. This batch has no
-production immutable-source proof owner and accepts no `sameSource` flag. Thus
-every new network attempt uses a **new exclusive file from zero**, retaining old
-attempt bytes. Equal URLs, ETags or a rehashed partial prefix cannot authorize
-Range append. The existing transfer planner's proof-required Range capability is
-preserved for future actual provider integration.
+continues the local job without resetting its static inputs. `run` and `restart`
+use a new exclusive file from zero; equal URLs or ETags never prove continuity.
+
+`resume` additionally takes a checkpoint digest independently retained from an
+earlier `checkpoint` notice. The library exposes `run_with_resume` and
+`ResumeCheckpointPin::from_independently_retained_sha256`; this constructor checks
+only digest spelling. A digest discovered in the cache or journal is not an
+independently retained pin and must not be passed as one. No `sameSource` flag,
+arbitrary checkpoint path or unsigned offset is accepted.
+
+A notice is emitted only after network/body I/O has ended, the actual file has
+been synchronized, and the same held object's identity, exact length and prefix
+SHA have been checked. The closed checkpoint binds the manifest, numeric attempt,
+physical identity, Package identity, signed immutable-source tuple, prefix length
+and SHA, and original strong ETag bytes. It contains no URL or credential. A
+failed write, synchronization or verification emits no digest. Partial bytes
+without a returned, independently retained digest remain available for whole-file
+recovery but do not authorize Range.
+
+Before Range, every new import passes the original signature, qualification,
+Package, scope, time and literal URL binding checks. The externally pinned
+checkpoint bytes and actual held old prefix are then checked. A verified prefix
+is copied into a new exclusive attempt, with its copy hash, synchronized bytes
+and physical identity rechecked. Only that new file can be appended or replaced
+by a legal HTTP 200 response; the old partial file remains intact. Changed source,
+object or version starts at zero even when the ETag is equal. Missing independent
+pin also starts at zero. A malformed checkpoint, wrong pin or damaged prefix is
+refused rather than silently treated as a normal source change.
+
+Before starting GET, the full import is checked again using the supplied
+observation plus the local monotonic time spent verifying and preparing its
+prefix. Expiry or arithmetic overflow refuses the attempt and preserves both
+files. This local adjustment does not establish trusted time and adds no deadline
+to an ongoing payload transfer.
+
+A fresh signed URL for the same immutable object can continue its verified
+prefix. Strong ETag and the original Range/If-Range, Content-Range and byte-count
+rules still apply. A successful partial 206 is an incomplete local attempt, not a
+full hash match or a remote failure event. A caller may retain its new checkpoint
+and obtain a fresh credential for another attempt. No checkpoint confers native
+ownership, current upgrade qualification or installation rights.
 
 ## Recovery and byte observations
 
@@ -222,5 +265,6 @@ architecture/CI routing assertions. Their repaired runs do not turn the initial
 failures into passes. Final frozen logs are recorded separately. No wall-clock
 24-hour transfer, physical power-loss, privileged-administrator, abrupt OS reboot
 or production file-service acceptance is inferred from these controls. The new
-job always requests full bytes; successful Range/206/416 behavior remains an
-existing lower-layer capability and is not claimed as this job's actual coverage.
+original job batch always requested full bytes. Its recorded results do not
+establish the later checkpoint/Range integration; that increment requires its own
+focused checks.

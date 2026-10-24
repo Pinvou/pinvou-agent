@@ -6,6 +6,7 @@ const base = pathToFileURL(process.argv[1]);
 const { canonicalize } = await import(new URL('./canonical-json.mjs',base));
 const { publicKeyDescriptor, signEnvelope, verifyRootSuccessor } = await import(new URL('./signatures.mjs',base));
 const inventory = JSON.parse(readFileSync(new URL('../vectors/crypto/envelopes.json',base)));
+const { createFixtureSet } = await import(new URL('./tests/fixtures.mjs', base));
 const clone = structuredClone;
 const rows = [];
 const DAY = 86_400_000;
@@ -47,7 +48,8 @@ function rotation(overlap = false) {
 }
 function active(rotationCase, name = 'timestamp', mutate = () => {}) {
   const vector = inventory.vectors.find((item) => item.name === name);
-  const signed = JSON.parse(Buffer.from(vector.envelopeBase64Url, 'base64url')).signed;
+  const signed = name === 'download' ? createFixtureSet({ clock: vector.now }).claims.download
+    : JSON.parse(Buffer.from(vector.envelopeBase64Url, 'base64url')).signed;
   if (Object.hasOwn(signed, 'signingKeyId')) {
     signed.signingKeyId = rotationCase.meta[0].descriptor.keyId;
   }

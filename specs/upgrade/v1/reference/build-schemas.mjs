@@ -9,6 +9,10 @@ const positive = { ...integer, minimum: 1 };
 const text = { type: 'string', minLength: 1, maxLength: 65536 };
 const identifier = { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' };
 const hash = { type: 'string', pattern: '^[0-9a-f]{64}$' };
+// New source identifiers require exact ASCII membership. ECMAScript '$' alone
+// may match before a final line terminator; do not broaden the legacy schemas.
+const sourceIdentifier = { ...identifier, maxLength: 128, not: { pattern: '[^A-Za-z0-9._:-]' } };
+const sourceHash = { ...hash, minLength: 64, maxLength: 64 };
 const version = { type: 'string', pattern: '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$' };
 const channel = { enum: ['stable', 'beta', 'internal'] };
 const targetKey = { enum: ['windows-x86_64-nsis-perMachine', 'linux-x86_64-deb-perMachine',
@@ -26,6 +30,8 @@ const roles = ['root', 'timestamp', 'snapshot', 'target', 'release', 'package', 
 const defs = {
   identifier, hash, version, integer, positive, text, channel, targetKey,
   byteIdentity: object({ size: positive, sha256: hash }),
+  downloadSourceBinding: object({ sourceId: sourceIdentifier, objectId: sourceIdentifier,
+    objectVersion: sourceIdentifier, urlSha256: sourceHash }),
   metadataReference: object({ role: { enum: ['root', 'timestamp', 'snapshot', 'target', 'release', 'package'] },
     scope: { type: 'object', maxProperties: 4, additionalProperties: identifier },
     version: nullable(positive), expiresAt: nullable(integer), size: { ...positive, maximum: 1048576 }, envelopeSha256: hash }),
@@ -184,7 +190,8 @@ function credential(role, audience, purpose, fields) {
 credential('decision', 'upgrade-control', 'check', { ...qualification, requestNonce: identifier,
   updateAvailable: { type: 'boolean' }, update: nullable(ref('updateBinding')), reason: nullable(identifier) });
 credential('download', 'upgrade-download-info', 'download', { ...qualification,
-  update: ref('updateBinding'), packageId: identifier, package: ref('byteIdentity') });
+  update: ref('updateBinding'), packageId: identifier, package: ref('byteIdentity'),
+  sourceBinding: ref('downloadSourceBinding') });
 for (const purpose of ['preinstall', 'install', 'activate']) {
   credential(`authorization-${purpose}`, 'upgrade-consume', purpose, { ...qualification,
     update: ref('updateBinding'), authorizationJti: identifier, transactionId: identifier,

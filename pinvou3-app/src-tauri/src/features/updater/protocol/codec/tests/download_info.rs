@@ -1,9 +1,7 @@
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use pinvou_upgrade_codec::{Document, DownloadInfoContractError, Error, InputKind};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -16,26 +14,46 @@ fn root() -> PathBuf {
         .to_owned()
 }
 fn base() -> Value {
-    let v: Value = serde_json::from_slice(
-        &std::fs::read(root().join("specs/upgrade/v1/vectors/crypto/envelopes.json")).unwrap(),
-    )
-    .unwrap();
-    let v = v["vectors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["name"] == "download")
+    // Generate a genuine new-contract credential with the existing reference
+    // fixture. The unchanged fixed legacy Download is a rejection control.
+    let output = Command::new("node")
+        .args([
+            "--input-type=module",
+            "-e",
+            r#"
+import {pathToFileURL} from 'node:url';
+const source=pathToFileURL(process.argv[1]);
+const {createFixtureSet}=await import(source);
+const {sha256}=await import(new URL('../digests.mjs',source));
+const {parseJson}=await import(new URL('../canonical-json.mjs',source));
+const f=createFixtureSet(),url='https://example.invalid/file';
+const claims=structuredClone(f.claims.download);
+claims.sourceBinding.urlSha256=sha256(Buffer.from(url,'utf8'));
+const c=parseJson(f.sign(claims));
+console.log(JSON.stringify({protocolVersion:1,requestId:'request-1',credential:c,
+packageId:c.signed.packageId,size:c.signed.package.size,sha256:c.signed.package.sha256,
+url,expiresAt:c.signed.exp,fileSourceClass:'primary'}));
+"#,
+        ])
+        .arg(root().join("specs/upgrade/v1/reference/tests/fixtures.mjs"))
+        .output()
         .unwrap();
-    let c: Value = serde_json::from_slice(
-        &URL_SAFE_NO_PAD
-            .decode(v["envelopeBase64Url"].as_str().unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    json!({"protocolVersion":1,"requestId":"request-1","credential":c,
- "packageId":c["signed"]["packageId"],"size":c["signed"]["package"]["size"],"sha256":c["signed"]["package"]["sha256"],
- "url":"https://example.invalid/file","expiresAt":c["signed"]["exp"],"fileSourceClass":"primary"})
+    assert!(
+        output.status.success(),
+        "new-contract fixture unavailable: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
 }
+fn set_url(value: &mut Value, url: &str) {
+    let hash: String = Sha256::digest(url.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    value["url"] = json!(url);
+    value["credential"]["signed"]["sourceBinding"]["urlSha256"] = json!(hash);
+}
+
 fn check(v: &Value) -> Result<(), DownloadInfoContractError> {
     Document::parse(&serde_json::to_vec(v).unwrap(), InputKind::Metadata)
         .unwrap()
@@ -88,18 +106,18 @@ fn contract_data_does_not_approve_url_signature_current_time_or_a_download_deadl
         .unwrap()
         .push(sig);
     for url in ["https://", "https://\n"] {
-        v["url"] = json!(url);
+        set_url(&mut v, url);
         assert_eq!(check(&v), Ok(()));
     }
-    v["url"] = json!("https://".to_owned() + &"a".repeat(8184));
+    set_url(&mut v, &("https://".to_owned() + &"a".repeat(8184)));
     assert_eq!(check(&v), Ok(()));
-    v["url"] = json!("https://".to_owned() + &"a".repeat(8185));
+    set_url(&mut v, &("https://".to_owned() + &"a".repeat(8185)));
     assert_eq!(check(&v), Err(DownloadInfoContractError::InvalidContract));
-    v["url"] = json!("https://".to_owned() + &"\u{1f600}".repeat(8184));
+    set_url(&mut v, &("https://".to_owned() + &"\u{1f600}".repeat(8184)));
     assert_eq!(check(&v), Ok(()));
-    v["url"] = json!("https://".to_owned() + &"\u{1f600}".repeat(8185));
+    set_url(&mut v, &("https://".to_owned() + &"\u{1f600}".repeat(8185)));
     assert_eq!(check(&v), Err(DownloadInfoContractError::InvalidContract));
-    v["url"] = json!("https://example.invalid/file");
+    set_url(&mut v, "https://example.invalid/file");
     v["credential"]["signed"]["nbf"] = v["credential"]["signed"]["exp"].clone();
     assert!(matches!(
         check(&v),

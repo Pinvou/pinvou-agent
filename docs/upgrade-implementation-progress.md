@@ -1,11 +1,11 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 11:00 Asia/Shanghai**.
+Checkpoint: **2026-10-24 11:27 Asia/Shanghai**.
 
 There are 47 tasks: seven completed, nineteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **7/47 (14.9%)**.
-The equal-task engineering estimate is **35.0%**. T07, T08 and T31 reflect their current delivery;
+The equal-task engineering estimate is **35.2%**. T07, T08, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
@@ -62,9 +62,49 @@ runs. Final qualifying invocations closed naturally without resource-floor
 breaches. Future affected checks separate compilation from test execution to
 avoid replaying long tests after compiler auxiliary-process cleanup failures.
 
-The mandatory source-binding and continuation candidate has passed independent
-source review but is not yet integrated or verified by Rust execution. This
-prerequisite does not change T29's completion estimate.
+The approved main-integration prerequisite is committed and pushed as
+`09c3ad32550a156bdea6a72a4e7d0cfdb169f043`. The following continuation
+increment is integrated and verified independently from that prerequisite.
+
+## Verified T29 signed-source continuation increment
+
+The Download credential now requires a closed signed `sourceBinding`: logical
+source, immutable object and object version, plus SHA-256 of the exact outer URL
+UTF-8 bytes. The verifier returns a privately constructed source identity only
+after the existing complete signature, qualification and expiry checks. A renewed
+signed URL can retain the same immutable identity; a changed source tuple starts
+a fresh exclusive file even when its ETag matches. Legacy unbound credentials
+are refused, as approved; the original twenty cryptographic vectors are unchanged.
+
+Windows cache jobs now publish independently retainable checkpoint digests only
+after flushing and rereading the actual held prefix. Resumption requires that
+external pin, closed checkpoint, exact held file identity/length/hash, strong
+ETag and the same original Package and signed source. The checked prefix is
+copied into a new exclusive attempt; interruption, replacement and HTTP restart
+preserve the original bytes. Cancellation remains latched. Full credential
+validation runs again after local preparation and before the first GET; there
+is no total or cumulative download deadline.
+
+Independent deep source and repair reviews passed. Qualifying Windows results:
+**157 codec, 71 verifier, 3 control HTTP, 45 workflow and 1 actual signed-package
+consumer passes**, with one existing control-HTTP opt-in ignored. The workflow
+includes all 21 new portable/Windows continuation and time-boundary tests. The
+codec total combines 34 unchanged successful targets from the complete run with
+the final three-target repair run; the earlier complete run remains failed.
+The unchanged reference suite's previous **205 passes** remain applicable.
+The complete application Windows all-targets check, architecture guard and
+whitespace checks passed. Earlier stale-fixture, missing-dependency and MSVC
+auxiliary-process cleanup failures remain recorded as unsuccessful runs.
+Final qualifying commands closed naturally without resource-floor breaches.
+
+The service's four source-binding test adaptations are integrated, but the
+committed contract export and service regression are the next step. This
+increment does not supply production current qualification, protected checkpoint
+storage or the authorized executor. T27's protected current acceptance and T26's
+proven time source remain real production prerequisites; ordinary QA clock inputs
+and cache observations do not replace them. Existing host staging and same-process
+VerifiedExecutionObject custody are reused. T29 remains in progress at **75%**;
+real remote file-service and installed-host E2E gaps remain explicitly unexecuted.
 
 ## Completed T08 internal publication delivery
 
@@ -254,13 +294,11 @@ remain diagnostic records. No resource-floor failure occurred.
 Actual protected-copy ACL/reparse, replacement and disk-exhaustion E2E remain
 unexecuted without a qualified isolated Windows input/environment; they are
 environment follow-ups, not passed tests or completion blockers. Current
-production qualification, source continuity/continuation and integration with
-the later authorized executor remain unfinished business implementation. The
-existing DownloadInfo wire lacks an authenticated immutable-source object/version
-binding. The owner approved a new signed immutable-source binding without legacy
-compatibility; this is now the main implementation work. No ETag or QA
-provider assertion is promoted to a production continuity proof. These increments
-do not complete T29; its engineering estimate remains unchanged pending closure.
+production qualification and integration with the later authorized executor
+remain unfinished business implementation. The subsequent signed-source
+continuation increment above closes the earlier wire-binding and explicit cache
+resumption gap. No ETag or QA provider assertion is promoted to production
+continuity authority. These components do not complete T29.
 
 ## Installed-image prerequisite delivered with T29
 
@@ -299,7 +337,7 @@ build target, current role artifacts and essential logs remain needed and retain
 
 ## Per-task status
 
-Only T31 changes from the previous estimates. Outstanding environment-only E2E qualification is not a
+T29 now reflects the verified continuation increment. Outstanding environment-only E2E qualification is not a
 completion blocker; outstanding business implementation is.
 
 | Task | Estimate | Status | Delivery / outstanding dependency |
@@ -332,7 +370,7 @@ completion blocker; outstanding business implementation is.
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
-| T29 | 65% | In progress | Restricted transfer/cache primitives, retained Windows QA jobs, fixed DownloadInfo caller, original FullPack/native observation, protected staging, authenticated historical Root succession and same-process VerifiedExecutionObject ownership are delivered; production qualification/source continuity/continuation and authorized-executor integration remain pending. |
+| T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; service contract export/regression, protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |
 | T32 | 0% | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |

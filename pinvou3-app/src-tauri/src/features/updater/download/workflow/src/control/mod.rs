@@ -1,7 +1,7 @@
 //! Explicit fixed control acquisition followed by the existing cache attempt.
 //! No endpoint/CA/header injection, remote retry, continuation grant or install.
 mod request;
-use crate::{Error, Job, NetworkConsent, Notice, Snapshot, journal::Phase};
+use crate::{Error, Job, NetworkConsent, Notice, ResumeCheckpointPin, Snapshot, journal::Phase};
 use pinvou_upgrade_control_http::{Operation, post_once};
 use request::PreparedControl;
 use serde::Deserialize;
@@ -38,6 +38,20 @@ pub async fn run_control(
     restart: bool,
     observe: impl FnMut(Notice) -> Result<(), Error> + Send + 'static,
 ) -> Result<Snapshot, Error> {
+    run_control_with_resume(path, pin, input, consent, restart, None, observe).await
+}
+
+/// A fresh fixed-service credential and the independently retained prefix pin
+/// are separate inputs. A cache/journal/CLI value grants no native authority.
+pub async fn run_control_with_resume(
+    path: PathBuf,
+    pin: String,
+    input: ControlAttempt,
+    consent: NetworkConsent,
+    restart: bool,
+    resume: Option<ResumeCheckpointPin>,
+    observe: impl FnMut(Notice) -> Result<(), Error> + Send + 'static,
+) -> Result<Snapshot, Error> {
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::IoUnavailable)?;
     let stop = Arc::new(AtomicBool::new(false));
     let _stop_on_drop = crate::runner::StopOnDrop(stop.clone());
@@ -69,7 +83,15 @@ pub async fn run_control(
         if stop.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
-        crate::runner::run_open_job(job, import, consent, restart, &runtime, observe, &stop)
+        crate::runner::run_open_job(
+            job,
+            import,
+            consent,
+            crate::runner::AttemptOptions { restart, resume },
+            &runtime,
+            observe,
+            &stop,
+        )
     })
     .await
     .map_err(|_| Error::IoUnavailable)?

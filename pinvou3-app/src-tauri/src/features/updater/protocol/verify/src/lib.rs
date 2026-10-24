@@ -28,7 +28,7 @@ pub use check::{
 };
 pub use download::{
     DownloadVerificationError, DownloadVerificationInputs, SignatureCheckedDownloadResponse,
-    verify_download_info_response,
+    SignatureCheckedDownloadSource, verify_download_info_response,
 };
 pub use error::VerificationError;
 pub use graph::{

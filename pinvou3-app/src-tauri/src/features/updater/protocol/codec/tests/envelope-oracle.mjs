@@ -16,7 +16,8 @@ const { requireCondition }=await import(new URL('./errors.mjs',reference));
 const { validateSchema }=await import(new URL('./schema-registry.mjs',reference));
 const { METADATA_LIFETIMES, sameJson }=await import(new URL('./semantics.mjs',reference));
 // Execute original helpers/functions unchanged. B13 compares partial encoding
-// only over unchanged frozen valid signed bodies. B15 mutates signed bodies and
+// only over current Schema-valid signed bodies. Original frozen bytes remain
+// covered separately by the byte-shape tests. B15 mutates signed bodies and
 // compares the complete parser/Schema/encoding composition, with expected context
 // derived from each case solely to isolate Schema validation.
 const [parseEnvelope,decodeBase64Url]=compileFunction(

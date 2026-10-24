@@ -9,23 +9,41 @@ import { signingInput, verifyEnvelope } from '../signatures.mjs';
 const envelopes = JSON.parse(await readFile(new URL('../../vectors/crypto/envelopes.json', import.meta.url), 'utf8'));
 const digests = JSON.parse(await readFile(new URL('../../vectors/crypto/digests.json', import.meta.url), 'utf8'));
 
-test('twenty independently verified fixed envelopes match signature inputs, hashes and claims', () => {
+// The original download vector predates mandatory sourceBinding. Its bytes and
+// signing input remain frozen; it is deliberately not a current credential.
+const legacyDownloads = envelopes.vectors.filter((vector) => vector.expectedContext.role === 'download');
+const currentVectors = envelopes.vectors.filter((vector) => vector.expectedContext.role !== 'download');
+
+test('all twenty fixed envelope identities and signing inputs remain unchanged', () => {
   assert.equal(envelopes.vectors.length, 20);
   for (const vector of envelopes.vectors) {
     const bytes = Buffer.from(vector.envelopeBase64Url, 'base64url');
-    const envelope = verifyEnvelope(bytes, { trustedRoot: envelopes.trustedRoot,
-      expected: vector.expectedContext, now: vector.now });
     assert.equal(sha256(bytes), vector.expectedEnvelopeSha256);
-    assert.equal(signingInput(envelope.signed).toString('hex'), vector.expectedSigningInputHex);
+    assert.equal(signingInput(parseJson(bytes).signed).toString('hex'), vector.expectedSigningInputHex);
   }
 });
 
-test('every fixed signed scalar rejects changed content, including nested scope and chain identities', () => {
+test('nineteen current fixed envelopes verify; original download is a legacy rejection control', () => {
+  assert.equal(currentVectors.length, 19);
+  assert.equal(legacyDownloads.length, 1);
+  for (const vector of currentVectors) {
+    verifyEnvelope(Buffer.from(vector.envelopeBase64Url, 'base64url'), { trustedRoot: envelopes.trustedRoot,
+      expected: vector.expectedContext, now: vector.now });
+  }
+  for (const vector of legacyDownloads) {
+    const bytes = Buffer.from(vector.envelopeBase64Url, 'base64url');
+    assert.equal(Object.hasOwn(parseJson(bytes).signed, 'sourceBinding'), false);
+    assert.throws(() => verifyEnvelope(bytes, { trustedRoot: envelopes.trustedRoot,
+      expected: vector.expectedContext, now: vector.now }), { code: 'SCHEMA_INVALID' });
+  }
+});
+
+test('every current fixed signed scalar rejects changed content, including nested scope and chain identities', () => {
   function leaves(value, path = []) {
     if (value === null || typeof value !== 'object') return [path];
     return Object.entries(value).flatMap(([key, child]) => leaves(child, [...path, key]));
   }
-  for (const vector of envelopes.vectors) {
+  for (const vector of currentVectors) {
     const original = parseJson(Buffer.from(vector.envelopeBase64Url, 'base64url'));
     for (const path of leaves(original.signed)) {
       const changed = structuredClone(original);

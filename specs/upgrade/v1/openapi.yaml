@@ -16025,6 +16025,48 @@
             ],
             "additionalProperties": false
           },
+          "downloadSourceBinding": {
+            "type": "object",
+            "properties": {
+              "sourceId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                "maxLength": 128,
+                "not": {
+                  "pattern": "[^A-Za-z0-9._:-]"
+                }
+              },
+              "objectId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                "maxLength": 128,
+                "not": {
+                  "pattern": "[^A-Za-z0-9._:-]"
+                }
+              },
+              "objectVersion": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                "maxLength": 128,
+                "not": {
+                  "pattern": "[^A-Za-z0-9._:-]"
+                }
+              },
+              "urlSha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "sourceId",
+              "objectId",
+              "objectVersion",
+              "urlSha256"
+            ],
+            "additionalProperties": false
+          },
           "metadataReference": {
             "type": "object",
             "properties": {
@@ -18801,6 +18843,9 @@
               },
               "package": {
                 "$ref": "#/components/schemas/common/$defs/byteIdentity"
+              },
+              "sourceBinding": {
+                "$ref": "#/components/schemas/common/$defs/downloadSourceBinding"
               }
             },
             "required": [
@@ -18835,7 +18880,8 @@
               "forwardPath",
               "update",
               "packageId",
-              "package"
+              "package",
+              "sourceBinding"
             ],
             "additionalProperties": false
           },

@@ -69,3 +69,6 @@ fn unsupported_adapter_does_not_touch_files() {
 
 #[cfg(all(test, target_os = "windows"))]
 mod windows_control_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_resume_tests;
