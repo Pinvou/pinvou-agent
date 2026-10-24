@@ -300,7 +300,11 @@ async fn reconcile_pending_rewind(
             // 磁盘重建（SyncSession）。单元夹具无池（None）跳过，生产接线由
             // send-prelude pin 保证 gates.pools 恒为 Some。
             if let Some((pool, _)) = gates.pools {
-                pool.evict(session_id).await;
+                // r28 B1：evict_if_present——evict 的无条目臂会 invalidate 未
+                // 提交预约（本条消息正是持预约进入快照前奏的），且重启恢复流
+                // 的池是空的（引擎在内存、重启即清空）。存在性判定在 entries
+                // 锁内（与 evict_locked 同一 chokepoint，无探针窗口）。
+                pool.evict_if_present(session_id).await;
             }
         }
         Ok(Err(error)) => {
@@ -1482,8 +1486,40 @@ mod tests {",
         );
         // r26 M3：重放截断后必须驱逐活引擎（否则引擎 persist 复活被截轮次）。
         assert!(
-            body.contains("pool.evict(session_id)"),
-            "重放截断后必须驱逐活引擎（r26 M3：引擎 persist 会复活被截轮次）"
+            body.contains("pool.evict_if_present(session_id)"),
+            "重放截断后必须以 evict_if_present 驱逐活引擎（r26 M3 + r28 B1：普通 evict 的无条目臂会失效在途预约）"
+        );
+    }
+
+    /// r28 M2(a) pin：rewind_to_turn 的复用判定不得查 sidecar 绑定记录——
+    /// matcher 的 revision 匹配已是提交判定器（r25 MAJOR-3），绑定记录在
+    /// revision 匹配时只能是 persist 分裂窗（复用恰恰正确）。复活绑定记录
+    /// 否决（r26-M1 类）必须在此变红。
+    #[test]
+    fn rewind_reuse_does_not_consult_the_sidecar_record() {
+        let src = include_str!("checkpoints.rs");
+        let fn_start = src
+            .find("pub async fn rewind_to_turn(")
+            .expect("rewind_to_turn must exist");
+        let rest = &src[fn_start..];
+        let body_end = [
+            "
+pub ",
+            "
+pub(super) ",
+            "
+async fn ",
+            "
+fn ",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(rest.len(), |offset| offset);
+        let body = &rest[..body_end];
+        assert!(
+            !body.contains("latest_rewound_turns_record"),
+            "rewind_to_turn 的复用判定不得查 sidecar 绑定记录（r28 M2：否则 persist 分裂窗被否决、P1 孤儿化）"
         );
     }
 
@@ -2936,7 +2972,10 @@ fn ",
     /// 匹配、绑定记录已存在（truncate 写记录后、持久化前失败 + 引擎旧副本
     /// 重新落盘）。对账必须**复用 P1** 幂等重放（不得 fresh 一枚 PreRestore
     /// 快照已恢复树、孤儿化 P1），完成后暂记清除、transcript 收敛到 1 轮。
-    /// 变异实证：复活 r26-M1 的绑定记录否决（fresh PreRestore）必须在此变红。
+    /// 本测试钉住重放流程本身：从绑定暂记出发的幂等重放必须收敛（截断到
+    /// keep_turns、暂记清除、无 fresh PreRestore）——r28 复核：否决复活由
+    /// `rewind_reuse_does_not_consult_the_sidecar_record` 源码 pin 承接（重放
+    /// 不经 matcher，本测试对否决不敏感）。
     #[tokio::test]
     async fn persist_split_replay_reuses_the_first_pre_restore() {
         if !git_available() {
