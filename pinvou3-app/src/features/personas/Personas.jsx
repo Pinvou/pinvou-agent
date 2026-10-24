@@ -171,7 +171,8 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
 
     // AI 造卡推广 banner(卡池顶部 hero):彩色渐变 + 标题 + 开始造卡 + 三步条 + 右侧浮动本地头像。
     // 整条/按钮点击 → onStart(=startAICard)。深浅模式同一条彩色卡。头像行 xl(1280px) 以下隐藏:
-    // 五张 108px 卡 + 430px 文案列在 overflow-hidden 的 banner 里需要 ≥986px，折叠侧栏时对应 ≥~1134px 窗口。
+    // 五张 108px 卡 + 430px 文案列在 overflow-hidden 的 banner 里需要 ≥986px，折叠侧栏(68px)时对应 ≥~1138px 窗口
+    // (280px 默认侧栏 ≈1350px，480px 最大侧栏最多 ≈1550px；窗口在 1280–1290px 且侧栏收到最窄 220px 时仍可能有 ~10px 裁切)。
     const AICardBanner = ({ onStart, isDark, t }) => {
       const F = (t && t.bnrFaces) || [];
       const face = (i) => ({ name: (F[i] && F[i][0]) || '', role: (F[i] && F[i][1]) || '' });
