@@ -1000,6 +1000,8 @@ Object.assign(dictJa.uiToolStore, {
   typeGroups:{ bundle:'プラグインパッケージ', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
   // Singular per-item badges (store cards, recycle rows); typeGroups stays plural for chips and section headers.
   typeLabels:{ bundle:'プラグインパッケージ', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook' },
+  // Preset-catalogue interface-type descriptors (the static cards in tool-common.jsx), keyed by the exact data literal.
+  catalogTypes:{ 'MCP Server':'MCP', 'Remote MCP':'リモート MCP', 'REST API':'REST API', 'OpenAPI Skill':'OpenAPI スキル', 'Webhook/API':'Webhook/API', 'Action Skill':'アクションスキル', 'Skill':'スキル' },
   recycleBin:'ごみ箱', recycleBinTitle:'プラグインのごみ箱', recycleBinEmpty:'ごみ箱は空です', recycleBinEmptyHint:'アップロードしたプラグインをアンインストールするとここに移動します。復元または完全に削除できます。',
   recycleBinLoadFailed:'ごみ箱の読み込みに失敗しました。もう一度お試しください。', recycleBinLoading:'ごみ箱を読み込み中…', recycledAt:time=>`移動日時: ${time}`,
   recycleRestore:'復元', recycleRestoreUnavailable:'パッケージファイルが見つからないため復元できません', recyclePurge:'完全に削除',

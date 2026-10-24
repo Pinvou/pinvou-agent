@@ -2585,7 +2585,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                   <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                                   <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
                                   <div className="flex items-center gap-2 mt-1.5">
-                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
+                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.catalogTypes || {})[tool.type] || tool.type}</span>
                                     {tool.authRequired && (
                                       <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
                                         <Zap size={10} /> {storeCopy.keyRequired}
@@ -2766,7 +2766,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   <div className="flex items-center justify-between py-5 mb-8 border-y border-slate-100 dark:border-white/5 overflow-x-auto no-scrollbar gap-8">
                     <div className="flex flex-col flex-shrink-0">
                       <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
-                      <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.type}</span>
+                      <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{(storeCopy.catalogTypes || {})[selectedTool.type] || selectedTool.type}</span>
                       <span className="text-[12px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />

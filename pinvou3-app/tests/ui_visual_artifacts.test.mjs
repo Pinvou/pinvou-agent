@@ -244,6 +244,10 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
     'card type badges must not read the plural group dictionary');
   assert.ok(count(toolStore, /\(storeCopy\.typeLabels \|\| \{\}\)\.(?:bundle|skill|mcp)\b/g) >= 4,
     'the uploaded-skill, companion and MCP card badges must read the singular type labels');
+  assert.match(toolStore, /\(storeCopy\.catalogTypes \|\| \{\}\)\[tool\.type\] \|\| tool\.type/,
+    'preset card badges must resolve through the localized catalogue types');
+  assert.match(toolStore, /\(storeCopy\.catalogTypes \|\| \{\}\)\[selectedTool\.type\]/,
+    'the detail header must resolve the catalogue type too');
   // Raw (not comment-stripped): a ternary leg like `: 'Skill'` must fail too,
   // not only a whole-property `type: 'Skill'` literal.
   assert.doesNotMatch(raw, /:\s*'Skill'/, 'card type labels must resolve through the localized dictionaries');
@@ -273,6 +277,21 @@ test('community group name and type badge labels exist in all three languages', 
   for (const kind of ['bundle', 'skill']) {
     assert.notEqual(dict.ja.uiToolStore.typeLabels[kind], dict.en.uiToolStore.typeLabels[kind],
       `ja typeLabels.${kind} must not fall back to English`);
+  }
+  // The static preset cards render their type through catalogTypes; every
+  // interface-type literal in the data file must be a key in all three
+  // dictionaries. ('text' is a content-block discriminator, not an interface
+  // type; the CLI + … connectors are localized per backend id through the
+  // uiToolDetails overlay instead.)
+  const catalogueLiterals = [...new Set([...source('features/tools/tool-common.jsx').matchAll(/type: '([^']+)'/g)].map(m => m[1]))]
+    .filter(value => value !== 'text' && !value.startsWith('CLI +'));
+  assert.ok(catalogueLiterals.length >= 7, 'preset catalogue type literals must be discoverable in tool-common.jsx');
+  for (const language of ['zh', 'en', 'ja']) {
+    const catalog = dict[language].uiToolStore.catalogTypes;
+    for (const literal of catalogueLiterals) {
+      assert.ok(catalog && typeof catalog[literal] === 'string' && catalog[literal].trim(),
+        `${language}.uiToolStore.catalogTypes must carry the preset descriptor '${literal}'`);
+    }
   }
   assert.equal(dict.en.uiToolStore.typeLabels.skill, 'Skill', 'en per-item badge labels must be singular');
   assert.equal(dict.en.uiToolStore.typeLabels.bundle, 'Plugin bundle', 'en per-item badge labels must be singular');

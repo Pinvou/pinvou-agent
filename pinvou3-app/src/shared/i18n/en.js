@@ -997,6 +997,8 @@ Object.assign(dictEn.uiToolStore, {
   typeGroups:{ bundle:'Plugin Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
   // Singular per-item badges (store cards, recycle rows); typeGroups stays plural for chips and section headers.
   typeLabels:{ bundle:'Plugin bundle', mcp:'MCP', skill:'Skill', cli:'CLI integration', api:'API & Webhook' },
+  // Preset-catalogue interface-type descriptors (the static cards in tool-common.jsx), keyed by the exact data literal.
+  catalogTypes:{ 'MCP Server':'MCP', 'Remote MCP':'Remote MCP', 'REST API':'REST API', 'OpenAPI Skill':'OpenAPI Skill', 'Webhook/API':'Webhook/API', 'Action Skill':'Action Skill', 'Skill':'Skill' },
   recycleBin:'Recycle Bin', recycleBinTitle:'Plugin Recycle Bin', recycleBinEmpty:'Recycle bin is empty', recycleBinEmptyHint:'Uploaded plugins you uninstall are moved here; you can restore or permanently delete them.',
   recycleBinLoadFailed:'Failed to load the recycle bin. Please retry.', recycleBinLoading:'Loading recycle bin…', recycledAt:time=>`Recycled at ${time}`,
   recycleRestore:'Restore', recycleRestoreUnavailable:'Package files are missing and cannot be restored', recyclePurge:'Delete Permanently',
