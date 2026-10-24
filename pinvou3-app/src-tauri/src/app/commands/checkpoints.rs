@@ -4,9 +4,10 @@
 //! 只做传输边界：原生车道校验、两个根解析、忙碌门与错误文案。原生车道 = 工作模式
 //! 会话 + 品悟原生 code 会话（`SessionKind::Chat` + 非 ACP）：ACP 会话与定时
 //! 会话如实拒绝（设计 §11：ACP 不做；定时会话无每轮快照，与 fork 拒绝口径一致）。
-//! aux 侧聊会话（`aux-`）零工具且无回退 UI 消费（r5 评审起 chat() 侧跳过快照；此处仅历史会话查询照常放行）：
-//! 私有目录（小且自排除），无 UI 消费——如实放行不设特判（配方与 list_sessions
-//! 车道过滤保持同源）。
+//! aux 侧聊会话（`aux-`）无快照即无回退面（r5 评审起 chat() 侧跳过快照）；
+//! r29 minor 3：破坏性命令（rewind/undo）显式拒绝 aux——raw IPC 直调不得经
+//! truncate_to_user_turn 改写 aux transcript（文件头旧声明「仅历史查询照常
+//! 放行」对破坏性腿失实，已按实际行为改写）。
 
 use super::prelude::*;
 use crate::features::code_checkpoints as checkpoints;
@@ -867,6 +868,12 @@ pub async fn rewind_to_turn(
 ) -> Result<RewindToTurnResult, String> {
     let (ledger, execution) =
         resolve_native_session_roots(&session_id, &store, |id| acp_pool.is_acp(id))?;
+    // r29 minor 3：破坏性命令族显式排除 aux 会话——文件头「仅历史查询过门」
+    // 的旧声明与实际不符；无快照的 aux 会话本无回退面，raw IPC 直调也不得
+    // 经 truncate_to_user_turn 改写其 transcript。
+    if crate::features::sessions::is_aux_session_id(&session_id) {
+        return Err("辅助会话不支持检查点回退".to_string());
+    }
     // 本会话忙碌门：同 restore_checkpoint，先快速检查给出友好文案，再原子占位；
     // 预约持有到编排结束（未提交，Drop 自动归还 slot）。
     if pool.is_turn_active(&session_id) {
@@ -1250,6 +1257,11 @@ pub async fn undo_last_rewind(
 ) -> Result<UndoLastRewindResult, String> {
     let (ledger, execution) =
         resolve_native_session_roots(&session_id, &store, |id| acp_pool.is_acp(id))?;
+    // r29 minor 3：与 rewind_to_turn 同款 aux 排除（破坏性命令族显式拒绝，
+    // 文件头声明恢复真实）。
+    if crate::features::sessions::is_aux_session_id(&session_id) {
+        return Err("辅助会话不支持检查点反悔".to_string());
+    }
     // 忙碌门与 rewind_to_turn 同款：本会话原子占位 + 同执行根跨会话拒绝。
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请先停止当前任务再反悔".to_string());

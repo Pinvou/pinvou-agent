@@ -5657,9 +5657,12 @@ fn require_native_code_session(
     // gives (`require_existing`).
     require_existing(store, session, "checkpoints")?;
     if !agents.is_code_session(session) {
+        // r29 minor 1: the refusal names the actual axes — work-mode sessions
+        // rewind in the GUI, aux sessions are out of scope everywhere.
         return Err(CliError::failed(format!(
-            "code_checkpoints_requires_native_code_session: only native code sessions support \
-             checkpoints (session {session})"
+            "code_checkpoints_requires_native_code_session: checkpoints via the CLI cover \
+             native code sessions only (session {session}); work-mode sessions rewind in the \
+             GUI, and aux sessions are out of scope everywhere"
         )));
     }
     // Round-41 review: pre-gate scheduled-run sessions here, BEFORE the
@@ -5923,13 +5926,15 @@ fn checkpoints_rewind(
     //    only copy of the pre-rewind state (undo would silently no-op).
     let revision = pinvou3_lib::features::sessions::transcript_revision(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error:#}")))?;
-    // r25 MAJOR-3：`matching_pending_pre_restore` 的 revision 匹配本身就是
-    // 提交判定器——completed rewind 的 truncate 已改写 transcript，revision
-    // 必然前进、matcher 返回 None。能走到 Some（revision 仍匹配）的唯一绑定
-    // 记录形态是 **persist 分裂窗**（sidecar 记录已写、截断持久化失败）：此刻
-    // 重用 P1 恰恰是正确动作（幂等重放），不得按「已完成、仅清理失败」否决
-    // ——否则 fresh P2 快照已恢复树、P1（真前态唯一副本）被孤儿化，undo
-    // 静默变成 no-op。
+    // r25 MAJOR-3: the matcher's revision check is itself the commit
+    // discriminator - a completed rewind's truncate rewrites the transcript,
+    // so the revision always advances and the matcher returns None. The only
+    // bound-record shape that can reach Some (revision still matching) is the
+    // persist-split window (sidecar record written, truncation persist
+    // failed): reusing P1 there is exactly right (idempotent replay) - do not
+    // veto it as "completed, cleanup-only", or a fresh P2 snapshots the
+    // already-restored tree, orphaning P1 (the only copy of the true
+    // pre-rewind state) and silently no-op-ing undo.
     let reuse =
         checkpoints::matching_pending_pre_restore(&ledger, &checkpoint.id, keep_turns, &revision)
             .map_err(|error| {
@@ -6125,17 +6130,20 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     let mut root_lock = execution_root_lock(&root, "undo")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "undo", session)?;
     let info = resolve_undo_state(&store, &ledger, session)?.ok_or_else(|| {
+        // r29 minor 1: name the LRU-eviction cause the GUI copy names.
         CliError::failed(
-            "no_undoable_rewind: nothing to undo (no rewind happened, or new turns were created \
-             after it)",
+            "no_undoable_rewind: nothing to undo (no rewind happened, new turns were created \
+             after it, or the rollback point was LRU-evicted)",
         )
     })?;
     let checkpoint_id = info.checkpoint_id.clone();
     if let Some(checkpoint_id) = checkpoint_id.as_deref() {
         checkpoints::restore_checkpoint(&ledger, &execution, checkpoint_id).map_err(|error| {
-            // r27 M3（r26 minor 10 文案腿序修正）：本臂先恢复代码、后恢复对话
-            // ——此处失败时**对话尚未恢复**（截断仍在），真实状态是「代码部分
-            // 恢复 + 对话保持回退后状态」。回滚点保留、幂等重试安全。
+            // r27 M3 (r26 minor 10 copy leg-order fix): this arm restores
+            // code first and the conversation second - on failure here the
+            // conversation has NOT been restored (the truncation is still in
+            // place); the real state is "code partially restored + transcript
+            // still truncated". Rollback point kept; idempotent retry safe.
             CliError::failed(format!(
                 "code checkpoints undo: restoring code to rollback point {checkpoint_id} failed \
                  before the conversation was restored (code partially restored, transcript still \
@@ -6168,11 +6176,13 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
         let condition_broken = matches!(resolve_undo_state(&store, &ledger, session), Ok(None));
         undo_restore_failure(condition_broken, session, checkpoint_id.as_deref(), &detail)
     })?;
-    // r24 M2：undo 成功 = 会话状态已变，任何在途回退暂记一律作废（镜像 GUI
-    // undo_last_rewind 的显式收口，app/commands/checkpoints.rs）。否则 replay
-    // 臂看到 sidecar 绑定记录已被本次 undo 消费（committed == false）而在
-    // 下一条 GUI 发送时重放**失败回退**的旧树，把 transcript 截到 undo 刚
-    // 恢复的状态之下——用户的 undo 被静默取代。
+    // r24 M2: a successful undo means the session state changed - invalidate
+    // any live pending (mirror of the GUI's explicit close-out in
+    // app/commands/checkpoints.rs). Otherwise the replay arm sees the sidecar
+    // record consumed by this undo (committed == false) and replays the FAILED
+    // rewind's older tree on the next GUI send, truncating the transcript
+    // below the state the undo just restored - silently superseding the
+    // user's undo.
     checkpoints::clear_pending_rewind(&ledger);
     let value = serde_json::json!({
         "session": session,
@@ -6195,9 +6205,10 @@ mod tests {
     use super::*;
     use crate::ExitCode;
 
-    /// r27 M2 pin：回退前奏必须在活暂记在飞时跳过陈旧和解（pending-first），
-    /// 且探针走 pub 布尔包装（PendingRewind 是 pub(crate)，CLI 不能触及）。
-    /// 删除守卫或改回私有类型 match 必须在此变红。
+    /// r27 M2 pin: the rewind prelude must skip the stale-Turn sweep while a
+    /// live pending exists (pending-first), probed through the pub bool
+    /// wrapper (PendingRewind is pub(crate); the CLI crate cannot name it).
+    /// Deleting the guard or reverting to the private-type match turns red.
     #[test]
     fn rewind_prelude_skips_stale_sweep_while_pending_live() {
         let src = include_str!("code.rs");
@@ -6209,7 +6220,7 @@ mod tests {
             .expect("the sweep must be gated on the live-pending probe (r27 M2)");
         assert!(
             guard_at < sweep_at,
-            "回退前奏必须先探活暂记、再做陈旧和解（r27 M2）"
+            "the rewind prelude must probe the live pending before the stale sweep (r27 M2)"
         );
     }
 
@@ -6230,13 +6241,13 @@ mod tests {
         let body = &rest[..body_end];
         assert!(
             !body.contains("latest_rewound_turns_record"),
-            "CLI rewind 的复用判定不得查 sidecar 绑定记录（r28 M2）"
+            "the CLI rewind reuse decision must not consult the sidecar record (r28 M2)"
         );
         // r27 P2-1 pin：暂记读取必须区分 NotFound 与真实 IO 错误——失败打开
         // （映射 None）会在引导重试时 fresh PreRestore 快照已恢复树。
         assert!(
             src.contains("ErrorKind::NotFound => return Ok(None)"),
-            "暂记读取必须区分 NotFound 与真实 IO 错误（r27 P2-1 fail-closed）"
+            "the pending read must distinguish NotFound from real IO errors (r27 P2-1 fail-closed)"
         );
     }
 

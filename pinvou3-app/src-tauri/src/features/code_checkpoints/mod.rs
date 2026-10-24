@@ -135,6 +135,13 @@ const SECRET_EXCLUDES: &[&str] = &[
     "terraform.tfstate*",
     ".my.cnf",
     ".pgpass",
+    // r29 minor 6：path-policy 清单余量（快照仅本地，calibrated minor）。
+    "*.tfstate*",
+    ".pypirc",
+    ".envrc",
+    "_netrc",
+    "secrets.yaml",
+    "service-account*.json",
 ];
 
 /// 把敏感模式转成大小写不敏感的 gitignore 模式：ASCII 字母逐个展开为 `[xX]`
