@@ -153,6 +153,8 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'the hero primary const must carry the canonical light + dark hover pair');
   assert.ok(count(remoteKnowledge, /className=\{heroPrimary\}/g) >= 2,
     'both hero calls-to-action must use the shared heroPrimary const');
+  assert.equal(count(source('features/remote-knowledge/RemoteKnowledgeView.jsx'), /(?<![-\w])hover:bg-\[#0A4BB8\](?![^"'`]*dark:hover:bg-\[#C2DBFF\])/g), 0,
+    'every canonical light primary hover must carry its dark half in the same string');
   // The file pairs every error/success text with its dark half (#ff8a80 /
   // #7DD3A8); a bare light-only instance re-opens the unreadable-in-dark
   // class. The lookahead stays inside the className string (no quote may be
@@ -219,10 +221,17 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
   // 4.35:1 on the restored red-500/[0.08] tint, below AA.
   assert.match(acpNotices, /bg-amber-500 text-amber-950 text-\[12px\]/,
     'the authorize button must use dark ink on the amber fill');
+  // Zero-tolerance form of the pin above: a string literal elsewhere in the
+  // file containing the pinned text can satisfy a positive, but any unpaired
+  // amber fill fails this.
+  assert.equal(count(acpNoticesRaw, /bg-amber-500(?!\/)(?![^"'`]*text-amber-950)/g), 0,
+    'every solid amber-500 fill must pair the dark amber-950 ink (the /[0.0N] tints are backgrounds, not fills)');
   assert.match(acpNotices, /rounded-xl bg-red-600 px-3 py-1\.5/,
     'the account switch must use red-600 under white text');
   assert.match(acpNotices, /bg-red-500\/\[0\.08\] text-red-700 dark:text-red-300/,
     'the tinted error banner must darken its light leg to red-700');
+  assert.equal(count(acpNoticesRaw, /bg-red-500\/\[0\.08\](?![^"'`]*text-red-700)/g), 0,
+    'every red-500 tint must pair the red-700 light leg');
   assert.ok(count(acpNotices, /text-red-600 dark:text-red-300/g) >= 4,
     'error details must use the file red-600 + red-300 pair');
   assert.match(remoteKnowledge, /bg-\[#d63a3a\]\/\[0\.08\] px-3 py-2 text-\[12px\] text-\[#b72f2f\]/,
@@ -294,6 +303,15 @@ test('community group name and type badge labels exist in all three languages', 
   for (const kind of ['bundle', 'skill']) {
     assert.notEqual(dict.ja.uiToolStore.typeLabels[kind], dict.en.uiToolStore.typeLabels[kind],
       `ja typeLabels.${kind} must not fall back to English`);
+  }
+  // ja and zh have no singular/plural split, so their typeLabels must stay
+  // value-identical to typeGroups — a divergent edit to one dictionary would
+  // silently fork the badge copy.
+  for (const kind of Object.keys(dict.ja.uiToolStore.typeLabels)) {
+    assert.equal(dict.ja.uiToolStore.typeLabels[kind], dict.ja.uiToolStore.typeGroups[kind],
+      `ja typeLabels.${kind} must stay in sync with typeGroups`);
+    assert.equal(dict.zh.uiToolStore.typeLabels[kind], dict.zh.uiToolStore.typeGroups[kind],
+      `zh typeLabels.${kind} must stay in sync with typeGroups`);
   }
   // The static preset cards render their type through catalogTypes; every
   // interface-type literal in the data file must be a key in all three
