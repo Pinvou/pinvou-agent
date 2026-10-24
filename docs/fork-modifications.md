@@ -29,6 +29,11 @@
 - All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
 - Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
 
+## Web JSONPath upstream backport (integrated; historical candidate evidence, #756)
+
+- [上游 #7046](https://github.com/codewhale-hq/Codewhale/pull/7046) 于 2026-10-22 以 `b9619942905ac4b62752a579ca8937467d0486fc` 合入。`4164aa6fd` 在公开维护提交 `083cebfd9` 上通过 `git cherry-pick -x` 保留原补丁、消息及贡献者署名；包含该 pick 的候选分支 tip `4bf5e0894` 保留在 `integration/jsonpath-upstream-7046`，用于历史溯源。实际维护分支通过 CodeWhale#117 的 squash `ea9fdc90f` 集成，父仓已由 #750 消费此基线。此项属于既有 T2，不新增 fork 主题。
+- 边界：本次回移只对齐上游 Web schema 文案和真实 parser 契约，不改变 parser、网络策略或执行。更完整的双引号键/非负索引/ASCII 点字段/对象通配符说明及既有带引号键内 `]` 扫描限制留作后续；当前状态、计数和测试由既有基线登记负责。
+
 ## T3 增补：技能索引幻影工具修复（#56 已合入为 `72e98fd89`）
 
 - 状态：[Pinvou/CodeWhale#56](https://github.com/Pinvou/CodeWhale/pull/56) 已合入为 squash `72e98fd89`（2026-09-17），并随 2026-09-17 批次把公开 `pinvou3-clean` 推进至 `92427bd8d`（候选分支原 `ae7e3fb36` 之上共 8 个提交：事故现场 `c34c3a430`、同类清扫 `f81528358`、两段式激活收口 `a2e21fcf9`、拼车剥离 `18f7c7b15`、复审去重与守护加固 `9f46ac5f0`、复审第五轮收口 `be2b2fe92`、复审第六轮同类收口 `4eb487cd3`、复审第七轮一致性收口 `dc1f391d6`）；父仓侧白名单/常载与指令适配随父仓 PR #490。候选期 `CANDIDATE_HEAD` 登记随落地回收，父仓 gitlink 恢复指向公开维护分支头，`verify-public-submodule.sh` 恢复绿。
