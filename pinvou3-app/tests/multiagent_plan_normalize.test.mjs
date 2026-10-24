@@ -1823,7 +1823,11 @@ test('refreshModeDefaults：草稿态按当前 lane 默认刷新显示', async (
         ],
       },
     ],
-    agent: null,
+    agent: { agentId: 'a1', role: 'scout', done: true, failed: false, error: null },
   });
-  assert.equal(projection.userText, '起点', '同族载体不得拼入任务指令（r27 M2）');
+  assert.equal(
+    projection.turns[0].userText,
+    '起点',
+    '同族载体不得拼入任务指令（r27 M2）',
+  );
 }
