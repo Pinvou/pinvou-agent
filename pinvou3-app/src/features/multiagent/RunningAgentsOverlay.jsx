@@ -195,6 +195,10 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
         sessionId,
         agentId: summary.agent_id,
         role: summary.role || null,
+        // Canonical fleet type (FleetRole::as_str: general/explore/planner/
+        // reviewer/implement/test/advisor/custom): role-less rows derive
+        // their label from it, same as the transcript panel's roleKeyOf.
+        agentType: summary.agent_type || null,
         status: summary.status || null,
         done: !!summary.done,
         failed: !!summary.failed,

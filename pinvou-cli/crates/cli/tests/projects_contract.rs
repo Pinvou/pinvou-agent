@@ -66,7 +66,12 @@ fn bind_code_session(dir: &Path) -> String {
     drop(sessions);
     let agents = SessionAgentStore::load_or_empty();
     agents
-        .bind_code_native_session(&id, CodexWorkspaceKind::Project, Some(dir.to_path_buf()))
+        .bind_code_native_session(
+            &id,
+            CodexWorkspaceKind::Project,
+            Some(dir.to_path_buf()),
+            Vec::new(),
+        )
         .expect("bind code session");
     drop(agents);
     id
@@ -533,9 +538,15 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         "delete must report the unassigned session"
     );
     let value = run_json(&["pinvou", "projects", "list"]);
+    // §9.9 (review #484): a deleted project's members are tombstoned as an
+    // explicit None entry instead of being removed — automatic revival into
+    // a surviving project sharing the root is forbidden; moving back is an
+    // explicit move.
     assert!(
-        value["assignments"].get(session_id.as_str()).is_none(),
-        "the assignment entry must be gone"
+        value["assignments"]
+            .get(session_id.as_str())
+            .is_some_and(|entry| entry.is_null()),
+        "the assignment entry must be tombstoned, not removed"
     );
     assert!(
         home.sessions_root()
@@ -565,8 +576,12 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         "the refusal must disclose that the write it refused is irreversible: {error}"
     );
     let value = run_json(&["pinvou", "projects", "list"]);
+    // The explicit None tombstone from the delete above stands; the refusal
+    // itself must not flip it into an assignment.
     assert!(
-        value["assignments"].get(session_id.as_str()).is_none(),
+        value["assignments"]
+            .get(session_id.as_str())
+            .is_some_and(|entry| entry.is_null()),
         "a refused ungroup must not write an assignment entry"
     );
 
@@ -820,7 +835,12 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
     drop(sessions);
     let agents = SessionAgentStore::load_or_empty();
     agents
-        .bind_code_native_session(&code_id, CodexWorkspaceKind::Project, Some(to.clone()))
+        .bind_code_native_session(
+            &code_id,
+            CodexWorkspaceKind::Project,
+            Some(to.clone()),
+            Vec::new(),
+        )
         .expect("move the code binding to to");
     drop(agents);
 
@@ -1481,12 +1501,13 @@ fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
     );
 }
 
-/// Round-40 review: rebinding onto another project's existing root would
-/// produce overlapping project roots — the preflight partition refuses with
-/// the typed `REBIND_ROOTS_CONFLICT` copy before any session binding moves.
-/// Like the missing-destination arm above, this arm had no contract test.
+/// §9.9 (review #484) legalized CROSS-project root overlap: rebinding onto
+/// a root another project already holds is a legal relocation. Round-46 M3
+/// renamed this test — its round-40 name/doc promised the typed
+/// `REBIND_ROOTS_CONFLICT` refusal while §9.9 flipped the body to assert
+/// success; the intra-set nesting arm is pinned separately below.
 #[test]
-fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
+fn projects_rebind_to_another_projects_root_relocates_per_s9_9() {
     let _env_guard = env_lock();
     let _home = HomeGuard::new("projects", "rebind-roots-conflict", Isolation::ProductHome);
     let from = make_root_dir("rebind-conflict-from");
@@ -1495,13 +1516,16 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
     create_project("Moving", &[&from]);
     create_project("Occupied", &[&to]);
 
-    let error = rebind(&from, &to).expect_err("rebinding onto an occupied root must refuse");
+    // §9.9 (review #484) legalizes cross-project root overlap: rebinding
+    // onto a root another project already holds is a legal, successful
+    // relocation — only the intra-set duplicate/nesting conflicts refuse.
+    let value = rebind_json(&from, &to);
     assert!(
-        error.to_string().contains("REBIND_ROOTS_CONFLICT"),
-        "the refusal must carry the typed conflict marker: {error}"
+        value["affected_project_ids"].as_array().is_some(),
+        "the relocation must report the affected project: {value}"
     );
 
-    // Both projects keep their own roots.
+    // Both projects survive; `Moving` now shares `Occupied`'s territory.
     let list = run_json(&["pinvou", "projects", "list"]);
     let roots: Vec<String> = list["projects"]
         .as_array()
@@ -1517,14 +1541,61 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
         })
         .collect();
     assert!(
-        roots.contains(&from.to_str().unwrap().to_owned())
+        !roots.contains(&from.to_str().unwrap().to_owned())
             && roots.contains(&to.to_str().unwrap().to_owned()),
-        "both roots must survive the refused rebind: {roots:?}"
+        "the moved project must now reference the shared root: {roots:?}"
+    );
+}
+
+/// Round-46 M3: the typed `REBIND_ROOTS_CONFLICT` arm — the only rebind
+/// refusal §9.9 keeps — had no CLI exercise after the overlap flip above
+/// renamed this arm's former host. Rebinding a root INTO the same project's
+/// other root nests the target set and must refuse with the typed marker
+/// before any binding moves.
+#[test]
+fn projects_rebind_into_own_sibling_root_is_a_typed_conflict() {
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("projects", "rebind-roots-nested", Isolation::ProductHome);
+    let first = make_root_dir("rebind-nested-first");
+    let second = make_root_dir("rebind-nested-second");
+    let inner_path = second.join("inner");
+    std::fs::create_dir_all(&inner_path).unwrap();
+    let inner = TempRoot(std::fs::canonicalize(&inner_path).unwrap());
+
+    create_project("Nesting", &[&first, &second]);
+
+    let error = expect_failed(&rebind_argv(&first, &inner));
+    assert!(
+        error.to_string().contains("REBIND_ROOTS_CONFLICT"),
+        "the intra-set nesting refusal must stay typed: {error}"
+    );
+
+    // Refused before any movement: the project still holds its original roots.
+    let list = run_json(&["pinvou", "projects", "list"]);
+    let roots: Vec<String> = list["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|project| {
+            project["roots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|root| root["path"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        roots.contains(&first.to_str().unwrap().to_owned())
+            && roots.contains(&second.to_str().unwrap().to_owned())
+            && !roots.contains(&inner.to_str().unwrap().to_owned()),
+        "a refused rebind must leave every original root in place: {roots:?}"
     );
 }
 
 /// Round-40 review: tier-2 auto-group resolution (workspace bound under a
-/// project root, no explicit assignment, longest root wins) had no positive
+/// project root, no explicit assignment, §9.9 (position, id) first-match)
+/// had no positive
 /// contract test — only the negative ungroup refusals exercised the wiring.
 /// A regression there (passing the session-record path instead of the
 /// session's workspace, or the `Some(None)` short-circuit leaking into tier
@@ -1797,5 +1868,128 @@ fn projects_rebind_keeps_a_current_to_lane_baseline_across_a_rerun() {
     assert!(
         !after_text.contains("between-runs.txt"),
         "the between-runs change must stay OUTSIDE the session-start reference: {after_text}"
+    );
+}
+
+/// Round-40 M5: the delete's auto-grouped-member expulsion is pinned — a
+/// session auto-filed under the project's root (no explicit assignment)
+/// must land in `affected_session_ids` and get the tombstone; and a corrupt
+/// agent index fails the delete with "nothing was deleted — retry" instead
+/// of silently under-enumerating.
+#[test]
+fn projects_delete_exposes_auto_grouped_members_and_refuses_a_corrupt_index() {
+    let _lock = env_lock();
+    let home = HomeGuard::new("projects", "delete-pin", Isolation::ProductHome);
+    let root = home.path().join("proj-root");
+    std::fs::create_dir_all(&root).expect("project root");
+
+    // Create the project through the CLI itself (the lane the pin
+    // exercises) and keep the generated id.
+    let created = create_project("cli-delete-pin", &[&root]);
+    let project_id = created["id"].as_str().unwrap().to_owned();
+    // An AUTO-GROUPED member: a code session bound under the root, no
+    // explicit assignment (tier-2 only).
+    let member = bind_code_session(&root);
+
+    let value = run_json(&["pinvou", "projects", "delete", &project_id, "--yes"]);
+    let affected = report_ids(&value, "affected_session_ids");
+    assert!(
+        affected.contains(&member),
+        "the auto-grouped member must land in affected_session_ids: {value}"
+    );
+    // The project itself is gone from the listing (tombstones may keep
+    // the file present by design — retention of explicit move-outs).
+    let listing = run_json(&["pinvou", "projects", "list"]);
+    let listed: Vec<&str> = listing["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(
+        !listed.contains(&"cli-delete-pin"),
+        "the deleted project must not survive in the listing: {listing}"
+    );
+
+    // Corrupt-index refusal: a second project + member, then break the
+    // agent index before the delete.
+    let home2 = HomeGuard::new("projects", "delete-corrupt", Isolation::ProductHome);
+    let root2 = home2.path().join("proj-root-2");
+    std::fs::create_dir_all(&root2).expect("project root 2");
+    let created2 = create_project("cli-delete-corrupt", &[&root2]);
+    let project_id2 = created2["id"].as_str().unwrap().to_owned();
+    let _ = bind_code_session(&root2);
+    std::fs::write(home2.path().join("session-agents.json"), "{not json")
+        .expect("corrupt the agent index");
+    expect_failed(&["pinvou", "projects", "delete", &project_id2, "--yes"]);
+}
+
+// Round-49 M4: `update --roots` expulsion contract. A root replacement must
+// route through `cli_replace_roots_and_expel` (the GUI's expel flow, the
+// round-40 M4 parity requirement): narrowing the roots tombstones the
+// auto-grouped member bound under the dropped root, so the assignment map
+// drops it. Reverting the path to a plain `store.update_project` leaves the
+// stale assignment in place (count stays 2, and the GUI's align would
+// silently re-adopt the member); no other update test reaches the
+// replacement lane with auto-grouped members at all.
+#[test]
+fn projects_update_roots_expels_auto_grouped_members() {
+    let _lock = env_lock();
+    let home = HomeGuard::new("projects", "update-expel", Isolation::ProductHome);
+    let kept_root = home.path().join("kept-root");
+    let dropped_root = home.path().join("dropped-root");
+    std::fs::create_dir_all(&kept_root).expect("kept project root");
+    std::fs::create_dir_all(&dropped_root).expect("dropped project root");
+
+    let created = create_project("cli-update-expel", &[&kept_root, &dropped_root]);
+    let project_id = created["id"].as_str().unwrap().to_owned();
+    // An AUTO-GROUPED member under each root (tier-2 binding, no explicit
+    // assignment): the dropped-root one must be expelled, the kept-root one
+    // must survive the replacement.
+    let survivor = bind_code_session(&kept_root);
+    let expelled = bind_code_session(&dropped_root);
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "update",
+        &project_id,
+        "--root",
+        kept_root.to_str().unwrap(),
+    ]);
+    // The replacement is wholesale: only the kept root remains.
+    let listed: Vec<&str> = value["roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        vec![kept_root.to_str().unwrap()],
+        "the root list must be replaced wholesale: {value}"
+    );
+
+    // The tombstone, asserted where it lives: the expelled member must hold
+    // an explicit-None entry in the durable assignment map. This is the
+    // exact discriminator against the round-40 M4 divergence class — a
+    // plain `store.update_project` would leave NO map entry (the member
+    // silently re-adoptable), which a bare count assertion cannot see
+    // (tier-2 members never enter the map to begin with).
+    let relisting = run_json(&["pinvou", "projects", "list"]);
+    let assignments = relisting["assignments"]
+        .as_object()
+        .expect("projects list must carry the assignment map");
+    assert!(
+        assignments.contains_key(expelled.as_str()),
+        "the expelled member must have an explicit assignment-map entry (the tombstone): {relisting}"
+    );
+    assert!(
+        assignments.get(expelled.as_str()).unwrap().is_null(),
+        "the expelled member's entry must be an explicit-None tombstone: {relisting}"
+    );
+    assert!(
+        !assignments.contains_key(survivor.as_str()),
+        "the kept-root member must stay tier-2-only (no map entry): {relisting}"
     );
 }

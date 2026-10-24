@@ -62,7 +62,7 @@ use pinvou3_lib::features::codex_acp::{
     AcpAgentDescriptor, AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS,
     CodexWorkspaceKind, GIT_IDENTITY_KEYS, GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION,
     MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi, SessionAgentStore,
-    version_at_least,
+    acp_session_model_name, version_at_least,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore, is_aux_session_id};
 use pinvou3_lib::platform::credential_store::{
@@ -1035,30 +1035,18 @@ fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
     Ok(id)
 }
 
-/// Credential-marker vocabulary from the GUI's login sanitizer
-/// (`features/codex_acp/login.rs::sanitize_kimi_login_failure_detail`): any
-/// of these in a login transcript means credential material may be present
-/// in a shape `redact_secret` cannot see — a JWT (`eyJ…`) carries no
-/// redactable prefix — and the GUI refuses to surface such detail at all.
-/// Round-40 review: the human-mode echo applies the same posture and
-/// withholds the dump instead of printing it partially scrubbed.
-const LOGIN_ECHO_WITHHOLD_MARKERS: [&str; 10] = [
-    "access_token",
-    "refresh_token",
-    "authorization:",
-    "bearer ",
-    "api_key",
-    "api-key",
-    "secret=",
-    "cookie:",
-    "user_code=",
-    "device_code=",
-];
-
+/// Round-40 review: the human-mode echo applies the GUI's withhold posture —
+/// the imported `KIMI_CREDENTIAL_MARKERS` are the GUI login sanitizer's own
+/// vocabulary (any of them in a login transcript means credential material
+/// may be present in a shape `redact_secret` cannot see — a JWT (`eyJ…`)
+/// carries no redactable prefix — and the GUI refuses to surface such detail
+/// at all), so the CLI withholds the dump instead of printing it partially
+/// scrubbed. The list itself is imported, not mirrored: an app-side marker
+/// tightens both surfaces at once.
 fn login_echo_withheld(combined: &str) -> bool {
     let normalized = combined.to_ascii_lowercase();
-    LOGIN_ECHO_WITHHOLD_MARKERS
-        .iter()
+    pinvou3_lib::features::codex_acp::KIMI_CREDENTIAL_MARKERS
+        .into_iter()
         .any(|marker| normalized.contains(marker))
 }
 
@@ -3749,21 +3737,28 @@ fn translate_import_entry_error(error: &str) -> String {
 
 // ── code sessions ───────────────────────────────────────────────────────────
 
-/// The three ACP session model names (`features::codex_acp`) paired with the
-/// agent identity each stands for — the one table [`acp_session_model`] and
+/// The three ACP session model names come from the shared
+/// `codex_acp::acp_session_model_name` (the string the GUI session creator
+/// writes and `acp_session_backend` parses), paired with the agent identity
+/// each stands for — the one table [`acp_session_model`] and
 /// [`agent_label`]'s lost-sidecar fallback both derive from, so a model name
 /// added app-side cannot be spelled one way in the gate and another way in
-/// the label.
-const ACP_SESSION_MODELS: [(&str, &str, &str); 3] = [
-    ("Codex (ACP)", "codex", "Codex"),
-    ("Claude Code (ACP)", "claude", "Claude Code"),
-    ("Kimi (ACP)", "kimi", "Kimi"),
-];
+/// the label. The agent-id/label columns stay local.
+fn acp_session_models() -> [(String, &'static str, &'static str); 3] {
+    [
+        (AgentBackend::CodexAcp, "codex", "Codex"),
+        (AgentBackend::ClaudeAcp, "claude", "Claude Code"),
+        (AgentBackend::KimiAcp, "kimi", "Kimi"),
+    ]
+    .map(|(backend, id, label)| (acp_session_model_name(backend), id, label))
+}
 
 /// Used to detect ACP sessions whose sidecar record was lost (same fallback
 /// as `acp_session_backend`).
 fn acp_session_model(model: &str) -> bool {
-    ACP_SESSION_MODELS.iter().any(|(name, _, _)| *name == model)
+    acp_session_models()
+        .iter()
+        .any(|(name, _, _)| *name == model)
 }
 
 fn is_code_chat_session(agents: &SessionAgentStore, id: &str, model: &str) -> bool {
@@ -3810,7 +3805,7 @@ fn agent_label(agents: &SessionAgentStore, id: &str, model: &str) -> (&'static s
         AgentBackend::CodexAcp => ("codex", "Codex"),
         AgentBackend::ClaudeAcp => ("claude", "Claude Code"),
         AgentBackend::KimiAcp => ("kimi", "Kimi"),
-        AgentBackend::Deepseek => ACP_SESSION_MODELS
+        AgentBackend::Deepseek => acp_session_models()
             .iter()
             .find(|(name, _, _)| *name == model)
             .map(|(_, id, label)| (*id, *label))
@@ -4109,8 +4104,9 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
 // Read-only ops (list/search/preview/changes/branches) call
 // `features::codex_acp::workspace` directly and serialize its types, so the
 // CLI JSON matches the GUI's exactly. Two pieces stay local on purpose: the
-// diff lane (the app's per-file diff reads untracked files unbounded, uses
-// Chinese section copy, and has no whole-workspace composition — the mirror
+// diff lane (the app's per-file diff uses Chinese section copy and has no
+// whole-workspace composition — its untracked-file reads have been bounded
+// at `DIFF_LIMIT+1` since the round-48 fix; the mirror
 // is differentially pinned against the app module by a contract test) and
 // `workspace checkout` (cross-process locks, the `--yes` gate, and
 // commit-identity hardening are CLI-specific value). Path validation stays a
@@ -4156,6 +4152,33 @@ static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 /// concurrent GUI turn on the same session remains undetectable here
 /// (documented in the command docs and `docs/pinvou-cli.md`).
 /// Callers must keep the returned lock alive alongside its write guard.
+/// The two `{action}_lock: cannot create/open ...` closures both code
+/// mutation locks pass to `support::family_lock` (FnOnce there, so the pair
+/// is built per call). One family, one stable message pair — the seam's
+/// per-family contract, kept in one place instead of pasted twice.
+fn code_mutation_lock_closures(
+    action: String,
+) -> (
+    impl FnOnce(std::path::PathBuf, std::io::Error) -> CliError,
+    impl FnOnce(std::path::PathBuf, std::io::Error) -> CliError,
+) {
+    {
+        let action = action + "_lock";
+        let action_create = action.clone();
+        (
+            move |dir, error| {
+                CliError::failed(format!(
+                    "{action_create}: cannot create {}: {error}",
+                    dir.display()
+                ))
+            },
+            move |path, error| {
+                CliError::failed(format!("{action}: cannot open {}: {error}", path.display()))
+            },
+        )
+    }
+}
+
 fn session_mutation_lock(
     session: &str,
     action: &str,
@@ -4174,20 +4197,11 @@ fn session_mutation_lock(
     // dodge the documented contract. Round-49: the directory-create, open
     // and 0600 tightening are the shared `support::family_lock` seam; the
     // two closures keep this family's stable messages byte-identical.
+    let (on_create_dir, on_open) = code_mutation_lock_closures(action.to_string());
     crate::support::family_lock(
         &format!("code-session-{session}.lock"),
-        |dir, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot create {}: {error}",
-                dir.display()
-            ))
-        },
-        |path, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot open {}: {error}",
-                path.display()
-            ))
-        },
+        on_create_dir,
+        on_open,
     )
 }
 
@@ -4217,20 +4231,11 @@ fn execution_root_lock(
     crate::support::sandbox_home()?;
     // Same `{action}_lock` rule as the session lock above (round-37 review);
     // same shared seam.
+    let (on_create_dir, on_open) = code_mutation_lock_closures(action.to_string());
     crate::support::family_lock(
         &format!("code-root-{}.lock", stable(root)),
-        |dir, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot create {}: {error}",
-                dir.display()
-            ))
-        },
-        |path, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot open {}: {error}",
-                path.display()
-            ))
-        },
+        on_create_dir,
+        on_open,
     )
 }
 
@@ -4363,16 +4368,11 @@ fn workspace_list(
 }
 
 fn workspace_search(root: &Path, query: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return Ok(success(render(
-            output,
-            String::new(),
-            &serde_json::json!({ "results": [], "truncated": false }),
-        )));
-    }
+    // The callee normalizes (trim/lowercase/empty -> no results), which
+    // renders as the same empty envelope below; the raw query is passed
+    // through so the app owns the normalization rule.
     let root = canonical_workspace(root)?;
-    let results = workspace::search_workspace(&root, &query)
+    let results = workspace::search_workspace(&root, query)
         .map_err(|error| CliError::failed(format!("code workspace search: {error:#}")))?;
     // The app walk stops silently at SEARCH_LIMIT, so from the outside the
     // cap being reached is all we can observe; `truncated` is therefore the
@@ -4394,10 +4394,13 @@ fn file_kind(path: &Path) -> &'static str {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if matches!(
-        extension.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
-    ) {
+    // Derived from the app's canonical MIME table so an app-side addition
+    // moves the CLI's classification with it (was a hand-copied extension
+    // list; see platform::filesystem::IMAGE_MIME_TABLE).
+    if pinvou3_lib::platform::IMAGE_MIME_TABLE
+        .iter()
+        .any(|(image_ext, _)| *image_ext == extension)
+    {
         return "image";
     }
     if matches!(
@@ -4566,12 +4569,14 @@ fn workspace_preview(
 /// commit fail honestly instead of recording a fabricated `user@hostname`.
 ///
 /// `commit.gpgsign=false` is a disclosed deviation from the user's git
-/// config and from the GUI's commit lane (which honors signing): this lane
-/// runs git with stdin at `/dev/null`, and the git lanes deliberately run
-/// without a deadline, so a `gpg.ssh`/GPG pinentry prompt would hang the
-/// command until interrupted. The price
+/// config: this lane runs git with stdin at `/dev/null`, and the git lanes
+/// deliberately run without a deadline, so a `gpg.ssh`/GPG pinentry prompt
+/// would hang the command until interrupted. The GUI's commit lane applies
+/// the same suppression through its mirrored `checkout_commit_args` builder
+/// (argument-for-argument twin, kept drift-safe by tests — not a shared
+/// body), so neither surface honors signing. The price
 /// is honest and documented in `docs/pinvou-cli.md`: commits made through
-/// this lane are unsigned even for a `commit.gpgsign=true` user, so a
+/// either lane are unsigned even for a `commit.gpgsign=true` user, so a
 /// signature-based audit must not treat them as verified.
 fn commit_command_args(root: &Path, message: &str) -> Vec<String> {
     let mut args = vec!["-c".to_owned(), "commit.gpgsign=false".to_owned()];

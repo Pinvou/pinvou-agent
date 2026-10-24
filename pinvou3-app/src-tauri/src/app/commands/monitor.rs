@@ -231,6 +231,11 @@ fn local_port_of(base_url: &str) -> Option<u16> {
 fn local_model_provider(kind: LocalServerKind, port: Option<u16>) -> (&'static str, &'static str) {
     match kind {
         LocalServerKind::Vllm => ("vllm", "vLLM"),
+        // 驭光 is the engine's Chinese brand name. Keep the label
+        // language-neutral like the other engine names in this table (the
+        // label reaches the UI verbatim): Latin name first, brand
+        // parenthesized — no Chinese prose for en/ja users.
+        LocalServerKind::Tachyon => ("tachyon", "Tachyon (驭光)"),
         LocalServerKind::Ollama => ("ollama", "Ollama"),
         LocalServerKind::LmStudio => ("lm_studio", "LM Studio"),
         LocalServerKind::Sglang => ("sglang", "SGLang"),
@@ -260,9 +265,7 @@ pub struct BackendStatus {
 pub async fn get_backend_status() -> Result<BackendStatus, String> {
     // Lightweight: 只 probe 当前 active model,不跑 nvidia-smi / RAM 采样。
     let vllm = crate::features::monitor::active_model_snapshot().await;
-    let vllm_online = vllm.as_ref().is_some_and(|v| {
-        v.health_status == "verified" && matches!(v.status, VllmStatus::Ready | VllmStatus::Busy)
-    });
+    let vllm_online = vllm.as_ref().is_some_and(VllmSnapshot::is_online);
     let max_model_len = vllm.as_ref().and_then(|v| v.max_model_len);
     Ok(BackendStatus {
         vllm_online,
@@ -407,6 +410,10 @@ mod tests {
         assert_eq!(
             local_model_provider(LocalServerKind::Vllm, None),
             ("vllm", "vLLM")
+        );
+        assert_eq!(
+            local_model_provider(LocalServerKind::Tachyon, None),
+            ("tachyon", "Tachyon (驭光)")
         );
         assert_eq!(
             local_model_provider(LocalServerKind::Ollama, None),

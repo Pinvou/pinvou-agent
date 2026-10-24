@@ -109,6 +109,10 @@ export default defineConfig([
       // cycle graph instead of one edge at a time.
 
       // ---- jsdoc: check what exists, don't demand new prose ----
+      // eslint-plugin-jsdoc is pinned exactly (65.3.2) in package.json: 65.4.x
+      // drags in four lagging duplicate families (@es-joy/jsdoccomment,
+      // comment-parser, jsdoc-type-pratt-parser, source-map) for a lint-only
+      // minor. Bump it deliberately and recount lock duplicates when you do.
       ...jsdoc.configs['recommended-typescript-flavor'].rules,
       'jsdoc/require-jsdoc': 'off', // retrofitting ~1.9k doc blocks is churn, not signal
       'jsdoc/require-param': 'off',
@@ -230,9 +234,10 @@ export default defineConfig([
     plugins: { n: nPlugin, jsdoc, unicorn, sonarjs, 'import-x': importX },
     settings: {
       'import-x/resolver': { node: { extensions: ['.js', '.mjs'] } },
-      // CI runs Node 22 (latest 22.x, which is >= 22.16 where
-      // import.meta.dirname landed); without this the n plugin falls back to
-      // its built-in >=16 floor and flags every modern builtin.
+      // CI runs Node 24; local dev tracks latest 22.x (>= 22.16, where
+      // import.meta.dirname landed). Pinning the n plugin to that dev floor
+      // stops it from falling back to its built-in >=16 floor and flagging
+      // every modern builtin.
       n: { version: '>=22.16.0 <23' },
     },
     rules: {

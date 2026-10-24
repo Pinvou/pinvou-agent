@@ -214,10 +214,16 @@ assert.deepStrictEqual(
   "run_llm",
   "long poster dictation from Alt or mic must run LLM",
 );
-assert.match(rustVoiceSource, /除极短自然句外，默认整理成结构化 Markdown 列表/);
-assert.match(rustVoiceSource, /内容包含目标、用途、功能、字段、截止时间、进度、多个事项、多个条件、步骤、约束或明显需求表达时，必须整理成 Markdown 列表/);
-assert.match(rustVoiceSource, /制作一个个人工作台，用于企业录入工作事项进度，包括截止时间/);
-assert.match(rustVoiceSource, /12月36日下午3点/);
+// The postprocess prompt texts moved into the shared CLI contract module
+// (features/voice/contract.rs); the application path stays in voice.rs.
+const rustVoiceContractSource = fs.readFileSync(
+  path.join(__dirname, "..", "src-tauri", "src", "features", "voice", "contract.rs"),
+  "utf8",
+);
+assert.match(rustVoiceContractSource, /除极短自然句外，默认整理成结构化 Markdown 列表/);
+assert.match(rustVoiceContractSource, /内容包含目标、用途、功能、字段、截止时间、进度、多个事项、多个条件、步骤、约束或明显需求表达时，必须整理成 Markdown 列表/);
+assert.match(rustVoiceContractSource, /制作一个个人工作台，用于企业录入工作事项进度，包括截止时间/);
+assert.match(rustVoiceContractSource, /12月36日下午3点/);
 assert.match(
   rustVoiceSource,
   /\[voice_postprocess\] empty_output[\s\S]{0,800}\(String::new\(\), false\)/,
@@ -525,11 +531,11 @@ assert.match(
 );
 const voiceRecordingStopAt = voiceHookSource.indexOf("if (voiceInput.status === 'recording') {");
 const voiceBusyGateAt = voiceHookSource.indexOf("if (voiceBusy) return false;", voiceRecordingStopAt);
-const voiceBeforeStartAt = voiceHookSource.indexOf("current.onBeforeStart(nextMode)", voiceRecordingStopAt);
+const voiceCanStartGateAt = voiceHookSource.indexOf("current.canStart(nextMode)", voiceRecordingStopAt);
 assert.ok(voiceRecordingStopAt >= 0 && voiceBusyGateAt > voiceRecordingStopAt,
   "recording stop must run before busy startup gates");
-assert.ok(voiceRecordingStopAt >= 0 && voiceBeforeStartAt > voiceRecordingStopAt,
-  "recording stop must run before the ASR-ready shortcut intro gate");
+assert.ok(voiceRecordingStopAt >= 0 && voiceCanStartGateAt > voiceRecordingStopAt,
+  "recording stop must run before the post-stop startup gates");
 assert.match(
   voiceHookSource,
   /if \(mode === 'edit'\) \{[\s\S]*?setEditPreview\(\{[\s\S]*?original,[\s\S]*?next,[\s\S]*?instruction:[\s\S]*?context,[\s\S]*?\}\);[\s\S]*?return;/,
@@ -537,7 +543,7 @@ assert.match(
 );
 assert.match(
   voiceHookSource,
-  /next === original[\s\S]*onEditUnchanged/,
+  /next === original[\s\S]*?discardVoiceResult\(context\)/,
   "edit mode must not silently swallow unchanged model output",
 );
 assert.match(
@@ -565,8 +571,8 @@ assert.match(
 );
 assert.match(
   webBridgeSource,
-  /function normalizeVoiceMode\(mode\) \{[\s\S]*?mode === "edit" \? "edit"/,
-  "web bridge must preserve edit mode instead of folding it into dictation",
+  /function normalizeVoiceMode\(mode\) \{[\s\S]*?\["edit", "voice_edit", "draft_edit"\]\.includes\(mode\)[\s\S]*?return "edit";/,
+  "web bridge must preserve edit mode (incl. the voice_edit/draft_edit aliases, round-9) instead of folding it into dictation",
 );
 // The web lane has no LLM postprocess, so edit must be downgraded to
 // appended dictation before writeback; otherwise the uncorrected raw ASR

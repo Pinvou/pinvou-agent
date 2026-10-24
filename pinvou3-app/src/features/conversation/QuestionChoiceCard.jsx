@@ -40,9 +40,9 @@ function initialState(questions, initialAnswers, otherAnswerLabel) {
     // （如中文“其他”）不再命中英文预设；此时不应回退到 value 匹配，否则撞值的“其他”答案会被
     // 误判为预设（评审第五轮 P2）。仅当 label 缺失时才按 value 回退，兼容 label 缺失的历史数据。
     const findOption = answer => (
-      answer.label != null && answer.label !== ''
-        ? options.find(option => option.label === answer.label)
-        : options.find(option => option.value === answer.value)
+      answer.label == null || answer.label === ''
+        ? options.find(option => option.value === answer.value)
+        : options.find(option => option.label === answer.label)
     );
     const matchesOption = answer => Boolean(findOption(answer));
     const optionValues = answers

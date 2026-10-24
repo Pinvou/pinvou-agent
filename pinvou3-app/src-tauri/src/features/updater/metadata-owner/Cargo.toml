@@ -10,8 +10,8 @@ license = "MIT"
 pinvou-upgrade-codec = { path = "../protocol/codec" }
 pinvou-upgrade-verifier = { path = "../protocol/verify" }
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.151"
-sha2 = "=0.11.0"
+serde_json = "=1.0.154"
+sha2 = "=0.11.1"
 
 [dev-dependencies]
 ring = "=0.17.14"

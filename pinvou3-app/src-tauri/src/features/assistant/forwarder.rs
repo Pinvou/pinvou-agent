@@ -7,7 +7,7 @@
 
 use super::*;
 
-use crate::features::assistant::engine_pool::stamp_steer_generation;
+use crate::features::assistant::engine_pool::{EnginePool, stamp_steer_generation};
 
 /// Summary detail line for the persistent startup timeline describing a
 /// terminal MCP session-boot receipt. `enabled_servers` counts only enabled
@@ -281,6 +281,17 @@ pub(crate) fn spawn_event_forwarder(
         let self_metrics = app
             .try_state::<crate::features::monitor::MonitorState>()
             .map(|s| s.self_metrics());
+        // Manual-compaction in-flight flag (review #484 round-18 M2): compact_now
+        // sets it at enqueue; this forwarder clears it on terminal compaction
+        // events (the Started arm re-sets it idempotently). Compaction takes no
+        // turn reservation, so the turn-side busy probe cannot see it — the event
+        // source must do this teardown, or align's busy fence would misjudge forever.
+        // try_state: headless harness / tests may not manage EnginePool — skip when
+        // absent; engine reclamation also removes the entry, leaving no sticky busy
+        // flag (same defensive shape as self_metrics above).
+        let engine_pool = app
+            .try_state::<EnginePool>()
+            .map(|pool| pool.inner().clone());
         let mut current_turn_id: Option<String> = None;
         let mut startup_first_output_recorded = false;
         // Dedupe memory for MCP boot receipts: the engine re-reports on every
@@ -805,9 +816,6 @@ pub(crate) fn spawn_event_forwarder(
                 // managed by the foundation itself; the app only consumes the
                 // generic subagent events (AgentSpawned no longer registers a
                 // role).
-                Event::AgentSpawned {
-                    owner_session_id, ..
-                } if owner_session_id == session_id => {}
                 Event::AgentSpawned { .. } => {}
                 // Mid-turn inject delivery confirmation (P0-A): after the
                 // engine appends the steer message to the transcript it emits
@@ -847,20 +855,24 @@ pub(crate) fn spawn_event_forwarder(
                         payload,
                     );
                 }
-                Event::WorkflowUi {
-                    owner_session_id, ..
-                } if owner_session_id == session_id => {}
                 Event::WorkflowUi { .. } => {}
                 Event::AgentProgress {
                     owner_session_id,
                     id,
                     status,
+                    activity,
                     ..
                 } if owner_session_id == session_id => {
                     let payload = json!({
                         "session_id": session_id,
                         "agent_id": id,
                         "status": status,
+                        // 结构化生命周期态（与 worker ledger 同一词表）：展示层
+                        // 不得从自由文本 progress 短语反推状态，否则台账令牌与
+                        // 实时短语互相覆盖，运行中子智能体的状态标签来回闪烁。
+                        "worker_status": deepseek_tui::tools::subagent::agent_worker_status_name(
+                            activity.worker_status,
+                        ),
                     });
                     // Web 端没有 chat:tool_start 的子智能体等价事件， bridge 靠该进展
                     // 文本调度 shell 快照轮询（发现子 agent 的后台任务），必须转发。
@@ -878,7 +890,7 @@ pub(crate) fn spawn_event_forwarder(
                     message,
                     ..
                 } if owner_session_id == session_id => {
-                    use deepseek_tui::tools::subagent::MailboxMessage as MM;
+                    use deepseek_tui::tools::subagent::{AgentWorkerStatus, MailboxMessage as MM};
                     // 审计是应用账本：绑了项目目录的原生代码会话写会话私有目录，
                     // 不污染用户项目；其余会话账本根与执行根相同，行为不变。
                     let ws = bridge.audit_workspace(&session_id, &execution_workspace);
@@ -924,6 +936,12 @@ pub(crate) fn spawn_event_forwarder(
                                 "session_id": session_id,
                                 "agent_id": agent_id,
                                 "status": format!("🔧 {tool_name} (step {step})"),
+                                // 与 AgentProgress 臂同词表：工具执行中。经
+                                // agent_worker_status_name 派生而非手写字面量，
+                                // 底座改词表时两臂一起变而非静默分叉。
+                                "worker_status": deepseek_tui::tools::subagent::agent_worker_status_name(
+                                    AgentWorkerStatus::RunningTool,
+                                ),
                             });
                             // 同 AgentProgress：Web 端靠它发现子 agent 的后台 shell 任务。
                             let _ = app.emit("multiagent:agent_progress", payload.clone());
@@ -1431,6 +1449,11 @@ pub(crate) fn spawn_event_forwarder(
                 Event::CompactionStarted {
                     id, message, auto, ..
                 } => {
+                    // Idempotently re-set the in-flight flag (review #484 round-18 M2): already
+                    // set at enqueue; covers auto-compaction paths bypassing pool.compact_now.
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, true);
+                    }
                     let payload = json!({ "session_id": session_id, "phase": "start", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(
@@ -1476,11 +1499,21 @@ pub(crate) fn spawn_event_forwarder(
                             u64::from(bridge.usage_context_window()),
                         );
                     }
+                    // Compaction terminal state: release the in-flight flag (review #484
+                    // round-18 M2), through which align's busy fence sees the recovery.
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                 }
                 Event::CompactionCancelled { id, message, auto } => {
                     // Cancellation is a terminal compaction phase just like done/fail.
                     // Forward the stable id so both UI lanes can settle the exact
                     // in-flight card instead of leaving the manual compact action locked.
+                    // Terminal state: synchronously release the in-flight flag
+                    // (review #484 round-18 M2).
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                     let payload = json!({
                         "session_id": session_id,
                         "phase": "cancel",
@@ -1496,6 +1529,11 @@ pub(crate) fn spawn_event_forwarder(
                     );
                 }
                 Event::CompactionFailed { id, message, auto } => {
+                    // A terminal failure likewise releases the in-flight flag
+                    // (review #484 round-18 M2).
+                    if let Some(pool) = &engine_pool {
+                        pool.set_compaction_in_flight(&session_id, false);
+                    }
                     let payload = json!({ "session_id": session_id, "phase": "fail", "id": id, "auto": auto, "message": message });
                     let _ = app.emit("chat:compaction", payload.clone());
                     crate::features::remote_control::forward_app_event(

@@ -1,19 +1,21 @@
-// 人格卡共享件:ChatView / tool-renderers / SubagentTranscriptPanel 等主 chunk
-// 消费的小件(头像块、部门配色、多语言取名)从 Personas.jsx 抽出,使卡池视图
-// (CardPoolView/PersonaEditorModal)可独立成懒加载 chunk,不再把
-// 主 chunk 的常驻引用一并拖进卡池。内容与 Personas.jsx 原实现的唯一差异:
-// AppIcon 的头像 img 补了 loading="lazy" decoding="async"(本 PR 主题内优化)。
+// Persona-card shared pieces: the small widgets (avatar block, department
+// colors, multilingual naming) consumed by the main chunk (ChatView /
+// tool-renderers / SubagentTranscriptPanel) were extracted from
+// Personas.jsx so the card-pool views (CardPoolView/PersonaEditorModal) can
+// be a standalone lazy chunk instead of pinning them into the main entry.
 import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
-import { dict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 import { personaOverlayFor } from '../../shared/persona-overlay.js';
     // iOS-style font stack shared by the Persona surfaces (5 call sites in
     // Personas/persona-shared/SavedPersonaConfirmDialog); the promo banner in
     // Personas.jsx deliberately keeps its shorter 4-font stack from main.
 export const IOS_FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
-    // 部门标签按当前 UI 语言取词(t.depts),中文词典(dict.zh.depts)兜底
-export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (dict.zh.depts && dict.zh.depts[k]) || k; }
-    // 内置卡名称/简介按 UI 语言显示(personas-i18n.js overlay,按 id 查),中文兜底;自制卡不翻
+    // Department labels follow the UI language (t.depts) with the zh dictionary
+    // (zhDict().depts) as the fallback.
+export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (zhDict().depts && zhDict().depts[k]) || k; }
+    // Built-in card name/bio render per UI language (personas-i18n.js overlay,
+    // keyed by id) with zh fallback; user-made cards are never translated.
 export function personaText(c, t) {
       const tr = personaOverlayFor(c, t && t.langTag);
       if (!tr) return c || {};
@@ -21,7 +23,7 @@ export function personaText(c, t) {
     }
 export const DEPT_ORDER = ['engineering','marketing','specialized','design','product','finance','sales','testing','project-management','paid-media','support','academic','game-development','spatial-computing','gis','security','supply-chain','hr','legal','tool'];
 export const ALL_DEPT = '__all__'; // 分类「全部」哨兵(语言中立,显示走 t.cpAll)
-const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', gis:'#0EA5E9', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', security:'#F43F5E', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7', tool:'#7C3AED' };
+const DEPT_COLOR = { academic:'#8B5CF6', design:'#EC4899', engineering:'#06B6D4', finance:'#10B981', 'game-development':'#F59E0B', gis:'#0EA5E9', hr:'#F472B6', legal:'#6B7280', marketing:'#F97316', 'paid-media':'#EF4444', product:'#7C3AED', 'project-management':'#3B82F6', sales:'#14B8A6', security:'#F43F5E', 'spatial-computing':'#6366F1', specialized:'#64748B', 'supply-chain':'#84CC16', support:'#22D3EE', testing:'#A855F7' };
     // 可在编辑器下拉选的部门(排除 tool —— 那是内置工具卡专用)
 export const DEPT_OPTIONS = DEPT_ORDER.filter(function(d){ return d !== 'tool'; });
 export const deptColor = (d) => DEPT_COLOR[d] || '#9aa0a6';

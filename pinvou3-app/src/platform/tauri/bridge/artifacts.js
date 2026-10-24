@@ -9,7 +9,8 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifacts"] = function (context) {let pinvouSharedtauriArtifactsCache = null;
 function pinvouSharedtauriArtifacts() {
-  if (!pinvouSharedtauriArtifactsCache) pinvouSharedtauriArtifactsCache = window.PinvouBridgeShared.create("tauriArtifacts", { invoke, addSystemItem, bt, state, sessionStates, isDeliverable, basename, dialogOpen, addAttachmentByPath });
+  if (!pinvouSharedtauriArtifactsCache) pinvouSharedtauriArtifactsCache = window.PinvouBridgeShared.create("tauriArtifacts", { invoke, addSystemItem, bt, state, sessionStates, isDeliverable, basename, artifactInfo, dialogOpen, addAttachmentByPath, // 桌面 WebView 与 Rust 同包发布:两个 deliverable 索引命令必然同时存在,无需协商
+  hasCommand() { return true; } });
   return pinvouSharedtauriArtifactsCache;
 }
 
@@ -22,7 +23,6 @@ function pinvouSharedtauriArtifacts() {
     const dialogOpen = context.dialogOpen;
     const basename = context.basename;
     const isDeliverable = context.isDeliverable;
-    const isAbsPath = context.isAbsPath;
     const sessionStates = context.sessionStates;
     const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     let attachIdSeq = 0;
@@ -39,45 +39,9 @@ function revealSessionFolder(sessionId) { return pinvouSharedtauriArtifacts().re
 function openScheduledTaskFolder(automationId) { return pinvouSharedtauriArtifacts().openScheduledTaskFolder(automationId); }
   // ACP 消息/产物预览里由用户亲自点击的 HTTP(S) 外链；后端与工具白名单入口分开校验。
   function openUserExternalUrl(url) { return invoke("open_user_external_url", { url }).catch(function (e) { addSystemItem(bt("openFailed") + e); }); }
-function deliverableCategory(path) { return pinvouSharedtauriArtifacts().deliverableCategory(path); }
-function sessionTitleById(sid) { return pinvouSharedtauriArtifacts().sessionTitleById(sid); }
-function currentMemoryArtifacts() { return pinvouSharedtauriArtifacts().currentMemoryArtifacts(); }
   // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
   // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「产出物」一级入口。
-  async function listDeliverableIndex() {
-    const disk = await invoke("list_deliverable_index").catch(function () { return []; });
-    const byPath = {};
-    (disk || []).forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    const mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
-    const hydrated = await Promise.all(mem.map(async function (x) {
-      let path = x.path;
-      if (!isAbsPath(path) && x.sessionId) {
-        try {
-          const ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
-          const bn = basename(path);
-          const resolved = (ws || []).find(function (p) { return basename(p) === bn; });
-          if (resolved) path = resolved;
-        } catch { /* keep the original path on parse failure */ }
-      }
-      let info = null;
-      try { info = await artifactInfo(path); } catch { /* degrade to no-details when info is missing */ }
-      const ext = (String(path).split(".").pop() || "").toLowerCase();
-      return {
-        name: x.name || basename(path),
-        path,
-        ext,
-        category: deliverableCategory(path),
-        sessionId: x.sessionId || "",
-        source: x.source || sessionTitleById(x.sessionId) || "",
-        mtime: info && info.modified ? info.modified : 0,
-        size: info && info.size ? info.size : 0,
-      };
-    }));
-    hydrated.forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    return Object.keys(byPath).map(function (p) { return byPath[p]; }).sort(function (a, b) {
-      return (b.mtime || 0) - (a.mtime || 0) || String(a.name || "").localeCompare(String(b.name || ""));
-    });
-  }
+  async function listDeliverableIndex() { return pinvouSharedtauriArtifacts().listDeliverableIndex(); }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用。
   // sessionId = 卡片携带的产物所属 session。后端 resolve_artifact_path 用它(而非全局
   // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带

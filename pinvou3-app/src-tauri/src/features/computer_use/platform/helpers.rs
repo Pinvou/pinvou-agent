@@ -6,6 +6,7 @@
 
 use super::super::guard::{self, for_each_folded_window};
 use super::super::types::{ComputerUseError, ScrollDirection};
+use enigo::{Direction, Enigo, Keyboard};
 
 /// Overflow guard on scroll clicks per call: enigo multiplies the click
 /// count by `WHEEL_DELTA` (120) internally, so an unclamped count overflows
@@ -14,6 +15,89 @@ use super::super::types::{ComputerUseError, ScrollDirection};
 /// only bounds the backend math. Windows used to clamp here; macOS did not
 /// clamp at all — both go through this now.
 pub(crate) const MAX_SCROLL_CLICKS: u32 = 100;
+
+/// Display bound for a single-line element/node name: one shared cap for the
+/// tool layer's consent labels, the `ui_tree` writers, and the Linux display
+/// names, all feeding [`sanitize_name`].
+pub(crate) const MAX_NAME_CHARS: usize = 80;
+
+/// Wait before a click so the previous move has settled (the target process
+/// consumes mouse move events).
+pub(crate) const CLICK_SETTLE_MS: u64 = 30;
+/// Interval between adjacent clicks of a double/triple click (far below the
+/// system 500ms double-click threshold; enigo maintains clickState
+/// internally and double/triple clicks are recognized from it).
+pub(crate) const MULTI_CLICK_INTERVAL_MS: u64 = 40;
+/// Pause after the drag press and before movement starts, giving the target
+/// window time to enter drag-recognition state.
+pub(crate) const DRAG_PRESS_SETTLE_MS: u64 = 60;
+/// Number of interpolated steps along the drag path (some apps only
+/// recognize a drag after receiving enough motion events).
+pub(crate) const DRAG_STEPS: usize = 8;
+/// Interval between adjacent drag waypoints.
+pub(crate) const DRAG_STEP_DELAY_MS: u64 = 12;
+/// Pause between pressing all keys and releasing them in reverse, improving
+/// the hit rate of modifier chords (cmd/alt+Tab etc.).
+pub(crate) const CHORD_HOLD_MS: u64 = 20;
+/// Granularity of the hold_key sleep: a stop/timeout cancel flag is polled
+/// at least this often, so an abandoned hold stops within this window
+/// instead of the full hold duration.
+pub(crate) const HOLD_CANCEL_POLL_MS: u64 = 100;
+
+/// `ui_tree` defaults/caps: depth and node count (prevents giant trees from
+/// overwhelming the worker thread and the text budget).
+pub(crate) const DEFAULT_TREE_MAX_DEPTH: u32 = 8;
+pub(crate) const DEFAULT_TREE_MAX_NODES: u32 = 400;
+pub(crate) const MAX_TREE_DEPTH: u32 = 24;
+pub(crate) const MAX_TREE_NODES: u32 = 2000;
+
+/// Shared `xcap` error mapping (screenshot/monitor probes on macOS and
+/// Windows): plain `{context}: {err}` wrapping.
+pub(crate) fn map_xcap_err(context: &str, err: xcap::XCapError) -> ComputerUseError {
+    ComputerUseError::failed(format!("{context}: {err}"))
+}
+
+/// Monitor to capture: the one holding the cursor (`Monitor::from_point`);
+/// falls back to the primary monitor, then to the first monitor.
+pub(crate) fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<xcap::Monitor, ComputerUseError> {
+    if let Some((x, y)) = cursor {
+        if let Ok(monitor) = xcap::Monitor::from_point(x, y) {
+            return Ok(monitor);
+        }
+    }
+    let mut monitors =
+        xcap::Monitor::all().map_err(|err| map_xcap_err("cannot enumerate monitors", err))?;
+    if let Some(primary) = monitors
+        .iter()
+        .position(|m| m.is_primary().unwrap_or(false))
+    {
+        return Ok(monitors.swap_remove(primary));
+    }
+    monitors
+        .drain(..)
+        .next()
+        .ok_or_else(|| ComputerUseError::unavailable("no monitor available for screen capture"))
+}
+
+/// Release the pressed keys in reverse; even on a mid-way error, best-effort
+/// release everything and return the first error.
+pub(crate) fn release_reverse(
+    pressed: &[enigo::Key],
+    enigo: &mut Enigo,
+) -> Result<(), enigo::InputError> {
+    let mut first_err = None;
+    for key in pressed.iter().rev() {
+        if let Err(err) = enigo.key(*key, Direction::Release) {
+            if first_err.is_none() {
+                first_err = Some(err);
+            }
+        }
+    }
+    match first_err {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
 
 /// Merge the interpolated-move and button-release results of `drag`. The
 /// release always runs, but `Result::and` kept only the first error: when the

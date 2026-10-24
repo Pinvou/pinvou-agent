@@ -747,6 +747,15 @@ fn tool_config_fields(tool: &super::ToolManifest) -> Vec<ConfigFieldSpec> {
 /// repeatedly across sources (dual use: UI field + placeholder parsing), deduplicated once by `(key, target)`,
 /// first declaration wins. The `secret` flag follows config_fields' explicit declaration (not overridden by the
 /// implicit true of secret_env/secret_headers); the latter two are sensitive declarations themselves, so secret is always true.
+///
+/// Legacy sensitive `manifest.env` keys are deliberately NOT projected here.
+/// On the remote channel they follow an existential "any one resolving key
+/// serves the entry" doctrine (the builder wires only the first), which
+/// cannot map onto this per-key required filter without false
+/// missing_credentials signals — a two-key manifest with one key stored
+/// works fine. A reconcile-disabled legacy-env entry therefore shows no
+/// Configure fix on its card; the startup reconcile note carries the why
+/// and the fix instead.
 fn dedup_credential_declarations<T>(
     tool: &super::ToolManifest,
     build: impl Fn(String, CredentialTarget, bool, bool) -> T,

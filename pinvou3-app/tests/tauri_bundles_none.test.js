@@ -3,8 +3,8 @@
 // Background: tauri-bundler cannot bundle loongarch64 — its arch mapping
 // (`binary_arch()`) has no LoongArch variant and panics on the
 // loongarch64-unknown-linux-gnu triple (verified in the tauri-bundler source
-// for tauri-bundler 2.9.4, the version inside the pinned
-// @tauri-apps/cli 2.11.4). The loong64 release pipeline
+// for tauri-bundler 2.10.4, the version inside the pinned
+// @tauri-apps/cli 2.12.4). The loong64 release pipeline
 // (scripts/ci-build-linux-loongarch64.sh) therefore runs the full build.js
 // pipeline with `--bundles none` and assembles the deb itself via
 // scripts/package-deb-loongarch64.sh.
@@ -46,7 +46,7 @@ test("bundles none on the loongarch64 target compiles without the bundler", () =
   // cargo target dir (target/<triple>/release/) instead of a bundle.
   assert.ok(prepared.includes("--no-bundle"), `missing --no-bundle: ${prepared}`);
   // The wrapper-owned spelling never reaches the CLI: the pinned
-  // @tauri-apps/cli 2.11.4 rejects the value "none" at arg-parse time.
+  // @tauri-apps/cli 2.12.4 rejects the value "none" at arg-parse time.
   assert.ok(!prepared.includes("--bundles"), `--bundles leaked: ${prepared}`);
   assert.ok(!prepared.includes("none"), `the "none" value leaked: ${prepared}`);
   // The full pipeline is unaffected: the same overlays a bundling build gets

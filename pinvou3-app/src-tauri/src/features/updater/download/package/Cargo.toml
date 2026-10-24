@@ -11,11 +11,11 @@ pinvou-upgrade-codec = { path = "../../protocol/codec" }
 pinvou-upgrade-archive = { path = "../archive" }
 pinvou-upgrade-cache-object = { path = "../cache" }
 pinvou-upgrade-transfer = { path = "../transfer" }
-serde_json = "=1.0.151"
+serde_json = "=1.0.154"
 
 [dev-dependencies]
 # Fixtures use the already selected digest version, not a new crypto provider.
-sha2 = "=0.11.0"
+sha2 = "=0.11.1"
 
 [lints.rust]
 unsafe_code = "forbid"

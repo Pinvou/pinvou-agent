@@ -10,12 +10,12 @@ license = "MIT"
 bytes = "=1.12.1"
 pinvou-upgrade-transfer = { path = "../transfer" }
 pinvou-upgrade-byte-check = { path = "../verify" }
-reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "stream", "system-proxy"] }
-tokio = { version = "=1.53.1", features = ["net", "time", "rt", "macros"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream", "system-proxy"] }
+tokio = { version = "=1.54.1", features = ["net", "time", "rt", "macros"] }
 
 [dev-dependencies]
 rustls = { version = "=0.23.45", default-features = false, features = ["aws-lc-rs"] }
-serde_json = "=1.0.151"
+serde_json = "=1.0.154"
 
 [lints.rust]
 unsafe_code = "forbid"

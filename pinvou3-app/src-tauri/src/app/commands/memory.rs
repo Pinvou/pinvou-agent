@@ -72,17 +72,28 @@ fn emit_memory_write_events(
 // chat.rs/forwarder.rs. Command callers read the fresh snapshot from the
 // command's return value instead.
 
-fn refresh_memory_runtime_for_command(
-    session_id: Option<String>,
-    store: &SessionStore,
-) -> Result<Option<crate::features::memory::RuntimeMemorySnapshot>, String> {
-    match resolve_session_id(session_id, store) {
-        Some(sid) => {
-            let snapshot = crate::features::memory::runtime_snapshot(&sid)
-                .map_err(|e| format!("render runtime memory: {e}"))?;
-            Ok(Some(snapshot))
+/// Single home of the runtime-refresh fallback ladder (resolve → snapshot →
+/// on failure the shared "render runtime memory" detail string, stderr log,
+/// and `runtime_refresh_failed` warning); the write-command wrapper, the
+/// snapshot-document lane, and the overview lane all consume it and add only
+/// their own bookkeeping.
+fn runtime_snapshot_best_effort(
+    sid: Option<String>,
+) -> (
+    Option<crate::features::memory::RuntimeMemorySnapshot>,
+    Option<MemoryWarning>,
+) {
+    match sid.map(|sid| crate::features::memory::runtime_snapshot(&sid)) {
+        Some(Ok(snapshot)) => (Some(snapshot), None),
+        Some(Err(error)) => {
+            let detail = format!("render runtime memory: {error}");
+            eprintln!("[memory] {detail}");
+            (
+                None,
+                Some(memory_warning("runtime_refresh_failed", "runtime", detail)),
+            )
         }
-        None => Ok(None),
+        None => (None, None),
     }
 }
 
@@ -93,16 +104,8 @@ fn refresh_memory_runtime_best_effort(
     Option<crate::features::memory::RuntimeMemorySnapshot>,
     Vec<MemoryWarning>,
 ) {
-    match refresh_memory_runtime_for_command(session_id, store) {
-        Ok(runtime) => (runtime, Vec::new()),
-        Err(detail) => {
-            eprintln!("[memory] {detail}");
-            (
-                None,
-                vec![memory_warning("runtime_refresh_failed", "runtime", detail)],
-            )
-        }
-    }
+    let (runtime, warning) = runtime_snapshot_best_effort(resolve_session_id(session_id, store));
+    (runtime, warning.into_iter().collect())
 }
 
 /// Shared tail of every memory write command: emit the write's
@@ -264,16 +267,12 @@ fn refresh_memory_snapshot_document(
     let runtime = match (runtime, resolve_session_id(session_id, store)) {
         (Some(snapshot), _) => Some(snapshot.clone()),
         (None, Some(sid)) if !runtime_render_failed => {
-            match crate::features::memory::runtime_snapshot(&sid) {
-                Ok(snapshot) => Some(snapshot),
-                Err(error) => {
-                    let detail = format!("render runtime memory: {error}");
-                    eprintln!("[memory] {detail}");
-                    warnings.push(memory_warning("runtime_refresh_failed", "runtime", detail));
-                    runtime_available = false;
-                    None
-                }
+            let (snapshot, warning) = runtime_snapshot_best_effort(Some(sid));
+            if let Some(warning) = warning {
+                warnings.push(warning);
+                runtime_available = false;
             }
+            snapshot
         }
         _ => None,
     };
@@ -407,21 +406,10 @@ pub async fn get_memory_overview(
     } = sources_loaded;
     let authoritative_sources_available = sources.values().all(|status| status.available);
     let runtime = match resolve_session_id(session_id, &store) {
-        Some(sid) => match crate::features::memory::runtime_snapshot(&sid) {
-            Ok(snapshot) => {
-                sources.insert(
-                    "runtime".to_string(),
-                    MemorySourceStatus {
-                        available: true,
-                        code: None,
-                    },
-                );
-                Some(snapshot)
-            }
-            Err(error) => {
-                let detail = format!("render runtime memory: {error}");
-                eprintln!("[memory] {detail}");
-                warnings.push(memory_warning("runtime_refresh_failed", "runtime", detail));
+        Some(sid) => {
+            let (snapshot, warning) = runtime_snapshot_best_effort(Some(sid));
+            if let Some(warning) = warning {
+                warnings.push(warning);
                 sources.insert(
                     "runtime".to_string(),
                     MemorySourceStatus {
@@ -429,9 +417,17 @@ pub async fn get_memory_overview(
                         code: Some("runtime_refresh_failed".to_string()),
                     },
                 );
-                None
+            } else {
+                sources.insert(
+                    "runtime".to_string(),
+                    MemorySourceStatus {
+                        available: true,
+                        code: None,
+                    },
+                );
             }
-        },
+            snapshot
+        }
         None => {
             sources.insert(
                 "runtime".to_string(),

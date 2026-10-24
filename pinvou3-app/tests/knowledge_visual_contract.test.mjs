@@ -111,3 +111,42 @@ test('a proven-unsupported platform opens the full-text knowledge posture', () =
     'local collection mounting must stay available on a proven-unsupported platform',
   );
 });
+
+test('deliverables index discloses unscannable session records instead of rendering a silent partial list', async () => {
+  // refreshOutputs consumes the command's { rows, skipped } shape: the
+  // skipped list (session records over the scan cap, unreadable, or
+  // unparseable) is the only signal that the listing is incomplete —
+  // defaulting the result to an array hid it (round-4 review).
+  assert.match(knowledgeSource, /Array\.isArray\(res\.rows\)/);
+  assert.match(knowledgeSource, /Array\.isArray\(res\.skipped\)/);
+  assert.match(knowledgeSource, /setOutputsSkipped\(nextSkipped\)/);
+  // The notice renders on the outputs tab whenever loaded work has skips —
+  // including above the "empty" state, which must not read as a clean bill.
+  assert.match(knowledgeSource, /outputsLoaded && outputsSkipped\.length > 0/);
+  assert.match(knowledgeSource, /t\.kbOutSkippedNotice\(outputsSkipped\.length\)/);
+  // The copy is tri-language via the shared i18n module (no zh-only literal).
+  for (const lang of ['zh', 'en', 'ja']) {
+    const source = await readFile(new URL(`../src/shared/i18n/${lang}.js`, import.meta.url), 'utf8');
+    assert.match(source, /kbOutSkippedNotice: \(n\) =>/);
+  }
+});
+
+test('a rejected deliverables refresh renders an error with retry over the last successful table', async () => {
+  // A total scan failure (unreadable sessions root, transport down) must
+  // not flatten into a successful empty index: refreshOutputs re-lists the
+  // retained cache (the sig compare then no-ops, keeping the last
+  // successful table) and raises the scan-error state; the localized
+  // banner with a retry action renders above the same branches (round-7
+  // review P2).
+  assert.match(knowledgeSource, /const scanFailed = !res;/);
+  assert.match(knowledgeSource, /scanFailed \? kbCache\.outputs :/);
+  assert.match(knowledgeSource, /setOutputsScanError\(scanFailed\)/);
+  assert.match(knowledgeSource, /\{outputsScanError && \(/);
+  assert.match(knowledgeSource, /\{t\.kbOutScanError\}/);
+  assert.match(knowledgeSource, /onClick=\{\(\) => refreshOutputs\(\)\}[^>]*>\{t\.kbOutRetry\}/);
+  for (const lang of ['zh', 'en', 'ja']) {
+    const source = await readFile(new URL(`../src/shared/i18n/${lang}.js`, import.meta.url), 'utf8');
+    assert.match(source, /kbOutScanError: '/);
+    assert.match(source, /kbOutRetry: '/);
+  }
+});

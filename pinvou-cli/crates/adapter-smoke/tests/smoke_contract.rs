@@ -200,7 +200,10 @@ fn rules_and_health_score_use_only_safe_adapter_material() {
     let records = vec![
         SmokeRecord::new(
             TaskOutcome::new("plep_smoke_hi", TaskStatus::Completed, None, vec![], 10),
-            SmokeAnalysisMaterial::new(vec!["web_search".into()]),
+            SmokeAnalysisMaterial::with_details(
+                vec![SmokeToolEvent::new("web_search", false)],
+                None,
+            ),
         ),
         SmokeRecord::new(
             TaskOutcome::new(
@@ -210,7 +213,7 @@ fn rules_and_health_score_use_only_safe_adapter_material() {
                 vec![],
                 20,
             ),
-            SmokeAnalysisMaterial::new(vec![]),
+            SmokeAnalysisMaterial::with_details(vec![], None),
         ),
     ];
 
@@ -222,7 +225,6 @@ fn rules_and_health_score_use_only_safe_adapter_material() {
     let score = calculate_product_score(&records, analysis.findings()).expect("safe findings");
     assert_eq!(score.version(), "pinvou-product-score/v1");
     assert!(score.total().is_some_and(|score| score < 100));
-    assert!(!score.is_official_score());
 
     let debug = format!("{records:?}");
     assert!(!debug.contains("prompt"));

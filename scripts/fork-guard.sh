@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 74 commits, nine maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 79 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="c08c8c022a31aa4bd4a5a146887690de99495786"
-EXPECTED_COMMITS=74
-# r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
-# 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
-# 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
-# scripts/verify-public-submodule.sh 在过渡期断言）。
+# Public maintenance after CodeWhale#115 and #116 merged.
+EXPECTED_HEAD="ea9fdc90f1c90335554833195eeeb847c83d82dd"
+EXPECTED_COMMITS=79
+# Published maintenance base of this integration.
+MAINTENANCE_BASE="ea9fdc90f1c90335554833195eeeb847c83d82dd"
+# The immutable r1 closure must remain an ancestor of the registered head.
+# A review candidate may lead public maintenance; this does not waive the
+# separate public-head gate or change the immutable r3 transition baseline.
 R1_CLOSURE="1fafee7e26b60a59457a43bce50c63aa2ad9dbaf"
 FAST_ONLY=0
 
@@ -27,40 +29,50 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 59 个登记提交，r3 收口后过渡期）──"
+bold "── Layer 0: v0.9.12 registered maintenance topology ──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（gitlink=维护分支头；过渡期内领先钉在 r3 收口的 tag）"
+  green "  ✓ CodeWhale matches registered review head ${EXPECTED_HEAD}; public maintenance alignment is checked separately"
 else
-  red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
+  red "  ✗ CodeWhale HEAD ${actual_head:-<unreadable>} differs from registered head $EXPECTED_HEAD"
   fail=1
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$EXPECTED_UPSTREAM" HEAD 2>/dev/null; then
-  green "  ✓ 当前 gitlink 继承官方 v0.9.12"
+  green "  ✓ Registered head descends from official v0.9.12"
 else
-  red "  ✗ 当前 gitlink 未继承官方 v0.9.12 $EXPECTED_UPSTREAM"
+  red "  ✗ Registered head does not descend from official v0.9.12 $EXPECTED_UPSTREAM"
   fail=1
 fi
 
 if git -C "$CODEWHALE" merge-base --is-ancestor "$R1_CLOSURE" HEAD 2>/dev/null; then
-  green "  ✓ 线性前进成立：r1 收口是当前 head 的祖先（过渡期内 gitlink=分支头，领先钉在 r3 收口的 tag）"
+  green "  ✓ Registered head descends from the immutable r1 closure; public maintenance alignment is checked separately"
 else
-  red "  ✗ r1 收口 $R1_CLOSURE 不是当前 head 的祖先，线性前进关系断裂"
+  red "  ✗ Immutable r1 closure $R1_CLOSURE is not an ancestor of the registered head"
+  fail=1
+fi
+
+if git -C "$CODEWHALE" merge-base --is-ancestor "$MAINTENANCE_BASE" HEAD 2>/dev/null; then
+  green "  ✓ Registered head contains public maintenance base $MAINTENANCE_BASE"
+else
+  red "  ✗ Registered head does not contain public maintenance base $MAINTENANCE_BASE"
   fail=1
 fi
 
 commit_count="$(git -C "$CODEWHALE" rev-list --count "$EXPECTED_UPSTREAM..HEAD" 2>/dev/null || true)"
 if [[ "$commit_count" == "$EXPECTED_COMMITS" ]]; then
-  green "  ✓ v0.9.12 之上 $EXPECTED_COMMITS 个登记提交"
+  green "  ✓ $EXPECTED_COMMITS registered commits above v0.9.12"
 else
-  red "  ✗ v0.9.12 之上有 ${commit_count:-<unreadable>} 个 commit，登记值为 $EXPECTED_COMMITS"
+  red "  ✗ ${commit_count:-<unreadable>} commits above v0.9.12; expected $EXPECTED_COMMITS"
   fail=1
 fi
 
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T2|Web JSONPath schema agrees with parser results|CodeWhale/crates/tui/src/tools/web/contract.rs|fn forkguard_web_fields_description_matches_parser"
+  "T2|Document the Web JSONPath subset|CodeWhale/crates/tui/src/tools/web_tool.rs|Recursive descent (..) and filters are not supported"
+  "T2|Preserve failed tool-result flags|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_tool_failure_flag_survives_recording_and_round_trip"
   "T2|Unix shell guidance preservation test|CodeWhale/crates/tui/src/tools/shell/guidance.rs|fn shell_guidance_preserves_unix_shell_contracts"
   "T2|Windows PowerShell policy bypass flags|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn powershell_build_command_includes_no_profile_and_command_flags"
   "T2|Windows PowerShell encoded fallback builder|CodeWhale/crates/tui/src/shell_dispatcher.rs|fn forkguard_powershell_encoded_fallback_avoids_the_script_file"
@@ -75,6 +87,11 @@ fingerprints=(
   "T2|Windows execution-policy retry glue|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_inline_retry_runs_the_command_and_notes_the_fallback"
   "T2|Windows execution-policy retry keeps first evidence|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_retry_keeps_the_first_result_when_it_cannot_start"
   "T2|Windows shell UTF-8 prefix family rule|CodeWhale/crates/tui/src/sandbox/mod.rs|fn forkguard_windows_shell_text_matches_the_shell_family"
+  "T2|Shell environment overlays preserve defaults|CodeWhale/crates/tui/src/sandbox/mod.rs|fn command_spec_env_overlays_preserve_existing_values"
+  "T2|Windows Python stdio environment end-to-end|CodeWhale/crates/tui/src/sandbox/mod.rs|fn forkguard_windows_shell_env_overlays_keep_python_stdio_utf8"
+  "T2|Windows explicit environment override casing|CodeWhale/crates/tui/src/sandbox/mod.rs|fn windows_shell_env_explicit_override_is_case_insensitive"
+  "T2|Windows native Python lowercase bash output|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_windows_python_stdio_lowercase_bash"
+  "T2|Windows native Python background output|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_windows_python_stdio_background_shell"
   "T2|Windows PowerShell encoded form end-to-end|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_encoded_spec_runs_a_non_ascii_payload"
   "T2|Windows PowerShell temp-script form end-to-end|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_temp_script_form_runs_a_non_ascii_payload"
   "T1|宿主 facade 公开 Automation        |CodeWhale/crates/tui/src/lib.rs|pub mod automation_manager;"
@@ -159,7 +176,10 @@ fingerprints=(
   "T3|技能索引省略尾行守护               |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_omitted_skills_line_stays_short"
   "T3|捆绑技能退役名清扫回归             |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names"
   "T3|best-of-n 目标工具自条件回归        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_best_of_n_goal_tool_is_availability_gated"
-  "T3|pdf 技能改引 read 活工具           |CodeWhale/crates/tui/assets/skills/pdf/SKILL.md|built-in \`read\` tool"
+  # 2026-10-20 批次 #112 撤下了 pdf 技能里 "built-in read 工具可抽取 PDF 文本" 的失实声明，
+  # 可靠工具清单改为 bash 侧 pdftotext/pdfinfo/qpdf/mutool——指纹随 #112 的真实措辞重钉；
+  # 反幻影名意图仍由 forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names 可执行回归承载。
+  "T3|pdf 技能改引 bash 侧活工具         |CodeWhale/crates/tui/assets/skills/pdf/SKILL.md|\`pdftotext\` for text extraction"
   "T3|best-of-n 目标门控文案             |CodeWhale/crates/tui/assets/skills/best-of-n/SKILL.md|\`create_goal\` is in your tool list"
   "T3|mcp-discovery 前言如实披露 pool 依赖 |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|the start tool once the host's MCP pool is initialized"
   "T3|start 工具两段式激活门控           |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|\`tool_search\` as in step 1; if that fails, registry starts"
@@ -302,6 +322,9 @@ fingerprints=(
   "T9|Custom Responses exact-model replay             |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_replays_only_exact_model_opaque_reasoning_state"
   "T9|Chat wire never captures encrypted reasoning    |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_chat_stream_does_not_capture_encrypted_reasoning"
   "T9|Empty encrypted content skips without breaking the stream |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_capture_tolerates_missing_or_empty_encrypted_content"
+
+  "T10|Tachyon effort ladder never emits high   |CodeWhale/crates/tui/src/client.rs|fn forkguard_tachyon_effort_ladder_never_emits_high"
+  "T10|registered-only Tachyon table survives save |CodeWhale/crates/config/src/tests.rs|fn forkguard_tachyon_only_provider_table_survives_config_store_save"
 
   "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"

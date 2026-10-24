@@ -40,7 +40,8 @@ test('the controller is a module-scope singleton shared by every mounted panel',
   // track backend-scoped operations that outlive any panel instance, so all
   // mounted panels must share one controller.
   assert.match(auxChatPanel, /const auxChatController = createAuxChatController\(\);/);
-  assert.match(auxChatPanel, /import \{ createAuxChatController, reconcileLiveTaskIds, removeAuxQuote \} from '\.\/aux-chat-controller\.mjs';/);
+  assert.match(auxChatPanel, /import \{ createAuxChatController, reconcileLiveTaskIds \} from '\.\/aux-chat-controller\.mjs';/);
+  assert.match(auxChatPanel, /import \{ removeAuxQuote \} from '\.\/aux-quote\.mjs';/);
 });
 
 test('M5: per-task registries and staged quotes purge on session deletion', () => {
@@ -228,6 +229,12 @@ test('the controller factory takes injected effects and exports the send-content
 
 // ── Work-mode (ChatView) aux entry gates ──
 
+// The isolated-session conjunct every ChatView aux gate must carry: sched-
+// runs and headless agentic_ sessions cannot own an aux side-chat (the store
+// refuses the parent), and agentic_ folds case like the backend gate. Each
+// pin is its own red arm: deleting a gate's agentic_ conjunct turns it red.
+const AUX_AGENTIC_CONJUNCT = /!activeSessionId\.toLowerCase\(\)\.startsWith\('agentic_'\)/;
+
 test('ChatView aux entry pill reflects real dock visibility (round-9 minor-2)', () => {
   assert.match(chat, /data-testid="aux-chat-open"/);
   // Work-mode entry parity with code mode: the entry pill reflects the
@@ -240,13 +247,39 @@ test('ChatView aux entry pill reflects real dock visibility (round-9 minor-2)', 
 test('ChatView panel mount gate and dock-highlight reset carry the bridge conjuncts (round-26 minor M4)', () => {
   assert.match(
     chat,
-    /\{auxChatPanel && activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& bridge\.available && bridge\.auxChat && \(/,
+    /\{auxChatPanel && activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& !activeSessionId\.toLowerCase\(\)\.startsWith\('agentic_'\)\s*&& bridge\.available && bridge\.auxChat && \(/,
     'the ChatView aux panel mount gate must include the bridge conjuncts (round-26 minor M4)',
   );
   assert.match(
     chat,
-    /if \(auxChatPanel && activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& bridge\.available && bridge\.auxChat\) return;/,
+    /if \(auxChatPanel && activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& !activeSessionId\.toLowerCase\(\)\.startsWith\('agentic_'\)\s*&& bridge\.available && bridge\.auxChat\) return;/,
     'the ChatView aux dock-highlight reset must mirror the mount conjuncts (round-26 minor M4)',
+  );
+});
+
+test('every ChatView aux gate refuses headless agentic_ parents', () => {
+  // The four aux surfaces — the mount gate, the dock-highlight reset, the
+  // header entry pill, and the quote-selection feed — must all exclude
+  // headless agentic_ parents (the store refuses aux-of-headless, so an
+  // offered gate would dead-end). The agentic_ conjunct appears once per
+  // gate site: four occurrences.
+  const occurrences = chat.match(new RegExp(AUX_AGENTIC_CONJUNCT.source, 'g')) || [];
+  assert.equal(
+    occurrences.length,
+    4,
+    'all four ChatView aux gates must carry the agentic_ conjunct',
+  );
+  // The entry pill's gate (the header button) and the quote feed's ternary
+  // both fold case like the backend's ensure_parent_can_own_aux.
+  assert.match(
+    chat,
+    /\{activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& !activeSessionId\.toLowerCase\(\)\.startsWith\('agentic_'\)\s*&& bridge\.available && bridge\.auxChat && \(/,
+    'the ChatView aux entry pill gate carries the agentic_ conjunct',
+  );
+  assert.match(
+    chat,
+    /activeSessionId && !activeSessionId\.startsWith\('sched-'\)\s*&& !activeSessionId\.toLowerCase\(\)\.startsWith\('agentic_'\)\s*&& bridge\.available && bridge\.auxChat\s*\? activeSessionId\s*: null/,
+    'the ChatView quote-selection feed carries the agentic_ conjunct',
   );
 });
 

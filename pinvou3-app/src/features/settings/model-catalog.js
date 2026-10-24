@@ -1914,6 +1914,25 @@ function normalizeStoredReasoningEffort(model, stored) {
   if (canonical === 'off' && reasoningProviderForModel(model) === 'openai_responses') {
     canonical = 'low';
   }
+  // 本地路由（vllm preset / 探测驱动的 loopback 兼容端点）的存量 `max` 逐字保留，
+  // 不落静态四档表之外的降级路径：探测为 tachyon（驭光）时档表是
+  // ['off','low','medium','max']，max 是真实最深档（wire 映射 xhigh）；静态
+  // normalization 表无 probe 语境、只认 vllm 四档，若在这里把 max 归一成默认
+  // low，设置表单重新打开再保存会把用户选的最深档静默改写为最低档。探测为
+  // vllm 等其他本地引擎时 wire 方言把 max 映射为有效值（如 high），同样无需
+  // 客户端降级；展示高亮由 probe 档表决定：不含 max 的表按
+  // reasoningEffortDisplayForTiers 的最近档规则显示（含 high 的表显示 high，
+  // 对 vllm wire 恰好等价），值本身不改。
+  // always-thinking 知识表命中（如本地 kimi-k3 的 ['low','high']）不在此例——
+  // 表外档维持既有的"归一到最低允许档"语义。
+  const storedValueProvider = reasoningProviderForModel(model);
+  if (
+    canonical === 'max'
+    && (storedValueProvider === 'vllm' || storedValueProvider === 'local')
+    && !alwaysThinkingSpecForModel(model && model.model)
+  ) {
+    return 'max';
+  }
   if (canonical && tiers.includes(canonical)) return canonical;
   return defaultReasoningEffortForModel(model) || tiers[0] || null;
 }
@@ -1921,6 +1940,9 @@ function normalizeStoredReasoningEffort(model, stored) {
 // 本地 OpenAI 兼容端点按探测服务类型可切换的档位。与 Rust
 // `probe_local_server_kind` 结果对齐：
 // - vllm → 底座 `chat_template_kwargs` 支持四档
+// - tachyon（驭光）→ wire 与 vllm 同族但有效档为 none/low/medium/xhigh（high
+//   会被服务端 400）；最深档复用既有 `max` 档位 id（与 codex/xai 先例一致，
+//   三语 i18n 已有 max 文案），bridge→底座链路把 max 映射为 wire 上的 xhigh
 // - sglang / llamacpp / koboldcpp / lmdeploy / dockermodelrunner → thinking
 //   control wire is structurally identical to vLLM (chat_template_kwargs +
 //   reasoning_effort passthrough); the tier set is the same as vllm
@@ -1931,6 +1953,8 @@ function normalizeStoredReasoningEffort(model, stored) {
 // - null（尚未探测/探测失败）→ 返回默认四档，前端在探测完成前不提供误导档位
 function localProbeTiersForKind(kind) {
   switch (kind) {
+    case 'tachyon':
+      return ['off', 'low', 'medium', 'max'];
     case 'vllm':
     case 'sglang':
     case 'llamacpp':
@@ -1969,6 +1993,10 @@ function localReasoningTiers(modelId, probedKind) {
     // is high (e.g. GPT-OSS only accepts the low/medium/high strings —
     // true/false is ignored, and thinking cannot be disabled anyway).
     if (probedKind === 'ollama') return ['high'];
+    // tachyon（驭光）叠加知识表（如本地 kimi-k3 的 ['low','high']）：表内的
+    // high 在 tachyon wire 上由 bridge 归一为 medium 发送（不发 high），最深
+    // 档 max 不在知识表内故不可达——与 Rust 侧防御归一口径一致，UI 保留
+    // 知识表档位不另行改写。
     return spec.tiers;
   }
   return localProbeTiersForKind(probedKind);
@@ -1981,12 +2009,14 @@ function localReasoningTiers(modelId, probedKind) {
 // (think:true), semantically equal to high, so the highlight maps to the
 // nearest tier, high (same for max; the core normalizes max to high).
 // This only affects display comparison and never changes stored values (the
-// original value survives switching back to a four-tier endpoint). Returns
-// null when no tier was ever picked, the table is missing/empty, or the table
-// truly has no high to land on (no highlight shown).
+// original value survives switching back to a four-tier endpoint).
+// Tachyon's ladder replaces high with max; its wire clamps a legacy high to
+// medium, so show that effective tier while preserving the stored value.
+// Returns null when there is no selection or no equivalent tier.
 function reasoningEffortDisplayForTiers(effort, tiers) {
   if (!effort || !Array.isArray(tiers) || !tiers.length) return null;
   if (tiers.includes(effort)) return effort;
+  if (effort === 'high' && tiers.includes('medium') && tiers.includes('max') && !tiers.includes('high')) return 'medium';
   return tiers.includes('high') ? 'high' : null;
 }
 

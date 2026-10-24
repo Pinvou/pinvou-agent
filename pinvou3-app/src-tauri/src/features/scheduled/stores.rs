@@ -81,6 +81,11 @@ impl Default for ScheduledTaskModelBindingRegistry {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ScheduledTaskKindEntry {
     pub(crate) kind: String,
+    /// `session_message` kind parameter: the session the message is delivered
+    /// into at each fire. Absent for every other kind; skipped on
+    /// serialization so older entries keep their exact on-disk shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) target_session: Option<String>,
     pub(crate) updated_at: String,
 }
 
@@ -285,6 +290,8 @@ pub(crate) struct VersionedJsonStore<T: VersionedRegistry> {
     /// through. Cleared by a successful persist (the file is healthy again)
     /// and by a successful read of a present file.
     quarantined: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    pub(crate) fail_next_persist: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Cheap change detector for the registry file: a `stat` is orders of
@@ -589,6 +596,8 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 DiskRead::Failed { .. } => (T::default(), false, true),
             };
         let store = Self {
+            #[cfg(test)]
+            fail_next_persist: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
             // Round-37 review MAJOR: a failed boot read must NOT install the
@@ -618,6 +627,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     #[cfg(test)]
     pub(crate) fn from_registry(path: PathBuf, registry: T) -> Self {
         Self {
+            fail_next_persist: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
             seen: Arc::new(RwLock::new(None)),
@@ -786,6 +796,13 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     }
 
     pub(crate) fn persist(&self, registry: &T) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next_persist
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            bail!("injected sidecar persist failure");
+        }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {} dir {}", T::LABEL, parent.display()))?;
@@ -1306,6 +1323,10 @@ pub(crate) enum ScheduledTaskKindLookup {
     Chat,
     /// Created as a memory-organize task; the executor runs it app-side.
     MemoryOrganize,
+    /// Created as a scheduled-message task; each fire delivers the stored
+    /// prompt into the target session (steer / new turn) instead of starting
+    /// a new conversation.
+    SessionMessage { target_session: String },
     /// An entry exists but its value is not a kind this build supports
     /// (hand-edited sidecar, or a task written by a different app version).
     /// The executor must fail such a run instead of degrading it to a chat
@@ -1315,15 +1336,19 @@ pub(crate) enum ScheduledTaskKindLookup {
 }
 
 impl VersionedJsonStore<ScheduledTaskKindRegistry> {
-    /// Reads the task kind for DTO display. Only `memory_organize` is a
-    /// supported kind for now; any other value left in the file surfaces as
-    /// None (an ordinary chat task), mirroring the creation-side allow-list.
-    /// The executor uses [`Self::kind_lookup_for`] instead, which distinguishes
-    /// an unsupported value from no entry at all.
+    /// Reads the task kind for DTO display. `memory_organize` and
+    /// `session_message` are the supported kinds; any other value left in
+    /// the file surfaces as None (an ordinary chat task), mirroring the
+    /// creation-side allow-list. The executor uses [`Self::kind_lookup_for`]
+    /// instead, which distinguishes an unsupported value from no entry at
+    /// all.
     pub(crate) fn kind_for(&self, automation_id: &str) -> Option<String> {
         match self.kind_lookup_for(automation_id) {
             ScheduledTaskKindLookup::MemoryOrganize => {
                 Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string())
+            }
+            ScheduledTaskKindLookup::SessionMessage { .. } => {
+                Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE.to_string())
             }
             ScheduledTaskKindLookup::Chat | ScheduledTaskKindLookup::Unsupported(_) => None,
         }
@@ -1331,42 +1356,88 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
 
     /// Executor-facing tri-state lookup; see [`ScheduledTaskKindLookup`].
     ///
-    /// A miss consults the disk before it answers `Chat`. This registry is read
-    /// once at `open()`, but the same file is co-owned by a foreign process:
-    /// `pinvou scheduled create --kind memory-organize` writes a kind record
-    /// while the app is running, and the foundation's sweep re-reads task
-    /// *definitions* from disk on every tick — so the scheduler will happily
-    /// fire a task whose kind this handle has never seen. Answering `Chat`
-    /// there is the unsafe direction (the executor would run the
-    /// kind-specific prompt as an unattended full-permission Yolo
-    /// conversation), so a miss pays a `stat` and re-reads only when the file
-    /// actually changed; a hit stays lock-only with no IO, which is the hot
-    /// path for every already-known task. Round-38 review note: the hit path
-    /// never re-consults disk, so a FOREIGN edit to an already-known id's
-    /// kind stays unseen until some miss, mutator, or poll reloads — bounded
-    /// staleness in the safe direction (the unknown→miss path always
-    /// reloads; a kind can only degrade Chat→organize, never the reverse,
-    /// without passing through a miss).
+    /// Refresh both additions and edits from the co-owned CLI sidecar.
+    /// A hit also checks the version stamp so a retarget is seen before fire.
     pub(crate) fn kind_lookup_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
-        if let Some(lookup) = self.stored_kind(automation_id) {
-            return lookup;
-        }
         self.reload_if_changed();
         self.stored_kind(automation_id)
             .unwrap_or(ScheduledTaskKindLookup::Chat)
     }
 
-    /// Classify the in-memory entry, or None when this handle has no record
-    /// for the id at all (the only case the disk can still contradict).
+    /// Mutation/dispatch readers need a current, readable registry. Keeping a
+    /// previous cache is useful for display, but cannot prove a safe body cap
+    /// or pair a newly read message with its destination after a read failure.
+    pub(crate) fn checked_kind_lookup_for(
+        &self,
+        automation_id: &str,
+    ) -> Result<ScheduledTaskKindLookup> {
+        if let Err(error) = std::fs::metadata(self.path.as_ref()) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                if let Some(parent) = self.path.parent() {
+                    match std::fs::read_dir(parent) {
+                        Ok(entries) => {
+                            for entry in entries {
+                                let entry = entry.context("read scheduled task kind directory")?;
+                                if entry
+                                    .file_name()
+                                    .to_string_lossy()
+                                    .starts_with("task-kinds.json.invalid-")
+                                {
+                                    bail!(
+                                        "scheduled task kind metadata unavailable after quarantine"
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error).context("read scheduled task kind directory");
+                        }
+                    }
+                }
+            } else {
+                return Err(error).context("read scheduled task kind metadata");
+            }
+        }
+        let registry = match Self::read_from_disk(
+            self.path.as_ref(),
+            &self.quarantined,
+            self.seen
+                .read()
+                .is_some_and(|stamp| stamp != FileStamp::ABSENT),
+        ) {
+            DiskRead::Loaded(registry) | DiskRead::Migrated(registry) => registry,
+            DiskRead::Failed { .. } => bail!("scheduled task kind metadata unavailable"),
+        };
+        Ok(registry
+            .tasks
+            .get(automation_id)
+            .map(Self::classify_kind_entry)
+            .unwrap_or(ScheduledTaskKindLookup::Chat))
+    }
+
+    /// Classify the loaded entry after the caller's version refresh.
     fn stored_kind(&self, automation_id: &str) -> Option<ScheduledTaskKindLookup> {
         self.registry
             .read()
             .tasks
             .get(automation_id)
-            .map(|entry| match entry.kind.as_str() {
-                SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
-                other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
-            })
+            .map(Self::classify_kind_entry)
+    }
+
+    fn classify_kind_entry(entry: &ScheduledTaskKindEntry) -> ScheduledTaskKindLookup {
+        match entry.kind.as_str() {
+            SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
+            SCHEDULED_TASK_KIND_SESSION_MESSAGE => match entry.target_session.as_deref() {
+                Some(target) if !target.trim().is_empty() => {
+                    ScheduledTaskKindLookup::SessionMessage {
+                        target_session: target.trim().to_string(),
+                    }
+                }
+                _ => ScheduledTaskKindLookup::Unsupported(entry.kind.clone()),
+            },
+            other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
+        }
     }
 
     /// None removes the task's kind record (back to an ordinary chat task).
@@ -1386,6 +1457,7 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
                     automation_id.to_string(),
                     ScheduledTaskKindEntry {
                         kind,
+                        target_session: None,
                         updated_at: chrono::Utc::now().to_rfc3339(),
                     },
                 );
@@ -1404,14 +1476,73 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
         }
         Ok(())
     }
+
+    /// Kind + delivery target in one entry (the `session_message` kind's
+    /// parameter). Same persist/restore discipline as [`Self::set_kind`].
+    pub(crate) fn set_kind_with_target(
+        &self,
+        automation_id: &str,
+        kind: &str,
+        target_session: &str,
+    ) -> Result<()> {
+        if automation_id.trim().is_empty() {
+            bail!("scheduled automation id cannot be empty");
+        }
+        // Defensive: a target entry only makes sense for the session_message
+        // kind, and a blank target would strand the task in the drift path
+        // (runs fail instead of degrading to chat).
+        if kind != SCHEDULED_TASK_KIND_SESSION_MESSAGE {
+            bail!("only the session_message kind carries a target session");
+        }
+        if target_session.trim().is_empty() {
+            bail!("target session cannot be empty");
+        }
+        // Round-17 M1: the reload discipline every sibling mutator keeps —
+        // this sidecar is co-owned by the `pinvou` CLI (which rewrites the
+        // whole file), and `persist`'s refusal guard premises itself on "a
+        // concurrent writer landed between the reload and this persist".
+        // Without the reload that premise can never hold: a foreign kinds
+        // write landing after boot makes every valid create/retarget here
+        // fail the stamp check, re-apply, and quarantine.
+        self.reload_if_changed();
+        let mut registry = self.registry.write();
+        let previous = registry.tasks.get(automation_id).cloned();
+        registry.tasks.insert(
+            automation_id.to_string(),
+            ScheduledTaskKindEntry {
+                kind: kind.to_string(),
+                target_session: Some(target_session.trim().to_string()),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        if let Err(error) = self.persist(&registry) {
+            <ScheduledTaskKindRegistry as ScheduledTasksMapRegistry>::restore_entry(
+                &mut registry.tasks,
+                automation_id,
+                previous,
+            );
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The stored delivery target of a `session_message` task (None for any
+    /// other kind or a drifted entry).
+    pub(crate) fn target_session_for(&self, automation_id: &str) -> Option<String> {
+        match self.kind_lookup_for(automation_id) {
+            ScheduledTaskKindLookup::SessionMessage { target_session } => Some(target_session),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) type ScheduledTaskModelBindingStore =
     VersionedJsonStore<ScheduledTaskModelBindingRegistry>;
 
 impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
-    /// Same foreign-writer miss path as the task-kind store's
-    /// `kind_lookup_for`: `pinvou scheduled create/update --model-id` rebinds
+    /// This model-binding store retains its miss-only foreign-writer refresh;
+    /// the kinds store also refreshes hits so CLI retargets are visible.
+    /// Here, `pinvou scheduled create/update --model-id` rebinds
     /// this sidecar while the app is running, and a handle opened before that
     /// would silently drop the binding and run the task on the bare wire model
     /// name. That is a correctness bug rather than a safety one, so the fix
@@ -1597,6 +1728,69 @@ mod foreign_writer_tests {
         let staging = path.with_extension("json.tmp-fixture");
         std::fs::write(&staging, payload).expect("write staging kind registry");
         std::fs::rename(&staging, path).expect("rename kind registry");
+    }
+
+    #[test]
+    fn strict_kind_lookup_refuses_corruption_and_recovers() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        assert_eq!(
+            store.checked_kind_lookup_for("ordinary").unwrap(),
+            ScheduledTaskKindLookup::Chat
+        );
+        assert_eq!(
+            store.checked_kind_lookup_for("ordinary").unwrap(),
+            ScheduledTaskKindLookup::Chat
+        );
+        store
+            .set_kind_with_target("message", "session_message", "target001")
+            .unwrap();
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(store.checked_kind_lookup_for("message").is_err());
+        assert!(
+            store.checked_kind_lookup_for("message").is_err(),
+            "quarantine absence is not a chat proof"
+        );
+        assert!(
+            kind_store(&path)
+                .checked_kind_lookup_for("message")
+                .is_err(),
+            "quarantine survives a process restart"
+        );
+        write_kind_registry(
+            &path,
+            serde_json::json!({"message":{"kind":"session_message","target_session":"target002","updated_at":"2026-01-01T00:00:00Z"}}),
+        );
+        assert!(
+            matches!(store.checked_kind_lookup_for("message").unwrap(), ScheduledTaskKindLookup::SessionMessage {target_session} if target_session == "target002")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn target_persist_failure_restores_memory_and_disk() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        store
+            .set_kind_with_target("message", "session_message", "target001")
+            .unwrap();
+        let original = std::fs::read(&path).unwrap();
+        store
+            .fail_next_persist
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            store
+                .set_kind_with_target("message", "session_message", "target002")
+                .is_err()
+        );
+        assert_eq!(
+            store.target_session_for("message").as_deref(),
+            Some("target001")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn memory_organize() -> String {
@@ -2417,5 +2611,93 @@ mod foreign_writer_tests {
         );
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn failed_model_binding_set_restores_the_last_successful_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bindings.json");
+        let backup = temp.path().join("backup.json");
+        let store = ScheduledTaskModelBindingStore::open(path.clone()).unwrap();
+        store
+            .set("task", Some("old-id".into()), Some("old-model".into()))
+            .unwrap();
+        std::fs::rename(&path, &backup).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            store
+                .set("task", Some("new-id".into()), Some("new-model".into()))
+                .is_err()
+        );
+        assert_eq!(
+            store.bound_model_id("task", "old-model").as_deref(),
+            Some("old-id")
+        );
+        assert_eq!(store.bound_model_id("task", "new-model"), None);
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&backup, &path).unwrap();
+        let reopened = ScheduledTaskModelBindingStore::open(path).unwrap();
+        assert_eq!(
+            reopened.model_id_for("task", "old-model").as_deref(),
+            Some("old-id")
+        );
+    }
+}
+
+#[cfg(test)]
+mod round7_drift_tests {
+    use super::*;
+
+    /// Round-7 minor 3: a DRIFTED session_message entry (blank/absent
+    /// target — the creation path never writes one; planted as the raw
+    /// registry shape) must fail closed as Unsupported instead of guessing
+    /// a chat run. The executor's Unsupported handling is pinned by
+    /// unsupported_kind_fails_the_run_without_a_session_or_engine_turn.
+    #[test]
+    fn drifted_targetless_session_message_entry_fails_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-kind-drift-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kinds.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "schema_version": 1,
+                "tasks": {
+                    "automation-blank": {
+                        "kind": crate::features::scheduled::tasks::SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                        "target_session": "   ",
+                        "updated_at": "2026-10-09T00:00:00Z",
+                    },
+                    "automation-absent": {
+                        "kind": crate::features::scheduled::tasks::SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                        "updated_at": "2026-10-09T00:00:00Z",
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let store = ScheduledTaskKindStore::open(path.clone()).expect("open");
+        assert!(
+            matches!(
+                store.kind_lookup_for("automation-blank"),
+                ScheduledTaskKindLookup::Unsupported(_)
+            ),
+            "a blank target is drift and fails closed"
+        );
+        assert!(
+            matches!(
+                store.kind_lookup_for("automation-absent"),
+                ScheduledTaskKindLookup::Unsupported(_)
+            ),
+            "an absent target is drift and fails closed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

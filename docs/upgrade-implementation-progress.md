@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 05:56 Asia/Shanghai**.
+Checkpoint: **2026-10-24 11:00 Asia/Shanghai**.
 
 There are 47 tasks: seven completed, nineteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **7/47 (14.9%)**.
@@ -37,6 +37,34 @@ not complete its enclosing task. T42 deployment and T03's 50 GiB / 500,000-file
 measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
+
+## Verified T29 main-integration prerequisite
+
+The approved alignment updates 32 exact requirements in fifteen updater
+manifests to seven libraries selected by the incoming main branch. Cargo
+normally regenerated the application and fifteen standalone lockfiles. The
+application retains all 1065 incoming registry packages and their checksums,
+with the original updater path packages and two canonical-JSON dependencies
+restored. Independent source and lock review passed.
+
+Seventeen native Windows module/doc/fault checks passed: **483 passing test
+records, 28 existing ignored records, zero failures** in the qualifying runs.
+The complete application MSVC all-targets check with `dev-tools`, version
+consistency, dependency advisories/licenses/bans/sources, architecture guard,
+fast fork guard and whitespace check passed. Application compilation is not
+GUI runtime or installation acceptance.
+
+The stale management-operation test inventory was repaired to require the exact
+33 frozen operations, reject duplicates, and keep every management operation
+unknown to the client profile. Prior auxiliary-process cleanup failures and an
+intentionally interrupted cold application check remain unsuccessful diagnostic
+runs. Final qualifying invocations closed naturally without resource-floor
+breaches. Future affected checks separate compilation from test execution to
+avoid replaying long tests after compiler auxiliary-process cleanup failures.
+
+The mandatory source-binding and continuation candidate has passed independent
+source review but is not yet integrated or verified by Rust execution. This
+prerequisite does not change T29's completion estimate.
 
 ## Completed T08 internal publication delivery
 

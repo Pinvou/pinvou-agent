@@ -8,11 +8,11 @@ license = "MIT"
 
 [dependencies]
 pinvou-upgrade-codec = { path = "../codec" }
-reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "stream", "system-proxy"] }
-serde_json = "=1.0.151"
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream", "system-proxy"] }
+serde_json = "=1.0.154"
 
 [dev-dependencies]
-tokio = { version = "=1.53.1", features = ["net", "time", "rt", "macros"] }
+tokio = { version = "=1.54.1", features = ["net", "time", "rt", "macros"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["aws-lc-rs"] }
 
 [lints.rust]

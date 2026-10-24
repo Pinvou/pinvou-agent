@@ -44,8 +44,9 @@ static TMEET_SKILLS_DIR: Dir<'_> =
 // marketplace 侧曾按 0.1.9 旧表写死 7 技能，与本表分叉）。
 // 此处 re-export 保持本模块及 extraction 的既有引用不变。
 pub(crate) use crate::platform::connector_skills::{
-    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_LEGACY_SKILL_DIRS,
-    WECOM_SKILL_DIRS,
+    DINGTALK_SKILL_DIRS, DINGTALK_SKILLS_NOTICE, FEISHU_SKILLS_NOTICE, LARK_SKILL_DIRS,
+    TMEET_SKILL_DIRS, TMEET_SKILLS_NOTICE, WECOM_LEGACY_SKILL_DIRS, WECOM_SKILL_DIRS,
+    WECOM_SKILLS_NOTICE,
 };
 
 /// Bundle 版本号：手动 base + 自动 instructions.md 内容 hash（build.rs 注入）。
@@ -502,8 +503,6 @@ pub const BROWSER_WRAPPER_PROTOCOL_MJS: &str =
 pub const BROWSER_CORE_PROTOCOL_MJS: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/browser-core-protocol.mjs");
 
-// --- 工具市场：内置 MCP server 资源(编译期内嵌) ---
-
 // --- 工具市场：内置 MCP server 资源 ---
 // 编译期内嵌资源已收编到 `marketplace::mcp_catalog`（单一真相源：清单、释放、
 // 校验同一份数据）；未安装包不再每启动全量释放到 bundle/mcp-servers/（§4）。
@@ -611,7 +610,6 @@ fn install_work_mode_browser_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::paths::tests::ENV_LOCK;
     use crate::features::marketplace::ENGINE_OWNED_MCP_SERVER_KEYS;
     use crate::platform::credential_store::{
         CredentialError, CredentialReference, CredentialStore,
@@ -796,49 +794,49 @@ mod tests {
         // An empty temporary home lacks the platform automation backend and/or wrapper. The
         // static probe must return a model-readable, injectable reason instead of silently
         // hiding browser capability and leaving the model unable to discover it.
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
-        let bundle = Pinvou3Bundle::paths();
-        let msg = bundle
-            .browser_unavailability_reason()
-            .expect("missing prerequisites must return an unavailable reason");
-        if !crate::platform::capabilities::browser_product_enabled() {
-            assert!(
-                msg.contains("not enabled in this product build"),
-                "a closed release gate must report that the product build does not enable browser tools: {msg}"
-            );
-        }
-        #[cfg(windows)]
-        assert!(
-            msg.contains("chrome-devtools-mcp"),
-            "the message must name the missing runtime: {msg}"
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-browser_unavailability_reason_reports_missing_runtime",
+            || {
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
+                let bundle = Pinvou3Bundle::paths();
+                let msg = bundle
+                    .browser_unavailability_reason()
+                    .expect("missing prerequisites must return an unavailable reason");
+                if !crate::platform::capabilities::browser_product_enabled() {
+                    assert!(
+                        msg.contains("not enabled in this product build"),
+                        "a closed release gate must report that the product build does not enable browser tools: {msg}"
+                    );
+                }
+                #[cfg(windows)]
+                assert!(
+                    msg.contains("chrome-devtools-mcp"),
+                    "the message must name the missing runtime: {msg}"
+                );
+                #[cfg(target_os = "linux")]
+                assert!(
+                    msg.contains("WebKitWebDriver") || msg.contains("browser wrapper"),
+                    "the message must name the missing Linux WebDriver or wrapper: {msg}"
+                );
+                #[cfg(target_os = "macos")]
+                if crate::platform::capabilities::browser_product_enabled() {
+                    assert!(
+                        msg.contains("browser wrapper"),
+                        "preview or released builds must name the missing macOS wrapper: {msg}"
+                    );
+                }
+                #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+                assert!(
+                    msg.contains("not enabled in this product build"),
+                    "the message must state that this platform has no released automation backend: {msg}"
+                );
+                assert!(
+                    msg.contains("mcp_browser_"),
+                    "the message must identify browser tools as unavailable: {msg}"
+                );
+            },
         );
-        #[cfg(target_os = "linux")]
-        assert!(
-            msg.contains("WebKitWebDriver") || msg.contains("browser wrapper"),
-            "the message must name the missing Linux WebDriver or wrapper: {msg}"
-        );
-        #[cfg(target_os = "macos")]
-        if crate::platform::capabilities::browser_product_enabled() {
-            assert!(
-                msg.contains("browser wrapper"),
-                "preview or released builds must name the missing macOS wrapper: {msg}"
-            );
-        }
-        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-        assert!(
-            msg.contains("not enabled in this product build"),
-            "the message must state that this platform has no released automation backend: {msg}"
-        );
-        assert!(
-            msg.contains("mcp_browser_"),
-            "the message must identify browser tools as unavailable: {msg}"
-        );
-        cleanup(&tmp);
     }
 
     #[test]
@@ -1086,13 +1084,14 @@ mod tests {
     /// crontab/schtasks/systemctl 路径）,但 bash 的回合内 `cmd &` 仍然可用——
     /// 措辞必须限定「回合结束后」,不得写成无条件的「无后台运行能力」。
     #[test]
-    fn shared_skeleton_pins_no_scheduling_red_line() {
+    fn shared_skeleton_describes_the_actual_scheduling_capability() {
+        assert!(INSTRUCTIONS_SHARED_MD.contains("app-automations"));
+        assert!(INSTRUCTIONS_SHARED_MD.contains("Plan 模式"));
+        assert!(INSTRUCTIONS_SHARED_MD.contains("pending 只表示排队"));
         assert!(
-            INSTRUCTIONS_SHARED_MD
+            !INSTRUCTIONS_SHARED_MD
                 .contains("你没有定时执行、回合结束后继续运行或稍后主动发消息的能力")
         );
-        assert!(INSTRUCTIONS_SHARED_MD.contains("定时任务功能"));
-        assert!(!INSTRUCTIONS_SHARED_MD.contains("你没有定时、后台运行"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {
@@ -1150,567 +1149,572 @@ mod tests {
     }
 
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
-    /// 借 crate 级唯一 bridge::paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
+    /// 借 crate 级唯一 platform::paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
     /// 不靠唯一 nanos 路径躲 race（仍会读 env var）。
     #[test]
     fn ensure_extracted_behavior() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-ensure_extracted_behavior",
+            || {
+                // 1) 首次解包：文件被写入 + VERSION 记录
+                let bundle = Pinvou3Bundle::paths();
+                bundle.ensure_extracted().unwrap();
+                assert!(bundle.mcp_json.is_file());
+                assert!(bundle.deny_sensitive_sh.is_file());
+                assert!(bundle.deny_sensitive_ps1.is_file());
+                assert!(bundle.multiagent_depth_guard_sh.is_file());
+                assert!(bundle.multiagent_depth_guard_ps1.is_file());
+                assert!(bundle.shell_env_sh.is_file());
+                assert!(paths::bundle_version_file().is_file());
+                // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
+                assert!(
+                    paths::bundle_present_artifact_server().is_file(),
+                    "present_artifact server 脚本应被解包"
+                );
+                assert!(
+                    paths::bundle_mcp_python_runner().is_file(),
+                    "Python MCP 依赖启动器应被解包"
+                );
+                let mcp = std::fs::read_to_string(&bundle.mcp_json).unwrap();
+                assert!(
+                    mcp.contains("present_artifact_server.py"),
+                    "mcp.json 应注册 present server 的绝对路径"
+                );
+                assert!(
+                    !mcp.contains("{{PINVOU3_PRESENT_SERVER}}"),
+                    "mcp.json 的 server 路径占位符应被替换"
+                );
+                // present server key 必须是 pinvou3(对齐产品名,消除模型把 pinvou 漂成 pinvou3 的撞脸);
+                // 旧 pinvou 名不残留。
+                let mcp_keys: serde_json::Value = serde_json::from_str(&mcp).unwrap();
+                let server_keys = mcp_keys["servers"].as_object().unwrap();
+                assert!(
+                    server_keys.contains_key("pinvou3") && !server_keys.contains_key("pinvou"),
+                    "present server key 应为 pinvou3、旧 pinvou 不残留,实际={:?}",
+                    server_keys.keys().collect::<Vec<_>>()
+                );
+                // 市场 MCP 包按「能力包」模型按需释放（§4）：启动不再全量释放，未安装的
+                // canva-mcp 在旧布局（bundle/mcp-servers/）与新布局（bundles/<id>/mcp/）
+                // 都不应占盘。
+                assert!(
+                    !paths::bundle_mcp_servers_dir().join("canva-mcp").exists(),
+                    "未安装包不应释放到旧布局"
+                );
+                let canva_pkg_mcp =
+                    crate::features::marketplace::mcp_catalog::package_mcp_dir("canva-mcp");
+                assert!(!canva_pkg_mcp.exists(), "未安装包不应释放到新布局");
+                // 安装后释放到新布局：bundles/<id>/mcp/manifest.json。
+                crate::features::marketplace::MarketplaceManager::new()
+                    .install("canva-mcp", &std::collections::HashMap::new())
+                    .unwrap();
+                let canva_manifest = canva_pkg_mcp.join("manifest.json");
+                assert!(
+                    canva_manifest.is_file(),
+                    "Canva 可画 manifest 应释放到包目录"
+                );
+                let canva_json: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&canva_manifest).unwrap())
+                        .unwrap();
+                assert_eq!(canva_json["id"], "canva-mcp");
+                assert_eq!(canva_json["servers"][0]["name"], "canva_mcp");
+                assert!(
+                    !canva_pkg_mcp.join("server.py").exists(),
+                    "Canva 远程 MCP 不应解包本地 server.py"
+                );
+                // 腾讯文档 manifest 应解包,且四个官方远程 server + 无 scheme Authorization 声明完整。
+                // 未安装包在新架构下只住 mcp_catalog 内嵌目录（不落盘）；先登记安装再校验释放。
+                let store = crate::features::marketplace::store::BundleStore::new();
+                store
+                    .upsert(
+                        crate::features::marketplace::store::BundleRecord::installed_now(
+                            "tencent-docs",
+                            crate::features::marketplace::store::BundleSource::Preset,
+                        ),
+                    )
+                    .unwrap();
+                crate::features::marketplace::mcp_catalog::ensure_package_released("tencent-docs")
+                    .expect("腾讯文档包应释放");
+                let tdoc_dir =
+                    crate::features::marketplace::mcp_catalog::package_mcp_dir("tencent-docs");
+                let tdoc_manifest = tdoc_dir.join("manifest.json");
+                assert!(tdoc_manifest.is_file(), "腾讯文档 manifest 应被解包");
+                let tdoc_json: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&tdoc_manifest).unwrap())
+                        .unwrap();
+                assert_eq!(tdoc_json["id"], "tencent-docs");
+                let server_names: Vec<&str> = tdoc_json["servers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s["name"].as_str().unwrap())
+                    .collect();
+                assert_eq!(
+                    server_names,
+                    vec!["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"]
+                );
+                assert_eq!(
+                    tdoc_json["secret_headers"][0]["header"], "Authorization",
+                    "Token 走 Authorization 头"
+                );
+                assert_eq!(
+                    tdoc_json["secret_headers"][0]["scheme"], "",
+                    "scheme 必须为空——官方端点要求原始 Token,不能加 Bearer 前缀"
+                );
+                assert!(
+                    !tdoc_dir.join("server.py").exists(),
+                    "腾讯文档远程 MCP 不应解包本地 server.py"
+                );
+                // 已下线 skills(legacy-ppt-workflow / pinvou-review-*)不应再被写出。
+                for retired in [
+                    "legacy-ppt-workflow",
+                    "pinvou-review-plan",
+                    "pinvou-review-final",
+                ] {
+                    assert!(
+                        !bundle.skills_dir.join(retired).exists(),
+                        "{retired} 已下线,不应再解包"
+                    );
+                }
+                let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
+                assert_eq!(v.trim(), BUNDLE_VERSION);
 
-        // 1) 首次解包：文件被写入 + VERSION 记录
-        let bundle = Pinvou3Bundle::paths();
-        bundle.ensure_extracted().unwrap();
-        assert!(bundle.mcp_json.is_file());
-        assert!(bundle.deny_sensitive_sh.is_file());
-        assert!(bundle.deny_sensitive_ps1.is_file());
-        assert!(bundle.multiagent_depth_guard_sh.is_file());
-        assert!(bundle.multiagent_depth_guard_ps1.is_file());
-        assert!(bundle.shell_env_sh.is_file());
-        assert!(paths::bundle_version_file().is_file());
-        // present_artifact MCP server 应解包,mcp.json 注册且占位符替换成绝对路径
-        assert!(
-            paths::bundle_present_artifact_server().is_file(),
-            "present_artifact server 脚本应被解包"
+                // 2) VERSION 匹配则跳过：故意改 bundle 内文件，再 ensure，不应覆写
+                std::fs::write(&bundle.shell_env_sh, "USER TOUCHED").unwrap();
+                bundle.ensure_extracted().unwrap();
+                let content = std::fs::read_to_string(&bundle.shell_env_sh).unwrap();
+                assert_eq!(
+                    content, "USER TOUCHED",
+                    "VERSION 匹配时不应覆写已存在的 bundle 文件"
+                );
+            },
         );
-        assert!(
-            paths::bundle_mcp_python_runner().is_file(),
-            "Python MCP 依赖启动器应被解包"
-        );
-        let mcp = std::fs::read_to_string(&bundle.mcp_json).unwrap();
-        assert!(
-            mcp.contains("present_artifact_server.py"),
-            "mcp.json 应注册 present server 的绝对路径"
-        );
-        assert!(
-            !mcp.contains("{{PINVOU3_PRESENT_SERVER}}"),
-            "mcp.json 的 server 路径占位符应被替换"
-        );
-        // present server key 必须是 pinvou3(对齐产品名,消除模型把 pinvou 漂成 pinvou3 的撞脸);
-        // 旧 pinvou 名不残留。
-        let mcp_keys: serde_json::Value = serde_json::from_str(&mcp).unwrap();
-        let server_keys = mcp_keys["servers"].as_object().unwrap();
-        assert!(
-            server_keys.contains_key("pinvou3") && !server_keys.contains_key("pinvou"),
-            "present server key 应为 pinvou3、旧 pinvou 不残留,实际={:?}",
-            server_keys.keys().collect::<Vec<_>>()
-        );
-        // 市场 MCP 包按「能力包」模型按需释放（§4）：启动不再全量释放，未安装的
-        // canva-mcp 在旧布局（bundle/mcp-servers/）与新布局（bundles/<id>/mcp/）
-        // 都不应占盘。
-        assert!(
-            !paths::bundle_mcp_servers_dir().join("canva-mcp").exists(),
-            "未安装包不应释放到旧布局"
-        );
-        let canva_pkg_mcp = crate::features::marketplace::mcp_catalog::package_mcp_dir("canva-mcp");
-        assert!(!canva_pkg_mcp.exists(), "未安装包不应释放到新布局");
-        // 安装后释放到新布局：bundles/<id>/mcp/manifest.json。
-        crate::features::marketplace::MarketplaceManager::new()
-            .install("canva-mcp", &std::collections::HashMap::new())
-            .unwrap();
-        let canva_manifest = canva_pkg_mcp.join("manifest.json");
-        assert!(
-            canva_manifest.is_file(),
-            "Canva 可画 manifest 应释放到包目录"
-        );
-        let canva_json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&canva_manifest).unwrap()).unwrap();
-        assert_eq!(canva_json["id"], "canva-mcp");
-        assert_eq!(canva_json["servers"][0]["name"], "canva_mcp");
-        assert!(
-            !canva_pkg_mcp.join("server.py").exists(),
-            "Canva 远程 MCP 不应解包本地 server.py"
-        );
-        // 腾讯文档 manifest 应解包,且四个官方远程 server + 无 scheme Authorization 声明完整。
-        // 未安装包在新架构下只住 mcp_catalog 内嵌目录（不落盘）；先登记安装再校验释放。
-        let store = crate::features::marketplace::store::BundleStore::new();
-        store
-            .upsert(
-                crate::features::marketplace::store::BundleRecord::installed_now(
-                    "tencent-docs",
-                    crate::features::marketplace::store::BundleSource::Preset,
-                ),
-            )
-            .unwrap();
-        crate::features::marketplace::mcp_catalog::ensure_package_released("tencent-docs")
-            .expect("腾讯文档包应释放");
-        let tdoc_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("tencent-docs");
-        let tdoc_manifest = tdoc_dir.join("manifest.json");
-        assert!(tdoc_manifest.is_file(), "腾讯文档 manifest 应被解包");
-        let tdoc_json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&tdoc_manifest).unwrap()).unwrap();
-        assert_eq!(tdoc_json["id"], "tencent-docs");
-        let server_names: Vec<&str> = tdoc_json["servers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            server_names,
-            vec!["tencent-docs", "tdoc-slide", "tdoc-doc", "tdoc-sheet"]
-        );
-        assert_eq!(
-            tdoc_json["secret_headers"][0]["header"], "Authorization",
-            "Token 走 Authorization 头"
-        );
-        assert_eq!(
-            tdoc_json["secret_headers"][0]["scheme"], "",
-            "scheme 必须为空——官方端点要求原始 Token,不能加 Bearer 前缀"
-        );
-        assert!(
-            !tdoc_dir.join("server.py").exists(),
-            "腾讯文档远程 MCP 不应解包本地 server.py"
-        );
-        // 已下线 skills(legacy-ppt-workflow / pinvou-review-*)不应再被写出。
-        for retired in [
-            "legacy-ppt-workflow",
-            "pinvou-review-plan",
-            "pinvou-review-final",
-        ] {
-            assert!(
-                !bundle.skills_dir.join(retired).exists(),
-                "{retired} 已下线,不应再解包"
-            );
-        }
-        let v = std::fs::read_to_string(paths::bundle_version_file()).unwrap();
-        assert_eq!(v.trim(), BUNDLE_VERSION);
-
-        // 2) VERSION 匹配则跳过：故意改 bundle 内文件，再 ensure，不应覆写
-        std::fs::write(&bundle.shell_env_sh, "USER TOUCHED").unwrap();
-        bundle.ensure_extracted().unwrap();
-        let content = std::fs::read_to_string(&bundle.shell_env_sh).unwrap();
-        assert_eq!(
-            content, "USER TOUCHED",
-            "VERSION 匹配时不应覆写已存在的 bundle 文件"
-        );
-
-        cleanup(&tmp);
     }
 
     #[test]
     fn secret_migration_failure_still_releases_runner_and_preserves_retryable_legacy_python_tool() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
-        let server_root = paths::bundle_mcp_servers_dir();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-secret_migration_failure_still_releases_runner_and_preserves_retryable_legacy_py",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
+                let server_root = paths::bundle_mcp_servers_dir();
 
-        let weather_dir = server_root.join("weather");
-        std::fs::create_dir_all(&weather_dir).unwrap();
-        let legacy_weather = br#"{"id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"env":{"AMAP_KEY":"legacy-fixture-value"}}"#;
-        std::fs::write(weather_dir.join("manifest.json"), legacy_weather).unwrap();
+                let weather_dir = server_root.join("weather");
+                std::fs::create_dir_all(&weather_dir).unwrap();
+                let legacy_weather = br#"{"id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"env":{"AMAP_KEY":"legacy-fixture-value"}}"#;
+                std::fs::write(weather_dir.join("manifest.json"), legacy_weather).unwrap();
 
-        let gongwen_dir = server_root.join("gongwen");
-        std::fs::create_dir_all(&gongwen_dir).unwrap();
-        std::fs::write(gongwen_dir.join("server.py"), "print('legacy')\n").unwrap();
-        std::fs::write(
+                let gongwen_dir = server_root.join("gongwen");
+                std::fs::create_dir_all(&gongwen_dir).unwrap();
+                std::fs::write(gongwen_dir.join("server.py"), "print('legacy')\n").unwrap();
+                std::fs::write(
             gongwen_dir.join("manifest.json"),
             r#"{"id":"gongwen","name":"Gongwen","description":"d","version":"0","icon":"x","category":"c","mcp_tools":["mcp_gongwen_make_gongwen"],"command":"python","args":["server.py"],"companion_skills":["government-writing"]}"#,
         )
         .unwrap();
-        let marketplace_dir = paths::pinvou3_home().join("marketplace");
-        std::fs::create_dir_all(&marketplace_dir).unwrap();
-        std::fs::write(marketplace_dir.join("installed.json"), r#"["gongwen"]"#).unwrap();
-        let expected_gongwen = serde_json::json!({
-            "command": "python",
-            "args": [gongwen_dir.join("server.py")],
-            "env": {"KEEP": "configured"},
-            "enabled": false,
-            "timeout_ms": 12345,
-            "future_field": {"preserve": true}
-        });
-        std::fs::write(
-            paths::mcp_config_path(),
-            serde_json::to_vec(&serde_json::json!({
-                "servers": {
-                    "gongwen": expected_gongwen.clone()
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
-            .install("government-writing")
-            .unwrap();
+                let marketplace_dir = paths::pinvou3_home().join("marketplace");
+                std::fs::create_dir_all(&marketplace_dir).unwrap();
+                std::fs::write(marketplace_dir.join("installed.json"), r#"["gongwen"]"#).unwrap();
+                let expected_gongwen = serde_json::json!({
+                    "command": "python",
+                    "args": [gongwen_dir.join("server.py")],
+                    "env": {"KEEP": "configured"},
+                    "enabled": false,
+                    "timeout_ms": 12345,
+                    "future_field": {"preserve": true}
+                });
+                std::fs::write(
+                    paths::mcp_config_path(),
+                    serde_json::to_vec(&serde_json::json!({
+                        "servers": {
+                            "gongwen": expected_gongwen.clone()
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+                crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                    .install("government-writing")
+                    .unwrap();
 
-        let manager =
-            crate::features::marketplace::MarketplaceManager::with_store(RejectingCredentialStore);
-        bundle
-            .ensure_extracted_with_marketplace(&manager, |manager| {
-                let installed_before =
-                    std::fs::read(marketplace_dir.join("installed.json")).unwrap();
-                let mcp_before: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(paths::mcp_config_path()).unwrap())
+                let manager = crate::features::marketplace::MarketplaceManager::with_store(
+                    RejectingCredentialStore,
+                );
+                bundle
+                    .ensure_extracted_with_marketplace(&manager, |manager| {
+                        let installed_before =
+                            std::fs::read(marketplace_dir.join("installed.json")).unwrap();
+                        let mcp_before: serde_json::Value = serde_json::from_slice(
+                            &std::fs::read(paths::mcp_config_path()).unwrap(),
+                        )
                         .unwrap();
-                let gongwen_before = mcp_before["servers"]["gongwen"].clone();
-                let failpoint =
+                        let gongwen_before = mcp_before["servers"]["gongwen"].clone();
+                        let failpoint =
                     crate::features::marketplace::fail_next_managed_dependency_install_for_test();
-                let errors = manager.repair_installed_python_tools()?;
-                assert!(
+                        let errors = manager.repair_installed_python_tools()?;
+                        assert!(
                     !crate::features::marketplace::
                         managed_dependency_install_failure_pending_for_test(),
                     "the high-level transient dependency failure must be consumed"
                 );
-                drop(failpoint);
-                assert_eq!(
-                    errors,
-                    vec![
-                        concat!(
-                            "tool 'gongwen' dependency repair will retry: ",
-                            "test-injected transient managed dependency install failure"
+                        drop(failpoint);
+                        assert_eq!(
+                            errors,
+                            vec![
+                                concat!(
+                                    "tool 'gongwen' dependency repair will retry: ",
+                                    "test-injected transient managed dependency install failure"
+                                )
+                                .to_string()
+                            ]
+                        );
+                        assert_eq!(
+                            std::fs::read(marketplace_dir.join("installed.json")).unwrap(),
+                            installed_before
+                        );
+                        let mcp_after: serde_json::Value = serde_json::from_slice(
+                            &std::fs::read(paths::mcp_config_path()).unwrap(),
                         )
-                        .to_string()
-                    ]
-                );
-                assert_eq!(
-                    std::fs::read(marketplace_dir.join("installed.json")).unwrap(),
-                    installed_before
-                );
-                let mcp_after: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(paths::mcp_config_path()).unwrap())
                         .unwrap();
-                assert_eq!(mcp_after["servers"]["gongwen"], gongwen_before);
-                assert!(!marketplace_dir.join("state-transaction.json").exists());
-                Ok(errors)
-            })
-            .unwrap();
+                        assert_eq!(mcp_after["servers"]["gongwen"], gongwen_before);
+                        assert!(!marketplace_dir.join("state-transaction.json").exists());
+                        Ok(errors)
+                    })
+                    .unwrap();
 
-        assert!(paths::bundle_mcp_python_runner().is_file());
-        let released_manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(
-                crate::features::marketplace::mcp_catalog::package_mcp_dir("gongwen")
-                    .join("manifest.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(released_manifest.get("python_dependencies").is_some());
-        assert_eq!(
-            std::fs::read(weather_dir.join("manifest.json")).unwrap(),
-            legacy_weather.to_vec(),
-            "credential failure must preserve the legacy plaintext source"
-        );
-        let installed: Vec<String> = serde_json::from_str(
-            &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(installed.contains(&"gongwen".to_string()));
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(paths::mcp_config_path()).unwrap())
+                assert!(paths::bundle_mcp_python_runner().is_file());
+                let released_manifest: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(
+                        crate::features::marketplace::mcp_catalog::package_mcp_dir("gongwen")
+                            .join("manifest.json"),
+                    )
+                    .unwrap(),
+                )
                 .unwrap();
-        let gongwen = &mcp["servers"]["gongwen"];
-        assert!(gongwen.is_object());
-        assert_eq!(
-            gongwen["command"],
-            serde_json::Value::String(paths::python_command())
+                assert!(released_manifest.get("python_dependencies").is_some());
+                assert_eq!(
+                    std::fs::read(weather_dir.join("manifest.json")).unwrap(),
+                    legacy_weather.to_vec(),
+                    "credential failure must preserve the legacy plaintext source"
+                );
+                let installed: Vec<String> = serde_json::from_str(
+                    &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
+                )
+                .unwrap();
+                assert!(installed.contains(&"gongwen".to_string()));
+                let mcp: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(paths::mcp_config_path()).unwrap(),
+                )
+                .unwrap();
+                let gongwen = &mcp["servers"]["gongwen"];
+                assert!(gongwen.is_object());
+                assert_eq!(
+                    gongwen["command"],
+                    serde_json::Value::String(paths::python_command())
+                );
+                for field in ["args", "env", "enabled", "timeout_ms", "future_field"] {
+                    assert_eq!(gongwen[field], expected_gongwen[field], "field: {field}");
+                }
+                assert!(!marketplace_dir.join("state-transaction.json").exists());
+                assert!(
+                    paths::bundles_root()
+                        .join("gongwen")
+                        .join("skills")
+                        .join("government-writing")
+                        .exists()
+                );
+            },
         );
-        for field in ["args", "env", "enabled", "timeout_ms", "future_field"] {
-            assert_eq!(gongwen[field], expected_gongwen[field], "field: {field}");
-        }
-        assert!(!marketplace_dir.join("state-transaction.json").exists());
-        assert!(
-            paths::bundles_root()
-                .join("gongwen")
-                .join("skills")
-                .join("government-writing")
-                .exists()
-        );
-
-        cleanup(&tmp);
     }
 
     #[test]
     fn connector_introspection_guard_matches_complete_names_only() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        bundle.ensure_extracted().unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-connector_introspection_guard_matches_complete_names_only",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                bundle.ensure_extracted().unwrap();
 
-        for tool in ["list_mcp_resources", "list_mcp_resource_templates"] {
-            for args in [r#"{"server":"wecom"}"#, r#"{"server":"企微"}"#] {
-                let output = run_connector_introspection_guard(&bundle, tool, args);
-                assert_eq!(
-                    output.status.code(),
-                    Some(2),
-                    "exact skill-connector names must be redirected: {output:?}"
-                );
-                // The stdout JSON reason is the model's only corrective copy (the
-                // engine folds deny reasons from stdout alone). Pinning the reason
-                // text also pins the script's UTF-8 stdout encoding: a writer that
-                // regresses to the console codepage would fail this reason match on
-                // Windows (PS 5.1 consoles emit GBK without an explicit UTF-8
-                // StreamWriter) while still exiting 2.
-                let verdict: serde_json::Value =
-                    serde_json::from_slice(&output.stdout).expect("single-line UTF-8 deny JSON");
-                assert_eq!(verdict["decision"], "deny");
-                let reason = verdict["reason"]
-                    .as_str()
-                    .expect("model-facing deny reason");
-                assert!(
-                    reason.contains("list_mcp_resources 或 list_mcp_resource_templates"),
-                    "deny reason must reach stdout as intact UTF-8 JSON: {verdict:?}"
-                );
-            }
-            for args in [
-                r#"{"server":"wecom-bot"}"#,
-                r#"{"server":"mcp_wecom-bot_send_text"}"#,
-                r#"{"server":"企微群机器人"}"#,
-            ] {
-                let output = run_connector_introspection_guard(&bundle, tool, args);
-                assert!(
-                    output.status.success(),
-                    "marketplace MCP names containing connector aliases must remain introspectable: {output:?}"
-                );
-            }
-        }
-
-        cleanup(&tmp);
+                for tool in ["list_mcp_resources", "list_mcp_resource_templates"] {
+                    for args in [r#"{"server":"wecom"}"#, r#"{"server":"企微"}"#] {
+                        let output = run_connector_introspection_guard(&bundle, tool, args);
+                        assert_eq!(
+                            output.status.code(),
+                            Some(2),
+                            "exact skill-connector names must be redirected: {output:?}"
+                        );
+                        // The stdout JSON reason is the model's only corrective copy (the
+                        // engine folds deny reasons from stdout alone). Pinning the reason
+                        // text also pins the script's UTF-8 stdout encoding: a writer that
+                        // regresses to the console codepage would fail this reason match on
+                        // Windows (PS 5.1 consoles emit GBK without an explicit UTF-8
+                        // StreamWriter) while still exiting 2.
+                        let verdict: serde_json::Value = serde_json::from_slice(&output.stdout)
+                            .expect("single-line UTF-8 deny JSON");
+                        assert_eq!(verdict["decision"], "deny");
+                        let reason = verdict["reason"]
+                            .as_str()
+                            .expect("model-facing deny reason");
+                        assert!(
+                            reason.contains("list_mcp_resources 或 list_mcp_resource_templates"),
+                            "deny reason must reach stdout as intact UTF-8 JSON: {verdict:?}"
+                        );
+                    }
+                    for args in [
+                        r#"{"server":"wecom-bot"}"#,
+                        r#"{"server":"mcp_wecom-bot_send_text"}"#,
+                        r#"{"server":"企微群机器人"}"#,
+                    ] {
+                        let output = run_connector_introspection_guard(&bundle, tool, args);
+                        assert!(
+                            output.status.success(),
+                            "marketplace MCP names containing connector aliases must remain introspectable: {output:?}"
+                        );
+                    }
+                }
+            },
+        );
     }
 
     #[test]
     fn multiagent_depth_guard_enforces_two_level_inputs() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        bundle.ensure_extracted().unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-multiagent_depth_guard_enforces_two_level_inputs",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                bundle.ensure_extracted().unwrap();
 
-        let positive = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":2}"#);
-        assert_eq!(positive.status.code(), Some(2));
-        // The engine reads the deny reason ONLY from stdout JSON (turn_loop
-        // fold_tool_call_before_results); stderr never reaches the model, so
-        // the guidance must ride the stdout contract.
-        let positive_stdout = String::from_utf8_lossy(&positive.stdout);
-        assert!(
-            positive_stdout.contains("\"decision\":\"deny\"")
-                && positive_stdout.contains("caps children at two levels"),
-            "拒绝原因必须以 stdout JSON 抵达模型并能指导重试: {positive:?}"
-        );
-        // The engine renders denial receipts through sanitize_hook_denial_reason
-        // with a 240-char cap and path-like-field redaction, so guidance that is
-        // too long gets cut mid-sentence and slashes/standalone path/file labels
-        // are destroyed. Both deny reasons must fit the budget and survive it.
-        let stdout_reason = |stdout: &str| -> String {
-            stdout
-                .trim()
-                .strip_prefix("{\"decision\":\"deny\",\"reason\":\"")
-                .and_then(|rest| rest.strip_suffix("\"}"))
-                .unwrap_or_default()
-                .to_string()
-        };
-        let depth_reason = stdout_reason(&positive_stdout);
-        assert!(
-            !depth_reason.is_empty() && depth_reason.chars().count() <= 240,
-            "深度拒绝原因必须完整通过引擎 240 字符回执上限: {depth_reason:?}"
-        );
+                let positive =
+                    run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":2}"#);
+                assert_eq!(positive.status.code(), Some(2));
+                // The engine reads the deny reason ONLY from stdout JSON (turn_loop
+                // fold_tool_call_before_results); stderr never reaches the model, so
+                // the guidance must ride the stdout contract.
+                let positive_stdout = String::from_utf8_lossy(&positive.stdout);
+                assert!(
+                    positive_stdout.contains("\"decision\":\"deny\"")
+                        && positive_stdout.contains("caps children at two levels"),
+                    "拒绝原因必须以 stdout JSON 抵达模型并能指导重试: {positive:?}"
+                );
+                // The engine renders denial receipts through sanitize_hook_denial_reason
+                // with a 240-char cap and path-like-field redaction, so guidance that is
+                // too long gets cut mid-sentence and slashes/standalone path/file labels
+                // are destroyed. Both deny reasons must fit the budget and survive it.
+                let stdout_reason = |stdout: &str| -> String {
+                    stdout
+                        .trim()
+                        .strip_prefix("{\"decision\":\"deny\",\"reason\":\"")
+                        .and_then(|rest| rest.strip_suffix("\"}"))
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                let depth_reason = stdout_reason(&positive_stdout);
+                assert!(
+                    !depth_reason.is_empty() && depth_reason.chars().count() <= 240,
+                    "深度拒绝原因必须完整通过引擎 240 字符回执上限: {depth_reason:?}"
+                );
 
-        let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
-        assert!(
-            inherited.status.success(),
-            "复杂一级委派省略深度参数时应继承会话两层上限: {inherited:?}"
-        );
+                let inherited = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect"}"#);
+                assert!(
+                    inherited.status.success(),
+                    "复杂一级委派省略深度参数时应继承会话两层上限: {inherited:?}"
+                );
 
-        let leaf = run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":0}"#);
-        assert!(leaf.status.success(), "叶子委派应通过: {leaf:?}");
+                let leaf =
+                    run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":0}"#);
+                assert!(leaf.status.success(), "叶子委派应通过: {leaf:?}");
 
-        let positive_one =
-            run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":1}"#);
-        assert_eq!(
-            positive_one.status.code(),
-            Some(2),
-            "多智能体会话固定两层,正数覆盖一律拦截(bundle 0.20 决策;引擎 #5253 起覆盖本就只能收窄,拦截保持会话上限权威)"
-        );
+                let positive_one =
+                    run_depth_guard(&bundle, "agent", r#"{"prompt":"inspect","max_depth":1}"#);
+                assert_eq!(
+                    positive_one.status.code(),
+                    Some(2),
+                    "多智能体会话固定两层,正数覆盖一律拦截(bundle 0.20 决策;引擎 #5253 起覆盖本就只能收窄,拦截保持会话上限权威)"
+                );
 
-        let alias = run_depth_guard(
-            &bundle,
-            "agent",
-            r#"{"prompt":"inspect","max_spawn_depth":2}"#,
-        );
-        assert_eq!(alias.status.code(), Some(2));
+                let alias = run_depth_guard(
+                    &bundle,
+                    "agent",
+                    r#"{"prompt":"inspect","max_spawn_depth":2}"#,
+                );
+                assert_eq!(alias.status.code(), Some(2));
 
-        let quoted_example = run_depth_guard(
-            &bundle,
-            "agent",
-            r#"{"prompt":"review this JSON: {\"max_depth\":2}"}"#,
-        );
-        assert!(
-            quoted_example.status.success(),
-            "任务正文里的转义示例不得误伤: {quoted_example:?}"
-        );
+                let quoted_example = run_depth_guard(
+                    &bundle,
+                    "agent",
+                    r#"{"prompt":"review this JSON: {\"max_depth\":2}"}"#,
+                );
+                assert!(
+                    quoted_example.status.success(),
+                    "任务正文里的转义示例不得误伤: {quoted_example:?}"
+                );
 
-        let workflow = run_depth_guard(
-            &bundle,
-            "workflow",
-            r#"{"script":"return task({ description: 'x', maxDepth: 1 });"}"#,
-        );
-        assert_eq!(workflow.status.code(), Some(2));
+                let workflow = run_depth_guard(
+                    &bundle,
+                    "workflow",
+                    r#"{"script":"return task({ description: 'x', maxDepth: 1 });"}"#,
+                );
+                assert_eq!(workflow.status.code(), Some(2));
 
-        // Inline JS also accepts the snake_case serde alias; the guard must
-        // catch it too (it previously matched only the quoted "max_depth" or
-        // camelCase maxDepth forms).
-        let workflow_snake = run_depth_guard(
-            &bundle,
-            "workflow",
-            r#"{"script":"return task({ description: 'x', max_depth: 2 });"}"#,
-        );
-        assert_eq!(
-            workflow_snake.status.code(),
-            Some(2),
-            "inline JS 的 snake_case max_depth 覆盖同样必须拦截: {workflow_snake:?}"
-        );
+                // Inline JS also accepts the snake_case serde alias; the guard must
+                // catch it too (it previously matched only the quoted "max_depth" or
+                // camelCase maxDepth forms).
+                let workflow_snake = run_depth_guard(
+                    &bundle,
+                    "workflow",
+                    r#"{"script":"return task({ description: 'x', max_depth: 2 });"}"#,
+                );
+                assert_eq!(
+                    workflow_snake.status.code(),
+                    Some(2),
+                    "inline JS 的 snake_case max_depth 覆盖同样必须拦截: {workflow_snake:?}"
+                );
 
-        // TaskOptions' canonical camelCase key also arrives quoted inside
-        // JSON payloads; the guard must catch the quoted form too (it used
-        // to match only bare camelCase, so a quoted "maxDepth" override was
-        // silently allowed through).
-        let workflow_quoted_camel = run_depth_guard(
-            &bundle,
-            "workflow",
-            r#"{"tasks":[{"options":{"maxDepth": 2}}]}"#,
-        );
-        assert_eq!(
-            workflow_quoted_camel.status.code(),
-            Some(2),
-            "workflow JSON 载荷里引号包裹的 camelCase maxDepth 覆盖同样必须拦截: {workflow_quoted_camel:?}"
-        );
-        // The escaped-quote carve-out must cover the camel key as well: a
-        // quoted example inside task prose is not an override.
-        let workflow_camel_example = run_depth_guard(
-            &bundle,
-            "workflow",
-            r#"{"note":"use \"maxDepth\":2 for children"}"#,
-        );
-        assert!(
-            workflow_camel_example.status.success(),
-            "正文里的转义 camelCase 示例不得误伤: {workflow_camel_example:?}"
-        );
+                // TaskOptions' canonical camelCase key also arrives quoted inside
+                // JSON payloads; the guard must catch the quoted form too (it used
+                // to match only bare camelCase, so a quoted "maxDepth" override was
+                // silently allowed through).
+                let workflow_quoted_camel = run_depth_guard(
+                    &bundle,
+                    "workflow",
+                    r#"{"tasks":[{"options":{"maxDepth": 2}}]}"#,
+                );
+                assert_eq!(
+                    workflow_quoted_camel.status.code(),
+                    Some(2),
+                    "workflow JSON 载荷里引号包裹的 camelCase maxDepth 覆盖同样必须拦截: {workflow_quoted_camel:?}"
+                );
+                // The escaped-quote carve-out must cover the camel key as well: a
+                // quoted example inside task prose is not an override.
+                let workflow_camel_example = run_depth_guard(
+                    &bundle,
+                    "workflow",
+                    r#"{"note":"use \"maxDepth\":2 for children"}"#,
+                );
+                assert!(
+                    workflow_camel_example.status.success(),
+                    "正文里的转义 camelCase 示例不得误伤: {workflow_camel_example:?}"
+                );
 
-        // Prose that merely mentions max_depth next to a quote or paren is not
-        // an override: the bare-snake-case class must stay identical across the
-        // .sh and .ps1 guards (a looser Windows class used to false-deny these).
-        // CI executes this test natively on both hook platforms: the Linux
-        // rust-test leg runs the full lib suite (.sh), and the Windows
-        // regression leg runs this filter via its native filter list (.ps1).
-        let workflow_prose =
-            run_depth_guard(&bundle, "workflow", r#"{"note":"max_depth: 2 here"}"#);
-        assert!(
-            workflow_prose.status.success(),
-            "正文里提及 max_depth 不构成覆盖,不得误拦: {workflow_prose:?}"
-        );
+                // Prose that merely mentions max_depth next to a quote or paren is not
+                // an override: the bare-snake-case class must stay identical across the
+                // .sh and .ps1 guards (a looser Windows class used to false-deny these).
+                // CI executes this test natively on both hook platforms: the Linux
+                // rust-test leg runs the full lib suite (.sh), and the Windows
+                // regression leg runs this filter via its native filter list (.ps1).
+                let workflow_prose =
+                    run_depth_guard(&bundle, "workflow", r#"{"note":"max_depth: 2 here"}"#);
+                assert!(
+                    workflow_prose.status.success(),
+                    "正文里提及 max_depth 不构成覆盖,不得误拦: {workflow_prose:?}"
+                );
 
-        let opaque_workflow = run_depth_guard(
-            &bundle,
-            "workflow",
-            r#"{"source_path":"workflows/review.workflow.js"}"#,
+                let opaque_workflow = run_depth_guard(
+                    &bundle,
+                    "workflow",
+                    r#"{"source_path":"workflows/review.workflow.js"}"#,
+                );
+                assert_eq!(opaque_workflow.status.code(), Some(2));
+                // The opaque-source reason must survive the engine redactor: it names
+                // the parameter (source_path) without embedding slashes or standalone
+                // path/file labels, which the sanitizer replaces with [path] markers.
+                let opaque_stdout = String::from_utf8_lossy(&opaque_workflow.stdout);
+                let opaque_reason = stdout_reason(&opaque_stdout);
+                assert!(
+                    opaque_reason.contains("source_path reference is rejected")
+                        && !opaque_reason.contains('/')
+                        && !opaque_reason.contains(" path ")
+                        && !opaque_reason.contains(" file ")
+                        && opaque_reason.chars().count() <= 240,
+                    "opaque workflow 拒绝原因必须原样通过引擎脱敏管线: {opaque_reason:?}"
+                );
+            },
         );
-        assert_eq!(opaque_workflow.status.code(), Some(2));
-        // The opaque-source reason must survive the engine redactor: it names
-        // the parameter (source_path) without embedding slashes or standalone
-        // path/file labels, which the sanitizer replaces with [path] markers.
-        let opaque_stdout = String::from_utf8_lossy(&opaque_workflow.stdout);
-        let opaque_reason = stdout_reason(&opaque_stdout);
-        assert!(
-            opaque_reason.contains("source_path reference is rejected")
-                && !opaque_reason.contains('/')
-                && !opaque_reason.contains(" path ")
-                && !opaque_reason.contains(" file ")
-                && opaque_reason.chars().count() <= 240,
-            "opaque workflow 拒绝原因必须原样通过引擎脱敏管线: {opaque_reason:?}"
-        );
-
-        cleanup(&tmp);
     }
 
     #[test]
     fn connector_skill_cache_requires_complete_domain_sets() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        // 连接器技能现按包聚合落盘：bundles/<pkg>/skills/<dir>（§4 新布局）。
-        let pkg_skills = |id: &str| paths::bundles_root().join(id).join("skills");
-        std::fs::create_dir_all(pkg_skills("feishu")).unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-connector_skill_cache_requires_complete_domain_sets",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                // 连接器技能现按包聚合落盘：bundles/<pkg>/skills/<dir>（§4 新布局）。
+                let pkg_skills = |id: &str| paths::bundles_root().join(id).join("skills");
+                std::fs::create_dir_all(pkg_skills("feishu")).unwrap();
 
-        assert!(!bundle.cached_feishu_skills_visible());
-        assert!(!bundle.cached_wecom_skills_visible());
-        assert!(!bundle.cached_dingtalk_skills_visible());
-        assert!(!bundle.cached_tmeet_skills_visible());
+                assert!(!bundle.cached_feishu_skills_visible());
+                assert!(!bundle.cached_wecom_skills_visible());
+                assert!(!bundle.cached_dingtalk_skills_visible());
+                assert!(!bundle.cached_tmeet_skills_visible());
 
-        for dir in LARK_SKILL_DIRS {
-            let path = pkg_skills("feishu").join(dir);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("SKILL.md"), "test").unwrap();
-        }
-        for dir in WECOM_SKILL_DIRS {
-            let path = pkg_skills("wecom").join(dir);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("SKILL.md"), "test").unwrap();
-        }
-        for dir in DINGTALK_SKILL_DIRS {
-            let path = pkg_skills("dingtalk").join(dir);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("SKILL.md"), "test").unwrap();
-        }
-        for dir in TMEET_SKILL_DIRS {
-            let path = pkg_skills("tmeet").join(dir);
-            std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("SKILL.md"), "test").unwrap();
-        }
-        assert!(bundle.cached_feishu_skills_visible());
-        assert!(bundle.cached_wecom_skills_visible());
-        assert!(bundle.cached_dingtalk_skills_visible());
-        assert!(bundle.cached_tmeet_skills_visible());
+                for dir in LARK_SKILL_DIRS {
+                    let path = pkg_skills("feishu").join(dir);
+                    std::fs::create_dir_all(&path).unwrap();
+                    std::fs::write(path.join("SKILL.md"), "test").unwrap();
+                }
+                for dir in WECOM_SKILL_DIRS {
+                    let path = pkg_skills("wecom").join(dir);
+                    std::fs::create_dir_all(&path).unwrap();
+                    std::fs::write(path.join("SKILL.md"), "test").unwrap();
+                }
+                for dir in DINGTALK_SKILL_DIRS {
+                    let path = pkg_skills("dingtalk").join(dir);
+                    std::fs::create_dir_all(&path).unwrap();
+                    std::fs::write(path.join("SKILL.md"), "test").unwrap();
+                }
+                for dir in TMEET_SKILL_DIRS {
+                    let path = pkg_skills("tmeet").join(dir);
+                    std::fs::create_dir_all(&path).unwrap();
+                    std::fs::write(path.join("SKILL.md"), "test").unwrap();
+                }
+                assert!(bundle.cached_feishu_skills_visible());
+                assert!(bundle.cached_wecom_skills_visible());
+                assert!(bundle.cached_dingtalk_skills_visible());
+                assert!(bundle.cached_tmeet_skills_visible());
 
-        std::fs::write(paths::pinvou3_home().join("feishu_disabled"), "1").unwrap();
-        std::fs::write(paths::pinvou3_home().join("wecom_disabled"), "1").unwrap();
-        std::fs::write(paths::pinvou3_home().join("dingtalk_disabled"), "1").unwrap();
-        std::fs::write(paths::pinvou3_home().join("tmeet_disabled"), "1").unwrap();
-        assert!(!bundle.cached_feishu_skills_visible());
-        assert!(!bundle.cached_wecom_skills_visible());
-        assert!(!bundle.cached_dingtalk_skills_visible());
-        assert!(!bundle.cached_tmeet_skills_visible());
-        std::fs::remove_file(paths::pinvou3_home().join("feishu_disabled")).unwrap();
-        std::fs::remove_file(paths::pinvou3_home().join("wecom_disabled")).unwrap();
-        std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
-        std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
+                std::fs::write(paths::pinvou3_home().join("feishu_disabled"), "1").unwrap();
+                std::fs::write(paths::pinvou3_home().join("wecom_disabled"), "1").unwrap();
+                std::fs::write(paths::pinvou3_home().join("dingtalk_disabled"), "1").unwrap();
+                std::fs::write(paths::pinvou3_home().join("tmeet_disabled"), "1").unwrap();
+                assert!(!bundle.cached_feishu_skills_visible());
+                assert!(!bundle.cached_wecom_skills_visible());
+                assert!(!bundle.cached_dingtalk_skills_visible());
+                assert!(!bundle.cached_tmeet_skills_visible());
+                std::fs::remove_file(paths::pinvou3_home().join("feishu_disabled")).unwrap();
+                std::fs::remove_file(paths::pinvou3_home().join("wecom_disabled")).unwrap();
+                std::fs::remove_file(paths::pinvou3_home().join("dingtalk_disabled")).unwrap();
+                std::fs::remove_file(paths::pinvou3_home().join("tmeet_disabled")).unwrap();
 
-        std::fs::remove_file(
-            pkg_skills("feishu")
-                .join(LARK_SKILL_DIRS[0])
-                .join("SKILL.md"),
-        )
-        .unwrap();
-        std::fs::remove_file(
-            pkg_skills("wecom")
-                .join(WECOM_SKILL_DIRS[0])
-                .join("SKILL.md"),
-        )
-        .unwrap();
-        std::fs::remove_file(
-            pkg_skills("dingtalk")
-                .join(DINGTALK_SKILL_DIRS[0])
-                .join("SKILL.md"),
-        )
-        .unwrap();
-        std::fs::remove_file(
-            pkg_skills("tmeet")
-                .join(TMEET_SKILL_DIRS[0])
-                .join("SKILL.md"),
-        )
-        .unwrap();
-        assert!(!bundle.cached_feishu_skills_visible());
-        assert!(!bundle.cached_wecom_skills_visible());
-        assert!(!bundle.cached_dingtalk_skills_visible());
-        assert!(!bundle.cached_tmeet_skills_visible());
-        cleanup(&tmp);
+                std::fs::remove_file(
+                    pkg_skills("feishu")
+                        .join(LARK_SKILL_DIRS[0])
+                        .join("SKILL.md"),
+                )
+                .unwrap();
+                std::fs::remove_file(
+                    pkg_skills("wecom")
+                        .join(WECOM_SKILL_DIRS[0])
+                        .join("SKILL.md"),
+                )
+                .unwrap();
+                std::fs::remove_file(
+                    pkg_skills("dingtalk")
+                        .join(DINGTALK_SKILL_DIRS[0])
+                        .join("SKILL.md"),
+                )
+                .unwrap();
+                std::fs::remove_file(
+                    pkg_skills("tmeet")
+                        .join(TMEET_SKILL_DIRS[0])
+                        .join("SKILL.md"),
+                )
+                .unwrap();
+                assert!(!bundle.cached_feishu_skills_visible());
+                assert!(!bundle.cached_wecom_skills_visible());
+                assert!(!bundle.cached_dingtalk_skills_visible());
+                assert!(!bundle.cached_tmeet_skills_visible());
+            },
+        );
     }
 
     #[cfg(unix)]
@@ -1719,7 +1723,13 @@ mod tests {
         use std::collections::HashMap;
         use std::process::Command;
 
-        let tmp = tempdir();
+        // This test neither holds ENV_LOCK nor sets PINVOU3_HOME (see its tail
+        // comment): it names its own scratch dir and removes it directly.
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-shell-env-hook-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(
             std::path::Path::new(&tmp).join(".bash_profile"),
@@ -1798,9 +1808,8 @@ mod tests {
             );
         }
 
-        // This test neither holds ENV_LOCK nor sets PINVOU3_HOME, so it must
-        // not use cleanup() — its contract requires the caller to hold the
-        // lock, and it unconditionally removes the variable. A lock-free
+        // This test neither holds ENV_LOCK nor sets PINVOU3_HOME, so it
+        // must not remove or mutate PINVOU3_HOME on its own: a lock-free
         // removal here would punch through a parallel test's lock-holding
         // window, and the dingtalk/wecom skill-gate tests then fail
         // intermittently with assertions reading the wrong root.
@@ -1810,49 +1819,48 @@ mod tests {
     /// 已下架预置技能的清理:市场标记的删、无标记裸残留的删、用户上传(upload:)的保。
     #[test]
     fn cleanup_removed_marketplace_skills_respects_upload_marker() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_removed_marketplace_skills_respects_upload_marker",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                std::fs::create_dir_all(&bundle.skills_dir).unwrap();
 
-        // pua:本市场装的(标记匹配)→ 应删
-        let pua = bundle.skills_dir.join("pua");
-        std::fs::create_dir_all(&pua).unwrap();
-        std::fs::write(pua.join(".installed-from"), "pinvou3-marketplace:pua").unwrap();
-        // huashu-nuwa:无标记裸残留 → 应删
-        let nuwa = bundle.skills_dir.join("huashu-nuwa");
-        std::fs::create_dir_all(&nuwa).unwrap();
-        // brainstorming:用户上传的同名 → 应保
-        let brainstorm = bundle.skills_dir.join("brainstorming");
-        std::fs::create_dir_all(&brainstorm).unwrap();
-        std::fs::write(brainstorm.join(".installed-from"), "upload:my.zip").unwrap();
+                // pua:本市场装的(标记匹配)→ 应删
+                let pua = bundle.skills_dir.join("pua");
+                std::fs::create_dir_all(&pua).unwrap();
+                std::fs::write(pua.join(".installed-from"), "pinvou3-marketplace:pua").unwrap();
+                // huashu-nuwa:无标记裸残留 → 应删
+                let nuwa = bundle.skills_dir.join("huashu-nuwa");
+                std::fs::create_dir_all(&nuwa).unwrap();
+                // brainstorming:用户上传的同名 → 应保
+                let brainstorm = bundle.skills_dir.join("brainstorming");
+                std::fs::create_dir_all(&brainstorm).unwrap();
+                std::fs::write(brainstorm.join(".installed-from"), "upload:my.zip").unwrap();
 
-        bundle.cleanup_removed_marketplace_skills().unwrap();
+                bundle.cleanup_removed_marketplace_skills().unwrap();
 
-        assert!(!pua.exists(), "市场标记的 pua 应被删");
-        assert!(!nuwa.exists(), "无标记的 huashu-nuwa 残留应被删");
-        assert!(brainstorm.exists(), "用户上传(upload:)的同名目录应保留");
-
-        cleanup(&tmp);
+                assert!(!pua.exists(), "市场标记的 pua 应被删");
+                assert!(!nuwa.exists(), "无标记的 huashu-nuwa 残留应被删");
+                assert!(brainstorm.exists(), "用户上传(upload:)的同名目录应保留");
+            },
+        );
     }
 
     #[test]
     fn forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-forkguard_builtin_visual_skill_uses_bundle_root_and_safe_name",
+            || {
+                let bundle = Pinvou3Bundle::paths();
 
-        bundle.write_builtin_skills().unwrap();
+                bundle.write_builtin_skills().unwrap();
 
-        let skill_path = bundle.skills_dir.join("visual-design").join("SKILL.md");
-        let content = std::fs::read_to_string(&skill_path).unwrap();
-        assert!(content.contains("name: visual-design"));
-        assert!(skill_path.starts_with(&bundle.skills_dir));
-        cleanup(&tmp);
+                let skill_path = bundle.skills_dir.join("visual-design").join("SKILL.md");
+                let content = std::fs::read_to_string(&skill_path).unwrap();
+                assert!(content.contains("name: visual-design"));
+                assert!(skill_path.starts_with(&bundle.skills_dir));
+            },
+        );
     }
 
     /// `BUILTIN_RELEASED_SKILL_DIRS` must mirror the embedded builtin-skills
@@ -1889,31 +1897,31 @@ mod tests {
     /// away by self-heal step 4 on the same launch.
     #[test]
     fn write_builtin_skills_releases_exactly_the_listed_dirs() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-write_builtin_skills_releases_exactly_the_listed_dirs",
+            || {
+                let bundle = Pinvou3Bundle::paths();
 
-        bundle.write_builtin_skills().unwrap();
+                bundle.write_builtin_skills().unwrap();
 
-        let mut written: Vec<String> = std::fs::read_dir(&bundle.skills_dir)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        written.sort_unstable();
-        let mut listed: Vec<String> = Pinvou3Bundle::BUILTIN_RELEASED_SKILL_DIRS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        listed.sort_unstable();
-        assert_eq!(
-            written, listed,
-            "write_builtin_skills 的释放面与 BUILTIN_RELEASED_SKILL_DIRS 不一致"
+                let mut written: Vec<String> = std::fs::read_dir(&bundle.skills_dir)
+                    .unwrap()
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                written.sort_unstable();
+                let mut listed: Vec<String> = Pinvou3Bundle::BUILTIN_RELEASED_SKILL_DIRS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                listed.sort_unstable();
+                assert_eq!(
+                    written, listed,
+                    "write_builtin_skills 的释放面与 BUILTIN_RELEASED_SKILL_DIRS 不一致"
+                );
+            },
         );
-        cleanup(&tmp);
     }
 
     /// include_dir! 内嵌树中的 `__pycache__/` 与 `*.pyc` 不得物化到用户 bundle
@@ -1922,50 +1930,49 @@ mod tests {
     /// 验证排除逻辑生效,不存在时断言"零物化 pyc"作为回归基线。
     #[test]
     fn extract_dir_skips_python_compilation_caches() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-extract_dir_skips_python_compilation_caches",
+            || {
+                let bundle = Pinvou3Bundle::paths();
 
-        bundle.apply_feishu_skills(true).unwrap();
-        bundle.apply_dingtalk_skills(true).unwrap();
+                bundle.apply_feishu_skills(true).unwrap();
+                bundle.apply_dingtalk_skills(true).unwrap();
 
-        let mut caches: Vec<std::path::PathBuf> = Vec::new();
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_dir() {
-                        if p.file_name().is_some_and(|n| n == "__pycache__") {
-                            out.push(p);
-                        } else {
-                            walk(&p, out);
+                let mut caches: Vec<std::path::PathBuf> = Vec::new();
+                fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let p = entry.path();
+                            if p.is_dir() {
+                                if p.file_name().is_some_and(|n| n == "__pycache__") {
+                                    out.push(p);
+                                } else {
+                                    walk(&p, out);
+                                }
+                            } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pyc")) {
+                                out.push(p);
+                            }
                         }
-                    } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pyc")) {
-                        out.push(p);
                     }
                 }
-            }
-        }
-        walk(&bundle.skills_dir, &mut caches);
-        assert!(caches.is_empty(), "物化出了 Python 编译缓存: {caches:?}");
-        cleanup(&tmp);
+                walk(&bundle.skills_dir, &mut caches);
+                assert!(caches.is_empty(), "物化出了 Python 编译缓存: {caches:?}");
+            },
+        );
     }
 
     /// 已下架预置 MCP 工具的清理:目录、installed.json、mcp.json、禁用列表都不应残留。
     #[test]
     fn cleanup_removed_marketplace_tools_removes_data_analysis() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
-        std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::write(
-            data_dir.join("manifest.json"),
-            r#"{
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_removed_marketplace_tools_removes_data_analysis",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
+                std::fs::create_dir_all(&data_dir).unwrap();
+                std::fs::write(
+                    data_dir.join("manifest.json"),
+                    r#"{
                 "id":"data_analysis",
                 "name":"数据分析与可视化",
                 "description":"removed",
@@ -1976,48 +1983,49 @@ mod tests {
                 "command":"python",
                 "args":["server.py"]
             }"#,
-        )
-        .unwrap();
-        let marketplace_dir = paths::pinvou3_home().join("marketplace");
-        std::fs::create_dir_all(&marketplace_dir).unwrap();
-        std::fs::write(
-            marketplace_dir.join("installed.json"),
-            r#"["weather","data_analysis"]"#,
-        )
-        .unwrap();
-        std::fs::write(
+                )
+                .unwrap();
+                let marketplace_dir = paths::pinvou3_home().join("marketplace");
+                std::fs::create_dir_all(&marketplace_dir).unwrap();
+                std::fs::write(
+                    marketplace_dir.join("installed.json"),
+                    r#"["weather","data_analysis"]"#,
+                )
+                .unwrap();
+                std::fs::write(
             paths::mcp_config_path(),
             r#"{"servers":{"data_analysis":{"command":"python","args":["server.py"]},"weather":{"command":"python","args":["server.py"]}}}"#,
         )
         .unwrap();
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Plain,
-            &["data_analysis".to_string(), "weather".to_string()],
-        )
-        .unwrap();
+                crate::features::marketplace::scope::save_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Plain,
+                    &["data_analysis".to_string(), "weather".to_string()],
+                )
+                .unwrap();
 
-        bundle.cleanup_removed_marketplace_tools().unwrap();
+                bundle.cleanup_removed_marketplace_tools().unwrap();
 
-        assert!(!data_dir.exists(), "data_analysis 运行目录应被删");
-        let installed = std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap();
-        assert!(
-            !installed.contains("data_analysis"),
-            "installed.json 不应残留 data_analysis"
+                assert!(!data_dir.exists(), "data_analysis 运行目录应被删");
+                let installed =
+                    std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap();
+                assert!(
+                    !installed.contains("data_analysis"),
+                    "installed.json 不应残留 data_analysis"
+                );
+                let mcp = std::fs::read_to_string(paths::mcp_config_path()).unwrap();
+                assert!(
+                    !mcp.contains("data_analysis"),
+                    "mcp.json 不应残留 data_analysis server"
+                );
+                let disabled = crate::features::marketplace::scope::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Plain,
+                );
+                assert!(
+                    !disabled.contains(&"data_analysis".to_string()),
+                    "disabled_connectors 不应残留 data_analysis"
+                );
+            },
         );
-        let mcp = std::fs::read_to_string(paths::mcp_config_path()).unwrap();
-        assert!(
-            !mcp.contains("data_analysis"),
-            "mcp.json 不应残留 data_analysis server"
-        );
-        let disabled = crate::features::marketplace::scope::load_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Plain,
-        );
-        assert!(
-            !disabled.contains(&"data_analysis".to_string()),
-            "disabled_connectors 不应残留 data_analysis"
-        );
-
-        cleanup(&tmp);
     }
 
     /// 损坏 mcp.json 下的退役清理:uninstall 在写入器处被拒并整体回滚——登记、
@@ -2025,16 +2033,15 @@ mod tests {
     /// 而不是销毁一个仍登记在册的工具的包目录。
     #[test]
     fn cleanup_defers_when_uninstall_refuses_a_corrupt_mcp_json() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
-        std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::write(
-            data_dir.join("manifest.json"),
-            r#"{
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_defers_when_uninstall_refuses_a_corrupt_mcp_json",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                let data_dir = paths::bundle_mcp_servers_dir().join("data_analysis");
+                std::fs::create_dir_all(&data_dir).unwrap();
+                std::fs::write(
+                    data_dir.join("manifest.json"),
+                    r#"{
                 "id":"data_analysis",
                 "name":"数据分析与可视化",
                 "description":"removed",
@@ -2045,37 +2052,38 @@ mod tests {
                 "command":"python",
                 "args":["server.py"]
             }"#,
-        )
-        .unwrap();
-        let marketplace_dir = paths::pinvou3_home().join("marketplace");
-        std::fs::create_dir_all(&marketplace_dir).unwrap();
-        std::fs::write(
-            marketplace_dir.join("installed.json"),
-            r#"["data_analysis"]"#,
-        )
-        .unwrap();
-        let mcp_path = paths::mcp_config_path();
-        let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-        std::fs::write(&mcp_path, corrupt).unwrap();
+                )
+                .unwrap();
+                let marketplace_dir = paths::pinvou3_home().join("marketplace");
+                std::fs::create_dir_all(&marketplace_dir).unwrap();
+                std::fs::write(
+                    marketplace_dir.join("installed.json"),
+                    r#"["data_analysis"]"#,
+                )
+                .unwrap();
+                let mcp_path = paths::mcp_config_path();
+                let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
+                std::fs::write(&mcp_path, corrupt).unwrap();
 
-        bundle.cleanup_removed_marketplace_tools().unwrap();
+                bundle.cleanup_removed_marketplace_tools().unwrap();
 
-        assert!(
-            data_dir.exists(),
-            "uninstall 被拒后不得删除仍登记在册的工具的包目录"
+                assert!(
+                    data_dir.exists(),
+                    "uninstall 被拒后不得删除仍登记在册的工具的包目录"
+                );
+                let installed =
+                    std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap();
+                assert!(
+                    installed.contains("data_analysis"),
+                    "uninstall 被拒后登记必须原样保留: {installed}"
+                );
+                assert_eq!(
+                    std::fs::read(&mcp_path).unwrap(),
+                    corrupt.as_bytes(),
+                    "坏文件字节必须在被拒的卸载中幸存"
+                );
+            },
         );
-        let installed = std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap();
-        assert!(
-            installed.contains("data_analysis"),
-            "uninstall 被拒后登记必须原样保留: {installed}"
-        );
-        assert_eq!(
-            std::fs::read(&mcp_path).unwrap(),
-            corrupt.as_bytes(),
-            "坏文件字节必须在被拒的卸载中幸存"
-        );
-
-        cleanup(&tmp);
     }
 
     /// 旧版 mcp.json 的 present server key 是 `pinvou`(与产品名差一个 3,模型采样必漂成
@@ -2083,62 +2091,63 @@ mod tests {
     /// 必须迁成 `pinvou3`、删干净旧 `pinvou`,且不碰 marketplace 已装条目。
     #[test]
     fn migrates_legacy_pinvou_server_key_to_pinvou3() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
-        // 模拟旧版本写下的 mcp.json:present server 仍叫 pinvou + 一个 marketplace 条目(weather)。
-        std::fs::write(
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-migrates_legacy_pinvou_server_key_to_pinvou3",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
+                std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+                // 模拟旧版本写下的 mcp.json:present server 仍叫 pinvou + 一个 marketplace 条目(weather)。
+                std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{"pinvou":{"command":"python3","args":["/old/present.py"]},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
         )
         .unwrap();
-        bundle.ensure_builtin_mcp_servers().unwrap();
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-        let servers = mcp["servers"].as_object().unwrap();
-        assert!(
-            servers.contains_key("pinvou3"),
-            "应迁到 pinvou3,实际={:?}",
-            servers.keys().collect::<Vec<_>>()
+                bundle.ensure_builtin_mcp_servers().unwrap();
+                let mcp: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .unwrap();
+                let servers = mcp["servers"].as_object().unwrap();
+                assert!(
+                    servers.contains_key("pinvou3"),
+                    "应迁到 pinvou3,实际={:?}",
+                    servers.keys().collect::<Vec<_>>()
+                );
+                assert!(!servers.contains_key("pinvou"), "旧 pinvou 应删除,不留残");
+                assert!(
+                    servers.contains_key("weather"),
+                    "marketplace 条目 weather 不应被迁移误删"
+                );
+            },
         );
-        assert!(!servers.contains_key("pinvou"), "旧 pinvou 应删除,不留残");
-        assert!(
-            servers.contains_key("weather"),
-            "marketplace 条目 weather 不应被迁移误删"
-        );
-        cleanup(&tmp);
     }
 
     /// 坏 mcp.json(parse 失败)必须自愈:重建骨架并恢复内置 pinvou3 server 条目——
     /// 早期返回"留给后续启动"会让坏文件永远修不好(present_artifact 永久失效)。
     #[test]
     fn ensure_builtin_mcp_servers_repairs_broken_mcp_json() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
-        std::fs::write(&bundle.mcp_json, "{ not valid json !!!").unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-ensure_builtin_mcp_servers_repairs_broken_mcp_json",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
+                std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+                std::fs::write(&bundle.mcp_json, "{ not valid json !!!").unwrap();
 
-        bundle.ensure_builtin_mcp_servers().unwrap();
+                bundle.ensure_builtin_mcp_servers().unwrap();
 
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
-                .expect("自愈后 mcp.json 必须是合法 json");
-        let servers = mcp["servers"].as_object().unwrap();
-        assert!(
-            servers.contains_key("pinvou3"),
-            "坏 mcp.json 自愈后应恢复内置 pinvou3 条目,实际={:?}",
-            servers.keys().collect::<Vec<_>>()
+                let mcp: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .expect("自愈后 mcp.json 必须是合法 json");
+                let servers = mcp["servers"].as_object().unwrap();
+                assert!(
+                    servers.contains_key("pinvou3"),
+                    "坏 mcp.json 自愈后应恢复内置 pinvou3 条目,实际={:?}",
+                    servers.keys().collect::<Vec<_>>()
+                );
+                assert!(!servers.contains_key("pinvou"), "旧 pinvou 不残留");
+            },
         );
-        assert!(!servers.contains_key("pinvou"), "旧 pinvou 不残留");
-        cleanup(&tmp);
     }
 
     /// #521/#515 cross-process contention on the boot builtin-refresh write
@@ -2150,74 +2159,74 @@ mod tests {
     /// reached the lock (#517 test shape).
     #[test]
     fn cross_process_lock_blocks_mcp_builtin_refresh_write_until_release() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
-        let mcp_json = bundle.mcp_json.clone();
-        std::fs::create_dir_all(mcp_json.parent().unwrap()).unwrap();
-        // Seed one marketplace sentinel; the refresh must add pinvou3 without
-        // touching it, contended or not.
-        std::fs::write(
-            &mcp_json,
-            r#"{"servers":{"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
-        )
-        .unwrap();
-        let lock_path = crate::features::marketplace::file_lock::lock_path_for(&mcp_json);
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&lock_path)
-            .expect("test should be able to open the lock file");
-        let mut foreign = fd_lock::RwLock::new(file);
-        let foreign_guard = foreign
-            .write()
-            .expect("test should be able to take the foreign cross-process write lock");
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cross_process_lock_blocks_mcp_builtin_refresh_write_until_release",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
+                let mcp_json = bundle.mcp_json.clone();
+                std::fs::create_dir_all(mcp_json.parent().unwrap()).unwrap();
+                // Seed one marketplace sentinel; the refresh must add pinvou3 without
+                // touching it, contended or not.
+                std::fs::write(
+                    &mcp_json,
+                    r#"{"servers":{"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
+                )
+                .unwrap();
+                let lock_path = crate::features::marketplace::file_lock::lock_path_for(&mcp_json);
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&lock_path)
+                    .expect("test should be able to open the lock file");
+                let mut foreign = fd_lock::RwLock::new(file);
+                let foreign_guard = foreign
+                    .write()
+                    .expect("test should be able to take the foreign cross-process write lock");
 
-        let worker = std::thread::spawn(move || {
-            bundle
-                .ensure_builtin_mcp_servers()
-                .expect("refresh should succeed once the foreign lock is released");
-        });
-        // Handshake: wait until the worker holds the mcp.json in-process mutex
-        // — with the foreign lock held, it is now parked on (or just failed)
-        // the OS-lock acquisition (#517 test shape).
-        crate::features::marketplace::file_lock::wait_until_process_mutex_parked(
-            &lock_path, "mcp.json",
-        );
-        // The refresh must not land while the peer holds the lock.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            let content = std::fs::read_to_string(&mcp_json).unwrap();
-            assert!(
-                !content.contains("\"pinvou3\""),
-                "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
-            );
-            assert!(
-                content.contains("\"weather\""),
-                "the marketplace sentinel must survive the contended window: {content}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+                let worker = std::thread::spawn(move || {
+                    bundle
+                        .ensure_builtin_mcp_servers()
+                        .expect("refresh should succeed once the foreign lock is released");
+                });
+                // Handshake: wait until the worker holds the mcp.json in-process mutex
+                // — with the foreign lock held, it is now parked on (or just failed)
+                // the OS-lock acquisition (#517 test shape).
+                crate::features::marketplace::file_lock::wait_until_process_mutex_parked(
+                    &lock_path, "mcp.json",
+                );
+                // The refresh must not land while the peer holds the lock.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let content = std::fs::read_to_string(&mcp_json).unwrap();
+                    assert!(
+                        !content.contains("\"pinvou3\""),
+                        "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                    );
+                    assert!(
+                        content.contains("\"weather\""),
+                        "the marketplace sentinel must survive the contended window: {content}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
 
-        drop(foreign_guard);
-        worker
-            .join()
-            .expect("worker should finish once the foreign lock is released");
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&mcp_json).unwrap()).unwrap();
-        assert!(
-            mcp["servers"].get("pinvou3").is_some(),
-            "the builtin entry must land after the lock is released: {mcp}"
+                drop(foreign_guard);
+                worker
+                    .join()
+                    .expect("worker should finish once the foreign lock is released");
+                let mcp: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&mcp_json).unwrap()).unwrap();
+                assert!(
+                    mcp["servers"].get("pinvou3").is_some(),
+                    "the builtin entry must land after the lock is released: {mcp}"
+                );
+                assert!(
+                    mcp["servers"].get("weather").is_some(),
+                    "the marketplace sentinel must survive: {mcp}"
+                );
+            },
         );
-        assert!(
-            mcp["servers"].get("weather").is_some(),
-            "the marketplace sentinel must survive: {mcp}"
-        );
-        cleanup(&tmp);
     }
 
     /// The write footprint of ensure_builtin_mcp_servers is pinned to the three
@@ -2229,19 +2238,18 @@ mod tests {
     /// the two sides can no longer drift apart silently.
     #[test]
     fn ensure_builtin_mcp_servers_touches_only_engine_owned_keys() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
-        // One entry per engine-key form (pinvou migration / pinvou3 upsert /
-        // browser-wrapper residue cleanup) plus two user-entry sentinels. The
-        // sentinels deliberately use node commands to dodge the stale-python
-        // rewrite path of refresh_mcp_python_commands — this test pins the
-        // key-set footprint, not the python self-heal semantics.
-        std::fs::write(
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-ensure_builtin_mcp_servers_touches_only_engine_owned_keys",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
+                std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+                // One entry per engine-key form (pinvou migration / pinvou3 upsert /
+                // browser-wrapper residue cleanup) plus two user-entry sentinels. The
+                // sentinels deliberately use node commands to dodge the stale-python
+                // rewrite path of refresh_mcp_python_commands — this test pins the
+                // key-set footprint, not the python self-heal semantics.
+                std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{
                 "pinvou":{"command":"python3","args":["/old/present.py"]},
@@ -2252,118 +2260,125 @@ mod tests {
             }}"#,
         )
         .unwrap();
-        let before: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-        let before_servers = before["servers"].as_object().unwrap();
+                let before: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .unwrap();
+                let before_servers = before["servers"].as_object().unwrap();
 
-        bundle.ensure_builtin_mcp_servers().unwrap();
+                bundle.ensure_builtin_mcp_servers().unwrap();
 
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-        let servers = mcp["servers"].as_object().unwrap();
-        let mut keys: Vec<&str> = servers.keys().map(String::as_str).collect();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec!["pinvou3", "user-node", "user-node2"],
-            "write footprint must be exactly the three engine keys: pinvou migrated away, pinvou3 upserted, browser residue deleted"
-        );
-        // Real cross-check against the marketplace-side constant: the keys the
-        // upsert actually manages — the engine keys surviving the pass plus the
-        // constant's keys it removed (pinvou migration, browser residue) — must
-        // equal ENGINE_OWNED_MCP_SERVER_KEYS exactly. An engine-side key added
-        // without the constant turns red, and a constant entry the boot path
-        // never touches turns red too; the marketplace-side exact-set test pins
-        // the constant against its literal.
-        let mut managed_keys: Vec<String> = servers
-            .keys()
-            .map(String::clone)
-            .filter(|key| !key.starts_with("user-node"))
-            .collect();
-        for key in before_servers.keys() {
-            if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&key.as_str()) && !servers.contains_key(key) {
-                managed_keys.push(key.clone());
-            }
-        }
-        managed_keys.sort_unstable();
-        managed_keys.dedup();
-        let mut expected: Vec<&str> = ENGINE_OWNED_MCP_SERVER_KEYS.to_vec();
-        expected.sort_unstable();
-        assert_eq!(
-            managed_keys, expected,
-            "ensure_builtin_mcp_servers' managed key set drifted from \
+                let mcp: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .unwrap();
+                let servers = mcp["servers"].as_object().unwrap();
+                let mut keys: Vec<&str> = servers.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys,
+                    vec!["pinvou3", "user-node", "user-node2"],
+                    "write footprint must be exactly the three engine keys: pinvou migrated away, pinvou3 upserted, browser residue deleted"
+                );
+                // Real cross-check against the marketplace-side constant: the keys the
+                // upsert actually manages — the engine keys surviving the pass plus the
+                // constant's keys it removed (pinvou migration, browser residue) — must
+                // equal ENGINE_OWNED_MCP_SERVER_KEYS exactly. An engine-side key added
+                // without the constant turns red, and a constant entry the boot path
+                // never touches turns red too; the marketplace-side exact-set test pins
+                // the constant against its literal.
+                let mut managed_keys: Vec<String> = servers
+                    .keys()
+                    .map(String::clone)
+                    .filter(|key| !key.starts_with("user-node"))
+                    .collect();
+                for key in before_servers.keys() {
+                    if ENGINE_OWNED_MCP_SERVER_KEYS.contains(&key.as_str())
+                        && !servers.contains_key(key)
+                    {
+                        managed_keys.push(key.clone());
+                    }
+                }
+                managed_keys.sort_unstable();
+                managed_keys.dedup();
+                let mut expected: Vec<&str> = ENGINE_OWNED_MCP_SERVER_KEYS.to_vec();
+                expected.sort_unstable();
+                assert_eq!(
+                    managed_keys, expected,
+                    "ensure_builtin_mcp_servers' managed key set drifted from \
              ENGINE_OWNED_MCP_SERVER_KEYS — update the marketplace constant in the same PR"
+                );
+                assert_eq!(
+                    servers["pinvou3"]["command"],
+                    serde_json::Value::String(paths::python_command())
+                );
+                assert_eq!(
+                    servers["user-node"],
+                    serde_json::json!({
+                        "command":"node","args":["/opt/user-tool/run.js"],
+                        "enabled":false,"custom_hint":"keep"
+                    }),
+                    "user entries outside the footprint must be preserved verbatim"
+                );
+                assert_eq!(
+                    servers["user-node2"],
+                    serde_json::json!({
+                        "command":"node","args":["/opt/user-tool/run2.js"]
+                    }),
+                    "user entries outside the footprint must be preserved verbatim"
+                );
+            },
         );
-        assert_eq!(
-            servers["pinvou3"]["command"],
-            serde_json::Value::String(paths::python_command())
-        );
-        assert_eq!(
-            servers["user-node"],
-            serde_json::json!({
-                "command":"node","args":["/opt/user-tool/run.js"],
-                "enabled":false,"custom_hint":"keep"
-            }),
-            "user entries outside the footprint must be preserved verbatim"
-        );
-        assert_eq!(
-            servers["user-node2"],
-            serde_json::json!({
-                "command":"node","args":["/opt/user-tool/run2.js"]
-            }),
-            "user entries outside the footprint must be preserved verbatim"
-        );
-        cleanup(&tmp);
     }
 
     /// write_if_changed:内容逐字节一致时跳过写盘(返回 false 且不动文件);
     /// 内容不同才实际写入(返回 true)。
     #[test]
     fn write_if_changed_skips_rewrite_when_content_identical() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        let target = std::path::Path::new(&tmp).join("nested").join("out.txt");
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-write_if_changed_skips_rewrite_when_content_identical",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                let target = std::path::Path::new(&paths::pinvou3_home())
+                    .join("nested")
+                    .join("out.txt");
 
-        // 首次:文件不存在 → 实际写入(父目录自动创建)
-        assert!(bundle.write_if_changed(&target, "hello").unwrap());
-        let mtime = std::fs::metadata(&target).unwrap().modified().unwrap();
-        // 内容一致 → 跳过写盘,mtime 不变
-        assert!(!bundle.write_if_changed(&target, "hello").unwrap());
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().modified().unwrap(),
-            mtime,
-            "内容一致时不应重写文件"
+                // 首次:文件不存在 → 实际写入(父目录自动创建)
+                assert!(bundle.write_if_changed(&target, "hello").unwrap());
+                let mtime = std::fs::metadata(&target).unwrap().modified().unwrap();
+                // 内容一致 → 跳过写盘,mtime 不变
+                assert!(!bundle.write_if_changed(&target, "hello").unwrap());
+                assert_eq!(
+                    std::fs::metadata(&target).unwrap().modified().unwrap(),
+                    mtime,
+                    "内容一致时不应重写文件"
+                );
+                // 内容变化 → 重写
+                assert!(bundle.write_if_changed(&target, "world").unwrap());
+                assert_eq!(std::fs::read_to_string(&target).unwrap(), "world");
+            },
         );
-        // 内容变化 → 重写
-        assert!(bundle.write_if_changed(&target, "world").unwrap());
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "world");
-        cleanup(&tmp);
     }
 
     /// 已下架工具无任何残留时走快速路径:不实例化 MarketplaceManager 跑 uninstall。
     /// 可观测证据:uninstall 必写 marketplace/installed.json,快速路径下它不得出现。
     #[test]
     fn cleanup_removed_marketplace_tools_fast_path_skips_uninstall() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_removed_marketplace_tools_fast_path_skips_uninstall",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
 
-        bundle.cleanup_removed_marketplace_tools().unwrap();
+                bundle.cleanup_removed_marketplace_tools().unwrap();
 
-        assert!(
-            !paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json")
-                .exists(),
-            "无残留时不应触发 uninstall(其必写 installed.json)"
+                assert!(
+                    !paths::pinvou3_home()
+                        .join("marketplace")
+                        .join("installed.json")
+                        .exists(),
+                    "无残留时不应触发 uninstall(其必写 installed.json)"
+                );
+            },
         );
-        cleanup(&tmp);
     }
 
     /// G8a Upload protection must be fail-closed like the uninstall path's
@@ -2372,31 +2387,31 @@ mod tests {
     /// `bundles/<id>` wholesale, which is user content for an upload).
     #[test]
     fn cleanup_removed_marketplace_tools_fail_closed_on_unreadable_store() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_removed_marketplace_tools_fail_closed_on_unreadable_store",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
 
-        // Corrupt (unparseable) bundles.json.
-        let store_file = paths::pinvou3_home()
-            .join("marketplace")
-            .join("bundles.json");
-        std::fs::create_dir_all(store_file.parent().unwrap()).unwrap();
-        std::fs::write(&store_file, "{ not valid json !!!").unwrap();
-        // Residue that would otherwise be cleaned (new-layout package dir).
-        let pkg_dir = paths::bundles_root().join("data_analysis");
-        std::fs::create_dir_all(&pkg_dir).unwrap();
-        std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+                // Corrupt (unparseable) bundles.json.
+                let store_file = paths::pinvou3_home()
+                    .join("marketplace")
+                    .join("bundles.json");
+                std::fs::create_dir_all(store_file.parent().unwrap()).unwrap();
+                std::fs::write(&store_file, "{ not valid json !!!").unwrap();
+                // Residue that would otherwise be cleaned (new-layout package dir).
+                let pkg_dir = paths::bundles_root().join("data_analysis");
+                std::fs::create_dir_all(&pkg_dir).unwrap();
+                std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
 
-        bundle.cleanup_removed_marketplace_tools().unwrap();
+                bundle.cleanup_removed_marketplace_tools().unwrap();
 
-        assert!(
-            pkg_dir.join("plugin.json").is_file(),
-            "store 不可读时退役清理必须 fail-closed（跳过），不得删包目录"
+                assert!(
+                    pkg_dir.join("plugin.json").is_file(),
+                    "store 不可读时退役清理必须 fail-closed（跳过），不得删包目录"
+                );
+            },
         );
-        cleanup(&tmp);
     }
 
     /// Round-32 minor 4 (review #455): an Upload record present BEFORE the
@@ -2404,47 +2419,47 @@ mod tests {
     /// no delete, the user's uploaded pack and its registration stay put.
     #[test]
     fn cleanup_removed_marketplace_tools_skips_when_upload_record_present() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_removed_marketplace_tools_skips_when_upload_record_present",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
 
-        // Residue that would normally trigger the cleanup…
-        let pkg_dir = paths::bundles_root().join("data_analysis");
-        std::fs::create_dir_all(&pkg_dir).unwrap();
-        std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
-        // …but the id is a user upload: the retired-id protection must win.
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(crate::features::marketplace::store::BundleRecord {
-                id: "data_analysis".to_string(),
-                source: crate::features::marketplace::store::BundleSource::Upload(
-                    "data_analysis.zip".to_string(),
-                ),
-                installed: true,
-                content_fingerprint: Some("fp".to_string()),
-                installed_at: "2026-09-30T00:00:00+00:00".to_string(),
-                degraded: None,
-                assets: Vec::new(),
-                extra: serde_json::Map::new(),
-            })
-            .unwrap();
+                // Residue that would normally trigger the cleanup…
+                let pkg_dir = paths::bundles_root().join("data_analysis");
+                std::fs::create_dir_all(&pkg_dir).unwrap();
+                std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+                // …but the id is a user upload: the retired-id protection must win.
+                crate::features::marketplace::store::BundleStore::new()
+                    .upsert(crate::features::marketplace::store::BundleRecord {
+                        id: "data_analysis".to_string(),
+                        source: crate::features::marketplace::store::BundleSource::Upload(
+                            "data_analysis.zip".to_string(),
+                        ),
+                        installed: true,
+                        content_fingerprint: Some("fp".to_string()),
+                        installed_at: "2026-09-30T00:00:00+00:00".to_string(),
+                        degraded: None,
+                        assets: Vec::new(),
+                        extra: serde_json::Map::new(),
+                    })
+                    .unwrap();
 
-        bundle.cleanup_removed_marketplace_tools().unwrap();
+                bundle.cleanup_removed_marketplace_tools().unwrap();
 
-        assert!(
-            pkg_dir.join("plugin.json").is_file(),
-            "an uploaded pack must never be swept by the retired-tool cleanup"
+                assert!(
+                    pkg_dir.join("plugin.json").is_file(),
+                    "an uploaded pack must never be swept by the retired-tool cleanup"
+                );
+                assert!(
+                    !paths::pinvou3_home()
+                        .join("marketplace")
+                        .join("installed.json")
+                        .exists(),
+                    "the top-probe skip must not run the uninstall (uninstall unconditionally rewrites installed.json)"
+                );
+            },
         );
-        assert!(
-            !paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json")
-                .exists(),
-            "the top-probe skip must not run the uninstall (uninstall unconditionally rewrites installed.json)"
-        );
-        cleanup(&tmp);
     }
 
     /// Round-32 minor 4 (review #455): an Upload import landing while the
@@ -2457,60 +2472,61 @@ mod tests {
     #[test]
     fn cleanup_upload_landing_under_import_lock_defers_the_whole_decision() {
         use crate::features::marketplace::plugin_import::import_lock_for;
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_upload_landing_under_import_lock_defers_the_whole_decision",
+            || {
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
 
-        // Residue so the cleanup would run once it gets the lock.
-        let pkg_dir = paths::bundles_root().join("data_analysis");
-        std::fs::create_dir_all(&pkg_dir).unwrap();
-        std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
+                // Residue so the cleanup would run once it gets the lock.
+                let pkg_dir = paths::bundles_root().join("data_analysis");
+                std::fs::create_dir_all(&pkg_dir).unwrap();
+                std::fs::write(pkg_dir.join("plugin.json"), "{}").unwrap();
 
-        // An import for the same id is mid-flight: it holds the id's import
-        // lock (its landing is serialized under exactly this lock).
-        let gate = import_lock_for("data_analysis");
-        let held = gate.lock().unwrap_or_else(|p| p.into_inner());
+                // An import for the same id is mid-flight: it holds the id's import
+                // lock (its landing is serialized under exactly this lock).
+                let gate = import_lock_for("data_analysis");
+                let held = gate.lock().unwrap_or_else(|p| p.into_inner());
 
-        let cleaner = std::thread::spawn(move || bundle.cleanup_removed_marketplace_tools());
-        // The cleaner can only sit blocked on the import lock. Strictly, the
-        // pre-lock top probe may already have run with a no-record store —
-        // which is exactly why the under-lock re-check (not the probe) is the
-        // load-bearing piece this pin protects.
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        // The import lands while the cleanup waits.
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(crate::features::marketplace::store::BundleRecord {
-                id: "data_analysis".to_string(),
-                source: crate::features::marketplace::store::BundleSource::Upload(
-                    "data_analysis.zip".to_string(),
-                ),
-                installed: true,
-                content_fingerprint: Some("fp".to_string()),
-                installed_at: "2026-09-30T00:00:00+00:00".to_string(),
-                degraded: None,
-                assets: Vec::new(),
-                extra: serde_json::Map::new(),
-            })
-            .unwrap();
-        drop(held);
+                let cleaner =
+                    std::thread::spawn(move || bundle.cleanup_removed_marketplace_tools());
+                // The cleaner can only sit blocked on the import lock. Strictly, the
+                // pre-lock top probe may already have run with a no-record store —
+                // which is exactly why the under-lock re-check (not the probe) is the
+                // load-bearing piece this pin protects.
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                // The import lands while the cleanup waits.
+                crate::features::marketplace::store::BundleStore::new()
+                    .upsert(crate::features::marketplace::store::BundleRecord {
+                        id: "data_analysis".to_string(),
+                        source: crate::features::marketplace::store::BundleSource::Upload(
+                            "data_analysis.zip".to_string(),
+                        ),
+                        installed: true,
+                        content_fingerprint: Some("fp".to_string()),
+                        installed_at: "2026-09-30T00:00:00+00:00".to_string(),
+                        degraded: None,
+                        assets: Vec::new(),
+                        extra: serde_json::Map::new(),
+                    })
+                    .unwrap();
+                drop(held);
 
-        cleaner.join().unwrap().unwrap();
+                cleaner.join().unwrap().unwrap();
 
-        assert!(
-            pkg_dir.join("plugin.json").is_file(),
-            "an upload landing under the import lock must never be swept"
+                assert!(
+                    pkg_dir.join("plugin.json").is_file(),
+                    "an upload landing under the import lock must never be swept"
+                );
+                assert!(
+                    !paths::pinvou3_home()
+                        .join("marketplace")
+                        .join("installed.json")
+                        .exists(),
+                    "the post-lock top probe must defer BEFORE the uninstall (old placement ran the uninstall outside the lock)"
+                );
+            },
         );
-        assert!(
-            !paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json")
-                .exists(),
-            "the post-lock top probe must defer BEFORE the uninstall (old placement ran the uninstall outside the lock)"
-        );
-        cleanup(&tmp);
     }
     /// Session Longevity/Efficient Approvals/taxonomy 不得再进 prompt,
     /// pinvou3 自有的 mode 块 + 瘦身 compact 模板必须在。上游 sync 后此测试
@@ -2523,47 +2539,51 @@ mod tests {
         // 改用 mode-independent 入口;pinvou3 composer 以常量 Yolo 构造 ctx → 静态层 = base.md
         // + MODE_EXECUTE_MD(生产单 Yolo-Auto)。原 Plan-mode 断言移除——static prompt 不再分模式
         // (Plan 前端入口已下线;若恢复,mode 走 per-turn <runtime_prompt> tag,非静态前缀)。
-        let tmp = tempdir();
-        std::fs::create_dir_all(&tmp).unwrap();
-        let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
-            std::path::Path::new(&tmp),
-            None,
-            None,
-            None,
-            None,
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-forkguard_static_composer_takes_over_static_layers",
+            || {
+                let tmp = paths::pinvou3_home();
+                let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+                    std::path::Path::new(&tmp),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                let yolo = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
+                // 干掉的底座块(composer 密封 + gate:Compaction 模板/Sub-agents/Thinking budget/
+                // Tier 体系/全模式 Runtime Policy Reference 实证死重)
+                for gone in [
+                    "Personality: Calm",
+                    "## Session Longevity",
+                    "## Efficient Approvals",
+                    "## Core Tool Taxonomy",
+                    "Compaction Relay Template",
+                    "Sub-agents",
+                    "Thinking budget",
+                    "Tier ",                       // 九层已删,不许残留悬空 tier 引用
+                    "## Runtime Policy Reference", // v0.8.57 上游新增全模式块,composer gate 抑制
+                ] {
+                    assert!(!yolo.contains(gone), "底座静态块应被 composer 干掉: {gone}");
+                }
+                // composer 静态层现在只剩 Mode —— 宪法/裁决/Voice 已折叠进 instructions.md §底线
+                // (单一来源,2026-06-15 第四轮),不再出现在静态层。
+                assert!(
+                    yolo.contains("## Mode: Execute"),
+                    "composer 静态层应含 Mode 块"
+                );
+                for folded in [
+                    "CONSTITUTION OF PINVOU3",
+                    "### When directives conflict",
+                    "### Voice",
+                ] {
+                    assert!(
+                        !yolo.contains(folded),
+                        "宪法层应已折叠出静态层(并入 instructions): {folded}"
+                    );
+                }
+            },
         );
-        let yolo = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
-        // 干掉的底座块(composer 密封 + gate:Compaction 模板/Sub-agents/Thinking budget/
-        // Tier 体系/全模式 Runtime Policy Reference 实证死重)
-        for gone in [
-            "Personality: Calm",
-            "## Session Longevity",
-            "## Efficient Approvals",
-            "## Core Tool Taxonomy",
-            "Compaction Relay Template",
-            "Sub-agents",
-            "Thinking budget",
-            "Tier ",                       // 九层已删,不许残留悬空 tier 引用
-            "## Runtime Policy Reference", // v0.8.57 上游新增全模式块,composer gate 抑制
-        ] {
-            assert!(!yolo.contains(gone), "底座静态块应被 composer 干掉: {gone}");
-        }
-        // composer 静态层现在只剩 Mode —— 宪法/裁决/Voice 已折叠进 instructions.md §底线
-        // (单一来源,2026-06-15 第四轮),不再出现在静态层。
-        assert!(
-            yolo.contains("## Mode: Execute"),
-            "composer 静态层应含 Mode 块"
-        );
-        for folded in [
-            "CONSTITUTION OF PINVOU3",
-            "### When directives conflict",
-            "### Voice",
-        ] {
-            assert!(
-                !yolo.contains(folded),
-                "宪法层应已折叠出静态层(并入 instructions): {folded}"
-            );
-        }
     }
 
     /// forkguard(locale): the slim locale preamble/closer must be wired into
@@ -2641,64 +2661,66 @@ mod tests {
     fn forkguard_static_composer_suppresses_context_mgmt_appends() {
         install_prompt_overrides();
 
-        let tmp = tempdir();
-        std::fs::create_dir_all(&tmp).unwrap();
-        // v0.8.57:上游把 system prompt 改 mode-independent,该函数签名去掉首个 AppMode 参数。
-        let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
-            std::path::Path::new(&tmp),
-            None,
-            None,
-            None,
-            None,
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-forkguard_static_composer_suppresses_context_mgmt_appends",
+            || {
+                let tmp = paths::pinvou3_home();
+                // v0.8.57:上游把 system prompt 改 mode-independent,该函数签名去掉首个 AppMode 参数。
+                let prompt = deepseek_tui::prompts::system_prompt_for_mode_with_context_and_skills(
+                    std::path::Path::new(&tmp),
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+                let text = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
+                assert!(
+                    !text.contains("## Context Management"),
+                    "Context Management 应被 composer 抑制"
+                );
+                assert!(
+                    !text.contains("## Runtime Policy Reference"),
+                    "Runtime Policy Reference 应被 composer gate 抑制(v0.8.57 新增全模式块)"
+                );
+                assert!(
+                    !text.contains("Prompt-cache awareness"),
+                    "prompt-cache 教学应被 composer 抑制"
+                );
+                // Compaction 模板全删(第二轮瘦身):真实压缩走 canonical_prompt/
+                // create_summary,模板无生产者无消费者。底座原版也不许回流。
+                assert!(
+                    !text.contains("Compaction Relay"),
+                    "Compaction 模板不应出现(pinvou3 已删,底座版也不许回流)"
+                );
+            },
         );
-        let text = deepseek_tui::prompts::system_prompt_flat_text(&prompt);
-        assert!(
-            !text.contains("## Context Management"),
-            "Context Management 应被 composer 抑制"
-        );
-        assert!(
-            !text.contains("## Runtime Policy Reference"),
-            "Runtime Policy Reference 应被 composer gate 抑制(v0.8.57 新增全模式块)"
-        );
-        assert!(
-            !text.contains("Prompt-cache awareness"),
-            "prompt-cache 教学应被 composer 抑制"
-        );
-        // Compaction 模板全删(第二轮瘦身):真实压缩走 canonical_prompt/
-        // create_summary,模板无生产者无消费者。底座原版也不许回流。
-        assert!(
-            !text.contains("Compaction Relay"),
-            "Compaction 模板不应出现(pinvou3 已删,底座版也不许回流)"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn dingtalk_skill_gate_extracts_and_removes_official_mono_skill() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-dingtalk_skill_gate_extracts_and_removes_official_mono_skill",
+            || {
+                let bundle = Pinvou3Bundle::paths();
 
-        bundle.apply_dingtalk_skills(true).unwrap();
-        // 新布局：钉钉 mono skill 解包到包目录 bundles/dingtalk/skills/。
-        let pkg_skills = paths::bundles_root().join("dingtalk").join("skills");
-        let skill = pkg_skills.join("dws");
-        assert!(skill.join("SKILL.md").is_file());
-        assert!(
-            skill
-                .join("references")
-                .join("global-reference.md")
-                .is_file()
+                bundle.apply_dingtalk_skills(true).unwrap();
+                // 新布局：钉钉 mono skill 解包到包目录 bundles/dingtalk/skills/。
+                let pkg_skills = paths::bundles_root().join("dingtalk").join("skills");
+                let skill = pkg_skills.join("dws");
+                assert!(skill.join("SKILL.md").is_file());
+                assert!(
+                    skill
+                        .join("references")
+                        .join("global-reference.md")
+                        .is_file()
+                );
+                assert!(pkg_skills.join("NOTICE-dingtalk.md").is_file());
+
+                bundle.apply_dingtalk_skills(false).unwrap();
+                assert!(!skill.exists());
+                assert!(!pkg_skills.join("NOTICE-dingtalk.md").exists());
+            },
         );
-        assert!(pkg_skills.join("NOTICE-dingtalk.md").is_file());
-
-        bundle.apply_dingtalk_skills(false).unwrap();
-        assert!(!skill.exists());
-        assert!(!pkg_skills.join("NOTICE-dingtalk.md").exists());
-
-        cleanup(&tmp);
     }
 
     /// `WECOM_SKILL_DIRS` 清单必须与内嵌 wecom-skills 资源树的实际目录一致:
@@ -2730,77 +2752,44 @@ mod tests {
     /// 防残留技能教已死的命令(`msg`/`schedule` 服务)。
     #[test]
     fn wecom_skill_gate_cleans_legacy_dirs() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-wecom_skill_gate_cleans_legacy_dirs",
+            || {
+                let bundle = Pinvou3Bundle::paths();
+                std::fs::create_dir_all(&bundle.skills_dir).unwrap();
 
-        for d in WECOM_LEGACY_SKILL_DIRS {
-            let legacy = bundle.skills_dir.join(d);
-            std::fs::create_dir_all(&legacy).unwrap();
-            std::fs::write(legacy.join("SKILL.md"), "legacy").unwrap();
-        }
+                for d in WECOM_LEGACY_SKILL_DIRS {
+                    let legacy = bundle.skills_dir.join(d);
+                    std::fs::create_dir_all(&legacy).unwrap();
+                    std::fs::write(legacy.join("SKILL.md"), "legacy").unwrap();
+                }
 
-        // 隐藏门控:清 legacy + 删当前技能
-        bundle.apply_wecom_skills(false).unwrap();
-        for d in WECOM_LEGACY_SKILL_DIRS {
-            assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
-        }
+                // 隐藏门控:清 legacy + 删当前技能
+                bundle.apply_wecom_skills(false).unwrap();
+                for d in WECOM_LEGACY_SKILL_DIRS {
+                    assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
+                }
 
-        // 显示门控:同样先清 legacy(开头无条件清理),再解包 15 个当前技能
-        for d in WECOM_LEGACY_SKILL_DIRS {
-            std::fs::create_dir_all(bundle.skills_dir.join(d)).unwrap();
-        }
-        bundle.apply_wecom_skills(true).unwrap();
-        for d in WECOM_LEGACY_SKILL_DIRS {
-            assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
-        }
-        // 门控解包目标在按包聚合布局 bundles/wecom/skills/（旧扁平 skills_dir 已退役）
-        let wecom_pkg_skills = crate::platform::paths::bundles_root()
-            .join("wecom")
-            .join("skills");
-        for d in WECOM_SKILL_DIRS {
-            assert!(
-                wecom_pkg_skills.join(d).join("SKILL.md").is_file(),
-                "{d} 应被解包"
-            );
-        }
-
-        cleanup(&tmp);
-    }
-
-    fn tempdir() -> String {
-        // 叠加 pid + 进程内原子计数器:pid 保证跨进程唯一(双终端 cargo test),
-        // unique_suffix 保证进程内唯一(纯纳秒会碰撞;曾因两个 bundle 测试落同纳秒,
-        // 临时目录同名 → 互相删文件)。与 scheduled/tasks.rs::temp_home 一致。
-        let id = format!(
-            "{}-{}",
-            std::process::id(),
-            crate::bridge::paths::tests::unique_suffix()
+                // 显示门控:同样先清 legacy(开头无条件清理),再解包 15 个当前技能
+                for d in WECOM_LEGACY_SKILL_DIRS {
+                    std::fs::create_dir_all(bundle.skills_dir.join(d)).unwrap();
+                }
+                bundle.apply_wecom_skills(true).unwrap();
+                for d in WECOM_LEGACY_SKILL_DIRS {
+                    assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
+                }
+                // 门控解包目标在按包聚合布局 bundles/wecom/skills/（旧扁平 skills_dir 已退役）
+                let wecom_pkg_skills = crate::platform::paths::bundles_root()
+                    .join("wecom")
+                    .join("skills");
+                for d in WECOM_SKILL_DIRS {
+                    assert!(
+                        wecom_pkg_skills.join(d).join("SKILL.md").is_file(),
+                        "{d} 应被解包"
+                    );
+                }
+            },
         );
-        // `std::env::temp_dir` already honors the platform's temporary-dir
-        // convention. A literal `/tmp` is not the same location on Windows
-        // after `PINVOU3_HOME` passes through `platform_compat_path`, which can
-        // split this fixture across two drives.
-        std::env::temp_dir()
-            .join(format!("pinvou3-bundle-test-{id}"))
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    /// Removes a test fixture directory and unsets `PINVOU3_HOME` in-process.
-    ///
-    /// Contract: the caller must hold `bridge::paths::tests::ENV_LOCK` for the
-    /// whole call — only that lock serializes the unconditional `remove_var`
-    /// against tests that set the variable under it. A test that never sets
-    /// `PINVOU3_HOME` must not borrow this helper; remove its directory
-    /// directly instead.
-    fn cleanup(dir: &str) {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::remove_var("PINVOU3_HOME") };
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Verifies the Browser MCP gate defined by the ADR:
@@ -2810,271 +2799,289 @@ mod tests {
     ///    file and deterministically renames any user-owned browser server only in that copy.
     #[test]
     fn browser_mcp_entry_is_gated_to_work_mode_config() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempdir();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
-        paths::ensure_dirs().unwrap();
-        let bundle = Pinvou3Bundle::paths();
-        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-browser_mcp_entry_is_gated_to_work_mode_config",
+            || {
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
+                paths::ensure_dirs().unwrap();
+                let bundle = Pinvou3Bundle::paths();
+                std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
 
-        // 1) Preserve a user-defined browser server in global mcp.json byte-for-byte. Remove
-        //    only historical app-owned residue whose command targets browser-wrapper.mjs.
-        std::fs::write(
+                // 1) Preserve a user-defined browser server in global mcp.json byte-for-byte. Remove
+                //    only historical app-owned residue whose command targets browser-wrapper.mjs.
+                std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{"browser":{"command":"/old/browser"},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
         )
         .unwrap();
-        bundle.ensure_builtin_mcp_servers().unwrap();
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-        assert!(
-            mcp["servers"].as_object().unwrap().contains_key("browser"),
-            "a user-defined browser server must not be deleted"
-        );
-        assert_eq!(
-            mcp["servers"]["browser"]["command"], "/old/browser",
-            "a user-defined browser server must remain unchanged"
-        );
+                bundle.ensure_builtin_mcp_servers().unwrap();
+                let mcp: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .unwrap();
+                assert!(
+                    mcp["servers"].as_object().unwrap().contains_key("browser"),
+                    "a user-defined browser server must not be deleted"
+                );
+                assert_eq!(
+                    mcp["servers"]["browser"]["command"], "/old/browser",
+                    "a user-defined browser server must remain unchanged"
+                );
 
-        if bundle.browser_mcp_entry().is_none() {
-            // Even when the built-in backend is unavailable, do not expose a user server
-            // under the reserved name in Work mode: the Agent would mistake `mcp_browser_*`
-            // for the same-page embedded browser. Rename only in the session copy and leave
-            // global configuration unchanged. Builds with complete prerequisites skip this
-            // branch and use the built-in conflict case below.
-            let reserved_path = bundle.work_mode_mcp_config_path_for_session("work/gated");
-            assert_ne!(reserved_path, bundle.mcp_json);
-            let reserved: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&reserved_path).unwrap()).unwrap();
-            assert!(
-                !reserved["servers"]
-                    .as_object()
-                    .unwrap()
-                    .contains_key("browser")
-            );
-            assert_eq!(
-                reserved["servers"]["browser_user"]["command"],
-                "/old/browser"
-            );
-            let global_after_reservation: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-            assert_eq!(global_after_reservation, mcp);
-        }
+                if bundle.browser_mcp_entry().is_none() {
+                    // Even when the built-in backend is unavailable, do not expose a user server
+                    // under the reserved name in Work mode: the Agent would mistake `mcp_browser_*`
+                    // for the same-page embedded browser. Rename only in the session copy and leave
+                    // global configuration unchanged. Builds with complete prerequisites skip this
+                    // branch and use the built-in conflict case below.
+                    let reserved_path = bundle.work_mode_mcp_config_path_for_session("work/gated");
+                    assert_ne!(reserved_path, bundle.mcp_json);
+                    let reserved: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&reserved_path).unwrap())
+                            .unwrap();
+                    assert!(
+                        !reserved["servers"]
+                            .as_object()
+                            .unwrap()
+                            .contains_key("browser")
+                    );
+                    assert_eq!(
+                        reserved["servers"]["browser_user"]["command"],
+                        "/old/browser"
+                    );
+                    let global_after_reservation: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                            .unwrap();
+                    assert_eq!(global_after_reservation, mcp);
+                }
 
-        // 1b) Remove historical app-owned wrapper residue; global configuration never
-        //     registers Browser MCP.
-        std::fs::write(
+                // 1b) Remove historical app-owned wrapper residue; global configuration never
+                //     registers Browser MCP.
+                std::fs::write(
             &bundle.mcp_json,
             r#"{"servers":{"browser":{"command":"/x/browser-wrapper.mjs"},"weather":{"command":"python3","args":["/x/w.py"]}}}"#,
         )
         .unwrap();
-        bundle.ensure_builtin_mcp_servers().unwrap();
-        let mcp2: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-        assert!(
-            !mcp2["servers"].as_object().unwrap().contains_key("browser"),
-            "historical app-owned browser residue must be removed"
-        );
+                bundle.ensure_builtin_mcp_servers().unwrap();
+                let mcp2: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .unwrap();
+                assert!(
+                    !mcp2["servers"].as_object().unwrap().contains_key("browser"),
+                    "historical app-owned browser residue must be removed"
+                );
 
-        // 2) Missing prerequisites (no vendor entry point) fall back to global mcp.json
-        //    without writing a session-specific file.
-        assert_eq!(
-            bundle.work_mode_mcp_config_path(),
-            bundle.mcp_json,
-            "missing prerequisites must return global mcp.json"
-        );
+                // 2) Missing prerequisites (no vendor entry point) fall back to global mcp.json
+                //    without writing a session-specific file.
+                assert_eq!(
+                    bundle.work_mode_mcp_config_path(),
+                    bundle.mcp_json,
+                    "missing prerequisites must return global mcp.json"
+                );
 
-        // 3) Complete prerequisites (Windows vendor, Linux WebKitWebDriver, or macOS
-        //    WKWebView BrowserCore, plus wrapper and Node.js) generate a session-specific
-        //    file. Unreleased platforms must still fail closed.
-        let fake_bin = std::path::PathBuf::from(&tmp).join("fake-cdmcp-entry.js");
-        std::fs::write(&fake_bin, "#!/usr/bin/env node\n").unwrap();
-        #[cfg(windows)]
-        {
-            let fake_bin_for_env = std::path::PathBuf::from(format!(r"\\?\{}", fake_bin.display()));
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-            unsafe { std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin_for_env) };
-        }
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-
-            let fake_driver = std::path::PathBuf::from(&tmp).join("WebKitWebDriver");
-            std::fs::write(&fake_driver, "#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(&fake_driver, std::fs::Permissions::from_mode(0o755)).unwrap();
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-            unsafe { std::env::set_var("PINVOU3_WEBKIT_WEBDRIVER_BIN", fake_driver) };
-        }
-        #[cfg(target_os = "macos")]
-        {
-            // The released macOS build resolves Node from the bundled connector
-            // runtime. Fabricate it under a fake resource dir (same layout and
-            // arch mapping as bundled_connector_runtime_paths_for) so the
-            // complete-prerequisites branch never depends on the machine PATH.
-            let node_rel = match std::env::consts::ARCH {
-                "aarch64" => "darwin-arm64/bin/node",
-                "x86_64" => "darwin-x64/bin/node",
-                other => panic!("unexpected macOS arch for the fake bundled node: {other}"),
-            };
-            let node_bin = std::path::PathBuf::from(&tmp)
-                .join("runtime/codex-bridge/node")
-                .join(node_rel);
-            std::fs::create_dir_all(node_bin.parent().unwrap()).unwrap();
-            std::fs::write(&node_bin, "#!/bin/sh\n").unwrap();
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-            unsafe { std::env::set_var("PINVOU3_RESOURCE_DIR", &tmp) };
-        }
-        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe {
-            std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin)
-        };
-        let wrapper = paths::bundle_browser_wrapper();
-        std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
-        std::fs::write(&wrapper, "#!/usr/bin/env node\n").unwrap();
-        let work_path = bundle.work_mode_mcp_config_path();
-        if !crate::platform::capabilities::browser_product_enabled() {
-            assert_eq!(
-                work_path, bundle.mcp_json,
-                "an unreleased product build must not register Browser MCP from environment residue"
-            );
-            assert_eq!(
-                bundle.work_mode_mcp_config_path_for_session("work/session-A"),
-                bundle.mcp_json,
-                "an unreleased build without a reserved-name conflict needs no session copy"
-            );
-            assert!(
-                bundle
-                    .browser_unavailability_reason()
-                    .is_some_and(|reason| reason.contains("not enabled in this product build"))
-            );
-        } else {
-            assert_ne!(
-                work_path, bundle.mcp_json,
-                "complete prerequisites must return a session-specific MCP file"
-            );
-            let work: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&work_path).unwrap()).unwrap();
-            let servers = work["servers"].as_object().unwrap();
-            assert!(
-                servers.contains_key("browser"),
-                "the session-specific file must contain a browser entry"
-            );
-            assert!(
-                servers.contains_key("weather"),
-                "the marketplace weather entry must be preserved"
-            );
-            let args = servers["browser"]["args"].as_array().unwrap();
-            assert_eq!(
-                args.len(),
-                3,
-                "the browser wrapper must receive only the wrapper, platform backend entry, and host-state file"
-            );
-            assert!(
-                args[0].as_str().unwrap().ends_with("browser-wrapper.mjs"),
-                "the browser entry must use the wrapper as its entry point"
-            );
-            assert!(
-                !args[0].as_str().unwrap().starts_with(r"\\?\"),
-                "the wrapper entry passed to Node.js must not retain a Windows verbatim prefix"
-            );
-            #[cfg(windows)]
-            assert!(
-                !args[1].as_str().unwrap().starts_with(r"\\?\"),
-                "the MCP entry passed to Node.js must not retain a Windows verbatim prefix"
-            );
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            assert_eq!(
-                args[1], "@pinvou/browser-core",
-                "Linux and macOS must select in-app BrowserCore instead of registering Chrome MCP"
-            );
-
-            // 4) Each Work-mode session receives an independent configuration and stable
-            //    token. The wrapper environment retains the original session_id for host
-            //    requests, while paths and labels use only the safe token.
-            let session_path = bundle.work_mode_mcp_config_path_for_session("work/session-A");
-            assert_ne!(session_path, work_path);
-            assert_eq!(
-                session_path.file_name().and_then(|value| value.to_str()),
-                Some("f1731564024f1ec5.json")
-            );
-            let session: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&session_path).unwrap()).unwrap();
-            assert_eq!(
-                session["servers"]["browser"]["env"]["PINVOU3_BROWSER_SESSION_ID"],
-                "work/session-A"
-            );
-            assert_eq!(
-                session["servers"]["browser"]["env"]["PINVOU3_BROWSER_SESSION_TOKEN"],
-                crate::platform::paths::browser_session_token("work/session-A")
-            );
-
-            // 5) When a user occupies the reserved browser name globally, leave the global
-            //    file unchanged. Work mode always points browser to the Pinvou wrapper and
-            //    preserves the user entry after existing deterministic aliases.
-            let global_with_conflict = serde_json::json!({
-                "servers": {
-                    "browser": {
-                        "command": "playwright-mcp",
-                        "env": { "USER_SETTING": "kept" }
-                    },
-                    "browser_user": { "command": "existing-user-browser" },
-                    "browser_user_2": { "command": "existing-numbered-browser" },
-                    "weather": { "command": "weather-mcp" }
+                // 3) Complete prerequisites (Windows vendor, Linux WebKitWebDriver, or macOS
+                //    WKWebView BrowserCore, plus wrapper and Node.js) generate a session-specific
+                //    file. Unreleased platforms must still fail closed.
+                // Round-8 review minor: snapshot the gate vars through the
+                // panic-safe guard BEFORE seeding them — the straight-line
+                // remove_var tail never ran on a mid-test panic, leaking the
+                // three values to later tests. (with_temp_home already holds
+                // ENV_LOCK, so locked_env's non-reentrant lock is not an
+                // option here; capture is the lock-free half of that pair.)
+                let _gate_env = crate::platform::test_support::EnvRestore::capture(&[
+                    "PINVOU3_CDMCP_BIN",
+                    "PINVOU3_WEBKIT_WEBDRIVER_BIN",
+                    "PINVOU3_RESOURCE_DIR",
+                ]);
+                let fake_bin =
+                    std::path::PathBuf::from(&paths::pinvou3_home()).join("fake-cdmcp-entry.js");
+                std::fs::write(&fake_bin, "#!/usr/bin/env node\n").unwrap();
+                #[cfg(windows)]
+                {
+                    let fake_bin_for_env =
+                        std::path::PathBuf::from(format!(r"\\?\{}", fake_bin.display()));
+                    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                    unsafe { std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin_for_env) };
                 }
-            });
-            std::fs::write(
-                &bundle.mcp_json,
-                serde_json::to_string_pretty(&global_with_conflict).unwrap(),
-            )
-            .unwrap();
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
 
-            let conflict_path =
-                bundle.work_mode_mcp_config_path_for_session("work/session-conflict");
-            assert_ne!(conflict_path, bundle.mcp_json);
-            let conflict: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&conflict_path).unwrap()).unwrap();
-            assert!(
-                conflict["servers"]["browser"]["args"][0]
-                    .as_str()
-                    .unwrap()
-                    .ends_with("browser-wrapper.mjs"),
-                "the session-reserved browser name must always target the Pinvou wrapper"
-            );
-            assert_eq!(
-                conflict["servers"]["browser_user_3"], global_with_conflict["servers"]["browser"],
-                "the conflicting user server must move to the first deterministic free alias"
-            );
-            assert_eq!(
-                conflict["servers"]["browser_user"],
-                global_with_conflict["servers"]["browser_user"]
-            );
-            assert_eq!(
-                conflict["servers"]["browser_user_2"],
-                global_with_conflict["servers"]["browser_user_2"]
-            );
-            let global_after: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-            assert_eq!(
-                global_after, global_with_conflict,
-                "generating a session copy must not rewrite the user's global mcp.json"
-            );
-            assert_eq!(
-                bundle.browser_unavailability_reason(),
-                None,
-                "a globally user-owned browser name must not degrade the embedded browser or inject an error"
-            );
-        }
+                    let fake_driver =
+                        std::path::PathBuf::from(&paths::pinvou3_home()).join("WebKitWebDriver");
+                    std::fs::write(&fake_driver, "#!/bin/sh\n").unwrap();
+                    std::fs::set_permissions(&fake_driver, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                    unsafe { std::env::set_var("PINVOU3_WEBKIT_WEBDRIVER_BIN", fake_driver) };
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    // The released macOS build resolves Node from the bundled connector
+                    // runtime. Fabricate it under a fake resource dir (same layout and
+                    // arch mapping as bundled_connector_runtime_paths_for) so the
+                    // complete-prerequisites branch never depends on the machine PATH.
+                    let node_rel = match std::env::consts::ARCH {
+                        "aarch64" => "darwin-arm64/bin/node",
+                        "x86_64" => "darwin-x64/bin/node",
+                        other => panic!("unexpected macOS arch for the fake bundled node: {other}"),
+                    };
+                    let node_bin = std::path::PathBuf::from(&paths::pinvou3_home())
+                        .join("runtime/codex-bridge/node")
+                        .join(node_rel);
+                    std::fs::create_dir_all(node_bin.parent().unwrap()).unwrap();
+                    std::fs::write(&node_bin, "#!/bin/sh\n").unwrap();
+                    // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                    unsafe { std::env::set_var("PINVOU3_RESOURCE_DIR", &paths::pinvou3_home()) };
+                }
+                #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+                unsafe {
+                    std::env::set_var("PINVOU3_CDMCP_BIN", &fake_bin)
+                };
+                let wrapper = paths::bundle_browser_wrapper();
+                std::fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+                std::fs::write(&wrapper, "#!/usr/bin/env node\n").unwrap();
+                let work_path = bundle.work_mode_mcp_config_path();
+                if !crate::platform::capabilities::browser_product_enabled() {
+                    assert_eq!(
+                        work_path, bundle.mcp_json,
+                        "an unreleased product build must not register Browser MCP from environment residue"
+                    );
+                    assert_eq!(
+                        bundle.work_mode_mcp_config_path_for_session("work/session-A"),
+                        bundle.mcp_json,
+                        "an unreleased build without a reserved-name conflict needs no session copy"
+                    );
+                    assert!(
+                        bundle.browser_unavailability_reason().is_some_and(
+                            |reason| reason.contains("not enabled in this product build")
+                        )
+                    );
+                } else {
+                    assert_ne!(
+                        work_path, bundle.mcp_json,
+                        "complete prerequisites must return a session-specific MCP file"
+                    );
+                    let work: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&work_path).unwrap())
+                            .unwrap();
+                    let servers = work["servers"].as_object().unwrap();
+                    assert!(
+                        servers.contains_key("browser"),
+                        "the session-specific file must contain a browser entry"
+                    );
+                    assert!(
+                        servers.contains_key("weather"),
+                        "the marketplace weather entry must be preserved"
+                    );
+                    let args = servers["browser"]["args"].as_array().unwrap();
+                    assert_eq!(
+                        args.len(),
+                        3,
+                        "the browser wrapper must receive only the wrapper, platform backend entry, and host-state file"
+                    );
+                    assert!(
+                        args[0].as_str().unwrap().ends_with("browser-wrapper.mjs"),
+                        "the browser entry must use the wrapper as its entry point"
+                    );
+                    assert!(
+                        !args[0].as_str().unwrap().starts_with(r"\\?\"),
+                        "the wrapper entry passed to Node.js must not retain a Windows verbatim prefix"
+                    );
+                    #[cfg(windows)]
+                    assert!(
+                        !args[1].as_str().unwrap().starts_with(r"\\?\"),
+                        "the MCP entry passed to Node.js must not retain a Windows verbatim prefix"
+                    );
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    assert_eq!(
+                        args[1], "@pinvou/browser-core",
+                        "Linux and macOS must select in-app BrowserCore instead of registering Chrome MCP"
+                    );
 
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_WEBKIT_WEBDRIVER_BIN") };
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-        unsafe { std::env::remove_var("PINVOU3_RESOURCE_DIR") };
-        cleanup(&tmp);
+                    // 4) Each Work-mode session receives an independent configuration and stable
+                    //    token. The wrapper environment retains the original session_id for host
+                    //    requests, while paths and labels use only the safe token.
+                    let session_path =
+                        bundle.work_mode_mcp_config_path_for_session("work/session-A");
+                    assert_ne!(session_path, work_path);
+                    assert_eq!(
+                        session_path.file_name().and_then(|value| value.to_str()),
+                        Some("f1731564024f1ec5.json")
+                    );
+                    let session: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&session_path).unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        session["servers"]["browser"]["env"]["PINVOU3_BROWSER_SESSION_ID"],
+                        "work/session-A"
+                    );
+                    assert_eq!(
+                        session["servers"]["browser"]["env"]["PINVOU3_BROWSER_SESSION_TOKEN"],
+                        crate::platform::paths::browser_session_token("work/session-A")
+                    );
+
+                    // 5) When a user occupies the reserved browser name globally, leave the global
+                    //    file unchanged. Work mode always points browser to the Pinvou wrapper and
+                    //    preserves the user entry after existing deterministic aliases.
+                    let global_with_conflict = serde_json::json!({
+                        "servers": {
+                            "browser": {
+                                "command": "playwright-mcp",
+                                "env": { "USER_SETTING": "kept" }
+                            },
+                            "browser_user": { "command": "existing-user-browser" },
+                            "browser_user_2": { "command": "existing-numbered-browser" },
+                            "weather": { "command": "weather-mcp" }
+                        }
+                    });
+                    std::fs::write(
+                        &bundle.mcp_json,
+                        serde_json::to_string_pretty(&global_with_conflict).unwrap(),
+                    )
+                    .unwrap();
+
+                    let conflict_path =
+                        bundle.work_mode_mcp_config_path_for_session("work/session-conflict");
+                    assert_ne!(conflict_path, bundle.mcp_json);
+                    let conflict: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&conflict_path).unwrap())
+                            .unwrap();
+                    assert!(
+                        conflict["servers"]["browser"]["args"][0]
+                            .as_str()
+                            .unwrap()
+                            .ends_with("browser-wrapper.mjs"),
+                        "the session-reserved browser name must always target the Pinvou wrapper"
+                    );
+                    assert_eq!(
+                        conflict["servers"]["browser_user_3"],
+                        global_with_conflict["servers"]["browser"],
+                        "the conflicting user server must move to the first deterministic free alias"
+                    );
+                    assert_eq!(
+                        conflict["servers"]["browser_user"],
+                        global_with_conflict["servers"]["browser_user"]
+                    );
+                    assert_eq!(
+                        conflict["servers"]["browser_user_2"],
+                        global_with_conflict["servers"]["browser_user_2"]
+                    );
+                    let global_after: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        global_after, global_with_conflict,
+                        "generating a session copy must not rewrite the user's global mcp.json"
+                    );
+                    assert_eq!(
+                        bundle.browser_unavailability_reason(),
+                        None,
+                        "a globally user-owned browser name must not degrade the embedded browser or inject an error"
+                    );
+                }
+            },
+        );
     }
 }

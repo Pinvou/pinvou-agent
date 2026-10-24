@@ -1,7 +1,7 @@
 # Build on whatever `stable` currently resolves to, matching
 # CodeWhale/rust-toolchain.toml so every workspace in the repo compiles
 # with the same floating rustc. The MSRV floor stays in Cargo.toml
-# (rust-version = 1.89); API renames newer than the MSRV are handled at
+# (rust-version = 1.90, the Tauri 2.12 line's floor); API renames newer than the MSRV are handled at
 # the call site with a targeted allow (see the fetch_update notes).
 # clippy / rustfmt components back the lint gates.
 [toolchain]

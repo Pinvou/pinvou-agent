@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.terminal = function (context) {let pinvouSharedtauriTerminalCache = null;
 function pinvouSharedtauriTerminal() {
-  if (!pinvouSharedtauriTerminalCache) pinvouSharedtauriTerminalCache = window.PinvouBridgeShared.create("tauriTerminal", { SHELL_TOOL_NAMES, bt, normalizeTerminalTail, runSyncOnSession, notify, latestShellToolIsWaitObserver, state, addChatItem, shellPollState, invoke });
+  if (!pinvouSharedtauriTerminalCache) pinvouSharedtauriTerminalCache = window.PinvouBridgeShared.create("tauriTerminal", { SHELL_TOOL_NAMES, bt, normalizeTerminalTail, runSyncOnSession, notify, publishShellSnapshots, latestShellToolIsWaitObserver, state, addChatItem, shellPollState, invoke });
   return pinvouSharedtauriTerminalCache;
 }
 
@@ -18,19 +18,9 @@ function pinvouSharedtauriTerminal() {
     const runSyncOnSession = context.runSyncOnSession;
     const addChatItem = context.addChatItem;
     let shellNotifyTimer = null;
+    let shellNotifyRequestRevision = 0;
     const shellPollState = Object.create(null);
-  function updateToolItem(toolId, output, success) {
-    for (let i = 0; i < state.chatItems.length; i++) {
-      if (state.chatItems[i].type === "tool" && state.chatItems[i].toolId === toolId) {
-        state.chatItems[i].output = output;
-        state.chatItems[i].success = success;
-        state.chatItems[i].state = success ? "done" : "failed";
-        delete state.chatItems[i]._terminalParser;
-        return state.chatItems[i];
-      }
-    }
-    return null;
-  }
+  function updateToolItem(toolId, output, success) { return pinvouSharedtauriTerminal().updateToolItem(toolId, output, success); }
 
   const SHELL_TOOL_NAMES = ["bash", "exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
   const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];
@@ -82,11 +72,28 @@ function scheduleShellPoll(sid, immediate) { return pinvouSharedtauriTerminal().
 async function runShellPoll(sid) { return pinvouSharedtauriTerminal().runShellPoll(sid); }
 
   function scheduleShellNotify() {
+    shellNotifyRequestRevision += 1;
     if (shellNotifyTimer != null) return;
     shellNotifyTimer = window.setTimeout(function () {
       shellNotifyTimer = null;
       notify();
     }, 50);
+  }
+
+  function publishShellSnapshots(sid, ordinaryRunningOutput) {
+    const timer = shellNotifyTimer;
+    const revision = shellNotifyRequestRevision;
+    const consumesPending = ordinaryRunningOutput && sid !== state.activeSessionId && timer != null;
+    // Keep publication inside the poll's original synchronous try/catch. A
+    // subscriber failure must retain both its poll retry and the shell timer.
+    notify();
+    // The global publication also delivered other pending background buffers
+    // to auxiliary observers. Reentrant output requests still need their
+    // original deadline, even when they reused this same pending timer.
+    if (consumesPending && shellNotifyTimer === timer && shellNotifyRequestRevision === revision) {
+      window.clearTimeout(timer);
+      shellNotifyTimer = null;
+    }
   }
 
   function markBackgroundToolItem(toolId, sessionId, taskId, fallbackOutput) {

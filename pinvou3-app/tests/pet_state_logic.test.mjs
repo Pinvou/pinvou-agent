@@ -23,6 +23,15 @@ for (const f of ['zh.js', 'browser.js']) {
     path.join(dir, 'shared', 'i18n', f),
   );
 }
+// zh moved behind i18n.js's lazy loader (startup budget): seed the staged
+// copy synchronously so the imported module reads a filled dict.zh.
+{
+  const { readFileSync, writeFileSync } = await import('node:fs');
+  const i18nCopy = path.join(dir, 'shared', 'i18n.js');
+  let staged = readFileSync(i18nCopy, 'utf8');
+  staged += "\nimport { dictZh as __zh } from './i18n/zh.js';\ndict.zh = __zh;\n";
+  writeFileSync(i18nCopy, staged);
+}
 
 try {
   // Timing fixtures mirror the module-private ACTIVITY_TTL_MS /
@@ -42,17 +51,16 @@ try {
     deriveActivities,
     markSessionViewed,
     removeSessionActivity,
-    syncSessionTitles,
   } = await import(`${pathToFileURL(tmp).href}?t=${Date.now()}`);
 
   const now = 1_000_000;
   const state = createPetState();
-  syncSessionTitles(state, [
+  applyActivitySnapshot(state, [
     { id: 'run', title: '实现宠物动画' },
     { id: 'wait', title: '确认发布范围' },
     { id: 'fail', title: '修复构建' },
     { id: 'done', title: '完成文档' },
-  ]);
+  ], 1, now);
 
   applyEvent(state, 'pet:turn_start', { session_id: 'run' }, now);
   applyEvent(state, 'chat:delta', { session_id: 'run', text: '正在逐帧实现官方动画' }, now + 1);
@@ -68,7 +76,7 @@ try {
   const authoritative = createPetState();
   applyEvent(authoritative, 'pet:turn_start', { session_id: 'present' }, now);
   applyEvent(authoritative, 'chat:done', { session_id: 'missing', status: 'Completed' }, now + 1);
-  syncSessionTitles(authoritative, [{ id: 'present', title: '仍然存在的任务' }]);
+  applyActivitySnapshot(authoritative, [{ id: 'present', title: '仍然存在的任务' }], 1, now);
   assert.deepEqual(
     deriveActivities(authoritative, now + 2).map((item) => item.sessionId),
     ['present'],

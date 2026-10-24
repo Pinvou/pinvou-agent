@@ -626,11 +626,57 @@ test('BrowserCore tab commits marker, WebDriver bind, initial navigation, then p
   );
   assert.match(
     userCreate,
-    /about:blank#pinvou-tab-[\s\S]{0,900}bind_staged_native_target\([\s\S]{0,900}bind_target\([\s\S]{0,900}navigate_tab_after_bind\(/,
+    /\{HOST_BLANK_MARKER_TAB_PREFIX\}\{tab_token\}[\s\S]{0,900}bind_staged_native_target\([\s\S]{0,900}bind_target\([\s\S]{0,900}navigate_tab_after_bind\(/,
   );
   assert.match(nativeHost, /staged_user_tabs: HashMap/);
   assert.match(nativeHost, /requires_automation_binding[\s\S]{0,240}capabilities\(\)\.agent_automation/);
   assert.match(nativeHost, /candidate\.publish\(\)/);
+});
+
+test('every browser/mod.rs blank-tab marker references the shared const, never a hand-typed literal', () => {
+  // Round-2 review minor: only create_native_bound_tab was const-by-name
+  // pinned; handle_hosted_browser_request and create_agent_popup_tab could
+  // revert to hand-typed literals (plus a typo) with every test green. All
+  // three production sites must go through HOST_BLANK_MARKER_TAB_PREFIX, and
+  // no production line may hand-type the value (the mod.rs literal below
+  // belongs to this file's test module).
+  const uses = [...browserManager.matchAll(/\{HOST_BLANK_MARKER_TAB_PREFIX\}/g)].length;
+  assert.equal(
+    uses,
+    3,
+    'browser/mod.rs blank-tab markers must all reference the shared platform const',
+  );
+  for (const fn of [
+    'handle_hosted_browser_request',
+    'create_agent_popup_tab',
+    'async fn create_native_bound_tab',
+  ]) {
+    assert.ok(browserManager.includes(fn), `${fn} must exist`);
+  }
+  const production = browserManager.slice(0, browserManager.lastIndexOf('#[cfg(test)]'));
+  assert.doesNotMatch(
+    production,
+    /about:blank#pinvou-tab-/,
+    'the blank-tab marker value must stay single-sourced in the platform constant',
+  );
+  // Round-8 review minor: host.rs's two blank-tab CONSTRUCTION sites (the
+  // workspace-restore arm and marked_blank_url) are const-bound like mod.rs.
+  // The one remaining hand-typed occurrence in host.rs production is the
+  // comparison inside the generated bootstrap JS raw string (it also names
+  // the session marker), which host.rs's own unit tests value-pin.
+  const hostProduction = nativeHost.slice(0, nativeHost.lastIndexOf('#[cfg(test)]'));
+  const hostConstUses = [...hostProduction.matchAll(/\{HOST_BLANK_MARKER_TAB_PREFIX\}/g)].length;
+  assert.equal(
+    hostConstUses,
+    2,
+    'host.rs blank-tab constructions must reference the shared platform const',
+  );
+  const hostHandTyped = [...hostProduction.matchAll(/about:blank#pinvou-tab-/g)].length;
+  assert.equal(
+    hostHandTyped,
+    1,
+    'the bootstrap JS comparison is the only hand-typed marker allowed in host.rs production',
+  );
 });
 
 test('Linux WebDriver safely rebinds with a host marker without injecting remote-page identity', () => {

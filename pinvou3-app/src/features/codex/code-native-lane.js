@@ -12,8 +12,7 @@
 // plan_card 的终态文案存 statusKey（approved/discarded/superseded/historical），
 // 三语文案在渲染层按 key 组装（与 compactPhase 同一约定）。
 
-import { projectDeepSeekConversation, conversationItemsForMode } from '../conversation/deepseek-conversation.js';
-import { redactDisplayError } from './acp-state.js';
+import { projectDeepSeekConversation, conversationItemsForMode, timelineDisplayError } from '../conversation/deepseek-conversation.js';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
 
@@ -508,7 +507,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       if (!p.error) return false;
       // Bare-string fallbacks are redacted too (gateway/provider bodies
       // the gate missed must not reach the screen with credentials).
-      const displayError = redactDisplayError(p.error, options.language);
+      const displayError = timelineDisplayError(p.error, { language: options.language });
       // Model-service errors go through the unified
       // classification/redaction/tri-lingual bubble; local tool errors
       // keep the bare-string fallback.
@@ -659,7 +658,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         // fallback shares the transient fallback's redacted text so the
         // same-text dedup can hit.
         const timelineTakesOver = Boolean(terminalRecord && terminalRecord.error);
-        const notice = `⚠️ ${redactDisplayError(p.error, options.language)}`;
+        const notice = `⚠️ ${timelineDisplayError(p.error, { language: options.language })}`;
         const start = currentTurnStart(lane);
         let existing = null;
         for (let i = start; i < lane.items.length; i += 1) {
@@ -776,11 +775,13 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
         const item = [...lane.items].reverse().find(candidate => (
           candidate && candidate.type === 'tool' && candidate.toolId === block.tool_use_id
         ));
-        if (item) {
-          item.output = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-          item.success = !block.is_error;
-          item.state = 'done';
+        if (!item) {
+          continue;
         }
+
+        item.output = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+        item.success = !block.is_error;
+        item.state = 'done';
       }
       continue;
     }
@@ -856,20 +857,19 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     }
     flushText();
     // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡。
-    if (sawPlanTool && (planSnap || todosSnap)) {
-      const snaps = { plan: planSnap, todos: todosSnap };
-      lane.items.push({
-        id: nextId(lane),
-        type: 'plan_card',
-        plan: planSnap,
-        todos: todosSnap,
-        planMarkdown: composeNativePlanMarkdown(snaps),
-        planId: null,
-        cardState: 'frozen',
-        resolved: true,
-        statusKey: 'historical',
-      });
-    }
+    if (!sawPlanTool || (!planSnap && !todosSnap)) continue;
+    const snaps = { plan: planSnap, todos: todosSnap };
+    lane.items.push({
+      id: nextId(lane),
+      type: 'plan_card',
+      plan: planSnap,
+      todos: todosSnap,
+      planMarkdown: composeNativePlanMarkdown(snaps),
+      planId: null,
+      cardState: 'frozen',
+      resolved: true,
+      statusKey: 'historical',
+    });
   }
   // 未被 tool_result 回填的工具卡按失败收尾，避免历史里残留"执行中"。
   for (const item of lane.items) {

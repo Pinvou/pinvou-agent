@@ -8,6 +8,7 @@ pub(crate) use helpers::normalize_typed_newlines;
 // `sanitize_name` is also the tool layer's display bound for consent target
 // lines: the backends carry raw role/name strings so screening keeps seeing
 // them untruncated, and the bound is applied where the label is rendered.
+pub(crate) use helpers::MAX_NAME_CHARS;
 pub(crate) use helpers::sanitize_name;
 // `screening_hit` is also consumed by the tool layer for the role: macOS
 // carries a free-form, app-supplied AXRole, and the streaming matcher keeps

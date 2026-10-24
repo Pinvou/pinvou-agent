@@ -6,8 +6,8 @@ Covers the session-mention P2 acceptance points:
   duplicates or gaps);
 - in-flight turns (a trailing turn with no assistant message) are not returned;
 - clipping (max_output_chars_per_item) and the include_outputs delta;
-- explicit errors for invalid ids / sched- / eval_ / aux- / missing sessions /
-  corrupt files;
+- explicit errors for invalid ids / sched- / eval_ / aux- / agentic_ / missing
+  sessions / corrupt files;
 - list_sessions title search and isolation semantics;
 - stdio contract: initialize / ping / tools/list / tools/call
   (newline-delimited JSON-RPC 2.0);
@@ -275,7 +275,7 @@ class ReadSessionTests(unittest.TestCase):
 
     def test_rejected_session_ids(self):
         for bad in ["", "../etc", "a/b", "sched-xyz", "eval_secret", "with space",
-                    "A" * 300, "abc\n"]:
+                    "A" * 300, "abc\n", "agentic_run1"]:
             payload, error = server.read_session_history(self.dir, bad)
             self.assertIsNone(payload, bad)
             self.assertIsNotNone(error, bad)
@@ -300,9 +300,13 @@ class ReadSessionTests(unittest.TestCase):
         self.assertIn("unreadable", error)
 
     def test_aux_prefix_sessions_are_rejected_case_insensitive(self):
-        # Isolation prefixes (sched-/eval_/aux-) are rejected
-        # case-insensitively in the read path (contract §4.3/§5).
-        for bad in ["aux-chat1", "AUX-chat1", "SCHED-x", "EVAL_x"]:
+        # Isolation prefixes (sched-/eval_/aux-/agentic_) are rejected
+        # case-insensitively in the read path (contract §4.3/§5); the
+        # agentic_ rows pin the headless family's read refusal — without
+        # the tuple entry, a headless transcript (unattended tool output
+        # included) would be served cross-session.
+        for bad in ["aux-chat1", "AUX-chat1", "SCHED-x", "EVAL_x",
+                    "agentic_4242_0", "AGENTIC_4242_0", "Agentic_4242_0"]:
             payload, error = server.read_session_history(self.dir, bad)
             self.assertIsNone(payload, bad)
             self.assertIn("not readable", error, bad)
@@ -785,6 +789,21 @@ class ListSessionsTests(unittest.TestCase):
                        updated_at="2026-09-15T00:00:00Z")
         _write_session(self.dir, "AUX-side2", [], title="side chat 2",
                        updated_at="2026-09-16T00:00:00Z")
+        payload, error = server.list_sessions(self.dir)
+        self.assertIsNone(error)
+        ids = [entry["sessionId"] for entry in payload["sessions"]]
+        self.assertEqual(ids, ["bbb222", "aaa111"])
+        self.assertEqual(payload["total"], 2)
+
+    def test_list_excludes_headless_agentic_sessions_case_insensitive(self):
+        # Headless `agent run` transcripts join the isolation set for the
+        # listing surface too (r1 MAJOR-1): without the tuple entry a headless
+        # id would surface as a mentionable-looking candidate with its title
+        # metadata, advertising an unreadable session to the model.
+        _write_session(self.dir, "agentic_4242_0", [], title="headless run",
+                       updated_at="2026-09-17T00:00:00Z")
+        _write_session(self.dir, "AGENTIC_7_1", [], title="headless run 2",
+                       updated_at="2026-09-18T00:00:00Z")
         payload, error = server.list_sessions(self.dir)
         self.assertIsNone(error)
         ids = [entry["sessionId"] for entry in payload["sessions"]]
@@ -1434,7 +1453,8 @@ class SendMessageTests(unittest.TestCase):
         self.assertEqual(len(self._spooled()), 2)
 
     def test_isolated_and_unknown_targets_are_rejected(self):
-        for target in ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1"):
+        for target in ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1",
+                       "agentic_4242_0", "AGENTIC_4242_0"):
             payload, error = self._send(to_session=target)
             self.assertIsNone(payload)
             self.assertIn("not readable", error, target)
@@ -1446,8 +1466,16 @@ class SendMessageTests(unittest.TestCase):
         self.assertIn("invalid", error)
 
     def test_isolated_sender_and_self_send_are_rejected(self):
-        payload, error = self._send(from_session="sched-run1")
-        self.assertIsNone(payload)
+        # The rejection class is asserted (not just payload absence): the
+        # sender gate rides validate_session_id, so an isolated sender gets
+        # the same typed "not readable" refusal as an isolated target —
+        # server↔watcher parity for all four families.
+        for sender in ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1",
+                       "agentic_4242_0", "AGENTIC_4242_0"):
+            payload, error = self._send(from_session=sender)
+            self.assertIsNone(payload, sender)
+            self.assertIn("not readable", error, sender)
+            self.assertEqual(len(self._spooled()), 0, sender)
         payload, error = self._send(from_session="TGT0001")
         self.assertIsNone(payload)
         self.assertIn("itself", error)
@@ -1630,9 +1658,13 @@ class OnlySessionArgTests(unittest.TestCase):
         # A scoped instance is always pinned to a NORMAL parent session: an
         # isolated-prefix pin is a misconfiguration (constructed aux parents
         # are normal sessions; the Rust side demotes such ids to ZeroTool —
-        # the server refusing to start is the process-side mirror).
+        # the server refusing to start is the process-side mirror). The
+        # agentic_ rows (including the title-case form) pin the headless
+        # family on the pin surface — a scoped reader must never serve a
+        # headless transcript either.
         for value in ["sched-1", "SCHED-1", "Sched-1", "eval_x", "EVAL_x",
-                      "aux-1", "AUX-1", "Aux-1"]:
+                      "aux-1", "AUX-1", "Aux-1",
+                      "agentic_1", "AGENTIC_1", "Agentic_1"]:
             error = server.validate_only_session(value)
             self.assertIsNotNone(error, value)
             self.assertIn("not readable", error)
@@ -1760,7 +1792,7 @@ class ScopedReadTests(unittest.TestCase):
         self.assertIn("not readable", error)
 
     def test_isolated_ids_still_rejected_before_scope(self):
-        for bad in ["sched-1", "aux-parent01", "eval_x"]:
+        for bad in ["sched-1", "aux-parent01", "eval_x", "agentic_1"]:
             payload, error = self.read(bad)
             self.assertIsNone(payload)
             self.assertIn("not readable", error)

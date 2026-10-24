@@ -160,8 +160,9 @@ export function splitSessionMentionBlock(text) {
 // Isolated session id prefixes, aligned with session_reader_server's
 // ISOLATED_SESSION_PREFIXES: sched- (scheduled runs live in the Scheduled
 // panel), eval_ (benchmark-private sessions), aux- (auxiliary side-chat
-// sessions, isolated from cross-session reads the same way).
-const ISOLATED_SESSION_PREFIXES = ['sched-', 'eval_', 'aux-'];
+// sessions, isolated from cross-session reads the same way), and agentic_
+// (headless `agent run` sessions — never mentionable cross-session).
+const ISOLATED_SESSION_PREFIXES = ['sched-', 'eval_', 'aux-', 'agentic_'];
 const isIsolatedSessionId = (sessionId) => {
   const lower = sessionId.toLowerCase();
   return ISOLATED_SESSION_PREFIXES.some((prefix) => lower.startsWith(prefix));
@@ -207,7 +208,7 @@ export function sessionMentionTriggerAt(text, enabled = true) {
  * @param {Array<{id: string, title?: string}>} sessions bridge snapshot session list (newest first)
  * @param {{ query?: string, excludeIds?: Iterable<string>, limit?: number }} options
  *   excludeIds excludes the current session and already-referenced ones;
- *   isolated sessions (sched-/eval_/aux-, case-insensitive — the same
+ *   isolated sessions (sched-/eval_/aux-/agentic_, case-insensitive — the same
  *   isolation semantics as dedupeSessionRefs) are always excluded so a listed
  *   candidate is always an acceptable pick (a no-op pick would still consume
  *   the typed trigger text).
@@ -237,7 +238,7 @@ export function filterSessionMentionCandidates(sessions, options = {}) {
 
 /**
  * Normalize a pending reference list: dedupe (by sessionId, order preserved),
- * drop isolated sessions (sched-/eval_/aux-, case-insensitive), and cap the
+ * drop isolated sessions (sched-/eval_/aux-/agentic_, case-insensitive), and cap the
  * length. This is the shared choke point for every add path (@ panel pick,
  * sidebar drag-drop, edit-resend rebuild) and for rendering refs parsed out
  * of historical messages (dirty data cannot blow up the UI).

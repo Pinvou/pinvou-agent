@@ -1,16 +1,5 @@
-const notifyComposerToolsChanged = () => {
-  try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch { /* silently ignored */ }
-};
-
-// 新一轮对话已提交（后端受理）：会话中「打开」的工具/技能自此进入上下文，
-// 未提交的「打开」（pending enable）转正并按「只增不减」锁死。scope 为
-// 'plain'（缺省，普通会话）或 'code'（原生代码会话），两条车道各自提交各自的。
-const notifyChatRoundCommitted = (scope) => {
-  try {
-    window.dispatchEvent(new CustomEvent('pinvou:chat-round-committed', {
-      detail: { scope: scope === 'code' ? 'code' : 'plain' },
-    }));
-  } catch { /* silently ignored */ }
-};
+// FFE4-1：实现移入 shared/tool-store-events.js（平台 classic 桥接层与 feature
+// 模块共用同一实现，事件名是跨层契约）；此处保留 feature 侧具名导出，消费方不变。
+const { notifyComposerToolsChanged, notifyChatRoundCommitted } = window.PinvouToolStoreEvents;
 
 export { notifyComposerToolsChanged, notifyChatRoundCommitted };

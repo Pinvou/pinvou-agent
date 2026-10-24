@@ -29,6 +29,8 @@ const read = relativePath => fs.readFileSync(path.join(webBridgeRoot, relativePa
 // bridge.js delegates shared helpers to window.PinvouBridgeShared (index.html loads the
 // shared payload before both bridges); VM harnesses must do the same first.
 const readSharedHelpers = () => fs.readFileSync(path.join(webBridgeRoot, '..', '..', 'shared', 'bridge-shared-helpers.js'), 'utf8');
+// rerenderFromMessages 的信封判定经 window.PinvouBridgeMessages（同样先于桥加载）。
+const readSharedMessages = () => fs.readFileSync(path.join(webBridgeRoot, '..', '..', 'shared', 'bridge-messages.js'), 'utf8');
 
 function bootWebBridge() {
   const storage = new Map();
@@ -121,6 +123,7 @@ function bootWebBridge() {
     TextDecoder,
   });
   vm.runInContext(readSharedHelpers(), context, { filename: 'shared/bridge-shared-helpers.js' });
+  vm.runInContext(readSharedMessages(), context, { filename: 'shared/bridge-messages.js' });
   vm.runInContext(read('bridge.js'), context, { filename: 'platform/web/bridge.js' });
   const flat = windowObject.TauriBridge;
   assert.equal(typeof flat.getState, 'function', 'Web transport must expose its private flat state');
@@ -138,9 +141,71 @@ function bootWebBridge() {
     },
     setHandler(name, fn) { handlers[name] = fn; },
     emit(name, payload) { (listeners[name] || []).forEach(fn => fn({ payload })); },
+    fireWindow(type, detail) { windowObject.dispatchEvent({ type, detail }); },
     personas: api.personas,
     sessions: api.sessions,
+    interaction: api.interaction,
   };
+}
+
+// 一次性回传完整 transcript JSON 的分块下载应答（web 权威加载的唯一通道）。
+function chunkResponse(saved) {
+  const encoded = Buffer.from(JSON.stringify(saved), 'utf8');
+  return {
+    offset: 0, total: encoded.length, download_id: 'dl-test',
+    data_base64: encoded.toString('base64'), eof: true,
+  };
+}
+
+test('web cold replay preserves first duplicate tool matching and cached session navigation', async () => {
+  const rt = bootWebBridge();
+  const loaded = [];
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => {
+    loaded.push(id);
+    return chunkResponse({
+      metadata: { id, title: id }, artifacts: [], transcript_revision: 'fixture-revision',
+      messages: id === 'replay-A' ? [
+        { role: 'user', content: [{ type: 'text', text: 'Restore tool history' }] },
+        { role: 'assistant', content: [
+          { type: 'tool_use', id: 'duplicate', name: 'Bash', input: { command: 'first' } },
+          { type: 'tool_use', id: 'duplicate', name: 'Bash', input: { command: 'second' } },
+          { type: 'tool_use', id: 'failure', name: 'Bash', input: { command: 'fail' } },
+          { type: 'tool_use', id: 'pending', name: 'Bash', input: { command: 'pending' } },
+        ] },
+        { role: 'user', content: [
+          { type: 'tool_result', tool_use_id: 'duplicate', content: 'complete' },
+          { type: 'tool_result', tool_use_id: 'failure', content: 'failed', is_error: true },
+        ] },
+        { role: 'assistant', content: [{ type: 'text', text: 'Restored' }] },
+      ] : [{ role: 'user', content: [{ type: 'text', text: 'Other session' }] }],
+    });
+  });
+  assert.equal(await rt.sessions.switchToSession('replay-A'), true);
+  const rows = () => Array.from(rt.view().chatItems.filter(item => item.type === 'tool'), item => ({
+    command: item.args.command, output: item.output, state: item.state, success: item.success,
+  }));
+  const expected = [
+    { command: 'first', output: 'complete', state: 'done', success: true },
+    { command: 'second', output: null, state: 'pending', success: null },
+    { command: 'fail', output: 'failed', state: 'failed', success: false },
+    // Web's existing replay hook leaves an unresolved historical tool pending.
+    { command: 'pending', output: null, state: 'pending', success: null },
+  ];
+  assert.deepEqual(rows(), expected);
+  assert.equal(await rt.sessions.switchToSession('replay-B'), true);
+  assert.equal(await rt.sessions.switchToSession('replay-A'), true);
+  assert.deepEqual(rows(), expected);
+  assert.deepEqual(loaded, ['replay-A', 'replay-B'], 'returning to A must use its cached buffer');
+});
+
+// 轮询至条件成立或超时（对账/物化链跨多个宏任务，不能单次 tick 断言）。
+async function waitFor(predicate, label) {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise(resolve => { setTimeout(resolve, 10); });
+  }
+  assert.ok(predicate(), label);
 }
 
 // ── ensureSession（经 equipPersona 物化链驱动）：再进草稿不劫持 ──
@@ -310,4 +375,105 @@ test('web archiveSession（scheduled run）：归档失败且无导航 → activ
   list.resolve([]);
   assert.equal(await p, false);
   assert.equal(rt.view().activeSessionId, 'sched-run-1', '无新导航时成对回滚');
+});
+
+// ── 权威重载/对账的 tauri 对齐回归（FE14 分歧修复）──────────────────
+
+test('web 权威重载：旧 steered 消息携带的 <turn_meta> 信封必须在用户气泡中剥除', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', () => chunkResponse({
+    metadata: { id: 'chat-meta', title: 'M' },
+    messages: [
+      { role: 'user', content: [
+        { type: 'text', text: '接着刚才的方案继续' },
+        // 持久化对齐前保存的会话在 steered 消息上带引擎烘焙的 turn_meta 块。
+        { type: 'text', text: '<turn_meta>\n{"steer":"mid-turn"}\n</turn_meta>' },
+      ] },
+    ],
+    artifacts: [],
+    transcript_revision: 1,
+  }));
+  await rt.sessions.switchToSession('chat-meta');
+  const bubble = rt.view().chatItems.find(item => item.type === 'user');
+  assert.ok(bubble, 'precondition: hydrated user bubble');
+  assert.ok(!String(bubble.text).includes('<turn_meta>'),
+    `rehydrated bubble must strip engine envelopes, got: ${bubble.text}`);
+  assert.ok(String(bubble.text).includes('接着刚才的方案继续'),
+    'the visible text must survive the envelope strip');
+});
+
+test('web 权威对账：运行中的后台 shell 卡必须在 reconcile 后保留（tauri 对齐）', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', () => chunkResponse({
+    metadata: { id: 'chat-bg', title: 'B' },
+    messages: [],
+    artifacts: [],
+    transcript_revision: 'rev-0',
+  }));
+  await rt.sessions.switchToSession('chat-bg');
+  // shell 轮询空转快速耗尽等待预算，避免测试尾部悬挂真实定时器。
+  rt.setHandler('list_shell_tasks', () => []);
+  rt.emit('chat:tool_start', {
+    session_id: 'chat-bg', id: 't-1', name: 'exec_shell', args: { command: 'npm run dev' },
+  });
+  rt.emit('chat:tool_end', {
+    session_id: 'chat-bg', id: 't-1', success: true, output: 'running',
+    metadata: { task_id: 'job-1', backgrounded: true, status: 'running' },
+  });
+  const live = rt.view().chatItems.find(item => item.type === 'tool' && item.toolId === 't-1');
+  assert.ok(live && live.background === true && live.state === 'running',
+    'precondition: live running background shell card');
+  // 远端回合终点 → 权威屏障；重连事件触发 reconcileRemoteTurn 权威重载。
+  rt.emit('chat:done', { session_id: 'chat-bg' });
+  const durableMessages = [
+    { role: 'user', content: [{ type: 'text', text: '起一个 dev 服务' }] },
+    { role: 'assistant', content: [
+      { type: 'tool_use', id: 't-1', name: 'exec_shell', input: { command: 'npm run dev' } },
+    ] },
+    { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 't-1', content: 'running' },
+    ] },
+  ];
+  rt.setHandler('web_access_load_session_chunk', () => chunkResponse({
+    metadata: { id: 'chat-bg', title: 'B' },
+    messages: durableMessages,
+    artifacts: [],
+    transcript_revision: 'rev-1',
+  }));
+  rt.fireWindow('pinvou:web-connection', { status: 'connected' });
+  // 权威重载完成的判据：messages 换成持久化终稿（含用户文本气泡）。
+  // 没有它，对账失败/未运行时旧卡原样保留会让断言空转通过。
+  await waitFor(() => rt.view().messages.length === 3,
+    'precondition: authoritative reconcile completed (durable transcript loaded)');
+  const survivor = rt.view().chatItems.find(item => item.type === 'tool' &&
+    item.background === true && item.state === 'running' && item.toolId === 't-1');
+  assert.ok(survivor,
+    '权威重载不得丢弃仍在运行的后台 shell 卡（transcript 无 taskId/background，无法重建）');
+});
+
+test('web discardPlan：成功路径必须回写 planResolutionConfirmed（tauri 对齐）', async () => {
+  const rt = bootWebBridge();
+  rt.setHandler('web_access_load_session_chunk', () => chunkResponse({
+    metadata: { id: 'chat-plan', title: 'P' },
+    messages: [],
+    artifacts: [],
+    transcript_revision: 1,
+  }));
+  await rt.sessions.switchToSession('chat-plan');
+  rt.setHandler('get_mode_state', () => ({ mode: 'plan' }));
+  rt.setHandler('discard_plan', () => ({ mode: 'plan' }));
+  rt.emit('chat:plan_ready', {
+    session_id: 'chat-plan',
+    plan_id: 'plan-ticket-1',
+    mode_state: { mode: 'plan' },
+    plan_snapshot: { items: [{ step: 'do it', status: 'pending' }] },
+  });
+  const plan = rt.view().chatItems.find(item => item.type === 'plan_card');
+  assert.ok(plan && plan.cardState === 'active', 'precondition: actionable plan card');
+  assert.equal(plan.planResolutionConfirmed, false, 'precondition: not yet confirmed');
+  await rt.interaction.discardPlan(plan.id, plan.planId);
+  await waitFor(() => {
+    const card = rt.view().chatItems.find(item => item.type === 'plan_card');
+    return card && card.planResolutionConfirmed === true;
+  }, '成功放弃方案后必须确认卡片已决议；否则 catch 复位守卫会把已放弃卡复活为 active');
 });

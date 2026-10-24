@@ -39,7 +39,7 @@ assert.match(installer, /MAX_ARCHIVE_BYTES/);
 assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
 
-assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.18/);
+assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.19/);
 // 连接器 CLI 解析实现已收敛到 posix.rs（Wave 3 去重），linux/macos 仅 re-export。
 assert.match(posix, /bundled_connector_npm_cli/);
 assert.match(posix, /cli_bin == "tmeet"/);

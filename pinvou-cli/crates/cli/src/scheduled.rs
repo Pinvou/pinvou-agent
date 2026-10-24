@@ -98,7 +98,9 @@ const RUN_HELP_HOST_REQUIREMENT: &str = "scheduled run boots the windowless prod
 requires a display (xvfb on headless Linux), a configured active model, and the scheduled task \
 runtime; only memory-organize tasks can run headlessly";
 
-/// Task kind. `Chat` is the ordinary engine-conversation task (no sidecar
+/// CLI creation kinds. Scheduled messages are inspected and safely updated,
+/// but created/retargeted and executed through the app runtime.
+/// `Chat` is the ordinary engine-conversation task (no sidecar
 /// entry); `MemoryOrganize` persists `memory_organize` to `task-kinds.json`,
 /// exactly like the GUI's create-side allow-list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1550,10 +1552,7 @@ fn model_id_for(
 
 fn kind_for(kinds: &serde_json::Value, task_id: &str) -> Option<String> {
     let entry = registry_tasks_view(kinds).get(task_id)?;
-    match str_field(entry, "kind") {
-        Some("memory_organize") => Some("memory_organize".to_owned()),
-        _ => None,
-    }
+    str_field(entry, "kind").map(str::to_owned)
 }
 
 fn pinned_for(ui_metadata: &serde_json::Value, task_id: &str) -> (bool, Option<String>) {
@@ -1614,6 +1613,8 @@ fn map_task(
         "model": model,
         "modelId": model_id_for(&views.bindings, task_id, model),
         "kind": kind_for(&views.kinds, task_id),
+        "targetSession": registry_tasks_view(&views.kinds).get(task_id)
+            .and_then(|entry| str_field(entry, "target_session")),
         "mode": def.get("mode").cloned().unwrap_or_default(),
         "allowShell": bool_field(def, "allow_shell", false),
         "trustMode": bool_field(def, "trust_mode", false),
@@ -1955,6 +1956,7 @@ fn show(id: &str, limit: Option<usize>, output: OutputMode) -> Result<CliOutcome
         format!("schedule: {}", cell("scheduleLabel", "")),
         format!("rrule: {}", cell("rrule", "")),
         format!("kind: {}", cell("kind", "chat")),
+        format!("target_session: {}", cell("targetSession", "-")),
         format!("model: {}", cell("model", "-")),
         format!("next_run: {}", cell("nextRunAt", "-")),
         format!("last_run: {}", cell("lastRunAt", "-")),
@@ -2351,7 +2353,33 @@ fn update(
         // Round-51 review: same credential-path gate as create (model
         // context; canonicalize → gate → read canonical) through the shared
         // helper.
-        request.prompt = Some(read_prompt_file("update", &prompt_file)?);
+        let prompt = read_prompt_file("update", &prompt_file)?;
+        let kinds = read_registry_for_write(&store_holder.task_kinds_path(), &["tasks"])?;
+        ensure_sidecar_schema(&kinds, 1, "task kinds")?;
+        if let Some(entry) = registry_tasks_view(&kinds).get(id)
+            && str_field(entry, "kind").is_none()
+        {
+            return Err(CliError::failed(
+                "scheduled_store_unreadable: task kind entry is malformed; repair it before replacing the prompt",
+            ));
+        }
+        match kind_for(&kinds, id).as_deref() {
+            Some("session_message")
+                if prompt.trim().chars().count()
+                    > pinvou3_lib::features::scheduled::SCHEDULED_MESSAGE_MAX_CHARS =>
+            {
+                return Err(CliError::usage(
+                    "scheduled message prompt exceeds the 32768 character limit",
+                ));
+            }
+            Some("session_message" | "memory_organize") | None => {}
+            Some(other) => {
+                return Err(CliError::failed(format!(
+                    "scheduled_update_unsupported_kind: cannot replace the prompt for kind {other:?}; use an app version that supports it"
+                )));
+            }
+        }
+        request.prompt = Some(prompt);
     }
     if let Some(rrule) = rrule {
         request.rrule = Some(rrule.to_owned());
@@ -2988,6 +3016,9 @@ fn run(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
         // would send the user to a run that also fails; mirror the
         // executor's remedy instead.
         return Err(CliError::failed(match raw_kind.as_deref() {
+            Some("session_message") => format!(
+                "scheduled_message_run_requires_product_host: task {id} delivers into an existing session; run it from the Pinvou app's Scheduled Tasks panel (CLI delivery is unsupported)"
+            ),
             Some(unsupported) => format!(
                 "scheduled_run_unsupported_kind: task {id} has scheduled kind {unsupported:?}, \
                  which neither the CLI nor the app can run; update the app or recreate the task \

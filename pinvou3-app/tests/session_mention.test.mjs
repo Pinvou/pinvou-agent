@@ -190,7 +190,7 @@ test('candidate filtering: excludes current/referenced/sched-, case-insensitive 
   assert.equal(limited.length, 2);
 });
 
-test('candidate filtering excludes every isolated prefix (sched-/eval_/aux-, case-insensitive) — aligned with dedupeSessionRefs', () => {
+test('candidate filtering excludes every isolated prefix (sched-/eval_/aux-/agentic_, case-insensitive) — aligned with dedupeSessionRefs', () => {
   // A listed candidate must always be an acceptable pick: isolated sessions
   // rejected by the shared choke point are filtered here too, so picking one
   // can never be a silent no-op that still consumes the typed @query.
@@ -201,6 +201,8 @@ test('candidate filtering excludes every isolated prefix (sched-/eval_/aux-, cas
     { id: 'EVAL_Upper', title: 'upper eval' },
     { id: 'aux-sidechat', title: 'side chat' },
     { id: 'Aux-Upper', title: 'upper aux' },
+    { id: 'agentic_4242_0', title: 'headless run' },
+    { id: 'AGENTIC_Upper', title: 'upper agentic' },
     { id: 'normal', title: '正常会话' },
   ];
   assert.deepEqual(
@@ -217,7 +219,7 @@ test('reference list dedupes (order preserved) and caps at MAX_SESSION_REFS', ()
   assert.equal(new Set(deduped.map(r => r.sessionId)).size, deduped.length);
 });
 
-test('dedupeSessionRefs drops isolated prefixes (sched-/eval_/aux-, case-insensitive)', () => {
+test('dedupeSessionRefs drops isolated prefixes (sched-/eval_/aux-/agentic_, case-insensitive)', () => {
   // The shared choke point folds in the sessions store isolation semantics
   // (ISOLATED_SESSION_PREFIXES in session_reader_server.py) for every add
   // path and for refs parsed out of historical messages.
@@ -228,6 +230,8 @@ test('dedupeSessionRefs drops isolated prefixes (sched-/eval_/aux-, case-insensi
     { sessionId: 'AUX-upper', title: 't' },
     { sessionId: 'EVAL_upper', title: 't' },
     { sessionId: 'Sched-Upper', title: 't' },
+    { sessionId: 'agentic_4242_0', title: 't' },
+    { sessionId: 'AGENTIC_upper', title: 't' },
     { sessionId: 'normal', title: 't' },
   ]);
   assert.deepEqual(deduped.map(r => r.sessionId), ['normal']);
@@ -262,71 +266,83 @@ test('auto-title contract: both bridges name the session from the stripped body 
   // Regression: the first message with references used to auto-name the
   // session "## Referenced chats". Presence-only source pins let an
   // applied-but-discarded split result through (round-12 R3): this drives
-  // the real persistMessagesFor from BOTH bridges and asserts the actual
-  // rename_session invoke.
+  // the real persistMessagesFor and asserts the actual rename_session
+  // invoke. The body moved into the shared base (the dead/duplicated sweep
+  // merged the web↔tauri persist pair), so the behavioral half now runs
+  // that single real body (with its `.value` state cells) and the
+  // "both bridges" leg is pinned structurally: each lane file must forward
+  // its cluster to the shared body.
   const BODY = '把配色用到 PPT 里';
-  const runTitleLane = async (rel) => {
-    const source = readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
-    const fn = extractNamedFunction(source, 'async function persistMessagesFor(sid)');
-    const invokes = [];
-    const run = async (firstUserText) => {
-      invokes.length = 0;
-      const state = {
-        activeSessionId: 'sess-1',
-        sessions: [{ id: 'sess-1', title: '新对话' }],
-        messages: [{ role: 'user', content: [{ type: 'text', text: firstUserText }] }],
-        artifacts: [],
-      };
-      const sandbox = {
-        state,
-        sessionStates: {},
-        isScheduledRunSession: () => false,
-        filterSessionArtifacts: (arts) => arts,
-        rebaseArtifactPathsForRebind: (sid, paths) => paths,
-        invoke: async (name, args) => { invokes.push([name, args]); return {}; },
-        isDefaultChatTitle: () => true,
-        personaPlaceholderTitles: {},
-        userMessageDisplayText: (content) => content.map((part) => (part && part.text) || '').join(''),
-        window: {
-          __PINVOU_SESSION_MENTION__: { splitSessionMentionBlock },
-          // Round-19 MAJOR-3: the bridges' message-block title strip executed
-          // in no test — the sandbox only published the mention global, so a
-          // strip destructured off the WRONG global shipped the suite green
-          // and delivered sessions auto-titled as the raw header. Publish
-          // both, exactly as the bridges consume them.
-          __PINVOU_SESSION_MESSAGE__: { splitSessionMessageBlock },
-        },
-        console,
-      };
-      vm.runInNewContext(`${fn}\nthis.persistMessagesFor = persistMessagesFor;`, sandbox);
-      await sandbox.persistMessagesFor('sess-1');
-      return invokes.filter(([name]) => name === 'rename_session').map(([, args]) => args.title);
+  const invokes = [];
+  const runTitle = async (firstUserText) => {
+    invokes.length = 0;
+    const sharedSource = readFileSync(
+      new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+    const fn = extractNamedFunction(sharedSource, 'async function persistMessagesFor(sid)');
+    const state = {
+      activeSessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', title: '新对话' }],
+      messages: [{ role: 'user', content: [{ type: 'text', text: firstUserText }] }],
+      artifacts: [],
     };
-    return run;
+    const sandbox = {
+      state,
+      sessionStates: { value: {} },
+      isScheduledRunSession: () => false,
+      filterSessionArtifacts: (arts) => arts,
+      rebaseArtifactPathsForRebind: (sid, paths) => paths,
+      invoke: async (name, args) => { invokes.push([name, args]); return {}; },
+      isDefaultChatTitle: () => true,
+      personaPlaceholderTitles: { value: {} },
+      userMessageDisplayText: (content) => content.map((part) => (part && part.text) || '').join(''),
+      window: {
+        __PINVOU_SESSION_MENTION__: { splitSessionMentionBlock },
+        // Round-19 MAJOR-3: the bridges' message-block title strip executed
+        // in no test — the sandbox only published the mention global, so a
+        // strip destructured off the WRONG global shipped the suite green
+        // and delivered sessions auto-titled as the raw header. Publish
+        // both, exactly as the bridges consume them.
+        __PINVOU_SESSION_MESSAGE__: { splitSessionMessageBlock },
+      },
+      console,
+    };
+    vm.runInNewContext(`${fn}\nthis.persistMessagesFor = persistMessagesFor;`, sandbox);
+    await sandbox.persistMessagesFor('sess-1');
+    return invokes.filter(([name]) => name === 'rename_session').map(([, args]) => args.title);
   };
-  for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
-    const run = await runTitleLane(rel);
-    assert.deepEqual(
-      await run(buildSessionMentionBlock(REFS) + BODY),
-      [BODY],
-      `${rel}: the injection block never feeds auto-naming`,
+  assert.deepEqual(
+    await runTitle(buildSessionMentionBlock(REFS) + BODY),
+    [BODY],
+    'the injection block never feeds auto-naming',
+  );
+  assert.deepEqual(
+    await runTitle(buildSessionMentionBlock(REFS)),
+    [],
+    'a refs-only message never names the session',
+  );
+  assert.deepEqual(
+    await runTitle(buildSessionMessageBlock({ sessionId: 'src0001', title: '源会话' }, BODY)),
+    [BODY],
+    'the delivered-message sender header never feeds auto-naming (round-19 MAJOR-3: the strip must come off the message global, not the mention one)',
+  );
+  assert.deepEqual(
+    await runTitle(buildSessionMessageBlock({ sessionId: null, title: null }, BODY)),
+    [BODY],
+    'the unattributed sender header never feeds auto-naming either',
+  );
+  assert.deepEqual(await runTitle(BODY), [BODY], 'plain bodies pass through');
+  // Both bridges reach the shared body: each lane forwards its persist
+  // entrypoint through the shared cluster, so the behavior above covers
+  // both lanes by construction.
+  for (const [rel, forwarder] of [
+    ['../src/platform/tauri/bridge.js', 'async function persistMessagesFor(sid) { return pinvouSharedtauriMain().persistMessagesFor(sid); }'],
+    ['../src/platform/web/bridge.js', 'async function persistMessagesFor(sid) { return pinvouSharedweb().persistMessagesFor(sid); }'],
+  ]) {
+    const laneSource = readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+    assert.ok(
+      laneSource.includes(forwarder),
+      `${rel}: persistMessagesFor must forward to the shared body`,
     );
-    assert.deepEqual(
-      await run(buildSessionMentionBlock(REFS)),
-      [],
-      `${rel}: a refs-only message never names the session`,
-    );
-    assert.deepEqual(
-      await run(buildSessionMessageBlock({ sessionId: 'src0001', title: '源会话' }, BODY)),
-      [BODY],
-      `${rel}: the delivered-message sender header never feeds auto-naming (round-19 MAJOR-3: the strip must come off the message global, not the mention one)`,
-    );
-    assert.deepEqual(
-      await run(buildSessionMessageBlock({ sessionId: null, title: null }, BODY)),
-      [BODY],
-      `${rel}: the unattributed sender header never feeds auto-naming either`,
-    );
-    assert.deepEqual(await run(BODY), [BODY], `${rel}: plain bodies pass through`);
   }
   // The global publishes exactly this pair of contract functions (bridges
   // cannot import features back, so the block format still has one source of truth).
@@ -1384,10 +1400,17 @@ test('both relay legs for the switch broadcast are pinned (round-6 minor 7)', ()
   // web_access_contract). Round-23 asto minor 3: the bare
   // `pinvou:tools-changed` presence pin was satisfied by the file's own
   // comment — deleting the actual re-dispatch line stayed green. Pin the
-  // dispatch itself.
+  // dispatch itself. The dead/duplicated sweep single-sourced the dispatch
+  // into window.PinvouToolStoreEvents.notifyComposerToolsChanged
+  // (tool-store-events.js), so the leg is pinned at both ends: the bridge
+  // must call the helper, and the helper must dispatch the real event on
+  // window (the same object ChatView / composer-shared listen on).
   const chatEvents = readFileSync(new URL('../src/platform/tauri/bridge/chat-events.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(chatEvents, /listen\("remote_control:tools_changed"/);
-  assert.match(chatEvents, /window\.dispatchEvent\(new CustomEvent\('pinvou:tools-changed'\)\)/);
+  assert.match(chatEvents, /window\.PinvouToolStoreEvents\.notifyComposerToolsChanged\(\)/);
+  const toolStoreEvents = readFileSync(new URL('../src/shared/tool-store-events.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(toolStoreEvents, /root\.dispatchEvent\(new CustomEvent\('pinvou:tools-changed'\)\)/);
+  assert.match(toolStoreEvents, /\}\)\(window\);/);
 });
 
 test('buildSessionMentionBlock caps titles like the parser (round-6 minor 3)', () => {

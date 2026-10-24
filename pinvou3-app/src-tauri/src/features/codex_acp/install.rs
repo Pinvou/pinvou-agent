@@ -121,11 +121,6 @@ pub(super) fn resolve_claude_cli(adapter: Option<&Path>) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let binary = if crate::platform::capabilities::is_windows() {
-        "claude.exe"
-    } else {
-        "claude"
-    };
     if let Some((package, binary)) = claude_native_runtime(
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -143,11 +138,8 @@ pub(super) fn resolve_claude_cli(adapter: Option<&Path>) -> Option<PathBuf> {
     }
     // 官方安装脚本默认目录（unix ~/.local/bin，Windows %USERPROFILE%\.local\bin），
     // 使脚本装完后无需重启 App 即可探测到。
-    let script_installed = crate::platform::os::user_home_dir()
-        .join(".local")
-        .join("bin")
-        .join(binary);
-    if nonempty_file(&script_installed) {
+    let script_installed = official_cli_install_path(AgentBackend::ClaudeAcp);
+    if let Some(script_installed) = script_installed.filter(|path| nonempty_file(path)) {
         return Some(script_installed);
     }
     find_agent_cli_in_path(AgentBackend::ClaudeAcp)
@@ -182,19 +174,11 @@ pub(super) fn resolve_kimi_path() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let binary = if crate::platform::capabilities::is_windows() {
-        "kimi.exe"
-    } else {
-        "kimi"
-    };
     // 官方安装脚本默认目录（unix ~/.kimi-code/bin，Windows %USERPROFILE%\.kimi-code\bin）。
     // 优先于 PATH：脚本装完无需重启即可探测，且避开 PATH 中可能残留的废弃
     // Python 版 kimi-cli。
-    let script_installed = crate::platform::os::user_home_dir()
-        .join(".kimi-code")
-        .join("bin")
-        .join(binary);
-    if nonempty_file(&script_installed) {
+    let script_installed = official_cli_install_path(AgentBackend::KimiAcp);
+    if let Some(script_installed) = script_installed.filter(|path| nonempty_file(path)) {
         return Some(script_installed);
     }
     find_agent_cli_in_path(AgentBackend::KimiAcp)
@@ -318,6 +302,17 @@ pub(super) fn probe_exit_status(
         }
     }
 }
+/// (brew 包名, is_cask)。codex/claude-code 是 cask,kimi-code 是 formula。
+/// 探测(brew_package_installed)与卸载规划(providers::lifecycle)共用同一张表,
+/// 包名改动一处同步。
+pub(super) fn brew_package(backend: AgentBackend) -> Option<(&'static str, bool)> {
+    match backend {
+        AgentBackend::CodexAcp => Some(("codex", true)),
+        AgentBackend::ClaudeAcp => Some(("claude-code", true)),
+        AgentBackend::KimiAcp => Some(("kimi-code", false)),
+        AgentBackend::Deepseek => None,
+    }
+}
 /// 探测 brew 是否已安装该 Agent 的 CLI（macOS 版本过旧时走 brew upgrade）。
 /// codex/claude-code 是 cask，kimi-code 是 formula（无 --cask）；
 /// 非 macOS 平台 brew_available 恒 false。
@@ -325,11 +320,13 @@ pub(super) fn brew_package_installed(backend: AgentBackend) -> bool {
     if !platform::brew_available() {
         return false;
     }
-    let args: &[&str] = match backend {
-        AgentBackend::CodexAcp => &["list", "--cask", "codex"],
-        AgentBackend::ClaudeAcp => &["list", "--cask", "claude-code"],
-        AgentBackend::KimiAcp => &["list", "kimi-code"],
-        AgentBackend::Deepseek => return false,
+    let Some((package, is_cask)) = brew_package(backend) else {
+        return false;
+    };
+    let args: &[&str] = if is_cask {
+        &["list", "--cask", package]
+    } else {
+        &["list", package]
     };
     probe_exit_status(
         std::process::Command::new(platform::brew_bin()),
@@ -431,25 +428,38 @@ pub(super) fn path_in_npm_global(path: &Path, root: &Path, windows: bool) -> boo
     };
     path.starts_with(bin)
 }
+/// 各 Agent 官方安装脚本写入的二进制路径(codex 平台路径 / claude `~/.local/bin`、
+/// kimi `~/.kimi-code/bin`;Windows 仅可执行文件后缀不同)。CLI 解析
+/// ([`resolve_claude_cli`] / [`resolve_kimi_path`])、来源判定
+/// ([`path_install_source`]) 与卸载清理(providers::lifecycle::official_script_paths)
+/// 共用同一张表——目录改名一处同步,卸载不会漏掉旧位置。
+pub(super) fn official_cli_install_path(backend: AgentBackend) -> Option<PathBuf> {
+    let executable = if crate::platform::capabilities::is_windows() {
+        ".exe"
+    } else {
+        ""
+    };
+    match backend {
+        AgentBackend::CodexAcp => Some(platform::codex_official_install_path()),
+        AgentBackend::ClaudeAcp => Some(
+            crate::platform::os::user_home_dir()
+                .join(".local")
+                .join("bin")
+                .join(format!("claude{executable}")),
+        ),
+        AgentBackend::KimiAcp => Some(
+            crate::platform::os::user_home_dir()
+                .join(".kimi-code")
+                .join("bin")
+                .join(format!("kimi{executable}")),
+        ),
+        AgentBackend::Deepseek => None,
+    }
+}
 /// 按路径前缀判定官方脚本来源（codex/claude ~/.local/bin、kimi ~/.kimi-code/bin）。
 pub(super) fn path_install_source(backend: AgentBackend, path: &Path) -> Option<&'static str> {
-    let home = crate::platform::os::user_home_dir();
-    match backend {
-        AgentBackend::CodexAcp
-            if platform::codex_official_install_path()
-                .parent()
-                .is_some_and(|directory| path.starts_with(directory)) =>
-        {
-            Some("script")
-        }
-        AgentBackend::ClaudeAcp if path.starts_with(home.join(".local").join("bin")) => {
-            Some("script")
-        }
-        AgentBackend::KimiAcp if path.starts_with(home.join(".kimi-code").join("bin")) => {
-            Some("script")
-        }
-        _ => None,
-    }
+    let directory = official_cli_install_path(backend)?.parent()?.to_path_buf();
+    path.starts_with(directory).then_some("script")
 }
 /// installed=false 时的安装动作：探测到过旧 CLI 且来源可识别时优先包管理器
 /// upgrade (brew/npm); other sources or a missing CLI keep the default install method.
@@ -698,7 +708,8 @@ async fn run_managed_install(
         .with_context(|| stage.spawn_context.clone())?;
     // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
     let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
-    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
+    // A cancel may land between spawn and pid registration: recheck once
+    // right after registering.
     if install_cancelled.lock().contains(&backend) {
         let _ = child.kill().await;
     }
@@ -1097,6 +1108,7 @@ mod tests {
             error: None,
             install_command: None,
             install_latest_line: None,
+            install_finished: None,
             setup_hint: None,
         };
         let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
@@ -1107,6 +1119,29 @@ mod tests {
         assert_eq!(value["install_source"], json!("npm"));
         assert_eq!(value["update_available"], json!(true));
         assert_eq!(value["update_required"], json!(true));
+        // The outcome is absent from serialization by default
+        // (skip_serializing_if); when present it carries ok/cancelled, and a
+        // failed (non-cancelled) outcome adds this run's error chain (skipped
+        // on success/cancellation).
+        assert!(value.get("install_finished").is_none());
+        let mut finished = status.clone();
+        finished.install_finished = Some(install_outcome_for_result(true, false, None));
+        let value = serde_json::to_value(&finished).expect("serialize install_finished");
+        assert_eq!(
+            value["install_finished"],
+            json!({ "ok": true, "cancelled": false })
+        );
+        let mut failed = status.clone();
+        failed.install_finished = Some(install_outcome_for_result(
+            false,
+            false,
+            Some("npm install failed: EBUSY"),
+        ));
+        let value = serde_json::to_value(&failed).expect("serialize failed install_finished");
+        assert_eq!(
+            value["install_finished"],
+            json!({ "ok": false, "cancelled": false, "error": "npm install failed: EBUSY" })
+        );
 
         let mut cli_ready_without_bridge = status.clone();
         cli_ready_without_bridge.codex_available = true;
@@ -1129,6 +1164,145 @@ mod tests {
                 .is_ok(),
             "advisory latest upgrade must not fail the install when the package manager lags behind"
         );
+    }
+
+    /// Outcome mapping: success passes through as ok; on failure the cancel
+    /// marker in the error chain distinguishes "cancelled" from "failed"
+    /// (same verdict as the wait side and the frontend, no Chinese-copy
+    /// substring matching). A cancel armed but not yet consumed at record
+    /// time (a preflight-window cancel whose natural failure won the race)
+    /// counts as cancelled too. Failure (non-cancelled) carries this run's
+    /// error chain for the cross-mount heal to echo.
+    #[test]
+    pub(super) fn install_outcome_maps_success_and_cancellation() {
+        assert_eq!(
+            install_outcome_for_result(true, false, None),
+            InstallFinishedInfo {
+                ok: true,
+                cancelled: false,
+                error: None
+            }
+        );
+        assert_eq!(
+            install_outcome_for_result(true, true, None),
+            InstallFinishedInfo {
+                ok: true,
+                cancelled: false,
+                error: None
+            },
+            "a cancel that lost the race to a successful exit is not an outcome"
+        );
+        assert_eq!(
+            install_outcome_for_result(false, false, Some("install_cancelled:kimi 安装已取消")),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true,
+                error: None
+            }
+        );
+        assert_eq!(
+            install_outcome_for_result(false, true, Some("preflight registry unreachable")),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true,
+                error: None
+            },
+            "a still-armed marker at record time is a preflight-window cancel"
+        );
+        assert_eq!(
+            install_outcome_for_result(false, false, Some("npm install failed: EBUSY")),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: false,
+                error: Some("npm install failed: EBUSY".to_string())
+            }
+        );
+        assert_eq!(
+            install_outcome_for_result(false, false, None),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: false,
+                error: None
+            }
+        );
+    }
+
+    /// Cancellation settlement: the returned error must classify the same
+    /// way as the recorded outcome. The critical case is a preflight-window
+    /// cancel whose natural failure won the race (armed marker + unmarked
+    /// error): the outcome says cancelled, so the initiating caller must see
+    /// a marker-carrying cancelled error — the frontend's catch would
+    /// otherwise pin the card on failed + red error while every other
+    /// surface (status.install_finished, the heal, the wait side) reports a
+    /// cancellation. Pre-marked cancel errors, successes, and plain failures
+    /// pass through unchanged.
+    #[test]
+    pub(super) fn install_settlement_returns_recorded_cancellation() {
+        let (outcome, returned) = settle_install_result(
+            false,
+            true,
+            Some("preflight registry unreachable"),
+            AgentBackend::KimiAcp,
+        );
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true,
+                error: None
+            }
+        );
+        assert_eq!(
+            returned.as_deref(),
+            Some("install_cancelled:Kimi 安装已取消"),
+            "the return value must carry the cancellation classification the outcome recorded"
+        );
+        // An error that already carries the marker classifies by itself: no
+        // rewrite (the original chain keeps its own wording).
+        let (outcome, returned) = settle_install_result(
+            false,
+            false,
+            Some("install_cancelled:kimi 安装已取消"),
+            AgentBackend::KimiAcp,
+        );
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true,
+                error: None
+            }
+        );
+        assert_eq!(returned, None, "a pre-marked cancel error needs no rewrite");
+        // A cancel that lost the race to a successful exit is not a
+        // cancellation on either side.
+        let (outcome, returned) = settle_install_result(true, true, None, AgentBackend::KimiAcp);
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: true,
+                cancelled: false,
+                error: None
+            }
+        );
+        assert_eq!(returned, None);
+        // A plain failure is neither cancelled nor rewritten: the outcome
+        // carries the error chain, and the caller sees the original error.
+        let (outcome, returned) = settle_install_result(
+            false,
+            false,
+            Some("npm install failed: EBUSY"),
+            AgentBackend::KimiAcp,
+        );
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: false,
+                error: Some("npm install failed: EBUSY".to_string())
+            }
+        );
+        assert_eq!(returned, None);
     }
 
     #[test]
@@ -1266,6 +1440,29 @@ mod tests {
         assert!(installing_agents.read().contains(&AgentBackend::CodexAcp));
         drop(codex);
         assert!(installing_agents.read().is_empty());
+    }
+
+    #[test]
+    pub(super) fn install_active_window_is_exclusive_and_ends_at_drop() {
+        let install_active = Arc::new(parking_lot::RwLock::new(HashSet::new()));
+        let claude = InstallActiveGuard::try_start(&install_active, AgentBackend::ClaudeAcp)
+            .expect("the active window must register at entry");
+
+        assert!(install_active.read().contains(&AgentBackend::ClaudeAcp));
+        assert!(
+            InstallActiveGuard::try_start(&install_active, AgentBackend::ClaudeAcp).is_none(),
+            "a second install for the same Agent must be rejected inside the active window"
+        );
+
+        drop(claude);
+        assert!(
+            !install_active.read().contains(&AgentBackend::ClaudeAcp),
+            "the window must close at guard drop (outcome already recorded by then)"
+        );
+        assert!(
+            InstallActiveGuard::try_start(&install_active, AgentBackend::ClaudeAcp).is_some(),
+            "the next install must be able to register again"
+        );
     }
 
     #[test]
@@ -1456,6 +1653,95 @@ mod tests {
 pub(super) fn clear_install_progress(app: &AppHandle, backend: AgentBackend) {
     if let Some(store) = app.try_state::<InstallProgressStore>() {
         store.0.write().remove(&backend);
+    }
+}
+
+/// Clears the previous install's outcome before `install_agent` starts:
+/// install_finished describes only the most recent install.
+pub(super) fn clear_install_outcome(app: &AppHandle, backend: AgentBackend) {
+    if let Some(store) = app.try_state::<InstallOutcomeStore>() {
+        store.0.write().remove(&backend);
+    }
+}
+
+/// Outcome mapping (pure, unit-testable): ok passes through; on failure the
+/// cancel marker in the error chain means "cancelled" (same verdict as the
+/// wait side, which the frontend classifies as cancelled via the structured
+/// marker — no red-error echo). `cancel_pending` is a marker still armed at
+/// record time: a preflight-window cancel whose natural failure won the race
+/// against the spawn-time recheck. Failure (non-cancelled) carries this
+/// run's error chain for the cross-mount heal to echo.
+pub(super) fn install_outcome_for_result(
+    ok: bool,
+    cancel_pending: bool,
+    error_detail: Option<&str>,
+) -> InstallFinishedInfo {
+    let cancelled = !ok
+        && (cancel_pending
+            || error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER)));
+    InstallFinishedInfo {
+        ok,
+        cancelled,
+        error: if !ok && !cancelled {
+            error_detail.map(str::to_string)
+        } else {
+            None
+        },
+    }
+}
+
+/// Settles a finished install run into (outcome to record, error to return),
+/// guaranteeing both carry the same cancellation classification. A cancel
+/// armed in the preflight window whose natural failure won the race is
+/// recorded as cancelled (see [`install_outcome_for_result`]); the return
+/// value must classify the same way — ProvidersSection's initiating catch
+/// recognizes only the structured `install_cancelled` marker and would
+/// otherwise overwrite the cancelled phase with failed plus a red error
+/// banner, a wrong terminal the cross-mount heal cannot repair (it only
+/// converges the installing phase). The rewritten error mirrors the wait
+/// side's cancel wording; the incidental natural failure stays visible in
+/// the diagnostics log. An error already carrying the marker, a successful
+/// run, and a plain failure are returned unchanged.
+pub(super) fn settle_install_result(
+    ok: bool,
+    cancel_pending: bool,
+    error_detail: Option<&str>,
+    backend: AgentBackend,
+) -> (InstallFinishedInfo, Option<String>) {
+    let outcome = install_outcome_for_result(ok, cancel_pending, error_detail);
+    let rewritten_error = if outcome.cancelled
+        && !error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER))
+    {
+        Some(format!(
+            "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+            backend.display_name()
+        ))
+    } else {
+        None
+    };
+    (outcome, rewritten_error)
+}
+
+/// Records the wrapped-up outcome into the shared store.
+pub(super) fn record_install_outcome(
+    app: &AppHandle,
+    backend: AgentBackend,
+    outcome: InstallFinishedInfo,
+) {
+    if let Some(store) = app.try_state::<InstallOutcomeStore>() {
+        store.0.write().insert(backend, outcome);
+    }
+}
+
+/// Fills `install_finished` into status so a remounted panel can observe the
+/// most recent outcome.
+pub(super) fn fill_install_outcome(
+    app: &AppHandle,
+    backend: AgentBackend,
+    status: &mut CodexAcpStatus,
+) {
+    if let Some(store) = app.try_state::<InstallOutcomeStore>() {
+        status.install_finished = store.0.read().get(&backend).cloned();
     }
 }
 

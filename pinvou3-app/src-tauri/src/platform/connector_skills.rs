@@ -37,6 +37,15 @@ pub const WECOM_SKILL_DIRS: [&str; 15] = [
 /// 搬移（搬进 `bundles/wecom/skills/` 后门控清理够不到，会永久残留）。
 pub const WECOM_LEGACY_SKILL_DIRS: [&str; 2] = ["wecomcli-msg", "wecomcli-schedule"];
 
+/// 连接器技能出处声明文件名（各连接器解包技能时落在同一 `skills_dir` 旁，隐藏时须一并
+/// 删除）。飞书独占裸 `NOTICE.md`；其余三家带 id 后缀，避免同目录互相覆盖。
+/// 单一真相源：runtime_bundle 的解包门控与 headless CLI 的登出清理共用
+/// （原先 CLI 逐字手抄此表，无对齐护栏）。
+pub const FEISHU_SKILLS_NOTICE: &str = "NOTICE.md";
+pub const WECOM_SKILLS_NOTICE: &str = "NOTICE-wecom.md";
+pub const DINGTALK_SKILLS_NOTICE: &str = "NOTICE-dingtalk.md";
+pub const TMEET_SKILLS_NOTICE: &str = "NOTICE-tmeet.md";
+
 /// 9 个飞书 lark 域技能目录名(门控写/删与 marketplace 注册表共用)。
 /// skills_dir 下这些目录在不在 = 飞书技能对模型可见与否(引擎 `SkillRegistry`
 /// 扫目录)。

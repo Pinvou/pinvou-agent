@@ -887,6 +887,9 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
   assert.deepStrictEqual([...localProbeTiersForKind('vllm')], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('ollama')], ['off', 'high']);
+  // tachyon（驭光）→ 有效档 none/low/medium/xhigh，high 是 400；最深档复用
+  // 既有 max 档位 id，bridge→底座链路映射为 wire 上的 xhigh
+  assert.deepStrictEqual([...localProbeTiersForKind('tachyon')], ['off', 'low', 'medium', 'max']);
   // Frameworks wire-isomorphic with vLLM thinking control → same four tiers as vllm
   for (const kind of ['sglang', 'llamacpp', 'koboldcpp', 'lmdeploy', 'dockermodelrunner']) {
     assert.deepStrictEqual([...localProbeTiersForKind(kind)], ['off', 'low', 'medium', 'high'], kind);
@@ -948,6 +951,16 @@ test('local routes hitting the knowledge table: tiers/defaults/stored-value norm
   const qwenLocal = { preset: 'local_vllm', model: 'qwen3-32b' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(qwenLocal)], ['off', 'low', 'medium', 'high']);
   assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'low');
+  // tachyon（驭光）probed 的本地兼容端点：静态归一只认 vllm 四档，但存量 max
+  // 必须逐字保留（tachyon 档表含 max，wire 映射 xhigh）——静默归一成默认 low
+  // 会让设置表单重开再保存把最深档改写为最低档；别名 xhigh 归一到 max 同理。
+  // 知识表命中的本地模型（k3）维持"表外档归一到最低允许档"的既有语义。
+  const tachyonLocal = { preset: 'openai_compatible', model: 'qwen3.8', base_url: 'http://127.0.0.1:8000/v1' };
+  assert.strictEqual(normalizeStoredReasoningEffort(tachyonLocal, 'max'), 'max');
+  assert.strictEqual(normalizeStoredReasoningEffort(tachyonLocal, 'xhigh'), 'max');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'max'), 'low');
+  // 展示层：probe 出的 tachyon 档表高亮 max 正确
+  assert.strictEqual(reasoningEffortDisplayForTiers('max', [...localProbeTiersForKind('tachyon')]), 'max');
   // exact cloud routes are unaffected: z.ai first-party glm-5.3 is still off/high/max
   const glmCloud = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(glmCloud)], ['off', 'high', 'max']);
@@ -979,6 +992,16 @@ test('localReasoningTiers: probed tiers overlaid with the model knowledge table'
 });
 
 test('reasoningEffortDisplayForTiers: display fallback of stored tiers against probed tiers', () => {
+  // A stored high, or high selected before probing completes, is clamped to
+  // medium on Tachyon. Re-probing another engine preserves the original value.
+  const tachyonTiers = [...localProbeTiersForKind('tachyon')];
+  for (const preset of ['local_vllm', 'openai_compatible']) {
+    const model = { preset, model: 'qwen3.8', base_url: 'http://127.0.0.1:8000/v1' };
+    const stored = normalizeStoredReasoningEffort(model, 'high');
+    assert.strictEqual(reasoningEffortDisplayForTiers(stored, tachyonTiers), 'medium');
+    assert.strictEqual(reasoningEffortDisplayForTiers(stored, [...localProbeTiersForKind('vllm')]), 'high');
+    assert.strictEqual(stored, 'high');
+  }
   // ollama two-tier table: stored low/medium are wire-equivalent to high
   // (think:true); the highlight maps to the nearest tier, high
   assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off', 'high']), 'high');

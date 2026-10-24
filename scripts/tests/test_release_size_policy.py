@@ -21,6 +21,32 @@ def cargo_profile(text: str, profile_header: str, next_header: str) -> str:
     return text.split(profile_header, maxsplit=1)[1].split(next_header, maxsplit=1)[0]
 
 
+def _without_inline_comments(block):
+    # PR #745 round-4 review (MINOR): positive pins must judge live lines
+    # only — a literal that survives as a trailing comment on another live
+    # line must not keep the pin green. Absence pins keep their existing
+    # whole-line stripping: a comment discussing the wrong `-C` spelling
+    # must not false-red them (documented polarity, mirrored in
+    # test_ci_gate_policy's `_without_inline_comments`).
+    stripped_lines = []
+    for line in block.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        quote = None
+        cut = len(line)
+        for index, char in enumerate(line):
+            if quote is not None:
+                if char == quote:
+                    quote = None
+            elif char in ("'", '"'):
+                quote = char
+            elif char == "#" and index > 0 and line[index - 1] in (" ", "\t"):
+                cut = index
+                break
+        stripped_lines.append(line[:cut].rstrip())
+    return "\n".join(stripped_lines)
+
+
 class ReleaseSizePolicyTests(unittest.TestCase):
     """Pins the release size / debug-info policy (docs/binary-size-optimization.md).
 
@@ -79,6 +105,34 @@ class ReleaseSizePolicyTests(unittest.TestCase):
                 if line.strip().startswith("RUSTFLAGS:"):
                     self.assertNotIn("-C remap-path-prefix", line, start)
 
+    def test_windows_probe_exports_remap_path_prefix(self):
+        # PR #745: the Windows lld probe exports --remap-path-prefix beside
+        # the probed linker flags so the nsis artifact normalizes
+        # build-machine absolute paths like every other release job. Both
+        # separator variants ship because the embedded form follows
+        # whatever cargo passed to rustc. Dropping the flags line reverts
+        # to path-leaking artifacts with no build error, hence the pin.
+        windows = self.job("\n  build-windows-x64:", "\n  build-macos-universal:")
+        # Inline-stripped positives (round-4 review): the live line being
+        # commented out (with the literal kept in the comment) must red
+        # this pin, so the asserts judge comment-stripped text.
+        live = _without_inline_comments(windows)
+        self.assertIn('ws="${GITHUB_WORKSPACE}"', live)
+        self.assertIn('ws_fwd="${ws//\\\\//}"', live)
+        self.assertIn(
+            'flags="$flags --remap-path-prefix=$ws=/ --remap-path-prefix=$ws_fwd=/"',
+            live,
+        )
+        # Comment-stripped: a comment explaining why the -C spelling is
+        # wrong (as the probe's own comment nearly does) must not false-red
+        # the absence pin (same rule as the other policy files' helpers).
+        self.assertNotIn(
+            "-C remap-path-prefix",
+            "\n".join(
+                line for line in windows.splitlines() if not line.lstrip().startswith("#")
+            ),
+        )
+
     def test_loongarch64_job_must_not_copy_lld_rustflags(self):
         # The pinned loong64/cross-tools asset ships NO lld (bfd ld only —
         # see scripts/ci-loongarch64-toolchain.sh). Copying the arm64 job's
@@ -97,13 +151,34 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         self.assertNotIn("--icf=safe", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", job_code)
-        # The job must not set RUSTFLAGS anywhere (job env, step env, or a
-        # run-block export): cargo gives a set RUSTFLAGS precedence over the
-        # target-scoped CARGO_TARGET_<triple>_RUSTFLAGS the orchestrator
-        # exports (remap + sysroot link-arg — pinned by
-        # test_release_loongarch64_policy), so a global RUSTFLAGS here would
-        # silently strip the target units' flags.
-        self.assertNotIn("RUSTFLAGS", job_code)
+        # RUSTFLAGS must stay remap-only in this job — in EVERY spelling a
+        # cargo/rustc invocation can see: a `RUSTFLAGS:` job/step env key AND
+        # a shell-style `export RUSTFLAGS=` / `RUSTFLAGS=` line inside any
+        # run block. --remap-path-prefix is rustc-side and keeps
+        # build-machine paths out of the artifact; linker selection is NOT a
+        # RUSTFLAGS concern (cargo routes through the generated rust-lld
+        # wrapper — pinned by test_release_loongarch64_policy), so any
+        # -C link-arg here would either fail (the pinned toolchain ships
+        # bfd only) or bypass the audited wrapper. The three spellings are
+        # collected together so a run-block export or a target-scoped
+        # CARGO_TARGET_*_RUSTFLAGS env key cannot slip past the job-env-only
+        # equality check.
+        # Containment, not line-anchored prefixes: an INLINE prefix
+        # (`run: RUSTFLAGS=... bash ...`) starts with neither spelling but
+        # is fully visible to cargo — every line mentioning RUSTFLAGS must
+        # BE the pinned definition.
+        rustflags = [
+            line.strip()
+            for line in job_code.splitlines()
+            if "RUSTFLAGS" in line
+        ]
+        self.assertEqual(
+            rustflags,
+            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
+            "the loong64 job must keep RUSTFLAGS remap-only (job/step env, "
+            "run-block exports, inline prefixes, and CARGO_TARGET_*_RUSTFLAGS "
+            "keys alike)",
+        )
 
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):
         for start, end in (

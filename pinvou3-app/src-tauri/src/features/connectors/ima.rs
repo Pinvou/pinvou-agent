@@ -18,9 +18,14 @@ use crate::platform::credential_store::{
 
 const CLIENT_ID_SECRET: &str = "client_id";
 const API_KEY_SECRET: &str = "api_key";
-const IMA_SKILL_ID: &str = "ima-skills";
+/// `pub`（经 `features::mod` 越界，见其 re-export 注释）：CLI 的 connectors
+/// ima 通道与 plugins readiness 表直接引用，替代各自的手抄镜像。
+pub const IMA_SKILL_ID: &str = "ima-skills";
 const IMA_BASE_URL: &str = "https://ima.qq.com";
-const IMA_SKILL_VERSION: &str = "1.1.8";
+/// `pub`（经 `features::mod` 越界）：CLI 的 ima_connect 查询把它作为
+/// `skill_version` 上报 —— 曾经是 CLI 侧的无对齐护栏手抄镜像（round-9 review
+/// n2），与 IMA_SKILL_ID 同一批单一真相源。
+pub const IMA_SKILL_VERSION: &str = "1.1.8";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const READ_API_PATHS: &[&str] = &[
@@ -44,11 +49,13 @@ const WRITE_API_PATHS: &[&str] = &[
     "openapi/wiki/v1/add_knowledge",
 ];
 
+/// ima 连接状态（`pub` + 经 `features::mod` 越界：CLI 的 readiness 表消费
+/// 同一计算结果，仅保留其降级包装）。
 #[derive(Debug, Clone, Serialize)]
-struct ImaConnectorStatus {
-    connected: bool,
-    credentials_present: bool,
-    skill_installed: bool,
+pub struct ImaConnectorStatus {
+    pub connected: bool,
+    pub credentials_present: bool,
+    pub skill_installed: bool,
 }
 
 fn client_id_ref() -> CredentialReference {
@@ -72,7 +79,9 @@ fn credentials<S: CredentialStore>(store: &S) -> Result<Option<(String, String)>
     })
 }
 
-fn status_with_store<S: CredentialStore>(store: &S) -> Result<ImaConnectorStatus, String> {
+/// `pub`（经 `features::mod` 越界）：CLI 的 readiness 表复用本判定，替代其
+/// `ima_readiness_parts` 手抄镜像（CLI 侧仅保留凭证读取失败时的降级包装）。
+pub fn status_with_store<S: CredentialStore>(store: &S) -> Result<ImaConnectorStatus, String> {
     let credentials_present = credentials(store)?.is_some();
     let skill_installed = SkillMarketplaceManager::new()
         .list_skills()
@@ -454,12 +463,6 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 
-    /// Temp-home harness for the connect regressions. Delegates to the
-    /// shared RAII helper (see its doc for the unwind-restore rationale).
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", f);
-    }
-
     /// Initialize the code scope with the given deny ids while the scope lock
     /// still works (the DenyAll sync then requires a real write). Routes onto
     /// the canonical seed helper in scope.rs.
@@ -483,7 +486,7 @@ mod tests {
     /// touched or any skill content lands.
     #[test]
     fn connect_refused_sync_aborts_before_anything_lands() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             let store = MemoryCredentialStore::default();
 
             // Initialize the code scope (makes the DenyAll sync a required
@@ -524,7 +527,7 @@ mod tests {
     /// it disabled with no recovery path.
     #[test]
     fn ima_reconnect_of_installed_skill_preserves_consent_state() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             let store = MemoryCredentialStore::default();
             store.set(&client_id_ref(), "client-v1").unwrap();
             store.set(&api_key_ref(), "key-v1").unwrap();
@@ -642,7 +645,7 @@ mod tests {
     /// reachable without touching the real system credential vault.
     #[test]
     fn ima_logout_vacuous_and_failed_uninstall_keeps_deny_entries() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             // Phase 1: vacuous uninstall.
             init_code_scope(&[IMA_SKILL_ID]);
 
@@ -685,7 +688,7 @@ mod tests {
     /// the credentials round-trip.
     #[test]
     fn fresh_connect_lands_deny_entry_and_credentials() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             init_code_scope(&["seed-bundle"]);
 
             let store = MemoryCredentialStore::default();

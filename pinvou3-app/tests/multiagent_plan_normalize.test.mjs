@@ -266,7 +266,7 @@ test('详情读取把 offset/revision 游标原样交给后端', async () => {
 test('子智能体事件由共享桥转成 DOM 事件，是否投影由会话视图决定', () => {
   const { listeners, dispatched } = loadFeature();
   listeners['multiagent:agent_progress']({
-    payload: { session_id: 'chat-1', agent_id: 'agent_a1', role_id: 'scout', status: '检索中' },
+    payload: { session_id: 'chat-1', agent_id: 'agent_a1', role_id: 'scout', status: '检索中', worker_status: 'model_wait' },
   });
   listeners['multiagent:agent_complete']({
     payload: { session_id: 'wf-2', agent_id: 'agent_b2', role_id: 'builder', failed: true },
@@ -276,8 +276,38 @@ test('子智能体事件由共享桥转成 DOM 事件，是否投影由会话视
   assert.equal(dispatched[0].detail.sessionId, 'chat-1');
   assert.equal(dispatched[0].detail.agentId, 'agent_a1');
   assert.equal(dispatched[0].detail.status, '检索中');
+  // 结构化生命周期令牌与 worker ledger 同词表；缺失时必须是 null（旧引擎
+  // payload 兼容），不能把自由文本短语冒充成令牌。
+  assert.equal(dispatched[0].detail.workerStatus, 'model_wait');
   assert.equal(dispatched[1].detail.done, true);
   assert.equal(dispatched[1].detail.failed, true);
+  listeners['multiagent:agent_progress']({
+    payload: { session_id: 'chat-1', agent_id: 'agent_a1', status: '检索中' },
+  });
+  assert.equal(dispatched[2].detail.workerStatus, null, '旧 payload 无 worker_status 时回退 null');
+});
+
+test('forwarder 必须转发结构化 worker_status，展示层不得解析进展短语', () => {
+  const forwarderSource = read('src-tauri', 'src', 'features', 'assistant', 'forwarder.rs');
+  // AgentProgress 事件自带 activity.worker_status（底座明言 UI 不得从展示
+  // 文本反推生命周期态）；漏转它会让台账令牌与实时短语互相覆盖，运行中的
+  // 子智能体状态标签在“排队中/运行中”之间来回闪烁。
+  const armStart = forwarderSource.indexOf('Event::AgentProgress {');
+  assert.ok(armStart >= 0, 'AgentProgress 转发臂必须存在');
+  const arm = forwarderSource.slice(armStart, forwarderSource.indexOf('Event::AgentProgress { .. }', armStart));
+  assert.match(
+    arm,
+    /"worker_status": deepseek_tui::tools::subagent::agent_worker_status_name\(\s*activity\.worker_status,?\s*\)/,
+    'AgentProgress 臂必须把 activity.worker_status 折成 ledger 词表令牌随 payload 下发',
+  );
+  // mailbox 的 ToolCallStarted 合成事件同样必须带令牌（工具执行中），且经
+  // agent_worker_status_name 从枚举派生：手写 "running_tool" 字面量会在底座
+  // 改词表时静默分叉。
+  assert.match(
+    forwarderSource,
+    /MM::ToolCallStarted \{[\s\S]{0,900}agent_worker_status_name\(\s*AgentWorkerStatus::RunningTool,?\s*\)/,
+    'ToolCallStarted 合成 payload 必须携带经枚举派生的 running_tool 令牌',
+  );
 });
 
 // ── 停止/回收：取消级联（ADR-0006 批次 A 的行为锁） ─────────────────────────
@@ -638,7 +668,11 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const sessionsBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
   assert.match(
     sessionsBridgeSource,
-    /pendingMultiAgent = state\.pendingDraftMultiAgent === true;[\s\S]{0,900}set_multi_agent_mode/,
+    // 1200 (was 900): the round-18 workspace merge interleaves the draft
+    // workspace/roots/projectId cleanup between the toggle consume and the
+    // backend call; the contract itself is unchanged — the staged intent is
+    // read-then-cleared and lands on the materialized session id.
+    /pendingMultiAgent = state\.pendingDraftMultiAgent === true;[\s\S]{0,1200}set_multi_agent_mode/,
     '寄存的开关意图在首条消息物化会话时落后端',
   );
   assert.match(
@@ -658,6 +692,34 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     i18nSource,
     /关闭不影响在跑的子智能体|turning it off never interrupts running subagents|オフにしても実行中のサブエージェントは中断されない/,
     '不得再保留与 ADR-0006 和实际回收行为相反的旧文案',
+  );
+  // Round-19 minor 11: the typed ALIGN_NO_WORKSPACE marker is mapped to copy
+  // in BOTH lanes (the contract comments say callers map typed markers); the
+  // alignNoWorkspace key must exist in all three locales.
+  assert.equal(
+    (i18nSource.match(/alignNoWorkspace:/g) || []).length, 3,
+    'alignNoWorkspace 文案必须三语齐备（此前 ALIGN_NO_WORKSPACE 落到通用失败文案，与 acpClient 的契约注释相悖）',
+  );
+  // Round-32 minor 13: the count above is distribution-insensitive (a 2+1+0
+  // split across locales passes) — slice each locale's uiKeychain section
+  // and require the key in every one, the workspace_picker_wiring pattern.
+  for (const locale of ['zh', 'en', 'ja']) {
+    const localeSource = read('src', 'shared', 'i18n', `${locale}.js`);
+    const start = localeSource.indexOf('uiKeychain: {');
+    const section = localeSource.slice(start, localeSource.indexOf('},', start));
+    assert.ok(
+      section.includes('alignNoWorkspace:'),
+      `${locale} 的 uiKeychain 必须携带 alignNoWorkspace（计数式断言对 2+1+0 分布不敏感）`,
+    );
+  }
+  const alignLanesSource = [
+    read('src', 'features', 'chat', 'ChatView.jsx'),
+    read('src', 'features', 'codex', 'CodexAcpView.jsx'),
+  ].join('\n');
+  assert.match(
+    alignLanesSource,
+    /startsWith\('ALIGN_NO_WORKSPACE'\)/,
+    '两条车道都必须映射 ALIGN_NO_WORKSPACE 而非只映射 ALIGN_BUSY',
   );
   assert.match(
     modeStateSource,
@@ -1010,7 +1072,7 @@ test('多级代理树：默认只列直属根，按父节点逐级展开并保�
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
   assert.match(
     timelineSource,
-    /if \((?:item\.type === 'tool' \|\| item\.type === 'command_execution' \|\| item\.type === 'file_change'|\['tool', 'command_execution', 'file_change'\]\.includes\(item\.type\))\)/,
+    /if \(isOperationItemType\(item\.type\)\)/,
     '独立 agent 工具项不得被共享时间线丢弃',
   );
   assert.match(
@@ -1095,7 +1157,7 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /copy\.showEarlierTranscript/);
   assert.match(
     panelSource,
-    /active: \(list\) => !Array\.isArray\(list\)\s*\|\|\s*list\.some\(\(entry\) => !entry\.done && entry\.status != null\)/,
+    /active: \(list\) => !Array\.isArray\(list\)\s*\|\|\s*!list\.every\(isSettledEntry\)/,
     '清单全部终态后必须停止定时轮询；孤儿行（无 status 的未完成历史记录）不得钉住 2s 轮询',
   );
   assert.match(panelSource, /pinvou:subagent-update/, '新子智能体实时事件必须能唤醒终态清单');

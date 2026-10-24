@@ -19,7 +19,8 @@ import {
  * it deliberately stays out of the dock-occlusion registry — registering
  * would hide every dock panel for the duration of a selection. The button is
  * suppressed entirely while the task has no aux chat (null sessionId: no
- * session / sched- runs / external ACP).
+ * session / sched- runs / headless agentic_ runs — the store refuses
+ * aux-of-headless at creation / external ACP).
  */
 
 export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {

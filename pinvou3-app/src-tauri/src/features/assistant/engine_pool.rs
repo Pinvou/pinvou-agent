@@ -58,7 +58,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnIdentity, TurnLifecycle, TurnReservation,
-    dispatch_turn_bound_cancel,
+    bounded_join_detached_on_timeout, dispatch_turn_bound_cancel,
 };
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
@@ -143,13 +143,20 @@ fn should_reap_idle_engine(
     scheduled_running: bool,
     is_active_session: bool,
     idle_for_secs: u64,
+    compaction_in_flight: bool,
 ) -> bool {
-    crate::core::reaper::should_reap_idle(
-        turn_active,
-        scheduled_running,
-        is_active_session,
-        std::time::Duration::from_secs(idle_for_secs),
-    )
+    // Round-26 minor 3: a manual compaction in flight blocks the idle reap
+    // too — compaction holds no turn reservation (the rebind lane learned
+    // this the hard way, round-21 M2), so the idle clock can expire
+    // mid-compaction and the reap would abort the forwarder, killing the
+    // transcript persist and the terminal event.
+    !compaction_in_flight
+        && crate::core::reaper::should_reap_idle(
+            turn_active,
+            scheduled_running,
+            is_active_session,
+            std::time::Duration::from_secs(idle_for_secs),
+        )
 }
 
 /// Rebind eviction recheck (pure function, unit-testable; review #463
@@ -158,8 +165,17 @@ fn should_reap_idle_engine(
 /// taken) or a running scheduled round. Unlike the idle reaper there is no
 /// idle-duration or active-session gate: a rebound session must be reclaimed
 /// even when recently active, so the next turn respawns in the new directory.
-fn rebind_evictable(turn_active: bool, scheduled_running: bool) -> bool {
-    !turn_active && !scheduled_running
+/// Round-21 M2: a manual compaction in flight blocks the reclaim too —
+/// compaction holds no turn reservation (the align probes already count it),
+/// so without this arm the eviction tail's `reclaim_engine_entry` would abort
+/// the forwarder mid-compaction, killing the transcript persist and the
+/// terminal event while the rebind reports clean success.
+fn rebind_evictable(
+    turn_active: bool,
+    scheduled_running: bool,
+    compaction_in_flight: bool,
+) -> bool {
+    !turn_active && !scheduled_running && !compaction_in_flight
 }
 
 /// `evict_if_idle`'s in-lock recheck (pure function, easy to unit test): the
@@ -174,6 +190,7 @@ fn should_still_reap_after_snapshot(
     idle_for_secs: u64,
     current_last_active_ms: u64,
     snapshot_last_active_ms: u64,
+    compaction_in_flight: bool,
 ) -> bool {
     current_last_active_ms <= snapshot_last_active_ms
         && should_reap_idle_engine(
@@ -181,6 +198,7 @@ fn should_still_reap_after_snapshot(
             scheduled_running,
             is_active_session,
             idle_for_secs,
+            compaction_in_flight,
         )
 }
 
@@ -352,9 +370,9 @@ pub(crate) fn turn_restrict_tools(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuxToolSurface {
     /// The legacy zero-tool aux engine. Also the fail-closed fallback:
-    /// isolated-prefix parents (`aux-sched-x` / `aux-aux-x` / `aux-eval_x`)
-    /// and per-aux scoped-config write failures demote here — byte-identical
-    /// to the pre-ADR-0024 behavior.
+    /// isolated-prefix parents (`aux-sched-x` / `aux-aux-x` / `aux-eval_x` /
+    /// `aux-agentic_x`) and per-aux scoped-config write failures demote here —
+    /// byte-identical to the pre-ADR-0024 behavior.
     ZeroTool,
     /// Scoped read-only parent context: exactly one model-visible tool (the
     /// session-reader `read_session`), pinned at spawn time to the parent
@@ -375,8 +393,8 @@ pub(crate) const AUX_SCOPED_READ_TOOL: &str = "mcp_session-reader_read_session";
 /// argument as `is_aux_session_id`). `None` for non-aux ids, an empty parent
 /// part, isolated-prefix parents, a parent part that fails the session-id
 /// charset, or a parent longer than the server's id length cap: aux creation
-/// rejects sched-/aux-prefixed parents (and `eval_` sessions have no aux
-/// entry point), but the surface decision must not trust construction —
+/// rejects sched-/aux-/agentic_-prefixed parents (and `eval_` sessions have
+/// no aux entry point), but the surface decision must not trust construction —
 /// those ids fail closed to the ZeroTool fallback (a charset-invalid or
 /// over-long parent could never name a real record, and the scoped server's
 /// own startup validation would refuse the pin).
@@ -391,7 +409,11 @@ pub(crate) fn aux_parent_session_id(session_id: &str) -> Option<&str> {
     // Isolated-prefix parents (the server's ISOLATED_SESSION_PREFIXES set,
     // case-insensitive): an aux engine pinned to one would point the scoped
     // reader at another isolated class — fail closed instead.
-    for prefix in ["sched-", "eval_", "aux-"] {
+    // The set gained agentic_ (headless runs) alongside the store's
+    // ensure_parent_can_own_aux refusal: an aux side-chat pinned to a
+    // headless parent is refused at creation, and this loop is the
+    // spawn-time backstop for ids that reach the pool anyway.
+    for prefix in ["sched-", "eval_", "aux-", "agentic_"] {
         if parent
             .get(..prefix.len())
             .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
@@ -568,7 +590,7 @@ pub(crate) fn forward_forced_turn_restrict<F>(
 /// the engine dispatch are folded into one function so the wiring (not only
 /// the pure helper) is covered by an executing test (round-31 M9-rust: this
 /// was the second unpinned `merge_aux_scoped_tool_reminder` call site).
-pub(crate) fn forward_edit_resend_with_reminder<F>(
+fn forward_edit_resend_with_reminder<F>(
     session_id: &str,
     new_message: String,
     send: impl FnOnce(String) -> F,
@@ -1052,26 +1074,24 @@ enum BoundedJoinOutcome {
 /// never complete its own bookkeeping. The budget is a parameter so the
 /// `Detached` outcome stays reachable from behavior tests without waiting
 /// on the real 5s clock; production callers always pass
-/// [`TURN_GATE_AWAIT_TIMEOUT`].
+/// [`TURN_GATE_AWAIT_TIMEOUT`]. The bounded join itself is the shared
+/// [`bounded_join_detached_on_timeout`] core (its `Detached` log line is
+/// that core's wording); this wrapper only maps the outcome onto the
+/// panic-distinguishing [`BoundedJoinOutcome`].
 async fn bounded_join_while_holding_turn_gate<T>(
     what: &str,
     budget: std::time::Duration,
     task: tokio::task::JoinHandle<T>,
 ) -> BoundedJoinOutcome {
-    match tokio::time::timeout(budget, task).await {
-        Ok(Ok(_)) => BoundedJoinOutcome::Settled,
-        Ok(Err(join_error)) => {
+    match bounded_join_detached_on_timeout(what, budget, task).await {
+        Some(Ok(_)) => BoundedJoinOutcome::Settled,
+        Some(Err(join_error)) => {
             eprintln!(
                 "[engine_pool] {what} task panicked: {join_error}; treating it as not settled"
             );
             BoundedJoinOutcome::Panicked(join_error)
         }
-        Err(_) => {
-            eprintln!(
-                "[engine_pool] {what} did not settle within {budget:?} while holding the turn gate; letting it finish in the background"
-            );
-            BoundedJoinOutcome::Detached
-        }
+        None => BoundedJoinOutcome::Detached,
     }
 }
 
@@ -1091,23 +1111,34 @@ fn shutdown_op_name(op: &Op) -> &'static str {
     }
 }
 
-/// Delivers the reclaim shutdown ops in order, each send bounded by
-/// [`TURN_GATE_AWAIT_TIMEOUT`] (issue #255): reclaim runs inside the session
-/// turn gate, so a stalled engine with a full ops channel must not extend
-/// the gate hold. Returns the number of ops delivered in order from the
-/// front; the caller re-sends any remainder from a detached task (see
-/// [`retry_shutdown_sends`]). A timed-out send is never enqueued (tokio
-/// mpsc send is cancel-safe), so skipping ahead cannot duplicate an op.
-async fn bounded_shutdown_sends<S, Fut>(mut send: S, ops: impl IntoIterator<Item = Op>) -> usize
+/// Shared loop of the two bounded shutdown-send lanes ([`bounded_shutdown_sends`]
+/// first pass and [`retry_shutdown_sends`] detached retry): delivers `ops`
+/// in order, each send bounded by `budget` (a timed-out send is never
+/// enqueued — tokio mpsc send is cancel-safe, so skipping ahead cannot
+/// duplicate an op), and stops at the first failed or timed-out send.
+/// Returns the number of ops delivered in order from the front;
+/// `on_delivered` observes each delivered op's static name (the gate-held
+/// first pass logs nothing; the retry reports the late delivery once the
+/// engine drained).
+async fn deliver_shutdown_ops<S, Fut, OnDelivered>(
+    mut send: S,
+    ops: impl IntoIterator<Item = Op>,
+    budget: std::time::Duration,
+    on_delivered: OnDelivered,
+) -> usize
 where
     S: FnMut(Op) -> Fut,
     Fut: Future<Output = Result<()>>,
+    OnDelivered: Fn(&str),
 {
     let mut delivered = 0;
     for op in ops {
         let op_name = shutdown_op_name(&op);
-        match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send(op)).await {
-            Ok(Ok(())) => delivered += 1,
+        match tokio::time::timeout(budget, send(op)).await {
+            Ok(Ok(())) => {
+                on_delivered(op_name);
+                delivered += 1;
+            }
             Ok(Err(e)) => {
                 eprintln!(
                     "[engine_pool] shutdown {op_name} send failed: {e:#}; abandoning remaining shutdown ops"
@@ -1116,13 +1147,28 @@ where
             }
             Err(_) => {
                 eprintln!(
-                    "[engine_pool] shutdown {op_name} send timed out after {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; abandoning remaining shutdown ops"
+                    "[engine_pool] shutdown {op_name} send timed out after {budget:?}; abandoning remaining shutdown ops"
                 );
                 break;
             }
         }
     }
     delivered
+}
+
+/// Delivers the reclaim shutdown ops in order, each send bounded by
+/// [`TURN_GATE_AWAIT_TIMEOUT`] (issue #255): reclaim runs inside the session
+/// turn gate, so a stalled engine with a full ops channel must not extend
+/// the gate hold. Returns the number of ops delivered in order from the
+/// front; the caller re-sends any remainder from a detached task (see
+/// [`retry_shutdown_sends`]). A timed-out send is never enqueued (tokio
+/// mpsc send is cancel-safe), so skipping ahead cannot duplicate an op.
+async fn bounded_shutdown_sends<S, Fut>(send: S, ops: impl IntoIterator<Item = Op>) -> usize
+where
+    S: FnMut(Op) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    deliver_shutdown_ops(send, ops, TURN_GATE_AWAIT_TIMEOUT, |_| {}).await
 }
 
 /// Retries the shutdown ops that [`bounded_shutdown_sends`] could not
@@ -1136,33 +1182,15 @@ where
 /// (MCP shutdown, subagent flush included). Each send is bounded by
 /// `patience`, so a permanently stalled engine stops the retry after at
 /// most `pending.len() × patience` instead of waiting forever.
-async fn retry_shutdown_sends<S, Fut>(mut send: S, pending: Vec<Op>, patience: std::time::Duration)
+async fn retry_shutdown_sends<S, Fut>(send: S, pending: Vec<Op>, patience: std::time::Duration)
 where
     S: FnMut(Op) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    for op in pending {
-        let op_name = shutdown_op_name(&op);
-        match tokio::time::timeout(patience, send(op)).await {
-            Ok(Ok(())) => {
-                eprintln!(
-                    "[engine_pool] shutdown {op_name} retry delivered after the engine drained"
-                );
-            }
-            Ok(Err(e)) => {
-                eprintln!(
-                    "[engine_pool] shutdown {op_name} retry stopped: engine channel closed ({e:#})"
-                );
-                break;
-            }
-            Err(_) => {
-                eprintln!(
-                    "[engine_pool] shutdown {op_name} retry timed out after {patience:?}; the engine task may linger until process exit"
-                );
-                break;
-            }
-        }
-    }
+    deliver_shutdown_ops(send, pending, patience, |op_name| {
+        eprintln!("[engine_pool] shutdown {op_name} retry delivered after the engine drained");
+    })
+    .await;
 }
 
 /// Tears down a just-spawned engine whose session hydration failed.
@@ -1741,6 +1769,12 @@ pub type EngineToolFactory =
     Arc<dyn Fn(&AppHandle, &str) -> Vec<Arc<dyn ToolSpec>> + Send + Sync + 'static>;
 pub type ToolPolicy = Arc<dyn Fn(&AppHandle) -> Vec<String> + Send + Sync + 'static>;
 
+/// Round-35 M1: how long a manual-compaction latch entry may block passive
+/// reclaim before every reader treats it as expired (a wedged compaction's
+/// worst case). Generous against real compactions (transcript persist plus
+/// terminal event complete in seconds; the hung case never completes).
+const MAX_COMPACTION_LATCH_AGE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 /// The multi-session engine pool. Held as Tauri State; `Clone` is cheap
 /// (everything inside is an Arc).
 #[derive(Clone)]
@@ -1772,6 +1806,24 @@ pub struct EnginePool {
     /// run_scheduled_turn's spawn→submit window the lifecycle is not yet
     /// active; idle reclaim needs this as a second layer of protection).
     scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+    /// Manual compaction in flight, keyed by session id with the set-time
+    /// (the enqueue→terminal-event window, review #484 round-18 M2):
+    /// compact_now sets it when it enqueues `Op::CompactContext`, and the
+    /// forwarder's compaction terminal events (Completed/Cancelled/Failed —
+    /// Started is idempotent) clear it. Compaction runs no turn
+    /// reservation, so neither `is_turn_active` nor
+    /// `is_scheduled_turn_running` sees it; without this set, align's live
+    /// push could `SyncSession` a stale pre-compaction disk snapshot over a
+    /// compacting engine and silently roll the manual compaction back.
+    /// Engine reclaim removes the entry so a dead engine (aborted forwarder
+    /// never delivering the terminal event) cannot leave a sticky busy
+    /// flag. Round-35 M1: the value is the set-time — every passive gate
+    /// that consults the latch treats entries older than
+    /// [`MAX_COMPACTION_LATCH_AGE`] as expired, so a wedged-mid-compaction
+    /// engine (hung provider, panicked forwarder — no terminal event ever
+    /// arrives) no longer permanently blocks its own idle reap and rebind
+    /// eviction; the worst case reverts to the pre-latch passive self-heal.
+    compacting_sessions: Arc<SyncMutex<HashMap<String, std::time::Instant>>>,
     /// Steer-id engine-incarnation allocator: a process-monotonic AtomicU64
     /// sequence bumped on every engine spawn. Arc-shared so pool clones see
     /// one sequence (same idiom as every shared field here — EnginePool is a
@@ -1895,6 +1947,7 @@ impl EnginePool {
             bridge,
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
+            compacting_sessions: Arc::new(SyncMutex::new(HashMap::new())),
             steer_incarnation_seq: Arc::new(AtomicU64::new(0)),
             execution_root_rewind_flags: Arc::new(SyncMutex::new(HashMap::new())),
         })
@@ -1950,6 +2003,7 @@ impl EnginePool {
                         self.scheduled_running_sessions.lock().contains(*sid),
                         active_id.as_deref() == Some(sid.as_str()),
                         idle_for_secs,
+                        self.is_compaction_in_flight(sid),
                     )
                 })
                 .map(|(sid, entry)| (sid.clone(), self.last_activity_ms(sid, entry)))
@@ -2188,14 +2242,16 @@ impl EnginePool {
         // thinking control follows the detected foundation wire protocol; a
         // LocalVllm preset resolves provider from the preset arm instead, so
         // for those routes the kind feeds only the native served-window
-        // follow-up below. LocalVllm presets must probe too: discovery saves
+        // follow-up below — except Tachyon, which additionally flips the wire
+        // dialect (see below). LocalVllm presets must probe too: discovery saves
         // Ollama/LM Studio endpoints under that preset, and `/v1/models`
         // there never carries a window fact — without the kind probe the
         // native fetch below can never fire and the route keeps the 128K
-        // fallback while the monitor shows the real window. The probe result
-        // cannot flip the wire route for these presets (`provider()` resolves
-        // LocalVllm to "vllm" from the preset arm before ever consulting the
-        // probed kind), so a real vLLM classified `Vllm` is inert here.
+        // fallback while the monitor shows the real window. For LocalVllm the
+        // probe only flips the wire route when it identifies Tachyon
+        // (`provider()` follows the probed kind for the Tachyon dialect —
+        // its tier ladder differs, so riding the vllm arm would re-expose the
+        // 400-tier); a real vLLM classified `Vllm` is inert here.
         // A probe failure (service not started/timeout/auth failure) is
         // classified as generic, keeping the existing openai wire route. The
         // probe request carries a credential from the same origin as real
@@ -2236,7 +2292,11 @@ impl EnginePool {
         // returns facts belonging to another model and must not be
         // misattributed. Cloud presets and coding_plan are not
         // operator-owned and are not probed.
-        let is_vllm_route = bridge.provider() == "vllm";
+        // Tachyon rides the same served-name correction as vLLM: the wire
+        // family is identical (`/v1/models` listing, single-model rename),
+        // so a configured name that misses the served list gets the same
+        // rename/facts treatment instead of a hard model_not_found.
+        let is_vllm_route = matches!(bridge.provider().as_str(), "vllm" | "tachyon");
         if let Some(model) = bridge.effective_model_owned() {
             Self::adopt_probed_endpoint_facts(
                 &mut bridge,
@@ -2499,7 +2559,8 @@ impl EnginePool {
                     prepared.requires_rebuild_from(&entry.runtime_model),
                     entry.mcp_config_revision,
                     mcp_config_revision,
-                ) {
+                ) && entry.engine.scheduled_run_engine == scheduled_unattended
+                {
                     (
                         Some(entry.engine.clone()),
                         entry.native_window_pending.clone(),
@@ -2673,6 +2734,7 @@ impl EnginePool {
             shell_manager,
             turn_shell_tasks,
             steer_incarnation,
+            scheduled_unattended,
         )
         .await?;
         let spawn_engine_ms = elapsed_ms(spawn_engine_started);
@@ -2846,6 +2908,7 @@ impl EnginePool {
                     now.saturating_sub(last_active) / 1000,
                     last_active,
                     snapshot_last_active_ms,
+                    self.is_compaction_in_flight(session_id),
                 ) {
                     entries.remove(session_id)
                 } else {
@@ -2890,6 +2953,7 @@ impl EnginePool {
                 if !rebind_evictable(
                     self.is_turn_active(session_id),
                     self.scheduled_running_sessions.lock().contains(session_id),
+                    self.is_compaction_in_flight(session_id),
                 ) {
                     return None;
                 }
@@ -2974,8 +3038,8 @@ impl EnginePool {
     }
 
     /// Atomically reset a task's auxiliary conversation (M6): delete the
-    /// existing aux session through the same turn gate as
-    /// `discard_aux_session` / chat delete, then create a fresh one and
+    /// existing aux session through the same turn gate as chat delete, then
+    /// create a fresh one and
     /// return its metadata together with the deleted aux id (so the caller
     /// can emit `session:deleted`). One primitive, one outcome — the
     /// frontend's old two-invoke restart (discard, then ensure) had no
@@ -3374,6 +3438,19 @@ impl EnginePool {
                 RECLAIM_SHUTDOWN_RETRY_PATIENCE,
             ));
         }
+        // A reclaimed engine's forwarder was aborted and, on the normal
+        // arm, awaited above (the bounded-drain timeout arm detaches instead
+        // — a straggler already inside a CompactionStarted arm can re-set
+        // the latch behind this cleanup; same 15-min expiry bounds it), so
+        // the compaction terminal event (Completed/Cancelled/Failed) that
+        // would clear the in-flight flag can never arrive — and clearing only
+        // here (not at entry) means a queued CompactionStarted the dying
+        // forwarder still processed before its abort cannot re-set the flag
+        // behind this cleanup. Without this, a dead engine leaves a sticky
+        // busy flag and every later align is refused (review #484 round-18
+        // M2; cleanup at the same chokepoint every removal/reap path funnels
+        // through).
+        self.set_compaction_in_flight(session_id, false);
     }
 
     async fn evict_locked(&self, session_id: &str) {
@@ -3663,6 +3740,51 @@ impl EnginePool {
         self.scheduled_running_sessions.lock().contains(session_id)
     }
 
+    /// Mark/unmark a manual compaction as in flight (review #484 round-18
+    /// M2). The pool sets it when compact_now enqueues `Op::CompactContext`
+    /// (closing the enqueue→CompactionStarted window) and the forwarder's
+    /// compaction terminal events clear it.
+    pub(crate) fn set_compaction_in_flight(&self, session_id: &str, in_flight: bool) {
+        if in_flight {
+            // Round-35 M1: re-set refreshes the timestamp — the forwarder's
+            // idempotent Started re-arm keeps a healthy long compaction from
+            // expiring mid-flight while a wedged one still ages out.
+            self.compacting_sessions
+                .lock()
+                .insert(session_id.to_string(), std::time::Instant::now());
+        } else {
+            self.compacting_sessions.lock().remove(session_id);
+        }
+    }
+
+    /// Whether this session has a manual compaction in flight (the
+    /// enqueue→terminal-event window). Compaction holds no turn reservation,
+    /// so the turn-active probes are blind to it; align's busy fence must ask
+    /// here explicitly or its live push can roll the compaction back.
+    /// Round-35 M1: entries older than [`MAX_COMPACTION_LATCH_AGE`] read as
+    /// NOT in flight (and are dropped) — the wedge self-heal.
+    pub fn is_compaction_in_flight(&self, session_id: &str) -> bool {
+        let mut guard = self.compacting_sessions.lock();
+        match guard.get(session_id) {
+            Some(set_at) => {
+                if set_at.elapsed() > MAX_COMPACTION_LATCH_AGE {
+                    // Expiry must apply to the READERS too, not just the
+                    // reaper: align/eviction consult this same method.
+                    guard.remove(session_id);
+                    // Round-34 minor 14: log::warn! matches the sibling
+                    // reclaim path (log hygiene, no eprintln in the pool).
+                    log::warn!(
+                        "[engine-pool] compaction latch expired (wedged compaction?); passive self-heal re-enabled"
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+            None => false,
+        }
+    }
+
     /// Refresh the session engine's idle clock (called when a turn starts;
     /// async-context safe: the entries lock is taken momentarily and never
     /// overlaps the send path's long critical section). A no-op when the
@@ -3780,6 +3902,56 @@ impl EnginePool {
         .await
     }
 
+    /// Shared turn-admission prelude of the reserved-turn senders (send /
+    /// edit-resend / eval send): stamp the display message onto the
+    /// reservation's baseline, take the session turn gate, re-verify the
+    /// store under the gate (a scheduled session re-validates against its
+    /// owning task; every other session must still exist), re-activate the
+    /// reservation, and refresh the idle clock so the idle sweep cannot
+    /// reclaim the engine between reserve and send (attachment resolution
+    /// and other time-consuming steps sit in that window). `role` only
+    /// names the admission in the deleted-session error ("turn" / "edit" /
+    /// "eval turn"). Returns the reservation with the held turn gate for the
+    /// caller's divergent tail; the eval lane's session ids are never
+    /// `sched-`, so its scheduled arm is a no-op.
+    ///
+    /// The caller MUST keep the returned gate alive until the engine
+    /// submission is enqueued: the cascade-cancel ordering invariant (see
+    /// `should_retry_cascade`) depends on a phase-two cancel never being able
+    /// to interleave between this admission and the next turn's
+    /// `SendMessage` enqueue.
+    async fn admit_reserved_turn(
+        &self,
+        session_id: &str,
+        op: TranscriptOperation,
+        display_message: Message,
+        role: &str,
+        mut reservation: TurnReservation,
+    ) -> Result<(TurnReservation, tokio::sync::OwnedMutexGuard<()>)> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(op, display_message, baseline_revision)?;
+        let scheduled_profile = self.store.scheduled_profile(session_id);
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
+            bail!("Scheduled session '{session_id}' no longer exists");
+        }
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let turn_gate = turn_lock.lock_owned().await;
+        if let Some(profile) = scheduled_profile {
+            scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
+        } else {
+            self.store.load(session_id).with_context(|| {
+                format!("Session '{session_id}' was deleted before the {role} could start")
+            })?;
+        }
+        reservation.ensure_active()?;
+        self.touch_engine_activity(session_id).await;
+        Ok((reservation, turn_gate))
+    }
+
     #[cfg(any(feature = "benchmark-hooks", test))]
     async fn send_reserved_eval_user_message(
         &self,
@@ -3787,23 +3959,19 @@ impl EnginePool {
         content: String,
         display_message: Message,
         policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
-        mut reservation: TurnReservation,
+        reservation: TurnReservation,
     ) -> Result<()> {
-        let baseline_revision = reservation
-            .base_transcript_revision()
-            .context("turn reservation has no base transcript revision")?
-            .to_string();
-        reservation.set_transcript_with_baseline(
-            TranscriptOperation::Append,
-            display_message,
-            baseline_revision,
-        )?;
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        self.store.load(session_id).with_context(|| {
-            format!("Session '{session_id}' was deleted before the eval turn could start")
-        })?;
-        reservation.ensure_active()?;
+        // Hold the turn gate through engine submission (cascade-cancel
+        // enqueue ordering — see admit_reserved_turn).
+        let (reservation, _turn_gate) = self
+            .admit_reserved_turn(
+                session_id,
+                TranscriptOperation::Append,
+                display_message,
+                "eval turn",
+                reservation,
+            )
+            .await?;
         self.get_or_spawn(session_id)
             .await?
             .send_reserved_eval_message(content, policy, reservation)
@@ -3825,37 +3993,19 @@ impl EnginePool {
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         expert_candidates: Vec<String>,
-        mut reservation: TurnReservation,
+        reservation: TurnReservation,
     ) -> Result<()> {
-        let baseline_revision = reservation
-            .base_transcript_revision()
-            .context("turn reservation has no base transcript revision")?
-            .to_string();
-        reservation.set_transcript_with_baseline(
-            TranscriptOperation::Append,
-            display_message,
-            baseline_revision,
-        )?;
-        let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
-        {
-            bail!("Scheduled session '{session_id}' no longer exists");
-        }
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        if let Some(profile) = scheduled_profile {
-            scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
-        } else {
-            self.store.load(session_id).with_context(|| {
-                format!("Session '{session_id}' was deleted before the turn could start")
-            })?;
-        }
-        reservation.ensure_active()?;
-        // The turn is formally submitted: refresh the idle clock (attachment
-        // resolution and other time-consuming steps sit between reserve and
-        // send; keep the idle sweep from reclaiming the engine in this
-        // window).
-        self.touch_engine_activity(session_id).await;
+        // Hold the turn gate through engine submission (cascade-cancel
+        // enqueue ordering — see admit_reserved_turn).
+        let (reservation, _turn_gate) = self
+            .admit_reserved_turn(
+                session_id,
+                TranscriptOperation::Append,
+                display_message,
+                "turn",
+                reservation,
+            )
+            .await?;
         // Side B card pool: when this session is wearing an expert mask,
         // inject a light anchor (short) every turn to maintain the identity.
         // The full body was injected once with the first equip message
@@ -4376,23 +4526,42 @@ impl EnginePool {
     /// engine is not running read their initial value from the persisted list
     /// at the next spawn (build_engine_config), so new windows / new
     /// conversations all inherit the same governance state.
-    pub async fn set_disallowed_all(&self, tools: Vec<String>) {
-        let targets = self
-            .entries
+    /// Snapshot of every running engine entry (session id + engine handle)
+    /// for a broadcast loop: the entries lock is taken momentarily and
+    /// released before any send, so the global engine-table lock is never
+    /// held across an await.
+    async fn live_engine_targets(&self) -> Vec<(String, AppEngine)> {
+        self.entries
             .lock()
             .await
             .iter()
             .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
+
+    pub async fn set_disallowed_all(&self, tools: Vec<String>) {
+        let targets = self.live_engine_targets().await;
         for (sid, engine) in targets {
             // The global hot refresh is shaped per session as well (code
             // sessions keep present_artifact hidden), and the entries lock is
             // released before sending, avoiding holding the global engine
             // table lock across awaits.
+            // Round-9 M2(b) (#628): compose the unattended shield for
+            // active unattended runs — CodeWhale applies the op as a
+            // plain OVERWRITE of config.disallowed_tools, so the un-gated
+            // broadcast replaced a live scheduled run's shield with the
+            // ordinary catalog (turns after the toggle ran unshielded).
+            let shaped = if engine.scheduled_unattended.load(Ordering::Acquire) {
+                crate::features::assistant::engine::unattended_disallowed_tools(
+                    &self.bridge.shape_disallowed_tools(&sid, tools.clone()),
+                )
+            } else {
+                self.bridge.shape_disallowed_tools(&sid, tools.clone())
+            };
             if let Err(e) = engine
                 .handle
                 .send(Op::SetDisallowedTools {
-                    tools: Some(self.bridge.shape_disallowed_tools(&sid, tools.clone())),
+                    tools: Some(shaped),
                 })
                 .await
             {
@@ -4410,13 +4579,7 @@ impl EnginePool {
     /// from build_engine_config_for_session_roots — both share
     /// `bridge.scope_deny_ruleset`.
     pub async fn refresh_permission_rulesets(&self) {
-        let targets = self
-            .entries
-            .lock()
-            .await
-            .iter()
-            .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
-            .collect::<Vec<_>>();
+        let targets = self.live_engine_targets().await;
         for (sid, engine) in targets {
             if let Err(e) = engine
                 .handle
@@ -4449,35 +4612,19 @@ impl EnginePool {
         session_id: &str,
         new_message: String,
         display_message: Message,
-        mut reservation: TurnReservation,
+        reservation: TurnReservation,
     ) -> Result<()> {
-        let baseline_revision = reservation
-            .base_transcript_revision()
-            .context("turn reservation has no base transcript revision")?
-            .to_string();
-        reservation.set_transcript_with_baseline(
-            TranscriptOperation::EditLast,
-            display_message,
-            baseline_revision,
-        )?;
-        let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
-        {
-            bail!("Scheduled session '{session_id}' no longer exists");
-        }
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        if let Some(profile) = scheduled_profile {
-            scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
-        } else {
-            self.store.load(session_id).with_context(|| {
-                format!("Session '{session_id}' was deleted before the edit could start")
-            })?;
-        }
-        reservation.ensure_active()?;
-        // A resend is also a turn submission: refresh the idle clock (same
-        // reason as send_reserved_user_message).
-        self.touch_engine_activity(session_id).await;
+        // Hold the turn gate through engine submission (cascade-cancel
+        // enqueue ordering — see admit_reserved_turn).
+        let (reservation, _turn_gate) = self
+            .admit_reserved_turn(
+                session_id,
+                TranscriptOperation::EditLast,
+                display_message,
+                "edit",
+                reservation,
+            )
+            .await?;
         // Aux scoped-tool reminder for edit resends (round-14 minor-1): this
         // path bypasses send_reserved_user_message, so the reminder is merged
         // into the resent message by forward_edit_resend_with_reminder —
@@ -4502,7 +4649,20 @@ impl EnginePool {
         let Some(engine) = self.handle_for(session_id).await else {
             anyhow::bail!("session_engine_not_running");
         };
-        engine.compact_now().await?;
+        // Mark compaction in flight BEFORE the enqueue (review #484 round-18
+        // M2): compaction holds no turn reservation, so between this enqueue
+        // and the forwarder's terminal compaction event the session looks
+        // fully idle to every turn-based busy probe. align's live push must
+        // see this window or its SyncSession wholesale-replaces the compacting
+        // engine's messages with the stale pre-compaction disk snapshot. The
+        // forwarder clears the flag at Completed/Cancelled/Failed; a failed
+        // enqueue never reaches the engine, so no event would arrive — clear
+        // it here to keep the flag from going sticky.
+        self.set_compaction_in_flight(session_id, true);
+        if let Err(error) = engine.compact_now().await {
+            self.set_compaction_in_flight(session_id, false);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -5147,7 +5307,10 @@ mod scheduled_model_tests {
         }
         assert_eq!(aux_parent_session_id("AUX-Case01"), Some("Case01"));
         // Isolated-prefix parents fail closed (case-insensitive, matching the
-        // server's ISOLATED_SESSION_PREFIXES set).
+        // server's ISOLATED_SESSION_PREFIXES set). The aux-agentic_ rows are
+        // the spawn-time backstop's red arm (r1 MAJOR-2): deleting the
+        // `agentic_` conjunct from aux_parent_session_id's loop turns these
+        // two rows red while every other suite stays green.
         for id in [
             "aux-sched-x",
             "AUX-SCHED-x",
@@ -5155,6 +5318,8 @@ mod scheduled_model_tests {
             "Aux-Aux-x",
             "aux-eval_x",
             "aux-EVAL_x",
+            "aux-agentic_4242_0",
+            "AUX-AGENTIC_x",
             // Degenerate shapes: bare prefix, empty parent, non-aux ids.
             "aux-",
             "sched-1",
@@ -5581,27 +5746,42 @@ mod scheduled_model_tests {
     fn idle_reap_keeps_active_turns_scheduled_and_active_sessions() {
         let idle = super::IDLE_EVICT_AFTER_SECS;
         // idle and not active → reclaim.
-        assert!(super::should_reap_idle_engine(false, false, false, idle));
+        assert!(super::should_reap_idle_engine(
+            false, false, false, idle, false
+        ));
         assert!(super::should_reap_idle_engine(
             false,
             false,
             false,
-            idle + 1
+            idle + 1,
+            false
         ));
         // an in-flight turn (a reservation held or a terminal state being
         // closed) is never reclaimed.
-        assert!(!super::should_reap_idle_engine(true, false, false, idle));
+        assert!(!super::should_reap_idle_engine(
+            true, false, false, idle, false
+        ));
         // a scheduled turn in flight (the spawn→submit window) is not
         // reclaimed.
-        assert!(!super::should_reap_idle_engine(false, true, false, idle));
+        assert!(!super::should_reap_idle_engine(
+            false, true, false, idle, false
+        ));
         // the currently active session is not reclaimed.
-        assert!(!super::should_reap_idle_engine(false, false, true, idle));
+        assert!(!super::should_reap_idle_engine(
+            false, false, true, idle, false
+        ));
+        // Round-26 minor 3: a manual compaction in flight (no turn
+        // reservation — the round-21 M2 class) is not reclaimed either.
+        assert!(!super::should_reap_idle_engine(
+            false, false, false, idle, true
+        ));
         // below the idle threshold → not reclaimed.
         assert!(!super::should_reap_idle_engine(
             false,
             false,
             false,
-            idle - 1
+            idle - 1,
+            false
         ));
     }
 
@@ -5611,26 +5791,31 @@ mod scheduled_model_tests {
         // no activity since the snapshot: clock not advanced + still idle →
         // allow the reclaim.
         assert!(should_still_reap_after_snapshot(
-            false, false, false, idle, 1000, 1000
+            false, false, false, idle, 1000, 1000, false
         ));
         // the activity clock advanced after the snapshot (turn submission /
         // terminal-closing refresh) → skip, even if the idle duration by the
         // old clock still exceeds the threshold.
         assert!(!should_still_reap_after_snapshot(
-            false, false, false, idle, 2000, 1000
+            false, false, false, idle, 2000, 1000, false
         ));
         // a new turn was reserved after the snapshot (lifecycle active;
         // reserve_turn does not take the gate) → skip.
         assert!(!should_still_reap_after_snapshot(
-            true, false, false, idle, 1000, 1000
+            true, false, false, idle, 1000, 1000, false
         ));
         // a scheduled turn entered the spawn→submit window / the session was
         // opened as active → skip.
         assert!(!should_still_reap_after_snapshot(
-            false, true, false, idle, 1000, 1000
+            false, true, false, idle, 1000, 1000, false
         ));
         assert!(!should_still_reap_after_snapshot(
-            false, false, true, idle, 1000, 1000
+            false, false, true, idle, 1000, 1000, false
+        ));
+        // Round-26 minor 3: a compaction that started after the snapshot
+        // blocks the in-lock recheck reclaim.
+        assert!(!should_still_reap_after_snapshot(
+            false, false, false, idle, 1000, 1000, true
         ));
         // clock unchanged but the idle threshold is no longer met by current
         // values (defensive backstop) → skip.
@@ -5640,7 +5825,8 @@ mod scheduled_model_tests {
             false,
             idle - 1,
             1000,
-            1000
+            1000,
+            false
         ));
     }
 
@@ -5707,6 +5893,7 @@ mod scheduled_model_tests {
                             super::IDLE_EVICT_AFTER_SECS + 60,
                             current,
                             snapshot_last_active,
+                            false,
                         ) {
                             probe_entry.store(false, Ordering::Release);
                             Some(())
@@ -5779,6 +5966,7 @@ mod scheduled_model_tests {
                         super::IDLE_EVICT_AFTER_SECS,
                         snapshot_last_active,
                         snapshot_last_active,
+                        false,
                     ) {
                         probe_entry.store(false, Ordering::Release);
                         Some(())
@@ -5803,11 +5991,18 @@ mod scheduled_model_tests {
     fn rebind_evictable_blocks_only_real_activity() {
         // review #463: rebind eviction has no idle-duration or active-session
         // gate — only an in-flight/reserved turn or a running scheduled round
-        // blocks the reclaim.
-        assert!(rebind_evictable(false, false));
-        assert!(!rebind_evictable(true, false));
-        assert!(!rebind_evictable(false, true));
-        assert!(!rebind_evictable(true, true));
+        // blocks the reclaim. Round-21 M2 adds the manual-compaction arm: the
+        // latch holds no turn reservation, so it needs its own probe here or
+        // the reclaim would abort the compaction's forwarder.
+        assert!(rebind_evictable(false, false, false));
+        assert!(!rebind_evictable(true, false, false));
+        assert!(!rebind_evictable(false, true, false));
+        assert!(!rebind_evictable(true, true, false));
+        assert!(
+            !rebind_evictable(false, false, true),
+            "a manual compaction in flight blocks the rebind reclaim"
+        );
+        assert!(!rebind_evictable(true, true, true));
     }
 
     #[tokio::test]
@@ -5846,7 +6041,7 @@ mod scheduled_model_tests {
                 let probe_lifecycles = probe_lifecycles.clone();
                 async move {
                     let turn_active = probe_lifecycles.get(sid).is_some_and(|lc| lc.is_active());
-                    rebind_evictable(turn_active, false).then_some(Some(()))
+                    rebind_evictable(turn_active, false, false).then_some(Some(()))
                 }
             },
             move |_| {
@@ -5934,7 +6129,7 @@ mod scheduled_model_tests {
                     async move {
                         let turn_active =
                             evict_lifecycles.get(sid).is_some_and(|lc| lc.is_active());
-                        rebind_evictable(turn_active, false).then_some(())
+                        rebind_evictable(turn_active, false, false).then_some(())
                     }
                 },
                 move |_| {
@@ -7265,8 +7460,8 @@ mod scheduled_model_tests {
     }
 
     /// PR #433 review regression: `delete_session`'s Chat branch cascades the
-    /// auxiliary session through the gate (same pipeline as
-    /// `discard_aux_session`) — first `pool.delete_chat_session(aux)`
+    /// auxiliary session through the gate (the same pipeline as the aux
+    /// discard leg) — first `pool.delete_chat_session(aux)`
     /// (reclaim the engine + store.delete + late sweep inside the turn gate),
     /// then delete the main session; `store.delete`'s on-disk cascade only
     /// removes the record and would leave a running aux engine as a
@@ -7378,8 +7573,8 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// Regression: the eval teardown paths (`EnginePoolRuntime::close` /
-    /// `delete_eval_session`) reuse delete_chat_session, but submit already
+    /// Regression: the eval teardown paths (the product runtime port's
+    /// `close` / `delete_eval_session`) reuse delete_chat_session, but submit already
     /// ran `timing::start_turn`; deletion must clear the session's unpaired
     /// queue key in ACTIVE_TURNS, or a single GAIA pass's ~165 create/delete
     /// cycles would grow the process-level map unbounded.
@@ -9476,6 +9671,12 @@ mod scheduled_model_tests {
             body.contains("scheduled_running_sessions"),
             "the take must refuse eviction while a scheduled turn is running",
         );
+        // Round-21 M2: compaction holds no turn reservation, so the production
+        // closure must read the compaction latch explicitly.
+        assert!(
+            body.contains("is_compaction_in_flight(session_id)"),
+            "the take must refuse eviction while a manual compaction is in flight",
+        );
         // review #463 round-19 SF-4: contains-only is order-insensitive —
         // moving the entry removal BEFORE the evictability recheck would
         // evict a session that just turned busy. Pin the order: the
@@ -10611,5 +10812,142 @@ mod probed_facts_wiring_tests {
         );
         assert_eq!(bridge.probed_context_tokens, Some(262_144));
         assert_eq!(bridge.probed_output_tokens, Some(4_096));
+    }
+    #[test]
+    fn spawn_config_carries_the_session_keychain_snapshot() {
+        // Round-13 M4: `build_engine_config_for_session_roots` must copy the
+        // bridge-resolved keychain snapshot into `EngineConfig.workspace_roots` —
+        // the line is the spawn-lane delivery of the feature; deleting it leaves
+        // the config default (empty) and this assertion red. The resolver here is
+        // the same injection the composition root installs.
+        let mut bridge = wiring_bridge(saved_model(
+            ModelPreset::OpenaiCompatible,
+            "spawn-keychain-model",
+            Some("custom"),
+        ));
+        let w = std::env::temp_dir().join("pinvou3-spawn-config-keychains");
+        let w_for_resolver = w.clone();
+        bridge.set_workspace_roots_resolver(std::sync::Arc::new(move |session_id: &str| {
+            if session_id == "s-keyed" {
+                vec![w_for_resolver.clone(), w_for_resolver.join("extra")]
+            } else {
+                Vec::new()
+            }
+        }));
+        let roots = crate::features::sessions::SessionRoots {
+            execution: w.join("execution"),
+            ledger: w.join("ledger"),
+            bound: true,
+        };
+        let cfg = bridge.build_engine_config_for_session_roots("s-keyed", roots);
+        assert_eq!(
+            cfg.workspace_roots,
+            vec![w.clone(), w.join("extra")],
+            "the spawn config must carry the resolver's snapshot verbatim"
+        );
+        let unkeyed = bridge.build_engine_config_for_session_roots(
+            "s-other",
+            crate::features::sessions::SessionRoots {
+                execution: w.join("execution"),
+                ledger: w.join("ledger"),
+                bound: false,
+            },
+        );
+        assert!(
+            unkeyed.workspace_roots.is_empty(),
+            "no snapshot = single-root semantics"
+        );
+    }
+
+    /// Round-9 M2(b) (#628): the toggle broadcast COMPOSES the unattended
+    /// shield for sched- sessions — CodeWhale applies SetDisallowedTools as
+    /// a plain overwrite, so an un-gated broadcast replaced a live
+    /// scheduled run's shield with the ordinary catalog. Source pin: the
+    /// set_disallowed_all body routes sched- ids through
+    /// unattended_disallowed_tools; deleting the branch turns this red.
+    #[test]
+    fn toggle_broadcast_composes_the_shield_for_sched_sessions() {
+        let source = include_str!("engine_pool.rs");
+        let fn_start = source
+            .find("pub async fn set_disallowed_all")
+            .expect("set_disallowed_all must exist");
+        let fn_end = source[fn_start..]
+            .find("\n    /// execpolicy")
+            .map(|offset| fn_start + offset)
+            .expect("next method boundary");
+        let fn_body = source[fn_start..fn_end]
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let compact: String = fn_body.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("letshaped=ifengine.scheduled_unattended.load(Ordering::Acquire){crate::features::assistant::engine::unattended_disallowed_tools("),
+            "the positive unattended branch must compose the shield, not merely mention it");
+        let gate = fn_body
+            .find("engine.scheduled_unattended.load(Ordering::Acquire)")
+            .expect("the active unattended branch exists");
+        let compose = fn_body
+            .find("unattended_disallowed_tools")
+            .expect("the composition");
+        assert!(
+            gate < compose,
+            "only active unattended engines receive the shield on broadcast"
+        );
+        // Round-24 minor 12: the composition must reach the op — the
+        // ordering assert above stays green if the send is reverted to the
+        // raw catalog. The engine.rs counterpart pin checks dataflow; this
+        // asserts the broadcast carries `Some(shaped)`, the composed value.
+        let send = fn_body
+            .find("Op::SetDisallowedTools {")
+            .expect("the broadcast send exists");
+        let carries = fn_body[send..]
+            .find("tools: Some(shaped)")
+            .expect("the broadcast must carry the composed shield value");
+        assert!(
+            compose < send + carries,
+            "the composed value (not the raw catalog) reaches Op::SetDisallowedTools"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Round-35 M1: the unattended/interactive pool-reuse clause is
+    /// load-bearing — it is the only thing preventing an interactive
+    /// continuation of a sched session from reusing the run engine
+    /// (subagents disabled, spawn-pinned scheduled model, stale shield
+    /// entries). Deleting the second leg kept the whole serial suite
+    /// green (reviewer mutation, re-confirmed by the round-36 subagent
+    /// review). Source-pin BOTH legs and their conjunction at the reuse
+    /// site: engine_pool.rs carries production code after its scattered
+    /// cfg(test) modules, so the span is the reuse function's own body
+    /// (up to the next item), which excludes the test module at the
+    /// file's end.
+    #[test]
+    fn pool_reuse_requires_the_same_engine_class() {
+        let source = include_str!("engine_pool.rs");
+        let span = source
+            .split("fn get_or_spawn_with_policy")
+            .nth(1)
+            .expect("the pool-reuse function present")
+            .split("fn ")
+            .next()
+            .expect("the reuse gate present")
+            // Round-36 review: strip line comments — a comment-anchored
+            // revert of the clause must not self-satisfy the pin (the
+            // same mutation class its three sibling pins defend against).
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            span.contains("entry_is_fresh("),
+            "the freshness leg must stay in the reuse gate"
+        );
+        assert!(
+            span.contains(") && entry.engine.scheduled_run_engine == scheduled_unattended"),
+            "reuse must be CONJOINED with the run-engine class — the clause \
+             that keeps interactive continuations off the run engine (round-35 M1)"
+        );
     }
 }

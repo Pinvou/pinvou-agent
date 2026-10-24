@@ -29,7 +29,7 @@ import secrets
 import sys
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List
+from typing import Dict
 
 # Windows 默认 stdout/stdin 编码为 GBK，MCP 协议要求 UTF-8
 if sys.platform == "win32":

@@ -122,6 +122,13 @@ assert.equal(
   'question cards should copy their visible question and numbered options instead of hidden JSON',
 );
 
+// marked is held at ^16.4.2: >=17 follows CommonMark here and a `>` blockquote
+// line at column 0 terminates the enclosing list item, demoting an indented
+// persona-card fence to an inline codespan inside a paragraph -- so the card
+// stops parsing and its hidden prompt copies out as literal text, a disclosure
+// regression (reproduced on 17.0.6 and 18.1.1 with the list blockquote fixture
+// below). Bumping marked means re-verifying every concealment variant in this
+// suite.
 const personaOnly = [
   '```persona-card',
   '{"name":"代码审查员","emoji":"🔎","description":"检查设计与副作用","body":"完整内部提示词"}',

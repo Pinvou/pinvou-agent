@@ -110,7 +110,51 @@ fn actual_original_inventory_and_all_cross_operation_acceptance_and_errors_match
     assert_eq!(actual, expected);
     assert_eq!(actual.len(), 26);
     let management = original["management"].as_array().unwrap();
-    assert_eq!(management.len(), 11);
+    // Keep an exact independent inventory: adding a management contract must
+    // never accidentally make it a client response operation.
+    let expected_management: BTreeSet<_> = [
+        "complete-upload",
+        "create-artifact-draft",
+        "create-change",
+        "create-deployment-draft",
+        "create-release-draft",
+        "deployment-rollout-abort",
+        "deployment-rollout-approval",
+        "deployment-rollout-context",
+        "deployment-rollout-create",
+        "deployment-rollout-history",
+        "deployment-rollout-locate-preparation",
+        "deployment-rollout-locate-review",
+        "deployment-rollout-lookup",
+        "deployment-rollout-preparation-context",
+        "deployment-rollout-prepare-abort",
+        "deployment-rollout-review-abort",
+        "deployment-rollout-review-context",
+        "management-command",
+        "reconciliation-create",
+        "recovery-review-create",
+        "review-change",
+        "scan-capture-context",
+        "scan-capture-lookup",
+        "scan-capture-queue",
+        "scan-capture-resume",
+        "support-floor-draft-context",
+        "support-floor-draft-history",
+        "support-floor-draft-operation-lookup",
+        "support-floor-draft-operation-resume",
+        "support-floor-draft-read",
+        "support-floor-draft-save",
+        "synchronize-stable",
+        "upload-locator",
+    ]
+    .into_iter()
+    .collect();
+    let actual_management: BTreeSet<_> = management
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect();
+    assert_eq!(management.len(), expected_management.len());
+    assert_eq!(actual_management, expected_management);
     for name in management {
         assert_eq!(
             name.as_str().unwrap().parse::<Operation>(),
@@ -152,7 +196,8 @@ fn actual_original_inventory_and_all_cross_operation_acceptance_and_errors_match
     }
     assert_eq!(positives, expected);
     eprintln!(
-        "matched {} actual original cases over 26 client and 11 excluded management operations",
-        cases.len()
+        "matched {} actual original cases over 26 client and {} excluded management operations",
+        cases.len(),
+        management.len()
     );
 }

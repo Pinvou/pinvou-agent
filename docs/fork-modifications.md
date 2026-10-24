@@ -45,18 +45,39 @@
 - 覆盖：config 侧 `custom_wire_override_mints_a_wire_true_candidate`、`wire_override_is_ignored_for_builtin_kinds`、`custom_wire_override_edges_stay_fail_closed`；tui 侧 `forkguard_named_table_wire_responses_reaches_the_runtime_candidate`、`forkguard_named_table_wire_anthropic_reaches_the_runtime_candidate`、`forkguard_named_table_without_wire_keeps_the_chat_default`、`forkguard_named_table_unrecognized_wire_keeps_the_chat_default`、`forkguard_identity_pinned_route_reads_the_pinned_tables_wire`、`forkguard_ambient_wire_override_does_not_leak_onto_pinned_chat_tables`、`forkguard_custom_responses_route_turn_client_posts_to_the_responses_endpoint`（wiremock 断言 POST 路径 `/v1/responses` 与 `store:false`/`include`/逐字模型）、`forkguard_custom_anthropic_route_turn_client_posts_to_the_messages_endpoint`、`forkguard_custom_responses_stream_captures_encrypted_reasoning_as_opaque_state`、`forkguard_custom_responses_captured_state_replays_on_the_next_turn`、`forkguard_custom_responses_replays_only_exact_model_opaque_reasoning_state`、`forkguard_fixed_endpoint_legacy_state_without_fingerprint_keeps_replaying`、`forkguard_repointed_builtin_legacy_state_without_fingerprint_fails_closed`、`forkguard_custom_chat_stream_does_not_capture_encrypted_reasoning`、`forkguard_custom_responses_capture_tolerates_missing_or_empty_encrypted_content`。guard 指纹 14 条（T9）。
 - 父仓配套（同 PR）：`uses_responses_wire` 增加 `DEEPSEEK_MODEL` 环境钉让位与官方 OpenAI 端点边界（非官方宿主保持 Chat，`openai_responses` 预设组是任意端点的显式 opt-in）；`findCloudProviderForModel` 自定义组仅匹配同 preset 记录（vm 实证回归钉）；`RESPONSES_ROUTE_PROVIDER` 注释改述真实引擎落点。round-5 评审收口 gate/落地劈叉：`provider()` 的 `OpenaiResponses` 臂施加与 wire 门相同的操作员压制（裸 `DEEPSEEK_MODEL` 钉把该组落回 vendor "openai" Chat 路线，gate 成为唯一裁决者，双向钉死）；官方宿主判定先小写再剥 `/v1` 后缀（`https://api.openai.com/V1` 计为官方）；新增测试钉 chat 时代存储的 `off` 仍逐字上线（引擎映射为 low）。app 侧无法直读候选协议（`ResolvedRuntimeRoute.candidate` 为 `pub(crate)`），wire 真值由底座测试与 guard 指纹承载。
 
-## 0. 当前状态（2026-10-17 · r3 收口后过渡期：tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次（上游收编 #90/#91/#93/#97/#98）前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、复随 2026-10-15 批次（#108 引擎重推导保留宿主申报限额，issue #703）前进至 `13ee4dfd2`、再随 2026-10-17 批次（#105 引擎路由 round-9/10 复审跟进、#106 依赖更新与去重、#111 引擎重推导仅携带宿主申报限额的复审加固）前进至 `c08c8c022`；r1 基线之上 59 个登记提交）
+## T10：Tachyon（驭光）本地引擎思考强度方言（CodeWhale #113，随 2026-10-20 批次收口）
 
-| 项 | 当前值 |
-|---|---|
-| 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 维护分支 | `pinvou3-clean` = `c08c8c022a31aa4bd4a5a146887690de99495786`（r1 基线 `1fafee7e2` 之上 59 个 squash 合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66、2026-09-21 批次 #64/#67、2026-09-22/23 批次 #63/#65/#68/#69/#70/#71/#72/#73、收口追加 #77/#76（替换原 #74）、2026-10-02 批次 #80、2026-10-08/09 批次 #79/#88/#89/#75/#78/#94/#95 、2026-10-12/13 批次 #90/#91/#97/#98/#93 、2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）、2026-10-14 批次（#54/#107）、2026-10-15 批次（#108）与 2026-10-17 批次（#105/#106/#111）） |
-| 发布状态 | r3 已收口（2026-09-23）：不可变 tag `pinvou-v0.9.12-r3` 切在合并头 `61cb769be`；2026-10-02 起 #80 使登记头领先 tag，进入过渡期，`scripts/verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言 tag 仍钉在 `61cb769be` 且 gitlink = 维护分支头并领先 tag（2026-10-08/09 批次 #79/#88/#89/#75/#78 与 2026-10-12/13 批次 #90/#91/#93/#97/#98 延续该过渡态）。r2 tag `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f`（24 个提交）作为回退点。r3 tag 曾短暂钉在 `ba2a07768f`，在父仓引用前因 #77 Windows 编译修复重切至 `61cb769be`（同日完成，未被任何父仓提交引用） |
-| 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
-| 历史组织 | 上游之上 74 个登记提交（73 个带 DCO sign-off；唯一未签为 #107 squash `f27672935`——其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107），归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 2 个已合入维护分支的主题（T7 压缩检查点角色兼容；T9 custom wire 运行时路线——底座 #79 随 2026-10-08/09 批次 squash 合入，父仓配套随 #625 落地）；r1 之后 59 个提交全部经 PR squash 合入并过必需门禁。T8 主题经 Pinvou/CodeWhale#65 落位：原以五个提交随父仓蜂群二期 PR 走保持提交合入以保全钉定 SHA，实际经 squash 合入（`c5fadb86d`）——登记随之改为钉定公开维护分支头，不再钉定合入前的波次 SHA（登记头现为 `c08c8c022`；详见第 13 节教训登记） |
-| drift | `470 files, +83668/-37332`，净增 46336 行（实测于 `c08c8c022` vs 上游 `dcd4c200f`；2026-10-17 批次 #106 依赖去重使净增较 `13ee4dfd2` 回落 8）；`445 files, +67393/-21049`，净增 46344 行（实测于 `13ee4dfd2` vs 上游 `dcd4c200f`；2026-10-15 批次 #108 为同模型宿主申报限额经引擎路由重推导保持的修复，净增较 `803e672bb` 增 223）；`445 files, +67187/-21066`，净增 46121 行（实测于 `803e672bb` vs 上游 `dcd4c200f`；2026-10-14 批次 #54 为多根 workspace_roots 授权基础设施（runtime lanes），净增较 `f27672935` 增 13,959；#107 为同模型宿主路由限制修复，净增较 `480bebf61` 增 119）；`397 files, +53709/-21547`，净增 32162 行（实测于 `f27672935` vs 上游 `dcd4c200f`）；`397 files, +53533/-21490`，净增 32043 行（实测于 `480bebf61` vs 上游 `dcd4c200f`；2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）以 #102 无价值测试清理与 #104 界限简化回落净增，此前 `3118c36b8a` 为 294 files +51027/-14227 净增 36800）；`252 files, +36785/-5754`，净增 31031 行（实测于 `0bc868ff0` vs 上游 `dcd4c200f`）；`906ffa979` 为 `252 files, +36779/-5754`（净增 31025），`7624cd3db` 为 `252 files, +36755/-5754`（净增 31001），`44921cf02` 为 `231 files, +29286/-5364`（净增 23922），r3 收口点 `61cb769be` 为 `229 files, +29272/-5352`（净增 23920），r2 为 `190 files, +19135/-2628`（净增 16507），旧 r13 为 `110 files, +10895/-1195` |
-| 守护 | 167 条独立 CodeWhale `forkguard_*` 行为名（guard 下限 64）+ 父仓指纹与行为测试 |
-| 父仓适配 | v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖本批底座能力 |
+- 状态：已随 2026-10-20 批次收口。[Pinvou/CodeWhale#113](https://github.com/Pinvou/CodeWhale/pull/113) 以 squash `083cebfd9`（`feat(provider): add Tachyon reasoning controls`，2026-10-20）合入 `pinvou3-clean`，登记头随之推进至 `083cebfd9`（上游 v0.9.12 之上 76 个提交）。同批次 #112（`fix(tui): align model-facing text with actual behavior`）为模型面文本与实现对齐的修复批次（RLM 元数据只教真实 REPL 面、工具描述失实声明逐项更正），不单列主题。
+- 问题：引擎团队《思考强度对接》通知（2026-10）：Tachyon 本地引擎 wire 与 vLLM 同族（`chat_template_kwargs.enable_thinking` + `reasoning_effort`），但有效档为 none/low/medium/xhigh——`high` 会被产物模板 400 拒绝，最深档是 `xhigh`。复用 vllm 方言会把 max/xhigh 硬降级为 `high`（不可上线），未识别 provider 名又兜底 DeepSeek 方言，任何取值都变不出 `xhigh`。
+- 修复（Pinvou 私有方言，不回馈上游）：config 侧注册 `ProviderKind::Tachyon` 与 provider 元数据（registered-only，不进 ALL 可选目录；`[providers.tachyon]` 表、`TACHYON_BASE_URL` 环境钉、keyless CredentialHelp、golden route ids/export 同步，登记数 49）；设置序列化统计 registered-only 表，内建上下文窗口校验纳入 Tachyon，inventory 仅认活跃/显式配置的路线（registered-only 身份与免密默认不推断可运行服务）。tui 侧 `ApiProvider::Tachyon` 查表/槽位/免密/持久化全链；`apply_reasoning_effort` 三档位族：off 族 `enable_thinking=false`，low~high 族 low/medium 透传且 `high` 防御性映射 medium（永不发 high），xhigh/max 族直发 `reasoning_effort=xhigh`（不复用 vllm 的 max→high 降级）；`provider_accepts_reasoning_content` 纳入 Tachyon——目录内推理 id 回放为 ON（与 vllm 的刻意差异，本条即 T10 登记），目录未知 id 解码依赖宿主显式 `separate_field` 配置；`TransportKind::for_kind` 补 Tachyon→LocalRuntime；`should_skip_secret_store_for_provider`、`route_declares_unknown_output_ceiling`、pricing/scorecard/route_billing 本地免计费与输出天花板名单、`providers_sorted_for_display` 过滤（registered-only 意图）、provider_picker 价格标签与流可见性、model_inventory 本地标签与默认模型、doctor 鉴权标签均补臂；round-2 加固：`root_deepseek_model_is_foreign_to_direct_provider` 的"可宿主 DeepSeek 模型 id"组在 tui 与 config 两处镜像名单补 Tachyon，route_billing 本地免计费回归循环补 Tachyon，workspace `.env` 凭据白名单排除 `TACHYON_API_KEY`（keyless 默认；shell 环境与 provider 表仍可用，取舍加注）；评审后段加固：`normalize_for_route` 补 Tachyon 臂（High→Medium、Max→XHigh、其余恒等——未编目 Tachyon 不再落入通用收缩），回执/档位别名（minimal/ultra）归一到生效线上档。
+- 覆盖：登记头处 8 个 `forkguard_tachyon_*` 测试——tui 侧 `forkguard_tachyon_effort_ladder_never_emits_high`、`forkguard_tachyon_max_maps_to_xhigh`、`forkguard_tachyon_stream_separates_reasoning_for_unknown_model_ids`、`forkguard_tachyon_picker_preserves_normalized_effort_on_reopen`、`forkguard_tachyon_thinking_capability_is_route_scoped`、`forkguard_tachyon_fleet_accepts_explicit_reasoning_for_served_ids`、`forkguard_tachyon_inventory_requires_an_active_or_configured_route`（inventory 仅认活跃/显式配置路线），config 侧 `forkguard_tachyon_only_provider_table_survives_config_store_save`（仅配置 Tachyon 的设置经 ConfigStore save/reload 与二次重写存活；复退旧实现四测失败）；config 侧零上下文窗口拒绝参数化；route_billing 本地免计费回归。forkguard 门禁命令（`cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`）在登记头 `083cebfd9`（Linux）实测 214 过/0 挂；#113 合并评审记录为 212。
+
+## T2：保留 Windows Python 标准流默认编码（已合入；原候选验证记录，CodeWhale#115）
+
+- 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
+- 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
+- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
+- 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
+- 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
+- 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
+- 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
+- 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
+
+## 0. 当前状态（2026-10-23）
+
+- 当前公开维护头与父仓 gitlink：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
+- 实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+
+### 本次维护集成
+
+- 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
+
+- #115 保留 shell 默认环境并合并叠加，Windows 显式变量名按大小写不敏感覆盖；#116 已以 [`e9a7f48da1`](https://github.com/Pinvou/CodeWhale/commit/e9a7f48da1) 合入，将返回的失败结果标志写入实际历史并验证会话往返。两项均在 T2 内，不增加主题。
+- #116 选择性前移上游 `2ae7460e4` 的 `is_error` 映射；该映射不在 v0.9.12 基线内，上游同一提交的取消 metadata 与 shell receipt 改动未纳入。成功返回但 `success=false` 的结果以及中断且未执行的标记记为失败，正文保留；原有执行错误、成功及 schema 加载但未执行的成功语义不变。
+- 影响面为持久化历史的 `is_error`、恢复后 Anthropic 请求中的失败标志、CLI failure 计数、会话选择器预览、runtime API 会话 JSON/工具回执，以及 Pinvou 应用恢复工具卡片时由 `!is_error` 回填的成功状态（`bridge-shared-helpers.js`）。实时工具卡片与 ACP Failed 状态原已依据 `ToolResult.success`，不因这次历史标志映射而改变；CodeWhale TUI 恢复历史的渲染器不生成 ToolResult 卡片。子 Agent 记录器（`tools/subagent/mod.rs`）与 TUI `SyncSession` 镜像（`tui/ui/event_loop.rs`）原有的标志丢失仍是后续项，不声称 #116 已覆盖。
+- 指纹同时登记 Windows 默认值/构造器/显式覆盖/原生工具测试及 `forkguard_tool_failure_flag_survives_recording_and_round_trip`。底座合入不等于客户环境或发布验证通过。
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
 
@@ -153,8 +174,11 @@
 | `0bc868ff0` | T4 修复 | drain-cap 测试的四个名字（`drain_pipe`/`DRAIN_CAPTURE_CAP`/`DRAIN_CAP_TRUNCATED_NOTE`/`Arc`/`Mutex`）不再经 tests mod 的 unix 门控 glob（#77 同形）解析，改为显式导入：测试本身平台无关（tokio duplex），Windows lib test 编译此前 7 处 E0425/E0433（#95） |
 | `906ffa979` | T5 修复 | Windows 硬链接计数改走稳定句柄 API：`number_of_links` 仍 unstable（`windows_by_handle`），父仓 Windows 腿 E0658；以 `GetFileInformationByHandle` 读取（与 Runtime store 身份检查同机制），无法打开/查询按单链接放行、由归档写入端的流式读取大声暴露真实问题；unix/fallback 臂仅增加未用 path 参数保持单一调用点（#94） |
 | `7624cd3db` | T4 特性 | human-wait 墙钟暂停（自主 #75 剥离，按 12-agent 对抗复审重建）：可交付决策面（runtime API 的 `decide_approval`/`submit_user_input`）上的审批/用户输入等待窗暂停任务墙钟并让 idle 时钟窗闭后全新重计，TUI 私有任务运行时无投递通道故不武装该窗、墙钟照常到期；聚合 24h fail-safe 上限跨整任务求和，超限以 `HumanWaitTimeout` 终态；parked 轮询自 200ms 捕获节奏倍退至 2s 上限、决策到达广播提前唤醒；逐 claim 突变验证红绿互钉（#78） |
+| `7d2636993` | T2 fix | Preserve shell defaults when task environment overlays are merged; explicit Windows names override case-insensitively. CodeWhale#115 adds generic overlay and Windows foreground/background Python stdio regressions; child-env sanitization and public signatures are unchanged. |
+| `e9a7f48da` | T2 fix | Preserve failed tool results as `is_error:true` during history recording. Existing upstream round-trip regression covers HTTP/tool errors, success and schema-loaded non-execution. CodeWhale#116; no public signature/dependency change. |
+| `ea9fdc90f` | T2 help/contract | Document the already supported Web JSONPath subset; one schema-description string changes, with a resultful parser-contract regression. No execution/parser/API/dependency change (CodeWhale#117). |
 
-除 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
+除 #116 squash `e9a7f48da` 与 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
 ## 4. T1 — 宿主嵌入与路由边界
 
@@ -202,6 +226,7 @@
 
 ### 关键测试
 
+- `forkguard_tool_failure_flag_survives_recording_and_round_trip`
 - `forkguard_exact_dispatch_rejects_forged_backends`
 - `forkguard_read_only_turn_rejects_write_at_final_dispatch`
 - `forkguard_restricted_tool_audit_redacts_private_payload`
@@ -357,3 +382,21 @@
 - 教训登记（2026-10-15）：gh squash 合并自定义 body 只保留主题列表、丢失 sign-off 尾部，使 #107 squash `f27672935` 成为 71 个登记提交中唯一未签者；「全部带签」的失实由 #705 写入、经 #712 延续，跨两个登记批才在 #706 订正。squash 合并必须把 `Signed-off-by:` 尾部写进提交信息；每个登记批必须按 `git rev-list --grep=^Signed-off-by:` 实数签数，不得沿用上一批的计数叙述。
 - 发布过程中只为精确 head 的受保护分支更新临时移除无法在该维护分支触发的 required status contexts，完成快进后立即恢复原保护配置；未关闭 force-push 防护，也未重写已发布 tag。
 - 后续发布仍不得降低公开校验或把本地 object 当成发布成功。
+
+## 2026-10-23 consumed baseline: Python stdio environment defaults (T2)
+
+CI public-baseline verification detected maintenance head `7d2636993` replacing `083cebfd9`. This parent consumes the already merged CodeWhale#115; it does not create another foundation patch or behavior topic. `CommandSpec::with_env` now merges through `with_env_var` so shell defaults survive empty/nonempty task overlays. On Windows, explicit environment names override earlier spellings case-insensitively; child environment sanitization still applies. Public signatures and dependency files are unchanged, so no app API adapter is needed.
+
+Existing upstream regressions cover generic overlays, Windows shell defaults and both Python execution lanes. Fingerprints pin those tests. Native Windows execution belongs to the corresponding upstream/parent CI; local Linux checks do not claim to exercise those cfg(windows) tests. The immutable r3 closure tag remains `61cb769be`. Recount:77 registered commits /76 commits with a signoff (the historical #107 exception is unchanged).
+
+## 2026-10-23 consumed baseline: failed tool result flags (T2)
+
+The live maintenance head advanced again to `e9a7f48da` (CodeWhale#116) while #115 validation was running. The only production change passes `(!output.success).then_some(true)` into the existing history-content builder instead of discarding the failure flag. The added upstream regression persists/restores HTTP failures, execution errors, success and schema-loaded non-execution. Public signatures, stored schema and dependencies are unchanged; no app adapter or new fork patch is needed. The existing T2 tool-result boundary owns this fix.
+
+Recount at this head:78 registered commits,76 with a signoff; #116's squash message introduces a second missing-footer exception alongside historical #107. This inventory records the public commit as observed; it does not claim an upstream report or rewrite. The parent repository's own commits remain signed. The immutable closure tag is unchanged.
+
+## 2026-10-23 consumed help-only baseline: JSONPath subset (T2)
+
+The public verifier advanced to `ea9fdc90f` (CodeWhale#117) between the parent and child pushes. The entire production delta from `e9a7f48da` is one Web `fields.description` string; execution, parsing, public signatures, dependencies and persisted schema are unchanged. The added resultful test drives advertised selectors through the real parser and verifies unsupported recursive descent/filters. The new fingerprint is under existing T2; no new fork patch/topic is introduced. Recount79 registered/77 signed commits; #107/#116 remain the only missing-footer exceptions.
+
+The preceding e9 execution regressions are retained as such. This help-only update is checked through current consumer compilation, Clippy and the current foundation schema/fork contracts; retained prior full-suite counts must not be presented as fresh runs at this documentation-only head.

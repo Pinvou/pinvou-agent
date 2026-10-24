@@ -61,12 +61,16 @@ use rpc::{
 use transfer::{
     append_web_attachment_upload_chunk, clear_web_attachments, discard_web_attachment_upload,
     ensure_web_session_download_capacity, finish_web_attachment_reservation_inner,
-    is_owned_session_download_id, open_web_session_downloads_base,
-    prune_expired_web_session_transfers, read_web_session_download_chunk,
-    remove_web_attachment_upload_dir, request_web_attachment_discard,
-    sweep_stale_web_session_downloads, take_web_session_download,
+    open_web_session_downloads_base, prune_expired_web_session_transfers,
+    read_web_session_download_chunk, remove_web_attachment_upload_dir,
+    request_web_attachment_discard, sweep_stale_web_session_downloads, take_web_session_download,
 };
-pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
+// The download-id ownership rule is the mint-side contract (`begin_web_session_download`
+// issues ids through it); the command-layer cancel gate re-uses it so the two
+// cannot drift again.
+pub(crate) use transfer::{
+    is_owned_session_download_id, sweep_stale_web_attachment_uploads, web_attachment_uploads_base,
+};
 use workspace_grants::{
     WebWorkspaceGrantReservation, WebWorkspaceGrantStore, WebWorkspaceIdentity,
     require_host_workspace_authorization,
@@ -2066,6 +2070,48 @@ impl RemoteControlManager {
         prune_rpc_cache(inner);
     }
 
+    /// Shared admission tail of the two Pending branches in `handle_rpc_request`
+    /// (reconstructed-tombstone and fresh-durable): insert the Pending cache
+    /// entry, queue the request id, prune, then map the bridge generation to the
+    /// dispatch action. Both arms were token-identical; this is the single home
+    /// of the idempotency bookkeeping (`settle_complete` is the Complete-insert
+    /// analogue). The cache entry clones `command`/`args`; the dispatch consumes
+    /// the originals — exactly the pre-extraction sharing.
+    fn admit_pending_rpc(
+        inner: &mut Inner,
+        request_id: &str,
+        lease_id: String,
+        command: String,
+        args: Value,
+        fingerprint: String,
+        bridge_generation: Option<String>,
+    ) -> RpcRequestAction {
+        inner.rpc_cache.insert(
+            request_id.to_string(),
+            RpcCacheEntry::Pending(PendingRpc {
+                lease_id,
+                command: command.clone(),
+                args: args.clone(),
+                fingerprint,
+                dispatched_generation: bridge_generation.clone(),
+                acknowledged_generation: None,
+                dispatched_at: Instant::now(),
+            }),
+        );
+        inner.rpc_order.push_back(request_id.to_string());
+        prune_rpc_cache(inner);
+        if let Some(bridge_generation) = bridge_generation {
+            RpcRequestAction::Dispatch(RpcDispatch {
+                request_id: request_id.to_string(),
+                command,
+                args,
+                bridge_generation,
+            })
+        } else {
+            RpcRequestAction::None
+        }
+    }
+
     fn handle_rpc_request(&self, value: &Value) {
         let request_id = value
             .get("client_request_id")
@@ -2248,30 +2294,15 @@ impl RemoteControlManager {
                                     rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
                                 )
                             } else {
-                                inner.rpc_cache.insert(
-                                    request_id.clone(),
-                                    RpcCacheEntry::Pending(PendingRpc {
-                                        lease_id,
-                                        command: command.clone(),
-                                        args: args.clone(),
-                                        fingerprint,
-                                        dispatched_generation: bridge_generation.clone(),
-                                        acknowledged_generation: None,
-                                        dispatched_at: Instant::now(),
-                                    }),
-                                );
-                                inner.rpc_order.push_back(request_id.clone());
-                                prune_rpc_cache(&mut inner);
-                                if let Some(bridge_generation) = bridge_generation {
-                                    RpcRequestAction::Dispatch(RpcDispatch {
-                                        request_id: request_id.clone(),
-                                        command,
-                                        args,
-                                        bridge_generation,
-                                    })
-                                } else {
-                                    RpcRequestAction::None
-                                }
+                                Self::admit_pending_rpc(
+                                    &mut inner,
+                                    &request_id,
+                                    lease_id,
+                                    command,
+                                    args,
+                                    fingerprint,
+                                    bridge_generation,
+                                )
                             }
                         }
                     } else {
@@ -2318,30 +2349,15 @@ impl RemoteControlManager {
                                     )
                                 } else {
                                     inner.rpc_ledger = next_ledger;
-                                    inner.rpc_cache.insert(
-                                        request_id.clone(),
-                                        RpcCacheEntry::Pending(PendingRpc {
-                                            lease_id,
-                                            command: command.clone(),
-                                            args: args.clone(),
-                                            fingerprint,
-                                            dispatched_generation: bridge_generation.clone(),
-                                            acknowledged_generation: None,
-                                            dispatched_at: Instant::now(),
-                                        }),
-                                    );
-                                    inner.rpc_order.push_back(request_id.clone());
-                                    prune_rpc_cache(&mut inner);
-                                    if let Some(bridge_generation) = bridge_generation {
-                                        RpcRequestAction::Dispatch(RpcDispatch {
-                                            request_id: request_id.clone(),
-                                            command,
-                                            args,
-                                            bridge_generation,
-                                        })
-                                    } else {
-                                        RpcRequestAction::None
-                                    }
+                                    Self::admit_pending_rpc(
+                                        &mut inner,
+                                        &request_id,
+                                        lease_id,
+                                        command,
+                                        args,
+                                        fingerprint,
+                                        bridge_generation,
+                                    )
                                 }
                             }
                             Err(error) => {
@@ -2784,7 +2800,7 @@ mod tests {
         acknowledge_pending_revocation_at, load_config_from, load_pending_revocations_from,
         queue_pending_revocation_at,
     };
-    use super::rpc::{WebSessionScope, web_scope_admits_absent_session, web_session_scope};
+    use super::rpc::{WebSessionScope, web_session_scope};
     use super::*;
 
     const TEST_ENDPOINT_ID: &str = "ep_test";
@@ -3323,15 +3339,11 @@ mod tests {
             );
         }
         // The auxiliary conversation (aux session) commands: the WebUI
-        // auxChat domain (bridge.js auxChatEnsure/auxChatDiscard/auxChatReset)
+        // auxChat domain (bridge.js auxChatEnsure/auxChatReset)
         // depends on them directly; once allowed, the central validator's
         // Required("sessionId") scope constraint pins them to an explicit
         // session.
-        for command in [
-            "get_or_create_aux_session",
-            "discard_aux_session",
-            "reset_aux_session",
-        ] {
+        for command in ["get_or_create_aux_session", "reset_aux_session"] {
             assert!(
                 policy.commands.contains(command),
                 "{command} must be allowed on Web (aux chat)"
@@ -3651,7 +3663,6 @@ mod tests {
             ("cancel_generation", "sessionId"),
             ("web_access_chat", "sessionId"),
             ("get_or_create_aux_session", "sessionId"),
-            ("discard_aux_session", "sessionId"),
             ("reset_aux_session", "sessionId"),
             ("delete_session", "id"),
             ("rename_session", "id"),
@@ -3677,27 +3688,6 @@ mod tests {
             web_session_scope("get_effective_model_config"),
             Some(WebSessionScope::Optional("sessionId"))
         );
-    }
-
-    #[test]
-    fn discard_aux_session_admits_an_absent_main_session() {
-        // Round-24 minor-10: desktop `discard_aux_session` is idempotent on an
-        // unmapped main id (a deleted main leaves no mapping and the command
-        // returns Ok(())), so the central validator must skip its
-        // `store.load` admission for it — the Web lane otherwise fails with
-        // `web_session_unavailable` exactly where desktop succeeds. Only the
-        // discard leg: the create leg needs the parent record, and every
-        // other command acts on the session itself.
-        assert!(web_scope_admits_absent_session("discard_aux_session"));
-        assert!(!web_scope_admits_absent_session(
-            "get_or_create_aux_session"
-        ));
-        // M6: reset CREATES the fresh session itself, so like the create leg
-        // it needs the parent record and must fail admission on an absent
-        // main — only the idempotent discard leg skips the load.
-        assert!(!web_scope_admits_absent_session("reset_aux_session"));
-        assert!(!web_scope_admits_absent_session("web_access_chat"));
-        assert!(!web_scope_admits_absent_session("delete_session"));
     }
 
     #[test]

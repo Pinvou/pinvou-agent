@@ -572,7 +572,6 @@ impl AgentTaskInput {
 pub enum SafeRunStatus {
     Completed,
     Failed,
-    Cancelled,
 }
 
 #[derive(Clone, Debug)]
@@ -674,25 +673,6 @@ impl SafeAgentEvent {
         }
     }
 
-    pub fn tool_finished(
-        task_id: impl Into<String>,
-        tool_name: impl Into<String>,
-        succeeded: bool,
-        elapsed: Duration,
-    ) -> Self {
-        Self::ToolFinished {
-            task_id: task_id.into(),
-            tool_name: tool_name.into(),
-            status: if succeeded {
-                SafeRunStatus::Completed
-            } else {
-                SafeRunStatus::Failed
-            },
-            elapsed,
-            failure_code: None,
-        }
-    }
-
     pub fn tool_finished_with_code(
         task_id: impl Into<String>,
         tool_name: impl Into<String>,
@@ -732,13 +712,6 @@ impl SafeAgentEvent {
         match self {
             Self::RunStarted { .. } => None,
             Self::RunFinished { status, .. } | Self::ToolFinished { status, .. } => Some(*status),
-        }
-    }
-
-    pub fn failure_code(&self) -> Option<&str> {
-        match self {
-            Self::ToolFinished { failure_code, .. } => failure_code.as_deref(),
-            _ => None,
         }
     }
 }

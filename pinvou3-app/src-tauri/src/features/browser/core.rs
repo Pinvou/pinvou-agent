@@ -10,9 +10,7 @@
 use serde_json::{Value, json};
 use tauri::Webview;
 
-use super::platform::{self, state::NativeTabLease};
-
-const CORE_GLOBAL: &str = "__PINVOU_BROWSER_CORE_V1__";
+use super::platform::{self, BROWSER_CORE_GLOBAL, state::NativeTabLease};
 
 /// JS prelude shared by every BrowserCore evaluation entry (this module, the
 /// macOS adapter, and the Linux WebDriver execute path): resolve the page
@@ -20,7 +18,7 @@ const CORE_GLOBAL: &str = "__PINVOU_BROWSER_CORE_V1__";
 /// contract version. Ends with a newline so callers append their own tail.
 pub(super) fn core_prelude() -> String {
     format!(
-        "const core = globalThis.{CORE_GLOBAL};\n\
+        "const core = globalThis.{BROWSER_CORE_GLOBAL};\n\
          if (!core || core.version !== 1) throw new Error('browser/core-runtime-unavailable');\n"
     )
 }

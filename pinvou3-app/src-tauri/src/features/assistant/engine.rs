@@ -72,6 +72,7 @@ pub struct AppEngine {
     multi_agent_enabled: bool,
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
+    pub(crate) scheduled_run_engine: bool,
     turn_lifecycle: Arc<TurnLifecycle>,
     turn_shell_tasks: Option<TurnShellTaskRegistry>,
     scheduled_disallowed_tools: Vec<String>,
@@ -1525,7 +1526,10 @@ impl TurnLifecycle {
 /// same reasoning as #483's shell-reclaim finalize bound. The caller presets
 /// the terminal to `Failed` on `None`: an unverified persistence must not be
 /// reported as clean, even though the detached save can still land later.
-async fn bounded_join_detached_on_timeout<T>(
+/// This is the single bounded-join core of the assistant lane: the pool's
+/// [`crate::features::assistant::engine_pool::bounded_join_while_holding_turn_gate`]
+/// is a thin adapter over it.
+pub(super) async fn bounded_join_detached_on_timeout<T>(
     what: &str,
     budget: std::time::Duration,
     task: tokio::task::JoinHandle<T>,
@@ -1669,6 +1673,51 @@ where
     }
 }
 
+/// Tools denied on an unattended scheduled-run turn (evals never receive
+/// this list — they are bounded by the EvalTurnPolicy allowlist instead).
+/// One automation run owns exactly one engine turn; goal tools can
+/// enqueue autonomous continuation turns after TurnComplete, and the
+/// scheduled-task write tools would let the run mutate the task family
+/// recursively (review R4-M1). This channel — not the typed Ask rules — is
+/// the deterministic recursion shield: the engine consults ask rules for
+/// `exec_shell` and the file tools only, and mutating MCP tools resolve to
+/// silent Allow under the current full-auto approval (contract §9). Applied
+/// only to the unattended turn; a later interactive continuation gets a
+/// fresh engine with the ordinary catalog.
+pub(crate) fn unattended_disallowed_tools(disallowed: &[String]) -> Vec<String> {
+    let mut list = disallowed.to_vec();
+    for tool in [
+        "create_goal",
+        "update_goal",
+        crate::features::assistant::platform::bridge::SCHEDULED_TASK_CREATE_TOOL,
+        crate::features::assistant::platform::bridge::SCHEDULED_TASK_UPDATE_TOOL,
+        crate::features::assistant::platform::bridge::SCHEDULED_TASK_DELETE_TOOL,
+        // Round-9 M2(a) (#628): the send tool is the messaging-indirection
+        // bypass — an unattended run injecting a turn into ANY plain session
+        // gives that turn the ordinary catalog (the shield does not cross
+        // sessions), and its from_session is optional/unauthenticated, so
+        // the target-side layers never see an unattended sender. An
+        // unattended run has no business starting turns elsewhere.
+        crate::features::assistant::platform::bridge::MESSAGING_SEND_TOOL,
+        // Round-30 REQUIRED-2 (#628): the registry launchers are a THIRD
+        // unattended channel — both ride the app allowlist (sched- engines
+        // keep it), auto-approval Allows them, and the foundation's
+        // full-access hold list names only start_mcp_server, so
+        // start_registry_mcp_server launched a user-cached registry
+        // candidate whose mcp_<name>_* tools joined the SAME turn under
+        // identities this name-keyed shield cannot see. The deny list is
+        // the PR's own mechanism; the hold-list addition is tracked
+        // upstream per the fork boundary.
+        "registry_sync",
+        "start_registry_mcp_server",
+    ] {
+        if !list.iter().any(|blocked| blocked == tool) {
+            list.push(tool.to_string());
+        }
+    }
+    list
+}
+
 impl AppEngine {
     /// 为指定 session spawn 一个**独立** engine:绑定该 session 专属的 workspace +
     /// instructions(spawn 时由 [`build_engine_config_for_session`] 固化进 config,
@@ -1691,6 +1740,7 @@ impl AppEngine {
         shell_manager: SharedShellManager,
         turn_shell_tasks: TurnShellTaskRegistry,
         steer_id_generation: u64,
+        scheduled_unattended_spawn: bool,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // Instructions 走 Inline，不写入远端工作区。所有会话共享产品工具面；
         // 子智能体仍由 CodeWhale 的通用角色与运行时策略进一步收窄。
@@ -1760,6 +1810,9 @@ impl AppEngine {
             }
             None => bridge.build_engine_config_for_session_roots(session_id, roots),
         };
+        if scheduled_unattended_spawn {
+            engine_config.subagents_enabled = false;
+        }
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
         // session_id,execute 时只访问该会话挂载的知识集)。工具常驻所有会话,挂没挂集由
@@ -1771,19 +1824,10 @@ impl AppEngine {
         //
         // 该列表来自 compute_disallowed_tools；多智能体会话不改写它，
         // 工具面与普通会话保持一致。
-        let mut scheduled_disallowed_tools = disallowed.clone();
-        // One automation run owns exactly one engine turn. Goal tools can
-        // enqueue autonomous continuation turns after TurnComplete. Apply this
-        // list only to the unattended turn; a later interactive continuation
-        // gets a fresh engine with the ordinary catalog.
-        for tool in ["create_goal", "update_goal"] {
-            if !scheduled_disallowed_tools
-                .iter()
-                .any(|blocked| blocked == tool)
-            {
-                scheduled_disallowed_tools.push(tool.to_string());
-            }
-        }
+        // One automation run owns exactly one engine turn. Apply the
+        // unattended deny list only to that turn; a later interactive
+        // continuation gets a fresh engine with the ordinary catalog.
+        let scheduled_disallowed_tools = unattended_disallowed_tools(&disallowed);
         engine_config.disallowed_tools = if disallowed.is_empty() {
             None
         } else {
@@ -1862,6 +1906,7 @@ impl AppEngine {
                 multi_agent_enabled,
                 turn_events,
                 scheduled_unattended,
+                scheduled_run_engine: scheduled_unattended_spawn,
                 turn_lifecycle,
                 turn_shell_tasks: Some(turn_shell_tasks),
                 scheduled_disallowed_tools,
@@ -1905,6 +1950,7 @@ impl AppEngine {
             multi_agent_enabled: false,
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
+            scheduled_run_engine: false,
             turn_lifecycle: Arc::new(TurnLifecycle::default()),
             turn_shell_tasks: None,
             scheduled_disallowed_tools,
@@ -2316,21 +2362,53 @@ impl AppEngine {
     /// `{{PINVOU3_WORKSPACE}}` 占位符。原先 sync 时重写 disk + 传 SystemPrompt::Text
     /// 都是 disk-API-限制的副作用,现在彻底走掉。
     pub async fn sync_session(&self, session_id: String, messages: Vec<Message>) -> Result<()> {
-        self.handle
-            .send(Op::SyncSession {
-                session_id: Some(session_id),
-                messages,
-                system_prompt: None,
-                system_prompt_override: false,
-                model: self.bridge.model(),
-                workspace: self.workspace.clone(),
-                // CodeWhale #54 multi-root 基建：空集经底座 normalize 后等价
-                // 单根（workspace 置于位置 0），保持既有行为。
-                workspace_roots: Vec::new(),
-                mode: AppMode::Agent,
-            })
-            .await?;
+        // Round-31 minor 9: aux exclusion parity with the spawn lane's pin
+        // (bridge.rs) — a stray aux-id snapshot must not reach a live aux
+        // engine through the hydration/align push either; all in-repo
+        // writers are aux-guarded, this is the backstop the bridge comment
+        // has claimed all along.
+        let roots = if crate::features::sessions::is_aux_session_id(&session_id) {
+            Vec::new()
+        } else {
+            self.bridge.session_workspace_roots(&session_id)
+        };
+        let op = Self::sync_session_op(
+            &session_id,
+            messages,
+            self.bridge.model(),
+            self.workspace.clone(),
+            // Restore-path keychain backfill (§6): the full roots locked at
+            // creation are not lost across session restarts; no snapshot
+            // (legacy/temporary sessions) = empty = single root, the base normalizes by cwd.
+            roots,
+        );
+        self.handle.send(op).await?;
         Ok(())
+    }
+
+    /// Payload construction for `sync_session` (review #484 round-13 M4 extracted
+    /// & pinned): the only channel by which the keychain backfill enters the base —
+    /// deleting/altering field names, serde shapes, or the backfill behavior fails
+    /// compilation or turns tests red. EngineHandle is not constructible across
+    /// crates, so pin at the payload layer; call sites pass the bridge-resolved
+    /// snapshot through unchanged.
+    pub(crate) fn sync_session_op(
+        session_id: &str,
+        messages: Vec<Message>,
+        model: String,
+        workspace: std::path::PathBuf,
+        workspace_roots: Vec<std::path::PathBuf>,
+    ) -> Op {
+        Op::SyncSession {
+            session_id: Some(session_id.to_string()),
+            messages,
+            system_prompt: None,
+            system_prompt_override: false,
+            model,
+            workspace,
+            workspace_roots,
+            mode: AppMode::Agent,
+        }
     }
 }
 
@@ -4203,6 +4281,86 @@ mod expert_turn_invariant_tests {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-34 M4: the delegation-disable leg is the deterministic defense
+    /// for unattended turns (the typed Ask rules never fire for MCP tools),
+    /// and it had NO pin — deleting the `subagents_enabled = false` arm at
+    /// the unattended spawn site kept the whole serial suite green
+    /// (reviewer mutation). Source-pin the disable at its production site:
+    /// engine.rs scatters its cfg(test) modules, so the span runs from the
+    /// unattended spawn gate to the shell-manager injection (the split
+    /// itself proves the gate exists; the arm inside it proves the disable).
+    #[test]
+    fn unattended_spawn_disables_subagents_in_source() {
+        let source = include_str!("engine.rs");
+        // Round-36 review hardening: strip line comments before matching —
+        // a commented-out disable arm must not satisfy the pin (the same
+        // mutation class the lib_rs dead-tool pin defends against).
+        let live = source
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let production = live
+            .split("mod tests {")
+            .next()
+            .expect("the production half of engine.rs present");
+        let span = production
+            .split("if scheduled_unattended_spawn {")
+            .nth(1)
+            .expect("the unattended spawn gate present")
+            .split("engine_config.runtime_services.shell_manager")
+            .next()
+            .expect("the disable arm is bounded by the shell-manager injection");
+        assert!(
+            span.contains("engine_config.subagents_enabled = false;"),
+            "the unattended spawn must disable subagents — the deterministic \
+             delegation-disable leg of the recursion shield (round-34 M4)"
+        );
+    }
+
+    #[test]
+    fn sync_session_op_carries_the_keychain_backfill() {
+        // Round-13 M4: the SyncSession payload is the keychain backfill's only
+        // channel into the foundation — the builder pins the field's presence
+        // and serde shape (deleting the field fails to compile here, renaming
+        // it reds this assert). The call site passes the bridge-resolved
+        // snapshot through unchanged.
+        let op = AppEngine::sync_session_op(
+            "s-backfill",
+            Vec::new(),
+            "test-model".to_string(),
+            std::path::PathBuf::from("/w"),
+            vec![
+                std::path::PathBuf::from("/w"),
+                std::path::PathBuf::from("/x"),
+            ],
+        );
+        match op {
+            Op::SyncSession {
+                session_id,
+                messages,
+                workspace_roots,
+                ..
+            } => {
+                assert_eq!(session_id.as_deref(), Some("s-backfill"));
+                assert!(messages.is_empty());
+                assert_eq!(
+                    workspace_roots,
+                    vec![
+                        std::path::PathBuf::from("/w"),
+                        std::path::PathBuf::from("/x")
+                    ]
+                );
+            }
+            other => panic!("unexpected op: {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod submit_gate_bound_tests {
     use super::Op;
     use super::bounded_join_detached_on_timeout;
@@ -4378,6 +4536,115 @@ mod submit_gate_bound_wiring_tests {
         assert!(
             spawn_at < join_at,
             "the blocking task must be handed to the bounded join, not awaited directly"
+        );
+    }
+}
+
+#[cfg(test)]
+mod unattended_shield_tests {
+    use super::unattended_disallowed_tools;
+
+    /// The recursion shield (review R4-M1): an unattended automation turn
+    /// must deny the scheduled-task write family deterministically — the
+    /// engine-level tool list, not an Ask rule (which mutating MCP tools
+    /// never consult under the current full-auto approval).
+    #[test]
+    fn unattended_turn_denies_scheduled_task_write_family() {
+        let caller = vec![
+            "mcp_fixture_disabled".to_string(),
+            "create_goal".to_string(),
+        ];
+        let list = unattended_disallowed_tools(&caller);
+        assert!(
+            list.contains(&caller[0]),
+            "caller-supplied feature disables survive composition"
+        );
+        assert_eq!(list.iter().filter(|tool| *tool == "create_goal").count(), 1);
+        for tool in [
+            "create_goal",
+            "update_goal",
+            "mcp_app-automations_create_scheduled_task",
+            "mcp_app-automations_update_scheduled_task",
+            "mcp_app-automations_delete_scheduled_task",
+            // Round-30 REQUIRED-2: the registry launchers — a third
+            // unattended channel (the foundation hold list names only
+            // start_mcp_server, and the launched server's mcp_<name>_*
+            // tools ride the same turn under identities the name-keyed
+            // deny list cannot see). Removing either entry turns this
+            // red.
+            "registry_sync",
+            "start_registry_mcp_server",
+        ] {
+            assert!(
+                list.iter().any(|blocked| blocked == tool),
+                "{tool} must be denied"
+            );
+        }
+    }
+
+    /// Connector-disabled tools ride along (the unattended deny is additive),
+    /// and pre-existing entries are not duplicated.
+    /// R5 strongly-recommended pin: the shield's only runtime channel is the
+    /// `Op::SetDisallowedTools` send ahead of every scheduled turn op — the
+    /// Ask rules are documented latent. Deleting the send (or detaching it
+    /// from the shield list) turns this red.
+    /// Round-6 MAJOR 3: the pin is scoped to the PRODUCTION span — slice the
+    /// source between `fn send_scheduled_message` and the next `fn `, so the
+    /// test module's own literals cannot satisfy it — and asserts BOTH the
+    /// composition in the spawn path (`unattended_disallowed_tools(&disallowed)`,
+    /// the wiring a bare `disallowed.clone()` revert would delete) and the
+    /// `Op::SetDisallowedTools` send carrying the shield list before the
+    /// turn op inside the send function. Deleting either turns this red.
+    /// Round-9 M2(a) (#628): the send tool is IN the unattended deny list —
+    /// the messaging-indirection route (unattended run → send_message_to_
+    /// session → ordinary-catalog turn elsewhere → create_scheduled_task)
+    /// closes with one entry. Removing the entry turns this red.
+    #[test]
+    fn unattended_deny_list_covers_the_messaging_send_route() {
+        let list = unattended_disallowed_tools(&[]);
+        assert!(
+            list.iter()
+                .any(|tool| tool == "mcp_session-reader_send_message_to_session"),
+            "the send tool must be denied on unattended turns: {list:?}"
+        );
+    }
+
+    #[test]
+    fn scheduled_sends_carry_the_shield_via_set_disallowed_tools() {
+        let source = include_str!("engine.rs");
+        // Round-36 review hardening: strip line comments before matching —
+        // a commented-out shield send must not satisfy the pin.
+        let live = source
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let send_start = live
+            .find("fn send_scheduled_message")
+            .expect("production send must exist");
+        let send_end = live[send_start..]
+            .find("\n    fn ")
+            .map(|offset| send_start + offset)
+            .unwrap_or(live.len());
+        let send_body = &live[send_start..send_end];
+        let op = send_body
+            .find("Op::SetDisallowedTools {")
+            .expect("the shield send must exist in the production span");
+        let carries = send_body[op..]
+            .find("self.scheduled_disallowed_tools.clone()")
+            .expect("the send must carry the shield list");
+        let turn_op = send_body[op..]
+            .find("self.send_turn_op(op).await")
+            .expect("the disallowed-tools send must precede the turn op");
+        assert!(carries < turn_op, "shield list carried before the turn op");
+        // The wiring: the field is composed through the unattended shield
+        // (a revert to `disallowed.clone()` deletes this line).
+        let spawn_body = &live[..send_start];
+        assert!(
+            spawn_body.contains(
+                "let scheduled_disallowed_tools = unattended_disallowed_tools(&disallowed);"
+            ),
+            "the engine's shield field must be composed through unattended_disallowed_tools"
         );
     }
 }

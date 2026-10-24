@@ -3295,3 +3295,122 @@ fn create_refuses_a_credential_path_prompt_file() {
         "the refusal must not have created a task: {list}"
     );
 }
+
+#[test]
+fn scheduled_message_inspection_run_refusal_and_prompt_cap_are_safe() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "session-message-compat",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Scheduled message");
+    write_json(
+        &home.kinds_path(),
+        &serde_json::json!({
+            "schema_version":1, "tasks":{ task_id.clone():{"kind":"session_message","target_session":"target001","updated_at":"2026-10-21T00:00:00Z"} }
+        }),
+    );
+    let shown = run_json(&["pinvou", "scheduled", "show", &task_id]);
+    assert_eq!(shown["kind"], "session_message");
+    assert_eq!(shown["targetSession"], "target001");
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(listed["tasks"][0]["kind"], "session_message");
+    assert_eq!(listed["tasks"][0]["targetSession"], "target001");
+    let error = expect_failed(&["pinvou", "scheduled", "run", &task_id]).to_string();
+    assert!(
+        error.starts_with("scheduled_message_run_requires_product_host"),
+        "{error}"
+    );
+    assert!(!error.contains("neither the CLI nor the app"));
+    assert!(!home.runs_dir(&task_id).exists());
+    let before = std::fs::read(home.def_path(&task_id)).unwrap();
+    let prompt = write_prompt_file(&home, "oversize.txt", &"界".repeat(32_769));
+    let error = assert_usage(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+    ]);
+    assert!(error.contains("32768"), "{error}");
+    assert_eq!(std::fs::read(home.def_path(&task_id)).unwrap(), before);
+    let prompt = write_prompt_file(&home, "valid.txt", &"界".repeat(32_768));
+    run_ok(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+    ]);
+    let updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.def_path(&task_id)).unwrap()).unwrap();
+    assert_eq!(updated["prompt"].as_str().unwrap().chars().count(), 32_768);
+    let kinds: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.kinds_path()).unwrap()).unwrap();
+    assert_eq!(kinds["tasks"][&task_id]["target_session"], "target001");
+}
+
+#[test]
+fn scheduled_prompt_updates_refuse_unknown_or_corrupt_kind_metadata() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "unknown-message-kind", Isolation::ProductHome);
+    let id = create_task_id(&home, "Unknown kind");
+    let before = std::fs::read(home.def_path(&id)).unwrap();
+    let prompt = write_prompt_file(&home, "replacement.txt", "new body");
+    write_json(
+        &home.kinds_path(),
+        &serde_json::json!({"schema_version":1,"tasks":{id.clone():{"kind":"future_message"}}}),
+    );
+    let error = expect_failed(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &id,
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+    ])
+    .to_string();
+    assert!(error.contains("kind"), "{error}");
+    assert_eq!(std::fs::read(home.def_path(&id)).unwrap(), before);
+    for metadata in [
+        serde_json::json!({"schema_version":1, "tasks":{id.clone():{"kind":42}}}),
+        serde_json::json!({"schema_version":999, "tasks":{}}),
+    ] {
+        write_json(&home.kinds_path(), &metadata);
+        expect_failed(&[
+            "pinvou",
+            "scheduled",
+            "update",
+            &id,
+            "--prompt-file",
+            prompt.to_str().unwrap(),
+        ]);
+        assert_eq!(std::fs::read(home.def_path(&id)).unwrap(), before);
+    }
+    std::fs::write(home.kinds_path(), "{broken").unwrap();
+    expect_failed(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &id,
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+    ]);
+    assert_eq!(std::fs::read(home.def_path(&id)).unwrap(), before);
+    expect_failed(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &id,
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        std::fs::read(home.def_path(&id)).unwrap(),
+        before,
+        "absence after quarantine must still refuse"
+    );
+}

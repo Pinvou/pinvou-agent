@@ -5,9 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  activateRightDockPanel,
   createRightDockState,
-  hideRightDockPanel,
+  reduceRightDockState,
   rightDockSnapshot,
 } from '../src/components/layout/right-dock-state.mjs';
 
@@ -15,16 +14,28 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const source = path.join(root, 'src', 'features', 'codex', 'acp-state.js');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-codex-acp-'));
-const moduleDir = path.join(temp, 'codex');
-const conversationDir = path.join(temp, 'conversation');
+const moduleDir = path.join(temp, 'features', 'codex');
+const conversationDir = path.join(temp, 'features', 'conversation');
+const sharedDir = path.join(temp, 'shared');
 mkdirSync(moduleDir, { recursive: true });
 mkdirSync(conversationDir, { recursive: true });
+mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 const modulePath = path.join(moduleDir, 'acp-state.js');
 copyFileSync(source, modulePath);
+for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
+  copyFileSync(
+    path.join(root, 'src', 'features', 'conversation', file),
+    path.join(conversationDir, file),
+  );
+}
 copyFileSync(
-  path.join(root, 'src', 'features', 'conversation', 'conversation-model.js'),
-  path.join(conversationDir, 'conversation-model.js'),
+  path.join(root, 'src', 'shared', 'shell-tools.mjs'),
+  path.join(sharedDir, 'shell-tools.mjs'),
+);
+copyFileSync(
+  path.join(root, 'src', 'shared', 'path-utils.js'),
+  path.join(sharedDir, 'path-utils.js'),
 );
 
 const event = (seq, type, data, turnId = 'turn-1') => ({
@@ -733,7 +744,11 @@ try {
   'new code sessions must expose the platform-specific directory picker');
   assert.ok(codexView.includes('const requestedWorkspaceHandle = draftWorkspaceHandle')
     && codexView.includes('workspaceHandle: requestedWorkspaceHandle')
-    && acpClient.includes("invokeTauri('create_codex_acp_session', { workspacePath, agentId })")
+    && acpClient.includes("invokeTauri('create_codex_acp_session', {")
+    // Single-entry picker: the desktop creation payload also carries the
+    // keychain snapshot and project ownership (§6/§9.3).
+    && acpClient.includes('workspaceRoots: workspaceRoots && workspaceRoots.length ? workspaceRoots : null')
+    && acpClient.includes('projectId: projectId || null')
     && acpClient.includes("invokeRequiredWebCommand('web_access_create_codex_acp_session'"),
   'selected project directories must use native paths on desktop and opaque grants on Web');
   assert.ok(!codexView.includes('data-testid="acp-agent-selector"')
@@ -975,10 +990,10 @@ try {
   'the code-mode aux chat must reuse the shared Right Dock panel, remember scroll on open, keep its entry highlight tied to real dock visibility, and gate the panel mount and the quote selection on isNativeAgent like the entry button (external-ACP tasks must never reach the aux session)');
 
   let codexDockState = createRightDockState();
-  codexDockState = activateRightDockPanel(codexDockState, 'codex-workspace');
-  codexDockState = activateRightDockPanel(codexDockState, 'subagent-transcript');
+  codexDockState = reduceRightDockState(codexDockState, { type: 'activate', panelId: 'codex-workspace' });
+  codexDockState = reduceRightDockState(codexDockState, { type: 'activate', panelId: 'subagent-transcript' });
   assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'subagent-transcript');
-  codexDockState = hideRightDockPanel(codexDockState, 'subagent-transcript');
+  codexDockState = reduceRightDockState(codexDockState, { type: 'hide', panelId: 'subagent-transcript' });
   assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'codex-workspace',
     'closing the active subagent panel must reveal the still-mounted workspace');
   assert.ok(codexWorkspace.includes('listAcpWorkspace({')

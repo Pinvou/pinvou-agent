@@ -125,6 +125,13 @@ fn docs_gaia_benchmark_records_current_integrity_and_platform_boundaries() {
         "attachments_platform_security_unsupported",
         "真实 Python scorer 逐题交叉验证尚未完成",
         "旧版 ready marker",
+        // HF_ENDPOINT mirror-trust disclosure: download digests come from the
+        // endpoint's own paths-info response (only the parquet is additionally
+        // pinned to the compiled-in digest) — a revert of that wording must
+        // turn this contract red.
+        "下载内容的校验",
+        "基准是同一端点返回的 paths-info 摘要",
+        "附件的编译期锚点只在本地导入路径生效",
     ] {
         assert!(
             content.contains(required),

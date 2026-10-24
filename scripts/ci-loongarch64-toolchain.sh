@@ -25,9 +25,13 @@
 # (verified with `gcc -print-sysroot` after moving the tree), so no
 # absolute-path fixups are required after unpacking.
 #
-# NOTE for the release job: this toolchain ships NO lld (only ld/ld.bfd).
-# The arm64 release job's RUSTFLAGS "-C link-arg=-fuse-ld=lld" must NOT be
-# copied to the loong64 job; linking goes through the default bfd ld.
+# NOTE for the release job: this toolchain ships NO lld (only bfd ld).
+# Cargo's links still must NOT use the bundled bfd: rustc's LLVM emits
+# R_LARCH_CALL36, which bfd 2.41 rejects. The CARGO_TARGET_*_LINKER export
+# points at a generated gcc wrapper that resolves the rust-bundled
+# rust-lld (same LLVM that emitted the relocs). The arm64 job's RUSTFLAGS
+# "-C link-arg=-fuse-ld=lld" must still NOT be copied: that resolves
+# against the HOST toolchain's lld, a different thing entirely.
 #
 # Env overrides:
 #   PINVOU_LOONG64_CROSS_TOOLS_URL    full asset URL override (mirror).
@@ -177,6 +181,7 @@ already_verified() {
   [ -x "$toolchain_bin/$TRIPLE-gcc" ] || return 1
 }
 
+fresh_tree=""
 if [ "$force" = false ] && already_verified; then
   log "reusing verified toolchain (marker: $(cat "$marker")): $toolchain_root"
 else
@@ -221,7 +226,10 @@ else
   [ "$libc_version" = "$GLIBC_VERSION" ] \
     || fail "bundled sysroot glibc is '${libc_version:-<unknown>}', expected $GLIBC_VERSION (wrong variant?)"
 
-  printf '%s\n' "$expected_id" > "$marker"
+  # Marker deliberately NOT written here: it is written after the smoke
+  # below, so a tree whose gcc cannot execute never records itself as
+  # verified.
+  fresh_tree=1
   log "verified and unpacked: $toolchain_root"
 fi
 
@@ -236,15 +244,71 @@ if [ "$host_arch" = "x86_64" ] || [ "${PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE:-0}" 
   # previous `--version | head -n 1` could die of SIGPIPE under pipefail and
   # report a healthy toolchain as broken). A foreign-arch host without a
   # matching userland fails both invocations and gets the container hint.
+  # On a smoke failure the recorded marker is removed first: an
+  # already-verified tree that stopped running (cache corruption after the
+  # marker was written) must re-download on the next run instead of failing
+  # identically forever — the hint names both recovery routes.
   gcc_version="$("$toolchain_bin/$TRIPLE-gcc" -dumpfullversion 2>/dev/null || true)"
   [ -n "$gcc_version" ] || gcc_version="$("$toolchain_bin/$TRIPLE-gcc" -dumpversion 2>/dev/null || true)"
   [ -n "$gcc_version" ] \
-    || fail "$TRIPLE-gcc did not report a version (x86_64 binary on a foreign-arch host: run it inside a matching-userland container, or export PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1)"
+    || { rm -f -- "$marker"; fail "$TRIPLE-gcc did not report a version (on a foreign-arch host: run it inside a matching-userland container, or export PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1; on the x86_64 runner this means a corrupt cache — re-run with --force to re-download)"; }
   [ "$gcc_version" = "$GCC_VERSION" ] \
-    || fail "$TRIPLE-gcc reports '$gcc_version', expected version $GCC_VERSION (pin drift)"
+    || { rm -f -- "$marker"; fail "$TRIPLE-gcc reports '$gcc_version', expected version $GCC_VERSION (pin drift — re-run with --force to re-download)"; }
   "$toolchain_bin/$TRIPLE-gcc" -print-sysroot >/dev/null \
-    || fail "$TRIPLE-gcc -print-sysroot failed"
+    || { rm -f -- "$marker"; fail "$TRIPLE-gcc -print-sysroot failed"; }
 fi
+
+# The generation marker is written only AFTER the smoke passes: a tree
+# whose gcc exists and is executable but cannot actually run (foreign-arch
+# host without a matching userland, corrupt unpack) must not leave a
+# "verified" marker behind — every later run would reuse it and fail
+# identically at the same smoke instead of re-fetching. A reuse-path tree
+# that fails the smoke above has its marker removed there, so the next run
+# re-fetches. With the smoke skipped (foreign-arch dev host +
+# PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1) the marker is still written, as
+# before.
+if [ -n "$fresh_tree" ]; then
+  printf '%s\n' "$expected_id" > "$marker"
+fi
+
+# Materialize the cargo-linker wrapper: cargo's link step routes through
+# rust-lld (see the notes in print_env for why), while native gcc-driven
+# builds (cc-rs compiles, cmake) keep the toolchain's own drivers. GCC's
+# -fuse-ld only accepts NAMES (resolved as `ld.<name>` via -B/search paths),
+# not absolute paths — so the wrapper ships a shim DIRECTORY containing an
+# `ld.lld` that resolves rust-lld from the ACTIVE rustc sysroot at link
+# time. The path must not be baked in here: this setup tree is cache-reused
+# across runs while rust floats on "stable" (rustup resolves whatever the
+# workflow installed that day), so a pinned path would rot on the next
+# rustc upgrade. Rewritten every run: idempotent. sh -n on both files.
+# (Why not rustc's native `-C link-self-contained=+linker` lld handoff:
+# with job-level remap-only RUSTFLAGS the per-target rustc flags could only
+# ride RUSTFLAGS — wrong scope, it hits host units too — or
+# CARGO_TARGET_*_RUSTFLAGS, the exact shadowing vector this pipeline fails
+# closed on; CARGO_TARGET_*_LINKER is the only clean per-target knob. The
+# wrapper mirrors the Official pinvou3#1993 rounds 5-7 strategy.)
+mkdir -p "$toolchain_bin/lld-shim"
+cat >"$toolchain_bin/lld-shim/ld.lld" <<SHIM
+#!/bin/sh
+# Generated by scripts/ci-loongarch64-toolchain.sh — do not edit.
+rust_lld="\$(find "\$(rustc --print sysroot 2>/dev/null)/lib/rustlib" -path '*/bin/gcc-ld/ld.lld' -print -quit 2>/dev/null)"
+if [ -z "\$rust_lld" ]; then
+  echo "ld.lld shim: no gcc-ld/ld.lld under the active rustc sysroot \\
+(is the installed toolchain a standard rustup distribution?)" >&2
+  exit 127
+fi
+exec "\$rust_lld" "\$@"
+SHIM
+chmod +x "$toolchain_bin/lld-shim/ld.lld"
+sh -n "$toolchain_bin/lld-shim/ld.lld" || fail "generated shim does not parse"
+wrapper="$toolchain_bin/$TRIPLE-gcc-rust-lld"
+cat >"$wrapper" <<WRAPPER
+#!/bin/sh
+# Generated by scripts/ci-loongarch64-toolchain.sh — do not edit.
+exec "\$(dirname "\$0")/$TRIPLE-gcc" -B"\$(dirname "\$0")/lld-shim" -fuse-ld=lld "\$@"
+WRAPPER
+chmod +x "$wrapper"
+sh -n "$wrapper" || fail "generated wrapper $wrapper does not parse"
 
 print_env() {
   # Underscore spelling ONLY: the pr-check leg greps this block into
@@ -259,12 +323,18 @@ CXX_loongarch64_unknown_linux_gnu=$toolchain_bin/$TRIPLE-g++
 AR_loongarch64_unknown_linux_gnu=$toolchain_bin/$TRIPLE-gcc-ar
 RANLIB_loongarch64_unknown_linux_gnu=$toolchain_bin/$TRIPLE-gcc-ranlib
 STRIP=$toolchain_bin/$TRIPLE-strip
-CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER=$toolchain_bin/$TRIPLE-gcc
+CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER=$toolchain_bin/$TRIPLE-gcc-rust-lld
 ---- notes ----
 # gcc resolves its bundled glibc $GLIBC_VERSION sysroot from its own path
 # (relocatable); no SYSROOT variable is needed for plain rust/cargo builds.
-# The toolchain ships NO lld (binutils ld/ld.bfd only): do NOT copy the
-# arm64 job's RUSTFLAGS "-C link-arg=-fuse-ld=lld" into the loong64 job.
+# CARGO_TARGET_*_LINKER deliberately points at the $TRIPLE-gcc-rust-lld
+# wrapper: rustc's LLVM emits R_LARCH_CALL36 (psABI v2.20; v2.30 added the
+# code-models chapter that makes rustc emit it for direct calls) that this
+# toolchain's bfd 2.41 cannot resolve, so cargo's links go through rust-lld
+# (same LLVM that emitted the relocs; linking against the same glibc
+# $GLIBC_VERSION sysroot keeps the deb floor unchanged). Do NOT copy the
+# arm64 job's RUSTFLAGS "-C link-arg=-fuse-ld=lld" into the loong64 job —
+# that resolves against the HOST toolchain's lld, not the rust-bundled one.
 EOF
 }
 

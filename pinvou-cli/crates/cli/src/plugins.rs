@@ -73,9 +73,11 @@
 //!   `connectors::ima::ima_status` instead (`bundle_readiness`'s ima arm):
 //!   ready = both OpenAPI credentials present (ima secret namespace) AND the
 //!   `ima-skills` companion installed, credentials judged first, installed =
-//!   credentials OR skill. The CLI mirrors those semantics exactly (see
-//!   [`ima_readiness_parts`]; the GUI helpers are app-crate-private, so the
-//!   check is replicated with ima.rs as the source of truth) — the ima row
+//!   credentials OR skill. The CLI consumes the exported
+//!   `connectors::ima::status_with_store` directly (on a credential-store
+//!   read failure only its credential half degrades to absent — the
+//!   skill-installed half is still computed from the skill store, see
+//!   [`ima_readiness_parts`]) — the ima row
 //!   must not route through `readiness_for`, whose `IMA_CLIENT_ID` /
 //!   `IMA_API_KEY` lookup is the wrong namespace and would report
 //!   `missing_credentials` for a connected ima. CLI-connector live status
@@ -126,7 +128,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::support::{
-    collapse_control_characters, family_option, join_rows, render, require_yes, sandbox_home,
+    self, collapse_control_characters, family_option, join_rows, render, require_yes, sandbox_home,
     success,
 };
 use crate::{CliError, CliOutcome, OutputMode};
@@ -142,9 +144,10 @@ use pinvou3_lib::features::marketplace::{
         set_project_skills_enabled, to_package_id_with,
     },
     skill_marketplace::{SkillMarketplaceManager, read_skill_name_from_str, sanitize_skill_name},
-    store::{BundleSource, BundleStore},
+    store::{BundleSource, BundleStore, MAX_IMPORT_DISPLAY_NAME_CHARS, is_display_unsafe_char},
     sync_deny_all_scopes_after_install,
 };
+use pinvou3_lib::features::{IMA_SKILL_ID, status_with_store};
 use pinvou3_lib::platform::credential_store::{
     CredentialReference, CredentialStore, SystemCredentialStore,
 };
@@ -293,7 +296,10 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
             let path = rest
                 .first()
                 .ok_or_else(|| CliError::usage("plugins import requires a PATH (zip, .md/.markdown skill file, or SKILL.md directory)"))?;
-            require_no_args(&rest[1..], "plugins import accepts no options".to_owned())?;
+            support::expect_no_arguments_message(
+                &rest[1..],
+                "plugins import accepts no options".to_owned(),
+            )?;
             Ok(PluginsCommand::Import {
                 path: PathBuf::from(path),
             })
@@ -324,7 +330,10 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "recycle" => parse_recycle(rest),
         "readiness" => {
-            require_no_args(rest, "plugins readiness accepts no arguments".to_owned())?;
+            support::expect_no_arguments_message(
+                rest,
+                "plugins readiness accepts no arguments".to_owned(),
+            )?;
             Ok(PluginsCommand::Readiness)
         }
         "enable" | "disable" => {
@@ -399,7 +408,7 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "auth" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 "plugins tools auth accepts no options".to_owned(),
             )?;
@@ -416,7 +425,7 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "oauth-cancel" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 "plugins tools oauth-cancel accepts no options".to_owned(),
             )?;
@@ -441,7 +450,7 @@ fn parse_skills(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "install" | "update" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 format!("plugins skills {action} accepts no options"),
             )?;
@@ -478,7 +487,7 @@ fn parse_recycle(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "restore" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 "plugins recycle restore accepts no options".to_owned(),
             )?;
@@ -555,18 +564,6 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
     Ok(id)
 }
 
-/// The "accepts no options/arguments" guards shared by the subcommands that
-/// take nothing beyond their required positionals (`args` is what remains
-/// after those). `message` is passed verbatim so each site keeps its pinned
-/// usage text.
-fn require_no_args(args: &[String], message: String) -> Result<(), CliError> {
-    if args.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::usage(message))
-    }
-}
-
 /// Shared implementation in `support::parse_family_flags`; `family`
 /// only names this family in error messages.
 fn parse_flags<'a>(
@@ -627,26 +624,6 @@ fn translate_plugin_import_error(error: &str) -> Option<String> {
     }
     None
 }
-
-/// Mirror of the GUI's display-value hygiene
-/// (`features/marketplace/store.rs::is_display_unsafe_char`, crate-private):
-/// control characters, zero-width/bidi controls, and line/paragraph
-/// separators never belong in a stored display name.
-fn is_display_unsafe_char(c: char) -> bool {
-    c.is_control()
-        || matches!(c,
-            '\u{00AD}' // SOFT HYPHEN
-            | '\u{200B}'..='\u{200D}' // ZERO WIDTH SPACE..JOINER
-            | '\u{2028}'..='\u{2029}' // LINE/PARAGRAPH SEPARATOR
-            | '\u{202A}'..='\u{202E}' // bidi embedding/override controls
-            | '\u{2066}'..='\u{2069}' // bidi isolate controls
-            | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
-        )
-}
-
-/// Longest display name the GUI stores for an imported package
-/// (`app/commands/marketplace.rs::sanitize_display_name` takes 128 chars).
-const MAX_IMPORT_DISPLAY_NAME_CHARS: usize = 128;
 
 /// Display name for an imported package, kept byte-identical to the GUI's
 /// stored value for the same file. The value lands verbatim in
@@ -1436,8 +1413,8 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     };
     // The raw file name becomes the package display name in bundles.json, so
     // it gets the same invisible-character hygiene as the GUI's display
-    // values (mirror of `features/marketplace/store.rs
-    // is_display_unsafe_char`, which is crate-private): strip instead of
+    // values (shared `features/marketplace/store.rs
+    // is_display_unsafe_char`): strip instead of
     // reject — the name came from the user's own file path, and a rename
     // requirement would be a worse outcome than a cleaned label. The RAW
     // lossy name is kept alongside: the fallback-id branch inside
@@ -1986,22 +1963,15 @@ const REASON_ASSETS_MISSING: &str = "assets_missing";
 /// same reason vocabulary for ima.
 const REASON_IMA_SKILL_NOT_INSTALLED: &str = "skill_not_installed";
 
-/// The companion skill `ima_connect` installs alongside the ima credentials
-/// (mirror of `features/connectors/ima.rs` `IMA_SKILL_ID`, which is
-/// app-crate-private and not importable from here).
-const IMA_SKILL_ID: &str = "ima-skills";
-
-/// ima readiness inputs, mirroring the GUI's `bundle_readiness` ima arm
+/// ima readiness inputs, the CLI lane of the GUI's `bundle_readiness` ima arm
 /// (`app/commands/marketplace.rs`) → `connectors::ima::ima_status` →
 /// `status_with_store`: ima is the ONE bundle the desktop does not judge
-/// through `readiness_for`, so neither does the CLI. Source of truth:
-/// `pinvou3-app/src-tauri/src/features/connectors/ima.rs` (`status_with_store`
-/// and `credentials`). Those helpers are app-crate-private, so this function
-/// replicates the smallest faithful check: both OpenAPI credentials
-/// (`client_id` and `api_key`, non-empty after trim, in the ima secret
+/// through `readiness_for`, so neither does the CLI. The status computation
+/// (both OpenAPI credentials non-empty after trim in the ima secret
 /// namespace — NOT the IMA_CLIENT_ID/IMA_API_KEY MCP-namespace keys the
-/// registry branch would look for) and the `ima-skills` companion package's
-/// installed flag.
+/// registry branch would look for — plus the `ima-skills` companion
+/// package's installed flag) is consumed directly from the exported
+/// `connectors::ima::status_with_store`.
 ///
 /// A credential-store READ failure degrades to "absent" with a stderr note
 /// and is named again in the row's reason (`credential_store_unavailable`),
@@ -2013,31 +1983,34 @@ const IMA_SKILL_ID: &str = "ima-skills";
 /// answer reads as absent, never the reverse — and the reason string keeps
 /// the two apart for scripts. (The GUI's `ima_status` fails its whole
 /// command on a read failure; that is a one-card surface, this is a table.)
+///
+/// The degrade covers the CREDENTIAL inputs only: `status_with_store`
+/// short-circuits on a store read failure (its `credentials` lookup runs
+/// before the skill check), so the Err arm re-derives the `ima-skills`
+/// installed flag from the skill store — the same list check the Ok path
+/// consults — instead of letting the store failure report the companion as
+/// uninstalled (which would flip an installed, credential-connected ima to
+/// `installed: false` on a keychain hiccup).
 fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> (bool, bool, bool) {
-    let credential_present = |name: &str| -> (bool, bool) {
-        match credential_store.get(&CredentialReference::for_ima_secret(name)) {
-            Ok(value) => (value.is_some_and(|secret| !secret.trim().is_empty()), false),
-            Err(error) => {
-                note!(
-                    "[plugins] readiness ima: credential store read failed \
-                     (reporting the credential as absent): {}",
-                    error.user_message()
-                );
-                (false, true)
-            }
+    match status_with_store(credential_store) {
+        Ok(status) => (status.credentials_present, status.skill_installed, false),
+        Err(error) => {
+            note!(
+                "[plugins] readiness ima: credential store read failed \
+                 (reporting the credential as absent): {}",
+                error
+            );
+            // The store error short-circuits `status_with_store` before its
+            // skill check, so the companion's installed flag is re-derived
+            // here (the same list the Ok path consults) instead of the store
+            // failure degrading an installed `ima-skills` to absent.
+            let skill_installed = SkillMarketplaceManager::new()
+                .list_skills()
+                .into_iter()
+                .any(|skill| skill.id == IMA_SKILL_ID && skill.installed);
+            (false, skill_installed, true)
         }
-    };
-    let (client_ok, client_failed) = credential_present("client_id");
-    let (api_ok, api_failed) = credential_present("api_key");
-    let skill_installed = SkillMarketplaceManager::new()
-        .list_skills()
-        .into_iter()
-        .any(|skill| skill.id == IMA_SKILL_ID && skill.installed);
-    (
-        client_ok && api_ok,
-        skill_installed,
-        client_failed || api_failed,
-    )
+    }
 }
 
 fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
@@ -2805,6 +2778,16 @@ mod tests {
                 plugin_import::MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
             ))
             .as_deref()
+        );
+        let forged = translate_plugin_import_error(
+            "插件包 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝",
+        );
+        assert_eq!(
+            forged.as_deref(),
+            Some(
+                "the package decompresses beyond its zip header's declared size (forged \
+                 header / zip bomb); rejected"
+            )
         );
         assert_eq!(
             translate_plugin_import_error("some unrelated english failure"),

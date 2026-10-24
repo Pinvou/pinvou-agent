@@ -101,14 +101,19 @@ pub(super) fn clear_deferred_no_usage() {
     MODEL_DEFERRED_NO_USAGE.store(false, Ordering::SeqCst);
 }
 
-fn configured_model_dir() -> std::path::PathBuf {
+/// `pub`（经 `features::knowledge` re-export）：headless CLI 的
+/// `model status` 直接消费同一解析顺序（env 覆盖优先，回退托管目录），
+/// 替代其五行的手抄镜像。
+pub fn configured_model_dir() -> std::path::PathBuf {
     configured_model_dir_from(
         std::env::var("PINVOU3_KB_EMBED_MODEL_DIR").ok(),
         super::model_dir(),
     )
 }
 
-fn configured_model_dir_from(
+/// The injectable variant of [`configured_model_dir`]; `pub` for the same
+/// reason and because the app tests drive the resolution through it.
+pub fn configured_model_dir_from(
     configured: Option<String>,
     managed: std::path::PathBuf,
 ) -> std::path::PathBuf {

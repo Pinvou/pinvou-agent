@@ -23,7 +23,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 - `allowed_tools` 同时约束首轮目录、`tool_search` 结果和实际执行，不在白名单中的工具不能通过搜索重新激活。
 - `disallowed_tools` 只能继续收窄白名单；模式差量、连接器停用集和运行期空态均走这条通道，下轮请求生效。
 - Plan / Agent / Operate 的注册面和 sandbox 仍由 CodeWhale 决定。白名单允许一个工具或工具族，不代表每种模式都注册其全部写操作。
-- `request_user_input` 与 `image_analyze` 由 `PINVOU3_ALWAYS_LOADED_TOOLS` 要求首轮直接可见；其他允许工具可按底座策略延迟加载。
+- `PINVOU3_ALWAYS_LOADED_TOOLS` 现有 7 项（`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`），均要求首轮直接可见；其余允许工具可按底座策略延迟加载。
 
 关键实现：
 
@@ -58,7 +58,7 @@ Pinvou disallowed_tools（模式、连接器、技能空态等动态拒绝）
 - 持久终端五个工具使用精确名而非 `terminal/*`：避免未来新增的执行原语仅凭共享前缀就自动穿透产品白名单（`tool_policy.rs:13-15` 注释；反向测试断言 `terminal/future-capability` 被拒，lib.rs）。
 - 大小写不敏感使隐藏回放名 `Bash` 能命中 `bash` 规则、在历史回放中继续可执行（新会话目录只教 canonical `bash`）；`File` 没有任何可命中的规则、不可执行（lib.rs `tool_allowlist_contract` 的对应断言）。
 
-`PINVOU3_ALWAYS_LOADED_TOOLS = ["request_user_input", "image_analyze"]`（`tool_policy.rs:52`）要求这两个工具首轮直接可见，不能依赖模型先调用 `tool_search`。
+`PINVOU3_ALWAYS_LOADED_TOOLS`（`tool_policy.rs:105-113`）现有 7 项：`request_user_input`、`image_analyze`、`load_skill`、`file_search`、`registry_sync`、`start_registry_mcp_server`、`computer_use`。这些工具要求首轮直接可见，不能依赖模型先调用 `tool_search`（always-load 只影响延迟加载，不绕过 `disallowed`，拒绝优先）。
 
 新增白名单项必须同步更新白名单正反向测试（lib.rs `tool_allowlist_contract`、`multiagent_regression_tests.rs`）和 fork guard。
 

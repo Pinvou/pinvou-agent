@@ -337,9 +337,8 @@ fn official_deepseek_model_name(model: &str) -> String {
 pub const MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_session";
 /// The exec-root resolver and "two roots" types for native code sessions are
 /// defined in one place, [`crate::features::sessions`] (SessionStore and the
-/// bridge share the same implementation); this re-export keeps existing call
-/// paths unchanged.
-pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
+/// bridge share the same implementation).
+use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
 /// Host-wide default per-turn model step budget: the main-turn default and
 /// the subagent default (`[subagents] default_max_steps`) are both 2,000;
@@ -377,6 +376,36 @@ fn removed_cap_env_warning(gate: &std::sync::OnceLock<()>) -> bool {
     }
     warned
 }
+
+/// Session keychain snapshot resolver closure (the full accessible root set
+/// locked at creation, §6). Injected for the same reason as
+/// [`crate::features::sessions::ExecutionRootResolver`]: the bridge cannot
+/// reach SessionStore/AcpPool.
+pub type WorkspaceRootsResolver =
+    std::sync::Arc<dyn Fn(&str) -> Vec<std::path::PathBuf> + Send + Sync>;
+
+/// Full model-visible name of the scheduled-task creation tool (server key
+/// app-automations, tool create_scheduled_task; docs/app-automations-定时任务创建工具-设计与验收.md).
+/// Same L1 treatment as `MESSAGING_SEND_TOOL`: a typed Ask rule is
+/// registered, but it does not prompt under the current full-auto approval
+/// (the engine consults ask rules for exec_shell and the file tools only) —
+/// it is the latent pin for the approval-mode split. The deterministic
+/// unattended recursion shield is the engine-side deny channel
+/// (unattended_disallowed_tools); the audit trail is written by
+/// features::scheduled::creation_requests (plus the shadow audit under the
+/// automation store root).
+pub const SCHEDULED_TASK_CREATE_TOOL: &str = "mcp_app-automations_create_scheduled_task";
+
+/// Full model-visible name of the scheduled-task update tool (server key
+/// app-automations). Same L1 treatment as [`SCHEDULED_TASK_CREATE_TOOL`].
+pub const SCHEDULED_TASK_UPDATE_TOOL: &str = "mcp_app-automations_update_scheduled_task";
+
+/// Full model-visible name of the scheduled-task delete tool (server key
+/// app-automations). Destructive (archive + remove); same latent-pin
+/// posture as the create/update rules (no prompt under the current
+/// full-auto approval) — the review surfaces are the audit trail and the
+/// Scheduled Tasks panel.
+pub const SCHEDULED_TASK_DELETE_TOOL: &str = "mcp_app-automations_delete_scheduled_task";
 
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
@@ -431,6 +460,11 @@ pub struct Pinvou3Bridge {
     /// artifacts) is unaffected and is still decided uniformly by the `ledger`
     /// field of `SessionStore::session_roots`.
     pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// Session keychain-snapshot resolver: the full accessible-root set
+    /// locked at session creation (empty = single-root semantics). Injected
+    /// once at the same place as the execution-root resolver (composition
+    /// root, once the AcpPool is ready).
+    pub workspace_roots_resolver: Option<WorkspaceRootsResolver>,
     /// Native code session predicate (code_session=true, covering both
     /// temporary and project-bound forms). Used for rendering the work/code
     /// branches of instructions and for tool shaping; lib.rs shares the same
@@ -470,6 +504,10 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field(
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "workspace_roots_resolver",
+                &self.workspace_roots_resolver.as_ref().map(|_| "Some(..)"),
             )
             .field(
                 "code_session_predicate",
@@ -617,6 +655,7 @@ impl Pinvou3Bridge {
             probed_local_kind: None,
             native_window_recheck: false,
             execution_root_resolver: None,
+            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -863,6 +902,24 @@ impl Pinvou3Bridge {
     /// is ready.
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
+    }
+
+    /// Inject the keychain-snapshot resolver; assembled by the app
+    /// composition root at the same place as the execution-root resolver.
+    pub fn set_workspace_roots_resolver(&mut self, resolver: WorkspaceRootsResolver) {
+        self.workspace_roots_resolver = Some(resolver);
+    }
+
+    /// The keychain snapshot locked at session creation (§6): the full
+    /// accessible-root set; empty when no resolver is injected or the session
+    /// has no snapshot (legacy/temporary sessions) — after base normalization
+    /// this is equivalent to `workspace`, leaving the single-root status quo
+    /// unchanged.
+    pub fn session_workspace_roots(&self, session_id: &str) -> Vec<std::path::PathBuf> {
+        self.workspace_roots_resolver
+            .as_ref()
+            .map(|resolver| resolver(session_id))
+            .unwrap_or_default()
     }
 
     /// Inject the native code session predicate (the same SessionAgentStore
@@ -1227,7 +1284,17 @@ impl Pinvou3Bridge {
             .map(|m| m.preset)
             .unwrap_or_else(|| self.prefs.advanced.model_preset.unwrap_or_default());
         match preset {
-            ModelPreset::LocalVllm => "vllm".to_string(),
+            // The probe is the ground truth of what is actually running: a
+            // LocalVllm-preset entry pointed at a Tachyon (驭光) server (the
+            // local-detect flow used to save probed Tachyon candidates with
+            // this preset, and hand-typed entries land here too) must not ride
+            // the vllm arm — Tachyon's tier ladder differs (`high` is a 400,
+            // `max` maps to xhigh), so a wrong arm would re-expose the exact
+            // tiers this PR exists to fix.
+            ModelPreset::LocalVllm => match self.probed_local_kind {
+                Some(LocalServerKind::Tachyon) => "tachyon".to_string(),
+                _ => "vllm".to_string(),
+            },
             ModelPreset::Deepseek => "deepseek".to_string(),
             ModelPreset::Kimi => "moonshot".to_string(),
             ModelPreset::Doubao => "volcengine".to_string(),
@@ -1248,6 +1315,11 @@ impl Pinvou3Bridge {
                 if base_url_uses_local_or_private(&self.base_url()) {
                     match self.probed_local_kind {
                         Some(LocalServerKind::Ollama) => return "ollama".to_string(),
+                        // Tachyon (驭光) speaks the vLLM wire family but its
+                        // tier ladder differs (none/low/medium/xhigh; `high`
+                        // is a 400), so it routes to its own engine provider
+                        // dialect instead of riding the vllm arm.
+                        Some(LocalServerKind::Tachyon) => return "tachyon".to_string(),
                         // SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker
                         // Model Runner all support passthrough of
                         // chat_template_kwargs.enable_thinking and
@@ -1378,6 +1450,19 @@ impl Pinvou3Bridge {
         if provider == "vllm" {
             return Some(SEPARATE_REASONING_FIELD);
         }
+        // The "tachyon" route is NOT a truly custom interface: it only ever
+        // comes from a probed Tachyon (驭光) engine, and that server places
+        // thinking in the separate reasoning_content field whenever its
+        // reasoning parser is enabled (the Tachyon cards ship with one).
+        // Keeping None here would hit the foundation's wildcard-proxy
+        // fallback, which inlines reasoning-only deltas into the answer text.
+        // The engine-side route classifier (provider_accepts_reasoning_content)
+        // already covers catalogued reasoning model ids; this explicit table
+        // value additionally covers served ids the model catalog has not
+        // cataloged yet.
+        if provider == "tachyon" {
+            return Some(SEPARATE_REASONING_FIELD);
+        }
         if matches!(
             provider,
             "deepseek" | "moonshot" | "zai" | "minimax" | "xiaomi-mimo" | "volcengine"
@@ -1451,14 +1536,28 @@ impl Pinvou3Bridge {
     /// thinking injection, see image_capability.rs).
     fn request_reasoning_effort(&self) -> Option<String> {
         let provider = self.provider();
-        // "Local route": the vllm/ollama providers. When the openai wire
-        // points at a local/private endpoint (LM Studio/generic server), the
-        // engine treats reasoning_effort as a no-op, so knowledge-table
+        let effort = self.request_reasoning_effort_for_provider(&provider);
+        // Tachyon (驭光) wire 有效档为 none/low/medium/xhigh：`high` 会被服务端
+        // 400 拒绝。任何来源的 high（旧版本存储的值、always-thinking 知识表
+        // 命中模型在表内原样透传的 high，如本地 kimi-k3）统一防御性归一为
+        // medium；`max` 原样放行，由底座 tachyon 方言映射为 xhigh。
+        if provider == "tachyon" && effort.as_deref() == Some("high") {
+            return Some("medium".to_string());
+        }
+        effort
+    }
+
+    /// [`Self::request_reasoning_effort`] 的档位推导主体；Tachyon 的
+    /// high→medium 归一在公共入口统一收口，这里不做 provider 特判。
+    fn request_reasoning_effort_for_provider(&self, provider: &str) -> Option<String> {
+        // "Local route": the vllm/ollama/tachyon providers. When the openai
+        // wire points at a local/private endpoint (LM Studio/generic server),
+        // the engine treats reasoning_effort as a no-op, so knowledge-table
         // normalization would be ineffective and is skipped (the stored value
         // is still passed through per "explicit user choice wins" below, so it
         // takes effect once a later probe resolves to vllm); precise cloud
         // routes (moonshot/zai etc.) are likewise skipped.
-        let is_local_route = matches!(provider.as_str(), "vllm" | "ollama");
+        let is_local_route = matches!(provider, "vllm" | "ollama" | "tachyon");
         if is_local_route {
             let model = self.effective_model();
             if let Some(spec) = model.and_then(|m| always_thinking_spec(&m.model)) {
@@ -1500,7 +1599,7 @@ impl Pinvou3Bridge {
         {
             return Some(effort.to_string());
         }
-        match provider.as_str() {
+        match provider {
             // Local models default to the lowest thinking tier instead of
             // off: real-world models (Qwen3.8 family etc.) do not reliably
             // honor thinking=off, and a silently-thinking model stalls the
@@ -1519,6 +1618,9 @@ impl Pinvou3Bridge {
             // per-model capability probe if real-machine reports cluster
             // here.
             "vllm" => Some("low".to_string()),
+            // Tachyon 同样取最低可表达档 low（显式 arm，避免落进下方
+            // `_ => Some("high")` 通配——high 在 Tachyon wire 上是 400）。
+            "tachyon" => Some("low".to_string()),
             "ollama" => Some("high".to_string()),
             // Local OpenAI-compatible endpoints (loopback/private-network LM
             // Studio/generic services) are not injected, preserving the old
@@ -1581,10 +1683,11 @@ impl Pinvou3Bridge {
     /// OpenAI-compatible services explicitly pointing at a local loopback
     /// allow no auth; cloud/LAN addresses still require a Key by default.
     pub fn api_key_required(&self) -> bool {
-        // vLLM and Ollama (including probed LAN Ollama) default to no auth and
-        // the foundation also allows an empty key (Ollama officially works out
-        // of the box); loopback endpoints are likewise exempt.
-        !matches!(self.provider().as_str(), "vllm" | "ollama")
+        // vLLM, Tachyon (驭光) and Ollama (including probed LAN Ollama) default
+        // to no auth and the foundation also allows an empty key (Ollama
+        // officially works out of the box); loopback endpoints are likewise
+        // exempt.
+        !matches!(self.provider().as_str(), "vllm" | "tachyon" | "ollama")
             && !base_url_uses_loopback(&self.base_url())
     }
 
@@ -1608,16 +1711,20 @@ impl Pinvou3Bridge {
             }
         }
         if let Some(m) = self.effective_model() {
-            // Local vLLM needs no auth: when the user leaves the key empty,
-            // fall back to local-no-auth (the base requires a non-empty value).
-            let local_endpoint = m.preset == ModelPreset::LocalVllm && self.provider() == "vllm";
+            // Local vLLM/Tachyon needs no auth: when the user leaves the key
+            // empty, fall back to local-no-auth (the base requires a non-empty
+            // value). Tachyon rides the same placeholder — the probe can flip
+            // a LocalVllm entry to the tachyon dialect, and both dialects
+            // tolerate an empty key the same way.
+            let local_endpoint = m.preset == ModelPreset::LocalVllm
+                && matches!(self.provider().as_str(), "vllm" | "tachyon");
             return Self::credential_for_model(m, local_endpoint, "model");
         }
         match (
             self.prefs.advanced.model_preset.unwrap_or_default(),
             self.provider().as_str(),
         ) {
-            (ModelPreset::LocalVllm, "vllm") => LOCAL_VLLM_API_KEY.into(),
+            (ModelPreset::LocalVllm, "vllm" | "tachyon") => LOCAL_VLLM_API_KEY.into(),
             _ => String::new(),
         }
     }
@@ -1877,7 +1984,9 @@ impl Pinvou3Bridge {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
         let inferred_context = crate::core::model_context::resolved_context_window(model);
-        let is_local_vllm = self.provider() == "vllm";
+        // Tachyon (驭光) is a vLLM-family local engine: same 128K no-facts
+        // window fallback and operator-owned endpoint declaration posture.
+        let is_local_vllm = matches!(self.provider().as_str(), "vllm" | "tachyon");
         // The window precedence shares core::model_context's single function
         // with the monitor display (declaration wins, probe min-clamps,
         // inference fills in), so the two paths cannot drift apart by each
@@ -2207,8 +2316,9 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
-            // CodeWhale #54 新增：父仓尚未消费多根授权，解构忽略（见下方
-            // EngineConfig 字面量的空集适配）。
+            // v0.9.12 workspace_roots foundation field: this stage only
+            // enumerates the default shape; the real per-session keychain is
+            // assigned in `build_engine_config_for_session_roots`.
             workspace_roots: _,
         } = EngineConfig::default();
 
@@ -2239,8 +2349,9 @@ impl Pinvou3Bridge {
             // pinvou3 override
             model: self.model(),
             workspace: self.workspace.clone(),
-            // CodeWhale #54 多根授权基建：空集经底座 normalize 后等价单根
-            // （workspace 置于位置 0），保持既有行为。
+            // Compile-time convergence: empty set = primary root only (the
+            // single-root status quo); multi-root keychains are assigned per
+            // session in `build_engine_config_for_session_roots`.
             workspace_roots: Vec::new(),
             session_id: None,
             allow_shell: self.allow_shell(),
@@ -2561,6 +2672,12 @@ impl Pinvou3Bridge {
         cfg.workspace = roots.execution;
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
+        if !is_aux {
+            cfg.instructions.push(InstructionSource::Inline {
+                name: "runtime:scheduled-request-origin".to_string(),
+                content: format!("Current session id: {session_id}. For app-automations keyed retries use this exact id as from_session and reuse the same idempotency_key only for the same operation. The claim is audit provenance, not authorization. Plan mode does not support this MCP family, including reads."),
+            });
+        }
         // Aux sessions skip the main instruction stack entirely: the aux
         // branch below replaces it with the minimal persona, while
         // session_instructions walks the AGENTS.md ancestors and writes the
@@ -2571,6 +2688,18 @@ impl Pinvou3Bridge {
             Vec::new()
         } else {
             self.session_instructions(session_id)
+        };
+        // Keychain snapshot (§6): the roots locked at creation; empty = single root
+        // (base normalize reduces to [workspace]; the base dedups cwd-first). Aux sessions carry
+        // no keychain — empty reads as single-root after base normalize.
+        // Round-21 should-fix 5: the exclusion used to be incidental (the
+        // aux lanes simply never write a snapshot); pin it explicitly so a
+        // stray snapshot written under an aux id can never widen the aux
+        // sandbox, as this comment has always claimed.
+        cfg.workspace_roots = if is_aux {
+            Vec::new()
+        } else {
+            self.session_workspace_roots(session_id)
         };
         // The skill discovery root points at the composed directory per
         // session (skill dual-scope governance: directory content = the
@@ -2657,6 +2786,8 @@ impl Pinvou3Bridge {
         //     takes the global mcp path — the global file is NEVER a
         //     fallback for the scoped surface (it would boot user servers
         //     for an aux engine: a scope escape, ADR-0024 clause 3).
+        // Unattended delegation is scoped by the run's spawn policy in
+        // AppEngine, rather than by the persisted sched- session identity.
         let mut scoped_aux_mcp_path: Option<std::path::PathBuf> = None;
         if is_aux {
             use crate::features::assistant::engine_pool::{AuxToolSurface, aux_tool_surface};
@@ -2898,6 +3029,22 @@ impl Pinvou3Bridge {
         // single-sourced here (messaging imports it — dependency direction
         // messaging -> assistant, never the reverse).
         rules.push(codewhale_execpolicy::ToolAskRule::new(MESSAGING_SEND_TOOL));
+        // Scheduled-task family (docs/builtin-toolset-contract.md §5 L1,
+        // same pattern — and the same honest posture as the send rule
+        // above): the Ask rules are latent pins for the approval-mode
+        // split; they never prompt under the current full-auto approval
+        // (the engine consults ask rules for exec_shell and the file tools
+        // only). The deterministic unattended recursion shield is the
+        // engine-side deny channel (unattended_disallowed_tools). The read
+        // tools (list/read) have no app Ask rule; feature/scope and Plan
+        // mode gates still apply to this MCP family.
+        for tool in [
+            SCHEDULED_TASK_CREATE_TOOL,
+            SCHEDULED_TASK_UPDATE_TOOL,
+            SCHEDULED_TASK_DELETE_TOOL,
+        ] {
+            rules.push(codewhale_execpolicy::ToolAskRule::new(tool));
+        }
         crate::features::assistant::safety_deny_rules::ruleset_with_denied_prefix_promotion(rules)
     }
 
@@ -3082,6 +3229,7 @@ impl Pinvou3Bridge {
             // Write base_url + api_key into the provider config matching the provider
             let provider_config = match provider.as_str() {
                 "vllm" => &mut providers.vllm,
+                "tachyon" => &mut providers.tachyon,
                 "ollama" => &mut providers.ollama,
                 "openai" => &mut providers.openai,
                 "deepseek" => &mut providers.deepseek,
@@ -3122,9 +3270,9 @@ impl Pinvou3Bridge {
             );
         }
         cfg.default_text_model = Some(model);
-        // Local models (vLLM / probed Ollama) default to the lowest thinking
-        // tier (see request_reasoning_effort); everything else defaults to
-        // high.
+        // Local models (vLLM / Tachyon / probed Ollama) default to the lowest
+        // thinking tier (see request_reasoning_effort); everything else
+        // defaults to high.
         cfg.reasoning_effort = self.request_reasoning_effort();
         // Default turn budget: the subagent default step count matches the
         // main turn (2000, i.e. the foundation hard cap). `agent` calls that
@@ -3939,6 +4087,7 @@ impl Pinvou3Bridge {
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
+            workspace_roots_resolver: None,
             image_analyze_always: false,
         }
     }
@@ -4010,6 +4159,43 @@ mod tests {
 
     fn fixture_bridge() -> Pinvou3Bridge {
         Pinvou3Bridge::test_fixture(None)
+    }
+
+    /// Round-34 minor 13: the aux force-empty arm is load-bearing — a
+    /// resolver that DOES return roots for an `aux-` id must still deliver
+    /// an empty keychain (deleting the guard reds this).
+    #[test]
+    fn aux_session_keychain_stays_empty_even_when_the_resolver_returns_roots() {
+        let mut bridge = fixture_bridge();
+        bridge.set_workspace_roots_resolver(std::sync::Arc::new(|_session_id: &str| {
+            vec![
+                std::path::PathBuf::from("/definitely/aux/roots"),
+                std::path::PathBuf::from("/more/aux/roots"),
+            ]
+        }));
+        let roots = crate::features::sessions::SessionRoots {
+            execution: std::path::PathBuf::from("/tmp/aux-exec"),
+            ledger: std::path::PathBuf::from("/tmp/aux-ledger"),
+            bound: true,
+        };
+        let cfg = bridge.build_engine_config_for_session_roots("aux-1", roots);
+        assert!(
+            cfg.workspace_roots.is_empty(),
+            "the aux arm must force-empty regardless of the resolver's answer"
+        );
+        // The non-aux arm still consumes the resolver (the same fixture
+        // proves the resolver is not simply dead).
+        let roots = crate::features::sessions::SessionRoots {
+            execution: std::path::PathBuf::from("/tmp/main-exec"),
+            ledger: std::path::PathBuf::from("/tmp/main-ledger"),
+            bound: true,
+        };
+        let cfg = bridge.build_engine_config_for_session_roots("main-1", roots);
+        assert_eq!(
+            cfg.workspace_roots.len(),
+            2,
+            "non-aux consumes the resolver"
+        );
     }
 
     #[test]
@@ -4852,11 +5038,12 @@ mod tests {
 
         use crate::features::marketplace::ConnectorScope;
         // plain has no disables → no CLI deny rules of its own. The always-on
-        // rules are exactly the cross-session messaging Ask rule (contract
-        // §5 L1); a dev machine's installed skills additionally contribute
-        // their exec_shell deny rules under the plain DenyAll fallback
-        // (#455), so the Ask-action set is pinned here and the rest is
-        // pinned to stay deny-action below — never an exact list equality.
+        // rules are exactly the L1 Ask rules (cross-session messaging send +
+        // the scheduled-task write family, contract §5 L1); a dev machine's
+        // installed skills additionally contribute their exec_shell deny
+        // rules under the plain DenyAll fallback (#455), so the Ask-action
+        // set is pinned here and the rest is pinned to stay deny-action
+        // below — never an exact list equality.
         let rs = bridge.scope_deny_ruleset_with("sess-plain", Vec::new());
         assert_eq!(
             rs.ask_rules
@@ -4864,15 +5051,23 @@ mod tests {
                 .filter(|r| r.action == codewhale_execpolicy::PermissionAction::Ask)
                 .map(|r| r.tool.as_str())
                 .collect::<Vec<_>>(),
-            [MESSAGING_SEND_TOOL],
-            "the only Ask-action rule on a plain session is the messaging rule"
+            [
+                MESSAGING_SEND_TOOL,
+                SCHEDULED_TASK_CREATE_TOOL,
+                SCHEDULED_TASK_UPDATE_TOOL,
+                SCHEDULED_TASK_DELETE_TOOL,
+            ],
+            "the only Ask-action rules on a plain session are the L1 write-family rules"
         );
         assert!(
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
+            "every non-L1 rule stays a deny"
         );
         // Deny command list when all 4 built-in CLI binaries are denied (bare
         // name plus one .exe/.cmd variant each, R4).
@@ -4927,8 +5122,11 @@ mod tests {
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
+            "every non-L1 rule stays a deny"
         );
 
         // code uninitialized → all 4 built-in CLI binaries denied by default (the
@@ -4940,8 +5138,11 @@ mod tests {
             rs.ask_rules
                 .iter()
                 .all(|r| r.action == codewhale_execpolicy::PermissionAction::Deny
-                    || r.tool == MESSAGING_SEND_TOOL),
-            "every non-messaging rule stays a deny"
+                    || r.tool == MESSAGING_SEND_TOOL
+                    || r.tool == SCHEDULED_TASK_CREATE_TOOL
+                    || r.tool == SCHEDULED_TASK_UPDATE_TOOL
+                    || r.tool == SCHEDULED_TASK_DELETE_TOOL),
+            "every non-L1 rule stays a deny"
         );
 
         // code explicitly disables only dingtalk → only dws remains hard-denied
@@ -4972,7 +5173,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()
@@ -5029,7 +5229,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()
@@ -5094,7 +5293,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()
@@ -5158,6 +5356,55 @@ mod tests {
                 .any(|tool| tool == MESSAGING_SEND_TOOL),
             "the Ask rule's tool name must match the manifest registration"
         );
+    }
+
+    /// Scheduled-task creation (docs/builtin-toolset-contract.md §5 L1, the
+    /// app-automations family): the composed ruleset always carries the typed
+    /// Ask rule. Like the messaging rule, it is a latent pin for the pending
+    /// approval-mode split — the engine consults ask rules for exec_shell
+    /// and the file tools only, so it does not prompt under the current
+    /// full-auto posture. The unattended recursion shield is the
+    /// `scheduled_disallowed_tools` channel (engine-side), not this rule;
+    /// the working gates are validation, audit, and the unattended deny
+    /// (see the engine tests). Mirrors the messaging-send test above.
+    #[test]
+    fn scope_deny_ruleset_asks_for_scheduled_task_create() {
+        let bridge = fixture_bridge();
+        let ruleset = bridge.scope_deny_ruleset("sess-plain");
+        let rule = ruleset
+            .ask_rules
+            .iter()
+            .find(|r| r.tool == SCHEDULED_TASK_CREATE_TOOL)
+            .expect("the scheduled task create tool must carry a typed Ask rule");
+        assert_eq!(rule.action, codewhale_execpolicy::PermissionAction::Ask);
+        assert!(
+            rule.command.is_none(),
+            "the ask rule matches any invocation"
+        );
+        // Drift pin: byte-identical to the manifest registration (see the
+        // messaging test for why this lives in assistant).
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("app-automations")
+                .unwrap()
+                .expect("app-automations is in the embedded catalog");
+        assert!(
+            manifest
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == SCHEDULED_TASK_CREATE_TOOL),
+            "the Ask rule's tool name must match the manifest registration"
+        );
+        // The L0 read tools carry no Ask rule: they are read-only and must
+        // not nag the user (only the state-changing tools are gated).
+        for read_tool in [
+            "mcp_app-automations_list_scheduled_tasks",
+            "mcp_app-automations_read_scheduled_task",
+        ] {
+            assert!(
+                !ruleset.ask_rules.iter().any(|r| r.tool == read_tool),
+                "the L0 {read_tool} must stay ungated"
+            );
+        }
     }
 
     /// Channel 3 data source: script directories of scope-disabled skills
@@ -5332,7 +5579,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()
@@ -7157,6 +7403,51 @@ mod tests {
     /// and a caller passing `restrict_tools=false` is still pressed to the
     /// scoped list — never the full catalog — by the `aux-` prefix.
     /// Ordinary sessions are enforced on neither side.
+    /// Round-8 M1(a) (#628), revised per round-33 M8 / round-34 M4: the
+    /// recursion shield rides the engine's disallowed_tools, which a
+    /// model-supplied `agent(inherit_disallowed_tools=false)` would
+    /// otherwise shed (the child keeps MCP + auto_approve while the
+    /// posture lists do not cover the app-automations write tools).
+    /// Round-33 M8 scoped the disable to the UNATTENDED run engine — an
+    /// interactive continuation rebuilds with normal delegation, so this
+    /// test pins that interactive scheduled sessions KEEP subagents. The
+    /// unattended spawn config's disable is pinned at its engine.rs site
+    /// (`unattended_spawn_disables_subagents_in_source`).
+    #[test]
+    fn scheduled_session_spawns_without_subagents() {
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::Deepseek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+            "sk-main",
+        );
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-sched-no-subagents-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = |name: &str| SessionRoots {
+            execution: root.join(format!("{name}-exec")),
+            ledger: root.join(format!("{name}-ledger")),
+            bound: false,
+        };
+        let sched_cfg = bridge.build_engine_config_for_session_roots("sched-run1", roots("sched"));
+        assert!(
+            sched_cfg.subagents_enabled,
+            "interactive scheduled sessions keep the ordinary delegation catalog"
+        );
+        // An ordinary session keeps the delegation surface (the pin's
+        // contrast arm — only the unattended class loses it).
+        let chat_cfg = bridge.build_engine_config_for_session_roots("chat0001", roots("chat"));
+        assert!(
+            chat_cfg.subagents_enabled,
+            "ordinary sessions keep subagents"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn aux_session_tools_are_scoped_read_only_on_spawn_and_send() {
         // The scoped spawn writes the per-aux config under pinvou3_home —
@@ -10398,6 +10689,115 @@ mod tests {
                 providers.vllm.reasoning_stream_style.as_deref(),
                 Some(SEPARATE_REASONING_FIELD),
                 "{kind:?}"
+            );
+        }
+    }
+
+    /// Tachyon (驭光) 探测命中走独立的 engine provider 方言：默认档 low（不落
+    /// `_ => Some("high")` 通配，high 在 Tachyon wire 上是 400）、本地免密、
+    /// providers.tachyon 槽位携带 separate_field 流式风格（reasoning_content
+    /// 解码为思考而非正文）。
+    #[test]
+    fn local_tachyon_maps_to_own_provider_wire_and_default_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3.8",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Tachyon);
+        assert_eq!(bridge.provider(), "tachyon");
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+        assert!(
+            !bridge.api_key_required(),
+            "本地 Tachyon 默认无鉴权，不应强制 key"
+        );
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Tachyon
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.tachyon.reasoning_stream_style.as_deref(),
+            Some(SEPARATE_REASONING_FIELD)
+        );
+        assert_eq!(
+            providers.tachyon.base_url.as_deref(),
+            Some("http://127.0.0.1:8000/v1")
+        );
+    }
+
+    /// LocalVllm 预设条目实际指向 Tachyon 服务器（本地检测流程历史存量与手填
+    /// 条目都会这样落库）：探测是运行真值，provider 必须跟随探测落 tachyon
+    /// 方言，而不是被预设臂钉死在 vllm（vllm 档表会把 max 降级成 high——
+    /// 恰是 Tachyon 上会 400 的值）。
+    #[test]
+    fn local_vllm_preset_follows_a_tachyon_probe() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            "qwen3.8",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        // 未探测时保持既有 LocalVllm → vllm 语义（探测前不改变任何行为）。
+        assert_eq!(bridge.provider(), "vllm");
+        bridge.probed_local_kind = Some(LocalServerKind::Tachyon);
+        assert_eq!(bridge.provider(), "tachyon");
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Tachyon
+        );
+    }
+
+    /// Tachyon 的存量/显式 high 必须防御性归一为 medium（high 会 400），
+    /// max 原样放行（由底座 tachyon 方言映射 xhigh）。
+    #[test]
+    fn local_tachyon_stored_high_normalizes_to_medium_and_max_passes_through() {
+        for (stored, expected) in [("high", "medium"), ("max", "max"), ("low", "low")] {
+            let (_lock, _env) = locked_env(&[
+                "DEEPSEEK_MODEL",
+                "DEEPSEEK_PROVIDER",
+                "DEEPSEEK_BASE_URL",
+                "DEEPSEEK_API_KEY",
+            ]);
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                "qwen3.8",
+                "http://127.0.0.1:8000/v1",
+                "",
+            );
+            bridge.probed_local_kind = Some(LocalServerKind::Tachyon);
+            bridge
+                .prefs
+                .advanced
+                .saved_models
+                .last_mut()
+                .map(|m| m.reasoning_effort = Some(stored.to_string()));
+            assert_eq!(
+                bridge.request_reasoning_effort().as_deref(),
+                Some(expected),
+                "stored {stored} must surface as {expected}"
             );
         }
     }

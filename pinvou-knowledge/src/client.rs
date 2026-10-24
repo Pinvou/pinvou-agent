@@ -449,18 +449,6 @@ impl KnowledgeClient {
             .await
     }
 
-    pub async fn documents(
-        &self,
-        collection_id: i64,
-        include_deleted: bool,
-    ) -> Result<Vec<Document>, String> {
-        self.get(&format!(
-            "/api/v1/collections/{collection_id}/documents?includeDeleted={}",
-            if include_deleted { "true" } else { "false" }
-        ))
-        .await
-    }
-
     pub async fn documents_page(
         &self,
         collection_id: i64,

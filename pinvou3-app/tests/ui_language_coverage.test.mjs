@@ -47,6 +47,7 @@ const chatRaw = source('features/chat/ChatView.jsx');
 const conversationRaw = source('features/conversation/ConversationTimeline.jsx');
 
 for (const language of ['zh', 'en', 'ja']) {
+  assert.equal(typeof dict[language].uiScheduled.targetSession, 'string', `${language}: target-session label is required`);
   for (const section of [
     'uiRemote',
     'uiMonitor',
@@ -77,6 +78,7 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiBuiltinFeatures',
     'uiSessionMention',
     'uiSessionMessage',
+    'uiScheduledTaskTool',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
   }
@@ -92,6 +94,19 @@ for (const language of ['zh', 'en', 'ja']) {
       dict[language].uiBuiltinPlugins.dataAccess['sessions.write'],
       `${language}.uiBuiltinPlugins.dataAccess.sessions.write must exist`,
     );
+    // Round-26 minor 14: the remaining declared scopes were unpinned —
+    // deleting automations.* from all three locales stayed green and the
+    // plugin card fell back to rendering the raw key. Driven from the
+    // app-automations manifest's declared data_access, so a new scope
+    // without localized copy turns red here too.
+    for (const scope of JSON.parse(
+      readFileSync(new URL('../resources/mcp-servers/app-automations/manifest.json', import.meta.url), 'utf8'),
+    ).data_access ?? []) {
+      assert.ok(
+        dict[language].uiBuiltinPlugins.dataAccess[scope],
+        `${language}.uiBuiltinPlugins.dataAccess.${scope} must exist (declared in the app-automations manifest)`,
+      );
+    }
   }
   // 2026-10-18 visual sweep pins. dictJa spreads dictEn, so the section loop
   // above cannot see ja-only gaps: a ja-missing top-level key silently falls
@@ -211,7 +226,7 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const role of ['scout', 'manager', 'builder', 'reviewer', 'general']) {
     assert.ok(multiAgent.roleCards[role], `${language}.uiMultiAgent.roleCards.${role} must exist`);
   }
-  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents', 'spawnedAgentsRowHint', 'runningAgentsTitle', 'runningAgentsCollapse', 'runningAgentsExpand']) {
+  for (const key of ['toggleLabel', 'toggleHint', 'close', 'loadingTranscript', 'emptyTranscript', 'blockedTag', 'pendingTag', 'panelResize', 'panelResizeHint', 'agentsListTitle', 'agentsEmpty', 'backToAgents', 'spawnedAgentsRowHint', 'runningAgentsTitle', 'runningAgentsCollapse', 'runningAgentsExpand']) {
     assert.ok(multiAgent[key], `${language}.uiMultiAgent.${key} must exist`);
   }
   for (const fnKey of ['spawnedAgentsRow', 'runningAgentsCount']) {
@@ -262,6 +277,26 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }
+  // Round-24 minor 9: every uiScheduledTaskTool key pinned like the
+  // uiSessionMention block — the section previously had only the
+  // directional existence check, so a zh-only key deletion stayed green
+  // (the exact drift class this coverage file exists to catch).
+  for (const key of ['listLabel', 'duplicateNote', 'created', 'updated', 'deleted', 'deletedNote', 'pending', 'promptLabel', 'mismatchNote', 'updatedName']) {
+    assert.ok(dict[language].uiScheduledTaskTool[key], `${language}.uiScheduledTaskTool.${key} must exist`);
+  }
+  for (const fnKey of ['limitSuffix', 'nameQuote']) {
+    assert.equal(typeof dict[language].uiScheduledTaskTool[fnKey], 'function', `${language}.uiScheduledTaskTool.${fnKey} must be a function`);
+  }
+  assert.equal(
+    Object.keys(dict[language].uiScheduledTaskTool).length,
+    12,
+    `${language}.uiScheduledTaskTool must hold exactly the 12 pinned keys`,
+  );
+  assert.deepEqual(
+    [...Object.keys(dict[language].uiScheduledTaskTool)].sort((a, b) => a.localeCompare(b)),
+    ['created', 'deleted', 'deletedNote', 'duplicateNote', 'limitSuffix', 'listLabel', 'mismatchNote', 'nameQuote', 'pending', 'promptLabel', 'updated', 'updatedName'],
+    `${language}.uiScheduledTaskTool must be the same key set in every locale`,
+  );
   // agentCard spawning-era keys: 'spawning' died with the inline expert card
   // (the aggregate count row only speaks in past-tense totals).
   assert.equal(multiAgent.agentCard.spawning, undefined, `${language}.uiMultiAgent.agentCard.spawning is retired and must stay deleted`);
@@ -382,8 +417,13 @@ assert.match(viewErrorBoundary, /this\.props\.heading \|\| copy\.viewLoadFailed/
 assert.doesNotMatch(viewErrorBoundary, />设置页加载失败</);
 
 const petWindow = source('features/pet/PetWindow.jsx');
-assert.match(petWindow, /invokeTauri\(['"]get_settings['"]\)/);
-assert.match(petWindow, /listen\(['"]ui:language_changed['"]/);
+// The language follow (get_settings seed + ui:language_changed listener)
+// lives in the shared hook since the FFE7-1 extraction; the pet window must
+// still adopt it and the hook must keep both sides of the contract.
+assert.match(petWindow, /useFollowMainWindowLanguage\(/);
+const followHook = source('hooks/useFollowMainWindowLanguage.js');
+assert.match(followHook, /invokeTauri\(['"]get_settings['"]\)/);
+assert.match(followHook, /listen\(['"]ui:language_changed['"]/);
 assert.match(petWindow, /const petCopy = t\.uiPet/);
 
 assert.match(source('features/monitor/MonitorView.jsx'), /t\.uiMonitor/);

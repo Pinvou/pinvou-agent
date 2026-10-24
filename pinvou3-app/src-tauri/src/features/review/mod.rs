@@ -516,7 +516,7 @@ async fn model_review(
     // configured value; cloud providers are not probed.
     let provider = bridge.provider();
     let preset = review_model_preset(bridge);
-    let model_name = if provider == "vllm" {
+    let model_name = if provider == "vllm" || provider == "tachyon" {
         // The served-name probe uses an inference-same-origin key:
         // authenticated vLLM 401s on /v1/models.
         crate::features::monitor::resolve_served_model(
@@ -633,7 +633,7 @@ fn review_reasoning_dialect(
     use crate::core::reasoning_dialect::{
         ReasoningDialect, kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
     };
-    if provider == "vllm" || preset == ModelPreset::LocalVllm {
+    if provider == "vllm" || provider == "tachyon" || preset == ModelPreset::LocalVllm {
         return ReasoningDialect::VllmChatTemplate;
     }
     if provider == "deepseek" || preset == ModelPreset::Deepseek {

@@ -155,12 +155,12 @@ fn workbook_base_folder<R: Read + Seek>(
     loop {
         match reader.read_event() {
             Ok(Event::Start(element) | Event::Empty(element))
-                if element.local_name().as_ref() == b"Relationship" =>
+                if element.local_name().as_ref() == "Relationship" =>
             {
-                let is_office_document = attr(&element, b"Type")
+                let is_office_document = attr(&element, "Type")
                     .is_some_and(|relationship_type| relationship_type.ends_with("officeDocument"));
                 if is_office_document {
-                    target = attr(&element, b"Target");
+                    target = attr(&element, "Target");
                 }
             }
             Ok(Event::Eof) => break,
@@ -188,17 +188,17 @@ fn formula_cell_span(xml: &str) -> (u64, u64) {
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => match element.local_name().as_ref() {
-                b"c" => {
+                "c" => {
                     current_cell =
-                        attr(&element, b"r").and_then(|reference| parse_cell_reference(&reference));
+                        attr(&element, "r").and_then(|reference| parse_cell_reference(&reference));
                 }
-                b"f" => formula_cell = current_cell,
+                "f" => formula_cell = current_cell,
                 _ => {}
             },
-            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"f" => {
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == "f" => {
                 formula_cell = current_cell;
             }
-            Ok(Event::End(element)) if element.local_name().as_ref() == b"c" => {
+            Ok(Event::End(element)) if element.local_name().as_ref() == "c" => {
                 if let Some((row, col)) = formula_cell.take() {
                     max_row = max_row.max(row);
                     max_col = max_col.max(col);
@@ -259,7 +259,7 @@ fn read_zip_text<R: Read + Seek>(
     Ok(Some(text))
 }
 
-fn attr(element: &BytesStart<'_>, key: &[u8]) -> Option<String> {
+fn attr(element: &BytesStart<'_>, key: &str) -> Option<String> {
     element
         .attributes()
         .with_checks(false)
@@ -274,14 +274,10 @@ fn attr(element: &BytesStart<'_>, key: &[u8]) -> Option<String> {
 }
 
 fn color(element: &BytesStart<'_>) -> Option<String> {
-    if let Some(rgb) = attr(element, b"rgb") {
+    if let Some(rgb) = attr(element, "rgb") {
         return normalized_rgb(&rgb);
     }
-    for (key, label) in [
-        (b"indexed".as_slice(), "indexed"),
-        (b"theme".as_slice(), "theme"),
-        (b"auto".as_slice(), "auto"),
-    ] {
+    for (key, label) in [("indexed", "indexed"), ("theme", "theme"), ("auto", "auto")] {
         if let Some(value) = attr(element, key) {
             return Some(format!("{label}:{value}"));
         }
@@ -311,9 +307,9 @@ fn apply_fill_element(current_fill: &mut Option<Fill>, element: &BytesStart<'_>)
         return;
     };
     match element.local_name().as_ref() {
-        b"patternFill" => fill.pattern = attr(element, b"patternType"),
-        b"fgColor" => fill.foreground = color(element),
-        b"bgColor" => fill.background = color(element),
+        "patternFill" => fill.pattern = attr(element, "patternType"),
+        "fgColor" => fill.foreground = color(element),
+        "bgColor" => fill.background = color(element),
         _ => {}
     }
 }
@@ -330,15 +326,15 @@ fn parse_style_fills(xml: &str) -> Result<Vec<Option<String>>, String> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(element)) => match element.local_name().as_ref() {
-                b"fills" => in_fills = true,
-                b"fill" if in_fills => current_fill = Some(Fill::default()),
-                b"patternFill" | b"fgColor" | b"bgColor" => {
+                "fills" => in_fills = true,
+                "fill" if in_fills => current_fill = Some(Fill::default()),
+                "patternFill" | "fgColor" | "bgColor" => {
                     apply_fill_element(&mut current_fill, &element);
                 }
-                b"cellXfs" => in_cell_xfs = true,
-                b"xf" if in_cell_xfs => {
+                "cellXfs" => in_cell_xfs = true,
+                "xf" if in_cell_xfs => {
                     cell_fill_ids.push(
-                        attr(&element, b"fillId")
+                        attr(&element, "fillId")
                             .and_then(|value| value.parse::<usize>().ok())
                             .unwrap_or(0),
                     );
@@ -348,13 +344,13 @@ fn parse_style_fills(xml: &str) -> Result<Vec<Option<String>>, String> {
             Ok(Event::Empty(element)) => match element.local_name().as_ref() {
                 // `<fill/>`（空填充）是合法 OOXML：跳过入列会让后续 fillId
                 // 整体错位，静默产出错误的填充标注。
-                b"fill" if in_fills => fills.push(current_fill.take().unwrap_or_default()),
-                b"patternFill" | b"fgColor" | b"bgColor" => {
+                "fill" if in_fills => fills.push(current_fill.take().unwrap_or_default()),
+                "patternFill" | "fgColor" | "bgColor" => {
                     apply_fill_element(&mut current_fill, &element);
                 }
-                b"xf" if in_cell_xfs => {
+                "xf" if in_cell_xfs => {
                     cell_fill_ids.push(
-                        attr(&element, b"fillId")
+                        attr(&element, "fillId")
                             .and_then(|value| value.parse::<usize>().ok())
                             .unwrap_or(0),
                     );
@@ -362,9 +358,9 @@ fn parse_style_fills(xml: &str) -> Result<Vec<Option<String>>, String> {
                 _ => {}
             },
             Ok(Event::End(element)) => match element.local_name().as_ref() {
-                b"fill" if in_fills => fills.push(current_fill.take().unwrap_or_default()),
-                b"fills" => in_fills = false,
-                b"cellXfs" => in_cell_xfs = false,
+                "fill" if in_fills => fills.push(current_fill.take().unwrap_or_default()),
+                "fills" => in_fills = false,
+                "cellXfs" => in_cell_xfs = false,
                 _ => {}
             },
             Ok(Event::Eof) => break,
@@ -386,10 +382,9 @@ fn parse_relationship_targets(xml: &str) -> Result<HashMap<String, String>, Stri
     loop {
         match reader.read_event() {
             Ok(Event::Start(element) | Event::Empty(element))
-                if element.local_name().as_ref() == b"Relationship" =>
+                if element.local_name().as_ref() == "Relationship" =>
             {
-                if let (Some(id), Some(target)) = (attr(&element, b"Id"), attr(&element, b"Target"))
-                {
+                if let (Some(id), Some(target)) = (attr(&element, "Id"), attr(&element, "Target")) {
                     targets.insert(id, target);
                 }
             }
@@ -408,9 +403,9 @@ fn parse_sheets(xml: &str) -> Result<Vec<(String, String)>, String> {
     loop {
         match reader.read_event() {
             Ok(Event::Start(element) | Event::Empty(element))
-                if element.local_name().as_ref() == b"sheet" =>
+                if element.local_name().as_ref() == "sheet" =>
             {
-                if let (Some(name), Some(id)) = (attr(&element, b"name"), attr(&element, b"id")) {
+                if let (Some(name), Some(id)) = (attr(&element, "name"), attr(&element, "id")) {
                     sheets.push((name, id));
                 }
             }
@@ -444,10 +439,10 @@ fn parse_sheet_annotations(
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(element)) if element.local_name().as_ref() == b"c" => {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == "c" => {
                 if let (Some(cell), Some(style_id)) = (
-                    attr(&element, b"r"),
-                    attr(&element, b"s").and_then(|value| value.parse::<usize>().ok()),
+                    attr(&element, "r"),
+                    attr(&element, "s").and_then(|value| value.parse::<usize>().ok()),
                 ) {
                     if let Some(Some(fill)) = style_fills.get(style_id) {
                         if style_cell_count < MAX_STYLE_CELLS {
@@ -463,10 +458,10 @@ fn parse_sheet_annotations(
                     }
                 }
             }
-            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"c" => {
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == "c" => {
                 if let (Some(cell), Some(style_id)) = (
-                    attr(&element, b"r"),
-                    attr(&element, b"s").and_then(|value| value.parse::<usize>().ok()),
+                    attr(&element, "r"),
+                    attr(&element, "s").and_then(|value| value.parse::<usize>().ok()),
                 ) {
                     if let Some(Some(fill)) = style_fills.get(style_id) {
                         if style_cell_count < MAX_STYLE_CELLS {
@@ -483,9 +478,9 @@ fn parse_sheet_annotations(
                 }
             }
             Ok(Event::Start(element) | Event::Empty(element))
-                if element.local_name().as_ref() == b"mergeCell" =>
+                if element.local_name().as_ref() == "mergeCell" =>
             {
-                if let Some(range) = attr(&element, b"ref") {
+                if let Some(range) = attr(&element, "ref") {
                     if annotations.merged_ranges.len() < MAX_MERGED_RANGES {
                         annotations.merged_ranges.push(flatten_text(&range));
                     } else {

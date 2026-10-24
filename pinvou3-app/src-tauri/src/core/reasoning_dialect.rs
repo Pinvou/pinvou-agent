@@ -22,9 +22,11 @@ use serde_json::{Value, json};
 /// `None / ThinkingDisabled / QwenEnableThinking / Minimax` 可由
 /// [`reasoning_dialect_from_base_url`] 从 URL 嗅探得出。
 ///
-/// `VllmChatTemplate` 只能由调用方按 `provider`/`preset`（`vllm` /
+/// `VllmChatTemplate` 只能由调用方按 `provider`/`preset`（`vllm` / `tachyon` /
 /// `LocalVllm`）判定，永远不来自 URL 嗅探；它留在统一枚举里是为了让
 /// 各 feature 的 dispatch 直接返回本类型，免去各自的本地枚举与 `From` 转换。
+/// Tachyon（驭光）的 off 开关与 vLLM 逐字节相同（`enable_thinking=false`），
+/// 共用此变体。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningDialect {
     None,

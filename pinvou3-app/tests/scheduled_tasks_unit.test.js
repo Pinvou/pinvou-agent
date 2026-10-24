@@ -353,11 +353,12 @@ assert.ok(
     !/data-testid="scheduled-live-mode"/.test(indexHtml) &&
     /function scheduledTaskBackendInput\(input\)/.test(tauriBridge) &&
     /(?:var|const|let) backendInput = \{ mode: "yolo" \}/.test(tauriBridge) &&
-    // createScheduledTask stayed in bridge/scheduled.js (web 版本不同未被去重)，
-    // updateScheduledTask 已随 dedup 合并进 bridge-shared-helpers.js 的 sharedBridgeBase（单一共享实现）。
-    // 拦截点本身仍是同一份 scheduledTaskBackendInput：mode 必须只在这里被强制为 "yolo"。
-    (scheduledBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 2 &&
-    (bridgeSharedHelpers.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 1,
+    // lane-merge wave 3: createScheduledTask 也已随 FE14 合并进
+    // bridge-shared-helpers.js 的 sharedBridgeBase（updateScheduledTask 早已合并）；
+    // 两个共享写路径都经由 deps 注入的同一份 scheduledTaskBackendInput ——
+    // mode 必须只在这一个拦截点被强制为 "yolo"。
+    (scheduledBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 1 &&
+    (bridgeSharedHelpers.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 2,
   'scheduled tasks should hide mode controls and force Yolo on every write'
 );
 assert.ok(
@@ -7962,6 +7963,46 @@ async function completedRunReopenPreservesStreamingFollowup() {
   );
 }
 
+// Round-6 M-1 (PR#629): the completed-run row's delivered sentence is
+// composed exactly ONCE — the view passes the DTO's bare deliveredTarget
+// id to the locale copy fn. The round-5 shape pre-composed English in the
+// backend summary and the panel composed again ("delivered to session
+// delivered to session X", backend English in zh/ja).
+async function scheduledDeliveredTargetCompositionBehavior() {
+  const viewSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'features', 'scheduled', 'scheduled-message-display.jsx'),
+    'utf8',
+  );
+  // Round-7 M-C: count RAW occurrences, not /deliveredTo\([^)]*\)/ matches —
+  // the regex cannot cross the nested ')', so the round-6 form survived
+  // exactly the doubling bug it cited (deliveredTo(delve…(x)) collapsed to
+  // one match). The nested replay produces two raw occurrences.
+  const occurrences = viewSource.split('deliveredTo(').length - 1;
+  assert.strictEqual(occurrences, 1, 'exactly one deliveredTo composition site');
+  assert.ok(
+    viewSource.includes('copy.deliveredTo(item.deliveredTarget)'),
+    'the view passes the DTO field bare (single, unnested call)',
+  );
+  for (const locale of ['en', 'zh', 'ja']) {
+    const dict = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'shared', 'i18n', locale + '.js'),
+      'utf8',
+    );
+    const match = dict.match(/deliveredTo:id=>`([^`]*)`/);
+    assert.ok(match, locale + ' has a deliveredTo template');
+    assert.ok(
+      match[1].includes('${id}'),
+      locale + ' composes the sentence around the bare id',
+    );
+    if (locale !== 'en') {
+      assert.ok(
+        !match[1].includes('delivered to session'),
+        locale + ' does not stack the backend English sentence',
+      );
+    }
+  }
+}
+
 async function scheduledTaskWriteSanitizationBehavior() {
   const harness = createBridgeHarness();
   let createInput = null;
@@ -9153,6 +9194,7 @@ Promise.resolve()
   .then(scheduledRunRecordSessionActionsBehavior)
   .then(scheduledSessionPersistenceBehavior)
   .then(scheduledDraftModelBehavior)
+  .then(scheduledDeliveredTargetCompositionBehavior)
   .then(scheduledTaskWriteSanitizationBehavior)
   .then(remoteSessionDeletionConvergesPresentationState)
   .then(function () { console.log('PASS scheduled tasks unit'); })

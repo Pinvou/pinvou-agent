@@ -33,9 +33,9 @@ fi
 NODE_VERSION="24.22.0"
 CODEX_ACP_VERSION="2.2.2"
 CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
-CLAUDE_ACP_VERSION="0.93.0"
+CLAUDE_ACP_VERSION="0.94.0"
 CLAUDE_ACP_PACKAGE="@agentclientprotocol/claude-agent-acp"
-CLAUDE_SDK_VERSION="0.3.300"
+CLAUDE_SDK_VERSION="0.3.303"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 
 # Print one string field of manifest.json on stdout.
@@ -146,8 +146,9 @@ bridge_runtime_valid() {
     # versions in OUT_DIR therefore proves that the runtime passed the
     # executing validation and that all three moves completed.
     #
-    # All three versions (Node and both ACP packages) are compared, so bumping
-    # any single one invalidates the old staging. The proof only covers the
+    # All four pinned versions (Node, both ACP packages and the Claude SDK the
+    # bridge lock resolves) are compared, so bumping any single one invalidates
+    # the old staging. The proof only covers the
     # build sequence: files changed in OUT_DIR between two builds (corrupt but
     # still non-empty) are not detected; the executing validation runs fully
     # only right after preparation.
@@ -156,6 +157,8 @@ bridge_runtime_valid() {
     [ "$(manifest_field "$root/manifest.json" codex_acp_version)" = "$CODEX_ACP_VERSION" ] \
       || return 1
     [ "$(manifest_field "$root/manifest.json" claude_acp_version)" = "$CLAUDE_ACP_VERSION" ] \
+      || return 1
+    [ "$(manifest_field "$root/manifest.json" claude_sdk_version)" = "$CLAUDE_SDK_VERSION" ] \
       || return 1
     return 0
   fi

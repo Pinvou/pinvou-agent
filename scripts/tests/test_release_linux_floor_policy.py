@@ -31,6 +31,32 @@ def _without_yaml_comments(block):
     )
 
 
+def _without_inline_comments(block):
+    # PR #745 round-4 review (MINOR): positive pins must judge live lines
+    # only — a literal that survives as a trailing comment on another live
+    # line must not keep the pin green. Absence pins stay on
+    # `_without_yaml_comments`: a comment discussing a retired idiom must
+    # not false-red them (documented polarity, mirrored in
+    # test_ci_gate_policy's `_without_inline_comments`).
+    stripped_lines = []
+    for line in block.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        quote = None
+        cut = len(line)
+        for index, char in enumerate(line):
+            if quote is not None:
+                if char == quote:
+                    quote = None
+            elif char in ("'", '"'):
+                quote = char
+            elif char == "#" and index > 0 and line[index - 1] in (" ", "\t"):
+                cut = index
+                break
+        stripped_lines.append(line[:cut].rstrip())
+    return "\n".join(stripped_lines)
+
+
 class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
     def setUp(self):
         self.workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -144,6 +170,26 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
             self.assertEqual(
                 job.count(upload_name), 2, f"{arch}: unified deb name must appear in both upload paths"
             )
+
+    def test_x64_rename_uses_literal_name_with_fail_loud_guard(self):
+        # PR #745 aligned the x64 rename with the other platforms: the
+        # literal VERSION-named deb plus an explicit test -f guard with a
+        # directory dump. The previous $(ls pinvou3_*.deb) glob failed
+        # opaquely on a surprise second match (mv with a newline-joined
+        # argument); the literal name turns any mismatch into an explicit
+        # test -f failure naming the expected file.
+        # Inline-stripped positives (round-4 review): the live line being
+        # commented out (with the literal kept in the comment) must red
+        # this pin, so the asserts judge comment-stripped text.
+        live = _without_inline_comments(self.x64_job)
+        self.assertIn('SRC="pinvou3_${VERSION}_amd64.deb"', live)
+        self.assertIn(
+            'test -f "$SRC" || { echo "❌ deb 产物不存在: $SRC"; ls -la; exit 1; }',
+            live,
+        )
+        # Comment-stripped: a policy comment naming the retired idiom must
+        # not false-red the absence pin (same rule as the rust-cache pins).
+        self.assertNotIn("ls pinvou3_", _without_yaml_comments(self.x64_job))
 
     def test_guard_script_defaults_to_per_arch_glibc_floors(self):
         # The wrapper takes the floor as the optional third argument and

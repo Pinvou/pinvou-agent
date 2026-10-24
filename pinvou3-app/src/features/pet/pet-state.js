@@ -1,4 +1,4 @@
-import { dict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 
 const ACTIVITY_PRIORITY = Object.freeze({
   waiting: 0,
@@ -88,21 +88,32 @@ function errorText(payload) {
 
 // 活动卡正文与标题兜底默认中文；UI 边界(PetWindow)按当前语言从 i18n 的
 // uiPet 命名空间注入同形 copy，键名与词条一一对应。
-const DEFAULT_ACTIVITY_COPY = Object.freeze({
-  activityThinking: dict.zh.uiPet.activityThinking,
-  activityProcessing: dict.zh.uiPet.activityProcessing,
-  activityUsingTool: dict.zh.uiPet.activityUsingTool,
-  activityCallingTool: dict.zh.uiPet.activityCallingTool,
-  activityContinuing: dict.zh.uiPet.activityContinuing,
-  activityInputNeeded: dict.zh.uiPet.activityInputNeeded,
-  activityTaskFailed: dict.zh.uiPet.activityTaskFailed,
-  activityTaskDone: dict.zh.uiPet.activityTaskDone,
-  activityStartFailed: dict.zh.uiPet.activityStartFailed,
-  activityTitleFallback: dict.zh.uiPet.activityTitleFallback,
-});
+// zhuowp round-43 P1: the module evaluates at import time on the pet
+// window's cold path — before ensureLanguage fills dict.zh — so the
+// frozen table cannot dereference zhDict() eagerly. Resolve lazily at
+// call time; the keys match the uiPet namespace verbatim.
+const ACTIVITY_COPY_KEYS = Object.freeze([
+  'activityThinking',
+  'activityProcessing',
+  'activityUsingTool',
+  'activityCallingTool',
+  'activityContinuing',
+  'activityInputNeeded',
+  'activityTaskFailed',
+  'activityTaskDone',
+  'activityStartFailed',
+  'activityTitleFallback',
+]);
+function defaultActivityCopy() {
+  const zh = zhDict().uiPet || {};
+  const copy = {};
+  for (const key of ACTIVITY_COPY_KEYS) copy[key] = zh[key] || key;
+  return copy;
+}
 
 /** Apply a broadcast chat/pet event to the lightweight per-session activity model. */
-export function applyEvent(state, name, payload, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
+export function applyEvent(state, name, payload, now = Date.now(), copy = null) {
+  copy = copy || defaultActivityCopy();
   const sid = sessionPayloadId(payload);
   if (!sid) return false;
 
@@ -193,7 +204,7 @@ export function applyEvent(state, name, payload, now = Date.now(), copy = DEFAUL
   }
 }
 
-export function syncSessionTitles(state, sessions) {
+function syncSessionTitles(state, sessions) {
   if (!Array.isArray(sessions)) return false;
   const next = new Map();
   for (const session of sessions) {
@@ -228,10 +239,12 @@ export function removeSessionActivity(state, sid) {
 function pruneExpired(state, now) {
   for (const [sid, activity] of state.sessions) {
     const ttl = ACTIVITY_TTL_MS[activity.status];
-    if (!ttl || now - activity.updatedAt > ttl) {
-      state.sessions.delete(sid);
-      if (state.pendingRemoval) state.pendingRemoval.delete(sid);
+    if (!(!ttl || now - activity.updatedAt > ttl)) {
+      continue;
     }
+
+    state.sessions.delete(sid);
+    if (state.pendingRemoval) state.pendingRemoval.delete(sid);
   }
   // 快照宽限期收尾：标记后一直没有任何事件(会话真消失)才真正删卡。
   if (state.pendingRemoval && state.pendingRemoval.size) {
@@ -246,7 +259,8 @@ function pruneExpired(state, now) {
   }
 }
 
-export function deriveActivities(state, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
+export function deriveActivities(state, now = Date.now(), copy = null) {
+  copy = copy || defaultActivityCopy();
   pruneExpired(state, now);
   return [...state.sessions.values()]
     .map((activity) => ({
@@ -280,7 +294,8 @@ export function markSessionViewed(state, sid, { completed = false } = {}) {
  * 旧快照直接丢弃；working:false 的 running 卡先进入宽限期待删标记，
  * 事件流(chat:done / chat:delta 等)到达即取消，宽限期后仍无事件才真正删除。
  */
-export function applyActivitySnapshot(state, sessions, sequence, now = Date.now(), copy = DEFAULT_ACTIVITY_COPY) {
+export function applyActivitySnapshot(state, sessions, sequence, now = Date.now(), copy = null) {
+  copy = copy || defaultActivityCopy();
   if (!Array.isArray(sessions)) return false;
   const snapshotSequence = Number(sequence);
   if (Number.isFinite(snapshotSequence) && snapshotSequence > 0) {

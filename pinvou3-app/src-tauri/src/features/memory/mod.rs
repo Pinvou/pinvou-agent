@@ -26,10 +26,10 @@ mod util;
 
 // ---- 实体类型与 trait（types）----
 pub use self::types::{
-    InjectedMemoryItem, MemoryProfile, MemoryReviewModel, MemoryReviewOutcome, MemorySuggestion,
-    MemoryTextPatch, MemoryWriteEvent, NeverMemoryItem, PendingMemoryItem, PreferenceFile,
-    ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RuntimeMemorySnapshot,
-    TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture, WorkContextFile,
+    MemoryProfile, MemoryReviewModel, MemorySuggestion, MemoryTextPatch, MemoryWriteEvent,
+    NeverMemoryItem, PendingMemoryItem, PreferenceFile, ProfileConventions, ProfileIdentity,
+    ProfilePatch, RecentWorkItem, RuntimeMemorySnapshot, TimedMemoryItem, TopicMutation, TopicRead,
+    TurnMemoryCapture, WorkContextFile,
 };
 // Round-40 review: the CLI's `memory profile set` refuses a label the
 // profile normalization would silently empty, by value — a replicated rule
@@ -82,6 +82,16 @@ pub use self::util::clean_candidate_sentence;
 // review).
 pub use self::io::{PREFERENCE_TEXT_MAX_CHARS, TIMED_TEXT_MAX_CHARS};
 pub use self::util::clean_text;
+// The CLI's `pending confirm` marker gate and `pending never` duplicate
+// pre-check must resolve the argv id exactly as `confirm_pending_memory`
+// does; this re-export replaces the CLI's hand mirror of the id pipeline.
+pub use self::util::clean_id;
+// The pending-queue content cap, the never-store reason cap and the default
+// preference topic: the CLI's add/never lanes must report truncation and
+// predict row ids/topics against the values the store really applies, so
+// these re-exports replace the CLI's disclosed plain-literal mirrors.
+pub use self::io::{NEVER_REASON_MAX_CHARS, PENDING_CONTENT_MAX_CHARS};
+pub use self::types::DEFAULT_PREFERENCE_TOPIC;
 // Round-45 review: the CLI's content-entry lanes that can render into the
 // model-visible block (`memory add`, `update`) refuse text carrying a
 // memory-block marker — the same boundary the organize validator and review

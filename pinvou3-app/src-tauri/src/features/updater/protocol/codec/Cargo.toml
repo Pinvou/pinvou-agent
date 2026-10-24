@@ -10,14 +10,14 @@ license = "MIT"
 # Reuse the exact parent validator/backend graph; embedded V1 resources only.
 jsonschema = { version = "=0.46.10", default-features = false }
 serde = "=1.0.229"
-serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 serde_jcs = "=0.2.0"
 base64 = "0.22"
 sha2 = "0.11"
 
 [dev-dependencies]
 # Exercise the same unified JSON behavior as the actual App/CLI graphs.
-serde_json = { version = "=1.0.151", features = ["preserve_order", "raw_value"] }
+serde_json = { version = "=1.0.154", features = ["preserve_order", "raw_value"] }
 indexmap = "=2.14.0"
 
 [lints.rust]

@@ -87,3 +87,10 @@ test("relay changes select the web UI smoke", () => {
     ["npm:test:ui-smoke", "npm:test:webui"],
   );
 });
+
+test("wrapper-only changes select the web UI smoke plus the core smoke", () => {
+  assert.deepEqual(
+    labels(selectFrontendSmokes(["pinvou3-app/scripts/run-webui-smoke.mjs"])),
+    ["npm:test:ui-smoke", "npm:test:webui"],
+  );
+});

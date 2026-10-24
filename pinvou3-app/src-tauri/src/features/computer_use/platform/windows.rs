@@ -73,7 +73,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetDesktopWindow, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
-use xcap::Monitor;
 
 use super::super::backend::ComputerUseBackend;
 use super::super::guard::raw_element_binding;
@@ -82,39 +81,13 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints, map_scroll,
-    normalize_typed_newlines, sanitize_name, screening_hit, split_type_runs,
+    CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
+    DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS, MAX_NAME_CHARS,
+    MAX_TREE_DEPTH, MAX_TREE_NODES, MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun,
+    combine_drag_errors, drag_waypoints, map_scroll, map_xcap_err, normalize_typed_newlines,
+    pick_monitor, release_reverse, sanitize_name, screening_hit, split_type_runs,
 };
 
-/// Wait before a click so the previous move has settled (the target process consumes mouse
-/// move events).
-const CLICK_SETTLE_MS: u64 = 30;
-/// Interval between adjacent clicks of a double/triple click (far below the system 500ms
-/// double-click threshold).
-const MULTI_CLICK_INTERVAL_MS: u64 = 40;
-/// Pause after the drag press and before movement starts, giving the target window time to
-/// enter drag-recognition state.
-const DRAG_PRESS_SETTLE_MS: u64 = 60;
-/// Number of interpolated steps along the drag path (some apps only recognize a drag after
-/// receiving enough motion events).
-const DRAG_STEPS: usize = 8;
-/// Interval between adjacent drag waypoints.
-const DRAG_STEP_DELAY_MS: u64 = 12;
-/// Pause between pressing all keys and releasing them in reverse, improving the hit rate of
-/// modifier chords (alt+Tab etc.).
-const CHORD_HOLD_MS: u64 = 20;
-/// Granularity of the hold_key sleep: a stop/timeout cancel flag is polled at least this
-/// often, so an abandoned hold stops within this window instead of the full hold duration.
-const HOLD_CANCEL_POLL_MS: u64 = 100;
-
-/// `ui_tree` defaults/caps: depth and node count (prevents giant trees from overwhelming the
-/// worker thread and the text budget).
-const DEFAULT_TREE_MAX_DEPTH: u32 = 8;
-const DEFAULT_TREE_MAX_NODES: u32 = 400;
-const MAX_TREE_DEPTH: u32 = 24;
-const MAX_TREE_NODES: u32 = 2000;
-/// Character cap for a single name line.
-const MAX_NODE_NAME_CHARS: usize = 80;
 /// Defensive cap for climbing from the focused element up to its owning window.
 const MAX_ANCESTOR_CLIMB: u32 = 16;
 
@@ -275,10 +248,6 @@ fn check_injection(context: &str, requested: u32, sent: u32) -> Result<(), Compu
          secure desktop (lock screen / UAC prompt) is active; \
          run Pinvou elevated or use an unelevated target window"
     )))
-}
-
-fn map_xcap_err(context: &str, err: xcap::XCapError) -> ComputerUseError {
-    ComputerUseError::failed(format!("{context}: {err}"))
 }
 
 /// BitBlts one monitor's pixels into an RGBA buffer, replicating xcap 0.9.8's
@@ -571,7 +540,7 @@ fn format_tree_line(
         &element
             .get_cached_name()
             .map_err(|e| map_uia_err("ui_tree name", e))?,
-        MAX_NODE_NAME_CHARS,
+        MAX_NAME_CHARS,
     );
     let rect = element
         .get_cached_bounding_rectangle()
@@ -625,7 +594,7 @@ fn element_info_from_cache(
     let secure = element
         .is_cached_password()
         .map_err(|e| map_uia_err(&format!("{context} password"), e))?;
-    let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
+    let display_name = sanitize_name(&name, MAX_NAME_CHARS);
     let role = format!("{control_type:?}");
     // Bound while the raw strings are still in scope (see `raw_binding`).
     // Disclosed collapse: an element whose cached name is empty binds
@@ -807,28 +776,6 @@ impl WindowsComputerUseBackend {
         })
     }
 
-    /// Pick the monitor to capture: the screen under the cursor, falling back to the primary
-    /// screen, and finally degrading to the first screen.
-    fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<Monitor, ComputerUseError> {
-        if let Some((x, y)) = cursor {
-            if let Ok(monitor) = Monitor::from_point(x, y) {
-                return Ok(monitor);
-            }
-        }
-        let mut monitors =
-            Monitor::all().map_err(|err| map_xcap_err("cannot enumerate monitors", err))?;
-        if let Some(primary) = monitors
-            .iter()
-            .position(|m| m.is_primary().unwrap_or(false))
-        {
-            return Ok(monitors.swap_remove(primary));
-        }
-        monitors
-            .drain(..)
-            .next()
-            .ok_or_else(|| ComputerUseError::unavailable("no monitor available for screen capture"))
-    }
-
     /// Property cache request: merges many per-node cross-process COM round-trips into a
     /// single batched read. `scope` gives the tree range of the cached fetch (`ui_tree`'s
     /// per-node descent needs the element **and** its children; single-element reads need
@@ -927,23 +874,6 @@ impl WindowsComputerUseBackend {
         Ok(current)
     }
 
-    /// Release the pressed keys in reverse; even on a mid-way error, best-effort release
-    /// everything and return the first error.
-    fn release_reverse(pressed: &[enigo::Key], enigo: &mut Enigo) -> Result<(), enigo::InputError> {
-        let mut first_err = None;
-        for key in pressed.iter().rev() {
-            if let Err(err) = enigo.key(*key, Direction::Release) {
-                if first_err.is_none() {
-                    first_err = Some(err);
-                }
-            }
-        }
-        match first_err {
-            Some(err) => Err(err),
-            None => Ok(()),
-        }
-    }
-
     /// Press all keys (rolling back those already pressed on error), pause, then release in reverse.
     fn chord(&mut self, keys: &[Key], hold: Duration) -> Result<(), ComputerUseError> {
         let mut pressed: Vec<enigo::Key> = Vec::with_capacity(keys.len());
@@ -962,12 +892,12 @@ impl WindowsComputerUseBackend {
                 Err(err) => {
                     // Chord resolution failed midway: release the pressed modifiers first to
                     // avoid stuck keys.
-                    let _ = Self::release_reverse(&pressed, &mut self.enigo);
+                    let _ = release_reverse(&pressed, &mut self.enigo);
                     return Err(err);
                 }
             };
             if let Err(err) = self.enigo.key(mapped, Direction::Press) {
-                let _ = Self::release_reverse(&pressed, &mut self.enigo);
+                let _ = release_reverse(&pressed, &mut self.enigo);
                 return Err(map_input_err("key press", err));
             }
             pressed.push(mapped);
@@ -983,7 +913,7 @@ impl WindowsComputerUseBackend {
                 .as_ref()
                 .is_some_and(|flag| flag.load(Ordering::SeqCst))
             {
-                let _ = Self::release_reverse(&pressed, &mut self.enigo);
+                let _ = release_reverse(&pressed, &mut self.enigo);
                 return Err(ComputerUseError::unavailable(
                     "hold was cancelled (caller timeout or stop); the keys have been released",
                 ));
@@ -992,8 +922,7 @@ impl WindowsComputerUseBackend {
             sleep(step);
             remaining -= step;
         }
-        Self::release_reverse(&pressed, &mut self.enigo)
-            .map_err(|err| map_input_err("key release", err))
+        release_reverse(&pressed, &mut self.enigo).map_err(|err| map_input_err("key release", err))
     }
 
     /// Multi-monitor-correct absolute movement: calls `SendInput` directly via windows-sys,
@@ -1053,7 +982,7 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
 
     fn capture(&mut self) -> Result<Capture, ComputerUseError> {
         let cursor = self.cursor_position().ok();
-        let monitor = Self::pick_monitor(cursor)?;
+        let monitor = pick_monitor(cursor)?;
         let origin_x = monitor
             .x()
             .map_err(|err| map_xcap_err("monitor origin", err))?;
@@ -1331,6 +1260,8 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use xcap::Monitor;
 
     /// Unwrap [`MappedKey::Key`] (test helper).
     fn unwrap_mapped(plan: Result<MappedKey, ComputerUseError>) -> Option<enigo::Key> {

@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["chat-events"] = function (context) {let pinvouSharedtauriChatEventsCache = null;
 function pinvouSharedtauriChatEvents() {
-  if (!pinvouSharedtauriChatEventsCache) pinvouSharedtauriChatEventsCache = window.PinvouBridgeShared.create("tauriChatEvents", { state });
+  if (!pinvouSharedtauriChatEventsCache) pinvouSharedtauriChatEventsCache = window.PinvouBridgeShared.create("tauriChatEvents", { state, addChatItem, bt, flushPendingTextBlock, autoCreateScheduledTaskDraft, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning });
   return pinvouSharedtauriChatEventsCache;
 }
 
@@ -22,6 +22,7 @@ function pinvouSharedtauriChatEvents() {
     const sessionStates = context.sessionStates;
     const renderMarkdown = context.renderMarkdown;
     const bt = context.bt;
+    const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
     const onSessionEvent = context.onSessionEvent;
     const runSyncOnSession = context.runSyncOnSession;
     // 权威 modeState 写回收敛点（bridge.js 共享，评审 P1）：事件负载携带的
@@ -68,15 +69,7 @@ function pinvouSharedtauriChatEvents() {
     const STREAM_NOTIFY_MAX_WAIT_MS = 32;
     const pendingStreamNotifications = Object.create(null);
 
-    function cancelPendingStreamNotify(sid) {
-      const pending = sid && pendingStreamNotifications[sid];
-      if (!pending) return;
-      if (pending.frame !== null && typeof window.cancelAnimationFrame === "function") {
-        window.cancelAnimationFrame(pending.frame);
-      }
-      if (pending.timer !== null && typeof clearTimeout === "function") clearTimeout(pending.timer);
-      delete pendingStreamNotifications[sid];
-    }
+    function cancelPendingStreamNotify(sid) { return pinvouSharedtauriChatEvents().cancelPendingStreamNotify(sid); }
 
     // Every semantic notification is a synchronous flush boundary. Its
     // snapshot already contains all accumulated deltas, so the pending frame
@@ -137,80 +130,16 @@ function pinvouSharedtauriChatEvents() {
       return window.PinvouBridgeMessages || {};
     }
 
-    function visibleUserTurnIndex() {
-      const count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
-      return Math.max(0, count - 1);
-    }
 
-    function latestOpenTimelineStart() {
-      const events = state.turnTimeline || [];
-      const completed = Object.create(null);
-      events.forEach(function (event) {
-        if (event && event.event === "assistant_done") completed[event.turn_id] = true;
-      });
-      for (let index = events.length - 1; index >= 0; index--) {
-        const event = events[index];
-        if (event && event.event === "user_start" && !completed[event.turn_id]) return event;
-      }
-      return null;
-    }
+    function latestOpenTimelineStart() { return pinvouSharedtauriChatEvents().latestOpenTimelineStart(); }
 
-    function recordTurnStarted() {
-      if (state.activeTurnTimelineId) return;
-      const timestamp = Date.now();
-      const turnIndex = visibleUserTurnIndex();
-      const existing = latestOpenTimelineStart();
-      if (existing && Math.abs(timestamp - Number(existing.timestamp || 0)) < 60000) {
-        existing.ui_turn_index = turnIndex;
-        state.activeTurnTimelineId = existing.turn_id;
-        return;
-      }
-      const turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
-      state.activeTurnTimelineId = turnId;
-      state.turnTimeline = [...(state.turnTimeline || []), {
-        turn_id: turnId,
-        event: "user_start",
-        timestamp,
-        ts: new Date(timestamp).toISOString(),
-        ui_turn_index: turnIndex,
-      }];
-    }
+    function recordTurnStarted() { return pinvouSharedtauriChatEvents().recordTurnStarted(); }
 
     function recordTurnCompleted(payload) {
       const openStart = latestOpenTimelineStart();
-      const turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
-      if (!turnId) return null;
-      if (payload && payload.error && !(payload.user_error || payload.userError)) {
-        const messages = bridgeMessages();
-        const userError = typeof messages.modelServiceUserError === "function"
-          ? messages.modelServiceUserError(payload, state)
-          : null;
-        if (userError) {
-          payload.user_error = userError;
-          payload.userError = userError;
-        }
-      }
-      const timestamp = Date.now();
-      const start = openStart || (state.turnTimeline || []).find(function (event) {
-        return event && event.turn_id === turnId && event.event === "user_start";
-      });
-      const record = {
-        turn_id: turnId,
-        event: "assistant_done",
-        timestamp,
-        ts: new Date(timestamp).toISOString(),
-        status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
-        error: payload && payload.error || null,
-        user_error: payload && (payload.user_error || payload.userError) || null,
-        ui_turn_index: start && start.ui_turn_index,
-      };
-      state.turnTimeline = [...(state.turnTimeline || []), record];
-      state.activeTurnTimelineId = null;
-      // The return value drives the terminal-bubble hiding decision: only a
-      // timeline terminal record that was actually written with an error
-      // lets the timeline error card take over (hiding otherwise = silent
-      // swallow).
-      return record;
+      // F-FE13-2：构建器统一在 shared/bridge-shared-helpers.js（web
+      // turn-terminal.js 同源），此处仅保留 openStart 取样与转发。
+      return window.PinvouBridgeShared.buildAssistantDoneTimelineRecord(state, openStart, payload);
     }
 
     function latestTimelineCompletion(events) {
@@ -270,38 +199,8 @@ function pinvouSharedtauriChatEvents() {
         });
     }
 
-    function preserveInterruptedAssistantPresentation() {
-      let userItemIndex = -1;
-      let afterMessageIndex = -1;
-      let afterUserOrdinal = -1;
-      for (let index = 0; index < state.chatItems.length; index++) {
-        const candidate = state.chatItems[index];
-        if (!candidate || candidate.type !== "user") continue;
-        afterUserOrdinal += 1;
-        userItemIndex = index;
-        afterMessageIndex = -1;
-        if (Number.isFinite(Number(candidate.messageIndex))) {
-          afterMessageIndex = Number(candidate.messageIndex);
-        }
-      }
-      // 没有任何 user 气泡时无法锚定轮次;若把全部历史 assistant 项都标记为
-      // 仅展示,下次权威重载会在末尾追加整段历史的重复副本。此时放弃保留,
-      // 退化为修复前行为(重载后消失),但必须清空 pending 以免污染下一轮。
-      if (userItemIndex < 0) {
-        context.pendingAssistantText = "";
-        context.pendingAssistantBlocks = [];
-        return;
-      }
-      for (let itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
-        const item = state.chatItems[itemIndex];
-        if (!item || item.type !== "assistant" || !item.html) continue;
-        item.interruptedDisplayOnly = true;
-        item.afterMessageIndex = afterMessageIndex;
-        item.afterUserOrdinal = afterUserOrdinal;
-      }
-      context.pendingAssistantText = "";
-      context.pendingAssistantBlocks = [];
-    }
+    function preserveInterruptedAssistantPresentation() { return pinvouSharedtauriChatEvents().preserveInterruptedAssistantPresentation(); }
+
     // chat:done terminal sweep: delete toolMeta entries that never got a
     // paired tool_result. The forwarder delivers mailbox events for a session
     // in order, and after done this turn sees no more chat:tool_end (the next
@@ -341,12 +240,14 @@ function pinvouSharedtauriChatEvents() {
       // tool_use id, yet the job may still be running.
       for (let i = 0; i < state.chatItems.length; i++) {
         const item = state.chatItems[i];
-        if (item && item.type === "tool" && item.toolId && item.background !== true
+        if (!(item && item.type === "tool" && item.toolId && item.background !== true
           && item.shellSnapshot !== true
-          && (item.state === "pending" || item.state === "running") && !paired[item.toolId]) {
-          item.success = false;
-          item.state = "failed";
+          && (item.state === "pending" || item.state === "running") && !paired[item.toolId])) {
+          continue;
         }
+
+        item.success = false;
+        item.state = "failed";
       }
     }
     const markTurnDirtyArtifact = context.markTurnDirtyArtifact;
@@ -635,16 +536,18 @@ function pinvouSharedtauriChatEvents() {
           // different messages with similar prefixes. On mismatch, keep
           // scanning the later additions (with a zero baseline, historical
           // user messages precede the additions).
-          if (firstText && firstText === itemText) {
-            fallbackQueued.shift();
-            // Legacy-backend steer settlement: same mid-turn semantics as
-            // settleSteerCommitted's bubble (no admission, no timing record).
-            addChatItem({ type: "user", text: itemText, time: timeStr(), steeredMidTurn: true });
-            // The persisted position is known exactly here (the match ran
-            // against the durable snapshot): record the sidecar marker
-            // directly, no pending-capture retry needed.
-            recordSteeredMessages(sid, [{ pos: newMessages.indexOf(message), text: itemText }]);
+          if (!(firstText && firstText === itemText)) {
+            continue;
           }
+
+          fallbackQueued.shift();
+          // Legacy-backend steer settlement: same mid-turn semantics as
+          // settleSteerCommitted's bubble (no admission, no timing record).
+          addChatItem({ type: "user", text: itemText, time: timeStr(), steeredMidTurn: true });
+          // The persisted position is known exactly here (the match ran
+          // against the durable snapshot): record the sidecar marker
+          // directly, no pending-capture retry needed.
+          recordSteeredMessages(sid, [{ pos: newMessages.indexOf(message), text: itemText }]);
         }
       });
       notify();
@@ -781,33 +684,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     context.currentStreamId = 0;
   }
 
-  function startReasoningBlock(index) {
-    const existing = streamingReasoningItem(index);
-    if (existing) return existing;
-    finalizeStreamingReasoning();
-    finalizeAssistantStreamBeforeReasoning();
-    const item = {
-      type: "reasoning",
-      text: "",
-      time: timeStr(),
-      streaming: true,
-      startedAt: Date.now(),
-      completedAt: null,
-      reasoningIndex: index,
-    };
-    addChatItem(item);
-    // 用空 thinking block 记录明确的 Started 边界，使两个相邻的
-    // thinking content block 不会在持久化时被误合并。
-    context.pendingAssistantBlocks.push({ type: "thinking", thinking: "" });
-    return item;
-  }
+  function startReasoningBlock(index) { return pinvouSharedtauriChatEvents().startReasoningBlock(index); }
 
-  function appendReasoningBlock(text) {
-    const blocks = context.pendingAssistantBlocks;
-    const last = blocks[blocks.length - 1];
-    if (last && last.type === "thinking") last.thinking += text;
-    else blocks.push({ type: "thinking", thinking: text });
-  }
+  function appendReasoningBlock(text) { return pinvouSharedtauriChatEvents().appendReasoningBlock(text); }
 
   listen("chat:reasoning_start", function (e) { onSessionEvent(e, function () {
     startReasoningBlock(reasoningEventIndex(e));
@@ -939,7 +818,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     const p = e.payload || {};
     appendToolItemOutput(p.id, p.content, p.stream);
     scheduleShellNotify();
-  }); });
+  // The existing terminal timer publishes after background routing restores
+  // the visible session; avoid an extra full snapshot for every output chunk.
+  }, { deferBackgroundNotify: true }); });
 
   // 子智能体不产生 chat:tool_start/chat:tool_end（forwarder 只转发 mailbox 进展），
   // 它启动的后台 shell 任务若无人调度轮询，就要等到会话切换或顶层 shell 调用
@@ -1452,7 +1333,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // 桌面前端监听的 DOM CustomEvent 'pinvou:tools-changed'(tool-events.js / 类似入口),
   // 让 chip 上的工具开关计数立即同步。
   listen("remote_control:tools_changed", function () {
-    try { window.dispatchEvent(new CustomEvent('pinvou:tools-changed')); } catch { /* DOM event dispatch failure only affects the count refresh */ }
+    try { window.PinvouToolStoreEvents.notifyComposerToolsChanged(); } catch { /* DOM event dispatch failure only affects the count refresh */ }
   });
 
   // 远程 mobile 挂载/摘挂 KB → Rust emit remote_control:kb_mount_changed → 这里同步
@@ -1605,7 +1486,6 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
   });
 
     return {
-      latestTimelineCompletion,
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
       // Called from bridge.js on session buffer eviction/deletion to cancel

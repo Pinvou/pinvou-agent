@@ -29,8 +29,11 @@ GAIA 数据集托管在 Hugging Face 仓库 `gaia-benchmark/GAIA`。该仓库为
 
 数据集拉取遵循标准 `HF_ENDPOINT` 环境变量（如国内镜像 `https://hf-mirror.com`）；
 评测 scratch 缓存目录与 token 的传入方式不受该变量影响。注意：设置
-`HF_ENDPOINT` 后，Hugging Face token 会随请求发送到所选端点，且 hf-hub 对
-下载内容不做本地校验——请只把它指向你信任的端点（公共镜像由第三方运营）。
+`HF_ENDPOINT` 后，Hugging Face token 会随请求发送到所选端点；下载内容的校验
+基准是同一端点返回的 paths-info 摘要——仅 Parquet 另与编译进二进制的固定摘要
+强制一致，附件的编译期锚点只在本地导入路径生效（恶意镜像可同时替换附件
+元数据与内容并通过下载校验，见 adapter-gaia 源码 paths-info 一节的说明）——
+请只把它指向你信任的端点（公共镜像由第三方运营）。
 
 ## Pinned revisions
 

@@ -1,17 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Check, Copy, ExternalLink, FolderOpen, Link, X,
-} from '../../components/icons.jsx';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { X } from '../../components/icons.jsx';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { useFollowMainWindowLanguage } from '../../hooks/useFollowMainWindowLanguage.js';
 import { pathBasename } from '../../shared/path-utils.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
-import { invokeTauri, listenTauri, tauriEvents } from '../../platform/tauri/client.js';
+import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
 import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
-import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
+import { dict, zhDict } from '../../shared/i18n.js';
 import {
-  CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
+  CodeViewerToolbar,
   useCodeHighlight,
   useViewerFontSize,
   viewerFontSizeBounds,
@@ -46,42 +45,30 @@ function ReaderTabContent({ tab, state, fontSize, copy }) {
 }
 
 export function ReaderApp() {
-  const [language, setLanguage] = useState(initialSystemLanguage);
-  const copy = (dict[language] || dict.zh).uiCodexWorkspace;
-  const [tabs, setTabs] = useState([]);
-  const [activeKey, setActiveKey] = useState('');
-  const [previews, setPreviews] = useState({});
-  const [fontSize, adjustFontSize] = useViewerFontSize();
-  const [copied, copyText] = useCopyFlash(1200);
-  const fontBounds = viewerFontSizeBounds();
-  const loadedKeysRef = useRef(new Set());
   // Appearance follows the app preference; while it is `system` the reader must
   // track OS theme flips live, same as the main and detached windows.
   const systemDark = useSystemDarkMode();
   const [colorScheme, setColorScheme] = useState('system');
-
-  // Language follows the main settings (same listener pattern as the pet window).
-  useEffect(() => {
-    let disposed = false;
-    let unlisten = null;
-    invokeTauri('get_settings').then((settings) => {
-      if (disposed) return;
-      const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
-      ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-      setColorScheme(normalizeColorScheme(settings?.color_scheme));
-    }).catch(() => {});
-    tauriEvents.listen('ui:language_changed', (event) => {
-      const next = event.payload?.language;
-      if (!disposed) ensureLanguage(next).then((ok) => { if (ok) setLanguage(next); }).catch(() => {});
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    }).catch(() => {});
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
+  const onMainWindowSettings = useCallback(
+    (settings) => setColorScheme(normalizeColorScheme(settings?.color_scheme)),
+    [],
+  );
+  const language = useFollowMainWindowLanguage({ onSettings: onMainWindowSettings });
+  // Lazy-load window (a direct mount that bypasses the entry's
+  // ensureLanguage preload): fall back to an empty table — string keys
+  // render blank instead of crashing. Production entries (reader-main.jsx)
+  // preload before the first render, so the normal path never sees it.
+  const copy = useMemo(
+    () => (dict[language] || zhDict()).uiCodexWorkspace || {},
+    [language],
+  );
+  const [tabs, setTabs] = useState([]);
+  const [activeKey, setActiveKey] = useState('');
+  const [previews, setPreviews] = useState({});
+  const [fontSize, adjustFontSize] = useViewerFontSize();
+  const [copied, copyText] = useCopyFlash();
+  const fontBounds = viewerFontSizeBounds();
+  const loadedKeysRef = useRef(new Set());
 
   // Re-apply when the preference resolves and on every system flip while `system`;
   // explicit light/dark ignore systemDark.
@@ -208,7 +195,6 @@ export function ReaderApp() {
     }).catch(nextError => console.error('code reader open failed:', nextError));
   }
 
-  const iconButton = CODE_VIEWER_ICON_BUTTON;
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-[#1E1E20] text-gray-900 dark:text-gray-100">
@@ -248,53 +234,20 @@ export function ReaderApp() {
             <div className="min-w-0 flex-1 truncate text-[11px] text-gray-400" title={activeTab.relativePath}>
               {activeTab.relativePath}
             </div>
-            <button
-              type="button"
-              onClick={() => adjustFontSize(-1)}
-              disabled={fontSize <= fontBounds.min}
-              className={`${iconButton} text-[12px] font-medium tracking-tight`}
-              title={copy.fontDecrease}
-              aria-label={copy.fontDecrease}
-            >
-              A-
-            </button>
-            <button
-              type="button"
-              onClick={() => adjustFontSize(1)}
-              disabled={fontSize >= fontBounds.max}
-              className={`${iconButton} text-[12px] font-medium tracking-tight`}
-              title={copy.fontIncrease}
-              aria-label={copy.fontIncrease}
-            >
-              A+
-            </button>
-            <button
-              type="button"
-              onClick={() => copyText('content', activeState?.preview?.kind === 'text' ? activeState.preview.text : '')}
-              disabled={activeState?.preview?.kind !== 'text'}
-              className={iconButton}
-              title={copied === 'content' ? copy.copied : copy.copyContent}
-            >
-              {copied === 'content' ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
-            </button>
-            <button
-              type="button"
-              onClick={() => copyText('path', activeTab.relativePath)}
-              className={iconButton}
-              title={copied === 'path' ? copy.copied : copy.copyPath}
-            >
-              {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
-            </button>
-            {activeTab.kind !== 'diff' && (
-              <>
-                <button type="button" onClick={() => openActive('reveal_codex_workspace_file')} className={iconButton} title={copy.reveal}>
-                  <FolderOpen size={13} />
-                </button>
-                <button type="button" onClick={() => openActive('open_codex_workspace_file')} className={iconButton} title={copy.open}>
-                  <ExternalLink size={13} />
-                </button>
-              </>
-            )}
+            <CodeViewerToolbar
+              copy={copy}
+              fontSize={fontSize}
+              fontBounds={fontBounds}
+              adjust={adjustFontSize}
+              copied={copied}
+              copyText={copyText}
+              contentText={activeState?.preview?.kind === 'text' ? activeState.preview.text : ''}
+              canCopyContent={activeState?.preview?.kind === 'text'}
+              copyPathText={activeTab.relativePath}
+              hideDesktopActions={activeTab.kind === 'diff'}
+              onReveal={() => openActive('reveal_codex_workspace_file')}
+              onOpen={() => openActive('open_codex_workspace_file')}
+            />
           </div>
           <ReaderTabContent tab={activeTab} state={activeState} fontSize={fontSize} copy={copy} />
         </>

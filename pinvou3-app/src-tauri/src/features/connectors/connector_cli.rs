@@ -9,11 +9,11 @@
 //! 薄声明 + 一段连接编排函数,调本模块的公共件。
 //!
 //! **drain 多态性说明**:[`drain_for_url`] 每行发 `(URL, 脱敏安全行)` 二元组,
-//! 供飞书/企微共享(URL 出二维码,安全行进失败原因缓冲)。
-//! tmeet/dingtalk 有各自的私有 drain(`drain_for_auth_url`/`drain_for_auth_event`),
-//! 因为它们在同一管道里额外抓取安全日志行 / user_code,channel 元素类型分别为
-//! `(Option<String>, Option<String>)` 和 `AuthEvent` enum。这是真实业务差异,
-//! 强行泛型化会增加闭包复杂度而收益有限——三者的 `BufReader::lines` 循环骨架
+//! 供飞书/企微/tmeet 共享(URL 出二维码,安全行进失败原因缓冲;tmeet 以
+//! `redact_bare_token=true` 开启 bare-"token" 兜底)。
+//! 仅 dingtalk 有私有 drain(`drain_for_auth_event`),因为它的 channel 元素类型
+//! 是 `AuthEvent` enum(同一管道里额外抓 user_code)。这是真实业务差异,
+//! 强行泛型化会增加闭包复杂度而收益有限——两者的 `BufReader::lines` 循环骨架
 //! 虽同构,但行处理逻辑不可统一。
 //!
 //! 连接状态(长驻子进程 PID + 取消标志)用一个 [`ConnectorConn`] 按连接器 id 复用,
@@ -84,10 +84,6 @@ impl CliCtx {
 
 fn connector_cli_command(cli_bin: &str, program: &str) -> Command {
     crate::platform::os::connector_cli_command(cli_bin, program)
-}
-
-pub fn apply_user_npm_prefix(cmd: &mut Command) {
-    crate::platform::os::apply_user_npm_prefix(cmd);
 }
 
 // ─────────────────────────────── 公共执行件 ───────────────────────────────
@@ -400,31 +396,6 @@ pub(crate) fn reap_after_kill(child: &mut Child) {
     let _ = reap_killed_child(child, REAP_GRACE);
 }
 
-/// 标准 base64 编码(避免引新依赖)。
-pub fn b64(data: &[u8]) -> String {
-    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
-        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(A[((n >> 18) & 63) as usize] as char);
-        out.push(A[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            A[((n >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            A[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 /// 从一段输出里抓第一个 JSON 对象(CLI `--json` 有时夹带 spinner / 提示行)。
 pub fn parse_json(s: &str) -> Option<Value> {
     let start = s.find('{')?;
@@ -452,6 +423,7 @@ pub fn parse_semver3(s: &str) -> Option<(u64, u64, u64)> {
 /// 纯 Rust(qrcode crate),不依赖具体 CLI 的 qrcode 子命令——各连接器通用。
 /// 失败返回 `None`(前端回退开浏览器)。
 pub fn make_qr(url: &str) -> Option<String> {
+    use base64::Engine as _;
     use qrcode::QrCode;
     use qrcode::render::svg;
     let code = QrCode::new(url.as_bytes()).ok()?;
@@ -462,7 +434,7 @@ pub fn make_qr(url: &str) -> Option<String> {
         .build();
     Some(format!(
         "data:image/svg+xml;base64,{}",
-        b64(svg_xml.as_bytes())
+        base64::engine::general_purpose::STANDARD.encode(svg_xml.as_bytes())
     ))
 }
 
@@ -471,6 +443,7 @@ pub fn make_qr(url: &str) -> Option<String> {
 /// signature plus the IEND tail; non-PNG / truncated files return `None` (the
 /// caller falls back to [`make_qr`]).
 pub fn png_data_url(bytes: &[u8]) -> Option<String> {
+    use base64::Engine as _;
     const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
     // The IEND chunk is always length(0) + type + CRC: the CRC over the IEND
     // content is fixed, so the whole tail can be compared verbatim. Checking only
@@ -483,16 +456,21 @@ pub fn png_data_url(bytes: &[u8]) -> Option<String> {
     {
         return None;
     }
-    Some(format!("data:image/png;base64,{}", b64(bytes)))
+    Some(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 /// 后台线程:逐行排空一个管道(防写满阻塞),每行经 channel 送回
 /// `(首个本连接器 URL, 脱敏安全行)` 二元组。URL 供二维码;安全行(已按
 /// [`safe_auth_log_line`] 脱敏 + 截断)供连接器收进失败原因环形缓冲。
-/// bare-"token" 兜底关闭:飞书/企微 CLI 的正常输出行可能含含 token 字样的
-/// 字段名,开启会把非敏感行整体吞成占位符,失败原因就没了(与 dingtalk 同款取舍)。
+/// `redact_bare_token` 透传给 [`safe_auth_log_line`]:飞书/企微传 `false`(CLI 的
+/// 正常输出行可能含含 token 字样的字段名,开启会把非敏感行整体吞成占位符,
+/// 失败原因就没了),tmeet 传 `true`(与 dingtalk 同款取舍)。
 pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     ctx: CliCtx,
+    redact_bare_token: bool,
     r: R,
     tx: mpsc::Sender<(Option<String>, Option<String>)>,
 ) -> std::thread::JoinHandle<()> {
@@ -506,7 +484,7 @@ pub fn drain_for_url<R: std::io::Read + Send + 'static>(
                     break;
                 }
             };
-            let safe = safe_auth_log_line(&line, false);
+            let safe = safe_auth_log_line(&line, redact_bare_token);
             let url = ctx.extract_url(&line);
             let _ = tx.send((url, safe));
         }
@@ -1014,7 +992,7 @@ mod tests {
     #[test]
     fn drain_for_url_stops_after_read_error() {
         let (tx, _rx) = mpsc::channel();
-        let handle = drain_for_url(TEST_CTX, ReadErrorThenPanic { failed: false }, tx);
+        let handle = drain_for_url(TEST_CTX, false, ReadErrorThenPanic { failed: false }, tx);
         assert!(handle.join().is_ok(), "读取错误后应退出排空线程");
     }
 
@@ -1138,8 +1116,14 @@ mod tests {
             "应是 SVG data URL"
         );
         // 解码回 SVG,确认是真实矢量二维码。
+        use base64::Engine as _;
         let b64 = qr.trim_start_matches("data:image/svg+xml;base64,");
-        let svg = String::from_utf8(b64_decode(b64)).unwrap();
+        let svg = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(svg.contains("<svg"), "应含 <svg> 根节点");
     }
 
@@ -1150,8 +1134,14 @@ mod tests {
         let data_url = png_data_url(png).expect("bytes with signature and IEND tail should pass");
         assert!(data_url.starts_with("data:image/png;base64,"));
         // Decode back to the original bytes to confirm losslessness.
+        use base64::Engine as _;
         let b64 = data_url.trim_start_matches("data:image/png;base64,");
-        assert_eq!(b64_decode(b64), png.to_vec());
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap(),
+            png.to_vec()
+        );
 
         assert!(
             png_data_url(b"").is_none(),
@@ -1234,27 +1224,5 @@ mod tests {
             elapsed >= Duration::from_secs(1) && elapsed < Duration::from_secs(10),
             "timeout path should return promptly after the kill, took {elapsed:?}"
         );
-    }
-
-    // 测试辅助:标准 base64 解码(生产 b64 的逆运算,仅测试用)。
-    fn b64_decode(s: &str) -> Vec<u8> {
-        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let val = |c: u8| A.iter().position(|&x| x == c).unwrap() as u32;
-        let mut out = Vec::new();
-        let clean: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
-        for chunk in clean.chunks(4) {
-            let mut n = 0u32;
-            for (i, &c) in chunk.iter().enumerate() {
-                n |= val(c) << (18 - 6 * i);
-            }
-            out.push((n >> 16) as u8);
-            if chunk.len() > 2 {
-                out.push((n >> 8) as u8);
-            }
-            if chunk.len() > 3 {
-                out.push(n as u8);
-            }
-        }
-        out
     }
 }

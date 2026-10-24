@@ -1815,7 +1815,7 @@ pub(crate) fn safety_deny_rules_for(super_permission_enabled: bool) -> Vec<ToolA
 /// state for the Windows real-home family. Production passes
 /// [`win_real_home_prefix`] (host-derived); tests inject a fixed value (or
 /// `None`) so the rule count stays host-independent.
-pub(crate) fn safety_deny_rules_with_home(
+fn safety_deny_rules_with_home(
     super_permission_enabled: bool,
     win_home_prefix: Option<String>,
 ) -> Vec<ToolAskRule> {
@@ -1904,7 +1904,6 @@ mod tests {
                 path: None,
                 ask_for_approval: AskForApproval::Never,
                 sandbox_mode: None,
-                // CodeWhale #54：空集保持历史单根判定。
                 workspace_roots: Vec::new(),
             })
             .unwrap()
@@ -2450,7 +2449,6 @@ mod tests {
                     path: None,
                     ask_for_approval: AskForApproval::OnRequest,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()

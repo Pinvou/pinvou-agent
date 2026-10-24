@@ -116,11 +116,12 @@ fn create_code_session_fixture(project: Option<&Path>) -> String {
                 &id,
                 CodexWorkspaceKind::Project,
                 Some(project.to_path_buf()),
+                Vec::new(),
             )
             .expect("bind project code session"),
         None => {
             agents
-                .bind_code_native_session(&id, CodexWorkspaceKind::Temporary, None)
+                .bind_code_native_session(&id, CodexWorkspaceKind::Temporary, None, Vec::new())
                 .expect("bind temporary code session");
             let workspace = SessionStore::boot()
                 .unwrap()
@@ -145,6 +146,7 @@ fn create_acp_session_fixture(project: &Path) -> String {
             pinvou3_lib::features::codex_acp::AgentBackend::CodexAcp,
             CodexWorkspaceKind::Project,
             Some(project.to_path_buf()),
+            Vec::new(),
         )
         .expect("bind acp workspace");
     id
@@ -4173,5 +4175,40 @@ fn flag_shaped_token_in_the_session_id_slot_is_a_usage_error() {
     assert!(
         message.contains("flag-shaped"),
         "the refusal must name the flag-shaped token: {message}"
+    );
+}
+
+// Round-8 review minor: the docs and `commit_command_args`' own doc claim both
+// commit lanes are kept drift-safe by tests; the GUI's `checkout_commit_args`
+// is pinned by three executing tests app-side, but the CLI builder had no pin
+// — deleting the gpgsign suppression kept every suite green. The builder is a
+// private string-list assembler behind `pinvou code workspace checkout --mode
+// commit`; a source-shape pin (the turn-gate precedent) is the proportionate
+// guard here.
+#[test]
+fn commit_command_args_leads_with_the_gpgsign_suppression() {
+    let source = include_str!("../src/code.rs");
+    let start = source
+        .find("fn commit_command_args(")
+        .expect("commit_command_args must exist");
+    let body = &source[start
+        ..source[start..]
+            .find("\n}")
+            .map(|offset| start + offset)
+            .expect("commit_command_args must close")];
+    let gpg = body
+        .find("\"commit.gpgsign=false\"")
+        .expect("the gpgsign suppression literal must be present");
+    let commit_arg = body
+        .find("\"commit\".to_owned()")
+        .expect("the commit subcommand push must be present");
+    assert!(
+        gpg < commit_arg,
+        "commit.gpgsign=false must be pushed before the `commit` subcommand: \
+         this lane runs without a deadline and a pinentry prompt would hang it"
+    );
+    assert!(
+        body.contains("\"user.useConfigOnly=true\""),
+        "the no-config-identity arm must fall back to user.useConfigOnly=true"
     );
 }

@@ -429,18 +429,10 @@ impl SessionStore {
     }
 
     pub fn load(&self, id: &str) -> Result<SavedSession> {
-        self.load_with_context(id, || format!("load_session({id})"))
-    }
-
-    fn load_with_context(
-        &self,
-        id: &str,
-        context: impl FnOnce() -> String,
-    ) -> Result<SavedSession> {
         let session = self
             .manager
             .load_session_snapshot(id)
-            .with_context(context)?;
+            .with_context(|| format!("load_session({id})"))?;
         // Fail closed on case-variant aliases of AUX records: on
         // case-insensitive filesystems `AUX-<suffix>.json` resolves to the
         // real `aux-…` record while case-sensitive identity tests miss the
@@ -1162,8 +1154,7 @@ impl SessionStore {
     /// at the same path, so an unreadable record (transient fault OR
     /// permanent corruption) must never fall into the creation leg
     /// (round-30 B4/B8). The panel surfaces the error as ensureFailed; the
-    /// user's recovery for a truly dead record is an explicit discard
-    /// (`discard_aux_session` deletes by id without parsing the record).
+    /// user's recovery for a truly dead record is an explicit discard.
     /// An auxiliary conversation must not own an aux session (aux-of-aux): an
     /// aux session is itself a Chat kind, so the command layer's
     /// `ensure_chat_session` cannot catch it — the single creation entry point
@@ -1436,17 +1427,26 @@ pub(crate) fn is_not_found_error(error: &anyhow::Error) -> bool {
     })
 }
 
-/// The two ownership refusals shared by `create_aux_session` and
+/// The ownership refusals shared by `create_aux_session` and
 /// `get_or_create_aux_session`: an auxiliary conversation must not own another
 /// aux (an aux session is itself a Chat kind, so the command layer's
-/// `ensure_chat_session` cannot catch it), and a scheduled session is deleted
-/// through its automation rather than gaining an aux.
+/// `ensure_chat_session` cannot catch it), a scheduled session is deleted
+/// through its automation rather than gaining an aux, and a headless
+/// `agentic_` run is nobody's interactive parent — an aux side-chat pinned to
+/// one used to fail later at spawn time (the scoped reader refusing the
+/// isolated parent) instead of here at creation.
 fn ensure_parent_can_own_aux(parent_id: &str) -> Result<()> {
     if super::validators::is_aux_session_id(parent_id) {
         bail!("Auxiliary session '{parent_id}' cannot own an aux session");
     }
     if super::validators::is_sched_session_id(parent_id) {
         bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+    }
+    if parent_id
+        .to_ascii_lowercase()
+        .starts_with(HEADLESS_SESSION_PREFIX)
+    {
+        bail!("Headless session '{parent_id}' cannot own an aux session");
     }
     Ok(())
 }

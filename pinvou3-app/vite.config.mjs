@@ -439,7 +439,11 @@ export const lazyChunkContracts = {
   archiveConfirmDialog: ['components/ArchiveConfirmDialog.jsx', 'ArchiveConfirmDialog'],
 };
 
-export function assertLazyChunks(bundle, contracts = lazyChunkContracts) {
+export const lazyToolChunkContracts = {
+  scheduledTaskCard: ['features/tools/scheduled-task-card.jsx', 'ScheduledTaskToolCard'],
+};
+
+export function assertLazyChunks(bundle, contracts = { ...lazyChunkContracts, ...lazyToolChunkContracts }) {
   for (const [modulePath, label] of Object.values(contracts)) {
     const chunks = Object.values(bundle).filter(output => output.type === 'chunk'
       && Object.keys(output.modules).some(moduleId => moduleId.replaceAll('\\', '/')
@@ -482,7 +486,46 @@ function enforceLazyChunks() {
 // the remainder is the synchronous receive-path parser, which cannot defer
 // without breaking render semantics. An in-PR trim (builder split into the
 // lazy graph) was measured net +122 B and rejected.
-export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
+//
+// Round-43 (this PR): the same ceiling also absorbs the node-version
+// minification delta between local (v22) and CI (v24) toolchains — the
+// identical tree measured 499.7 kB locally and 500.6 kB on CI; only the
+// minifier output differs.
+//
+// 502_000 → 504_000 (this PR's rebase onto the #627+#714 main, measured per
+// policy): main's own web entry is now 500.69 kB on the local v22 toolchain
+// (1.3 kB under its own ceiling); this PR's feature net adds +2.10 kB
+// (500.69 → 502.79 local; CI projects ≈503.7 at the stable +0.9 kB toolchain
+// delta). The picker/grouping helpers are render-path synchronous and cannot
+// defer; the ceiling is the measured projection, not padded.
+//
+// 504_000 → 505_000 (this PR's re-cut onto the #733 main, measured per
+// policy): #733's Tachyon app-side wiring rides the shared entry; the
+// joint main entry measures 504,082 B locally and identically on CI —
+// 82 B over the 504_000 ceiling this PR last raised. The picker/grouping
+// helpers are render-path synchronous and cannot defer; the ceiling is
+// the measured projection, not padded.
+//
+// 505_000 → 506_000 (PR #628 follow-ups, measured per policy):
+// The author explicitly approved 506_000 on 2026-10-21 after reviewing
+// both targets. On this branch, npm ci with pinned Vite 8.3.4 / Node 22.23.1
+// produces 505,454 B web and 502,135 B desktop. Review 5596933329 measured
+// its combined tree with main@0baf7fa6c at 505,848 / 502,533 B; that is
+// 152 B web headroom, not a reproduced toolchain-tolerance allowance.
+// The card/parser remain lazy. Future combined trees must pass this gate;
+// this cap does not promise headroom for unrelated main changes.
+//
+// 506_000 → 507_000 (PR #773, measured per policy): the swarm overlay's
+// structured worker-status merge rides the startup graph; same-base build
+// against main@f1ae1279a measures 505,844 → 506,175 B web (CI node 24:
+// 506,192) and 502,529 → 502,862 B desktop, i.e. +331 B of synchronous
+// event-path merge rules (token precedence, identity guard, ending-token
+// set). The merge runs on the always-mounted overlay and cannot defer
+// without breaking render semantics; the minified delta is all live logic
+// (verified by chunk diff — no comments or dead code ride along). The next
+// thousand step leaves 808 B web headroom at the CI measurement; this cap
+// does not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 507_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (
