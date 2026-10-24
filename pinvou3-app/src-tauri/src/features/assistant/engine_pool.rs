@@ -3467,6 +3467,21 @@ impl EnginePool {
     }
 
     async fn evict_locked(&self, session_id: &str) {
+        self.evict_locked_inner(session_id, true).await;
+    }
+
+    /// r28 B1: evict a RESIDENT engine entry only. `evict`'s no-entry arm
+    /// invalidates an unsubmitted reservation — inside the snapshot prelude
+    /// that reservation is the caller's own (chat/accept_plan reserve before
+    /// the checkpoint prelude), and the restart-with-pending recovery flow has
+    /// no resident engine at all, so a plain evict there failed the user's
+    /// very next send. Absent entry = nothing to reclaim = no-op; presence is
+    /// decided under the same entries lock as evict_locked (no probe window).
+    pub async fn evict_if_present(&self, session_id: &str) {
+        self.evict_locked_inner(session_id, false).await;
+    }
+
+    async fn evict_locked_inner(&self, session_id: &str, invalidate_absent_reservation: bool) {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
         // Take the entry out of the map before matching: a temporary guard in
@@ -3480,11 +3495,13 @@ impl EnginePool {
                 self.reclaim_engine_entry(session_id, entry).await;
             }
             _ => {
-                if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-                    // A caller can reserve before lazy spawn. Reclaim that Reserved
-                    // phase without fabricating chat:done; the guard's eventual send
-                    // will observe that its reservation was invalidated.
-                    lifecycle.invalidate_unsubmitted_reservation();
+                if invalidate_absent_reservation {
+                    if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+                        // A caller can reserve before lazy spawn. Reclaim that Reserved
+                        // phase without fabricating chat:done; the guard's eventual send
+                        // will observe that its reservation was invalidated.
+                        lifecycle.invalidate_unsubmitted_reservation();
+                    }
                 }
             }
         }

@@ -6213,6 +6213,33 @@ mod tests {
         );
     }
 
+    /// r28 M2(b) pin：CLI rewind 的复用判定不得查 sidecar 绑定记录（同 GUI，
+    /// r25 MAJOR-3 的前提：revision 匹配的暂记只能是 persist 分裂窗）。
+    #[test]
+    fn cli_rewind_reuse_does_not_consult_the_sidecar_record() {
+        let src = include_str!("code.rs");
+        let fn_start = src
+            .find("fn checkpoints_rewind(")
+            .expect("checkpoints_rewind must exist");
+        let rest = &src[fn_start..];
+        let body_end = ["\nfn ", "\npub "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(rest.len(), |offset| offset);
+        let body = &rest[..body_end];
+        assert!(
+            !body.contains("latest_rewound_turns_record"),
+            "CLI rewind 的复用判定不得查 sidecar 绑定记录（r28 M2）"
+        );
+        // r27 P2-1 pin：暂记读取必须区分 NotFound 与真实 IO 错误——失败打开
+        // （映射 None）会在引导重试时 fresh PreRestore 快照已恢复树。
+        assert!(
+            src.contains("ErrorKind::NotFound => return Ok(None)"),
+            "暂记读取必须区分 NotFound 与真实 IO 错误（r27 P2-1 fail-closed）"
+        );
+    }
+
     /// Round-52 review: an unknown `--model-slot` slot used to parse fine
     /// and then be silently dropped — the add gate only checks that the
     /// REQUIRED slots are present, so `--model-slot bogus=X` exited 0 and

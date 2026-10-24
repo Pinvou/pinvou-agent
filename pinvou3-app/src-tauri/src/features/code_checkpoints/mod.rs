@@ -118,11 +118,23 @@ const SECRET_EXCLUDES: &[&str] = &[
     "id_ed25519",
     "id_dsa",
     "id_ecdsa",
-    // r27 M4：平台 path_policy 同类凭据（ingest 侧整目录拦截；快照侧按文件
-    // 粒度补齐——icase 三层与既有机制同向）。
+    // r27 M4 + r28 M3：平台 path_policy / safety_deny_rules 同类凭据（ingest
+    // 侧整目录拦截；快照侧按内容 glob 粒度补齐——含斜杠条目经 B2 双腿派生
+    // 覆盖嵌套副本；`.tfstate*` 状态文件含明文 secret 变量）。
     ".aws/credentials",
+    ".aws/config",
+    ".aws/sso/cache/**",
     ".kube/config",
     ".docker/config.json",
+    ".git-credentials",
+    ".gnupg/**",
+    ".password-store/**",
+    ".ssh/**",
+    ".azure/accessTokens.json",
+    "application_default_credentials.json",
+    "terraform.tfstate*",
+    ".my.cnf",
+    ".pgpass",
 ];
 
 /// 把敏感模式转成大小写不敏感的 gitignore 模式：ASCII 字母逐个展开为 `[xX]`
@@ -139,6 +151,20 @@ fn icase_gitignore_pattern(pattern: &str) -> String {
             other => other.to_string(),
         })
         .collect()
+}
+
+/// r28 B2：info/exclude 与 clean -e 的排除形式派生——gitignore 语义里含
+/// 斜杠的模式锚定仓库根，嵌套副本（`sub/.aws/credentials`）不被裸形式命中
+/// （clean -fd 会物理删除它、add -A 会暂存它）。返回「裸根 icase 形式 +
+/// `**/` 嵌套 icase 形式」双腿（无斜杠模式单腿）；目录内容 glob
+/// （`.ssh/**`）两腿同形。
+fn icase_ignore_legs(pattern: &str) -> Vec<String> {
+    let bare = icase_gitignore_pattern(pattern);
+    if pattern.contains('/') {
+        vec![bare.clone(), format!("**/{bare}")]
+    } else {
+        vec![bare]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1112,11 +1138,11 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // 在任何文件系统上闭合。
     let mut excludes: Vec<String> = SHADOW_EXCLUDES
         .iter()
-        .map(|line| icase_gitignore_pattern(line))
+        .flat_map(|line| icase_ignore_legs(line))
         .chain(
             SECRET_EXCLUDES
                 .iter()
-                .map(|line| icase_gitignore_pattern(line)),
+                .flat_map(|line| icase_ignore_legs(line)),
         )
         .collect();
     // ledger 与执行根都可能未经 canonicalize（Windows 短名/大小写），统一规范化后
@@ -1672,8 +1698,13 @@ pub fn pending_pre_restore_for_degraded(
     transcript_revision: &str,
 ) -> Result<Option<String>> {
     let path = pending_rewind_path(ledger_root);
-    let Ok(bytes) = fs::read(&path) else {
-        return Ok(None);
+    // r28 M1：与 matching_pending_pre_restore / live_pending_rewind 同款——
+    // 真实 IO 错误映射 None 会让降级回退跳过 PreRestore 绑定（代码已回退而
+    // 记录宣称「代码未变」）。
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
     };
     let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
         let _ = fs::remove_file(&path);
@@ -1826,12 +1857,16 @@ pub fn apply_restore(
     // 系统上挡不住 Dist/ 变体，被 icase purge 移出 index 的真实文件会被
     // clean -fd 物理删除（评审实证，会话前就存在的用户文件）。
     for pattern in SHADOW_EXCLUDES {
-        clean_args.push("-e".into());
-        clean_args.push(icase_gitignore_pattern(pattern));
+        for leg in icase_ignore_legs(pattern) {
+            clean_args.push("-e".into());
+            clean_args.push(leg);
+        }
     }
     for pattern in SECRET_EXCLUDES {
-        clean_args.push("-e".into());
-        clean_args.push(icase_gitignore_pattern(pattern));
+        for leg in icase_ignore_legs(pattern) {
+            clean_args.push("-e".into());
+            clean_args.push(leg);
+        }
     }
     for pattern in ledger_guard_ignore_patterns(&ledger_guard_paths(ledger_root, &execution_root)) {
         clean_args.push("-e".into());
@@ -1912,12 +1947,21 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 /// 与 info/exclude 的字符类模式、purge 的 `:(icase)` pathspec 三层同向
 /// （评审 B1/M1）。
 fn secret_path_matches(path: &str) -> bool {
-    let basename = path.rsplit('/').next().unwrap_or(path);
-    let basename = basename.to_ascii_lowercase();
+    // r28 B2：含斜杠模式（.aws/credentials 等）按整条路径匹配——basename
+    // 匹配对它们恒假；自身注释「模式均无斜杠」自 r27 起失效，一并改写。
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
     SECRET_EXCLUDES.iter().any(|pattern| {
         let pattern = pattern.to_ascii_lowercase();
-        if pattern.contains('*') {
-            wildcard_match(&pattern, &basename)
+        if pattern.contains('/') {
+            if pattern.ends_with("/**") {
+                let dir = pattern.trim_end_matches("/**");
+                return normalized == dir || normalized.starts_with(&format!("{dir}/"));
+            }
+            // 根级副本整路径相等；嵌套副本按「/ 边界 + 后缀」命中。
+            normalized == pattern || normalized.ends_with(&format!("/{pattern}"))
+        } else if pattern.contains('*') {
+            wildcard_match(&pattern, basename)
         } else {
             basename == pattern
         }
@@ -3412,6 +3456,60 @@ mod tests {
             exec.read("Dist/assets.bin").as_deref(),
             Some("user asset\n"),
             "大小写变体构建目录必须在 restore 后存活（r24 B1 数据丢失）"
+        );
+    }
+
+    /// r28 B2 回归：嵌套凭据副本（`services/api/.aws/credentials`，含斜杠
+    /// 模式在 gitignore 语义锚定根）曾被「info/exclude 裸形式不命中 → add -A
+    /// 暂存 → icase purge 移出 → clean -fd 物理删除」与「staged 校验每轮
+    /// bail」两条链打掉。修复后四层同向：不进快照、restore 存活、patch
+    /// 预览按整路径命中（slash-aware secret_path_matches）。
+    #[test]
+    fn nested_credential_copies_survive_restore() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("nestedcred-ledger");
+        let exec = TestDir::new("nestedcred-exec");
+        exec.write("services/api/.aws/credentials", "AKIAEXAMPLE\n");
+        exec.write("ok.txt", "v1\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("嵌套凭据副本不得使快照 bail（r28 B2 前每轮必死）");
+        exec.write("ok.txt", "v2\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap();
+
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.contains(".aws/credentials")),
+            "嵌套凭据副本不得进快照: {tracked}"
+        );
+        assert!(
+            secret_path_matches("services/api/.aws/credentials"),
+            "patch 预览过滤必须按整路径命中含斜杠模式（r28 B2）"
+        );
+
+        restore_checkpoint(ledger.path(), exec.path(), &first.id).unwrap();
+        assert_eq!(exec.read("ok.txt").as_deref(), Some("v1\n"));
+        assert_eq!(
+            exec.read("services/api/.aws/credentials").as_deref(),
+            Some("AKIAEXAMPLE\n"),
+            "嵌套凭据副本必须在 restore 后存活（r28 B2 数据丢失）"
         );
     }
 
