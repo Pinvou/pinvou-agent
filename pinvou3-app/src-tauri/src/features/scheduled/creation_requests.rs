@@ -1772,13 +1772,18 @@ fn pending_batch(root: &Path, retries: &RetryState, mut listed: Vec<PathBuf>) ->
     // #680: a name whose file vanished this pass (the parked-maintenance
     // move above, or an external delete after the retains) must not enter
     // the batch — a ghost poisons as "unreadable" and would open a junk
-    // episode for a name that may legitimately return.
+    // episode for a name that may legitimately return. Round-11 M-1:
+    // `symlink_metadata`, not `exists` — `exists` follows links, so a
+    // DANGLING symlink at a record name would be silently skipped forever
+    // (never reaching the Poison arm's terminal answer); a dangling link
+    // has metadata, stays in the batch, and is refused by the gated open
+    // like any non-regular entry.
     let mut selected: Vec<_> = retries
         .attempts
         .keys()
         .filter(|name| !retries.parked.contains_key(*name) && !retries.receipts.contains_key(*name))
         .map(|name| root.join(name))
-        .filter(|path| path.exists())
+        .filter(|path| path.symlink_metadata().is_ok())
         .collect();
     selected.sort();
     selected.dedup();
@@ -1787,7 +1792,7 @@ fn pending_batch(root: &Path, retries: &RetryState, mut listed: Vec<PathBuf>) ->
         if selected.len() >= MAX_PENDING_FILES + MAX_TAIL_QUARANTINES {
             break;
         }
-        if !path.exists() {
+        if path.symlink_metadata().is_err() {
             continue;
         }
         let skipped = path
@@ -2053,10 +2058,10 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
-            // #680: probe the REAL cause BEFORE the move (the record leaves
-            // the spool afterwards, and this is the only pass that will ever
-            // handle it — the probe is structurally once per record, not
-            // per-pass dead work). A digest-bound recorded ok receipt
+            // #680: probe the REAL cause BEFORE the move (while the move
+            // succeeds this is the only pass that handles the record; a
+            // wedged rename re-probes ≤32 records per pass, cost disclosed).
+            // A digest-bound recorded ok receipt
             // suppresses the failure marker entirely (the receipt answers
             // the waiting call); a corrupt tail record is "unparseable", an
             // unreadable/non-regular/oversize one says so — only the
@@ -2103,10 +2108,10 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             }
             if quarantine_with_warning(&path, &mut quarantine_warnings) {
                 // Best-effort trail: the disposition is audited when the
-                // record parses (the tail can hold legitimate-looking
-                // records — the trail must show where they went and why);
-                // hostile bytes keep the failed/ evidence and the streak
-                // warn as the trace.
+                // record parses AND carries a gate-valid sender (the tail
+                // can hold legitimate-looking records — the trail must show
+                // where they went and why); hostile bytes keep the failed/
+                // evidence and the streak warn as the trace.
                 if parsed.is_some() {
                     let audited_reason = marker_reason
                         .as_ref()
@@ -2372,9 +2377,16 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                         &error,
                     );
                 }
-                if !snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| snapshot.still_matches(&path))
+                // Round-11 M-1: skip a record whose entry VANISHED (nothing
+                // at the name to answer), or one that diverged after the
+                // snapshot (the replacement takes its own fresh pass). A
+                // DANGLING LINK has an entry — it proceeds to the
+                // quarantine/park and the marker below, the same terminal
+                // answer base gave every unreadable record.
+                if !path.symlink_metadata().is_ok()
+                    || snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| !snapshot.still_matches(&path))
                 {
                     continue;
                 }
@@ -2399,10 +2411,11 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     write_failure_marker(&stem, &error);
                 } else if failure_marker_missing(&stem) {
                     // #680's ensure-presence: the deduped episode still
-                    // repairs a MISSING marker. The reachable trigger is
-                    // the PRIOR pass whose `!still_matches → continue`
-                    // skipped the write after inserting this identity (the
-                    // record was replaced mid-apply); the audit line stays
+                    // repairs a MISSING marker. Reachable triggers: the
+                    // PRIOR pass whose divergence/skip guards bypassed the
+                    // write after inserting this identity (a mid-apply
+                    // replacement, or the record vanished), and a prior
+                    // marker-write IO failure; the audit line stays
                     // deduped, the waiting call does not
                     // (write_failure_marker still refuses a landed ok
                     // receipt).
@@ -2448,9 +2461,13 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                             &error,
                         );
                     }
-                    if !snapshot
-                        .as_ref()
-                        .is_some_and(|snapshot| snapshot.still_matches(&path))
+                    // Round-11 M-1: see the Poison arm's guard — skip a
+                    // VANISHED entry or a post-snapshot divergence; a
+                    // dangling link proceeds to the terminal answer.
+                    if !path.symlink_metadata().is_ok()
+                        || snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| !snapshot.still_matches(&path))
                     {
                         continue;
                     }
@@ -4112,6 +4129,165 @@ mod tests {
     /// spool names are quarantined ON SIGHT, before the batch count — they
     /// can never be processed or keyed, and counting them let planted
     /// squatters starve legitimately named records.
+    /// #680 round-11 M-1 + m-D: the ghost filter is `symlink_metadata`-based,
+    /// not `exists`-based. A VANISHED name is skipped (no junk episode opens
+    /// for it), while a DANGLING SYMLINK at a record name has metadata, stays
+    /// in the batch, and reaches the Poison arm for base's terminal answer —
+    /// an `exists` filter would follow the link, drop it on every pass, and
+    /// silently starve the waiting caller (ships this red).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vanished_ghost_skipped_and_dangling_link_answered_terminally() {
+        use std::os::unix::fs::symlink;
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // The vanished ghost: a tracked name whose file is gone this pass.
+        let mut retries = RetryState::default();
+        retries.attempts.insert("ghost.json".to_string(), 1);
+        retries
+            .stuck_episode_audited
+            .insert("ghost.json".to_string(), "stale-digest".to_string());
+        // The dangling link: metadata exists, the target does not — base
+        // terminally refused it at the gated open.
+        symlink(
+            spool.join("nonexistent-target"),
+            spool.join("dangling.json"),
+        )
+        .unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            !retries.stuck_episode_audited.contains_key("ghost.json")
+                && !retries.attempts.contains_key("ghost.json"),
+            "the vanished name is skipped and its stale entries retained away"
+        );
+        // The platform rename refuses symlinks (O_NOFOLLOW open), so the
+        // terminal answer is the Poison arm's ok:false MARKER with the name
+        // parked — not a successful move (an `exists` filter never reaches
+        // this arm at all and ships this red).
+        assert!(
+            retries.parked.contains_key("dangling.json"),
+            "the dangling link reaches the Poison arm and parks"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("dangling.json"))
+                .expect("the waiting call gets a terminal answer"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], false);
+        assert!(
+            spool.join("dangling.json").symlink_metadata().is_ok(),
+            "the link stays queued under its park (the platform rename refuses it)"
+        );
+    }
+
+    /// #680 round-11 m-C: the Poison/Retry arms' ensure-presence repair
+    /// branch — a pass whose snapshot diverged (a digest-preserving
+    /// reformat) inserted the identity but skipped the marker write; the
+    /// NEXT pass's deduped arm must repair the missing marker without
+    /// re-auditing.
+    #[tokio::test]
+    async fn deduped_episode_repairs_a_marker_the_diverged_pass_skipped() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|content| content.lines().count())
+                .unwrap_or(0)
+        };
+        struct ReformattingFailureCreator {
+            spool_path: std::path::PathBuf,
+            applies: Arc<AtomicUsize>,
+        }
+        impl TaskCreator for ReformattingFailureCreator {
+            async fn create(
+                &self,
+                _input: CreateScheduledTaskInput,
+            ) -> std::result::Result<ScheduledTaskDto, String> {
+                // Digest-preserving reformat on the EXHAUSTION apply only
+                // (3rd call): pretty-printing changes the bytes — the loop's
+                // snapshot diverges — while the parsed record, and its
+                // payload digest, is intact. Later applies leave the bytes
+                // stable so the repair pass's snapshot matches.
+                if self.applies.fetch_add(1, Ordering::SeqCst) == MAX_CREATE_ATTEMPTS as usize - 1 {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&self.spool_path).unwrap())
+                            .unwrap();
+                    std::fs::write(
+                        &self.spool_path,
+                        serde_json::to_string_pretty(&value).unwrap(),
+                    )
+                    .unwrap();
+                }
+                Err("simulated persistent failure".to_string())
+            }
+            async fn update(
+                &self,
+                _task_id: &str,
+                _input: UpdateScheduledTaskInput,
+            ) -> std::result::Result<ScheduledTaskDto, String> {
+                Err("simulated persistent failure".to_string())
+            }
+            async fn delete(
+                &self,
+                _task_id: &str,
+            ) -> std::result::Result<ScheduledTaskDto, String> {
+                Err("simulated persistent failure".to_string())
+            }
+        }
+        let creator = ReformattingFailureCreator {
+            spool_path: spool.join("swap.json"),
+            applies: Arc::new(AtomicUsize::new(0)),
+        };
+        std::fs::write(spool.join("swap.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        for _ in 0..MAX_CREATE_ATTEMPTS {
+            process_pending_spool(
+                &creator,
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+        }
+        assert_eq!(audit_lines(), 1, "one exhausted-episode audit line");
+        assert!(
+            !done_dir().join("swap.json").exists(),
+            "the diverged pass inserted the identity but skipped the marker"
+        );
+        process_pending_spool(
+            &creator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("swap.json"))
+                .expect("the deduped arm repairs the missing marker"),
+        )
+        .unwrap();
+        assert_eq!(repaired["ok"], false);
+        assert_eq!(
+            audit_lines(),
+            1,
+            "the repair does not re-audit the deduped episode"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn non_utf8_squatters_do_not_starve_legitimate_records() {
