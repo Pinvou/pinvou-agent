@@ -197,6 +197,20 @@ try {
   assert.equal(lane4.busy, false, '无 live 痕迹时 hydration 不恢复 busy');
   assert.equal(lane4.tokens.input, 4, 'hydration restores the latest context snapshot');
   assert.equal(lane4.tokens.max, 64000, 'hydration restores the context-window denominator');
+  // Adjacent text blocks are separate markdown blocks: hydration joins them
+  // with a blank line so a table after prose still parses, and a textless
+  // block renders nothing instead of the literal string "undefined".
+  const laneJoin = createNativeLane();
+  hydrateNativeLane(laneJoin, {
+    messages: [
+      { role: 'assistant', content: [{ type: 'text', text: 'Summary:' }, { type: 'text', text: '| a | b |\n|---|---|' }] },
+      { role: 'assistant', content: [{ type: 'text' }] },
+    ],
+  }, []);
+  assert.deepEqual(
+    laneJoin.items.filter(item => item.type === 'assistant').map(item => item.text),
+    ['Summary:\n\n| a | b |\n|---|---|'],
+  );
   // A live chat:usage that landed before hydration finished is newer than the on-disk
   // snapshot; hydration must not roll it back.
   const lane4live = createNativeLane();

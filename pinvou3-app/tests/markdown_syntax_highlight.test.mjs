@@ -216,8 +216,8 @@ assert.match(css, /\.msg-md pre\.pinvou-code-block::before/u);
 // (block-table pattern) instead of clipping at the container edge or forcing
 // a whole-document pan that hides the heading column. Pin the rule so a CSS
 // tidy cannot silently delete it.
-const msgMdTableRule = css.match(/\.msg-md table \{[^}]*\}/u);
-assert.ok(msgMdTableRule, '.msg-md table block-table rule must exist');
+const msgMdTableRule = css.match(/\.msg-md table,\.persona-body table \{[^}]*\}/u);
+assert.ok(msgMdTableRule, '.msg-md table block-table rule must exist (shared with .persona-body table)');
 assert.match(msgMdTableRule[0], /display:\s*block/u);
 assert.match(msgMdTableRule[0], /width:\s*max-content/u);
 assert.match(msgMdTableRule[0], /max-width:\s*100%/u);

@@ -107,7 +107,7 @@ async function clickChip(page, text) {
       const h3s = [...document.querySelectorAll('h3')].map(h => (h.textContent || '').trim());
       return h3s.includes('文档知识') && !h3s.includes('技能');
     }));
-    rec('点击「全部」chip 复位', await clickExact(page, '全部'));
+    rec('点击「全部」chip 复位', await clickChip(page, '全部'));
     await sleep(300);
     // 主维度=类型 → 下方按业务分区。业务归属未知的条目(内置视觉设计/独立技能/
     // 自定义上传 MCP)落「其他」分区;「技能」不再是业务分区(仅作类型维度组)。
@@ -129,7 +129,7 @@ async function clickChip(page, text) {
       JSON.stringify(badgeSections));
 
     // 二级筛选:MCP → 只剩 MCP 条目,仍按业务分区;金融分区应为 企查查+同花顺问财 共 2 条
-    rec('点击「MCP」chip', await clickExact(page, 'MCP'));
+    rec('点击「MCP」chip', await clickChip(page, 'MCP'));
     await sleep(300);
     const mcpBadge = await page.evaluate(() => {
       const head = [...document.querySelectorAll('div.items-baseline')].find(h => (h.querySelector('h3')?.textContent || '').trim() === '金融数据');
@@ -145,10 +145,10 @@ async function clickChip(page, text) {
     // 自定义上传的 MCP（后端合成卡带 userUploaded + mcpServer）必须归 MCP 组
     // （二轮评审：旧判定顺序把 userUploaded 先短路进 Skill 组）。
     rec('自定义上传 MCP 出现在 MCP 筛选', await page.evaluate(() => document.body.innerText.includes('my-uploaded-mcp')));
-    rec('点击「Skill」chip', await clickExact(page, 'Skill'));
+    rec('点击「Skill」chip', await clickChip(page, 'Skill'));
     await sleep(300);
     rec('Skill 筛选不含自定义上传 MCP', await page.evaluate(() => !document.body.innerText.includes('my-uploaded-mcp')));
-    rec('点击「全部」chip 复位', await clickExact(page, '全部'));
+    rec('点击「全部」chip 复位', await clickChip(page, '全部'));
     await sleep(300);
 
     // 切主维度=业务

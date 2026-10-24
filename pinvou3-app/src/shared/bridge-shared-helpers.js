@@ -5138,6 +5138,7 @@
       const rc = state.messages[ri].content;
       if (!Array.isArray(rc)) continue;
       for (let rj = 0; rj < rc.length; rj++) {
+        if (!rc[rj]) continue;
         if (rc[rj].type === "tool_result") {
           resultById[rc[rj].tool_use_id] = { content: rc[rj].content, is_error: !!rc[rj].is_error };
         }
@@ -5154,6 +5155,7 @@
       if (!Array.isArray(dc)) continue;
       for (let dj = 0; dj < dc.length; dj++) {
         const db = dc[dj];
+        if (!db) continue;
         const dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
         if (dbMutation) {
           extractArtifactPaths(db.input).forEach(function (dap) {
@@ -5205,6 +5207,7 @@
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
         for (let ci = 0; ci < blocks.length; ci++) {
           const c = blocks[ci];
+          if (!c) continue;
           if (c.type !== "tool_result") continue;
           const tm = lane.toolMeta.value[c.tool_use_id];
           if (tm) {
@@ -5230,8 +5233,13 @@
       let planSnap = null, todosSnap = null, sawPlanTool = false;
       for (let bi = 0; bi < blocks.length; bi++) {
         const b = blocks[bi];
+        if (!b) continue;
         if (b.type === "text") {
-          textBuf += b.text;
+          // Adjacent text blocks are separate markdown blocks (same convention as
+          // the scheduled-draft flattener in flushAssistantMessageToHistory, which
+          // joins them with a blank line); raw concatenation glues a following
+          // table onto the previous line and it never parses.
+          textBuf = textBuf ? textBuf + "\n\n" + (b.text || "") : (b.text || "");
         } else if (b.type === "thinking") {
           if (textBuf) {
             addChatItem({ type: "assistant", text: textBuf, html: lane.renderMarkdown(textBuf), time: "", streaming: false });

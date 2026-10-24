@@ -399,7 +399,7 @@ export function CodexWorkspacePanel({
       visible={visible}
       activationKey={activationKey}
       onActiveChange={onActiveChange}
-      className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
+      className="border-l border-black/[0.06] bg-white/[0.92] backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/[0.96]"
       dataTestId="codex-workspace-panel"
     >
       <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
@@ -436,7 +436,7 @@ export function CodexWorkspacePanel({
               </button>
             </div>
           </div>
-          {error && <div className="mx-3 mt-2 rounded-lg bg-red-500/8 px-2.5 py-2 text-[10px] leading-4 text-red-600 dark:text-red-300">{error}</div>}
+          {error && <div className="mx-3 mt-2 rounded-lg bg-red-500/[0.08] px-2.5 py-2 text-[10px] leading-4 text-red-700 dark:text-red-300">{error}</div>}
 
           {tab === 'files' ? (
             <>
@@ -492,7 +492,7 @@ export function CodexWorkspacePanel({
               {sessionId ? (
                 <>
                   {!changes?.baselineAvailable && (
-                    <div className="mx-1 mb-2 rounded-lg bg-amber-500/8 px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
+                    <div className="mx-1 mb-2 rounded-lg bg-amber-500/[0.08] px-2.5 py-2 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
                       {copy.noBaseline}
                     </div>
                   )}

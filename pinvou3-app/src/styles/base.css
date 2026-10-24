@@ -53,11 +53,22 @@
     .msg-md pre > code { display:block; padding:0; background:transparent; color:inherit; }
     .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
     .msg-md a { text-decoration:underline; }
+    /* Long unbreakable tokens (URLs, paths) must wrap inside their container:
+       the turn section's content-visibility paint containment clips overflow
+       without creating scrollability, so an unwrapped token is unreachable
+       (the persona modal body surfaces it as a stray horizontal scrollbar).
+       break-word is declared first because `anywhere` needs Safari 15.4+, and
+       its min-content shrink would let auto-layout tables collapse their cells
+       instead of using the block-table scroll boxes below, so cells opt out. */
+    .msg-md,.persona-body,.codex-markdown { overflow-wrap:break-word; overflow-wrap:anywhere; }
+    .msg-md th,.msg-md td,.codex-markdown th,.codex-markdown td,.persona-body th,.persona-body td { overflow-wrap:normal; }
     /* Block-table pattern: wide tables (LLM output routinely exceeds the panel
        width) scroll within their own box instead of clipping at the container
-       edge or forcing a whole-document pan that hides the heading column. */
-    .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; display:block; width:max-content; max-width:100%; overflow-x:auto; }
-    .msg-md th,.msg-md td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
+       edge or forcing a whole-document pan that hides the heading column.
+       Persona bodies render LLM markdown too, so they share the recipe rather
+       than carrying a byte-identical copy in their own section. */
+    .msg-md table,.persona-body table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; display:block; width:max-content; max-width:100%; overflow-x:auto; }
+    .msg-md th,.msg-md td,.persona-body th,.persona-body td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
 
     /* Dark theme code blocks — scoped under .dark so both light-code+dark-code
        classes can coexist on one element (dark-code wins via specificity in dark mode).
@@ -145,6 +156,7 @@
     }
     .codex-markdown table {
       display:block;
+      width:max-content;
       max-width:100%;
       margin:.7em 0;
       overflow-x:auto;
@@ -552,7 +564,6 @@
     @keyframes bnrFloat1 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
     @keyframes bnrFloat2 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
     @keyframes bnrFloat3 { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
-    @media (max-width: 760px){ .bnr-avatars { display: none; } }
     /* 详情 modal 里的完整人设正文(markdown) prose 排版 */
     .persona-body h1, .persona-body h2, .persona-body h3 { font-weight:600; margin:.9em 0 .35em; line-height:1.3; }
     .persona-body h1 { font-size:1.15em; } .persona-body h2 { font-size:1.06em; } .persona-body h3 { font-size:1em; }
