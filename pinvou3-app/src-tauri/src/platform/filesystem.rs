@@ -452,6 +452,40 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
     Ok(file)
 }
 
+/// Open a private temp file for a write-then-rename publish: create or
+/// truncate, `O_NOFOLLOW|O_NONBLOCK`, 0600, and a post-open non-regular
+/// refusal. The refusal is the point here, unlike
+/// [`open_private_lock_file`]'s deliberate FIFO tolerance: a write-only
+/// open succeeds on a planted FIFO whenever a reader holds it (and fails
+/// with ENXIO when none does), so the payload would vanish into the pipe
+/// buffer and the publish rename would install the FIFO as the data file
+/// (round-18 MAJOR-1 on #628 — silent receipt loss plus a
+/// duplicate-apply window on the scheduled-task marker; round-21 M2
+/// pinned both the no-reader and reader-present variants). Round-24
+/// minor-13 note: `mode(0o600)` applies at creation only — a pre-existing
+/// tmp left loose by an external tooling keeps its mode for that write
+/// (no secrets in the payloads; the publish rename lands it in the same
+/// private directory). Windows has no std-level reparse-point refusal on
+/// `OpenOptions` (documented residual, same-user spool/state tree).
+/// A regular file with additional hard links is accepted: create+truncate can
+/// change the linked inode before any post-open check. Callers must use a
+/// private state directory; this helper does not isolate hostile same-user
+/// hard links (the lock-file primitive documents the same authority boundary).
+pub(crate) fn open_private_tmp_write_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    refuse_non_regular_file(&file, path)?;
+    Ok(file)
+}
+
 /// Open a cross-process lock file (an fd-lock flock/LockFileEx target) for
 /// read-modify-write serialization. The file holds no user data, but
 /// private-by-default is the home's convention: created 0600 on Unix and
@@ -3811,6 +3845,33 @@ pub(crate) mod tests {
             .read_to_string(&mut contents)
             .unwrap();
         assert_eq!(contents, "one\ntwo\n");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn private_tmp_writer_refuses_symlinks_and_reader_present_fifo() {
+        use std::os::unix::fs::{OpenOptionsExt as _, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        std::fs::write(&target, b"keep these bytes").unwrap();
+        let link = temp.path().join("link");
+        symlink(&target, &link).unwrap();
+        assert!(super::open_private_tmp_write_file(&link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep these bytes");
+        let fifo = temp.path().join("pipe");
+        crate::platform::paths::tests::plant_fifo(&fifo);
+        let _reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        let error = super::open_private_tmp_write_file(&fifo).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidData,
+            "the post-open gate, rather than ENXIO, refuses the write"
+        );
+        let plain = temp.path().join("plain");
+        super::open_private_tmp_write_file(&plain).expect("a plain regular file opens");
     }
 }
 

@@ -7,7 +7,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use deepseek_tui::models::SystemPrompt;
 use deepseek_tui::session_manager::SessionManager;
 
@@ -142,19 +142,61 @@ pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     if !path.is_absolute() {
         bail!("Workspace path must be absolute: {raw}");
     }
-    let canonical = path
-        .canonicalize()
-        .with_context(|| format!("Workspace path does not exist: {raw}"))?;
+    let canonical = path.canonicalize().map_err(|error| {
+        // Round-30 minor 8: a transient fault (mount hiccup, permission
+        // race) is not "does not exist" — name the distinction instead of
+        // telling the model a falsehood. Round-31 MAJOR 1 corrected the
+        // classification: only the transient wording retries — the NotFound
+        // wording ("does not exist") IS a permanent class, and the
+        // classifier's transient-prefix-first check is what keeps this
+        // branch retryable.
+        if error.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!("Workspace path does not exist: {raw}")
+        } else {
+            anyhow::anyhow!("Workspace path could not be verified right now ({error}): {raw}")
+        }
+    })?;
     if !canonical.is_dir() {
         bail!("Workspace path must be a directory: {raw}");
+    }
+    let canonical_str = crate::platform::os::platform_compat_path(&canonical.to_string_lossy());
+    // Round-23 M1 (#657): the pinvou3 home (settings.json, connector
+    // credentials, sessions/, spool roots) and filesystem volume roots are
+    // refused as project workspaces — binding either would present
+    // privileged state as an unattended opening turn's project. Scope
+    // refusal lives HERE (the panel's own gate) so the panel and the
+    // tool-created path share it. BOTH sides are canonicalized so the
+    // comparison is in real-path space (canonicalize resolves junctions —
+    // e.g. the CI runner's Temp — into their targets, and a string-level
+    // comparison against the raw pinvou3_home() would silently miss).
+    // PathBuf::starts_with compares whole components, so a sibling like
+    // `<home>-backup` is not a false match.
+    let home_canonical = crate::platform::paths::pinvou3_home()
+        .canonicalize()
+        .unwrap_or_else(|_| crate::platform::paths::pinvou3_home());
+    if canonical == home_canonical || canonical.starts_with(&home_canonical) {
+        bail!(
+            "Workspace path must not be inside the Pinvou home ({}): {raw}",
+            home_canonical.display()
+        );
+    }
+    // Round-29 minor: the old `len() <= 3` heuristic misclassified 1-2
+    // character top-level directories (`/a`, `/ab`) as volume roots —
+    // fail-closed but with the wrong message. A path is a volume root iff
+    // it terminates in a root/prefix component (Path::parent is None
+    // there); everything else has a proper parent directory component.
+    let is_volume_root = match canonical.parent() {
+        None => true,
+        Some(parent) => parent == canonical,
+    };
+    if is_volume_root {
+        bail!("Workspace path must not be a filesystem volume root: {raw}");
     }
     // Windows canonicalize returns a \?\ verbatim prefix; agents and the
     // frontend misjudge cwd in string/prefix comparisons, so normalize to a
     // regular drive path (identity on non-Windows) — the same invariant as
     // validate_codex_project_workspace.
-    Ok(crate::platform::os::platform_compat_path(
-        &canonical.to_string_lossy(),
-    ))
+    Ok(canonical_str)
 }
 
 /// Input validation for the keychain snapshot (§6): every additional root
