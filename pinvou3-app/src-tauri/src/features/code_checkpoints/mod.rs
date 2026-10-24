@@ -126,7 +126,6 @@ const SECRET_EXCLUDES: &[&str] = &[
     ".aws/sso/cache/**",
     ".kube/config",
     ".docker/config.json",
-    ".git-credentials",
     ".gnupg/**",
     ".password-store/**",
     ".ssh/**",
@@ -1962,8 +1961,13 @@ fn secret_path_matches(path: &str) -> bool {
         let pattern = pattern.to_ascii_lowercase();
         if pattern.contains('/') {
             if pattern.ends_with("/**") {
+                // r30 MAJOR-1：目录 glob 的嵌套副本按中路径命中——`==`/前缀
+                // 只覆盖根级，`sub/.ssh/agent-env`（basename 不落任何 basename
+                // 模式）曾从 legacy 树的 patch 预览泄漏明文。
                 let dir = pattern.trim_end_matches("/**");
-                return normalized == dir || normalized.starts_with(&format!("{dir}/"));
+                return normalized == dir
+                    || normalized.starts_with(&format!("{dir}/"))
+                    || normalized.contains(&format!("/{dir}/"));
             }
             // 根级副本整路径相等；嵌套副本按「/ 边界 + 后缀」命中。
             normalized == pattern || normalized.ends_with(&format!("/{pattern}"))
@@ -2920,6 +2924,76 @@ mod tests {
             fs::read(ledger.join("checkpoints/index.json")).unwrap(),
             live_index_bytes,
             "陈旧 tree 里的 checkpoints/index.json 不得覆写活账本（r19 M4）"
+        );
+    }
+
+    /// 降级回退携带查询（评审 r9 M4 零锚定区）：keepTurns+revision 匹配命中；
+    /// ghost/被裁剪目标与维度不匹配按 None 处理。
+    #[test]
+    /// r30 MAJOR-3 pin：r27-M4/r28-M3/r29-minor-6 扩充条目跨形状覆盖——
+    /// purge pathspec 双腿（根级 + `**/` 嵌套）逐条命中；patch 过滤三形状
+    /// （目录 glob 中路径、basename 通配、plain basename）命中。删除扩充
+    /// 条目或破坏双腿派生必须变红。
+    #[test]
+    fn expanded_secret_entries_cover_all_shapes() {
+        let specs = secret_pathspecs();
+        for entry in [
+            ".aws/sso/cache/**",
+            ".gnupg/**",
+            ".password-store/**",
+            ".ssh/**",
+            "terraform.tfstate*",
+            ".pypirc",
+            ".envrc",
+            "_netrc",
+            "secrets.yaml",
+            "service-account*.json",
+        ] {
+            let lower = entry.to_ascii_lowercase();
+            assert!(
+                specs.iter().any(|s| s == &format!(":(icase){lower}")),
+                "purge 根腿缺失: {entry}"
+            );
+            assert!(
+                specs.iter().any(|s| s == &format!(":(icase)**/{lower}")),
+                "purge 嵌套腿缺失: {entry}"
+            );
+        }
+        assert_eq!(
+            SECRET_EXCLUDES
+                .iter()
+                .filter(|entry| **entry == ".git-credentials")
+                .count(),
+            1,
+            ".git-credentials 不得重复（r30 MAJOR-3 去重后保持单条）"
+        );
+        assert!(
+            secret_path_matches("x/.aws/sso/cache/token"),
+            "目录 glob 中路径命中"
+        );
+        assert!(
+            secret_path_matches("terraform.tfstate.backup"),
+            "basename 通配命中"
+        );
+        assert!(
+            secret_path_matches("deploy/.envrc"),
+            "plain basename 嵌套命中"
+        );
+        assert!(!secret_path_matches("src/main.rs"), "非秘密路径不误报");
+    }
+
+    /// r30 MAJOR-2 行为 pin：降级匹配器的 IO fail-closed——pending 路径被
+    /// 目录占用（读取 = 非 NotFound 的真实 IO 错误）必须 Err，不得映射为
+    /// 「无暂记」（否则降级回退跳过 PreRestore 绑定而代码已回退）。
+    #[test]
+    fn pending_pre_restore_for_degraded_fails_closed_on_io_errors() {
+        let ledger = TestDir::new("degraded-io-ledger");
+        let pending_path = ledger.path().join("pending_rewind.json");
+        fs::create_dir_all(&pending_path).unwrap();
+        let result = pending_pre_restore_for_degraded(ledger.path(), 1, "rev");
+        assert!(
+            result.is_err(),
+            "真实 IO 错误必须 fail-closed（r30 MAJOR-2 变异实证：映射 None 时全绿）"
         );
     }
 
@@ -4052,6 +4126,125 @@ mod tests {
         assert!(
             !diff.patch.contains(".env"),
             "secret path must not enter the patch: {:?}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.contains("ok.txt"),
+            "normal file diffs must survive in the patch: {:?}",
+            diff.patch
+        );
+    }
+
+    /// r30 MAJOR-1 回归：`.ssh/**` 目录 glob 曾只按根级命中——legacy 树里
+    /// 的嵌套副本（`sub/.ssh/agent-env`，basename 不落任何 basename 模式）
+    /// 从 patch 预览泄漏明文、清单误报「将删除」。修复后按中路径命中。
+    #[test]
+    fn diff_preview_filters_nested_dir_glob_secrets_from_legacy_snapshot() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("dirglob-ledger");
+        let exec = TestDir::new("dirglob-exec");
+        exec.write(
+            "ok.txt", "v1
+",
+        );
+        exec.write(
+            "sub/.ssh/agent-env",
+            "SECRET MATERIAL 1234
+",
+        );
+        exec.write(
+            "sub/.ssh/authorized_keys",
+            "ssh-ed25519 AAAA
+",
+        );
+        let repo = repo_dir(ledger.path());
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(&repo, exec.path(), &["init"]).unwrap();
+        git_ok(&repo, exec.path(), &["config", "core.autocrlf", "false"]).unwrap();
+        git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "add",
+                "-f",
+                "ok.txt",
+                "sub/.ssh/agent-env",
+                "sub/.ssh/authorized_keys",
+            ],
+        )
+        .unwrap();
+        let tree = git_ok(&repo, exec.path(), &["write-tree"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let commit = git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &tree,
+                "-m",
+                "legacy snapshot",
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git_ok(
+            &repo,
+            exec.path(),
+            &["update-ref", "refs/checkpoints/c1-1", &commit],
+        )
+        .unwrap();
+        save_index(
+            ledger.path(),
+            &CheckpointIndex {
+                version: 2,
+                entries: vec![CheckpointMeta {
+                    id: "c1-1".into(),
+                    turn: Some(1),
+                    kind: CheckpointKind::Turn,
+                    label: String::new(),
+                    commit,
+                    created_at: 0,
+                }],
+            },
+        )
+        .unwrap();
+
+        // 当前状态：ok.txt 改了，嵌套 .ssh 内容也变了（purge 后不在 index）。
+        exec.write(
+            "ok.txt", "v2
+",
+        );
+        exec.write(
+            "sub/.ssh/agent-env",
+            "SECRET MATERIAL 5678
+",
+        );
+        let diff = diff_checkpoint(ledger.path(), exec.path(), "c1-1", true).unwrap();
+        assert!(
+            diff.changes
+                .iter()
+                .all(|change| !change.path.contains(".ssh/")),
+            "嵌套 .ssh 条目不得出现在变更清单（中路径命中）: {:?}",
+            diff.changes
+        );
+        assert!(diff.changes.iter().any(|change| change.path == "ok.txt"));
+        assert!(
+            !diff.patch.contains("SECRET MATERIAL"),
+            "嵌套 .ssh 明文不得进入 patch: {:?}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains(".ssh/"),
+            "嵌套 .ssh 路径不得进入 patch: {:?}",
             diff.patch
         );
         assert!(

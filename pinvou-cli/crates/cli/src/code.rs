@@ -6224,8 +6224,9 @@ mod tests {
         );
     }
 
-    /// r28 M2(b) pin：CLI rewind 的复用判定不得查 sidecar 绑定记录（同 GUI，
-    /// r25 MAJOR-3 的前提：revision 匹配的暂记只能是 persist 分裂窗）。
+    /// r28 M2(b) pin: the CLI rewind's reuse decision must not consult the
+    /// sidecar record (same as the GUI; a revision-matched pending can only
+    /// be the persist-split window per the r25 MAJOR-3 premise).
     #[test]
     fn cli_rewind_reuse_does_not_consult_the_sidecar_record() {
         let src = include_str!("code.rs");
@@ -6243,8 +6244,9 @@ mod tests {
             !body.contains("latest_rewound_turns_record"),
             "the CLI rewind reuse decision must not consult the sidecar record (r28 M2)"
         );
-        // r27 P2-1 pin：暂记读取必须区分 NotFound 与真实 IO 错误——失败打开
-        // （映射 None）会在引导重试时 fresh PreRestore 快照已恢复树。
+        // r27 P2-1 pin: the pending read must distinguish NotFound from real
+        // IO errors - failing open (mapping to None) mints a fresh PreRestore
+        // of the already-restored tree during a guided retry.
         assert!(
             src.contains("ErrorKind::NotFound => return Ok(None)"),
             "the pending read must distinguish NotFound from real IO errors (r27 P2-1 fail-closed)"
