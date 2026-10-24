@@ -4833,6 +4833,8 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
 function patchItemById(id, patch) { return pinvouSharedweb().patchItemById(id, patch); }
   function pushUserEcho(text, persist) {
     const item = { type: "user", text, time: timeStr() };
+    // 与 tauri 车道同款标记：前端-only 回显不计后端 turn（回退序号剔除用）。
+    if (!persist) item.frontendEcho = true;
     let message = null;
     addChatItem(item);
     if (persist) {

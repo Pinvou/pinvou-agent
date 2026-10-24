@@ -5,7 +5,8 @@
 // clicking the backdrop). The panel is pinned `relative` so it always stacks above the
 // positioned backdrop regardless of caller classes. Title/error row/footer are all optional
 // nodes composed by callers: the
-// rewind confirm/undo dialogs (codex/RewindChip.jsx) use the full set, CodexAcpView's
+// rewind confirm/undo dialogs (features/conversation/RewindChip.jsx, shared by both native
+// lanes) use the full set, CodexAcpView's
 // branch-switch dialog uses only the shell + its own panel, and the settings provider
 // delete/uninstall/transfer dialogs keep their local wrappers on top of it. Promoted out of
 // features/codex/ModalDialogShell.jsx per the 2026-10 reuse audit (its header already said it

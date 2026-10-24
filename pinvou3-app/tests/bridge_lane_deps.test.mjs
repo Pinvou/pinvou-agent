@@ -193,10 +193,12 @@ while ((m = clusterRe.exec(helpers)) !== null) {
   snapshot.clusters[m[1]] = [...m[2].matchAll(/([\w$]+): b\.([\w$]+)/g)].map((p) => `${p[1]}:${p[2]}`);
 }
 const EXPECTED_SURFACE = {
-  // The replay result mutator is private and parameter-only. AST scope audit:
-  // updateToolItem adds only that helper; replay adds it plus standard Map.
-  // No new cluster deps, exports or forwarders; REQUIRED stays unchanged.
-  sharedFnCount: 313,
+  // Combined drift (main #746 replay mutator +1, branch isCompactionCarrier
+  // +1, r22 isImageMarkerTextBlock +1): all private, parameter-only helpers
+  // — no new cluster deps, exports or forwarders; REQUIRED stays unchanged.
+  // r22 审计结论：isImageMarkerTextBlock 仅被 rerenderFromMessagesCore 的
+  // user 分支调用（基座内局部名，不进 deps 集合），纯谓词、无副作用。
+  sharedFnCount: 315,
 };
 
 assert.equal(

@@ -1381,6 +1381,35 @@ pub fn run() {
                     // sessions feature 自己的 code 判定（mode 默认值解析 + 仅 code
                     // 持久化），与 bridge 共用同一份 SessionAgentStore 闭包。
                     store_for_engine.set_code_session_predicate(code_session_predicate.clone());
+                    // r21 M1: transcript-shrink (compaction) invalidates the
+                    // truncated branch's Turn checkpoints so the ledger-derived
+                    // reconciliation count stays transcript-honest in the
+                    // idle-after-compaction window. Fired inside the persist
+                    // lock — the work runs on its own thread (hook discipline).
+                    store_for_engine.register_messages_shrunk_hook(std::sync::Arc::new({
+                        let store = store_for_engine.clone();
+                        move |session_id: &str, messages: &[deepseek_tui::models::Message]| {
+                            let sid = session_id.to_string();
+                            let messages = messages.to_vec();
+                            let store = store.clone();
+                            std::thread::spawn(move || {
+                                let Ok(roots) = store.session_roots(&sid) else {
+                                    return;
+                                };
+                                let kept = crate::features::code_checkpoints::count_user_turns(&messages);
+                                if let Err(error) =
+                                    crate::features::code_checkpoints::invalidate_turn_checkpoints_after(
+                                        &roots.ledger,
+                                        kept,
+                                    )
+                                {
+                                    log::warn!(
+                                        "[pinvou3][checkpoints] compaction invalidation failed sid={sid}: {error:#}"
+                                    );
+                                }
+                            });
+                        }
+                    }));
                     // SessionStore::delete and deep deletion paths without
                     // an app handle (retention policy/scheduled cleanup)
                     // clear process-level per-session keys uniformly via

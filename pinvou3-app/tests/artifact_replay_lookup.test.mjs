@@ -165,6 +165,34 @@ for (const runtime of ['tauri', 'web']) {
     assert.deepEqual(plain(rows.map(c => c.type)), ['card_creator_intro', 'tool', 'artifact_card', 'user', 'tool', 'artifact_card']);
   });
 
+  test(`${runtime}: a tool-result carrier of only runtime image markers keeps no user bubble`, () => {
+    // r9 M5 截图回传形态（CodeWhale tool_result_message_content）：
+    // [ToolResult, Text("<image path=…>"), ImageUrl, Text("</image>")]。
+    // 剥掉标记后没有用户话语 → 不得还原幻影气泡；工具卡照常回填。
+    const h = createReplay(runtime);
+    const rows = h.replay([
+      assistant(tool('shot', 'screenshot', {})),
+      user(result('shot', 'ok'),
+        { type: 'text', text: '<image path="/tmp/shot.png">' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } },
+        { type: 'text', text: '</image>' }),
+    ]);
+    assert.equal(rows.filter(c => c.type === 'user').length, 0);
+    assert.equal(rows.filter(c => c.type === 'tool').length, 1);
+  });
+
+  test(`${runtime}: real text beside a tool result keeps its bubble and the output boundary`, () => {
+    // r22 集成修复：混合形态（tool_result + 真实用户文本）不能被一刀切吞掉，
+    // 否则 artifact 续接的 user 边界消失、第二个 output 原地改写旧卡而非追加。
+    const h = createReplay(runtime);
+    const rows = h.replay([
+      assistant(producer('first')), user(output('first', '/one/report.md'), { type: 'text', text: 'real words' }),
+      assistant(producer('second')), user(output('second', '/two/report.md')),
+    ]);
+    assert.deepEqual(plain(rows.filter(c => c.type === 'user').map(c => c.text)), ['real words']);
+    assert.deepEqual(plain(cards(rows).map(c => [c.path, c.id])), [['/one/report.md', 3], ['/one/report.md', 6]]);
+  });
+
   test(`${runtime}: the current mutation boundary permits continuation across a prior user message`, () => {
     const rows = createReplay(runtime).replay([
       assistant(present('first', '/one/report.md')), user({ type: 'text', text: 'next' }),

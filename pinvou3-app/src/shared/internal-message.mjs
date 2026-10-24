@@ -18,6 +18,49 @@
 
 const INTERNAL_PROVENANCE = new Set(['runtime', 'subagent_handoff', 'shell_completion']);
 
+/**
+ * 压缩载体消息判定（评审 r5 M2 / r10 M2；镜像 CodeWhale history_recognition：
+ * 摘要头前缀（当前/历史）+ 其余为空或仅 provenance 注释）。载体是运行时内部
+ * 消息、is_user_turn_prompt 判 NotPrompt 不计 turn——展示层渲染它会造成幻影
+ * 「用户轮」并把回退序号顶偏（调和门随之隐藏全部入口）。
+ */
+export function isCompactionCarrierBlocks(blocks) {
+  if (!Array.isArray(blocks) || !blocks.length || !(blocks[0] && blocks[0].type === 'text')) return false;
+  const text = String(blocks[0].text || '');
+  if (!(text.startsWith('Another language model started to solve this problem')
+    || text.startsWith('Conversation Summary (Auto-Generated)'))) return false;
+  const rest = blocks.slice(1);
+  return rest.length === 0 || (rest.length === 1 && rest[0].type === 'text'
+    && String(rest[0].text || '').trim() === '<!-- codewhale.compaction-checkpoint.v1 -->');
+}
+/**
+ * 步数预算通知判定（评审 r10 M3；与 Rust 侧 turns::is_step_budget_notification
+ * 前缀镜像）：底座以 ExternalUser provenance 落盘这两条引擎通知，展示层过滤
+ * 气泡、计数侧（count_user_turns 家族）同步剔除——否则活会话调和门隐藏全部
+ * 回退入口、重载后渲染成用户亲发的假气泡。
+ */
+// NotPrompt 同族 tool-result 块类型全集（CodeWhale request.rs ContentBlock
+// 变体；r20 minor 4 / r25 MAJOR-2 与后端 classify 及 bridge-shared-helpers 的
+// classic 副本保持同集——classic script 无法 import ESM，副本各自成文）。
+export const TOOL_RESULT_BLOCK_TYPES = [
+  'tool_result',
+  'tool_search_tool_result',
+  'code_execution_tool_result',
+];
+
+// 含 tool-result 族块的用户消息不是用户轮（classify 按 ToolResult-first 判
+// NotPrompt）——重载投影只跳过其用户气泡，工具卡回填照跑（r25 MAJOR-2）。
+export function isToolResultCarrierBlocks(blocks) {
+  return (Array.isArray(blocks) ? blocks : []).some(
+    block => block && TOOL_RESULT_BLOCK_TYPES.includes(block.type),
+  );
+}
+
+export function isStepBudgetNoticeText(text) {
+  const value = String(text || '');
+  return value.startsWith('Step budget soft landing:')
+    || value.startsWith('Your model-step budget was exhausted');
+}
 /** 单个文本块是否为完整内部运行时信封。 */
 export function isInternalRuntimeEnvelopeText(value) {
   const text = String(value || '').trim();
