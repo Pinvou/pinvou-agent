@@ -124,7 +124,7 @@ export function buildSessionMentionBlock(refs) {
  * @returns {{ refs: Array<{sessionId: string, title: string}>, text: string, matched: boolean }} parsed refs, the stripped body, and whether the input was structurally a block at all (a byte-valid block that parses to zero refs is still matched — consumers that must agree with the Rust titler and the bubble strip gate on this, not on refs.length)
  */
 export function splitSessionMentionBlock(text) {
-  const raw = String(text || '');
+  const raw = text || '';
   const empty = { refs: [], text: raw, matched: false };
   if (!raw.startsWith(BLOCK_HEADER + '\n')) return empty;
   const lines = raw.split('\n');
@@ -193,7 +193,7 @@ const MENTION_TRIGGER_RE = /(^|[^A-Za-z0-9._%+\-/])@([^\s@]*)$/;
  */
 export function sessionMentionTriggerAt(text, enabled = true) {
   if (!enabled) return null;
-  const raw = String(text || '');
+  const raw = text || '';
   const match = MENTION_TRIGGER_RE.exec(raw);
   if (!match) return null;
   const prefix = match[1] || '';

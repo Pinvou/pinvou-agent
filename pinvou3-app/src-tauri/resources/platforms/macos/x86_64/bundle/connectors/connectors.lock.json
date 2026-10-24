@@ -4,12 +4,12 @@
   "artifacts": [
     {
       "name": "dws",
-      "version": "1.0.64",
+      "version": "1.0.65",
       "license": "Apache-2.0",
       "source": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli",
-      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.64/dws-darwin-amd64.tar.gz",
-      "archiveSha256": "c3c7cde614012ef217debaeb80b42857b0f49e2227bfd8d88718c7aff8718e26",
-      "binarySha256": "0bfcedcd8fcab7a3d266708162a3bdb8fb6be4b3228d30b9ada56cac7309619c"
+      "url": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v1.0.65/dws-darwin-amd64.tar.gz",
+      "archiveSha256": "6afdd8dcb093ea0c7aa9d0e76371f44308aa6ee9f8a44bf0d2b010bb2e3c8244",
+      "binarySha256": "c46dfdefb32500695f575833409c006b4ff3dc95c3dbd3b83f4f11db6ebba1b7"
     },
     {
       "name": "lark-cli",

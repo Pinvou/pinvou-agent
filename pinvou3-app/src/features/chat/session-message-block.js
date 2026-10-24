@@ -50,7 +50,7 @@ const MAX_SENDER_TITLE_LENGTH = 200;
  *   unparseable lookalike returns sender null and the text unchanged.
  */
 export function splitSessionMessageBlock(text) {
-  const raw0 = String(text || '');
+  const raw0 = text || '';
   // Fast path first (review M4): the header compare runs on the raw string
   // before any whole-body replaceAll — a 100k-char history item without the
   // block pays one startsWith, not a full scan-and-copy. The header itself

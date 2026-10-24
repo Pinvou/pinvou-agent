@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import { Check, Copy, ExternalLink, MessageCircle } from '../../components/icons.jsx';
 import { copyClipboardText } from '../../shared/clipboard.js';
-import { COMMUNITY_QQ_GROUP_NAME, COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
+import { COMMUNITY_QQ_GROUP_NUMBER, COMMUNITY_QQ_QR_IMAGE_SRC } from './community-config.js';
 
 /**
  * @param {{
  *   copy: Record<string, string>,
  *   onOpenDiscussions: () => void,
  * }} props - Community content and actions. The QQ group identity constants are
- * owned by this panel (community-config.js) and rendered directly; the sole
+ * owned by this panel; the group name is localized via i18n while the number
+ * and QR image stay as constants in community-config.js. The sole
  * caller (SettingsView) never passed overrides, so the prop slots were dead
  * surface. onOpenDiscussions stays injected so the external-url bridge seam is
  * wired by the caller.
@@ -37,7 +38,7 @@ export function CommunityPanel({ copy, onOpenDiscussions }) {
             <MessageCircle size={14} />
             {copy.communityChannelTag}
           </div>
-          <h2 data-testid="community-group-name" className="text-[20px] font-semibold leading-6">{COMMUNITY_QQ_GROUP_NAME}</h2>
+          <h2 data-testid="community-group-name" className="text-[20px] font-semibold leading-6">{copy.communityGroupName}</h2>
           <p className="mt-2 text-[13px] leading-5 text-[#636366] dark:text-[#C7C7CC]">{copy.communityQrHint}</p>
           <div className="mt-4 flex items-center gap-2 max-sm:justify-center">
             <span className="text-[13px] text-[#8A8A8E] dark:text-[#98989D]">{copy.communityGroupLabel}</span>

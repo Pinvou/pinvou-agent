@@ -1,6 +1,6 @@
 {
   "name": "pinvou3-app",
-  "version": "0.10.14",
+  "version": "0.10.15",
   "description": "品悟智能助手桌面应用",
   "private": true,
   "scripts": {
@@ -161,7 +161,7 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-sonarjs": "^4.2.2",
-    "eslint-plugin-unicorn": "^78.0.0",
+    "eslint-plugin-unicorn": "^79.0.0",
     "globals": "^17.13.0",
     "jscpd": "^5.4.2",
     "knip": "^6.42.1",

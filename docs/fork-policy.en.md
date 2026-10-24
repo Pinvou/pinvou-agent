@@ -3,6 +3,8 @@
 > Updated: 2026-10-23. Public maintenance ea9fdc90f contains #115/#116/#117; parent gitlink follows the public maintenance head.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
+Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.
+
 ## 0. Current maintenance baseline and validation boundary
 
 - Public maintenance and parent gitlink: `ea9fdc90f1c90335554833195eeeb847c83d82dd` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance. #117 merged remotely on 2026-10-23 as `ea9fdc90f`.

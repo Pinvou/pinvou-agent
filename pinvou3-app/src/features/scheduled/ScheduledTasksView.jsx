@@ -382,6 +382,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
     // Scheduled-task subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees)
     const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
+    // Inactive filter tabs sit on the tinted segmented track, not on the panel:
+    // the 60% muted ink lands at 3.1–3.2:1 there, so the light leg goes to 80%.
+    const mutedOnTrack = 'text-[#3C3C43]/80 dark:text-[#EBEBF5]/60';
     // Shared scaffolding for the create/detail dialogs: field styles, field-label rows, backdrop + panel frame, footer surface.
     // Per-site differences (min-height, max-width, footer layout) stay at the call sites; the header close button stays per-site
     // because tests pin its data-testid literal — not componentized.
@@ -418,7 +421,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
     };
     /** @param {{ scheduledCopy: ScheduledCopy, taskFilter: string, setTaskFilter: (value: string) => void }} props - Filter tab state and copy. */
     const FilterTabs = ({ scheduledCopy, taskFilter, setTaskFilter }) => (
-      <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 bg-[#767680]/12 dark:bg-[#767680]/24`}>
+      <div data-testid="scheduled-filter-tabs" className={`grid grid-cols-3 rounded-[8px] p-0.5 bg-[#767680]/[0.12] dark:bg-[#767680]/[0.24]`}>
         {[
           ['all', scheduledCopy.filterAll],
           ['active', scheduledCopy.filterActive],
@@ -429,7 +432,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             className={`h-7 min-w-[72px] rounded-[6.5px] px-3 text-[13px] font-medium transition-colors ${
               taskFilter === value
                 ? 'bg-white text-black shadow-sm dark:bg-[#636366] dark:text-white'
-                : `${mutedValue}`
+                : mutedOnTrack
             }`}>
             {label}
           </button>
@@ -1532,7 +1535,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             <div className="fixed inset-0 z-[300] flex items-center justify-center px-4">
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; the keyboard path is covered by the dialog's cancel button */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
-              <div className="absolute inset-0 bg-black/28 backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
+              <div className="absolute inset-0 bg-black/[0.28] backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />
               <div
                 role="alertdialog"
                 aria-modal="true"
@@ -1549,7 +1552,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                     {scheduledCopy.deleteDescription(deleteConfirmTask.name)}
                   </p>
                 </div>
-                <div className={`grid grid-cols-2 divide-x divide-[#3C3C43]/16 dark:divide-[#545458]/50`}>
+                <div className={`grid grid-cols-2 divide-x divide-[#3C3C43]/[0.16] dark:divide-[#545458]/50`}>
                   <button type="button" data-testid="scheduled-detail-delete-cancel"
                     onClick={(event) => cancelDeleteTask(event)}
                     disabled={!!busyAction}

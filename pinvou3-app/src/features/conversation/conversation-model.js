@@ -394,6 +394,7 @@ function readCommandExecution(tool, forDisplay) {
         ?? '',
     );
     const code = rawOutput.exit_code ?? rawOutput.exitCode;
+    // eslint-disable-next-line unicorn/prefer-includes-over-repeated-comparisons -- strict null/''-guard chain, not a membership test (see the contract comment below); an array literal would allocate per mapped message
     if (code !== undefined && code !== null && code !== '') exitCode = Number(code);
   }
   if (!output && tool && typeof tool.content === 'string') output = tool.content;

@@ -798,7 +798,11 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
     for (const block of blocks) {
       if (!block) continue;
       if (block.type === 'text') {
-        textBuf += block.text || '';
+        // Adjacent text blocks are separate markdown blocks: join with a blank
+        // line (same as the shared rerenderFromMessagesCore hydration) so a
+        // table that follows plain text still parses.
+        const blockText = block.text || '';
+        textBuf = textBuf ? `${textBuf}\n\n${blockText}` : blockText;
       } else if (block.type === 'thinking') {
         flushText();
         const reasoning = String(block.thinking || block.text || '');
