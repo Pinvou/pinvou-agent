@@ -122,7 +122,7 @@ const FILE_ICON_BY_CAT = { web: '/file-icons/html.svg', doc: '/file-icons/docx.s
  * @param {string} [category] - Output category fallback.
  */
 const fileIconSrc = (ext, category) => resolveAppAssetUrl(
-  FILE_ICON_BY_EXT[String(ext || '').toLowerCase()]
+  FILE_ICON_BY_EXT[(ext || '').toLowerCase()]
     || FILE_ICON_BY_CAT[category ?? '']
     || '/file-icons/genericfile.svg',
 );

@@ -3112,6 +3112,7 @@
     for (let itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
       const item = state.chatItems[itemIndex];
       if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      // eslint-disable-next-line unicorn/prefer-includes-over-repeated-comparisons -- strict undefined/null guard, not a membership test; an array literal would allocate per item in this streaming loop
       if (index !== undefined && index !== null && item.reasoningIndex !== index) continue;
       item.streaming = false;
       item.completedAt = completedAt;
