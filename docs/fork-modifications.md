@@ -1,5 +1,23 @@
 # CodeWhale Fork 修改清单
 
+## T2 审核候选：恢复引擎收到的工具输出
+
+- 采用上游 #6619 中的输出预算切片（`3e39820f530496dec909a57541f25f3f6f63ac9f`）及底座审核修复。引擎、Web 包装层、Chat Completions 兜底和 TUI 镜像共用路由预算；在普通工具执行结果和并行聚合信封广播前，以不可变 artifact 保全其完整正文，保留真实保存失败提示、检索和所属证明边界，以及 fork 的有界 child-route/handle 摘要。移除 live TUI 工具输出 receipt 渲染器及其唯一调用点，transcript/模型视图采用共用路由预算。
+- 完整 fetch 信封跟进：文本和已提取 PDF 的 `fetch_url` 结果保留合法完整 JSON，兼容进程内 RLM 消费；既有引擎保全在按路由压缩前保存整个信封，避免保存正文已截断的信封。二进制 PDF/媒体仍走原 artifact 路径。新不可变文件在写正文、发布前即以 Unix 0600 创建；不追溯修改旧文件，Windows 沿用继承 ACL。引擎保全的 artifact 引用也会激活既有延迟检索 schema，策略已移除的工具仍不可用，视图压缩语义不变。新增四项指纹覆盖大正文/失败/大 header 的一次引用恢复、小 JSON 无 artifact、私有不可变重放及延迟恢复激活。确定性测试从网络返回载体开始，不冒称新增 HTTP/SSRF 或原生 Windows 执行。
+- 审核闭合：`a95ce139555c93cbe4c7e77cd627add892faa101` 补齐有界失败摘要接线、wire 预算上下两侧/去重合同和 receipt 正文/恢复提示的分离边界。新候选按真实字段、行或流省略记录恢复需求，不把重新排版当作截断；完整结构化结果不再请求恢复 artifact。adaptive 预览记录原始行数，重复的未保存预览不再被说成完整正文引用；小预算提示保持单份且有界，损坏的预览长度安全拒绝。
+- 新一轮固定提交审核：`tasks gate_run` 内联展示不同的非空 stdout/stderr summary，真实字段截断时保留恢复需求，覆盖无 active task/日志 artifact 的普通聊天。短中断子代理快照省略 `checkpoint`/`needs_input` 时同样保留恢复，兼顾行本身及外层 wrapper；回归使用真实 TasksTool 返回结果和真实中断 checkpoint/needs-input DTO 构造器。没有这些遗漏的完整行保持原语义。
+- 信封路径跟进：独立的 `multi_tool_use.parallel` 分支在广播聚合结果前，复用 spillover/审计与按需保全。两个单独内联的 8,000 字符子输出验证仅合并后发生的省略，barrier 强制真实子调用并发；该分支测试可达，但当前生产 planner 不生成此形态（#772 跟踪）；串行、并行、信封的完整小结果均保持无 artifact。合成 guard/planning 结果、tool-search 激活回复、用户输入协议回复及仅含 `ToolError` 的错误值沿用既有处理；本切片不声称通用保全这些控制回复。
+- 复审跟进（`c2d5ca61081ed0147dfd4a329f04ca31457424b4`）：gate stream 回归分别使用超过 800 字符的 stdout/stderr，直接要求恢复标志；三条真实派发回归继续经过结果记录并检查下一步检索 schema，大输出激活、完整小结果不激活。子代理报告与旧 spillover 的提示明确说明：检索工具未激活时先通过 `tool_search` 发现，两条路径均不可用时使用各自的替代操作；不增加基于正文猜测引用的激活逻辑。Unix 私有创建是先前 fetch 跟进中的全引擎不可变 artifact 加固，不只作用于 Web。
+- 上轮复审跟进（`ac8b7e77935a9da3d1df3af585573742ff44dc1e`）：相关引擎预算读取回归及 wire 回归使用共享 workshop 测试保护，避免与配置安装窗口重叠；`run_tests` 的失败摘要截断标记真实内容损失，并以长短摘要正反例覆盖。子代理报告测试检查短报告不写盘、引用名称、Unicode 原始字节、重投递、不同子代理引用不冲突及保存失败。后台 shell 通知与 handle 指引补充显式工具发现及不可用时的回退。历史 `tool_result_max_bytes` 在内联路由预算中按字符解释，最高 2,097,152 个 Unicode 标量，UTF-8 字节数可更高；兼容配置迁移仍由 #770 跟踪。
+- 本轮跟进（`2a0221f22705c04d6cdac6db29b62b56d4d6738e`）：无任务日志的 gate 视图明示每条输出流由生产端限制为 900 字符；恢复提示只指完整返回结果，不承诺已丢弃的原始命令尾部。真实 TasksTool 回归生成每流 12,000 字符，检查实际 900 字符 DTO 与空 log_path，再仅模拟保全后的 metadata 验证视图文案，不将其冒称存储/检索或完整日志测试。短 sentinel 回归改为直接要求两条输出流可见；带引用的恢复提示也补充 tool_search 激活和窄输出重跑回退。
+- 有意保留的上游差异（#772）：evidence_available 预览仅在不超当前路由预算时原样透传，超过预算则使用已有引用重新缩放；上游 3e39820f5 无条件透传，fork 有意保留当前路由预算约束。fork 保留固定的子代理逐行摘要边界（含 route/handle 投影），不采用上游按路由预算缩放的逐行下限；`run_verifiers` 保留最多 12 项 gate、每项 600 字符 detail，不采用上游 detail 缩放，也不输出 parsed 级或逐 gate 的 `log_path` 行；`run_tests` 按剩余路由预算分配输出流，不另设上游的 600 字符逐流下限。`task_gate_run` 已有的 `log_path` 仍保留。
+- R4 范围决定：仅能恢复到达引擎的正文。工具生产端上限仍保留：`git.rs`、`git_history.rs` 为 40,000 字符，`test_runner.rs` 每条输出流为 40,000 字符，`verifier.rs` 每项 gate 的 stdout/stderr 各为 16,000 字符，`shell_output.rs` 的 `MAX_OUTPUT_SIZE` 为 30,000 字节；`tasks.rs` 在构造返回 DTO 前，将 gate 的 stdout/stderr summary 各限制为 900 字符。无 active task 时不写完整命令日志（log_path 为空）；引擎只保全该 DTO，不能检索 DTO 构造前已丢弃的流尾部。有 active task 且存在 log_path 时，该路径才是单独的命令日志 artifact。工具内部已经丢弃的尾部不会到达引擎，不能由本切片恢复；移除这些上限明确延后，不冒称本次已回移该部分上游变更。
+- 独立的搜索决定：native-search 回答链仍维持既有 2,048/4,096 token 上限，本次不新增 provider length-stop 标记；其上限和终止原因合同延后到单独审核的底座切片。正常新执行的 Responses 请求使用引擎视图，但本次未增加其历史消息 wire 兜底；Chat Completions 的旧历史兜底仍与路由无关，不声称所有 provider wire 均有同等兜底。
+- 保留的非阻塞边界：可选的检索摘要校验（#769）、极小预算恢复尾行/字符与字节语义/恢复后路由与 wire 差异（#770）、artifact 配额与 transcript 重复及保留（#771）、继承的生产端上限/planner 可达性/有意上游差异（#772）。native_memory、handle、lsp、子代理协调也存在引擎前截断，本切片不恢复其已丢弃尾部。首次 fetch 完整信封修复不表示所有 Web 生产端信封在后续路由缩小时均重新发布引用。旧行数回退、/status raw-over-cap 文案和会话相对 artifact 大小观测仍为后续项；不声称新增打包宿主或真实 provider 验证。
+- 当前候选 gitlink：`2a0221f22705c04d6cdac6db29b62b56d4d6738e`（92 个提交、90 个带 DCO），已包含公开维护头 `ea9fdc90f1` 及 #115/#116/#117；保留远端维护者重排后的历史。公开维护头尚不包含本输出恢复候选。
+- 合入前提：先合入 CodeWhale#118，再将候选 gitlink、`EXPECTED_HEAD` 和两份修改清单的候选头换成实际公开维护 SHA；核实 `EXPECTED_UPSTREAM`、重算 `EXPECTED_COMMITS`，协调其他已合入修复并同步两份策略/修改清单。通过未放宽的 `verify-public-submodule.sh` 后，还须审核最终集成树。候选检查不豁免公开门禁；草稿不具备合并或发布资格。
+- 验证见承载 PR 的固定提交记录。二十六项输出恢复指纹（包括四项 fetch/私有文件/激活合同、两项显式发现提示合同，以及失败摘要和子代理报告字节合同）覆盖 header-padding Web、完整/截断结构化结果、adaptive 行数、损坏预览 metadata、重复未保存的 wire 预览、gate-stream DTO、interrupted-coordination 字段、真实 taskless-gate/interrupted-child 生产端，串行/并行/信封 turn-loop 保存接线，以及三条路径完整结果不写 artifact。六项调度测试通过 `execute_planned_tools` 执行已注册工具，核对 outcome/UI 引用并检索原始字节；大输入超过模型视图但不会触发工具执行阶段 spillover；完整小输入不得产生 artifact metadata 或文件。基线执行、禁用 helper/串行/并行/信封调用，以及始终保全变异的反例记录对应 PR 中的固定源码和验证提交。未增加 changelog：CodeWhale `CONTRIBUTING.md` 明确要求在 main 合并时统一登记，不在 PR 分支改写。排除客户数据、凭证及运行/会话日志。
+
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
@@ -56,7 +74,7 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
+- 已公开合入：上方审核候选保留维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
@@ -65,10 +83,12 @@
 
 ## 0. 当前状态（2026-10-23）
 
-- 当前公开维护头与父仓 gitlink：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
+- 历史底座执行回执：`805b62c377fd1674544b1da9cad9e27647180866` 的 [check 120211944621](https://github.com/Pinvou/CodeWhale/actions/runs/39891335133/job/120211944621) 实际执行 14870 项、全部通过、15 项跳过（1 slow、2 leaky），六项调度合同均有具名 PASS。CI 实际检出 `027e3e18f16142bb1c423c2c072a3e522a99cf3c` 的树 `fd2bc2174e81dbdbf048130279f78c16509ae335` 亦为维护者重排后 f28bfdd13 的树；不证明较新 fetch/私有文件修复、父仓公共对齐或发布验证已执行。
+- 当前父仓候选：`ac8b7e77935a9da3d1df3af585573742ff44dc1e`，相对 v0.9.12 为 91 个提交，89 个带 DCO；已包含公开维护头 `ea9fdc90f1c90335554833195eeeb847c83d82dd`。来源 CodeWhale#118 的维护者已将旧候选重排为 `f28bfdd13251d3af9f70d30afc73cc548eac5519`，其树仍为 `fd2bc2174e81dbdbf048130279f78c16509ae335`；本次在其上追加完整 fetch 信封和私有文件创建修复，保留远端新历史。既有完整 CI 回执只证明旧树；新修复的执行记录及父仓组合树 CI 须独立核对。公开维护头不包含此候选，公开维护头对齐门禁仍未满足。
+- 当前公开维护头（候选另列）：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
 - 实测历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 公开维护头 ea9fdc90f 的实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 本次维护集成
 

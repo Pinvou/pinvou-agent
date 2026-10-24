@@ -56,10 +56,10 @@ class ForkGuardAncestryTests(unittest.TestCase):
         # file fingerprints. No network, fake Git, or production checkout edits.
         source = (ROOT / "scripts/fork-guard.sh").read_text(encoding="utf-8")
         source, boundary, remainder = source.partition(
-            '\nbold "── 第 1 层：登记主题与父仓适配指纹 ──"\n'
+            '\nbold "── Layer 1: registered themes and parent-adaptation fingerprints ──"\n'
         )
         self.assertTrue(boundary, "missing topology/fingerprint boundary")
-        self.assertRegex(remainder, r"\A# 格式：[^\n]*\nfingerprints=\(")
+        self.assertRegex(remainder, r"\A# Format:[^\n]*\nfingerprints=\(")
         for name, value in {
             "EXPECTED_UPSTREAM": self.upstream,
             "R1_CLOSURE": self.r1,
