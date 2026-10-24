@@ -1,21 +1,22 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25 00:18 Asia/Shanghai**.
+Checkpoint: **2026-10-25 02:15 Asia/Shanghai**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **36.4%**. T07, T08, T09, T10, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **36.7%**. T07, T08, T09, T10, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T10 supply-chain scanning and risk approval**.
-T08 fixed supply-chain publication composition is its only active direct prerequisite.
-T09 upload lifecycle and validation components are delivered; its remaining
-Artifact-valid admission is parked.
+The current main task is **T09 Artifact-valid admission and quarantine**.
+T10 channel risk review, exceptions and current-risk reads are delivered; its
+remaining actual selection-widening composition is parked until T14 supplies the
+real qualification producer. The fixed T08 adapter is delivered. T09 now resumes
+from its verified upload lifecycle and validation components.
 T07 signing-key lifecycle is implemented, independently reviewed and pushed. T29 signed-source
 continuation is delivered; its remaining production current-metadata/time owners
 remain parked with T26/T27.
@@ -58,8 +59,8 @@ The strict generic CycloneDX/PURL evaluator supports fifteen verified language
 ecosystems using fixed Trivy parser revisions. Unsupported OS/package inputs,
 missing versions, skipped components and unconfirmed diagnostics remain
 incomplete. A complete coverage result still cannot approve risk, validate an
-Artifact or publish a channel. Formal risk approval and bounded exceptions are
-the next T10 component, with independent source review in progress.
+Artifact or publish a channel. The formal risk component below now consumes
+these originals; capture alone remains separate from risk acceptance.
 
 Independent source and repair reviews passed. Scoped domain/PostgreSQL/signed
 HTTPS checks, the admin build, ten pure admin cases and three real browser cases
@@ -69,6 +70,40 @@ Vet, module verification, all command builds and client contract pin checks
 passed. Linux binaries cross-compiled; Linux/systemd native E2E remains
 unexecuted on this Windows host. Original browser-locator and invalid PURL
 fixture/qualifier failures remain recorded separately from repaired passing runs.
+
+## Verified T10 formal risk component
+
+Service commit `97324779984f7e4067829a3af0f717e0ebdcd201` is pushed.
+The formal owner now provides exact Target/channel risk proposals, independent
+review, approval/revocation, bounded dual-responsibility exceptions, authenticated
+directories, private expiry/recovery and three-language administration. Final
+native writes bind actual session/MFA deadlines to the original epoch. The
+same-transaction current-risk reader authenticates highest risk/exception facts,
+checks exact evidence bindings and actual SQL time, and returns bounded read
+inventory. It does not qualify an Artifact or Target.
+
+The fixed T08 adapter uses the actual complete reference census for atomic
+deny/pending/job tightening. Old exception revocation, replacement or rollback
+cannot be treated as a still-current basis for a replacement approval. Genuine
+restoration/widening still requires T14's concrete selection proposal and source;
+that producer/composition is not delivered and remains unsupported. T10 is
+therefore **90%**, not complete. This is remaining business integration, distinct
+from the non-blocking environment E2E gap.
+
+Independent source/repair and documentation reviews passed. The final focused
+invocation passed **11 top-level / 84 total records**, zero skips/failures; host
+pool/classification/shutdown controls also passed. The **13 pure admin cases**
+passed once without skips or retries. Final common checks passed **4682 records,
+1768 skipped records, zero failures**, plus vet, module integrity, all command
+builds and client contract pins. Original functional failures and repaired runs
+remain separately recorded in service verification documentation.
+
+Four formal real-browser cases, a protected Linux scan-to-approved lifecycle and
+positive highest-approved/actual-exception-revocation lifecycle coverage remain
+unexecuted in this environment. Rolled-back structural SQL controls do not
+substitute for them. These environment gaps do not block this component's
+delivery under the agreed policy. No download elapsed deadline or mandatory
+native signing-certificate requirement is added.
 
 ## Verified T29 main-integration prerequisite
 
@@ -543,7 +578,7 @@ completion blocker; outstanding business implementation is.
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
 | T09 | 75% | In progress | Prior inspection/intake plus durable validation queue, exact original-request recovery, scoped status/history and three-language administration; actual corrupt bytes produce atomic rejection, absent evidence remains blocked. Admission provenance/scanner archives and replica proof components plus the official S3 adapter are reviewed and tested separately; Complete uploading birth/Join/first-enqueue identity, original-response recovery and true browser flow are delivered; combined valid admission/current qualification and all-reference quarantine remain pending. Certificates remain optional. |
-| T10 | 75% | In progress | Manifest-bound materials/provenance, fixed original scan registration and single-job CLI, six-original custody, same-request recovery, strict generic coverage for fifteen language ecosystems and three-language administration are delivered; formal channel risk approval/revocation, bounded exceptions and current-publication composition remain pending. Linux/systemd native E2E is unexecuted on this Windows host and non-blocking. |
+| T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
 | T13 | 10% | In progress | Delivered planning domain and authority port; protected persistence, private recovery, HTTP/admin and genuine E2E candidates passed scoped source review. Contract routes and service sync are pushed; complete workflow tests/commit remain pending, as do active-floor approvals/publication, ordinary prerequisite paths and historical bridge eligibility. |
