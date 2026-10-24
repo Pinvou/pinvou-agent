@@ -341,17 +341,29 @@ test('inks on the restored tints clear AA where the tint re-composited them belo
   // Restoring a dead tint puts text on a darker surface; these legs landed
   // below 4.5:1 on the real ancestor chain and were deepened.
   const artifacts = stripComments(source('features/artifacts/ArtifactsPanel.jsx'));
-  assert.match(artifacts, /text-\[#636366\] \$\{active \? 'dark:text-\[#D1D1D6\]' : 'dark:text-\[#A1A1AA\]'\}/,
-    'the active switcher row must lift its meta ink in dark (#A1A1AA was 4.16:1 on the restored row tint)');
+  assert.match(artifacts, /text-\[#636366\] \$\{active \? 'dark:text-\[#D1D1D6\]' : 'dark:text-\[#A1A1AA\] dark:group-hover:text-\[#D1D1D6\]'\}/,
+    'the switcher row must lift its meta ink in dark, on hover too (#A1A1AA was 4.16:1 on the restored active tint and 4.04:1 on the hover tint)');
   // The 11px menu text inks sat on the iOS secondary gray in light (2.83:1 on
   // the active row, 3.23:1 elsewhere); the deepened #636366 clears AA on every
   // light surface in the menu. The 10px ▼ glyph is a state indicator held to
-  // the 3:1 non-text bar and keeps the lighter gray.
+  // the 3:1 non-text bar: #85858B clears it on the button's own hover tint
+  // (3.37:1; #8E8E93 dipped to 2.99:1 there).
   const artifactsRaw = source('features/artifacts/ArtifactsPanel.jsx');
   assert.equal(count(artifactsRaw, /text-\[11px\][^"'`]*text-\[#8E8E93\]/g), 0,
     '11px menu text must not use the 3.2:1 iOS gray in light');
+  assert.match(artifacts, /text-\[10px\] text-\[#85858B\] dark:text-\[#A1A1AA\]/,
+    'the switcher glyph must clear the 3:1 non-text bar on its hover tint');
+  assert.equal(count(artifactsRaw, /text-\[10px\][^"'`]*text-\[#8E8E93\]/g), 0,
+    'the 10px glyph must not fall back to the hover-failing gray');
   assert.ok(count(artifacts, /text-\[#636366\](?=[^"'`]*dark:text-\[#A1A1AA\])/g) >= 2,
     'the menu header and footer must carry the deepened light gray');
+  // Zero-tolerance form: the row's ternary carries its dark halves through the
+  // template expression (pinned exactly above); after carving that form out,
+  // any remaining #636366 light leg must pair its dark half in the same
+  // className string, so a new bare occurrence cannot slip in.
+  const artifactsRowCarved = artifactsRaw.replace(/text-\[#636366\] \$\{active \? '[^']*' : '[^']*'\}/, '');
+  assert.equal(count(artifactsRowCarved, /text-\[#636366\](?![^"'`]*dark:text-\[#(?:A1A1AA|D1D1D6)\])/g), 0,
+    'every #636366 menu ink must carry its dark half');
   const scheduled = stripComments(source('features/scheduled/ScheduledTasksView.jsx'));
   assert.match(scheduled, /const mutedOnTrack = 'text-\[#3C3C43\]\/80 dark:text-\[#EBEBF5\]\/60';/,
     'inactive filter tabs need the 80% light ink on the restored track tint (60% was 3.1:1)');

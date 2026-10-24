@@ -510,7 +510,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               <ArtifactTileIcon name={sel.basename} tileCls="w-6 h-6 rounded-[8px]" glyphCls="w-3.5 h-3.5" />
               <span className="min-w-0 truncate">{sel.basename}</span>
               {artifacts.length > 1 && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] bg-[#F2F2F7] text-[#6E6E73] dark:bg-white/10 dark:text-[#D1D1D6]`}>{artifacts.length}</span>}
-              <span className={`shrink-0 text-[10px] text-[#8E8E93] dark:text-[#A1A1AA]`}>▼</span>
+              <span className={`shrink-0 text-[10px] text-[#85858B] dark:text-[#A1A1AA]`}>▼</span>
             </button>
             {artifactMenuOpen && (
               <div
@@ -545,7 +545,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <ArtifactTileIcon name={a.basename} tileCls="w-8 h-8 rounded-[10px]" glyphCls="w-4 h-4" />
                         <span className="min-w-0 flex-1">
                           <span className={`block truncate text-[13px] font-medium text-[#1D1D1F] dark:text-[#F5F5F7]`}>{a.basename}</span>
-                          <span className={`block truncate text-[11px] text-[#636366] ${active ? 'dark:text-[#D1D1D6]' : 'dark:text-[#A1A1AA]'}`}>
+                          <span className={`block truncate text-[11px] text-[#636366] ${active ? 'dark:text-[#D1D1D6]' : 'dark:text-[#A1A1AA] dark:group-hover:text-[#D1D1D6]'}`}>
                             {itemInfo ? formatLocalDateTime(itemInfo.modified * 1000, '') : '—'}
                           </span>
                         </span>
