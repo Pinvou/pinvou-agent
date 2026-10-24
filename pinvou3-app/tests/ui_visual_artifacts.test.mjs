@@ -234,7 +234,14 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
   assert.ok(detailHeader.length > 0, 'detail header block must be locatable');
   assert.equal(count(detailHeader, /(?<!dark:)text-slate-400/g), 0,
     'detail header labels and sub-labels must pair slate-500 with a dark slate-400 half');
-  assert.match(toolStore, /\(storeCopy\.recycleKinds \|\| \{\}\)\[item\.kind\]/, 'recycle badge must use the singular type labels');
+  // Per-item badges read the singular typeLabels dictionary; typeGroups is the
+  // plural chip/section-header dictionary (en "Skills" on a single card was a
+  // copy regression).
+  assert.match(toolStore, /\(storeCopy\.typeLabels \|\| \{\}\)\[item\.kind\]/, 'recycle badge must use the singular type labels');
+  assert.equal(count(raw, /\(storeCopy\.typeGroups \|\| \{\}\)\.(?:bundle|skill|mcp)\b/g), 0,
+    'card type badges must not read the plural group dictionary');
+  assert.ok(count(toolStore, /\(storeCopy\.typeLabels \|\| \{\}\)\.(?:bundle|skill|mcp)\b/g) >= 4,
+    'the uploaded-skill, companion and MCP card badges must read the singular type labels');
   // Raw (not comment-stripped): a ternary leg like `: 'Skill'` must fail too,
   // not only a whole-property `type: 'Skill'` literal.
   assert.doesNotMatch(raw, /:\s*'Skill'/, 'card type labels must resolve through the localized dictionaries');
@@ -248,19 +255,25 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
   assert.deepEqual([...magic], [0xff, 0xd8, 0xff], 'wb-qq-mail.jpg must really be JPEG data');
 });
 
-test('community group name and recycle-bin badge labels exist in all three languages', () => {
+test('community group name and type badge labels exist in all three languages', () => {
   for (const language of ['zh', 'en', 'ja']) {
     assert.ok(typeof dict[language].communityGroupName === 'string' && dict[language].communityGroupName.trim(),
       `${language}.communityGroupName must exist`);
-    const kinds = dict[language].uiToolStore.recycleKinds;
-    // recycle_bin.rs only ever records mcp / skill / bundle packages.
+    const kinds = dict[language].uiToolStore.typeLabels;
+    // recycle_bin.rs only ever records mcp / skill / bundle packages; the store
+    // cards read the same three keys.
     for (const kind of ['bundle', 'mcp', 'skill']) {
-      assert.ok(kinds && typeof kinds[kind] === 'string' && kinds[kind].trim(), `${language}.uiToolStore.recycleKinds.${kind} must exist`);
+      assert.ok(kinds && typeof kinds[kind] === 'string' && kinds[kind].trim(), `${language}.uiToolStore.typeLabels.${kind} must exist`);
     }
   }
   // dictJa spreads dictEn: a ja-missing key silently falls back to English.
   assert.notEqual(dict.ja.communityGroupName, dict.en.communityGroupName, 'ja community group name must not fall back to English');
-  assert.equal(dict.en.uiToolStore.recycleKinds.skill, 'Skill', 'en recycle badge labels must be singular');
+  for (const kind of ['bundle', 'skill']) {
+    assert.notEqual(dict.ja.uiToolStore.typeLabels[kind], dict.en.uiToolStore.typeLabels[kind],
+      `ja typeLabels.${kind} must not fall back to English`);
+  }
+  assert.equal(dict.en.uiToolStore.typeLabels.skill, 'Skill', 'en per-item badge labels must be singular');
+  assert.equal(dict.en.uiToolStore.typeLabels.bundle, 'Plugin bundle', 'en per-item badge labels must be singular');
 
   const communityPanel = source('features/settings/CommunityPanel.jsx');
   assert.match(stripComments(communityPanel), /copy\.communityGroupName/, 'the community panel must render the localized group name');

@@ -998,7 +998,8 @@ visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシ�
 Object.assign(dictJa.uiToolStore, {
   groupByType:'タイプ別', groupByBusiness:'業務別',
   typeGroups:{ bundle:'プラグインパッケージ', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
-  recycleKinds:{ bundle:'プラグインパッケージ', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook' },
+  // Singular per-item badges (store cards, recycle rows); typeGroups stays plural for chips and section headers.
+  typeLabels:{ bundle:'プラグインパッケージ', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook' },
   recycleBin:'ごみ箱', recycleBinTitle:'プラグインのごみ箱', recycleBinEmpty:'ごみ箱は空です', recycleBinEmptyHint:'アップロードしたプラグインをアンインストールするとここに移動します。復元または完全に削除できます。',
   recycleBinLoadFailed:'ごみ箱の読み込みに失敗しました。もう一度お試しください。', recycleBinLoading:'ごみ箱を読み込み中…', recycledAt:time=>`移動日時: ${time}`,
   recycleRestore:'復元', recycleRestoreUnavailable:'パッケージファイルが見つからないため復元できません', recyclePurge:'完全に削除',

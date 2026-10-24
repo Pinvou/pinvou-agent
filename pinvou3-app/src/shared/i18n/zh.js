@@ -1038,7 +1038,8 @@ visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图�
 Object.assign(dictZh.uiToolStore, {
   groupByType:'按类型', groupByBusiness:'按业务',
   typeGroups:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
-  recycleKinds:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook' },
+  // Singular per-item badges (store cards, recycle rows); typeGroups stays plural for chips and section headers.
+  typeLabels:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook' },
   recycleBin:'回收站', recycleBinTitle:'插件回收站', recycleBinEmpty:'回收站是空的', recycleBinEmptyHint:'上传的插件卸载后会移到这里，可恢复或彻底删除。',
   recycleBinLoadFailed:'回收站读取失败，请重试', recycleBinLoading:'正在加载回收站…', recycledAt:time=>`回收于 ${time}`,
   recycleRestore:'恢复', recycleRestoreUnavailable:'包文件已缺失，无法恢复', recyclePurge:'彻底删除',

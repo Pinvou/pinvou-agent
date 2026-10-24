@@ -995,7 +995,8 @@ visualizer: { title:'Data Visualization', subtitle:'Chart.js dashboards / chart 
 Object.assign(dictEn.uiToolStore, {
   groupByType:'By Type', groupByBusiness:'By Domain',
   typeGroups:{ bundle:'Plugin Bundles', mcp:'MCP', skill:'Skills', cli:'CLI Integrations', api:'API & Webhook', upcoming:'Coming Soon' },
-  recycleKinds:{ bundle:'Plugin bundle', mcp:'MCP', skill:'Skill', cli:'CLI integration', api:'API & Webhook' },
+  // Singular per-item badges (store cards, recycle rows); typeGroups stays plural for chips and section headers.
+  typeLabels:{ bundle:'Plugin bundle', mcp:'MCP', skill:'Skill', cli:'CLI integration', api:'API & Webhook' },
   recycleBin:'Recycle Bin', recycleBinTitle:'Plugin Recycle Bin', recycleBinEmpty:'Recycle bin is empty', recycleBinEmptyHint:'Uploaded plugins you uninstall are moved here; you can restore or permanently delete them.',
   recycleBinLoadFailed:'Failed to load the recycle bin. Please retry.', recycleBinLoading:'Loading recycle bin…', recycledAt:time=>`Recycled at ${time}`,
   recycleRestore:'Restore', recycleRestoreUnavailable:'Package files are missing and cannot be restored', recyclePurge:'Delete Permanently',

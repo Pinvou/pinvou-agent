@@ -1373,7 +1373,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const bf = (bs && bs.bundle) || null;
           const base = {
             id: 'mcp-' + x.id, backendId: x.id, title: (bf && bf.name) || x.name || x.id, subtitle: '',
-            category: 'other', type: (storeCopy.typeGroups || {}).mcp || 'MCP Server', mcpServer: true,
+            category: 'other', type: (storeCopy.typeLabels || {}).mcp || 'MCP Server', mcpServer: true,
             version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
             latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
@@ -1479,7 +1479,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             // (getToolTypeGroup 据此归 Skill 组),业务维度由 getToolBusinessGroup
             // 落「其他」(初步设计,见 tool-common 注释)。
             category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
-            type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : ((storeCopy.typeGroups || {}).skill || 'Skill'),
+            type: mcpId ? ((storeCopy.typeLabels || {}).bundle || 'Bundle') : ((storeCopy.typeLabels || {}).skill || 'Skill'),
             companionBundle: !!mcpId,
             exportable: ownerExportable,
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
@@ -1493,7 +1493,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
         // 用户上传技能无业务归属元数据,业务分组落「其他」;类型分组仍按 userUploaded 归 Skill。
-        category: 'other', type: (storeCopy.typeGroups || {}).skill || 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
+        category: 'other', type: (storeCopy.typeLabels || {}).skill || 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
         actions: actionsOf(bundleStates[x.id]),
       }));
@@ -2326,7 +2326,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           <div className="flex-1 min-w-0">
                             <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white truncate">{name}</h3>
                             <div className="flex items-center gap-2 mt-1">
-                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.recycleKinds || {})[item.kind] || item.kind}</span>
+                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.typeLabels || {})[item.kind] || item.kind}</span>
                               {recycledAt && <span className="text-[12px] text-slate-400 dark:text-slate-500">{storeCopy.recycledAt(recycledAt)}</span>}
                             </div>
                           </div>
