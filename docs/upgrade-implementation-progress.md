@@ -1,11 +1,11 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25 02:15 Asia/Shanghai**.
+Checkpoint: **2026-10-25 03:54 Asia/Shanghai**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **36.7%**. T07, T08, T09, T10, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **37.0%**. T07, T08, T09, T10, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
@@ -15,8 +15,10 @@ measured hours or release readiness.
 The current main task is **T09 Artifact-valid admission and quarantine**.
 T10 channel risk review, exceptions and current-risk reads are delivered; its
 remaining actual selection-widening composition is parked until T14 supplies the
-real qualification producer. The fixed T08 adapter is delivered. T09 now resumes
-from its verified upload lifecycle and validation components.
+real qualification producer. The fixed T08 adapter is delivered. T09 now extends its verified upload lifecycle and validation components with an
+integrated admission/quarantine increment. Independent FullPack custody and
+fail-closed installer refusal are integrated and passed the final common checks;
+this checkpoint precedes the delivery commit.
 T07 signing-key lifecycle is implemented, independently reviewed and pushed. T29 signed-source
 continuation is delivered; its remaining production current-metadata/time owners
 remain parked with T26/T27.
@@ -203,7 +205,7 @@ There is no total validation or download deadline.
 Actual malformed ZIP bytes now commit a rejected Artifact, terminal job, result,
 history and outbox together. Rootless products can reject objectively corrupt
 archives; a sound archive without current trust remains blocked. Missing complete
-admission evidence also remains blocked. No Artifact-valid writer is exposed.
+admission evidence also remains blocked. That earlier increment exposed no Artifact-valid writer.
 The original received acknowledgment and receipt are unchanged.
 
 Independent source/repair reviews passed. An actual PostgreSQL failure exposed a
@@ -275,10 +277,55 @@ The upload-lifecycle increment is committed and pushed in the service repository
 as `c89c35821f45ef5d03f249c42c7e15a07d468bc4`; the remote tracking revision matches
 and that service tree is clean at this delivery boundary.
 
-T09 is estimated at **75%**, not complete: combined valid admission and
-all-reference quarantine remain outstanding. Genuine T46 and protected current
-sources remain prerequisites; incomplete local upgrade paths do not grant
-certification or Artifact validity.
+T09 is now estimated at **90%**, not complete. The integrated increment
+adds genuine DSSE/SBOM/native/scanner-six-original/replica proof composition,
+protected final admission and canonical/alias current sources, plus dedicated
+quarantine preparation, two-person review, original-wire recovery and atomic T08
+reference tightening. Historical received and enqueue acknowledgments remain
+unchanged. No manual success input or old acknowledgment becomes current
+qualification.
+
+Current scoped checks passed 34 domain top-level / 121 total records;
+valid-profile PostgreSQL controls passed 2 / 7, and quarantine/publication
+installation, seven publisher-port and UTF-8 controls passed 1 / 13. These are
+schema/codec/protected-source controls, not a complete scan-to-valid/quarantine
+business E2E. Administration passed 20 pure cases and its build; HTTP boundary
+checks passed 25 records; filesystem checks passed 14 records with one skip.
+The four new real browser tests were collected but executed **zero** times;
+collection is not acceptance.
+
+The final common invocation closed naturally without resource-floor breaches:
+**4,784 passed / 1,771 skipped / zero failed** default Go test records, with
+2,416 top-level tests including skips. Linux command builds and Linux scanner
+test-binary compilation, all-package vet, module verification, all command builds,
+client contract pin and whitespace checks passed. Default skips do not qualify
+opt-in/platform integrations, and Linux compilation is not native execution.
+
+Independent FullPack primary Put/Open/full-hash/underlying-EOF/Close and every
+replica's separate child readback, with signed identity/typed reference/report
+binding, is integrated and covered by this final common run. Its added tests
+exercise real signed-child extraction and corrupt/tail/EOF/Close/durability
+failures, not a successful native scan or valid Artifact. Windows NSIS stub/Version and Linux
+DEB metadata do not establish actual main-payload architecture; DMG filesystem/app
+verification is also absent. All four current targets therefore lack positive
+final-installer qualification. The required source correction fails closed with
+`NativeUnsupported` after physical profile success, retaining blocked state; it
+is verified by the final common tests, including unchanged historical T04
+observations, and does not implement the missing main-payload verifier. Existing T04 inspection and
+real helper/launcher profiles are narrower and unchanged. These are functional
+implementation gaps, not environment exemptions. The **90%** estimate describes
+component engineering coverage only, not a working positive production admission
+loop. Actual Linux/root/systemd scan plus live-cloud replica E2E remains unexecuted;
+that environment-only gap is distinct from the implementation gaps. Native
+certificates remain optional. T10 risk and T46 release/Target qualification are
+downstream boundaries, not Artifact.valid prerequisites; the genuine downstream
+qualification producer is not supplied or replaced by this increment.
+T09 still owes consuming and displaying genuine T46 evidence references bound
+to the exact source/target, host platform, Artifact, activation mode, data/backup
+range and finite preparation/execution budgets. The genuine producer is not yet
+delivered; this integration gap does not make T46 an Artifact.valid prerequisite.
+This checkpoint records the verified increment before its delivery commit. The estimate does not
+change the strict **8/47 (17.0%)** completion ratio or mark T09 complete.
 
 ## Completed T07 managed-purpose lifecycle
 
@@ -577,7 +624,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 75% | In progress | Prior inspection/intake plus durable validation queue, exact original-request recovery, scoped status/history and three-language administration; actual corrupt bytes produce atomic rejection, absent evidence remains blocked. Admission provenance/scanner archives and replica proof components plus the official S3 adapter are reviewed and tested separately; Complete uploading birth/Join/first-enqueue identity, original-response recovery and true browser flow are delivered; combined valid admission/current qualification and all-reference quarantine remain pending. Certificates remain optional. |
+| T09 | 90% | In progress | Component engineering estimate only. Upload birth/Join/rejection are delivered; admission/quarantine machinery passed scoped/common checks. Independent FullPack custody and fail-closed installer refusal are integrated and verified; none of four targets has actual main-payload qualification; main-payload implementation remains pending. Four browsers collected, zero executed; real Linux/cloud E2E unexecuted. No positive production admission-loop or whole-task completion claim. T10/T46 remain downstream, native certificates optional. |
 | T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |

@@ -475,3 +475,15 @@ free capacity for the source, backup and safety allowance; current local volumes
 are insufficient. Smaller-load experiments and other development remain in scope.
 Final preparation budgets and complete platform coverage remain pending actual
 measurements.
+
+
+## Approved initial generic scanner coverage (2026-10-25)
+
+The owner approved the strict general CycloneDX/PURL approach for T10. The
+initial complete-coverage profile accepts only independently verified language
+dependency ecosystems and uses version parsers matching the fixed scanner.
+Original diagnostics remain retained. System packages, missing versions and
+components whose actual scanning cannot be confirmed are explicitly incomplete
+and cannot be automatically approved. Further system-package support needs
+separate implementation and evidence; this decision does not certify a native
+execution, clean risk result or channel publication.
