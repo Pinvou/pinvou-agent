@@ -1,18 +1,21 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-24 11:42 Asia/Shanghai**.
+Checkpoint: **2026-10-24 12:48 Asia/Shanghai**.
 
-There are 47 tasks: seven completed, nineteen in progress, twenty not completed,
-and T42 explicitly deferred. The strict completion ratio is **7/47 (14.9%)**.
-The equal-task engineering estimate is **35.2%**. T07, T08, T29 and T31 reflect their current delivery;
+There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
+and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
+The equal-task engineering estimate is **35.6%**. T07, T08, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T29 download continuation and immutable-source binding**.
+The current main task is **T09 persistent Artifact validation and admission**.
+T07 signing-key lifecycle is implemented, independently reviewed and pushed. T29 signed-source
+continuation is delivered; its remaining production current-metadata/time owners
+remain parked with T26/T27.
 T08's internal atomic publication, renewal, deny/pending and durable worker
 module is complete. Trusted host composition must explicitly start, cancel and
 join the callable worker; actual first activation requires T14's business owner. T29's
@@ -122,6 +125,59 @@ proven time source remain real production prerequisites; ordinary QA clock input
 and cache observations do not replace them. Existing host staging and same-process
 VerifiedExecutionObject custody are reused. T29 remains in progress at **75%**;
 real remote file-service and installed-host E2E gaps remain explicitly unexecuted.
+
+## Completed T07 managed-purpose lifecycle
+
+The management service and three-language admin now cover all nineteen non-Root
+roles with exact role-applicable dimensions. Timestamp, Snapshot and Release use
+component scopes; Package also requires a target; Target and credentials require
+both channel and target. Null means inapplicable, never a wildcard. Fresh
+provisioning, registration and enablement are strict at management preparation
+and the actual new T06 identity boundary. Retained original requests preserve
+their exact scope, wire, hash and recovery identity; fresh legacy cleanup still
+captures actual registered material or an existing epoch.
+
+Independent deep source and repair reviews passed for the server, admin,
+composed native tests and current documentation. Go compilation, 42 affected
+domain test records, TypeScript/build and seven pure admin contracts passed.
+Twenty qualifying PostgreSQL records passed: eighteen successful records from
+the first invocation plus the repaired mixed lifecycle and new complete
+Target-scope tests.
+The original command containing the failed single-operation fixture remains
+failed; no failed result was relabeled as successful.
+
+The lifecycle test uses real owners for material registration, a Root retaining
+old/new metadata-key policies, old stop/new enable, private renewal and final
+Root. This new scenario retains the original Root signing members. Only old unissued epochs
+use their real initial two-minute retention; signed epochs retain the actual
+24-hour replay obligation plus margin. A live renewed graph, original immutable
+Package and full historical archive still verify after old metadata keys leave
+the current Root. The initial graph is a schema-owner fixture, not T14
+activation. RAM signing/stop providers do not certify physical custody. Separate isolated
+Transit tests verify the adapter's real RPC, permissions and recovery behavior;
+production custody remains deferred.
+
+Ten management-native records and all four real TLS/OIDC/OpenBao/browser
+workflows passed. The key-material workflow includes six Playwright cases:
+the original reviewed creation/recovery path, three full-scope/remount checks
+and two local legacy unknown-wire recovery checks. A test-only JSON field-order
+assertion failed in development; the reviewed semantic four-field correction
+passed its affected browser group without rerunning the other three successful
+workflows. Local legacy data is not evidence of old server acceptance.
+
+Final default Go tests passed 4062 records / skipped 1738 / failed 0
+(1274 passing and 948 skipped top-level tests). Contract pin, dependency
+verification, full vet, all command builds, changed-Go formatting and whitespace
+passed. Every qualifying invocation closed naturally without resource-floor
+breaches. Initial fixture and browser assertion failures remain failed history.
+
+Independent task-completeness review found no remaining T07 business code gap.
+The service delivery is committed and pushed as
+`5f3bab018ed201d6599400548337ff8a966821d7`.
+Genuine old Target/null cross-version database handoff has not been run;
+production custody/deployment remain deferred. These are disclosed verification
+boundaries, not claimed passed scenarios. First activation and each credential's
+business qualification remain with their respective downstream owners.
 
 ## Completed T08 internal publication delivery
 
@@ -365,7 +421,7 @@ completion blocker; outstanding business implementation is.
 | T04 | 65% | In progress | Offline tools, Windows post-build npm adapter and role-specific NSIS inspection are delivered; the integrated source passed default regression and current-CLI normal/wrong-Root cases. Complete provenance, product build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | 80% | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and finite atomic multi-Release publication signing; T08 now supplies active deny/publication composition; full T07 lifecycle acceptance remains pending |
+| T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
 | T09 | 55% | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine and platform qualification remain pending. Native certificate observations do not grant or gate admission. |
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
