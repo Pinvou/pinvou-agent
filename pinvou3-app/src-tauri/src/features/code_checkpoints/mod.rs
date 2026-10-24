@@ -2927,9 +2927,6 @@ mod tests {
         );
     }
 
-    /// 降级回退携带查询（评审 r9 M4 零锚定区）：keepTurns+revision 匹配命中；
-    /// ghost/被裁剪目标与维度不匹配按 None 处理。
-    #[test]
     /// r30 MAJOR-3 pin：r27-M4/r28-M3/r29-minor-6 扩充条目跨形状覆盖——
     /// purge pathspec 双腿（根级 + `**/` 嵌套）逐条命中；patch 过滤三形状
     /// （目录 glob 中路径、basename 通配、plain basename）命中。删除扩充
