@@ -46,13 +46,26 @@ test('chat markdown: long tokens wrap with a Safari-14 fallback and tables keep 
     /\.msg-md th,\.msg-md td,\.codex-markdown th,\.codex-markdown td,\.persona-body th,\.persona-body td \{ overflow-wrap:normal; \}/,
     'table cells must opt back out of anywhere so wide tables scroll instead of collapsing',
   );
-  // The persona modal body renders LLM markdown too: without its own
-  // block-table recipe its cells squeeze per-character instead of scrolling.
+  // The persona modal body renders LLM markdown too: it shares the msg-md
+  // block-table recipe through one selector list instead of a byte-identical
+  // copy, and the codex timeline table carries width:max-content like the
+  // other two so the recipes stay uniform.
   assert.match(
     baseCss,
-    /\.persona-body table \{[^}]*display:block; width:max-content; max-width:100%; overflow-x:auto; \}/,
-    'persona-body tables must keep the block-table scroll box',
+    /\.msg-md table,\.persona-body table \{[^}]*display:block; width:max-content; max-width:100%; overflow-x:auto; \}/,
+    'persona-body tables must keep the shared block-table scroll box',
   );
+  assert.doesNotMatch(baseCss, /(?<!,)\.persona-body table \{/,
+    'the persona table recipe must stay merged into the shared selector list');
+  assert.match(baseCss, /\.codex-markdown table \{[^}]*width:max-content;/,
+    'the codex timeline table must carry the same width:max-content recipe');
+  // The pet window renders marked markdown under overflow-wrap:anywhere with
+  // no cell opt-out, so a wide table would squeeze per-character there.
+  const petCss = source('features/pet/pet.css');
+  assert.match(petCss, /\.pet-activity-body table \{[^}]*width:\s*max-content;\s*max-width:\s*100%;\s*overflow-x:\s*auto;/,
+    'pet tables must scroll in their own block-table box');
+  assert.match(petCss, /\.pet-activity-body th,\s*\.pet-activity-body td \{\s*overflow-wrap:\s*normal;/,
+    'pet table cells must opt out of the inherited overflow-wrap:anywhere');
 });
 
 test('knowledge dialogs fit narrow panes', () => {
