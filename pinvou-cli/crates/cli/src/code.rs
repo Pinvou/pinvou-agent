@@ -6133,10 +6133,14 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     let checkpoint_id = info.checkpoint_id.clone();
     if let Some(checkpoint_id) = checkpoint_id.as_deref() {
         checkpoints::restore_checkpoint(&ledger, &execution, checkpoint_id).map_err(|error| {
-            // r26 minor 10：树恢复失败 = 混合态（对话已恢复、代码恢复失败），
-            // 与 rewind 腿同款披露 + 幂等重试指引（restore 可重跑）。
+            // r27 M3（r26 minor 10 文案腿序修正）：本臂先恢复代码、后恢复对话
+            // ——此处失败时**对话尚未恢复**（截断仍在），真实状态是「代码部分
+            // 恢复 + 对话保持回退后状态」。回滚点保留、幂等重试安全。
             CliError::failed(format!(
-                "code checkpoints undo: the conversation was restored but restoring code to                  rollback point {checkpoint_id} failed (mixed state); the rollback point is kept                  and retrying the undo is safe (restore re-runs): {error:#}"
+                "code checkpoints undo: restoring code to rollback point {checkpoint_id} failed \
+                 before the conversation was restored (code partially restored, transcript still \
+                 truncated); the rollback point is kept and retrying the undo is safe (restore \
+                 re-runs): {error:#}"
             ))
         })?;
     }
@@ -6190,6 +6194,24 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
 mod tests {
     use super::*;
     use crate::ExitCode;
+
+    /// r27 M2 pin：回退前奏必须在活暂记在飞时跳过陈旧和解（pending-first），
+    /// 且探针走 pub 布尔包装（PendingRewind 是 pub(crate)，CLI 不能触及）。
+    /// 删除守卫或改回私有类型 match 必须在此变红。
+    #[test]
+    fn rewind_prelude_skips_stale_sweep_while_pending_live() {
+        let src = include_str!("code.rs");
+        let sweep_at = src
+            .find("rewound_turns_records(session)")
+            .expect("stale sweep must exist");
+        let guard_at = src
+            .find("live_pending_rewind_present(&ledger)")
+            .expect("the sweep must be gated on the live-pending probe (r27 M2)");
+        assert!(
+            guard_at < sweep_at,
+            "回退前奏必须先探活暂记、再做陈旧和解（r27 M2）"
+        );
+    }
 
     /// Round-52 review: an unknown `--model-slot` slot used to parse fine
     /// and then be silently dropped — the add gate only checks that the

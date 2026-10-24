@@ -102,6 +102,7 @@ const SECRET_EXCLUDES: &[&str] = &[
     ".env.*.local",
     ".npmrc",
     ".netrc",
+    ".git-credentials",
     "credentials.json",
     "*.pem",
     "*.key",
@@ -117,6 +118,11 @@ const SECRET_EXCLUDES: &[&str] = &[
     "id_ed25519",
     "id_dsa",
     "id_ecdsa",
+    // r27 M4：平台 path_policy 同类凭据（ingest 侧整目录拦截；快照侧按文件
+    // 粒度补齐——icase 三层与既有机制同向）。
+    ".aws/credentials",
+    ".kube/config",
+    ".docker/config.json",
 ];
 
 /// 把敏感模式转成大小写不敏感的 gitignore 模式：ASCII 字母逐个展开为 `[xX]`
@@ -1627,8 +1633,13 @@ pub fn matching_pending_pre_restore(
     transcript_revision: &str,
 ) -> Result<Option<String>> {
     let path = pending_rewind_path(ledger_root);
-    let Ok(bytes) = fs::read(&path) else {
-        return Ok(None);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        // r27 P2-1：NotFound（无暂记）与真实 IO 错误区分——后者映射 None 会让
+        // 引导重试 fresh 一枚 PreRestore 快照已恢复树、孤儿化 P1（暂记协议
+        // 要防的正是这个）。传播 Err 由调用方 fail-closed。
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
     };
     let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
         // 损坏的暂记不阻塞回退：删除后退回「新建 PreRestore」路径。
