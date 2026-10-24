@@ -257,11 +257,16 @@ use serde_json::Value;
 /// 规则集不热刷会让在跑引擎对刚连接连接器的技能脚本/CLI 拦截过期）。
 #[tauri::command]
 pub async fn refresh_connector_auth_gates(
+    app: AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<ConnectorAuthGateRefresh, String> {
     let result = connector_cli_domain::refresh_connector_auth_gates().await?;
-    // 技能目录可能已增删 → 技能脚本 deny 规则（code 默认全禁已装技能）要按新目录重算。
-    pool.refresh_permission_rulesets().await;
+    // Round-9 review P2: the backfill materializes skill dirs, so a session
+    // composed BEFORE the connector connected must get the rewrite too — the
+    // send path's ensure only rebuilds an ABSENT dir. Full wrap-up (live
+    // sessions + disallowed + rulesets + cross-window broadcast), same as the
+    // manual enable's write path below.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(result)
 }
 
@@ -282,9 +287,17 @@ async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, Strin
 /// CLI hard-deny stale = fail-open). Mirrors the hot-reload pattern of
 /// `ima_connect`.
 #[tauri::command]
-pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+pub async fn feishu_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
     let result = feishu_domain::feishu_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(result)
 }
 async_command_passthrough!(feishu_domain, feishu_skills_state() -> Result<Value, String>);
@@ -302,9 +315,17 @@ async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
 #[tauri::command]
-pub async fn wecom_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+pub async fn wecom_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
     let result = wecom_domain::wecom_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(result)
 }
 async_command_passthrough!(wecom_domain, wecom_skills_state() -> Result<Value, String>);
@@ -322,9 +343,17 @@ async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, S
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
 #[tauri::command]
-pub async fn dingtalk_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+pub async fn dingtalk_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
     let result = dingtalk_domain::dingtalk_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(result)
 }
 async_command_passthrough!(dingtalk_domain, dingtalk_skills_state() -> Result<Value, String>);
@@ -342,9 +371,17 @@ async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
 #[tauri::command]
-pub async fn tmeet_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
+pub async fn tmeet_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
     let result = tmeet_domain::tmeet_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
     Ok(result)
 }
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);

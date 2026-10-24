@@ -63,6 +63,62 @@ REQUIRED_PINS = [
     # "nothing was disabled" while the wide signal initializes plain fully-on.
     "corrupt_legacy_file_fails_closed_not_implicitly_all_on",
     "schema_invalid_legacy_file_fails_closed",
+    # skill_gate.rs (connect-grant fix wave, round-1 review): the
+    # exact-footprint restore pin — the compensation must rebuild ONLY the
+    # scopes the grant actually lifted, never downgrading another scope's
+    # stored verdict to a liftable default-off row.
+    "revoke_restores_exactly_the_scopes_the_grant_lifted",
+    # Round-3 review wave: the remaining consent-critical pins of the
+    # connect-grant feature. Each guards a fail-closed invariant a dropped
+    # attribute would silently disable — the boot verdict guard and its
+    # legacy cohort, the recovery hold, the in-lock ledger recheck, the
+    # standing-consent negative, the materialization-failure revoke on both
+    # command bodies, and the three round-3 revoke-contract pins
+    # (covered-uninitialized footprint, grant-consumed predicate,
+    # marker-faithful restoration).
+    "connect_refresh_never_overrides_a_stored_verdict",
+    "legacy_migrated_disable_survives_the_boot_refresh",
+    "recovery_hold_keeps_the_boot_backfill_fail_closed",
+    "revoke_rearms_a_recovery_hold_its_grant_cleared",
+    "gesture_grant_rechecks_the_ledger_under_the_lock",
+    "toggle_off_in_one_scope_removes_the_global_grant",
+    "boot_refresh_never_reverts_a_verdict_after_a_failed_connect",
+    "failed_materialization_leaves_a_standing_consent_alone",
+    "failed_materialization_revokes_a_fresh_connect_grant",
+    "revoke_restores_a_scope_that_materializes_mid_connect",
+    "revoke_leaves_a_consumed_grant_alone",
+    "revoke_restores_markers_only_where_the_lift_found_one",
+    # Round-6 review P2: the compensating revoke owns its grant by the
+    # operation token — a stale failure after a teardown + reconnect must
+    # leave the replacement grant alone.
+    "stale_revoke_leaves_a_replacement_grant_alone",
+    # Round-7 review P2: an overlapping completion commits the relied-upon
+    # standing grant (its gate captures the standing token), so the older
+    # in-flight operation's compensating revoke stops matching; the commit
+    # declines over a replaced owner so a newer operation's own failure
+    # compensation still strips in full.
+    "committed_relied_grant_survives_the_in_flight_revoke",
+    "stale_commit_leaves_a_replacement_owner_alone",
+    # Round-7 review P2, command-body level: the real apply_skills_command
+    # with a controlled materializer commits the relied-upon standing grant
+    # on success, so the in-flight operation's stale revoke preserves it.
+    "connect_body_commits_the_relied_standing_grant",
+    # Round-8 review P2: the commit is a completion requirement. A relied-upon
+    # grant that is GONE at commit time (the owner operation's compensating
+    # revoke won the race / a teardown swept it / a verdict consumed it) is
+    # reported as lost and writes nothing; the real connect and refresh bodies
+    # fail with the consent-sync copy instead of returning visible:true over
+    # consent that computes OFF; a commit whose persist fails fails the
+    # completion too, leaving the ownership claim standing.
+    "revoked_relied_grant_reports_lost_and_commits_nothing",
+    "connect_body_fails_when_the_relied_grant_vanishes_before_its_commit",
+    "refresh_body_fails_when_the_relied_grant_vanishes_before_its_commit",
+    "connect_body_fails_when_the_relied_grant_commit_cannot_persist",
+    # Round-9 review P2 pair: the known-bundle shortcut captures the standing
+    # grant's reliance token (the third gate exit — the one that dropped it),
+    # and the commit-persist failure carries the commit-stage marker (still
+    # enabled), never the fail-closed consent-sync copy.
+    "known_bundle_shortcut_captures_the_standing_reliance_token",
 ]
 
 

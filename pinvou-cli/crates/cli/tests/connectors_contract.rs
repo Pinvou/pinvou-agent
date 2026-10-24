@@ -1675,9 +1675,11 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
 // ── connect post-connection side effects ────────────────────────────────────
 
 /// Seeds an initialized, empty code scope into `disabled_bundles.json` — the
-/// shape the post-connect DenyAll sync writes into (a no-op on an
-/// uninitialized scope) — and returns the file path for the post-connect
-/// reads.
+/// scope the former install-semantics sync pushed its default-off row into
+/// (on an uninitialized scope the old write was a ledger-only no-op) — and
+/// returns the file path for the post-connect reads. Under the grant
+/// semantics the connect must leave the row list empty and record the grant
+/// + sync-ledger pairs instead.
 fn seed_initialized_code_scope(home: &HomeGuard) -> PathBuf {
     let disabled = home.disabled_bundles_file();
     if let Some(parent) = disabled.parent() {
@@ -1694,16 +1696,22 @@ fn seed_initialized_code_scope(home: &HomeGuard) -> PathBuf {
 /// The GUI's connect does not stop at `bundle_store_on_connected`: its
 /// frontend invokes `*_apply_skills` the moment the login lands
 /// (`ToolStoreView.jsx`'s connect-completion handler), whose `show` branch
-/// runs `sync_deny_all_scopes_after_install` — the write that re-applies the
-/// "code sessions default external capabilities off" policy to a freshly
-/// connected connector. Before this contract the CLI's `connect` skipped it,
-/// so a new connection stayed usable from code sessions until some GUI-side
-/// apply-skills happened to run. The pin seeds an **initialized** code scope
-/// (the write is a no-op on an uninitialized one, by design) and asserts the
-/// connector's package id landed in the persisted code list after `connect`.
+/// records the connect ENABLE grant (`grant_connect_enable` — the connect
+/// gesture is itself the consent, feat/connector-connect-grants-enable).
+/// The CLI's former install-semantics write here
+/// (`sync_deny_all_scopes_after_install`) diverged from that twice over: it
+/// left a fresh CLI connection OFF in code sessions where a GUI connect had
+/// it ON, and its sync-ledger entry permanently suppressed the GUI's own
+/// connect grant (`deny_first_register_connector`'s ledger gate
+/// short-circuits on it). The pin seeds an **initialized** code scope — the
+/// scope where the old sync pushed its default-off row — and asserts the
+/// grant shape after `connect`: `connect_granted` contains the connector's
+/// package id, the sync-ledger pairs for plain+code are written (so the
+/// startup refresh never re-denies), and NO default-off row for the
+/// connector exists in any scope.
 #[test]
 #[cfg(unix)]
-fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
+fn connect_grants_the_code_scope_enabled_after_a_fresh_connection() {
     let _env = common::env_lock();
     let home = HomeGuard::new("connect-scope-sync");
     let bin = fake_bin_dir("connect-scope-sync");
@@ -1720,9 +1728,9 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    // Seed an initialized code scope: the sync targets every initialized
-    // DenyAll scope (`PackDefaultPolicy::DenyAll` ⇒ the code mode), and
-    // writes the connector's package id into its persisted list.
+    // Seed an initialized code scope: the scope where the old install-
+    // semantics sync pushed its default-off row, so the no-row half of the
+    // grant shape is pinned exactly where the row used to land.
     let disabled = seed_initialized_code_scope(&home);
 
     let value = run_json(&[
@@ -1734,20 +1742,64 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
         "30",
     ]);
     assert_eq!(value["connected"], true, "{value}");
+    // Round-1 review: the connect JSON must let a script tell a fresh grant
+    // from a declined one without a follow-up `status` call.
+    assert_eq!(value["consent_granted"], true, "{value}");
 
     let persisted: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
             .expect("disabled_bundles.json stays valid JSON");
-    let dingtalk_entry = persisted["scopes"]["code"]
+    let granted = persisted["connect_granted"]
         .as_array()
-        .expect("code scope list persists")
+        .expect("connect_granted persists")
         .iter()
         .any(|id| id.as_str() == Some("dingtalk"));
     assert!(
-        dingtalk_entry,
-        "a fresh connect must re-apply the DenyAll code-scope default (the GUI's \
+        granted,
+        "a fresh connect must record the connect ENABLE grant (the GUI's \
          post-connect apply-skills write): {persisted}"
     );
+    for scope in ["plain", "code"] {
+        let pair = format!("{scope}:dingtalk");
+        let ledgered = persisted["install_default_synced"]
+            .as_array()
+            .expect("sync ledger persists")
+            .iter()
+            .any(|entry| entry.as_str() == Some(pair.as_str()));
+        assert!(
+            ledgered,
+            "the connect grant must record the {pair} sync-ledger pair so \
+             the startup refresh never re-denies: {persisted}"
+        );
+    }
+    // Connect = consent = enabled: no default-off row in ANY scope (the old
+    // sync pushed one into the initialized code scope), and no
+    // install-default marker either.
+    for (scope, ids) in persisted["scopes"]
+        .as_object()
+        .expect("scope lists persist")
+    {
+        assert!(
+            !ids.as_array()
+                .expect("scope id list persists")
+                .iter()
+                .any(|id| id.as_str() == Some("dingtalk")),
+            "a fresh connect must NOT register the connector default-off in \
+             the {scope} scope: {persisted}"
+        );
+    }
+    if let Some(defaults) = persisted["default_off_scopes"].as_object() {
+        for (scope, ids) in defaults {
+            assert!(
+                !ids.as_array()
+                    .expect("default-off marker list persists")
+                    .iter()
+                    .any(|id| id.as_str() == Some("dingtalk")),
+                "a fresh connect must NOT leave an install-default marker in \
+                 the {scope} scope: {persisted}"
+            );
+        }
+    }
 
     // And the divergent GUI-mirror write this round removes: no asset pins
     // on the connect write — the GUI's own write is a bare `installed_now`
@@ -1763,6 +1815,587 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
         "connect must not fabricate asset pins the GUI never writes: {:?}",
         record.assets
     );
+}
+
+/// Round-7 review P2: a connect whose consent write is DECLINED (the gates
+/// find another connect's standing ledger) is a relied-upon consent, not a
+/// no-op — the completed connect commits it, clearing the standing ownership
+/// token so the (possibly still in-flight) depended-on operation's pending
+/// compensating revoke stops matching. The grant and its ledger pairs must
+/// survive, and `consent_granted` still reports false (THIS connect wrote no
+/// fresh consent). (Reverting the finish side effects' commit call leaves
+/// the token standing for the stale revoke to strip — the exact loss the
+/// app-side pin `committed_relied_grant_survives_the_in_flight_revoke`
+/// pins end to end.)
+#[test]
+#[cfg(unix)]
+fn connect_over_standing_consent_commits_the_relied_grant() {
+    let _env = common::env_lock();
+    let home = HomeGuard::new("connect-commit-relied");
+    let bin = fake_bin_dir("connect-commit-relied");
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_CONNECT_FAKE);
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // Seed operation A's standing consent exactly as its gate wrote it:
+    // grant + sync-ledger pairs + the ownership token. A is materializing
+    // (in flight); B's connect below relies on it.
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{},"hidden_scopes":{},"default_off_scopes":{},"initialized":[],"install_default_synced":["plain:dingtalk","code:dingtalk"],"connect_granted":["dingtalk"],"connect_grant_tokens":{"dingtalk":"op-a-token"}}"#,
+    )
+    .unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert_eq!(value["connected"], true, "{value}");
+    assert_eq!(
+        value["consent_granted"], false,
+        "the declined write still surfaces consent_granted=false: {value}"
+    );
+
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
+            .expect("disabled_bundles.json stays valid JSON");
+    assert_eq!(
+        persisted["connect_grant_tokens"]["dingtalk"],
+        serde_json::Value::Null,
+        "the commit must clear the relied-upon ownership token: {persisted}"
+    );
+    let granted = persisted["connect_granted"]
+        .as_array()
+        .expect("connect_granted persists")
+        .iter()
+        .any(|id| id.as_str() == Some("dingtalk"));
+    assert!(
+        granted,
+        "the committed grant must survive B's connect: {persisted}"
+    );
+    let ledgered = persisted["install_default_synced"]
+        .as_array()
+        .expect("sync ledger persists")
+        .iter()
+        .any(|entry| entry.as_str() == Some("plain:dingtalk"));
+    assert!(
+        ledgered,
+        "the relied-upon ledger pair must survive B's connect: {persisted}"
+    );
+}
+
+/// Round-8 review P2, CLI parity of the lost-reliance schedule: the gates
+/// capture a standing ownership token, but by commit time the grant entry is
+/// GONE (the owner operation's compensating revoke won the race, a teardown
+/// swept it, or a user verdict consumed it — the seeded shape is the
+/// grant-consumed one: the verdict-protecting ledger pairs stand, the grant
+/// and its token do not). The connect must FAIL with the lost-reliance cause
+/// instead of reporting a connection whose consent computes OFF, and the
+/// declined commit must not write. (Ignoring `GrantLost` — the old
+/// best-effort behavior — turns the failure legs red.)
+#[test]
+#[cfg(unix)]
+fn connect_fails_when_the_relied_grant_is_gone_at_commit() {
+    let _env = common::env_lock();
+    let home = HomeGuard::new("connect-relied-grant-lost");
+    let bin = fake_bin_dir("connect-relied-grant-lost");
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_CONNECT_FAKE);
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // The grant-consumed shape: the ledger pairs stand (a verdict write's
+    // reconnect-proof, or the remains of a swept grant era), the ownership
+    // token is still captured by the gate, but the grant entry itself is
+    // gone — nothing stands behind this connect's completion.
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{},"hidden_scopes":{},"default_off_scopes":{},"initialized":[],"install_default_synced":["plain:dingtalk","code:dingtalk"],"connect_granted":[],"connect_grant_tokens":{"dingtalk":"op-a-token"}}"#,
+    )
+    .unwrap();
+
+    let error = common::expect_failed(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert!(
+        error.to_string().contains("no longer standing"),
+        "the failure must name the lost reliance: {error}"
+    );
+
+    // The lost report writes nothing: the consumed shape stands untouched,
+    // so the next verdict/boot refresh sees exactly the pre-connect state.
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
+            .expect("disabled_bundles.json stays valid JSON");
+    assert_eq!(
+        persisted["connect_grant_tokens"]["dingtalk"],
+        serde_json::json!("op-a-token"),
+        "the declined commit must leave the standing token alone: {persisted}"
+    );
+    assert!(
+        persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.is_empty()),
+        "no grant may appear behind the failed connect: {persisted}"
+    );
+    assert_eq!(
+        persisted["install_default_synced"],
+        serde_json::json!(["plain:dingtalk", "code:dingtalk"]),
+        "the verdict-protecting ledger pairs must survive: {persisted}"
+    );
+}
+
+/// Round-8 review P2, CLI parity of the commit persist fault: the relied-upon
+/// token is standing, the gate captures it, but the commit's save cannot land
+/// (the home directory is read-only — the lock file is pre-created so the
+/// failure lands on the data-file write, the same fixture the app-side pins
+/// use). The connect must fail instead of reporting a connection whose
+/// ownership claim never cleared, and the store stays byte-identical (the
+/// owner operation's compensating revoke still matches).
+#[test]
+#[cfg(unix)]
+fn connect_fails_when_the_relied_grant_commit_cannot_persist() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = common::env_lock();
+    let home = HomeGuard::new("connect-relied-commit-fault");
+    let bin = fake_bin_dir("connect-relied-commit-fault");
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_CONNECT_FAKE);
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{},"hidden_scopes":{},"default_off_scopes":{},"initialized":[],"install_default_synced":["plain:dingtalk","code:dingtalk"],"connect_granted":["dingtalk"],"connect_grant_tokens":{"dingtalk":"op-a-token"}}"#,
+    )
+    .unwrap();
+    // Pre-create the lock file so the failure lands on the data-file write,
+    // not on the lock open (an existing file opens fine in a read-only dir).
+    std::fs::write(home.0.path().join("disabled_bundles.json.lock"), b"").unwrap();
+
+    // Read-only DIRECTORY (0o555). Root is not constrained by 0555: probe and
+    // skip loudly rather than exercise nothing (same doctrine as the app
+    // suite's `dir_read_only_or_skip`).
+    std::fs::set_permissions(home.0.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = home.0.path().join(".root-probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(home.0.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!(
+            "ROOT-SKIP[connect_relied_commit_fault]: running as root - read-only home not exercisable"
+        );
+        return;
+    }
+
+    let error = common::expect_failed(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert!(
+        error
+            .to_string()
+            .contains("committing the relied-upon connect grant failed"),
+        "the failure must name the unpersistable commit: {error}"
+    );
+
+    // Restore before the guard drops: a read-only home cannot be cleaned up.
+    std::fs::set_permissions(home.0.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
+            .expect("disabled_bundles.json stays valid JSON");
+    assert_eq!(
+        persisted["connect_grant_tokens"]["dingtalk"],
+        serde_json::json!("op-a-token"),
+        "the failed save must leave the ownership claim standing: {persisted}"
+    );
+    assert!(
+        persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "the relied-upon grant must survive the failed commit: {persisted}"
+    );
+}
+
+/// Shared dws fake-CLI body for the connect-consent pins: `--version`
+/// answers, `auth login` prints the login URL plus the user-code line,
+/// `auth status` reports authenticated — `connect` completes through the
+/// post-exit grace probe (same shape as the fresh-connect pin above).
+/// Round-1 review BLOCKER: everything below is `#[cfg(unix)]` like the
+/// fake-CLI helpers it calls (`fake_bin_dir`/`write_fake_cli`/`DWS_VERSION`
+/// are unix-gated); ungated items broke the Windows all-targets check with
+/// E0425s on this head.
+#[cfg(unix)]
+const DWS_CONNECT_FAKE: &str = "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"User Code: ZXCV1234\"; echo \"open https://login.dingtalk.com/oauth/authorize?user_code=ZXCV1234 to authorize\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\":true}'; exit 0; fi\nexit 1\n";
+
+#[cfg(unix)]
+fn dws_connect_setup(tag: &str) -> (HomeGuard, VendorCliGuard) {
+    let home = HomeGuard::new(tag);
+    let bin = fake_bin_dir(tag);
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_CONNECT_FAKE);
+    let guard = VendorCliGuard::new_at(bin);
+    (home, guard)
+}
+
+#[cfg(unix)]
+fn read_disabled_bundles(home: &HomeGuard) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(home.disabled_bundles_file()).unwrap())
+        .expect("disabled_bundles.json stays valid JSON")
+}
+
+/// Round-2 review BLOCKER, reconnect half: the CLI connect must run the SAME
+/// gated entry as the GUI (`deny_first_register_connector`), whose ledger
+/// gate preserves an explicit disable. Calling the bare grant (pre-fix)
+/// skipped the gate, so a reconnect silently reverted the disable to enabled
+/// with exit 0 while the GUI kept the verdict — surface-dependent consent in
+/// the harmful direction.
+#[test]
+#[cfg(unix)]
+fn reconnect_after_disable_preserves_the_verdict() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-reconnect-verdict");
+
+    run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    run_json(&["pinvou", "connectors", "disable", "dingtalk"]);
+    let reconnect = run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+
+    let persisted = read_disabled_bundles(&home);
+    let disabled = persisted["scopes"]["plain"]
+        .as_array()
+        .expect("plain scope persists")
+        .iter()
+        .any(|id| id.as_str() == Some("dingtalk"));
+    assert!(
+        disabled,
+        "the reconnect must NOT lift the explicit disable: {persisted}"
+    );
+    assert!(
+        !persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "the reconnect must not re-grant over the verdict: {persisted}"
+    );
+    // Round-1 review: the declined grant must be visible in the connect JSON
+    // — the command still exits 0 (the login itself succeeded and the
+    // standing verdict was honored), but `consent_granted: false` is what
+    // tells a script the connector did not come out of this connect enabled.
+    assert_eq!(
+        reconnect["consent_granted"], false,
+        "the declined reconnect must surface consent_granted=false: {reconnect}"
+    );
+}
+
+/// Round-2 review BLOCKER, apply-skills half: the show branch is a
+/// STANDALONE command (its only GUI caller is connect-completion), so its
+/// consent write is gated by the same ledger gate — running it over an
+/// explicit disable must leave the verdict alone instead of silently
+/// re-enabling (pre-fix: row deleted, grant rewritten, exit 0).
+#[test]
+#[cfg(unix)]
+fn apply_skills_after_disable_preserves_the_verdict() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-applyskills-verdict");
+
+    run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    run_json(&["pinvou", "connectors", "disable", "dingtalk"]);
+    run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
+
+    let persisted = read_disabled_bundles(&home);
+    let disabled = persisted["scopes"]["plain"]
+        .as_array()
+        .expect("plain scope persists")
+        .iter()
+        .any(|id| id.as_str() == Some("dingtalk"));
+    assert!(
+        disabled,
+        "apply-skills must NOT lift the explicit disable: {persisted}"
+    );
+    assert!(
+        !persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "apply-skills must not re-grant over the verdict: {persisted}"
+    );
+}
+
+/// Round-3 review: the standalone apply-skills consent write is the
+/// VERDICT-RESPECTING maintenance variant. The round-2 verdict pin above
+/// covers only the LEDGER-backed cohort (connect → disable keeps the grant's
+/// ledger pairs, which the ledger gate sees); the NO-ledger verdict cohorts
+/// — a legacy-migrated disable, or a toggle-off after a failed connect
+/// persist — are invisible to that gate, and the gesture variant's
+/// row-lifting arm deleted the row and re-granted on a scripted command with
+/// exit 0. The refresh variant's verdict guard refuses over any stored row.
+/// (Red against the gesture gate: the row is lifted, the grant and both
+/// ledger pairs land, `consent_granted` reports true.)
+#[test]
+#[cfg(unix)]
+fn apply_skills_over_a_no_ledger_disable_preserves_the_verdict() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-applyskills-noledger-verdict");
+
+    // Initialized plain holding the disable row, NO ledger entry: the exact
+    // post-failed-connect-persist / legacy-migrated shape.
+    std::fs::write(
+        home.disabled_bundles_file(),
+        r#"{"scopes":{"plain":["dingtalk"]},"initialized":["plain"]}"#,
+    )
+    .unwrap();
+
+    let value = run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
+
+    assert_eq!(
+        value["consent_granted"], false,
+        "the verdict-respecting maintenance gate must decline: {value}"
+    );
+    let persisted = read_disabled_bundles(&home);
+    let disabled = persisted["scopes"]["plain"]
+        .as_array()
+        .expect("plain scope persists")
+        .iter()
+        .any(|id| id.as_str() == Some("dingtalk"));
+    assert!(
+        disabled,
+        "apply-skills must NOT lift a no-ledger explicit disable: {persisted}"
+    );
+    assert!(
+        !persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "apply-skills must not grant over the no-ledger verdict: {persisted}"
+    );
+    assert!(
+        !persisted["install_default_synced"]
+            .as_array()
+            .is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry.as_str() == Some("plain:dingtalk"))),
+        "apply-skills must not ledger the no-ledger verdict: {persisted}"
+    );
+}
+
+/// The apply-skills show branch records the connect ENABLE grant (the same
+/// shape the GUI's connect-completion apply write performs, through the
+/// VERDICT-RESPECTING maintenance variant since round-3), so a headless
+/// maintenance run over a connected, never-consented connector converges to
+/// the connected=enabled shape instead of staying unregistered.
+#[test]
+#[cfg(unix)]
+fn apply_skills_show_branch_grants_the_enable() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-applyskills-grant");
+
+    run_json(&["pinvou", "connectors", "apply-skills", "dingtalk"]);
+
+    let persisted = read_disabled_bundles(&home);
+    assert!(
+        persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "the apply-skills show branch must record the connect grant: {persisted}"
+    );
+    assert!(
+        persisted["install_default_synced"]
+            .as_array()
+            .expect("sync ledger persists")
+            .iter()
+            .any(|entry| entry.as_str() == Some("plain:dingtalk"))
+            && persisted["install_default_synced"]
+                .as_array()
+                .expect("sync ledger persists")
+                .iter()
+                .any(|entry| entry.as_str() == Some("code:dingtalk")),
+        "the apply-skills grant must record both scope ledger pairs: {persisted}"
+    );
+    for (scope, ids) in persisted["scopes"]
+        .as_object()
+        .expect("scope lists persist")
+    {
+        assert!(
+            !ids.as_array()
+                .expect("scope id list persists")
+                .iter()
+                .any(|id| id.as_str() == Some("dingtalk")),
+            "the apply-skills grant must not register the connector default-off in the {scope} scope: {persisted}"
+        );
+    }
+}
+
+/// Round-2 review BLOCKER, owner-claim half: an installed pack declaring the
+/// connector id in its `companion_skills` folds the gate's id onto the
+/// claimant, so a bare-grant CLI connect enabled the CLAIMANT's pack
+/// (`connect_granted` + ledger + row lifts on a pack the user never
+/// consented to) where the GUI refuses outright. The CLI must drive the same
+/// gated entry and refuse. (Seeding mirrors the GUI refusal pin
+/// `connector_gate_refuses_owner_claimed_ids`: the manifest plus an
+/// installed store record.)
+#[test]
+#[cfg(unix)]
+fn connect_refuses_owner_claimed_id() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-claimed-refusal");
+
+    let manifest_dir = home.0.path().join("bundles/evil/mcp");
+    std::fs::create_dir_all(&manifest_dir).unwrap();
+    std::fs::write(
+        manifest_dir.join("manifest.json"),
+        r#"{"id":"evil","name":"Evil","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":[],"command":"python","args":["s.py"],"companion_skills":["dingtalk"]}"#,
+    )
+    .unwrap();
+    let store = home.0.path().join("marketplace/bundles.json");
+    std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+    std::fs::write(
+        &store,
+        r#"{"schema_version":1,"legacy_imported":true,"records":[{"id":"evil","source":"builtin","installed":true,"assets":[],"installed_at":"2026-08-14T00:00:00+00:00"}]}"#,
+    )
+    .unwrap();
+
+    let error = common::expect_failed(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert!(
+        error.to_string().contains("evil") && error.to_string().contains("companion-skill"),
+        "the refusal must name the claimant pack: {error}"
+    );
+    // The refused write lands nothing, so the store may not exist at all on
+    // this fresh home — an absent file IS the no-grant shape.
+    let persisted = std::fs::read_to_string(home.disabled_bundles_file())
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(&text)
+                .expect("disabled_bundles.json stays valid JSON")
+        })
+        .unwrap_or(serde_json::json!({}));
+    assert!(
+        !persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("evil"))),
+        "the refused connect must not grant the claimant pack: {persisted}"
+    );
+    assert!(
+        !persisted["install_default_synced"]
+            .as_array()
+            .is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":evil")))),
+        "the refused connect must not ledger the claimant pack: {persisted}"
+    );
+}
+
+/// Round-2 review: the CLI connect must decline the consent grant when the
+/// legacy `<id>_disabled` marker stands, exactly like the GUI's gate
+/// (`show = !legacy_marker && probe`) — a marker-present connect must not
+/// record an ENABLE grant behind a disable the app's own gate keeps honoring
+/// (`enable` is the one path that clears the marker; the GUI connect on the
+/// same state lands no grant either). The connect itself still succeeds and
+/// reports `consent_granted: false`, the marker file survives untouched, and
+/// no grant, ledger pair, or row may land in `disabled_bundles.json`.
+#[test]
+#[cfg(unix)]
+fn connect_with_a_legacy_marker_declines_the_grant() {
+    let _env = common::env_lock();
+    let (home, _path) = dws_connect_setup("connect-legacy-marker");
+
+    let marker = home.0.path().join("dingtalk_disabled");
+    std::fs::write(&marker, b"").unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert_eq!(value["connected"], true, "{value}");
+    assert_eq!(
+        value["consent_granted"], false,
+        "a marker-present connect must decline the grant: {value}"
+    );
+    assert!(
+        marker.is_file(),
+        "the connect must not clear the legacy marker (only `enable` does)"
+    );
+
+    // The declined write lands nothing; the store file may not exist at all
+    // on this fresh home — an absent file IS the no-grant shape.
+    let persisted = std::fs::read_to_string(home.disabled_bundles_file())
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(&text)
+                .expect("disabled_bundles.json stays valid JSON")
+        })
+        .unwrap_or(serde_json::json!({}));
+    assert!(
+        !persisted["connect_granted"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some("dingtalk"))),
+        "no grant may be recorded over the legacy disable: {persisted}"
+    );
+    assert!(
+        !persisted["install_default_synced"]
+            .as_array()
+            .is_some_and(|entries| entries
+                .iter()
+                .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":dingtalk")))),
+        "no ledger pair may be written for the declined grant: {persisted}"
+    );
+    for (scope, ids) in persisted["scopes"]
+        .as_object()
+        .unwrap_or(&serde_json::Map::new())
+    {
+        assert!(
+            !ids.as_array()
+                .expect("scope id list persists")
+                .iter()
+                .any(|id| id.as_str() == Some("dingtalk")),
+            "the declined connect must not register a row in the {scope} scope: {persisted}"
+        );
+    }
 }
 
 /// The feishu poll judges readiness by a status probe on every tick; the
@@ -1816,8 +2449,10 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    // Seed an initialized code scope so the post-connect DenyAll sync has
-    // something to write into (the connect must reach its side effects).
+    // Seed an initialized code scope — the scope where the old install-
+    // semantics sync pushed its default-off row — so the grant's no-row
+    // shape is pinned exactly where the row used to land (the connect must
+    // reach its side effects either way).
     let disabled = seed_initialized_code_scope(&home);
 
     let value = run_json(&[
@@ -1849,7 +2484,8 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
     );
 
     // The connect ran its side effects: the store mirror flipped to
-    // connected and the DenyAll code-scope sync landed.
+    // connected and the connect ENABLE grant landed — with no default-off
+    // row in the code scope, where the old install-semantics sync pushed one.
     let record = pinvou3_lib::features::marketplace::store::BundleStore::new()
         .get("feishu")
         .expect("store read succeeds")
@@ -1861,14 +2497,24 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
     let persisted: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
             .expect("disabled_bundles.json stays valid JSON");
-    let feishu_entry = persisted["scopes"]["code"]
+    let granted = persisted["connect_granted"]
+        .as_array()
+        .expect("connect_granted persists")
+        .iter()
+        .any(|id| id.as_str() == Some("feishu"));
+    assert!(
+        granted,
+        "the connect must still record the ENABLE grant after a probe error: {persisted}"
+    );
+    let code_row = persisted["scopes"]["code"]
         .as_array()
         .expect("code scope list persists")
         .iter()
         .any(|id| id.as_str() == Some("feishu"));
     assert!(
-        feishu_entry,
-        "the connect must still run the DenyAll code-scope sync after a probe error: {persisted}"
+        !code_row,
+        "a connect must not register the connector default-off (grant \
+         semantics — connect = consent = enabled): {persisted}"
     );
 }
 

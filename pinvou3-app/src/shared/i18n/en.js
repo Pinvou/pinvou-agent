@@ -635,7 +635,7 @@ dictEn.uiToolDetails.flow = {
   openBrowser:'Open in browser ↗', connectionIncomplete:'Connection incomplete', close:'Close', retry:'Retry',
 };
 
-dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', enabled:'Connected. Tool switches are off by default; turn this on in the composer tools list', disconnectedTmeet:'Tencent Meeting disconnected', connectingIma:'Connecting Tencent ima', validatingIma:'Validating OpenAPI credentials…', connectedIma:'Tencent ima connected', imaEnabled:'IMA connected. Tool switches are off by default; turn this on in the composer tools list.', imaFailed:'IMA connection failed', imaSkillsFailed:err=>`IMA connection did not complete: the skills were installed but persisting their default-off consent state failed, so this connection was rolled back (reconnect required); after reconnecting, switch the skills off in the composer tools list if they come up enabled: ${err}`, disconnectedIma:'Tencent ima disconnected', operationFailed:'Operation failed. Please retry' };
+dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', enabled:'Connected. Tool switches are enabled by default; manage them in the composer tools list', disconnectedTmeet:'Tencent Meeting disconnected', connectingIma:'Connecting Tencent ima', validatingIma:'Validating OpenAPI credentials…', connectedIma:'Tencent ima connected', imaEnabled:'IMA connected. Tool switches are off by default; turn this on in the composer tools list.', imaFailed:'IMA connection failed', imaSkillsFailed:err=>`IMA connection did not complete: the skills were installed but persisting their default-off consent state failed, so this connection was rolled back (reconnect required); after reconnecting, switch the skills off in the composer tools list if they come up enabled: ${err}`, disconnectedIma:'Tencent ima disconnected', operationFailed:'Operation failed. Please retry' };
 
 dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'Use the app-provided Node runtime'},{key:'cli',label:'Install connector',sub:'tmeet · about 40 seconds on first use'},{key:'qr',label:'Sign in',sub:'Tencent Meeting authorization page'}];
 
@@ -916,7 +916,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
   },
   connectedTool:name=>`${name} connected`, disconnectedTool:name=>`${name} disconnected`,
   connectedQuoted:name=>`${name} connected`, installedQuoted:name=>`${name} installed`, uninstalledQuoted:name=>`${name} uninstalled`,
-  connectedBanner:name=>`${name} connected · tool switches are off by default; enable it in the composer tools list`,
+  connectedBanner:name=>`${name} connected · tool switches are enabled by default; manage them in the composer tools list`,
   connectedBannerIma:'Tencent ima connected · tool switches are off by default; enable it in the composer tools list',
   uploadedSkill:'User-uploaded skill',
   oauthBrowserTimeout:'No browser authorization callback received. Confirm whether authorization finished, or try again later.',
@@ -961,6 +961,8 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
     registration_failed:'App registration was not completed. Reconnect and try again.',
     auth_failed:'Sign-in authorization was not completed. Reconnect and try again.',
     consent_persist_failed:'Authorization completed, but persisting the default-off consent failed. Turn the connector off in the composer tools list, then reconnect.',
+    connect_consent_persist_failed:'Authorization completed, but persisting the connector’s enabled state failed. Nothing was exposed — reconnect to try again.',
+    connect_consent_commit_incomplete:'Authorization completed, but finalizing the connector’s enabled state failed. It stays enabled, but a concurrent operation could still withdraw it — reconnect to secure it.',
     skills_enable_failed:'Authorization completed, but enabling the skill failed. Try again.',
     cli_data_access_disabled:'Your organization has not enabled CLI data access for DingTalk. Ask your organization admin to enable “Allow members to access their personal data via CLI” in the DingTalk open-platform developer settings, then sign in again.',
     unknown:'Connection failed. Try again later.',

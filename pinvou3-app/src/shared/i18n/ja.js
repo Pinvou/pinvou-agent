@@ -638,7 +638,7 @@ dictJa.uiToolDetails.flow = {
   openBrowser:'ブラウザーで開く ↗', connectionIncomplete:'接続が完了していません', close:'閉じる', retry:'再試行',
 };
 
-dictJa.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しました', enabled:'接続しました。ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにしてください', disconnectedTmeet:'Tencent Meeting から切断しました', connectingIma:'Tencent ima に接続中', validatingIma:'OpenAPI 認証情報を確認しています…', connectedIma:'Tencent ima に接続しました', imaEnabled:'IMA に接続しました。ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにしてください。', imaFailed:'IMA の接続に失敗しました', imaSkillsFailed:err=>`IMA の接続は完了しませんでした：スキルはインストールされましたが、同意状態の保存に失敗したため、今回の接続はロールバックされました（再接続が必要です）。再接続後にスキルが既定で有効になる場合は、入力欄のツールリストから手動でオフにしてください：${err}`, disconnectedIma:'Tencent ima から切断しました', operationFailed:'操作に失敗しました。再試行してください' };
+dictJa.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しました', enabled:'接続しました。ツールスイッチはデフォルトでオンです。入力欄のツールリストで管理できます', disconnectedTmeet:'Tencent Meeting から切断しました', connectingIma:'Tencent ima に接続中', validatingIma:'OpenAPI 認証情報を確認しています…', connectedIma:'Tencent ima に接続しました', imaEnabled:'IMA に接続しました。ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにしてください。', imaFailed:'IMA の接続に失敗しました', imaSkillsFailed:err=>`IMA の接続は完了しませんでした：スキルはインストールされましたが、同意状態の保存に失敗したため、今回の接続はロールバックされました（再接続が必要です）。再接続後にスキルが既定で有効になる場合は、入力欄のツールリストから手動でオフにしてください：${err}`, disconnectedIma:'Tencent ima から切断しました', operationFailed:'操作に失敗しました。再試行してください' };
 
 dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準備',sub:'アプリ同梱の Node を使用'},{key:'cli',label:'接続コンポーネントをインストール',sub:'tmeet · 初回は約 40 秒'},{key:'qr',label:'ログイン',sub:'Tencent Meeting 認証ページ'}];
 
@@ -919,7 +919,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
   },
   connectedTool:name=>`${name} に接続しました`, disconnectedTool:name=>`${name} から切断しました`,
   connectedQuoted:name=>`「${name}」に接続しました`, installedQuoted:name=>`「${name}」をインストールしました`, uninstalledQuoted:name=>`「${name}」をアンインストールしました`,
-  connectedBanner:name=>`${name} に接続済み · ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにできます`,
+  connectedBanner:name=>`${name} に接続済み · ツールスイッチはデフォルトでオンです。入力欄のツールリストで管理できます`,
   connectedBannerIma:'Tencent ima に接続済み · ツールスイッチはデフォルトでオフです。入力欄のツールリストでオンにできます',
   uploadedSkill:'ユーザーがアップロードしたスキル',
   oauthBrowserTimeout:'ブラウザーからの認証コールバックを受信できませんでした。認証が完了したか確認するか、後で再度お試しください。',
@@ -964,6 +964,8 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
     registration_failed:'アプリの登録が完了していません。再接続してください。',
     auth_failed:'ログイン認証が完了していません。再接続してください。',
     consent_persist_failed:'接続は完了しましたが、デフォルトOFFの同意状態の保存に失敗しました。入力欄のツールリストでコネクタをオフにしてから、再接続してください。',
+    connect_consent_persist_failed:'認証は完了しましたが、コネクタの有効状態の保存に失敗しました。外部には何も公開されていません。再接続して再試行してください。',
+    connect_consent_commit_incomplete:'認証は完了しましたが、コネクタの有効状態の確定に失敗しました。現在も有効ですが、並行して実行中の操作によって取り消される可能性があります。確定するには再接続してください。',
     skills_enable_failed:'認証は完了しましたが、スキルを有効化できませんでした。再試行してください。',
     cli_data_access_disabled:'組織のDingTalk CLIデータアクセスが有効になっていません。組織の管理者に、DingTalkオープンプラットフォームの開発者設定で「Allow members to access their personal data via CLI」を有効にするよう依頼し、再度サインインしてください。',
     unknown:'接続に失敗しました。後で再試行してください。',

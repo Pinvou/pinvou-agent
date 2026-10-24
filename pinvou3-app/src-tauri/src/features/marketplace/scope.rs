@@ -89,6 +89,52 @@ pub struct DisabledBundlesFile {
     /// the pack's entries so a fresh install / reconnect re-syncs default-off.
     #[serde(default)]
     pub install_default_synced: Vec<String>,
+    /// Package ids a CLI connector CONNECT explicitly opted in
+    /// (feat/connector-connect-grants-enable): the connect gesture on the
+    /// store card is itself consent, so the connector lands ENABLED in every
+    /// DenyAll scope instead of registered default-off. Gating reads the set
+    /// through the uninitialized scope's DenyAll expansion
+    /// (`resolve_scope_disabled_ids`) — an initialized scope is governed by
+    /// its stored list alone, where absence of a row already means enabled, so
+    /// a grant is vestigial there; the only other reader is
+    /// `enable_packages_in_scope`'s not-applied filter (reporting, inside the
+    /// same uninitialized arm). The set is GLOBAL, not per scope: a grant
+    /// flips the connector on in every still-uninitialized scope at once, and
+    /// (disclosed asymmetry) a composer toggle-off in ONE scope removes it for
+    /// all of them — a later re-ON in that scope cannot restore it; only a
+    /// teardown+reconnect can, because a reconnect over a ledger-backed
+    /// toggle-off preserves the verdict (the deny-first ledger gate). A user's composer toggle-off
+    /// removes the grant ([`save_disabled_bundles_for`] — a stored row is a
+    /// verdict that outranks the connect default), teardown
+    /// ([`remove_bundle_from_disabled_scopes_exact`]) sweeps it with the rows
+    /// so a same-id reinstall starts from the connect flow's own re-grant,
+    /// and the boot refresh (`grant_connect_enable_refresh`) never grants
+    /// over a stored verdict — only the connect gesture
+    /// (`grant_connect_enable`) may lift a row.
+    #[serde(default)]
+    pub connect_granted: Vec<String>,
+    /// The standing grant's operation identity, keyed by package id: the
+    /// token of the connect whose grant currently stands for the pack. A
+    /// compensating revoke may strip only the grant it created — a materialization
+    /// failure resolving AFTER a teardown + reconnect granted afresh must
+    /// leave the newer consent alone (round-6 review P2: the package id
+    /// alone cannot tell this call's grant from a replacement's). Written
+    /// when a grant lands, cleared wherever the grant is consumed (the
+    /// owning revoke, the composer verdict write, the teardown sweep).
+    #[serde(default)]
+    pub connect_grant_tokens: std::collections::BTreeMap<String, String>,
+    /// Corrupt/lost-store recovery hold: set by every recovery arm, it blocks
+    /// the boot refresh's consent backfill (`grant_connect_enable_refresh`)
+    /// until the next connect gesture (`grant_connect_enable`) clears it.
+    /// After a store loss the stored verdicts and the connect ledger are gone
+    /// together, so the refresh can no longer tell "never consented" from
+    /// "consented" — without the hold, one boot refresh silently converted
+    /// every still-connected connector into a granted-ON state over its lost
+    /// verdict (reproduced in the round-2 review). Fail-closed by design: the
+    /// user re-establishes consent by reconnecting, and the gesture's grant
+    /// is the fresh consent that re-arms the backfill.
+    #[serde(default)]
+    pub recovery_hold: bool,
     /// 未知键原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
@@ -334,12 +380,30 @@ pub(crate) fn pre_create_disabled_bundles_lock_for_test() {
     std::fs::write(disabled_bundles_lock_path(), b"").unwrap();
 }
 
+/// Test fixture: run `f` while HOLDING the store's cross-process lock, as a
+/// peer process would. The connect/refresh bodies' commit leg is the one
+/// writer whose interleaving position cannot be reached through the
+/// injectable materializer (it sits after the tail persist's known-bundle
+/// skip, whose unlocked read must stay valid), so the deterministic
+/// reverse-order tests park the body's commit behind this lock, strip the
+/// relied-upon consent as the lock holder, and let the parked commit observe
+/// the loss. `with_file_lock` is `pub(super)`; this is the one test-only
+/// funnel, alongside [`pre_create_disabled_bundles_lock_for_test`].
+#[cfg(test)]
+pub(crate) fn hold_disabled_bundles_lock_for_test<R>(f: impl FnOnce() -> R) -> R {
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || Ok(f())).unwrap()
+}
+
 /// The fail-closed recovered state shared by the corrupt/lost-store recovery
 /// arms: only the migration marker is set and no scope is initialized, so the
-/// DenyAll fallback keeps every previously opted-out pack off.
+/// DenyAll fallback keeps every previously opted-out pack off. The recovery
+/// hold is armed with it: the loss also destroyed the connect ledger and the
+/// stored verdicts, so the boot refresh's consent backfill must wait for a
+/// fresh gesture instead of guessing (`recovery_hold`).
 fn fail_closed_recovered_file() -> DisabledBundlesFile {
     DisabledBundlesFile {
         plain_defaults_migrated: true,
+        recovery_hold: true,
         ..DisabledBundlesFile::default()
     }
 }
@@ -996,6 +1060,48 @@ pub(crate) fn consent_sync_failure_message(subject: &str, error: &str) -> String
     )
 }
 
+/// The CONNECT channel's twin marker (feat/connector-connect-grants-enable):
+/// the connector connect flow records an ENABLE grant, so its consent persist
+/// failure is fail-CLOSED — the deny-first caller aborts before materializing
+/// anything and the connector stays off until the user reconnects. Pinned on
+/// both sides exactly like the install marker
+/// (`skill_gate_consent_failure_message_keeps_the_frontend_marker` +
+/// `consent_marker_frontend.test.mjs`); a rewording must move the JS literal
+/// and this constant in the same commit.
+pub const CONNECT_CONSENT_SYNC_FAILURE_MARKER: &str =
+    "persisting the connector's connect-enabled consent failed";
+
+/// Single source of the connect-channel consent-failure copy, mirroring
+/// [`consent_sync_failure_message`] for the grant semantics: the guidance
+/// flips from "turn it off" (the install failure leaves the pack live) to
+/// "reconnect" (the connect failure leaves the pack off, nothing exposed).
+pub(crate) fn connect_consent_sync_failure_message(subject: &str, error: &str) -> String {
+    format!(
+        "{subject}, but {CONNECT_CONSENT_SYNC_FAILURE_MARKER}: new sessions will keep it disabled — reconnect to retry: {error}"
+    )
+}
+
+/// Single source of the COMMIT-stage failure copy (round-9 review P2). The
+/// deny-first helper above describes a fail-CLOSED state (the grant never
+/// landed, new sessions keep the connector disabled). A relied-upon grant's
+/// token-clearing commit that fails to PERSIST is the opposite shape: the
+/// standing grant + ledger stay effective, so the connector REMAINS enabled —
+/// asserting "disabled" / "nothing was exposed" here would be false. What is
+/// actually at risk is narrower: the token clear was the disarm of the older
+/// in-flight operation's pending compensating revoke, so a concurrent
+/// operation's failure could still withdraw the consent. The frontend keys
+/// this marker to its own "stays enabled — reconnect to secure it" copy
+/// (consent_marker_frontend.test.mjs cross-compares the literal) and does NOT
+/// latch the consent-failure banner for it (the enabled banner is accurate).
+pub const CONNECT_GRANT_COMMIT_FAILURE_MARKER: &str =
+    "finalizing the connector's connect-enabled consent failed";
+
+pub(crate) fn connect_grant_commit_failure_message(subject: &str, error: &str) -> String {
+    format!(
+        "{subject}, but {CONNECT_GRANT_COMMIT_FAILURE_MARKER}: it stays enabled, but a concurrent operation could still withdraw it — reconnect to secure it: {error}"
+    )
+}
+
 pub(crate) fn to_package_id(raw: &str) -> String {
     to_package_id_with(&MarketplaceManager::new().available_tools(), raw)
 }
@@ -1530,7 +1636,10 @@ fn corrupt_sidecar_evidence_exists(home: &std::path::Path) -> bool {
 /// fallback (the disclosed R11-M4 exception: an upgraded install whose freeze
 /// persist failed re-enters it after restart). Including
 /// unconnected CLI packs is harmless (companion skills are not on disk, so
-/// excluding them is a no-op), and "connected later" is also off by default.
+/// excluding them is a no-op). A CONNECTED CLI connector is subtracted from
+/// the expansion through `connect_granted` (feat/connector-connect-grants-enable:
+/// the connect gesture is the opt-in), so "connected later" is enabled by
+/// default in the computed default too; pack/MCP installs stay off by default.
 ///
 /// The computed DenyAll default drops ids that normalize to a builtin
 /// catalog entry (round-6 B1): builtins are feature-switch-governed, never
@@ -1710,6 +1819,16 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
     ids.retain(|id| {
         !crate::features::marketplace::builtin::is_builtin_tool(&to_package_id_with(&tools, id))
     });
+    // Connect-granted ids (feat/connector-connect-grants-enable): a CLI
+    // connector the user connected is consented — the connect gesture IS the
+    // opt-in — so the computed default must not deny it. Grants are
+    // exact-match package ids (written normalized by the grant writer); a
+    // user's stored row always wins because the composer save removes the
+    // grant when it writes the row, and teardown sweeps the grant with the
+    // rows. Subtracting in the degraded arms too: the fail-closed expansion
+    // exists to avoid INVENTING consent for packs the user never opted into,
+    // not to override consent the user already recorded.
+    ids.retain(|id| !file.connect_granted.contains(id));
     ids
 }
 
@@ -1795,6 +1914,19 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
             };
         file.scopes.insert(key.clone(), normalized.clone());
         file.initialized.insert(key.clone());
+        // A stored row is an explicit off, and grant and row never coexist
+        // (feat/connector-connect-grants-enable): the whole-list write carries
+        // the user's verdict for every id it names, so ids entering the list
+        // lose their connect grant — a user toggle-off must outrank the
+        // connect default, including in the uninitialized scope's DenyAll
+        // expansion the grant set feeds. Entries the write leaves ON are
+        // absent from `normalized` and keep their grants.
+        file.connect_granted.retain(|id| !normalized.contains(id));
+        // The consumed grants' ownership tokens go with them (round-6 review
+        // P2): a stale connect's compensating revoke must keep seeing the
+        // grant as consumed, not re-discover it through a dangling token.
+        file.connect_grant_tokens
+            .retain(|id, _| !normalized.contains(id));
         // The composer sends the whole list, not a per-id gesture, so this write
         // says nothing about who switched a given entry off. Keep the
         // install-default marker for entries that were already persisted as off
@@ -1935,32 +2067,81 @@ pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), Stri
     ))
 }
 
-/// Deny-first consent registration for the CLI connector channels
-/// (`feishu`/`wecom`/`dingtalk`/`tmeet` `*_apply_skills` and the auth-gate
-/// refresh / startup backfill): when the connector is about to become
-/// visible (materialize its skill files), register it in the initialized
-/// DenyAll scopes FIRST, so a refused registration aborts before anything is
-/// exposed. A hidden (`show == false`) connector needs no registration. The
-/// known-bundle skip ignores the connect-time `Builtin` record (written
-/// before the gate ever runs), so the FIRST visibility always registers;
-/// once the connector's full companion layout is materialized on disk it
-/// counts as known (see `consent_gate_bundle_already_known`), preserving the
-/// user's recorded enable — including across the startup auth-gate refresh.
+/// Deny-first consent registration for the CONNECT gesture
+/// (`feishu`/`wecom`/`dingtalk`/`tmeet` `*_apply_skills`): when the connector
+/// is about to become visible (materialize its skill files), record its
+/// connect consent FIRST, so a refused write aborts before anything is
+/// exposed. The consent is an ENABLE grant
+/// (feat/connector-connect-grants-enable): the connect gesture is itself the
+/// opt-in, so the registration lands the connector ENABLED in every DenyAll
+/// scope (`grant_connect_enable_inner`, behind this gate) instead of the former default-off rows.
+/// Returns the [`ConnectGrantOutcome`] footprint of THIS call — `granted`
+/// says whether the grant landed, and the caller feeds the whole outcome to
+/// `revoke_connect_enable` when the skill
+/// materialization after the grant fails, so a failed connect cannot leave
+/// the connector computed-ON behind a failure card. A hidden
+/// (`show == false`) connector needs no registration. The known-bundle skip
+/// ignores the connect-time `Builtin` record (written before the gate ever
+/// runs), so the FIRST visibility always registers; once the connector's full
+/// companion layout is materialized on disk it counts as known (see
+/// `consent_gate_bundle_already_known`), preserving the user's recorded
+/// verdict — including across the startup auth-gate refresh.
 ///
 /// Re-shows after a hide/disconnect: the CLI connectors' hide and logout
 /// paths run no teardown, so the sync ledger entry survives and a re-show
-/// is a no-op — the user's recorded rows stay in place and a re-show never
-/// re-denies.
+/// is a no-op — the user's verdict (a stored row after a composer
+/// toggle-off, or the standing grant) stays in place and a re-show never
+/// overrides it.
 /// Re-registration happens after a ledger-clearing teardown: an ima logout
 /// (`uninstall_and_strip_scope`), or a pack uninstall, which also withdraws
-/// the materialized companion dirs. Because the gate's materialized
-/// known-clause additionally requires the ledger trace, a
+/// the materialized companion dirs and sweeps the connect grant. Because the
+/// gate's materialized known-clause additionally requires the ledger trace, a
 /// gated show materializing IN FLIGHT across such a teardown — the dirs
 /// re-land after the strip — re-registers through its post-materialization
-/// sync instead of vouching for the cleared consent.
-pub(crate) fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(), String> {
+/// grant instead of vouching for the cleared consent.
+///
+/// This is the GESTURE surface: the user just connected, so lifting a stale
+/// stored row is the connect overriding an old verdict with a fresh one. The
+/// boot-time counterpart that must never touch verdicts is
+/// `deny_first_register_connector_refresh`. Both CLI consent writes
+/// (`pinvou connectors connect`, the `apply-skills` show branch) route
+/// through THIS gated entry — calling the bare grant skipped the
+/// owner-claim refusal and the ledger gate and let a CLI connect grant a
+/// foreign claimant's pack or silently revert an explicit disable
+/// (round-2 review BLOCKER).
+pub fn deny_first_register_connector(
+    connector_id: &str,
+    show: bool,
+) -> Result<ConnectGrantOutcome, String> {
+    deny_first_register_connector_inner(connector_id, show, false)
+}
+
+/// The STARTUP counterpart of [`deny_first_register_connector`] — same
+/// deny-first boundary for the auth-gate refresh / startup backfill, but its
+/// consent write is the LEDGER-GATED, VERDICT-RESPECTING grant (the
+/// crate-internal `grant_connect_enable_refresh`): a boot refresh has no user
+/// gesture behind it, so it never lifts a stored row (a stored row is a user
+/// verdict — the composer toggle-off or a legacy-migrated explicit disable)
+/// and only backfills pairs nothing ever consented. See the review BLOCKER:
+/// routing the boot refresh through the gesture variant silently flipped both
+/// cohorts ON. `pub` since the round-3 review: the CLI's standalone
+/// `apply-skills` maintenance run drives this same gated entry — a command
+/// with no connect gesture behind it must not lift a stored no-ledger
+/// verdict the way a real connect may.
+pub fn deny_first_register_connector_refresh(
+    connector_id: &str,
+    show: bool,
+) -> Result<ConnectGrantOutcome, String> {
+    deny_first_register_connector_inner(connector_id, show, true)
+}
+
+fn deny_first_register_connector_inner(
+    connector_id: &str,
+    show: bool,
+    ledger_gated: bool,
+) -> Result<ConnectGrantOutcome, String> {
     if !show {
-        return Ok(());
+        return Ok(ConnectGrantOutcome::default());
     }
     let package_id = to_package_id(connector_id);
     // Owner-claim divergence refusal — the connector twin
@@ -1970,35 +2151,69 @@ pub(crate) fn deny_first_register_connector(connector_id: &str, show: bool) -> R
     // and a DECLARED-but-unshipped companion name survives import validation,
     // so an installed mcp-only pack declaring `companion_skills:
     // ["feishu"]` folds this gate's id onto the claimant; the ledger check
-    // and the sync's known-bundle skip below then vouch for the CLAIMANT,
+    // and the grant's known-bundle skip below then vouch for the CLAIMANT,
     // nothing is registered under the connector id, and the connector (whose
     // materialized dirs' gating owner is the connector id itself) lands
-    // ENABLED with zero consent rows in every initialized DenyAll scope.
+    // ENABLED with zero consent in every DenyAll scope.
     // For every honest state the connector id self-maps (a builtin CLI
     // identity, or its own pack row), so like the install-channel checks the
     // refusal is state-dependent and never fires on an unclaimed home.
     // It must sit BEFORE the ledger read: the ledger entry is keyed on the
     // folded id, so a hijacked fold would hit the claimant's entry and
-    // return early. Both call sites (apply_skills_command, the auth-gate
-    // refresh/backfill) propagate the Err before any skill materializes.
+    // return early. All three surfaces (apply_skills_command, the auth-gate
+    // refresh/backfill, and the CLI consent writes behind the same entry)
+    // propagate the Err before any skill materializes.
     if package_id != connector_id {
-        return refuse_owner_claimed_id(connector_id, &package_id);
+        return refuse_owner_claimed_id(connector_id, &package_id)
+            .map(|_| ConnectGrantOutcome::default());
     }
-    // LEDGER-GATED (the startup-refresh boundary): the sync
+    // LEDGER-GATED (the startup-refresh boundary): the grant
     // itself skips only *known* bundles; a ledgered-but-uninstalled pair
-    // (the enable removed the row, the ledger entry survives) would re-arm
-    // through the ungated install sync at every boot and silently revert the
-    // enable. A ledger entry for any scope = a sync already ran for this
-    // pack; only a ledger-clearing teardown (an ima logout, a pack
-    // uninstall — the CLI connectors' hide/logout runs none) re-arms a
-    // later show.
-    let ledger = load_disabled_bundles_file().install_default_synced;
-    if ledger_has_any_mode(&ledger, &package_id) {
-        return Ok(());
+    // (the user toggle-off removed the row, the ledger entry survives) would
+    // re-grant through the ungated connect grant at every boot and silently
+    // revert the toggle-off. A ledger entry for any scope = a consent write
+    // already ran for this pack; only a ledger-clearing teardown (an ima
+    // logout, a pack uninstall — the CLI connectors' hide/logout runs none)
+    // re-arms a later show. The no-ledger verdict cohorts (legacy-migrated
+    // rows, toggle-off after a failed connect persist) are the
+    // refresh variant's verdict guard's job.
+    let ledger_file = load_disabled_bundles_file();
+    if ledger_has_any_mode(&ledger_file.install_default_synced, &package_id) {
+        // Reliance capture (round-7 review P2): this operation is about to
+        // run on top of the standing consent instead of granting its own, so
+        // it records WHICH grant it relies on. A successful completion then
+        // commits that grant (`commit_relied_connect_grant`), making the
+        // depended-on operation's pending compensating revoke stop matching —
+        // without the commit, A grants and materializes while B connects over
+        // A's standing ledger, B succeeds, and A's late materialization
+        // failure strips the grant + ledger B's success relied on (token
+        // still A's — B never wrote one). The capture rides the same (possibly
+        // degraded) snapshot the ledger probe read; the commit re-validates
+        // the token under the write lock, so a stale capture degrades to the
+        // pre-fix behavior rather than over-committing.
+        return Ok(ConnectGrantOutcome {
+            relied_grant_token: ledger_file
+                .connect_grant_tokens
+                .get(&package_id)
+                .cloned()
+                .unwrap_or_default(),
+            ..ConnectGrantOutcome::default()
+        });
     }
-    // The sync itself skips known bundles (their consent is recorded), so a
-    // re-show never re-denies an enable.
-    sync_deny_all_scopes_after_install(connector_id)
+    // The grant itself skips known bundles (their consent is recorded), so a
+    // re-show never overrides a user verdict. The connect tail carries the
+    // shared connect-consent marker on persist failures (the realistic
+    // #515 flock refusal happens here): the store cards key on it to show
+    // the fail-closed "reconnect to retry" copy instead of the generic
+    // "try again". Owner-claim refusals propagate unwrapped — they are
+    // policy refusals, not persist failures.
+    if ledger_gated {
+        grant_connect_enable_inner(&package_id, true)
+    } else {
+        grant_connect_enable_inner(&package_id, false).map_err(|e| {
+            connect_consent_sync_failure_message(&format!("{connector_id} connected"), &e)
+        })
+    }
 }
 
 /// One constructor for the sync-ledger key wire format
@@ -2111,28 +2326,17 @@ pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
 /// persisted"). Callers surface the error after their own success commit; a
 /// retry of the sync is safe (idempotent membership push).
 pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
-    sync_deny_all_scopes_inner(raw_id, false)
+    sync_deny_all_scopes_inner(raw_id)
 }
 
-/// The STARTUP connector-gate-refresh variant (round-31 BLOCKER, review
-/// #455): LEDGER-GATED — pushes rows only for `(scope, pack)` pairs that no
-/// sync ever recorded. For a connected connector the refresh's `show` is
-/// always true (the legacy disable flags are read-only), so a plain
-/// membership push here re-added the row a user enable had removed at every
-/// boot, silently reverting explicit enables. The ledger entry survives the
-/// user's later enable (which removes the stored row, not this fact);
-/// ledger absence is exactly the never-synced cohort the backfill targets.
-/// The install/connect variant stays deliberately un-gated: connecting is a
-/// user action with fresh-install semantics ("等同新装") and re-arms the
-/// default-off — both variants record the ledger pair **even when the scope is
-/// still uninitialized** (round-32 MAJOR 1, review #455), so this refresh
-/// never undoes what either of them wrote, nor an enable made between a
-/// pre-initialization sync and the scope's materialization.
-pub fn sync_deny_all_scopes_refresh(raw_id: &str) -> Result<(), String> {
-    sync_deny_all_scopes_inner(raw_id, true)
-}
+// The former LEDGER-GATED startup-refresh variant of this sync
+// (`sync_deny_all_scopes_refresh`, the round-31 BLOCKER fix of review #455)
+// lost its last production caller when the connector connect flow flipped to
+// the enable grant: the boot refresh is now the verdict-respecting
+// `grant_connect_enable_refresh`, and the `ledger_gated` arm went with it.
+// Reintroduce a gated arm only with a caller.
 
-fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), String> {
+fn sync_deny_all_scopes_inner(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
     // Builtin plugins can never be disabled (docs/builtin-toolset-contract.md
     // §3.3): exempt them here, or a direct-IPC reinstall of an already
@@ -2161,22 +2365,19 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
             let ledger_key = ledger_key(key, &package_id);
             if !file.initialized.contains(key) {
                 // The uninitialized arm must still
-                // record the pair. A connect/install sync on a fresh home runs
+                // record the pair. An install sync on a fresh home runs
                 // exactly here — plain is uninitialized by design until the
                 // user's first composer/welcome/scene write materializes it — so
                 // skipping the ledger made the user's FIRST enable observably
-                // identical to "never synced": the next boot's refresh backfilled
-                // the default-off row over it. Recording (without pushing any
+                // identical to "never synced" (the round-32 MAJOR 1 shape).
+                // Recording (without pushing any
                 // row — the uninitialized scope is covered by the on-the-fly
-                // expansion) marks the pair as seen, so the post-materialization
-                // refresh leaves the enable in place.
+                // expansion) marks the pair as seen for every ledger-gated
+                // consumer.
                 if !file.install_default_synced.contains(&ledger_key) {
                     file.install_default_synced.push(ledger_key);
                     changed = true;
                 }
-                continue;
-            }
-            if ledger_gated && file.install_default_synced.contains(&ledger_key) {
                 continue;
             }
             let ids = file.scopes.entry(key.to_string()).or_default();
@@ -2201,6 +2402,594 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
             try_save_disabled_bundles_file(&file)?;
         }
         Ok(())
+    })
+}
+
+/// CONNECT grant (feat/connector-connect-grants-enable): record a CLI
+/// connector connect as the user's opt-IN — the mirror image of the install
+/// registration `sync_deny_all_scopes_inner` performs. The connect gesture
+/// (authorizing on the store card) is itself consent, so the connector lands
+/// ENABLED in every DenyAll scope: stale default-off rows and their markers
+/// are lifted (a fresh connect overrides an old verdict with a new one —
+/// this variant is reachable ONLY through the gesture path), the id is
+/// recorded in `connect_granted` (the uninitialized scope's DenyAll
+/// expansion subtracts it), and the sync ledger pair is written so the
+/// startup refresh never re-denies. The persist is
+/// **fail-visible** for the same reason the install sync's is: the deny-first
+/// caller aborts the connect before materializing anything, so a swallowed
+/// save would strand the connector disabled with the card claiming success.
+/// Pack/MCP INSTALLS keep defaulting off. Crate-internal on purpose: this
+/// wrapper's only production caller is `apply_skills_command`'s tail leg;
+/// every connect consent write (the GUI deny-first leg and the CLI
+/// connect/apply-skills consent write) consumes `grant_connect_enable_inner`
+/// BEHIND [`deny_first_register_connector`]'s gates (owner-claim refusal +
+/// ledger gate) — route a new caller through the gate, never straight here.
+/// A retry is safe (idempotent membership writes).
+pub(crate) fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
+    grant_connect_enable_inner(&to_package_id(raw_id), false).map(|outcome| outcome.granted)
+}
+
+/// The STARTUP connector-gate-refresh variant: LEDGER-GATED and
+/// VERDICT-RESPECTING. Only pairs no consent write ever recorded are granted,
+/// and a stored row in ANY scope — a composer toggle-off, or a
+/// legacy-migrated explicit disable — blocks the grant entirely: a boot
+/// refresh has no user gesture behind it, so it must never lift a verdict
+/// (the ledger gate alone cannot see the no-ledger verdict cohorts). The
+/// gesture counterpart that may lift stale rows on a fresh connect is
+/// [`grant_connect_enable`].
+pub(crate) fn grant_connect_enable_refresh(raw_id: &str) -> Result<bool, String> {
+    grant_connect_enable_inner(&to_package_id(raw_id), true).map(|outcome| outcome.granted)
+}
+
+/// What one connect-grant write actually did. The compensating revoke needs
+/// the exact mutation footprint rather than a boolean so it can restore
+/// precisely the rows the grant lifted — restoring every initialized scope's
+/// row unconditionally would downgrade a stored verdict in a scope the grant
+/// never touched (a reconnect-after-failure whose second grant no-oped there
+/// would flip the user's explicit ON back to a liftable default-off row when
+/// its materialization failed).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ConnectGrantOutcome {
+    /// Whether THIS call persisted any change (the grant is now in place).
+    pub granted: bool,
+    /// The package id THIS call granted under — the grant-time
+    /// `to_package_id` fold, carried so `revoke_connect_enable` compensates
+    /// the exact id that was registered instead of re-folding the raw id
+    /// (an installed claimant pack landing mid-connect could fold the same
+    /// raw id differently at revoke time and strand the real grant).
+    pub package_id: String,
+    /// DenyAll scope keys (`"plain"`/`"code"`) where THIS call lifted a
+    /// stored default-off row or its marker — the rows the revoke restores.
+    pub lifted_scopes: Vec<String>,
+    /// The subset of `lifted_scopes` where the lift found a
+    /// `default_off_scopes` MARKER. The revoke re-adds a marker only here:
+    /// an unmarked verdict row (a legacy-migrated disable, a composer
+    /// toggle-off after a failed connect persist) must come back unmarked —
+    /// restoring a marker over it would downgrade the explicit verdict to a
+    /// liftable install default (round-3 review).
+    pub lifted_markers: Vec<String>,
+    /// Whether THIS call cleared a `recovery_hold` (the gesture variant's
+    /// post-recovery re-consent); the revoke re-arms it so a failed connect
+    /// after a recovery cannot leave the boot backfill guessing over the
+    /// lost state again.
+    pub cleared_recovery_hold: bool,
+    /// The operation token THIS grant stored beside the `connect_granted`
+    /// entry — the ownership proof `revoke_connect_enable` checks before
+    /// compensating. A teardown + reconnect between this grant and its
+    /// compensating revoke writes a fresh token, so the stale revoke
+    /// becomes a no-op instead of deleting the newer grant (round-6
+    /// review P2).
+    pub grant_token: String,
+    /// The standing grant's token THIS operation relied on when its gate
+    /// found the consent already recorded (the ledger short-circuit —
+    /// round-7 review P2). Empty when the gate granted fresh (the operation
+    /// owns its own [`ConnectGrantOutcome::grant_token`]) or found no
+    /// standing consent. A completion that succeeds on top of relied-upon
+    /// consent commits it via `commit_relied_connect_grant`: the relied
+    /// token's pending compensating revoke stops matching, so an older
+    /// in-flight operation's failure can no longer strip the consent this
+    /// successful operation just proved usable.
+    pub relied_grant_token: String,
+    /// DenyAll scope keys where THIS call recorded the grant while the
+    /// scope was still UNINITIALIZED (the fresh-home arm: the grant + its
+    /// ledger pair are all that covers the connector there, so nothing was
+    /// lifted and `lifted_scopes` stays empty). The revoke must still
+    /// restore the deny-first shape in such a scope when it has since
+    /// MATERIALIZED — a whole-list composer write or another pack's enable
+    /// initializing it from a post-grant snapshot leaves the connector
+    /// computed-ON by row-absence with the grant gone, behind the failure
+    /// card, and the next boot refresh completes the enable (round-3
+    /// review).
+    pub covered_uninitialized_scopes: Vec<String>,
+}
+
+/// The known-bundle shortcut's reliance capture (round-9 review P2). The
+/// gate's unlocked ledger pre-read can MISS a consent write that lands while
+/// this connect is in flight (the disclosed degraded-read corner), and the
+/// other operation then grants, writes its ledger, and materializes its
+/// companion layout — so THIS grant reaches the known-bundle clause with that
+/// consent standing. Returning a default outcome here dropped the reliance:
+/// the completion reported `NotRelied`, committed nothing, and the owner's
+/// late compensating revoke could still strip the consent the successful
+/// completion relied on. The read is exact under the write lock; on a refused
+/// lock it degrades to the same unlocked snapshot the gate probes use, and
+/// the completion's commit re-validates whatever was captured under the lock
+/// anyway (`commit_relied_connect_grant`).
+fn known_bundle_standing_reliance(package_id: &str) -> ConnectGrantOutcome {
+    let token_of = |file: &DisabledBundlesFile| -> ConnectGrantOutcome {
+        ConnectGrantOutcome {
+            relied_grant_token: file
+                .connect_grant_tokens
+                .get(package_id)
+                .cloned()
+                .unwrap_or_default(),
+            ..ConnectGrantOutcome::default()
+        }
+    };
+    // Exact under the held write lock (`load_disabled_bundles_file_locked`,
+    // NOT the try-read probe: it would self-degrade against this very lock);
+    // on a refused lock degrade to the same unlocked snapshot the gate
+    // probes use.
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        Ok(token_of(&load_disabled_bundles_file_locked()))
+    })
+    .unwrap_or_else(|_| token_of(&load_disabled_bundles_file()))
+}
+
+fn grant_connect_enable_inner(
+    package_id: &str,
+    ledger_gated: bool,
+) -> Result<ConnectGrantOutcome, String> {
+    // Builtin exemption and known-bundle skip mirror the install sync: the
+    // boot-seeded builtin must never enter user state, and a bundle whose
+    // consent is already recorded must not be re-registered — the ledger the
+    // first grant wrote is what keeps a later refresh/relogin from
+    // re-granting over a user's toggle-off.
+    if crate::features::marketplace::builtin::is_builtin_tool(package_id) {
+        return Ok(ConnectGrantOutcome::default());
+    }
+    if consent_gate_bundle_already_known(package_id) {
+        return Ok(known_bundle_standing_reliance(package_id));
+    }
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        // Operation identity (round-6 review P2): this grant's ownership
+        // proof. A compensating revoke runs long after the write that landed
+        // it (skill materialization sits in between), so the outcome must be
+        // able to prove the standing grant is still ITS grant and not a
+        // replacement a teardown + reconnect landed in the window.
+        let grant_token = uuid::Uuid::new_v4().to_string();
+        let mut file = load_disabled_bundles_file_locked();
+        let mut outcome = ConnectGrantOutcome {
+            package_id: package_id.to_string(),
+            grant_token,
+            ..ConnectGrantOutcome::default()
+        };
+        // In-lock ledger recheck: the gate's ledger pre-read is the bounded
+        // try-read, which degrades to an unlocked snapshot under contention
+        // and can MISS a consent write that lands while this connect is in
+        // flight. Re-running the probe on the locked load keeps the gesture
+        // from lifting a verdict that concurrent composer write recorded
+        // behind the stale pre-read (a ledger entry for any scope = a
+        // consent write already ran, so the standing verdict stays and the
+        // gesture is a no-op). The refresh variant never reaches the
+        // row-lifting arm anyway, so this is fail-safe for both.
+        if ledger_has_any_mode(&file.install_default_synced, package_id) {
+            // Reliance capture (round-7 review P2), the in-lock leg: the
+            // gate's unlocked pre-read missed this consent write, and THIS
+            // operation is the one that must commit it on success. The read
+            // is under the write lock, so the captured token is exact here.
+            outcome.relied_grant_token = file
+                .connect_grant_tokens
+                .get(package_id)
+                .cloned()
+                .unwrap_or_default();
+            return Ok(outcome);
+        }
+        // BOOT REFRESH NEVER OVERRIDES A VERDICT: a stored row in any scope
+        // is a user verdict — a composer toggle-off, or a legacy-migrated
+        // explicit disable. Default-off registrations are always written
+        // together with their ledger pair in one atomic save, and the
+        // composer's first materializing write seeds verdict rows too, so a
+        // row that exists without a ledger entry is verdict-shaped, and the
+        // row the ledger gate cannot see is exactly this cohort. Without
+        // this guard the row removal below silently flipped both cohorts ON
+        // at the next boot (the reproduced review BLOCKER). The refresh
+        // therefore leaves every verdict in place; only the user's own
+        // connect gesture (the un-gated variant) may lift a row, and only a
+        // teardown re-arms the grant.
+        if ledger_gated
+            && file
+                .scopes
+                .values()
+                .any(|ids| ids.iter().any(|id| id == package_id))
+        {
+            return Ok(outcome);
+        }
+        // RECOVERY HOLD (round-2 review): a recovery arm wiped the stored
+        // verdicts and the connect ledger together, so the backfill can no
+        // longer tell "never consented" from "consented" — granting here
+        // would flip every still-connected connector ON over its lost
+        // verdict (reproduced). The hold clears on the next connect gesture
+        // below, whose grant is the fresh consent the hold waits for.
+        if ledger_gated && file.recovery_hold {
+            return Ok(outcome);
+        }
+        let mut changed = false;
+        // The connect gesture re-establishes consent after a recovery:
+        // clearing the hold here re-arms the boot backfill from this consent
+        // onward. Tracked on the outcome so the compensating revoke can
+        // re-arm it when this connect's materialization fails — otherwise
+        // the cleared hold would let the NEXT boot's backfill grant every
+        // still-connected lost-verdict connector, the exact flip the hold
+        // exists to prevent.
+        if !ledger_gated && file.recovery_hold {
+            file.recovery_hold = false;
+            outcome.cleared_recovery_hold = true;
+            changed = true;
+        }
+        for mode in SessionMode::ALL {
+            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                continue;
+            }
+            let key = mode.as_str();
+            let ledger_key = ledger_key(key, package_id);
+            if !file.initialized.contains(key) {
+                // Same round-32 rationale as the install sync's uninitialized
+                // arm: record the pair even though nothing else is stored, or
+                // the post-materialization refresh would classify the grant as
+                // "never synced". The grant itself is what covers the scope
+                // here — plain/code may not exist yet, and without the
+                // recorded grant the DenyAll expansion would deny the
+                // just-connected connector until the first composer write
+                // (the exact trap this change removes).
+                if !file.install_default_synced.contains(&ledger_key) {
+                    file.install_default_synced.push(ledger_key);
+                    changed = true;
+                }
+                if !file.connect_granted.iter().any(|id| id == package_id) {
+                    file.connect_granted.push(package_id.to_string());
+                    changed = true;
+                }
+                // Footprint (round-3 review): this scope is covered by the
+                // GRANT, not by a lifted row — the compensation's
+                // `lifted_scopes` restore cannot see it. If the scope
+                // materializes between the grant and a compensating revoke
+                // (the composer's whole-list write or another pack's enable
+                // initializing it from a post-grant snapshot), the stored
+                // list is the sole truth there and the connector computes ON
+                // by row-absence once the grant is gone. Track the covered
+                // scopes so the revoke can restore the deny-first shape in
+                // the ones that have since materialized.
+                if !outcome
+                    .covered_uninitialized_scopes
+                    .iter()
+                    .any(|k| k == key)
+                {
+                    outcome.covered_uninitialized_scopes.push(key.to_string());
+                }
+                continue;
+            }
+            // A stored row must not outlive the connect GESTURE: the row and
+            // its marker go, the grant lands. Reachable shapes: hand-edited
+            // state, or a verdict from a previous ledger era (a legacy
+            // migration row — default-off registrations always land together
+            // with their ledger pair in one atomic save, so a consent-era
+            // registration row can never get here: the ledger gates above
+            // already returned). The gesture is a fresh consent, so it
+            // overrides; the boot refresh (ledger_gated) never reaches this
+            // arm at all — its guard above returns before any write. Lifted
+            // scope keys are tracked on the outcome: they are the ONLY rows
+            // the compensating revoke may rebuild, and `lifted_markers`
+            // records where the lift found a marker so the revoke restores
+            // the verdict's own attribution instead of downgrading it.
+            let mut lifted_here = false;
+            let mut lifted_marker_here = false;
+            if let Some(ids) = file.scopes.get_mut(key) {
+                let before = ids.len();
+                ids.retain(|id| id != package_id);
+                changed |= ids.len() != before;
+                lifted_here |= ids.len() != before;
+            }
+            let mut drop_marker_key = false;
+            if let Some(defaults) = file.default_off_scopes.get_mut(key) {
+                let before = defaults.len();
+                defaults.retain(|id| id != package_id);
+                changed |= defaults.len() != before;
+                lifted_here |= defaults.len() != before;
+                lifted_marker_here = defaults.len() != before;
+                drop_marker_key = defaults.is_empty();
+            }
+            if drop_marker_key {
+                file.default_off_scopes.remove(key);
+            }
+            if lifted_here {
+                outcome.lifted_scopes.push(key.to_string());
+                // Attribution (round-3 review): the marker is recorded only
+                // where the lift actually FOUND one — a row-only lift (an
+                // unmarked verdict) must come back unmarked, or the revoke's
+                // restoration would downgrade the explicit verdict to a
+                // liftable install default.
+                if lifted_marker_here && outcome.lifted_markers.iter().all(|k| k != key) {
+                    outcome.lifted_markers.push(key.to_string());
+                }
+            }
+            if !file.connect_granted.iter().any(|id| id == package_id) {
+                file.connect_granted.push(package_id.to_string());
+                changed = true;
+            }
+            if !file.install_default_synced.contains(&ledger_key) {
+                file.install_default_synced.push(ledger_key);
+                changed = true;
+            }
+        }
+        if changed {
+            // The token marks THIS call as the author of the pack's standing
+            // consent. It rides the same save as the grant, so the stored
+            // identity can never claim a grant this call did not write —
+            // including a hand-edited pre-present entry, where claiming
+            // ownership keeps the compensating revoke fail-closed (it strips
+            // the entry instead of skipping it over an unprovable identity).
+            file.connect_grant_tokens
+                .insert(package_id.to_string(), outcome.grant_token.clone());
+            try_save_disabled_bundles_file(&file)?;
+        }
+        outcome.granted = changed;
+        Ok(outcome)
+    })
+}
+
+/// Compensating revoke for a connect whose grant landed but whose skill
+/// materialization then failed: without it the connector would be computed
+/// ON in every DenyAll expansion (the grant stands, the stale rows were
+/// already lifted, the CLI binary drops out of `cli_deny_rules`) while the
+/// card reports failure — the review's fail-open abort window, where main
+/// kept the default-off rows and stayed fully denied. Removes the
+/// `connect_granted` entry and the sync ledger pairs, and RESTORES the
+/// deny-first shape from the grant's [`ConnectGrantOutcome`] footprint: the
+/// default-off rows the grant lifted — EXACTLY the scopes recorded in
+/// `lifted_scopes`, with markers only where `lifted_markers` says the lift
+/// found one (round-1 review: an unconditional restore flipped a user's
+/// composer-ON back to a liftable default-off row when a
+/// reconnect-after-failure re-granted nothing in that scope; round-3
+/// review: re-adding a marker over an UNMARKED verdict downgrades its
+/// attribution to a liftable install default) — plus the deny-first shape
+/// in every `covered_uninitialized_scopes` scope that has since
+/// MATERIALIZED (round-3 review: the fresh-home grant covers those scopes
+/// through the grant alone; a whole-list composer write or another pack's
+/// enable initializing the scope from a post-grant snapshot leaves the
+/// connector computed-ON by row-absence once the grant is gone, behind the
+/// failure card, and the next boot refresh completes the enable). An
+/// initialized scope's stored list is its sole truth, so leaving a covered
+/// scope unrestored computes the connector ON by row-absence behind the
+/// failure card; the restoration — which matches what a deny-first
+/// registration would have written — returns the touched scopes to the
+/// fail-closed "never consented" shape and re-arms the verdict guard
+/// against the boot backfill.
+///
+/// GRANT-CONSUMED PREDICATE (round-3 review): if the grant is no longer in
+/// the store, a later verdict write has already consumed this consent
+/// state — a composer toggle-off naming the id (whose ledger pair must
+/// survive so the verdict stays reconnect-proof), or a teardown sweep.
+/// Compensating over the newer verdict would mangle it (strip its ledger
+/// protection, re-add markered rows over its shape), so only the
+/// `recovery_hold` re-arm still runs: the hold waits for the next real
+/// gesture either way. GRANT OWNERSHIP (round-6 review P2): presence of the
+/// package id is not proof of ownership either — a teardown + reconnect in
+/// the grant-to-revoke window lands a fresh grant under the same id, and
+/// the stale revoke must leave it (and the verdicts around it) untouched.
+/// Every grant therefore writes a per-operation token beside its
+/// `connect_granted` entry, and the revoke compensates only when the
+/// standing entry still carries THIS grant's token. The id and the footprint
+/// both come from the
+/// outcome — the grant-time fold, not a revoke-time re-fold whose
+/// `to_package_id` could diverge onto a claimant pack that installed
+/// mid-connect (round-3 review). A hold the grant cleared is re-armed for
+/// the same reason: with the ledger gone again the backfill must not
+/// guess over the recovered state. The next connect retries the full
+/// flow. Callers invoke this best-effort next to the materialize failure
+/// and log a revoke failure instead of masking the original error.
+pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), String> {
+    if !grant.granted {
+        // Nothing of this call's landed (a declined gate, a standing
+        // consent) — there is no consent state to compensate.
+        return Ok(());
+    }
+    let package_id = grant.package_id.clone();
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        let mut file = load_disabled_bundles_file_locked();
+        let mut changed = false;
+        // GRANT-CONSUMED PREDICATE: the whole compensation — strip AND
+        // restores — runs only while the grant still stands. A verdict write
+        // that consumed it (a composer toggle-off naming the id, a teardown
+        // sweep) left the newer shape the user owns; compensating over it
+        // would re-add markered rows over the explicit verdict and strip the
+        // ledger pair that makes the verdict reconnect-proof. Only the
+        // `recovery_hold` re-arm runs either way: the hold waits for the
+        // next real gesture regardless of which shape won.
+        //
+        // GRANT OWNERSHIP (round-6 review P2): presence alone cannot tell
+        // this call's grant from a replacement's. A teardown + reconnect
+        // between the grant and this compensating revoke removes the stale
+        // entry and lands a fresh grant for the same package id — stripping
+        // by id alone would delete the newer consent and restore this call's
+        // lifted rows over a successful later connection. The token this
+        // grant wrote proves the standing entry is still its own; a mismatch
+        // means a newer operation owns the state and the stale revoke leaves
+        // the standing consent untouched — the `recovery_hold` re-arm below
+        // is the one deliberate exception (it only arms a wait for the next
+        // real gesture and touches no verdict, grant, or row).
+        if file.connect_granted.contains(&package_id)
+            && file
+                .connect_grant_tokens
+                .get(&package_id)
+                .is_some_and(|token| token == &grant.grant_token)
+        {
+            let before_grant = file.connect_granted.len();
+            file.connect_granted.retain(|id| id != &package_id);
+            changed |= file.connect_granted.len() != before_grant;
+            changed |= file.connect_grant_tokens.remove(&package_id).is_some();
+            for mode in SessionMode::ALL {
+                if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                    continue;
+                }
+                let ledger_key = ledger_key(mode.as_str(), &package_id);
+                let before_ledger = file.install_default_synced.len();
+                file.install_default_synced
+                    .retain(|entry| entry != &ledger_key);
+                changed |= file.install_default_synced.len() != before_ledger;
+            }
+            for key in &grant.lifted_scopes {
+                if !file.initialized.contains(key.as_str()) {
+                    // The scope's materialization was torn down between the
+                    // grant and this revoke: an uninitialized scope is covered
+                    // by the DenyAll expansion on the fly, which denies again
+                    // now that the grant above is gone — nothing to restore.
+                    continue;
+                }
+                let ids = file.scopes.entry(key.clone()).or_default();
+                if !ids.contains(&package_id) {
+                    ids.push(package_id.clone());
+                    changed = true;
+                }
+                if grant.lifted_markers.iter().any(|k| k == key) {
+                    let defaults = file.default_off_scopes.entry(key.clone()).or_default();
+                    if !defaults.contains(&package_id) {
+                        defaults.push(package_id.clone());
+                        changed = true;
+                    }
+                }
+            }
+            for key in &grant.covered_uninitialized_scopes {
+                if !file.initialized.contains(key.as_str()) {
+                    // Still uninitialized: the DenyAll expansion denies again
+                    // now that the grant above is gone — nothing to restore.
+                    continue;
+                }
+                // The scope materialized mid-connect from a post-grant
+                // snapshot: its stored list names other packs and computes
+                // this connector ON by absence. Restore the deny-first shape
+                // (row + marker — what a deny-first registration would have
+                // written) so the failure end-state is fail-closed and the
+                // restored row re-arms the verdict guard against the boot
+                // backfill.
+                let ids = file.scopes.entry(key.clone()).or_default();
+                if !ids.contains(&package_id) {
+                    ids.push(package_id.clone());
+                    changed = true;
+                }
+                let defaults = file.default_off_scopes.entry(key.clone()).or_default();
+                if !defaults.contains(&package_id) {
+                    defaults.push(package_id.clone());
+                    changed = true;
+                }
+            }
+        }
+        if grant.cleared_recovery_hold && !file.recovery_hold {
+            file.recovery_hold = true;
+            changed = true;
+        }
+        if changed {
+            try_save_disabled_bundles_file(&file)?;
+        }
+        Ok(())
+    })
+}
+
+/// The outcome of a relied-upon connect grant's COMMIT (round-7 review P2,
+/// three-way since the round-8 review). A completion that ran on top of
+/// standing consent must know which of these happened before it may report
+/// success: only [`ReliedGrantCommit::Committed`] and
+/// [`ReliedGrantCommit::Superseded`] leave standing consent behind the
+/// completion; [`ReliedGrantCommit::GrantLost`] means the consent the
+/// completion relied on no longer exists, so a `visible:true` would compute
+/// OFF behind the success card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReliedGrantCommit {
+    /// The completion relied on nothing (an empty captured token — it
+    /// granted fresh, or found and declined a standing verdict): nothing to
+    /// commit, nothing at risk.
+    NotRelied,
+    /// The relied-upon token was standing and is now cleared: the grant
+    /// owner's pending compensating revoke no longer matches, so the
+    /// completion's success stands on secured consent.
+    Committed,
+    /// A NEWER grant stands under a different token. The commit deliberately
+    /// declines: clearing the newer owner's token would break ITS OWN failure
+    /// compensation (fail-open, the round-7 P2). The newer consent covers
+    /// the connector, so the completion may stand on it — untouched.
+    Superseded,
+    /// No standing grant for the package at commit time: the consent this
+    /// completion relied on was consumed before it could commit — the owner
+    /// operation's compensating revoke won the race, a teardown swept it, or
+    /// a user verdict write consumed it. Nothing stands behind the
+    /// completion; the caller must not report success.
+    GrantLost,
+}
+
+/// Single source of the cause text for a lost relied-upon grant, shared by
+/// the GUI tails (which wrap it in the localized connect-consent failure
+/// copy, [`CONNECT_CONSENT_SYNC_FAILURE_MARKER`]-marked for the frontend
+/// classification) and the CLI's connect error. `pub` for the same
+/// cross-crate reason as [`commit_relied_connect_grant`].
+pub const RELIED_GRANT_LOST_CAUSE: &str = "the relied-upon connect grant is no longer standing (an overlapping operation's compensation removed it, or a newer verdict consumed it)";
+
+/// COMMIT of a relied-upon connect grant (round-7 review P2): a completion
+/// whose gate found the consent already recorded (the ledger short-circuit —
+/// it captured the standing token on
+/// [`ConnectGrantOutcome::relied_grant_token`]) and that then materialized
+/// and persisted SUCCESSFULLY acknowledges the grant it depended on as
+/// committed. Clearing the standing token ends the window in which the older
+/// in-flight operation's compensating revoke still matches: A grants and
+/// starts materializing, B connects over A's standing ledger (no fresh grant
+/// — the ledger gate and the tail's known-bundle skip both decline), B
+/// succeeds, and without this commit A's late failure strips the grant +
+/// ledger B's success relied on, disabling a connector a completed connect
+/// just proved usable.
+///
+/// The result is three-way (round-8 review): the commit fires only while the
+/// standing entry still carries the RELIED-UPON token (re-validated under
+/// the write lock); a mismatch means a NEWER live operation owns the state
+/// ([`ReliedGrantCommit::Superseded`] — committing over its token would make
+/// ITS OWN failure compensation a no-op, fail-open), and a vanished grant
+/// means the relied-upon consent is gone entirely
+/// ([`ReliedGrantCommit::GrantLost`] — the caller must surface an
+/// uncompleted completion instead of reporting success). The token is the
+/// only mutation — grant, ledger, and rows are untouched, so the verdict
+/// rules are not engaged. With no token captured
+/// ([`ReliedGrantCommit::NotRelied`]) this is a no-op, so the steady-state
+/// reconnect/refresh tail adds no store write. Not crate-internal despite
+/// the bare grant/revoke writers being so: the CLI's `connect` finish side
+/// effects drive the same gated entry cross-crate and must commit the
+/// consent they relied on (`pub` like
+/// `deny_first_register_connector` — a consent-affecting caller routes
+/// through the gate entry it sits behind, never here directly).
+pub fn commit_relied_connect_grant(
+    package_id: &str,
+    relied_token: &str,
+) -> Result<ReliedGrantCommit, String> {
+    if relied_token.is_empty() {
+        return Ok(ReliedGrantCommit::NotRelied);
+    }
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        let mut file = load_disabled_bundles_file_locked();
+        // The round-6 ownership pair, reported separately (round-8 review):
+        // a grant that no longer stands is a LOST reliance — the completion
+        // would report success over consent that computes OFF — while a
+        // standing grant under a different token is a replacement owner the
+        // commit must leave alone.
+        if !file.connect_granted.iter().any(|id| id == package_id) {
+            return Ok(ReliedGrantCommit::GrantLost);
+        }
+        if file
+            .connect_grant_tokens
+            .get(package_id)
+            .is_none_or(|token| token != relied_token)
+        {
+            return Ok(ReliedGrantCommit::Superseded);
+        }
+        file.connect_grant_tokens.remove(package_id);
+        try_save_disabled_bundles_file(&file)?;
+        Ok(ReliedGrantCommit::Committed)
     })
 }
 
@@ -2304,6 +3093,14 @@ pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), 
         file.install_default_synced
             .retain(|entry| !ledger_keys.contains(entry));
         changed |= file.install_default_synced.len() != before_ledger;
+        // Teardown also clears the pack's connect grant: the uninstall
+        // withdraws the skills the grant covers, and a leftover grant would
+        // pre-enable a future same-id reinstall's DenyAll expansion before its
+        // connect flow re-grants. Same re-arm story as the ledger clear above.
+        let before_grant = file.connect_granted.len();
+        file.connect_granted.retain(|id| id != package_id);
+        changed |= file.connect_granted.len() != before_grant;
+        changed |= file.connect_grant_tokens.remove(package_id).is_some();
         if changed {
             try_save_disabled_bundles_file(&file)?;
         }
@@ -2420,7 +3217,7 @@ pub fn enable_packages_in_scope(
             let mut effective = resolve_scope_disabled_ids(&file, scope);
             let not_applied_ids: Vec<String> = ids
                 .iter()
-                .filter(|id| !effective.contains(id))
+                .filter(|id| !effective.contains(id) && !file.connect_granted.contains(id))
                 .cloned()
                 .collect();
             let before = effective.len();
@@ -2439,12 +3236,18 @@ pub fn enable_packages_in_scope(
                     .cloned()
                     .collect();
                 changed = true;
-            } else {
+            } else if !not_applied_ids.is_empty() {
                 // No requested id sits in the expansion: an explicit user action
                 // would be silently voided — log it (the id is
                 // likely not installed/known yet, so there is nothing to persist).
+                // A batch whose ids are all connect-granted (already on) lands
+                // here too but reports nothing and warns about nothing: the
+                // opt-in is already material, there is just no row delta. The
+                // warn names only the NOT-applied ids: in a mixed batch the
+                // granted member did match (it is already on), so warning
+                // about the whole request would be false.
                 log::warn!(
-                    "[scope] enable_packages_in_scope({key}): none of {ids:?} matched the DenyAll expansion; no opt-in materialized"
+                    "[scope] enable_packages_in_scope({key}): none of {not_applied_ids:?} matched the DenyAll expansion; no opt-in materialized"
                 );
             }
             not_applied = not_applied_ids;
@@ -3074,6 +3877,90 @@ mod tests {
         pin_not_found_with_sidecar_evidence_fails_closed("disabled_bundles.json.corrupt.123");
     }
 
+    /// Round-2 review M2: a corrupt/lost store wipes the stored verdicts and
+    /// the connect ledger together, so the boot refresh's consent backfill
+    /// can no longer tell "never consented" from "consented" — without the
+    /// recovery hold, one refresh silently converted every still-connected
+    /// connector into a granted-ON state over its lost verdict (reproduced:
+    /// pre-corruption explicit off + ledger → corrupt bytes → one refresh →
+    /// `connect_granted` holds the id). The hold must keep the backfill
+    /// fail-closed, and only the connect gesture may lift it.
+    #[test]
+    fn recovery_hold_keeps_the_boot_backfill_fail_closed() {
+        with_temp_home("pinvou3-scope-recovery-hold", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+            // The user's pre-corruption state: an explicit off-row plus the
+            // ledger pairs a consent write recorded.
+            std::fs::write(
+                &store,
+                r#"{"scopes":{"plain":["feishu"]},"initialized":["plain"],"plain_defaults_migrated":true,"install_default_synced":["plain:feishu","code:feishu"]}"#,
+            )
+            .unwrap();
+            // Corrupt the store; the production read recovers fail-closed
+            // and must arm the hold.
+            std::fs::write(&store, b"this is not json {{{ nope").unwrap();
+            let recovered = load_disabled_bundles_file();
+            assert!(
+                recovered.recovery_hold,
+                "the recovery must arm the recovery hold"
+            );
+
+            // The boot refresh must not backfill a grant over the lost state.
+            deny_first_register_connector_refresh("feishu", true).unwrap();
+            let after_refresh = load_disabled_bundles_file();
+            assert!(
+                !after_refresh
+                    .connect_granted
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the boot backfill must not grant over the recovered state: {:?}",
+                after_refresh.connect_granted
+            );
+            assert!(
+                after_refresh.recovery_hold,
+                "the refresh must keep the hold armed"
+            );
+
+            // The connect gesture re-establishes consent and re-arms the
+            // backfill for everything else.
+            assert!(
+                deny_first_register_connector("feishu", true)
+                    .unwrap()
+                    .granted,
+                "the gesture grant must land after the recovery"
+            );
+            let after_gesture = load_disabled_bundles_file();
+            assert!(
+                after_gesture
+                    .connect_granted
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the gesture grant must be recorded: {:?}",
+                after_gesture.connect_granted
+            );
+            assert!(
+                !after_gesture.recovery_hold,
+                "the gesture must clear the recovery hold"
+            );
+            // With the hold cleared, the backfill works again for other
+            // never-consented pairs.
+            assert!(
+                deny_first_register_connector_refresh("wecom", true)
+                    .unwrap()
+                    .granted,
+                "the cleared hold must re-arm the boot backfill"
+            );
+            assert!(
+                load_disabled_bundles_file()
+                    .connect_granted
+                    .iter()
+                    .any(|id| id == "wecom"),
+                "the re-armed backfill must grant wecom"
+            );
+        });
+    }
+
     /// Round-24 minor 1: the NotFound sidecar-evidence rule covers BOTH
     /// namespaces — quarantine's `.corrupt.<ts>` AND the rename-aside
     /// `.unreadable.<ts>` half. This twin of
@@ -3283,6 +4170,385 @@ mod tests {
                     .values()
                     .any(|ids| ids.iter().any(|id| id == "pptx")),
                 "the stored entry itself must be removed from every scope: {file:?}"
+            );
+        });
+    }
+
+    /// feat/connector-connect-grants-enable: the connect grant must flip the
+    /// uninitialized scope's computed DenyAll default (both the composer's
+    /// first view and session gating read it through this expansion), and the
+    /// VERDICT GUARD (with the ledger as backstop) must keep a user
+    /// toggle-off sticky against the grant refresh — a re-grant would DELETE
+    /// the user's stored row, the exact stomp the round-31 BLOCKER family
+    /// guards against. (Round-1 review note: in THIS scenario the stored row
+    /// alone blocks the refresh — the in-lock verdict guard returns before
+    /// the ledger probe matters — so the ledger write below is pinned on the
+    /// raw store in the rowless cohorts, not here.)
+    #[test]
+    fn connect_grant_enables_uninitialized_scope_and_user_off_stays_off() {
+        with_temp_home("pinvou3-scope", || {
+            // Fresh home: plain uninitialized, so feishu (a builtin CLI id,
+            // always in the expansion) computes as disabled.
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "fixture: the uninitialized DenyAll expansion denies the builtin CLI ids"
+            );
+
+            // The connect: the grant flips the computed default without
+            // initializing anything, and leaves the rest of the expansion
+            // intact.
+            grant_connect_enable("feishu").unwrap();
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the connect grant must enable the connector in the computed default"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"wecom".to_string()),
+                "the grant must not shrink the rest of the expansion"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                !file.initialized.contains("plain"),
+                "the grant must not initialize the scope as a side effect: {file:?}"
+            );
+
+            // The user turns the connector off before any composer write:
+            // the verdict removes the grant, and the stored row makes the
+            // in-lock verdict guard block the LEDGER-GATED refresh (the
+            // grant's ledger pair is the backstop for the rowless cohorts —
+            // pinned raw in `enable_after_uninitialized_connect_survives_
+            // startup_refresh`).
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.is_empty(),
+                "the stored verdict must drop the grant: {file:?}"
+            );
+            assert!(
+                file.initialized.contains("plain"),
+                "fixture: the composer write initialized the scope"
+            );
+            grant_connect_enable_refresh("feishu").unwrap();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the ledger-gated refresh must not re-grant over a user verdict"
+            );
+        });
+    }
+
+    /// Round-1 review (concurrency lane): the gate's ledger pre-read is the
+    /// bounded try-read and can MISS a consent write that lands while the
+    /// connect is in flight; the in-lock recheck must then skip the gesture
+    /// grant instead of lifting the just-written composer verdict and making
+    /// the flip sticky with fresh ledger pairs. Driving the grant directly
+    /// (bypassing the outer pre-read) pins exactly the locked recheck:
+    /// a ledger entry plus a stored off-row must come out a no-op.
+    #[test]
+    fn gesture_grant_rechecks_the_ledger_under_the_lock() {
+        with_temp_home("pinvou3-scope-gesture-recheck", || {
+            // Materialize plain (initialized, empty) the way the composer's
+            // first write does.
+            save_disabled_bundles_for(ConnectorScope::Plain, &[]).unwrap();
+            // The interleaved-composer shape: a stored off-row AND the ledger
+            // pairs a consent write recorded — the state the stale pre-read
+            // missed.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            {
+                let mut file = load_disabled_bundles_file();
+                file.install_default_synced.push("plain:feishu".to_string());
+                file.install_default_synced.push("code:feishu".to_string());
+                try_save_disabled_bundles_file(&file).unwrap();
+            }
+
+            let outcome = grant_connect_enable_inner("feishu", false).unwrap();
+            assert!(
+                !outcome.granted,
+                "a ledger-present pack must be a grant no-op: {outcome:?}"
+            );
+            assert!(
+                outcome.lifted_scopes.is_empty(),
+                "the recheck must not lift anything over the recorded consent: {outcome:?}"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the composer verdict row must survive the recheck"
+            );
+            assert!(
+                load_disabled_bundles_file().connect_granted.is_empty(),
+                "the recheck must not record a grant over the recorded consent"
+            );
+        });
+    }
+
+    /// Round-9 review P2: the known-bundle shortcut must carry the standing
+    /// grant's reliance token, not drop it. The gate's unlocked ledger
+    /// pre-read can MISS a consent write that lands mid-connect (the
+    /// disclosed degraded-read corner), so the inner grant then reaches the
+    /// known-bundle clause with the other operation's grant + ledger + token
+    /// standing. A default outcome there captured no relied token: the
+    /// completion reported `NotRelied`, committed nothing, and the owner's
+    /// late compensating revoke stripped the consent the successful
+    /// completion relied on. (The outer probes — the gate pre-read and the
+    /// in-lock recheck — already capture; the shortcut is the third exit and
+    /// was the one that dropped the token. It is deterministically reachable
+    /// only through the crate-internal grant: through the public gate a
+    /// standing ledger makes the pre-read capture first, so the pin calls the
+    /// inner fn directly and the completion's commit machinery stays covered
+    /// by the round-7/8 body pins.)
+    #[test]
+    fn known_bundle_shortcut_captures_the_standing_reliance_token() {
+        with_temp_home("pinvou3-scope-known-shortcut-reliance", || {
+            // The other operation's grant stands: ledger pair + ownership
+            // token (its materialization is in flight).
+            let grant_a = grant_connect_enable_inner("feishu", false).unwrap();
+            assert!(grant_a.granted, "fixture: the standing grant lands");
+            // The known-bundle clause fires on the store-record leg — an
+            // installed record with its package dir on disk — so the
+            // shortcut, not any ledger probe, is what decides the exit.
+            plant_installed_record("feishu", BundleSource::Preset);
+            std::fs::create_dir_all(paths::bundles_root().join("feishu")).unwrap();
+
+            let outcome = grant_connect_enable_inner("feishu", false).unwrap();
+            assert!(
+                !outcome.granted,
+                "the shortcut must not grant a fresh consent over the standing one: {outcome:?}"
+            );
+            assert_eq!(
+                outcome.relied_grant_token, grant_a.grant_token,
+                "the shortcut must capture the standing grant's token: {outcome:?}"
+            );
+            // The captured reliance commits — the completion's requirement —
+            // and the owner's late revoke leaves the consent standing.
+            assert_eq!(
+                commit_relied_connect_grant("feishu", &outcome.relied_grant_token).unwrap(),
+                ReliedGrantCommit::Committed,
+                "the shortcut-captured reliance must commit"
+            );
+            revoke_connect_enable(&grant_a).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the stale revoke must not delete the committed grant: {file:?}"
+            );
+            assert!(
+                file.install_default_synced
+                    .iter()
+                    .any(|entry| entry.ends_with(":feishu")),
+                "the ledger pair the completion relied on must survive: {file:?}"
+            );
+        });
+    }
+
+    /// The disclosed global-grant asymmetry, pinned: a composer toggle-off in
+    /// ONE scope removes the grant for ALL still-uninitialized scopes
+    /// (fail-closed) — plain's computed expansion must re-deny the id even
+    /// though plain itself was never written. Deleting the grant strip in the
+    /// composer save fails on the plain-expansion leg.
+    #[test]
+    fn toggle_off_in_one_scope_removes_the_global_grant() {
+        with_temp_home("pinvou3-scope-cross-scope-grant", || {
+            grant_connect_enable("feishu").unwrap();
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "fixture: the grant enables the uninitialized plain scope"
+            );
+
+            // The CODE scope's composer write names the id: the grant is
+            // removed globally, so plain (still uninitialized, never written)
+            // computes OFF again.
+            save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()]).unwrap();
+            assert!(
+                load_disabled_bundles_file().connect_granted.is_empty(),
+                "the code-scope verdict must remove the global grant"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the still-uninitialized plain scope must re-deny after the global grant removal"
+            );
+        });
+    }
+
+    /// Round-1 review (concurrency lane): the revoke must re-arm a
+    /// recovery hold its own grant cleared. Recovery → gesture (hold
+    /// cleared, grant + ledger land) → materialization failure → revoke —
+    /// without the re-arm the hold stays clear while the ledger is gone
+    /// again, and the NEXT boot's backfill grants every still-connected
+    /// lost-verdict connector: the exact flip the hold exists to prevent.
+    #[test]
+    fn revoke_rearms_a_recovery_hold_its_grant_cleared() {
+        with_temp_home("pinvou3-scope-revoke-hold", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+            std::fs::write(&store, b"not json {{{").unwrap();
+            assert!(
+                load_disabled_bundles_file().recovery_hold,
+                "fixture: the recovery must arm the hold"
+            );
+
+            // The gesture clears the hold and lands the grant.
+            let grant = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant.granted && grant.cleared_recovery_hold,
+                "fixture: the gesture must grant and clear the hold: {grant:?}"
+            );
+
+            // The compensating revoke must restore the hold so the boot
+            // backfill cannot guess over the lost state again.
+            revoke_connect_enable(&grant).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.recovery_hold,
+                "the revoke must re-arm the hold its grant cleared: {file:?}"
+            );
+            assert!(
+                file.connect_granted.is_empty() && file.install_default_synced.is_empty(),
+                "the revoke must still strip the grant and the ledger: {file:?}"
+            );
+
+            // And the boot backfill stays blocked while the hold stands.
+            deny_first_register_connector_refresh("feishu", true).unwrap();
+            assert!(
+                !load_disabled_bundles_file()
+                    .connect_granted
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the re-armed hold must keep the boot backfill fail-closed"
+            );
+        });
+    }
+
+    /// Review BLOCKER regression pin: the BOOT refresh must never grant over
+    /// (let alone delete) a stored verdict row, in ANY scope. The ledger gate
+    /// cannot see the no-ledger verdict cohorts — a legacy-migrated explicit
+    /// disable, and a composer toggle-off written after a failed connect
+    /// persist (the composer writer never records the ledger) — so the
+    /// verdict guard inside `grant_connect_enable_refresh` is the only thing
+    /// standing between those cohorts and a silent ON flip at the next boot.
+    /// Deleting the guard, or swapping the refresh variant for the gesture
+    /// variant, must fail here. The gesture variant itself remains allowed to
+    /// lift a stale row: a fresh connect is a fresh consent.
+    #[test]
+    fn connect_refresh_never_overrides_a_stored_verdict() {
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-scope-refresh-respects-verdicts", || {
+            // (a) Initialized plain with an explicit off row, NO ledger entry:
+            // the exact post-failed-connect-persist shape.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            assert!(
+                !load_disabled_bundles_file()
+                    .install_default_synced
+                    .iter()
+                    .any(|entry| entry.ends_with(":feishu")),
+                "fixture: the composer write records no ledger entry"
+            );
+            grant_connect_enable_refresh("feishu").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the boot refresh must not touch a stored verdict row: {file:?}"
+            );
+            assert!(
+                file.connect_granted.is_empty() && file.install_default_synced.is_empty(),
+                "the refresh must write nothing at all over a verdict: {file:?}"
+            );
+
+            // (b) Cross-scope consequence: the row lives in plain and code
+            // was never initialized — the blocked grant means no ON state may
+            // leak into any scope behind the plain verdict, so code's
+            // computed expansion still denies the connector.
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Code).contains(&"feishu".to_string()),
+                "the blocked grant must leave the uninitialized scope's expansion denying the id"
+            );
+
+            // (c) The gesture counterpart: the user's own connect MAY lift the
+            // stale row — a fresh consent overrides an old verdict.
+            grant_connect_enable("feishu").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the connect gesture lifts the verdict row: {file:?}"
+            );
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the gesture records the grant: {file:?}"
+            );
+        });
+    }
+
+    /// The LEGACY-MIGRATED cohort of the same BLOCKER: an upgraded home whose
+    /// `disabled_connectors.json` disabled the connector pre-consent-gate.
+    /// Migration lands an unmarked row with no ledger entry, the connector
+    /// probes as shown (the legacy composer-off never writes the read-only
+    /// `<id>_disabled` flag the gate probes), so the first boot's refresh
+    /// used to delete the row and silently re-enable the connector. The
+    /// verdict guard must keep the legacy disable in place.
+    #[test]
+    fn legacy_migrated_disable_survives_the_boot_refresh() {
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-scope-legacy-verdict", || {
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("disabled_connectors.json"), r#"["feishu"]"#).unwrap();
+
+            // First read runs the migration: the row lands, no ledger entry.
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "fixture: the migration carried the legacy disable over"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.install_default_synced.is_empty(),
+                "fixture: the migrated row carries no ledger entry: {file:?}"
+            );
+
+            // The boot refresh must leave the legacy verdict alone.
+            grant_connect_enable_refresh("feishu").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the legacy explicit disable must survive the boot refresh: {file:?}"
+            );
+            assert!(
+                file.connect_granted.is_empty() && file.install_default_synced.is_empty(),
+                "the refresh must write nothing over the legacy verdict: {file:?}"
+            );
+        });
+    }
+
+    /// The grant-aware reporting leg of the enable path: a connect-granted id
+    /// is already ON, so requesting it must not be reported `not_applied` (and
+    /// must persist nothing), while a genuinely unknown id in the same batch
+    /// still is. Dropping the grant conjunct from the not-applied filter
+    /// fails here. (The warn wording is NOT pinned — `log::warn!` content is
+    /// unasserted; round-1 review corrected this doc's over-claim.)
+    #[test]
+    fn enable_reporting_treats_a_connect_granted_id_as_applied() {
+        use crate::features::marketplace::scope::enable_packages_in_scope;
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-scope-enable-grant-reporting", || {
+            grant_connect_enable("feishu").unwrap();
+            let outcome = enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["feishu".to_string(), "never-heard-of-it".to_string()],
+            )
+            .unwrap();
+            assert_eq!(
+                outcome.not_applied,
+                vec!["never-heard-of-it".to_string()],
+                "only the unknown id may be reported not applied: {outcome:?}"
+            );
+            assert!(
+                !outcome.state_changed,
+                "an all-granted batch persists nothing — the opt-in is already material"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.scopes.get("plain").is_none() && !file.initialized.contains("plain"),
+                "the reporting path must not materialize the scope as a side effect: {file:?}"
             );
         });
     }
@@ -4410,8 +5676,10 @@ mod tests {
     }
 
     /// The CLI-connector gate helper registers only when the connector is
-    /// about to become visible; a hidden connector must not write the deny
-    /// state at all.
+    /// about to become visible; a hidden connector must not write the consent
+    /// state at all. The visible leg records the connect ENABLE grant
+    /// (feat/connector-connect-grants-enable): the stored list gains no row —
+    /// the grant lands in `connect_granted` plus the ledger pairs.
     #[test]
     fn connector_gate_registers_only_when_shown() {
         with_temp_home("pinvou3-scope-gate-shown", || {
@@ -4423,30 +5691,49 @@ mod tests {
             // vouches for the connector.
             plant_installed_record("feishu", BundleSource::Builtin);
 
-            deny_first_register_connector("feishu", false)
+            let granted = deny_first_register_connector("feishu", false)
                 .expect("a hidden connector needs no registration");
+            assert!(!granted.granted, "a hidden connector grants nothing");
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["seed-bundle".to_string()],
                 "a hidden connector must not be registered"
             );
 
-            deny_first_register_connector("feishu", true).expect(
+            let granted = deny_first_register_connector("feishu", true).expect(
                 "a visible connector registers deny-first even with the connect-time Builtin record present",
             );
+            assert!(granted.granted, "the visible connect must own its grant");
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                vec!["seed-bundle".to_string(), "feishu".to_string()]
+                vec!["seed-bundle".to_string()],
+                "the connect consent is an ENABLE grant — no default-off row may land"
             );
+            {
+                let file = load_disabled_bundles_file();
+                assert!(
+                    file.connect_granted.iter().any(|id| id == "feishu"),
+                    "the visible connector's grant must be recorded: {file:?}"
+                );
+                assert!(
+                    file.install_default_synced
+                        .contains(&"code:feishu".to_string())
+                        && file
+                            .install_default_synced
+                            .contains(&"plain:feishu".to_string()),
+                    "the grant must record both scope ledger pairs: {file:?}"
+                );
+            }
 
             // A Builtin record WITH its package dir present
             // is the one shape where the source exclusion and the
             // content-corroboration requirement diverge — corroboration alone
             // would vouch "known" for a connector whose only record is the
             // connect-time Builtin one. The exclusion must hold on its own;
-            // drive the install variant of the sync (the ledger already
+            // drive the INSTALL variant of the sync (the ledger already
             // records feishu from the leg above, so the ledger-gated wrapper
-            // would no-op before ever consulting the gate) on a fresh id.
+            // would no-op before ever consulting the gate) on a fresh id —
+            // installs keep the default-off registration.
             let builtin_dir = paths::bundles_root().join("wecom");
             std::fs::create_dir_all(&builtin_dir).unwrap();
             assert!(
@@ -4458,11 +5745,7 @@ mod tests {
                 .expect("a fresh id must register even with a Builtin record plus a bare dir");
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                vec![
-                    "seed-bundle".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string()
-                ],
+                vec!["seed-bundle".to_string(), "wecom".to_string()],
                 "a Builtin record with a bare package dir must not skip registration"
             );
         });
@@ -4560,12 +5843,20 @@ mod tests {
             crate::features::marketplace::store::BundleStore::new()
                 .remove("evil")
                 .unwrap();
-            deny_first_register_connector("feishu", true)
+            let granted = deny_first_register_connector("feishu", true)
                 .expect("with no claimant installed the connector id self-maps and the gate runs");
+            assert!(granted.granted, "the unclaimed connect must own its grant");
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                vec!["seed-bundle".to_string(), "feishu".to_string()],
-                "the connector must be registered deny-first once unclaimed"
+                vec!["seed-bundle".to_string()],
+                "the unclaimed connector's connect consent is an ENABLE grant — no deny row"
+            );
+            assert!(
+                load_disabled_bundles_file()
+                    .connect_granted
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the unclaimed connector must gain its connect grant"
             );
         });
     }
