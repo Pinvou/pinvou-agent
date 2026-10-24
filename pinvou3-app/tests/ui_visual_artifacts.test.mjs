@@ -135,9 +135,9 @@ test('reader window paints its own dark canvas before first paint and keeps it o
 
 test('web-access primaries and the refresh confirm carry the shared light + dark pairing', () => {
   const settingsView = stripComments(source('features/settings/SettingsView.jsx'));
-  assert.match(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-60 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\] dark:hover:bg-\[#c2d8fb\]/,
+  assert.match(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0A4BB8\] disabled:opacity-60 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\] dark:hover:bg-\[#C2DBFF\]/,
     'refresh confirm button must carry light + dark primary styling');
-  assert.ok(count(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0842A0\] disabled:opacity-50 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\] dark:hover:bg-\[#c2d8fb\]/g) >= 2,
+  assert.ok(count(settingsView, /bg-\[#0B57D0\] text-white hover:bg-\[#0A4BB8\] disabled:opacity-50 dark:bg-\[#A8C7FA\] dark:text-\[#062E6F\] dark:hover:bg-\[#C2DBFF\]/g) >= 2,
     'the allow-workspace and enable primaries in the same panel must carry the dark pairing too');
 });
 
@@ -147,8 +147,12 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'remote-KB toggle track must follow the shared Toggle light/dark track colours');
   assert.match(remoteKnowledge, /rounded-xl bg-\[#F7F9FC\] px-3\.5 py-4 text-\[12px\] dark:bg-white\/\[0\.04\]/,
     'the empty-state chip must get the same dark tint as its sibling chips');
-  assert.ok(count(remoteKnowledge, /bg-\[#0B57D0\] px-5 text-\[14px\] font-bold text-white[^"']*dark:bg-\[#A8C7FA\]/g) >= 2,
-    'the inline hero primaries must carry the shared light + dark pairing');
+  // The two hero calls-to-action share one const carrying the canonical
+  // card-buttons hover pair (#0A4BB8 / #C2DBFF) instead of two pasted strings.
+  assert.match(remoteKnowledge, /const heroPrimary = '[^']*hover:bg-\[#0A4BB8\][^']*dark:hover:bg-\[#C2DBFF\]'/,
+    'the hero primary const must carry the canonical light + dark hover pair');
+  assert.ok(count(remoteKnowledge, /className=\{heroPrimary\}/g) >= 2,
+    'both hero calls-to-action must use the shared heroPrimary const');
   // The file pairs every error/success text with its dark half (#ff8a80 /
   // #7DD3A8); a bare light-only instance re-opens the unreadable-in-dark
   // class. The lookahead stays inside the className string (no quote may be

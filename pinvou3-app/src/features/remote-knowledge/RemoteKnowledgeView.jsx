@@ -19,9 +19,9 @@ const panelShadow = 'shadow-[0_1px_2px_rgba(24,24,40,0.04),0_8px_24px_rgba(24,24
 const ink = 'text-[#1F1F1F] dark:text-[#E3E3E3]';
 const muted = 'text-[#444746] dark:text-[#C4C7C5]';
 const button = 'inline-flex h-9 items-center justify-center gap-1.5 whitespace-nowrap rounded-full px-4 text-[13px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45';
-const primary = `${button} bg-[#0B57D0] text-white hover:bg-[#0848ad] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#c2d8fb]`;
+const primary = `${button} bg-[#0B57D0] text-white hover:bg-[#0A4BB8] dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]`;
 const soft = `${button} bg-[#F0F4F9] text-[#0B57D0] hover:bg-[#E1E5EA] dark:bg-[#2A2B2D] dark:text-[#A8C7FA] dark:hover:bg-[#333537]`;
-const quiet = `${button} px-3 text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#333537]`;
+const quiet = `${button} text-[#444746] hover:bg-[#F0F4F9] dark:text-[#C4C7C5] dark:hover:bg-[#333537]`;
 
 // How long the join/connect success feedback stays visible (both connector entry points share the same timing).
 const JOIN_FEEDBACK_SETTLE_MS = 550;
@@ -38,11 +38,14 @@ function classifyUploadedDocument(document, duplicate) {
     : base === 'index_failed' ? 'duplicate_failed'
       : 'duplicate_pending';
 }
-const danger = `${button} px-3 text-[#d63a3a] hover:bg-[#d63a3a]/10 hover:text-[#b72f2f] dark:text-[#ff8a80] dark:hover:text-[#ff8a80]`;
+const danger = `${button} text-[#d63a3a] hover:bg-[#d63a3a]/10 hover:text-[#b72f2f] dark:text-[#ff8a80] dark:hover:text-[#ff8a80]`;
 const iconButton = 'grid h-8 w-8 shrink-0 place-items-center rounded-full text-[#444746] transition-colors hover:bg-[#E1E5EA] dark:text-[#C4C7C5] dark:hover:bg-[#333537] disabled:cursor-not-allowed disabled:opacity-45';
 const field = 'h-10 w-full rounded-xl border border-[#dfe3ea] bg-white px-3.5 text-[13px] text-[#1F1F1F] outline-none transition-shadow placeholder:text-[#8b8d94] focus:border-[#0B57D0] focus:ring-2 focus:ring-[#0B57D0]/10 dark:border-white/10 dark:bg-[#171719] dark:text-[#E3E3E3] dark:focus:border-[#A8C7FA]';
 const ownerSection = 'rounded-2xl border border-[#e3e7ee] bg-white p-4 dark:border-white/10 dark:bg-[#1E1F20] sm:p-5';
 const ownerTab = 'inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/25';
+// The two hero calls-to-action share one string; the hover pair is the
+// canonical card-buttons.mjs primary recipe.
+const heroPrimary = 'inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-[#0B57D0] px-5 text-[14px] font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[#0A4BB8] disabled:opacity-45 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]';
 const documentPageSize = 200;
 const documentStatusBatchSize = 500;
 const uploadIndexPollIntervalMs = 1000;
@@ -1456,7 +1459,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
               {hostStatus?.supported && !hostStatus.installed && (
                 <button type="button"
                   data-testid="shared-kb-create-host"
-                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-[#0B57D0] px-5 text-[14px] font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[#0848ad] disabled:opacity-45 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#c2d8fb]"
+                  className={heroPrimary}
                   onClick={installHost}
                   disabled={isBusy('install-host')}
                 >
@@ -1467,7 +1470,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
               {connectionsLoaded && hostStatus?.supported && hostStatus.installed && !hasLocalHostOwner && (
                 <button type="button"
                   data-testid="shared-kb-reconnect-host"
-                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-[#0B57D0] px-5 text-[14px] font-bold text-white transition-all hover:-translate-y-0.5 hover:bg-[#0848ad] disabled:opacity-45 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#c2d8fb]"
+                  className={heroPrimary}
                   onClick={reconnectHost}
                   disabled={isBusy('reconnect-host')}
                 >
