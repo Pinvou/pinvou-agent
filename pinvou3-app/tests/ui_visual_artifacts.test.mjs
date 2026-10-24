@@ -234,6 +234,11 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'every red-500 tint must pair the red-700 light leg');
   assert.ok(count(acpNotices, /text-red-600 dark:text-red-300/g) >= 4,
     'error details must use the file red-600 + red-300 pair');
+  // Zero-tolerance form: a count floor cannot see a NEW unpaired text-red-600
+  // (bare red-600 is ~3.9:1 in dark), so any red-600 without the red-300 half
+  // anywhere ahead in its className string fails.
+  assert.equal(count(acpNoticesRaw, /text-red-600(?![^"'`]*dark:text-red-300)/g), 0,
+    'every red-600 detail ink in the runtime notices must carry its dark red-300 half');
   assert.match(remoteKnowledge, /bg-\[#d63a3a\]\/\[0\.08\] px-3 py-2 text-\[12px\] text-\[#b72f2f\]/,
     'the tinted connection-error banner must use the file deep-red ink (d63a3a sat at 4.14:1 on its own tint)');
 });
@@ -318,7 +323,9 @@ test('community group name and type badge labels exist in all three languages', 
   // dictionaries. ('text' is a content-block discriminator, not an interface
   // type; the CLI + … connectors are localized per backend id through the
   // uiToolDetails overlay instead.)
-  const catalogueLiterals = [...new Set([...source('features/tools/tool-common.jsx').matchAll(/type: '([^']+)'/g)].map(m => m[1]))]
+  // Derived from comment-stripped source like every positive anchor: a
+  // commented-out preset row must not demand a dictionary entry.
+  const catalogueLiterals = [...new Set([...stripComments(source('features/tools/tool-common.jsx')).matchAll(/type: '([^']+)'/g)].map(m => m[1]))]
     .filter(value => value !== 'text' && !value.startsWith('CLI +'));
   assert.ok(catalogueLiterals.length >= 7, 'preset catalogue type literals must be discoverable in tool-common.jsx');
   for (const language of ['zh', 'en', 'ja']) {
@@ -379,18 +386,22 @@ test('alpha modifiers stay on the opacity scale or use the bracket form', () => 
   // themes (the bracket form /[0.08] is the working spelling). The utility
   // prefix keeps the scan inside class tokens, so a URL like
   // img/v2/16/logo.png does not trip it. Scanned repo-wide: the sweep audited
-  // four files and missed the same class in ten more.
+  // four files and missed the same class in ten more. Stylesheets (an @apply
+  // would carry the same dead class) and the compiler's tests/fixtures content
+  // glob are part of the walked set for the same reason.
   const BARE_ALPHA = /(?:bg|text|border|divide|ring|shadow|from|to|via|outline|decoration|accent|caret|fill|stroke|placeholder)-[^\s'"`]*\/(\d+)(?![\d.%])/g;
   const walk = (dir, out) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(p, out);
-      else if (/\.(?:jsx?|mjs|html)$/.test(entry.name)) out.push(p);
+      else if (/\.(?:jsx?|mjs|html|css)$/.test(entry.name)) out.push(p);
     }
     return out;
   };
   const offScale = [];
-  for (const file of walk(srcRoot, [])) {
+  const fixturesRoot = fileURLToPath(new URL('../tests/fixtures/', import.meta.url));
+  const walked = [...walk(srcRoot, []), ...(existsSync(fixturesRoot) ? walk(fixturesRoot, []) : [])];
+  for (const file of walked) {
     const src = readFileSync(file, 'utf8');
     for (const m of src.matchAll(BARE_ALPHA)) {
       if (Number(m[1]) % 5 !== 0) offScale.push(`${path.relative(srcRoot, file)}: ${m[0]}`);
