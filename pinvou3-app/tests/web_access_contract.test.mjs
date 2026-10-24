@@ -181,6 +181,14 @@ for (const command of [
   // stash / checkout): desktop-only, the web client rejects them explicitly.
   'list_codex_workspace_branches',
   'checkout_codex_workspace_branch',
+  // r26 minor 7（反向 pin）：五个 checkpoint 命令必须留在桌面端——影子仓库
+  // 强制恢复对浏览器客户端不可辩护；分层防线（canInvoke + 命令层车道拒绝）
+  // 是现实，但策略文件的负向清单此前没有 pin，未来策略编辑会静默放行。
+  'list_checkpoints',
+  'checkpoint_diff',
+  'rewind_to_turn',
+  'rewind_undo_state',
+  'undo_last_rewind',
   // Clipboard reads are desktop-privacy surface: the paste fallback runs on
   // the desktop host only; web pastes go through the device-upload path.
   'paste_clipboard_image',
@@ -502,6 +510,11 @@ assert.match(rustCommandBlock(commands, 'edit_last_turn'),
 assert.match(rustCommandBlock(commands, 'chat_with_reservation'),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'chat_with_reservation must self-check the ACP lane inside the seam, not only at its callers');
+// r26 M4（body 声明的承接 pin）：归档列表的 ACP 过滤此前无任何测试引用、
+// 回退该行全绿——浏览器客户端会拿到 ACP 会话 id（launchpad 通道）。
+assert.match(rustCommandBlock(commands, 'web_access_list_archived_sessions'),
+  /sessions\.retain\(\|s\| !acp_pool\.is_acp\(&s\.metadata\.id\)\)/,
+  'web_access_list_archived_sessions must retain ACP sessions out of the archived list (r16 M2, r26 M4)');
 assert.match(remoteControlCommands,
   /struct WebSavedSession[\s\S]*?metadata: deepseek_tui::session_manager::SessionMetadata[\s\S]*?messages:[\s\S]*?artifacts:[\s\S]*?transcript_revision:/,
   'chunked Web session downloads must use an explicit browser field allowlist');
