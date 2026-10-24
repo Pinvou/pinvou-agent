@@ -1690,6 +1690,12 @@ pub fn clear_pending_rewind(ledger_root: &Path) {
 /// 与 matching_pending_pre_restore 不同——不做 checkpoint/keepTurns/revision
 /// 维度匹配：对账要回答的是「协议是否走到一半死了」，任何活暂记都值得
 /// 处理。损坏文件沿既有约定隔离（删除 + None）。
+/// r26 M2：是否存在「活」暂记的布尔探针——CLI crate 无法触及 pub(crate) 的
+/// `PendingRewind` 类型，跨 crate 消费（回退前奏的和解跳过）走这里。
+pub fn live_pending_rewind_present(ledger_root: &Path) -> Result<bool> {
+    Ok(live_pending_rewind(ledger_root)?.is_some())
+}
+
 pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
     let path = pending_rewind_path(ledger_root);
     // r25 minor 1：NotFound（无暂记）与真实 IO 错误必须区分——后者映射为
