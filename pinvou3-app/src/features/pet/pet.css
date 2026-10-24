@@ -299,6 +299,20 @@ html.pet-window #root {
   overflow-wrap: anywhere;
   white-space: normal;
 }
+/* Pet bodies render marked markdown, so cells must opt out of `anywhere`'s
+   min-content shrink and wide tables must scroll in their own box — the same
+   block-table pattern the chat surfaces use (base.css). */
+.pet-activity-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.pet-activity-body th,
+.pet-activity-body td {
+  overflow-wrap: normal;
+}
 .pet-activity.is-expanded .pet-activity-body {
   display: block;
   -webkit-line-clamp: unset;

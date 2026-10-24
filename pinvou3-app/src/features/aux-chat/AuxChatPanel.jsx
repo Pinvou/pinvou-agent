@@ -187,7 +187,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       panelId="aux-chat"
       activationKey={activationKey}
       onActiveChange={onActiveChange}
-      className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
+      className="border-l border-black/[0.06] bg-white/[0.92] backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/[0.96]"
       dataTestId="aux-chat-panel"
     >
       <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">

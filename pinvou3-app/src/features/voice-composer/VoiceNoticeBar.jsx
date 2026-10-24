@@ -17,11 +17,11 @@ function VoiceNoticeBar({ voiceInput, voiceMode, copy, dark = false, canInstallL
   if (!voiceInput || voiceInput.status !== 'failed' || !voiceInput.message) return null;
   if (voiceInput.category === 'empty_result') {
     const cardClass = dark
-      ? 'border-white/[0.08] bg-[#1C1C1E]/88 text-[#F5F5F7] shadow-[0_18px_42px_-30px_rgba(0,0,0,0.9)]'
-      : 'border-black/[0.06] bg-white/88 text-[#1D1D1F] shadow-[0_18px_42px_-30px_rgba(0,0,0,0.35)]';
+      ? 'border-white/[0.08] bg-[#1C1C1E]/[0.88] text-[#F5F5F7] shadow-[0_18px_42px_-30px_rgba(0,0,0,0.9)]'
+      : 'border-black/[0.06] bg-white/[0.88] text-[#1D1D1F] shadow-[0_18px_42px_-30px_rgba(0,0,0,0.35)]';
     const iconClass = dark
-      ? 'bg-[#FF9F0A]/16 text-[#FFD18A]'
-      : 'bg-[#FF9500]/12 text-[#B96800]';
+      ? 'bg-[#FF9F0A]/[0.16] text-[#FFD18A]'
+      : 'bg-[#FF9500]/[0.12] text-[#B96800]';
     const hintClass = dark ? 'text-[#AEAEB2]' : 'text-[#6E6E73]';
     const secondaryButtonClass = dark
       ? 'bg-white/[0.08] text-[#F5F5F7] hover:bg-white/[0.13]'

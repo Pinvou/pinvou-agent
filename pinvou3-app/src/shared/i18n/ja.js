@@ -454,7 +454,7 @@ const jaBase = {
         dep_ocr: '画像 / スキャン PDF の OCR', dep_archive: 'アーカイブ（zip/rar/7z）', dep_email: 'メール（.eml / .msg）', dep_voice_asr: 'ローカル音声認識',
         dep_voice_asr_model: '音声認識モデル（SenseVoice q8）', dep_knowledge_embedding_model: 'ナレッジ埋め込みモデル（bge-m3）',
         depHint_email_manual: '手動インストールが必要：ターミナルで `sudo cpan -i Email::Outlook::Message` を実行（Homebrew に formula はありません）。詳細: https://metacpan.org/pod/Email::Outlook::Message',
-        communityQrAlt: 'Pinvou QQ グループの QR コード', communityChannelTag: '中国語 QQ コミュニティ',
+        communityQrAlt: 'Pinvou QQ グループの QR コード', communityChannelTag: '中国語 QQ コミュニティ', communityGroupName: 'pinvou-agent公式交流グループ',
         communityQrHint: 'モバイル QQ でスキャンするか、グループ番号をコピーして手動で検索してください。',
         communityGroupLabel: 'グループ番号', communityCopyGroup: 'グループ番号をコピー', communityCopied: 'グループ番号をコピーしました',
         communityDiscussions: 'GitHub Discussions',
@@ -998,6 +998,10 @@ visualizer: { title:'データ分析の可視化', subtitle:'Chart.js ダッシ�
 Object.assign(dictJa.uiToolStore, {
   groupByType:'タイプ別', groupByBusiness:'業務別',
   typeGroups:{ bundle:'プラグインパッケージ', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook', upcoming:'近日公開' },
+  // Singular per-item badges (store cards, recycle rows); typeGroups stays plural for chips and section headers.
+  typeLabels:{ bundle:'プラグインパッケージ', mcp:'MCP', skill:'スキル', cli:'CLI 連携', api:'API & Webhook' },
+  // Preset-catalogue interface-type descriptors (the static cards in tool-common.jsx), keyed by the exact data literal.
+  catalogTypes:{ 'MCP Server':'MCP', 'Remote MCP':'リモート MCP', 'REST API':'REST API', 'OpenAPI Skill':'OpenAPI スキル', 'Webhook/API':'Webhook/API', 'Action Skill':'アクションスキル', 'Skill':'スキル' },
   recycleBin:'ごみ箱', recycleBinTitle:'プラグインのごみ箱', recycleBinEmpty:'ごみ箱は空です', recycleBinEmptyHint:'アップロードしたプラグインをアンインストールするとここに移動します。復元または完全に削除できます。',
   recycleBinLoadFailed:'ごみ箱の読み込みに失敗しました。もう一度お試しください。', recycleBinLoading:'ごみ箱を読み込み中…', recycledAt:time=>`移動日時: ${time}`,
   recycleRestore:'復元', recycleRestoreUnavailable:'パッケージファイルが見つからないため復元できません', recyclePurge:'完全に削除',

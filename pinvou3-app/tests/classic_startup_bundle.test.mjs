@@ -116,14 +116,18 @@ test('verbatim runtime copy set excludes everything the startup bundles serve', 
   // model-service-errors.js is bundled into the index.html startup packages
   // but pet.html still references it directly, so its copy must survive in
   // both builds; every other bundled or cross-platform script must be absent
-  // from the copy set, or the build ships the same source twice.
+  // from the copy set, or the build ships the same source twice. theme-boot.js
+  // is referenced only by reader.html (index.html keeps an inline copy of the
+  // recipe), so it is a verbatim copy and never a startup-bundle member.
   const requiredByPetEntry = new Set(['shared/model-service-errors.js']);
+  const requiredByReaderEntry = new Set(['shared/theme-boot.js']);
   const requiredByRuntimeFetch = new Set(['platform/web/access-policy.json']);
   const intentionallyCopied = new Set([
     'shared/legacy-polyfills.js',
     'platform/web/bootstrap.js',
     'features/updater/update-notice-logic.js',
     ...requiredByPetEntry,
+    ...requiredByReaderEntry,
     ...requiredByRuntimeFetch,
   ]);
   for (const webBuild of [false, true]) {

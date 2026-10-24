@@ -118,7 +118,7 @@ const THIRD_PARTY_TOOL_LOGOS = {
   ima: 'assets/tool-icons/wb-ima-mcp.png',
   obsidian: 'assets/tool-icons/obsidian.ico',
   'yuandian-mcp': 'assets/tool-icons/wb-yuandian-mcp.svg',
-  3: 'assets/tool-icons/wb-qq-mail.png',
+  3: 'assets/tool-icons/wb-qq-mail.jpg',
   5: 'assets/tool-icons/wb-lexiang.png',
   11: 'assets/tool-icons/wb-tapd.png',
   12: 'assets/tool-icons/wb-cnb-api.svg',
@@ -584,7 +584,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const ModalBackdrop = ({ onClose, onKeyDown, children }) => (
       // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
       <div
-        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm"
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
         onClick={onClose}
         onKeyDown={onKeyDown}
       >
@@ -599,9 +599,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const TsAlert = ({ alert, onDismiss, onNewChat, onCancelLoading, copy }) => {
       if (!alert.visible && !alert.loading) return null;
       return (
-        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
           <div
-            className="w-[280px] rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]"
+            className="w-[280px] max-w-full rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]"
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
             {alert.loading ? (
@@ -683,7 +683,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       return (
         <ModalBackdrop>
           <div
-            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
+            className={`w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
           >
             <div className="px-6 pt-6 pb-4 text-center max-h-[70vh] overflow-y-auto">
@@ -798,7 +798,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
           <div
             data-testid="edit-display-dialog"
-            className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
+            className={`w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`}
             style={{ animation: 'tsAlertIn .2s ease-out' }}
             onClick={e => e.stopPropagation()}
           >
@@ -906,7 +906,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       );
       return (
         <ModalBackdrop>
-          <div className={`w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`} style={{ animation: 'tsAlertIn .2s ease-out' }}>
+          <div className={`w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]`} style={{ animation: 'tsAlertIn .2s ease-out' }}>
             <div className="px-6 pt-6 pb-4 text-center">
               <div className="text-[34px] mb-2">📖</div>
               <div className={`text-[17px] font-semibold mb-2 text-slate-900 dark:text-white`}>{c.title}</div>
@@ -928,7 +928,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       <ModalBackdrop onClose={onCancel}>
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
-        <div className="w-[300px] rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
+        <div className="w-[300px] max-w-full rounded-[20px] overflow-hidden shadow-2xl bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]" onClick={e => e.stopPropagation()}>
           <div className="px-6 pt-6 pb-5 text-center">
             <div className="text-[17px] font-semibold mb-1.5 text-slate-900 dark:text-white">{title}</div>
             <div className="text-[13px] leading-relaxed text-slate-500 dark:text-slate-400">{desc}</div>
@@ -1373,7 +1373,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           const bf = (bs && bs.bundle) || null;
           const base = {
             id: 'mcp-' + x.id, backendId: x.id, title: (bf && bf.name) || x.name || x.id, subtitle: '',
-            category: 'other', type: 'MCP Server', mcpServer: true,
+            category: 'other', type: (storeCopy.typeLabels || {}).mcp || 'MCP Server', mcpServer: true,
             version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
             latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
             icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
@@ -1479,7 +1479,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             // (getToolTypeGroup 据此归 Skill 组),业务维度由 getToolBusinessGroup
             // 落「其他」(初步设计,见 tool-common 注释)。
             category: mcpEntry ? (mcpEntry.category || 'skill') : 'skill',
-            type: mcpId ? ((storeCopy.typeGroups || {}).bundle || 'Bundle') : 'Skill',
+            type: mcpId ? ((storeCopy.typeLabels || {}).bundle || 'Bundle') : ((storeCopy.typeLabels || {}).skill || 'Skill'),
             companionBundle: !!mcpId,
             exportable: ownerExportable,
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
@@ -1493,7 +1493,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const uploadedSkills = skillBackend.filter(x => x.user_uploaded).map(x => ({
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
         // 用户上传技能无业务归属元数据,业务分组落「其他」;类型分组仍按 userUploaded 归 Skill。
-        category: 'other', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
+        category: 'other', type: (storeCopy.typeLabels || {}).skill || 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
         icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
         actions: actionsOf(bundleStates[x.id]),
       }));
@@ -2326,7 +2326,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           <div className="flex-1 min-w-0">
                             <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white truncate">{name}</h3>
                             <div className="flex items-center gap-2 mt-1">
-                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.typeGroups || {})[item.kind] || item.kind}</span>
+                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.typeLabels || {})[item.kind] || item.kind}</span>
                               {recycledAt && <span className="text-[12px] text-slate-400 dark:text-slate-500">{storeCopy.recycledAt(recycledAt)}</span>}
                             </div>
                           </div>
@@ -2552,10 +2552,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                               <span>{(builtinCopy || {}).sectionTitle}</span>
                             </button>
                           )}
-                          <span className="shrink-0 hidden sm:flex items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
-                            {storeCopy.guide.dragHintShort}
+                          <span className="hidden xl:flex min-w-0 items-center gap-1.5 text-[12px] text-slate-400 dark:text-slate-500 pl-1">
+                            <span className="truncate">{storeCopy.guide.dragHintShort}</span>
                             <button type="button" onClick={() => setShowGuide(true)} aria-label={storeCopy.guide.title} title={storeCopy.guide.title}
-                              className="w-[18px] h-[18px] rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/20 flex items-center justify-center text-[11px] font-bold leading-none">?</button>
+                              className="shrink-0 w-[18px] h-[18px] rounded-full bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-white/20 flex items-center justify-center text-[11px] font-bold leading-none">?</button>
                           </span>
                         </div>
                       </div>
@@ -2585,7 +2585,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                   <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                                   <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
                                   <div className="flex items-center gap-2 mt-1.5">
-                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
+                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.catalogTypes || {})[tool.type] || tool.type}</span>
                                     {tool.authRequired && (
                                       <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
                                         <Zap size={10} /> {storeCopy.keyRequired}
@@ -2758,28 +2758,28 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex flex-col items-end gap-1.5">
                         <PlatformToolAction tool={detailTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />
-                        {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
+                        {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-500 dark:text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
                   </div>
 
                   <div className="flex items-center justify-between py-5 mb-8 border-y border-slate-100 dark:border-white/5 overflow-x-auto no-scrollbar gap-8">
                     <div className="flex flex-col flex-shrink-0">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
-                      <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.type}</span>
-                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
+                      <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{(storeCopy.catalogTypes || {})[selectedTool.type] || selectedTool.type}</span>
+                      <span className="text-[12px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailVersion}</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailVersion}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.version}</span>
-                      <span className="text-[12px] text-slate-400 mt-1">{storeCopy.detailStableRelease}</span>
+                      <span className="text-[12px] text-slate-500 dark:text-slate-400 mt-1">{storeCopy.detailStableRelease}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0 pr-4">
-                      <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailLatency}</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailLatency}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.latency}</span>
-                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> {storeCopy.detailGlobalAccel}</span>
+                      <span className="text-[12px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> {storeCopy.detailGlobalAccel}</span>
                     </div>
                   </div>
 

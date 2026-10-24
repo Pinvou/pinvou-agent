@@ -456,7 +456,7 @@ export const dictZh = {
         dep_ocr: '图片 / 扫描件 OCR', dep_archive: '压缩包（zip/rar/7z）', dep_email: '邮件（.eml / .msg）', dep_voice_asr: '本地语音识别',
         dep_voice_asr_model: '语音识别模型（SenseVoice q8）', dep_knowledge_embedding_model: '知识库向量模型（bge-m3）',
         depHint_email_manual: '需手动安装：在终端执行 `sudo cpan -i Email::Outlook::Message`（Homebrew 无此 formula）。详见 https://metacpan.org/pod/Email::Outlook::Message',
-        communityQrAlt: 'Pinvou QQ 群二维码', communityChannelTag: '中文 QQ 社区',
+        communityQrAlt: 'Pinvou QQ 群二维码', communityChannelTag: '中文 QQ 社区', communityGroupName: 'pinvou-agent官方交流群',
         communityQrHint: '使用手机 QQ 扫码加入；无法扫码时，也可以复制群号手动查找。',
         communityGroupLabel: '群号', communityCopyGroup: '复制群号', communityCopied: '群号已复制',
         communityDiscussions: 'GitHub Discussions',
@@ -1038,6 +1038,10 @@ visualizer: { title:'数据分析可视化', subtitle:'Chart.js 仪表盘 / 图�
 Object.assign(dictZh.uiToolStore, {
   groupByType:'按类型', groupByBusiness:'按业务',
   typeGroups:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook', upcoming:'即将上线' },
+  // Singular per-item badges (store cards, recycle rows); typeGroups stays plural for chips and section headers.
+  typeLabels:{ bundle:'插件包', mcp:'MCP', skill:'Skill', cli:'CLI 集成', api:'API & Webhook' },
+  // Preset-catalogue interface-type descriptors (the static cards in tool-common.jsx), keyed by the exact data literal.
+  catalogTypes:{ 'MCP Server':'MCP', 'Remote MCP':'远程 MCP', 'REST API':'REST API', 'OpenAPI Skill':'OpenAPI Skill', 'Webhook/API':'Webhook/API', 'Action Skill':'Action Skill', 'Skill':'Skill' },
   recycleBin:'回收站', recycleBinTitle:'插件回收站', recycleBinEmpty:'回收站是空的', recycleBinEmptyHint:'上传的插件卸载后会移到这里，可恢复或彻底删除。',
   recycleBinLoadFailed:'回收站读取失败，请重试', recycleBinLoading:'正在加载回收站…', recycledAt:time=>`回收于 ${time}`,
   recycleRestore:'恢复', recycleRestoreUnavailable:'包文件已缺失，无法恢复', recyclePurge:'彻底删除',
