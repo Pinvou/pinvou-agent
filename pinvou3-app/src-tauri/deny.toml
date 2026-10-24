@@ -30,11 +30,13 @@ ignore = [
     # is live. Remove this entry once an upstream release lets the graph
     # resolve crypto-bigint >= 0.7.6 — update the pinning parent
     # (age/elliptic-curve) first, then run `cargo update -p crypto-bigint`.
-    # Consolidated with #777: this repo's only age usage is
-    # `age::x25519::Identity` (src/app/commands/shared_knowledge_host.rs) —
-    # X25519 arithmetic is curve25519-dalek, so the affected NIST-curve ops
-    # are linked but not on an executed path; pinvou-knowledge's CI deny run
-    # reuses this config via `--config pinvou3-app/src-tauri/deny.toml`.
+    # Consolidated with #777: the app's only age usage is
+    # `age::x25519::Identity` (src/app/commands/shared_knowledge_host.rs);
+    # pinvou-knowledge's backup path uses the fuller Encryptor/Decryptor API
+    # but is likewise x25519-only. X25519 arithmetic is curve25519-dalek, so
+    # the affected NIST-curve ops are linked but not on an executed path;
+    # pinvou-knowledge's CI deny run reuses this config via
+    # `--config pinvou3-app/src-tauri/deny.toml`.
     "RUSTSEC-2026-0387",
     # GTK3 的 RUSTSEC-2024-0415 ignore 已在 main 移除（#705，2026-10）：
     # advisory 不再匹配锁定的 gtk 0.18.2（cargo deny 报 advisory-not-detected），

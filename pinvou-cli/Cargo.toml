@@ -1,8 +1,10 @@
 [workspace]
 members = ["crates/*"]
-# resolver = "3" is edition 2024's default and is MSRV-aware, like
-# src-tauri/knowledge: `cargo update` here now respects rust-version = 1.90
-# and cannot silently pick rustc-1.92+ crates (e.g. ort rc.14/rc.15).
+# Virtual workspaces default to resolver "1" regardless of member editions,
+# so this explicit key is load-bearing: "3" is the MSRV-aware resolver that
+# src-tauri/knowledge get from their edition-2024 package manifests —
+# `cargo update` here respects rust-version = 1.90 and holds back crates
+# needing a newer rustc when a compatible version exists.
 resolver = "3"
 
 [workspace.package]
