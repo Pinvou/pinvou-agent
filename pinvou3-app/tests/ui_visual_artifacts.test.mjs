@@ -8,11 +8,14 @@
 // protect (paint-containment clipping, cascade order, first-paint colour) are
 // only observable in a real browser and are exercised by the sweep harness.
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { dict } from './helpers/i18n-all.js';
 import { COLOR_SCHEME_STORAGE_KEY } from '../src/shared/color-scheme.js';
 
+const srcRoot = fileURLToPath(new URL('../src/', import.meta.url));
 const sourceUrl = relative => new URL(`../src/${relative}`, import.meta.url);
 const source = relative => readFileSync(sourceUrl(relative), 'utf8');
 // Positive anchors run against comment-stripped text so a guard that was
@@ -156,6 +159,10 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'every deep error-red text in remote knowledge must carry its dark pair');
   assert.equal(count(remoteKnowledgeRaw, /text-\[#16894a\](?![^"'`]*dark:text-\[#7DD3A8\])/g), 0,
     'every success-green text in remote knowledge must carry its dark pair');
+  // The light success green was deepened to #0F7A40 (the old #16894a sat at
+  // 3.95–4.46:1 on every light surface); the pair pin above only checks the
+  // dark half, so the deepening needs its own guard.
+  assert.doesNotMatch(remoteKnowledgeRaw, /16894a/i, 'the light success green must stay deepened to #0F7A40');
   // Warning amber (#a76518) sat at 4.20:1 on its own #fff2dd chip; the file
   // now carries the deeper #96600F everywhere the pair appears.
   assert.doesNotMatch(remoteKnowledgeRaw, /a76518/i, 'the light warning amber must stay deepened to #96600F');
@@ -175,6 +182,10 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'every group-hover red darkening must restore its dark group-hover ink');
   assert.equal(count(remoteKnowledgeRaw, /(?<![-\w])hover:text-\[#(?:b72f2f|d63a3a)\](?![^"'`]*dark:hover:text-\[#ff8a80\])/g), 0,
     'every hover red darkening must restore its dark hover ink');
+  // The group-hover inks above only fire when the row itself is the `group`;
+  // dropping that class silently kills every row-hover darkening.
+  assert.match(remoteKnowledgeRaw, /data-testid="remote-document-row" className="group /,
+    'the document row must stay the group its group-hover inks depend on');
   // The local knowledge view pairs its error reds with the same dark half as
   // the remote one; a bare light-only instance re-opens the class there too.
   assert.equal(count(source('features/knowledge/KnowledgeView.jsx'), /text-\[#d63a3a\](?![^"'`]*dark:text-\[#ff8a80\])/g), 0,
@@ -301,27 +312,23 @@ test('alpha modifiers stay on the opacity scale or use the bracket form', () => 
   // … all compile to no CSS at all, so the tint silently vanishes in both
   // themes (the bracket form /[0.08] is the working spelling). The utility
   // prefix keeps the scan inside class tokens, so a URL like
-  // img/v2/16/logo.png does not trip it.
-  const BARE_ALPHA = /(?:bg|text|border|divide|ring|from|to|via|outline|decoration|accent|caret|fill|stroke)-[^\s'"`]*\/(\d+)(?![\d.%])/g;
-  for (const file of [
-    'features/remote-knowledge/RemoteKnowledgeView.jsx',
-    'features/knowledge/KnowledgeView.jsx',
-    'features/codex/AcpRuntimeNotices.jsx',
-    'features/settings/SettingsView.jsx',
-    'features/monitor/MonitorView.jsx',
-    'features/voice-composer/VoiceNoticeBar.jsx',
-    'features/codex/CodexWorkspacePanel.jsx',
-    'features/scheduled/ScheduledTasksView.jsx',
-    'features/artifacts/ArtifactsPanel.jsx',
-    'features/multiagent/SubagentTranscriptPanel.jsx',
-    'features/codex/CodexAcpView.jsx',
-    'features/aux-chat/AuxChatPanel.jsx',
-    'features/chat/composer-controls.jsx',
-    'features/conversation/ConversationTimeline.jsx',
-  ]) {
-    const src = source(file);
-    const offScale = [...src.matchAll(BARE_ALPHA)].map(m => m[1]).filter(v => Number(v) % 5 !== 0);
-    assert.deepEqual(offScale, [],
-      `${file} must not carry alpha modifiers outside tailwind's opacity scale`);
+  // img/v2/16/logo.png does not trip it. Scanned repo-wide: the sweep audited
+  // four files and missed the same class in ten more.
+  const BARE_ALPHA = /(?:bg|text|border|divide|ring|shadow|from|to|via|outline|decoration|accent|caret|fill|stroke|placeholder)-[^\s'"`]*\/(\d+)(?![\d.%])/g;
+  const walk = (dir, out) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p, out);
+      else if (/\.(?:jsx?|mjs|html)$/.test(entry.name)) out.push(p);
+    }
+    return out;
+  };
+  const offScale = [];
+  for (const file of walk(srcRoot, [])) {
+    const src = readFileSync(file, 'utf8');
+    for (const m of src.matchAll(BARE_ALPHA)) {
+      if (Number(m[1]) % 5 !== 0) offScale.push(`${path.relative(srcRoot, file)}: ${m[0]}`);
+    }
   }
+  assert.deepEqual(offScale, [], 'no source file may carry alpha modifiers outside tailwind\'s opacity scale');
 });
