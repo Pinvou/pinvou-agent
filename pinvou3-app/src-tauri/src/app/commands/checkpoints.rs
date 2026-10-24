@@ -292,7 +292,17 @@ async fn reconcile_pending_rewind(
     })
     .await;
     match truncate {
-        Ok(Ok(_outcome)) => {}
+        Ok(Ok(_outcome)) => {
+            // r26 M3：重放真正截断了 transcript——活引擎仍持有全量历史的内存
+            // 副本，本轮 turn 结束的 persist 会把被截轮次写回磁盘（对话恢复、
+            // 工作区仍回退 = r21-M1 判不可接受的分叉，且 undo 计数失配永久
+            // 消失）。与手动回退成功路径同款驱逐活引擎，下一次使用从截断后的
+            // 磁盘重建（SyncSession）。单元夹具无池（None）跳过，生产接线由
+            // send-prelude pin 保证 gates.pools 恒为 Some。
+            if let Some((pool, _)) = gates.pools {
+                pool.evict(session_id).await;
+            }
+        }
         Ok(Err(error)) => {
             log::error!(
                 "[pinvou3][checkpoints] rewind reconciliation truncate failed, blocking this turn's snapshot sid={session_id}: {error:#}"
@@ -897,7 +907,23 @@ pub async fn rewind_to_turn(
         // sidecar 备份先于截断落盘，其记录是可靠凭据：`turn > kept_turns` 且
         // 创建于该次回退之前的快照必属被弃分支（新分支同号快照创建于回退后）。
         // best-effort：和解失败不阻塞回退，如实记日志（与即时作废同级语义）。
-        match store_snapshot.rewound_turns_records(&session_id_snapshot) {
+        // r26 M2：活暂记在飞时跳过本轮陈旧和解——sidecar 记录写于截断持久化
+        // 之前，persist 分裂窗内其记录并非「截断已发生」的凭据；按记录失效会
+        // 删掉暂记自己的目标快照，把错误信息承诺的引导重打（P1 复用）变成
+        // checkpoint_missing，并把暂记楔死在 evicted 态（混合树固化）。暂记由
+        // 对账先收口，和解留给收口后的下一次回退。
+        match checkpoints::live_pending_rewind(&ledger_snapshot) {
+            Ok(Some(_)) => {
+                eprintln!(
+                    "[checkpoints] live pending rewind present, skipping stale-Turn reconciliation this round"
+                );
+            }
+            Err(error) => {
+                eprintln!(
+                    "[checkpoints] 读取回退暂记失败（仅和解未做，fail-closed）: {error:#}"
+                );
+            }
+            Ok(None) => match store_snapshot.rewound_turns_records(&session_id_snapshot) {
             Ok(records) => {
                 for record in records {
                     let cutoff = match chrono::DateTime::parse_from_rfc3339(&record.rewound_at) {
@@ -919,8 +945,9 @@ pub async fn rewind_to_turn(
                     }
                 }
             }
-            Err(error) => {
-                eprintln!("[checkpoints] 读取回退备份记录失败（仅和解未做）: {error:#}");
+                Err(error) => {
+                    eprintln!("[checkpoints] 读取回退备份记录失败（仅和解未做）: {error:#}");
+                }
             }
         }
         let entries = checkpoints::list_checkpoints(&ledger_snapshot)
@@ -959,28 +986,21 @@ pub async fn rewind_to_turn(
     if let Some(checkpoint) = plan.checkpoint {
         let ledger_restore = ledger.clone();
         let execution_restore = execution.clone();
-        let bound_check_store = store.inner().clone();
-        let bound_check_session = session_id.clone();
         let revision_for_prepare = transcript_revision.clone();
         let (target_meta, undo) = tauri::async_runtime::spawn_blocking(move || {
+            // r26 M1：与 CLI 侧（code.rs，r25 MAJOR-3）同款——不加「绑定记录
+            // 否决」。matcher 的 revision 匹配本身就是提交判定器：completed
+            // rewind 必然推进 revision、matcher 返回 None；能拿到 Some
+            // （revision 仍匹配）的唯一绑定记录形态是 persist 分裂窗，此刻
+            // 复用 P1（幂等重放）恰恰正确——否决会把 P1 孤儿化、undo 变
+            // no-op，直接违背下方截断失败的重试承诺。
             let reuse = checkpoints::matching_pending_pre_restore(
                 &ledger_restore,
                 &checkpoint.id,
                 keep_turns,
                 &revision_for_prepare,
             )
-            .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
-            .filter(|pre_restore_id| {
-                // 陈旧暂记防误复用：该 PreRestore 已被某次成功回退的备份记录
-                // 绑定 → 回退实际已完成（清理失败的残留），不复用。
-                !bound_check_store
-                    .latest_rewound_turns_record(&bound_check_session)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|record| {
-                        record.pre_restore_checkpoint_id.as_deref() == Some(pre_restore_id.as_str())
-                    })
-            });
+            .map_err(|error| format!("读取回退暂记失败: {error:#}"))?;
             let (target_meta, undo) = checkpoints::prepare_restore(
                 &ledger_restore,
                 &execution_restore,
@@ -1442,6 +1462,14 @@ mod tests {",
             .find("async fn reconcile_pending_rewind(")
             .expect("reconcile fn must exist");
         let body = &src[fn_start..];
+        // r26 minor 11：span 收紧到 reconcile 函数体（截到下一个 fn 条目）——
+        // 首次出现式搜索会被函数之前的注释或其它块静默满足。
+        let body_end = ["\npub ", "\npub(super) ", "\nasync fn ", "\nfn "]
+            .iter()
+            .filter_map(|marker| body.find(marker))
+            .min()
+            .map_or(body.len(), |offset| offset);
+        let body = &body[..body_end];
         let guard_at = body
             .find("begin_execution_root_rewind")
             .expect("replay arm must hold the execution-root flag (r24 M3)");

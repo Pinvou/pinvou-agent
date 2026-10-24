@@ -5856,26 +5856,46 @@ fn checkpoints_rewind(
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "rewind", session)?;
 
     // Stale Turn snapshot reconciliation (same source of truth as the GUI).
-    match store.rewound_turns_records(session) {
-        Ok(records) => {
-            for record in records {
-                let Some(cutoff) = parse_rfc3339_epoch_secs(&record.rewound_at) else {
-                    continue;
-                };
-                if let Err(error) = checkpoints::invalidate_stale_turn_checkpoints(
-                    &ledger,
-                    record.kept_turns,
-                    cutoff,
-                ) {
-                    note!(
-                        "[pinvou-cli] stale checkpoint reconciliation failed (cleanup only): {error:#}"
-                    );
-                }
-            }
+    // r26 M2: while a live pending exists, skip this sweep — the sidecar record
+    // is written BEFORE the truncation persists, so inside the persist-split
+    // window it is not evidence the truncation happened; invalidating on it
+    // deletes the pending's own target snapshot and wedges the guided retry
+    // (checkpoint_missing) that the error copy promises. The pending resolves
+    // first; the sweep runs on a later rewind.
+    match checkpoints::live_pending_rewind(&ledger) {
+        Ok(Some(_)) => {
+            note!(
+                "[pinvou-cli] live pending rewind present, skipping stale-Turn reconciliation this round"
+            );
         }
         Err(error) => {
-            note!("[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}");
+            note!(
+                "[pinvou-cli] reading the pending rewind failed (reconciliation skipped, fail-closed): {error:#}"
+            );
         }
+        Ok(None) => match store.rewound_turns_records(session) {
+            Ok(records) => {
+                for record in records {
+                    let Some(cutoff) = parse_rfc3339_epoch_secs(&record.rewound_at) else {
+                        continue;
+                    };
+                    if let Err(error) = checkpoints::invalidate_stale_turn_checkpoints(
+                        &ledger,
+                        record.kept_turns,
+                        cutoff,
+                    ) {
+                        note!(
+                            "[pinvou-cli] stale checkpoint reconciliation failed (cleanup only): {error:#}"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                note!(
+                    "[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}"
+                );
+            }
+        },
     }
 
     let entries = checkpoints::list_checkpoints(&ledger).map_err(|error| {
@@ -6113,7 +6133,11 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     let checkpoint_id = info.checkpoint_id.clone();
     if let Some(checkpoint_id) = checkpoint_id.as_deref() {
         checkpoints::restore_checkpoint(&ledger, &execution, checkpoint_id).map_err(|error| {
-            crate::support::store_error("code", "checkpoints undo", checkpoint_id, error)
+            // r26 minor 10：树恢复失败 = 混合态（对话已恢复、代码恢复失败），
+            // 与 rewind 腿同款披露 + 幂等重试指引（restore 可重跑）。
+            CliError::failed(format!(
+                "code checkpoints undo: the conversation was restored but restoring code to                  rollback point {checkpoint_id} failed (mixed state); the rollback point is kept                  and retrying the undo is safe (restore re-runs): {error:#}"
+            ))
         })?;
     }
     let restored_messages = store.restore_rewound_turns(session).map_err(|error| {
