@@ -5,7 +5,7 @@ Checkpoint: **2026-10-24 14:24 Asia/Shanghai**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **35.9%**. T07, T08, T09, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **36.1%**. T07, T08, T09, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
@@ -126,7 +126,7 @@ and cache observations do not replace them. Existing host staging and same-proce
 VerifiedExecutionObject custody are reused. T29 remains in progress at **75%**;
 real remote file-service and installed-host E2E gaps remain explicitly unexecuted.
 
-## Current T09 validation queue and storage increment
+## Current T09 upload lifecycle, validation and storage increment
 
 The durable validation owner imports an authenticated original received receipt,
 creates one Artifact/job under the original T06 command, and retains exact
@@ -168,7 +168,8 @@ single-PUT capacity is an adapter capability, never permanent package invalidity
 Actual AWS permissions/topology/persistence tests remain unexecuted. Aliyun OSS,
 Tencent COS, WORM and production topology are not claimed by this adapter.
 
-Final common checks passed: **4,272 passing / 1,737 skipped / zero failed**
+The preceding `5b3d80d` queue/storage increment's final common checks passed:
+**4,272 passing / 1,737 skipped / zero failed**
 Go test records (1,331 passing and 949 skipped top-level tests), all-package vet,
 module integrity, every command build, the client contract pin and whitespace.
 All qualifying command trees closed naturally without resource-floor breaches.
@@ -178,9 +179,42 @@ policy`); no inventory or deletion ran and the outputs remain locally. The
 component is committed and pushed in the service repository as
 `5b3d80d25f096821977940288dd16036368f0c6b`; the remote tracking revision
 matches and the service tree is clean at this delivery boundary.
-T09 is estimated at **65%**, not complete: true uploading birth/join, combined
-valid admission and all-reference quarantine remain outstanding. Genuine T46
-and protected current-source composition cannot be replaced by fixtures.
+The upload lifecycle increment now records a committed revision-one uploading
+Artifact before the first application file-body read. Actual authenticated
+reception joins to the same Artifact at revision two without inventing a version
+or job. Explicit first enqueue preserves its birth identity at revision three
+and fixes one version/job; historical received imports keep their original IDs
+and acknowledgments. Fixed Begin/Locate/Resume routes, accurate Context capability,
+mandatory owner readiness and three-language administration form the full path.
+Lost confirmations retain exact pending bytes; explicit continuation rechecks the
+whole file and owner token. Original received responses retain their 24-hour policy.
+
+Independent source/repair reviews passed. Backend domain verification passed
+20 top-level / 27 total records, and 27 admin contracts plus TypeScript/build
+passed. Final native regression passed 14 top-level / 17 records; nine actual
+browser cases passed once without skips/retries, checking real committed
+inventories. Earlier native failures remain failures: a missing receipt field
+in the Join time guard was replaced by the actual reception committed time,
+and a test-only nil callback was removed. Other reviewed repairs cover the
+single-connection startup probe, mandatory lifecycle recovery and pre-Join
+registration rollback. Temporary diagnostics were restored before acceptance.
+
+This increment's common checks passed **4,274 default Go records / 1,756 skipped
+/ zero failed**, with 1,329 passing and 963 skipped top-level tests; all-package
+vet, module integrity, all command builds, client contract pin and whitespace
+passed. Default verification did not enable unrelated opt-in integrations; the
+actual PostgreSQL and nine browser cases are counted separately above. Final
+canonical-profile acceptance also checks the canonical LF database profile;
+its original five V1 SQL sources match their unchanged Git contents.
+
+The upload-lifecycle increment is committed and pushed in the service repository
+as `c89c35821f45ef5d03f249c42c7e15a07d468bc4`; the remote tracking revision matches
+and that service tree is clean at this delivery boundary.
+
+T09 is estimated at **75%**, not complete: combined valid admission and
+all-reference quarantine remain outstanding. Genuine T46 and protected current
+sources remain prerequisites; incomplete local upgrade paths do not grant
+certification or Artifact validity.
 
 ## Completed T07 managed-purpose lifecycle
 
@@ -479,7 +513,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 65% | In progress | Prior inspection/intake plus durable validation queue, exact original-request recovery, scoped status/history and three-language administration; actual corrupt bytes produce atomic rejection, absent evidence remains blocked. Admission provenance/scanner archives and replica proof components plus the official S3 adapter are reviewed and tested separately; genuine uploading birth/join, combined valid admission/current qualification and all-reference quarantine remain pending. Certificates remain optional. |
+| T09 | 75% | In progress | Prior inspection/intake plus durable validation queue, exact original-request recovery, scoped status/history and three-language administration; actual corrupt bytes produce atomic rejection, absent evidence remains blocked. Admission provenance/scanner archives and replica proof components plus the official S3 adapter are reviewed and tested separately; Complete uploading birth/Join/first-enqueue identity, original-response recovery and true browser flow are delivered; combined valid admission/current qualification and all-reference quarantine remain pending. Certificates remain optional. |
 | T10 | 60% | In progress | Actual Manifest-bound materials, managed provenance profile preparation, independent dual approval and enable/disable, DSSE observations, pending dossier bindings/history, original-request recovery and three-language administration; formal channel supply-chain approval/revocation, scanner execution/coverage and bounded exceptions remain pending. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
