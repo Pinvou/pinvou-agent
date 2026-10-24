@@ -1480,6 +1480,48 @@ mod tests {",
             guard_at < probe_at,
             "重放臂必须先置执行根互斥标志、后探对端忙碌（r25 MAJOR-1：flag-then-check）"
         );
+        // r26 M3：重放截断后必须驱逐活引擎（否则引擎 persist 复活被截轮次）。
+        assert!(
+            body.contains("pool.evict(session_id)"),
+            "重放截断后必须驱逐活引擎（r26 M3：引擎 persist 会复活被截轮次）"
+        );
+    }
+
+    /// r26 M2 pin：回退前奏必须先探活暂记、再做陈旧 Turn 和解
+    /// （persist 分裂窗内 sidecar 记录不是「截断已发生」的凭据，按记录失效
+    /// 会删掉暂记自己的目标快照、楔死错误信息承诺的引导重试）。
+    #[test]
+    fn rewind_prelude_probes_live_pending_before_the_stale_sweep() {
+        let src = include_str!("checkpoints.rs");
+        let fn_start = src
+            .find("pub async fn rewind_to_turn(")
+            .expect("rewind_to_turn must exist");
+        let rest = &src[fn_start..];
+        let body_end = [
+            "
+pub ",
+            "
+pub(super) ",
+            "
+async fn ",
+            "
+fn ",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .map_or(rest.len(), |offset| offset);
+        let body = &rest[..body_end];
+        let pending_at = body
+            .find("live_pending_rewind(&ledger_snapshot)")
+            .expect("the prelude must probe the live pending (r26 M2)");
+        let sweep_at = body
+            .find("rewound_turns_records(&session_id_snapshot)")
+            .expect("the stale sweep must exist");
+        assert!(
+            pending_at < sweep_at,
+            "回退前奏必须先探活暂记、再做陈旧和解（r26 M2）"
+        );
     }
 
     /// r24 M5 pin（production 源码锚，chat.rs / interaction.rs）：两个发送
@@ -2885,6 +2927,129 @@ mod tests {",
             checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
             1,
             "重放必须完成截断（保留第一轮）"
+        );
+        assert!(!snapshot.is_empty(), "本轮快照登记");
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// r27 M2 pin（persist-split 端到端）：引导重试的窗口——暂记 revision 仍
+    /// 匹配、绑定记录已存在（truncate 写记录后、持久化前失败 + 引擎旧副本
+    /// 重新落盘）。对账必须**复用 P1** 幂等重放（不得 fresh 一枚 PreRestore
+    /// 快照已恢复树、孤儿化 P1），完成后暂记清除、transcript 收敛到 1 轮。
+    /// 变异实证：复活 r26-M1 的绑定记录否决（fresh PreRestore）必须在此变红。
+    #[tokio::test]
+    async fn persist_split_replay_reuses_the_first_pre_restore() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("persist-split");
+        std::fs::write(
+            execution.join("code.txt"),
+            "v1
+",
+        )
+        .expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        std::fs::write(
+            execution.join("code.txt"),
+            "v2
+",
+        )
+        .expect("advance code");
+        create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 2 snapshot");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed turn 2");
+
+        // 协议走到「apply 完成 + 记录已写」后、截断持久化前失败；随后引擎旧
+        // 副本把 transcript 原样重新落盘（revision 与暂记一致、记录已绑定）。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let target = checkpoints::find_checkpoint(&ledger, &first).expect("target");
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
+        store
+            .truncate_to_user_turn(&id, 1, Some(undo.id.clone()))
+            .expect("truncate wrote the bound record");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("stale engine persist restores the full transcript");
+
+        // 下一次发送：persist 分裂窗 → 复用 P1 幂等重放，不得 fresh PreRestore。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("persist 分裂窗重放后本轮快照必须照常登记");
+        let rollbacks: Vec<String> = checkpoints::list_checkpoints(&ledger)
+            .expect("list")
+            .into_iter()
+            .filter(|entry| entry.kind == CheckpointKind::PreRestore)
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(
+            rollbacks,
+            vec![undo.id.clone()],
+            "persist 分裂窗重放必须复用 P1，不得 fresh PreRestore: {rollbacks:?}"
+        );
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            1,
+            "重放必须完成截断"
+        );
+        assert!(
+            !ledger.join("pending_rewind.json").exists(),
+            "协议完成后暂记清除"
         );
         assert!(!snapshot.is_empty(), "本轮快照登记");
         let _ = std::fs::remove_dir_all(&ledger);

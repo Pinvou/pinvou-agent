@@ -1804,3 +1804,26 @@ test('refreshModeDefaults：草稿态按当前 lane 默认刷新显示', async (
   assert.equal(rt.state.modeDefaults.code, 'plan');
   assert.equal(rt.state.modeState.mode, 'plan', 'the code lane draft shows its own global default');
 });
+
+// r27 M2（m5 承接 fixture）：NotPrompt 同族载体的用户消息不是任务指令——
+// 旧探针只认 tool_result，tool_search 变体的标记文本会被拼进任务指令。
+{
+  const projection = projectSubagentTranscript({
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '起点' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'ts1', name: 'tool_search', input: {} }],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_search_tool_result', tool_use_id: 'ts1', content: 'results' },
+          { type: 'text', text: '<image path="/tmp/shot.png">' },
+        ],
+      },
+    ],
+    agent: null,
+  });
+  assert.equal(projection.userText, '起点', '同族载体不得拼入任务指令（r27 M2）');
+}
