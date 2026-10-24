@@ -1538,7 +1538,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {pendingJoins.map(item => (
                 <div key={item.requestId} className="flex items-center gap-3 rounded-xl bg-[#F7F9FC] px-3.5 py-3 dark:bg-white/[0.04]">
-                  <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#fff2dd] text-[#a76518] dark:bg-[#412d13] dark:text-[#eab66f]"><RefreshCw size={15} /></div>
+                  <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#fff2dd] text-[#96600F] dark:bg-[#412d13] dark:text-[#eab66f]"><RefreshCw size={15} /></div>
                   <div className="min-w-0 flex-1">
                     <p className={`truncate text-[13px] font-semibold ${ink}`}>{item.serverName}</p>
                     <p className={`truncate text-[11px] ${muted}`}>{item.deviceName}</p>
@@ -1586,7 +1586,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                 <div className="min-w-[220px] flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className={`truncate text-[16px] font-bold ${ink}`}>{selectedConnection.name}</h2>
-                    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${selectedConnection.online && selectedConnection.ready ? 'bg-[#e2f6e9] text-[#0F7A40] dark:bg-[#13361f] dark:text-[#7DD3A8]' : 'bg-[#fff2dd] text-[#a76518] dark:bg-[#412d13] dark:text-[#eab66f]'}`}>
+                    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${selectedConnection.online && selectedConnection.ready ? 'bg-[#e2f6e9] text-[#0F7A40] dark:bg-[#13361f] dark:text-[#7DD3A8]' : 'bg-[#fff2dd] text-[#96600F] dark:bg-[#412d13] dark:text-[#eab66f]'}`}>
                       <span className={`h-1.5 w-1.5 rounded-full ${selectedConnection.online && selectedConnection.ready ? 'bg-[#18a957]' : 'bg-[#d6873e]'}`} />
                       {selectedConnection.online ? (selectedConnection.ready ? t.remoteKbReady : t.remoteKbNotReady) : t.remoteKbOffline}
                     </span>
@@ -2308,7 +2308,7 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                     {item.error && <p className="mt-0.5 truncate text-[11px] text-[#d63a3a] dark:text-[#ff8a80]" title={item.error}>{item.error}</p>}
                   </div>
                   {item.status !== 'queued' && (
-                      <span className={`inline-flex shrink-0 items-center gap-1.5 text-[11.5px] ${['success', 'duplicate'].includes(item.status) ? 'text-[#0F7A40] dark:text-[#7DD3A8]' : ['failed', 'index_failed', 'duplicate_failed'].includes(item.status) ? 'text-[#d63a3a] dark:text-[#ff8a80]' : ['pending_index', 'duplicate_pending'].includes(item.status) ? 'text-[#a76518] dark:text-[#eab66f]' : muted}`}>
+                      <span className={`inline-flex shrink-0 items-center gap-1.5 text-[11.5px] ${['success', 'duplicate'].includes(item.status) ? 'text-[#0F7A40] dark:text-[#7DD3A8]' : ['failed', 'index_failed', 'duplicate_failed'].includes(item.status) ? 'text-[#d63a3a] dark:text-[#ff8a80]' : ['pending_index', 'duplicate_pending'].includes(item.status) ? 'text-[#96600F] dark:text-[#eab66f]' : muted}`}>
                       {item.status === 'uploading' && <RefreshCw size={13} className="animate-spin" />}
                       {['success', 'duplicate'].includes(item.status) && <CheckCircle2 size={13} />}
                       {['failed', 'index_failed', 'duplicate_failed'].includes(item.status) && <AlertTriangle size={13} />}

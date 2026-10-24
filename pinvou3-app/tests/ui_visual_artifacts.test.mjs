@@ -156,6 +156,18 @@ test('dark-capable hint text and toggle tracks have dark variants', () => {
     'every deep error-red text in remote knowledge must carry its dark pair');
   assert.equal(count(remoteKnowledgeRaw, /text-\[#16894a\](?![^"'`]*dark:text-\[#7DD3A8\])/g), 0,
     'every success-green text in remote knowledge must carry its dark pair');
+  // Warning amber (#a76518) sat at 4.20:1 on its own #fff2dd chip; the file
+  // now carries the deeper #96600F everywhere the pair appears.
+  assert.doesNotMatch(remoteKnowledgeRaw, /a76518/i, 'the light warning amber must stay deepened to #96600F');
+  assert.match(remoteKnowledge, /bg-\[#fff2dd\] text-\[#96600F\] dark:bg-\[#412d13\] dark:text-\[#eab66f\]/,
+    'the not-ready status chip must use the deepened amber ink');
+  // Every error text on a red tint (restored /[0.08] or the on-scale /10) must
+  // use the deep red: #d63a3a composited over its own tint lands at 4.0–4.2:1.
+  const TINTED_RED_WITHOUT_DEEP_INK = /bg-\[#d63a3a\]\/(?:\[0\.08\]|10)(?![^"'`]*text-\[#b72f2f\])/g;
+  assert.equal(count(remoteKnowledgeRaw, TINTED_RED_WITHOUT_DEEP_INK), 0,
+    'every red-tinted banner in remote knowledge must carry the deep-red ink');
+  assert.equal(count(source('features/knowledge/KnowledgeView.jsx'), TINTED_RED_WITHOUT_DEEP_INK), 0,
+    'every red-tinted banner in local knowledge must carry the deep-red ink');
   // Row-hover inks darken on the hovered row; each must carry the dark
   // restore of the SAME variant chain, or dark mode's hover state degrades
   // (a plain dark half loses the cascade to the variant rule).
@@ -216,6 +228,12 @@ test('tool store: hint, dialogs, labels, badge, icon', () => {
     'no 300px dialog card may lose its max-width guard');
   assert.ok(count(toolStore, /text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider/g) >= 3,
     'detail labels must have a dark variant');
+  // The sub-labels under those headers were light-only slate-400 (2.56:1 on
+  // white); inside the detail header block slate-400 may only be a dark half.
+  const detailHeader = raw.slice(raw.indexOf('storeCopy.firstUseOnlineInstall'), raw.indexOf('storeCopy.detailGlobalAccel'));
+  assert.ok(detailHeader.length > 0, 'detail header block must be locatable');
+  assert.equal(count(detailHeader, /(?<!dark:)text-slate-400/g), 0,
+    'detail header labels and sub-labels must pair slate-500 with a dark slate-400 half');
   assert.match(toolStore, /\(storeCopy\.recycleKinds \|\| \{\}\)\[item\.kind\]/, 'recycle badge must use the singular type labels');
   // Raw (not comment-stripped): a ternary leg like `: 'Skill'` must fail too,
   // not only a whole-property `type: 'Skill'` literal.
@@ -248,6 +266,21 @@ test('community group name and recycle-bin badge labels exist in all three langu
   assert.match(stripComments(communityPanel), /copy\.communityGroupName/, 'the community panel must render the localized group name');
   assert.doesNotMatch(communityPanel, /COMMUNITY_QQ_GROUP_NAME/, 'the raw Chinese constant must not come back');
   assert.doesNotMatch(source('features/settings/community-config.js'), /COMMUNITY_QQ_GROUP_NAME/, 'community-config must not export the name');
+});
+
+test('inks on the restored tints clear AA where the tint re-composited them below it', () => {
+  // Restoring a dead tint puts text on a darker surface; these legs landed
+  // below 4.5:1 on the real ancestor chain and were deepened.
+  const artifacts = stripComments(source('features/artifacts/ArtifactsPanel.jsx'));
+  assert.match(artifacts, /text-\[#8E8E93\] \$\{active \? 'dark:text-\[#D1D1D6\]' : 'dark:text-\[#A1A1AA\]'\}/,
+    'the active switcher row must lift its meta ink in dark (#A1A1AA was 4.16:1 on the restored row tint)');
+  const scheduled = stripComments(source('features/scheduled/ScheduledTasksView.jsx'));
+  assert.match(scheduled, /const mutedOnTrack = 'text-\[#3C3C43\]\/80 dark:text-\[#EBEBF5\]\/60';/,
+    'inactive filter tabs need the 80% light ink on the restored track tint (60% was 3.1:1)');
+  assert.match(scheduled, /\n\s*: mutedOnTrack\n/, 'the filter tabs must use the on-track ink');
+  const timeline = stripComments(source('features/conversation/ConversationTimeline.jsx'));
+  assert.match(timeline, /bg-blue-500\/\[0\.08\] text-\[10px\] text-blue-700 dark:text-blue-300/,
+    'the resource chip must use blue-700 on its restored tint (blue-600 was 4.48:1)');
 });
 
 test('alpha modifiers stay on the opacity scale or use the bracket form', () => {

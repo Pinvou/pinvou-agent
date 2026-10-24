@@ -382,6 +382,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
 
     // Scheduled-task subcomponents (module scope: types stay stable across renders, avoiding per-render rebuilds that remount subtrees)
     const mutedValue = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
+    // Inactive filter tabs sit on the tinted segmented track, not on the panel:
+    // the 60% muted ink lands at 3.1–3.2:1 there, so the light leg goes to 80%.
+    const mutedOnTrack = 'text-[#3C3C43]/80 dark:text-[#EBEBF5]/60';
     // Shared scaffolding for the create/detail dialogs: field styles, field-label rows, backdrop + panel frame, footer surface.
     // Per-site differences (min-height, max-width, footer layout) stay at the call sites; the header close button stays per-site
     // because tests pin its data-testid literal — not componentized.
@@ -429,7 +432,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             className={`h-7 min-w-[72px] rounded-[6.5px] px-3 text-[13px] font-medium transition-colors ${
               taskFilter === value
                 ? 'bg-white text-black shadow-sm dark:bg-[#636366] dark:text-white'
-                : `${mutedValue}`
+                : mutedOnTrack
             }`}>
             {label}
           </button>

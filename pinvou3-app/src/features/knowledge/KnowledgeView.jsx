@@ -1468,7 +1468,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                 )}
 
                 {importError && (
-                  <div data-testid="kb-import-error" role="alert" className="mb-3 rounded-xl border border-[#d63a3a]/30 bg-[#d63a3a]/10 px-4 py-3 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">
+                  <div data-testid="kb-import-error" role="alert" className="mb-3 rounded-xl border border-[#d63a3a]/30 bg-[#d63a3a]/10 px-4 py-3 text-[12px] text-[#b72f2f] dark:text-[#ff8a80]">
                     {importError}
                   </div>
                 )}
@@ -1646,7 +1646,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       </div>
                       );
                     })()}
-                    {removeDocError && <div role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/[0.08] px-3 py-2 text-[12px] text-[#d63a3a] dark:text-[#ff8a80]">{removeDocError}</div>}
+                    {removeDocError && <div role="alert" className="mt-3 rounded-xl bg-[#d63a3a]/[0.08] px-3 py-2 text-[12px] text-[#b72f2f] dark:text-[#ff8a80]">{removeDocError}</div>}
                   </div>
                 )}
 

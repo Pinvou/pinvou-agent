@@ -2758,7 +2758,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex flex-col items-end gap-1.5">
                         <PlatformToolAction tool={detailTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />
-                        {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
+                        {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-500 dark:text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
                   </div>
@@ -2767,19 +2767,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     <div className="flex flex-col flex-shrink-0">
                       <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.type}</span>
-                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
+                      <span className="text-[12px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0">
                       <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailVersion}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.version}</span>
-                      <span className="text-[12px] text-slate-400 mt-1">{storeCopy.detailStableRelease}</span>
+                      <span className="text-[12px] text-slate-500 dark:text-slate-400 mt-1">{storeCopy.detailStableRelease}</span>
                     </div>
                     <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
                     <div className="flex flex-col flex-shrink-0 pr-4">
                       <span className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailLatency}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.latency}</span>
-                      <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> {storeCopy.detailGlobalAccel}</span>
+                      <span className="text-[12px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> {storeCopy.detailGlobalAccel}</span>
                     </div>
                   </div>
 

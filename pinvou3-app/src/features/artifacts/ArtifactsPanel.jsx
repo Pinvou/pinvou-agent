@@ -545,7 +545,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <ArtifactTileIcon name={a.basename} tileCls="w-8 h-8 rounded-[10px]" glyphCls="w-4 h-4" />
                         <span className="min-w-0 flex-1">
                           <span className={`block truncate text-[13px] font-medium text-[#1D1D1F] dark:text-[#F5F5F7]`}>{a.basename}</span>
-                          <span className={`block truncate text-[11px] text-[#8E8E93] dark:text-[#A1A1AA]`}>
+                          <span className={`block truncate text-[11px] text-[#8E8E93] ${active ? 'dark:text-[#D1D1D6]' : 'dark:text-[#A1A1AA]'}`}>
                             {itemInfo ? formatLocalDateTime(itemInfo.modified * 1000, '') : '—'}
                           </span>
                         </span>
