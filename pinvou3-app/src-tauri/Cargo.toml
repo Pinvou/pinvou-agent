@@ -206,9 +206,10 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rand = "0.10"
-# Keep 0.22: age, codewhale-tui, wry 0.57, reqwest 0.12, ureq 2.12, oauth2 5,
-# hf-hub, ort-sys and rmcp 2 all still require 0.22 (only hyper-util has moved
-# to 0.23); a solo 0.23 bump would only add a second copy. Revisit once upstreams align.
+# Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, oauth2 5,
+# hf-hub, ort-sys and rmcp 2 all still require 0.22 (wry 0.57.1 and
+# hyper-util have moved to 0.23); a solo 0.23 bump would only add a second
+# copy. Revisit once upstreams align.
 base64 = "0.22"
 tempfile = "3"
 age = { version = "0.12", default-features = false }
