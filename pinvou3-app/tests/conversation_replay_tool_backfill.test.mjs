@@ -185,4 +185,19 @@ for (const runtime of ['tauri', 'web']) {
     h.replay([]);
     assert.deepEqual(Object.keys(h.lane.toolMeta.value), []);
   });
+
+  test(`${runtime}: replay joins adjacent assistant text blocks with a blank line and drops textless blocks`, () => {
+    // Adjacent text blocks are separate markdown blocks: raw concatenation glued
+    // a following table onto the previous line and it never parsed; a textless
+    // block used to render the literal string "undefined".
+    const h = createReplay(runtime, { busy: false });
+    const rows = h.replay([
+      assistant({ type: 'text', text: 'Summary:' }, { type: 'text', text: '| a | b |\n|---|---|' }),
+      assistant({ type: 'text' }),
+    ]);
+    assert.deepEqual(
+      plain(rows.filter(row => row.type === 'assistant').map(row => row.text)),
+      ['Summary:\n\n| a | b |\n|---|---|'],
+    );
+  });
 }
