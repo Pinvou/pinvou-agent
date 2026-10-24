@@ -306,8 +306,17 @@ test('inks on the restored tints clear AA where the tint re-composited them belo
   // Restoring a dead tint puts text on a darker surface; these legs landed
   // below 4.5:1 on the real ancestor chain and were deepened.
   const artifacts = stripComments(source('features/artifacts/ArtifactsPanel.jsx'));
-  assert.match(artifacts, /text-\[#8E8E93\] \$\{active \? 'dark:text-\[#D1D1D6\]' : 'dark:text-\[#A1A1AA\]'\}/,
+  assert.match(artifacts, /text-\[#636366\] \$\{active \? 'dark:text-\[#D1D1D6\]' : 'dark:text-\[#A1A1AA\]'\}/,
     'the active switcher row must lift its meta ink in dark (#A1A1AA was 4.16:1 on the restored row tint)');
+  // The 11px menu text inks sat on the iOS secondary gray in light (2.83:1 on
+  // the active row, 3.23:1 elsewhere); the deepened #636366 clears AA on every
+  // light surface in the menu. The 10px ▼ glyph is a state indicator held to
+  // the 3:1 non-text bar and keeps the lighter gray.
+  const artifactsRaw = source('features/artifacts/ArtifactsPanel.jsx');
+  assert.equal(count(artifactsRaw, /text-\[11px\][^"'`]*text-\[#8E8E93\]/g), 0,
+    '11px menu text must not use the 3.2:1 iOS gray in light');
+  assert.ok(count(artifacts, /text-\[#636366\](?=[^"'`]*dark:text-\[#A1A1AA\])/g) >= 2,
+    'the menu header and footer must carry the deepened light gray');
   const scheduled = stripComments(source('features/scheduled/ScheduledTasksView.jsx'));
   assert.match(scheduled, /const mutedOnTrack = 'text-\[#3C3C43\]\/80 dark:text-\[#EBEBF5\]\/60';/,
     'inactive filter tabs need the 80% light ink on the restored track tint (60% was 3.1:1)');

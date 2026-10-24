@@ -518,7 +518,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 role="menu"
                 className={`absolute left-0 top-11 z-40 w-[320px] max-w-[calc(100vw-48px)] rounded-[18px] border p-1.5 shadow-2xl backdrop-blur-2xl border-black/10 bg-white/95 text-[#1D1D1F] dark:border-white/10 dark:bg-[#2C2C2E]/95 dark:text-[#F5F5F7]`}
               >
-                <div className={`px-3 pb-1 pt-1 text-[11px] font-medium text-[#8E8E93] dark:text-[#A1A1AA]`}>
+                <div className={`px-3 pb-1 pt-1 text-[11px] font-medium text-[#636366] dark:text-[#A1A1AA]`}>
                   {uiA.switchArtifact}
                 </div>
                 {artifacts.map((a) => {
@@ -545,7 +545,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <ArtifactTileIcon name={a.basename} tileCls="w-8 h-8 rounded-[10px]" glyphCls="w-4 h-4" />
                         <span className="min-w-0 flex-1">
                           <span className={`block truncate text-[13px] font-medium text-[#1D1D1F] dark:text-[#F5F5F7]`}>{a.basename}</span>
-                          <span className={`block truncate text-[11px] text-[#8E8E93] ${active ? 'dark:text-[#D1D1D6]' : 'dark:text-[#A1A1AA]'}`}>
+                          <span className={`block truncate text-[11px] text-[#636366] ${active ? 'dark:text-[#D1D1D6]' : 'dark:text-[#A1A1AA]'}`}>
                             {itemInfo ? formatLocalDateTime(itemInfo.modified * 1000, '') : '—'}
                           </span>
                         </span>
@@ -565,7 +565,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   );
                 })}
                 {info && (
-                  <div className={`mt-1 border-t px-3 pt-2 text-[11px] border-black/10 text-[#8E8E93] dark:border-white/10 dark:text-[#A1A1AA]`}>
+                  <div className={`mt-1 border-t px-3 pt-2 text-[11px] border-black/10 text-[#636366] dark:border-white/10 dark:text-[#A1A1AA]`}>
                     {uiA.currentMtime(formatLocalDateTime(info.modified * 1000, ''))}
                   </div>
                 )}
