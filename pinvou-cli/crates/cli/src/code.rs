@@ -5862,8 +5862,8 @@ fn checkpoints_rewind(
     // deletes the pending's own target snapshot and wedges the guided retry
     // (checkpoint_missing) that the error copy promises. The pending resolves
     // first; the sweep runs on a later rewind.
-    match checkpoints::live_pending_rewind(&ledger) {
-        Ok(Some(_)) => {
+    match checkpoints::live_pending_rewind_present(&ledger) {
+        Ok(true) => {
             note!(
                 "[pinvou-cli] live pending rewind present, skipping stale-Turn reconciliation this round"
             );
@@ -5873,7 +5873,7 @@ fn checkpoints_rewind(
                 "[pinvou-cli] reading the pending rewind failed (reconciliation skipped, fail-closed): {error:#}"
             );
         }
-        Ok(None) => match store.rewound_turns_records(session) {
+        Ok(false) => match store.rewound_turns_records(session) {
             Ok(records) => {
                 for record in records {
                     let Some(cutoff) = parse_rfc3339_epoch_secs(&record.rewound_at) else {
