@@ -50,7 +50,7 @@ function injectSource() {
       // companion 卡动作须来自技能级 readiness(卸载),首个用例卸载后回到未装态。
       installed:{},skills:{visualizer:false,'government-writing':true},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},imaSkillsUpdate:true,
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,failOpenExternal:false,
-      hidden:{plain:[],code:[]}
+      hidden:{plain:[],code:[]},sessionSeq:0
     };
     window.addEventListener('pinvou:tools-changed',()=>{state.composerChanged++;});
     window.__TAURI_EVENT_HANDLERS__={};
@@ -94,6 +94,7 @@ function injectSource() {
         case 'list_scheduled_tasks': return Promise.resolve([]);
         case 'list_scheduled_task_recent_runs': return Promise.resolve([]);
         case 'list_sessions': return Promise.resolve([]);
+        case 'create_session': return Promise.resolve({id:'tool-store-session-'+(++state.sessionSeq)});
         case 'get_super_permission_status': return Promise.resolve(false);
         case 'list_personas': return Promise.resolve([]);
         case 'get_backend_status': return Promise.resolve({online:true,ok:true,status:'online'});
@@ -374,11 +375,29 @@ async function visibilityBox(page, cardText, modeLabel, click) {
   await dismiss(page);
   const weatherInput=await page.$('input[type="password"][placeholder="粘贴高德 Web 服务 Key"]');
   await weatherInput.type('amap-test-token');
-  await clickExact(page,'连接'); await sleep(260); await dismiss(page);
+  await clickExact(page,'连接'); await sleep(260);
   rec('高德天气经 Env 凭据配置连接',await page.evaluate(()=>{
     const call=[...window.__TOOL_STORE_TEST__.calls].reverse().find(x=>x.cmd==='install_marketplace_tool'&&x.args.toolId==='weather');
     return window.__TOOL_STORE_TEST__.installed.weather&&call?.args?.config?.AMAP_KEY==='amap-test-token';
   }));
+
+  // 安装成功后的「新建会话」是商城数据与聊天页之间唯一的业务交叉点。
+  // 真实点击这条链路，确保新会话的工具欢迎卡能加载，并继续走原聊天发送入口。
+  await clickExact(page,'新建会话');
+  await page.waitForFunction(() => document.body.innerText.includes('杭州今天天气'), {timeout:10000}).catch(()=>{});
+  rec('安装后新会话展示工具欢迎卡',await page.evaluate(() =>
+    document.body.innerText.includes('杭州今天天气')
+      && document.body.innerText.includes('已安装 · 首次提问时自动开启')));
+  await clickExact(page,'杭州今天天气');
+  await sleep(300);
+  rec('欢迎问题点击沿用聊天发送链路',await page.evaluate(() => {
+    const calls=window.__TOOL_STORE_TEST__.calls;
+    return calls.some(x=>x.cmd==='enable_marketplace_packages'&&(x.args.packageIds||[]).includes('weather'))
+      &&calls.some(x=>x.cmd==='chat'&&x.args.message==='杭州今天天气');
+  }));
+  await page.evaluate(()=>document.querySelector('[data-nav="toolstore"]')?.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true})));
+  await page.waitForFunction((selector) => !!document.querySelector(selector), {timeout:10000}, TOOL_STORE_SEARCH_SELECTOR).catch(()=>{});
+  await dismiss(page);
 
   await action(page,'同花顺问财','配置','iwencai');
   rec('同花顺问财安装前展示必填 Key 配置',await page.evaluate(()=>{
