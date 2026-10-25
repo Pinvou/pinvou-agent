@@ -467,8 +467,7 @@ pub fn png_data_url(bytes: &[u8]) -> Option<String> {
 /// [`safe_auth_log_line`] 脱敏 + 截断)供连接器收进失败原因环形缓冲。
 /// `redact_bare_token` 透传给 [`safe_auth_log_line`]:飞书/企微传 `false`(CLI 的
 /// 正常输出行可能含含 token 字样的字段名,开启会把非敏感行整体吞成占位符,
-/// 失败原因就没了),tmeet 传 `true`(其输出含裸 token 字样需兜底;dingtalk
-/// 走私有 drain 且不开兜底)。
+/// 失败原因就没了),tmeet 传 `true`(与 dingtalk 同款取舍)。
 pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     ctx: CliCtx,
     redact_bare_token: bool,
@@ -1065,7 +1064,7 @@ mod tests {
     fn probe_error_messages_distinguish_timeout_from_missing_install() {
         // fixtures use the real platform::process message formats.
         let timeout = ProbeError::classify(String::from(
-            "lark-cli timed out after 30s: subprocess tree termination requested",
+            "lark-cli timed out after 30s: no subprocess output",
         ));
         assert!(matches!(timeout, ProbeError::Timeout(_)));
         assert!(timeout.message().contains("探测超时"));
@@ -1126,7 +1125,7 @@ mod tests {
 
         // 超时/执行异常维持原分型文案,同样不得降级。
         let timeout = ProbeError::classify(String::from(
-            "dws timed out after 30s: subprocess tree termination requested",
+            "dws timed out after 30s: no subprocess output",
         ));
         match logout_probe_verdict(label, Err(timeout)) {
             LogoutProbeVerdict::Unconfirmed(message) => {
