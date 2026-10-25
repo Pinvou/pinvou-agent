@@ -268,7 +268,10 @@ async fn snapshot_for_model_config(
                 "auth_failed",
                 Some(MonitorDiagnostic {
                     code: "auth_failed".to_string(),
-                    message: format!("model endpoint authentication failed (HTTP {})", r.status().as_u16()),
+                    message: format!(
+                        "model endpoint authentication failed (HTTP {})",
+                        r.status().as_u16()
+                    ),
                 }),
             ));
         }
@@ -473,11 +476,13 @@ async fn snapshot_for_model_config(
         }),
         "unverified" => Some(MonitorDiagnostic {
             code: "remote_unverified".to_string(),
-            message: "remote endpoint returned no model list; showing the configured model".to_string(),
+            message: "remote endpoint returned no model list; showing the configured model"
+                .to_string(),
         }),
         "mismatch" => Some(MonitorDiagnostic {
             code: "model_mismatch".to_string(),
-            message: "configured model name differs from the one reported by the local server".to_string(),
+            message: "configured model name differs from the one reported by the local server"
+                .to_string(),
         }),
         _ => None,
     };
