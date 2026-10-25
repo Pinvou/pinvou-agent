@@ -1,25 +1,27 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, T25 accepted-event network sources independently reviewed and verified**.
+Checkpoint: **2026-10-25, T25 protected internal network-week ownership component**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **37.9%** (1780/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **38.1%** (1790/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T25 network privacy**. Actual first-connection ASN and
-purpose/week prefix HMAC capture now compose with the original legal event,
-atomic source/missingness persistence and immutable ACK replay. This increment
-is independently reviewed and verified below; T25 is estimated at **55%**.
-Contribution eligibility, completeness watermarks and frozen privacy reports
-remain the same task's next work. T09's approved controlled macOS measurement
-component remains delivered; genuine downstream T46 production/consumption is
-still its parked gap.
+The current main task is **T25 network privacy**. Its protected internal
+whole-week freeze, explicit local CLI and installed host/private-worker increment
+builds on delivered first-peer ASN/week-HMAC capture and immutable legal ACKs.
+T25 is estimated at **65%** for component coverage, not whole-task completion or
+certification. The ordinary public full-scope read/export policy still awaits the
+owner's decision; no public report endpoint or filtered report is supplied.
+Stage/release-purpose restricted contribution ports and the T40 three-language
+purpose/form/retention contract remain T25 work. Their real quality/report
+consumers belong to T21/T24. T09's approved controlled macOS measurement component remains
+delivered; genuine downstream T46 production/consumption is still its parked gap.
 T13's protected planning workflow is delivered in service `51630257` and client
 progress `1805fcc`; its remaining active-floor/path/bridge work is parked.
 The domain, protected persistence/private owner, current HTTP/host composition and
@@ -68,7 +70,81 @@ measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
 
-## Current T25 accepted-event network-source increment
+## Current T25 protected internal network-week ownership increment
+
+The source-reviewed component owns one immutable result for each complete ISO
+UTC week in its explicitly installed realm. It authenticates the original legal
+event, receipt, source-v2 and historical ASN/week-material associations, rather
+than accepting caller-provided evidence or consulting today's source state as a
+substitute for historical authority. Original server acceptance selects the week
+and day; event occurrence and ID order the fixed five-dimensional contributions.
+Scope/leaf/week and prefix/leaf/day limits, the cross-leaf prefix cap of seven,
+and k=20 suppression are applied to the complete input set. The freeze gate uses
+actual SQL time after week-end plus seven days. Missing source, a midweek cutover,
+retention loss or unresolved ordering yields an immutable unavailable whole week,
+never partial counts; integrity, SQL, cancellation and capacity errors remain errors.
+
+A fixed T05 machine source port and exact native/MAC reverse census authenticate
+the installation and frozen record. Initial/final source and audit costs join
+under the 32 MiB/4096-point metadata bound. The same original T06 transaction
+rechecks source basis, products, parent/lease/epoch and public body, then inserts
+the frozen snapshot and calls original Complete last. Failure rolls the audit,
+snapshot and parent back together. Frozen read/replay returns the same stored
+canonical bytes; it does not reopen sources or recompute a report.
+
+The explicit local operator installs or freezes using its closed seven-field
+configuration and emits only state. Host configuration keeps realm selection and
+new-admission separate: admission-off retains installed recovery/internal reads;
+startup never migrates. The actual private recovery/due loops cancel and join,
+and the fixed week command joins the existing nineteen private names for unknown
+classification only. Common worker Keys remain unchanged. No public HTTP
+read/export, wildcard grant, partial-scope report or cross-purpose qualification
+is introduced; public authorization is still pending the owner's decision.
+
+Current scoped verification: **82 passed, zero skipped and zero failed**, across
+39 top-level cases. This combines the public/domain and T05 port controls, source
+reader, owner/CLI and host tests with two genuine PostgreSQL native cases; it
+does not add failed attempts, duplicate reruns or older component results.
+
+The native cases verified an actual due historical coverage-gap freeze, original
+T05/parent closure, exact replay with admission disabled and runtime parent UPDATE
+rights absent; missing or contradictory frozen rows were rejected and restored
+exactly. A real direct-TCP accepted event exercised original receipt/outbox/family,
+historical ASN and material source costs, same-callback and foreign-token guards,
+and stable historical rereads after closing the provider and actually disabling
+the current ASN source. These controls did not fabricate an available old week.
+
+Final common checks passed: default tests **5,585 passed, 1,822 skipped, zero
+failed** (1,659 passing and 1,022 skipped top-level cases), all-package vet,
+module verification, Linux server build, Windows and Linux network-week CLI
+builds, client contract-pin verification and whitespace. Default-suite skips
+include platform, capability and explicit opt-in cases; the two new native
+cases were separately executed and passed. All command trees closed naturally
+and the existing resource floor did not trip.
+
+A genuine complete available historical week does not yet exist in this freshly
+installed test environment. That calendar-dependent E2E is **NOT RUN**; complete
+calculation and k=20 boundaries have pure controls. No backdated source or accepted
+event is used to claim that E2E passed. This environment limitation follows the
+owner's rule allowing unavailable E2E to remain nonblocking, without waiving
+functional failures.
+
+The initial runtime permission refusal was repaired by reusing the original
+T06 parent-row lock rather than requiring direct UPDATE rights. The repaired
+native test proves those rights remain absent. Failed invocations remain failed;
+their repaired controls were rerun, and older delivered component results below
+are not counted again as this increment's acceptance.
+
+This component estimate changes T25 from 55% to **65%**, increasing the equal-task
+estimate from 1780 to 1790 points: **1790/47 = 38.1%**. Strict completion remains
+**8/47 (17.0%)**; eighteen tasks remain in progress and all other task estimates
+and counts are unchanged. Protected internal freeze is not ordinary public
+report delivery or completion of T25. Full-scope public permission/report wiring,
+stage/release-purpose restricted ports and the three-language disclosure
+contract remain T25 work. The T21/T24 quality/report consumers are separate tasks
+and do not become additional prerequisites for completing the T25 ports.
+
+## Delivered T25 accepted-event network-source increment
 
 The actual event path uses the immediate TCP connection capability, protected
 offline ASN selection and ready per-purpose/per-week OpenBao HMAC material.
@@ -114,12 +190,12 @@ The owner-only expired-row forms exercise the real retention transaction,
 rollback and minimal tombstones; they are explicitly synthetic storage data,
 not historical accepted events or production source evidence. No proxy topology,
 production deployment or real user traffic has been qualified. Ready source
-rows do not authorize publishing partial statistics. Contribution limits,
-cross-purpose qualification ports, completeness/k-suppression, seven-day freeze
-and fixed privacy-report integration remain unfinished.
+rows do not authorize publishing partial statistics. At that checkpoint,
+contribution limits, cross-purpose qualification ports, completeness/k-suppression,
+seven-day freeze and fixed privacy-report integration remained unfinished.
 
-The component estimate changes T25 from 45% to **55%**, and the equal-task
-estimate from 1770 to 1780 points: **1780/47 = 37.9%**. Strict completion remains
+At that checkpoint, the component estimate changed T25 from 45% to **55%**, and
+the equal-task estimate from 1770 to 1780 points: **1780/47 = 37.9%**. Strict completion remains
 **8/47 (17.0%)**; all other task estimates and counts remain unchanged.
 
 ## Verified T09 dedicated macOS measurement increment
@@ -1037,7 +1113,7 @@ completion blocker; outstanding business implementation is.
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 55% | In progress | Purpose/week OpenBao material and protected offline ASN ownership retain their delivered verification. Original acceptance/CurrentVersion attribution, private recovery and immutable ACK replay are integrated. Actual first TCP peer/ASN/week-HMAC capture, same-transaction current rechecks, mandatory version-2 source/missingness records, explicit week provisioning/source maintenance and old-publisher refusal are independently reviewed and verified with real PostgreSQL/HTTP controls; original v1 records remain not-captured. Contribution eligibility/limits, completeness watermarks, k-suppression, freeze and fixed privacy reports remain unfinished; ready source data does not authorize partial statistics. |
+| T25 | 65% | In progress | Delivered original acceptance/CurrentVersion attribution, real first TCP peer/ASN/week-HMAC capture, atomic source-v2/missingness persistence and immutable legal ACKs remain verified. This batch adds the protected complete-week reader, fixed T05/native freeze ownership, original T06 atomic publication, state-only install/freeze CLI and explicit-realm host recovery/due lifecycle; current batch verification is recorded in its section above. Internal fixed-leaf contribution limits and k-suppression do not constitute an ordinary public report. Public full-scope authorization/read/export awaits the owner decision and implementation; stage/release-purpose restricted ports and the T40 disclosure contract remain T25 work. Their quality/report consumers belong to T21/T24. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
