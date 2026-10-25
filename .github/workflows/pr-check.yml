@@ -234,6 +234,8 @@ jobs:
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
             rust_dependencies:
+              - 'scripts/guard-webpki-roots-exception.py'
+              - 'scripts/tests/test_webpki_roots_exception.py'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/deny.toml'
@@ -360,6 +362,8 @@ jobs:
               - 'pinvou-knowledge/deploy/**'
               - '.github/workflows/pr-check.yml'
             knowledge_dependencies:
+              - 'scripts/guard-webpki-roots-exception.py'
+              - 'scripts/tests/test_webpki_roots_exception.py'
               - 'pinvou-knowledge/Cargo.toml'
               - 'pinvou-knowledge/Cargo.lock'
               - 'pinvou3-app/src-tauri/deny.toml'
@@ -966,14 +970,23 @@ jobs:
           # hard gate nondeterministically.
           tool: cargo-deny@0.20.2
 
-      # 共用现有许可证/来源策略，但审计对象显式指向独立 crate。
+      # Reuses the existing license/source policy, but the audited target is
+      # pointed at the standalone crate. The lock-graph guard runs in the same
+      # fail-fast step, before the --locked scan, so metadata resolution can
+      # never rewrite the audited lockfile.
+      - name: Python for dependency exception guard
+        if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: cargo deny check
         if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
-        run: >-
-          cargo deny
-          --manifest-path pinvou-knowledge/Cargo.toml
-          --config pinvou3-app/src-tauri/deny.toml
-          check advisories licenses bans sources
+        shell: bash
+        working-directory: .
+        run: |
+          python3 scripts/guard-webpki-roots-exception.py
+          cargo deny --locked --manifest-path pinvou-knowledge/Cargo.toml --config pinvou3-app/src-tauri/deny.toml check advisories licenses bans sources
 
   # clippy/fmt/deny 独立 job:与 rust-test 并行,各自独立 cache。
   # clippy 用 clippy-driver 编译,产物不能被 cargo test(rustc)复用;在同一 job 里
@@ -1179,10 +1192,18 @@ jobs:
           # nondeterministically. Keep in sync with the knowledge-rust
           # cargo-deny pin.
           tool: cargo-deny@0.20.2
+      - name: Python for dependency exception guard
+        if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
       - name: cargo deny check (hard gate)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
+        shell: bash
         working-directory: pinvou3-app/src-tauri
-        run: cargo deny check advisories licenses bans sources
+        run: |
+          python3 ../../scripts/guard-webpki-roots-exception.py
+          cargo deny --locked check advisories licenses bans sources
 
   rust-test:
     name: rust-test
