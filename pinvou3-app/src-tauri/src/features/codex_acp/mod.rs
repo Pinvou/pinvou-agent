@@ -17,6 +17,7 @@ mod operation_gate;
 mod platform;
 mod providers;
 pub(crate) mod reader_window;
+mod resource_ledger;
 mod runtime;
 mod stall;
 mod store;
@@ -109,6 +110,7 @@ pub use providers::{
 // `providers add` 预检与 `ProviderManager::save` 共用同一 claude 模型槽位
 // 列表，消除手工副本漂移；行为不变。
 pub use providers::CLAUDE_MODEL_SLOTS;
+use resource_ledger::{AcpResourceLedger, RuntimeResourceRoot};
 // `GIT_OVERRIDE_KEYS` (from `platform::process`) is published through this
 // facade re-export: the workspace git env scrubbing in the same-repo
 // `pinvou-cli` shares the exact key list with `strip_git_override_env`,
@@ -1242,6 +1244,12 @@ struct AcpSession {
     kimi_session_id: Option<String>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     child: Mutex<Child>,
+    /// PID of the process directly spawned by Pinvou. Resource sampling walks
+    /// descendants from this stable ownership anchor and never records argv.
+    root_pid: u32,
+    /// Static agent id (`codex`/`claude`/`kimi`) kept only as the resource
+    /// ledger's per-role aggregation label; it carries no process details.
+    resource_role: &'static str,
     /// 最近一次请求/响应时刻（空闲回收巡检用）。任何直接到达该会话的请求
     /// （发消息、改配置、状态查询复用）与 prompt 响应返回都会刷新。
     last_activity: parking_lot::Mutex<Instant>,
@@ -1631,6 +1639,12 @@ pub struct AcpPool {
     /// 任一 clone 释放都会误停巡检。pool 是进程级 managed state，巡检随进程
     /// 退出自然终止；guard 的 Drop 清理仅作防御（见 start_idle_reaper 注释）。
     idle_reaper: Arc<parking_lot::Mutex<Option<IdleReaperGuard>>>,
+    /// ACP runtime resource ledger: aggregates process count and RSS of the
+    /// resident ACP process trees and writes one local diagnostics line only
+    /// when the aggregates change enough (no upload, no cmdline/env/path or
+    /// any other process detail). Arc + parking_lot mutex so the inspection
+    /// tick can sample on a blocking thread.
+    resource_ledger: Arc<parking_lot::Mutex<AcpResourceLedger>>,
 }
 
 /// Mutually exclusive install/upgrade per Agent; different Agents stay
@@ -1978,6 +1992,7 @@ impl AcpPool {
                 crate::platform::credential_store::SystemCredentialStore::new(),
             )?),
             idle_reaper: Arc::new(parking_lot::Mutex::new(None)),
+            resource_ledger: Arc::new(parking_lot::Mutex::new(AcpResourceLedger::default())),
         })
     }
 
@@ -4413,9 +4428,52 @@ impl AcpPool {
         crate::core::reaper::start_idle_reaper(
             &mut slot,
             self.clone(),
-            |pool| async move { pool.reap_idle_sessions().await },
+            |pool| async move {
+                pool.sample_runtime_resources().await;
+                pool.reap_idle_sessions().await;
+            },
             "codex_acp",
         );
+    }
+
+    /// Samples the resident ACP process trees once per idle-inspection tick
+    /// and, when the aggregates changed enough, writes a single summary line
+    /// to the local diagnostics log (`resource:acp_sample` in
+    /// `~/.pinvou3/logs/codex-acp.log`). Observation only: nothing here feeds
+    /// admission, throttling, or reaping, and nothing is uploaded. Only the
+    /// directly spawned root PIDs are registered and only aggregate process
+    /// count / RSS are recorded — never command lines, environment variables,
+    /// working directories, or process names. Sampling runs on a blocking
+    /// thread; a failure skips this round only and retries next tick.
+    async fn sample_runtime_resources(&self) {
+        let roots = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .values()
+                .map(|runtime| RuntimeResourceRoot {
+                    pid: runtime.root_pid,
+                    role: runtime.resource_role,
+                })
+                .collect::<Vec<_>>()
+        };
+        if roots.is_empty() {
+            return;
+        }
+        let ledger = self.resource_ledger.clone();
+        let result =
+            tauri::async_runtime::spawn_blocking(move || ledger.lock().sample_and_record(&roots))
+                .await;
+        match result {
+            Ok(Some(summary)) => diagnostics::write(
+                &diagnostics::operation_id("resources"),
+                "resource:acp_sample",
+                summary,
+            ),
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!("[codex_acp] ACP 资源采样失败（已降级，下轮重试）: {error}")
+            }
+        }
     }
 
     /// 单轮空闲回收。busy/configuring 会话（含 turn 等待权限/问询期间）与
@@ -5352,6 +5410,10 @@ impl AcpPool {
         let activity = event_bridge.activity();
         let pending_permissions = self.pending_permissions.clone();
         let pending_elicitations = self.pending_elicitations.clone();
+        // Stable ownership anchor for the resource ledger: only this directly
+        // spawned PID is registered; the sampler never records process details.
+        let root_pid = child.id().context("ACP 子进程启动后未返回进程标识")?;
+        let resource_role = backend.agent_id().unwrap_or("acp");
         Ok(AcpSession {
             connection,
             kimi_session_id: (backend == AgentBackend::KimiAcp).then(|| acp_session_id.clone()),
@@ -5374,6 +5436,8 @@ impl AcpPool {
             prompt_capabilities,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             child: Mutex::new(child),
+            root_pid,
+            resource_role,
             last_activity: parking_lot::Mutex::new(Instant::now()),
         })
     }

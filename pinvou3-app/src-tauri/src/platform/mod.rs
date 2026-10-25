@@ -16,6 +16,7 @@ pub mod path_policy;
 pub mod paths;
 pub mod prefs;
 pub(crate) mod process;
+pub(crate) mod process_resources;
 // Targeted re-export: the module itself stays crate-private, but the CLI's
 // Windows kill tree needs `external_command` across the crate boundary
 // (`pinvou3_lib::platform::external_command`) so both surfaces resolve a
