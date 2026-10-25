@@ -10,6 +10,13 @@
 //! exiting so a broken install cannot turn every UI access into a tight
 //! respawn loop.
 //!
+//! Budget schedule, per session, inside a 60 s window: the first crash
+//! respawns immediately; from the second crash a respawn waits 250 ms after
+//! the latest crash; from the third crash automatic rebuilds pause until the
+//! oldest crash leaves the window. A reuse of a generation that has been
+//! running for two minutes clears the budget, so a runtime that only fails
+//! every few minutes is never throttled — the budget targets tight loops.
+//!
 //! Ported from the official fork's `codex_acp/lifecycle.rs` (crash-budget
 //! core). The controller-only custody helpers that share the upstream file
 //! (turn-retirement gate, owned pool takes) stay unported: they serve the
@@ -22,7 +29,7 @@ use std::time::{Duration, Instant};
 const CRASH_WINDOW: Duration = Duration::from_secs(60);
 const STABLE_RESET_AFTER: Duration = Duration::from_secs(2 * 60);
 const MAX_CRASHES_IN_WINDOW: usize = 3;
-const SECOND_RETRY_DELAY: Duration = Duration::from_millis(250);
+const RETRY_BACKOFF: Duration = Duration::from_millis(250);
 
 /// Per-process lifetime state for one ACP runtime generation.
 ///
@@ -44,17 +51,20 @@ pub(super) enum RuntimeLookup<T> {
     Missing,
 }
 
-/// Resolves one session entry under the pool lock. A dead entry is removed in
-/// the same critical section, so no caller can reuse it after the decision.
+/// Resolves one session entry under the pool lock. An entry that is not
+/// reusable — its process exited, or a replacement was requested for a
+/// still-running process — is removed in the same critical section, so no
+/// caller can reuse it after the decision. The caller tells the two apart
+/// from the lifecycle itself.
 pub(super) fn resolve_runtime<T: Clone>(
     sessions: &mut HashMap<String, T>,
     session_id: &str,
-    is_running: impl FnOnce(&T) -> bool,
+    is_reusable: impl FnOnce(&T) -> bool,
 ) -> RuntimeLookup<T> {
     let Some(runtime) = sessions.get(session_id).cloned() else {
         return RuntimeLookup::Missing;
     };
-    if is_running(&runtime) {
+    if is_reusable(&runtime) {
         RuntimeLookup::Reusable(runtime)
     } else {
         sessions.remove(session_id);
@@ -143,8 +153,7 @@ impl RuntimeCrashBudget {
         if self.crashes.len() == 1 {
             return SpawnAdmission::Allowed;
         }
-        let cooldown = SECOND_RETRY_DELAY;
-        retry_until(now, last + cooldown, false)
+        retry_until(now, last + RETRY_BACKOFF, false)
     }
 
     fn prune(&mut self, now: Instant) {
@@ -227,9 +236,36 @@ mod tests {
     fn expected_shutdown_does_not_consume_crash_budget() {
         let lifecycle = RuntimeLifecycle::new(8);
         lifecycle.begin_expected_shutdown();
+        // Announcing the shutdown must not flip the generation to dead on
+        // its own: only the transport ending does.
+        assert!(lifecycle.is_running());
         assert!(!lifecycle.mark_connection_closed());
         assert!(!lifecycle.is_running());
         assert!(!lifecycle.take_uncounted_crash());
+    }
+
+    #[test]
+    fn concurrent_observers_consume_exactly_one_crash_slot() {
+        let lifecycle = std::sync::Arc::new(RuntimeLifecycle::new(3));
+        assert!(lifecycle.mark_connection_closed());
+        let observers = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(observers));
+        let handles = (0..observers)
+            .map(|_| {
+                let lifecycle = lifecycle.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    lifecycle.take_uncounted_crash()
+                })
+            })
+            .collect::<Vec<_>>();
+        let taken = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("observer thread"))
+            .filter(|took| *took)
+            .count();
+        assert_eq!(taken, 1);
     }
 
     #[test]
@@ -244,12 +280,12 @@ mod tests {
         assert_eq!(
             budget.admission_at(start),
             SpawnAdmission::RetryAfter {
-                delay: SECOND_RETRY_DELAY,
+                delay: RETRY_BACKOFF,
                 budget_exhausted: false,
             }
         );
 
-        let third = start + SECOND_RETRY_DELAY;
+        let third = start + RETRY_BACKOFF;
         budget.record_crash_at(third);
         assert!(matches!(
             budget.admission_at(third),
@@ -261,6 +297,37 @@ mod tests {
         assert_eq!(
             budget.admission_at(start + CRASH_WINDOW),
             SpawnAdmission::Allowed
+        );
+    }
+
+    #[test]
+    fn admission_prunes_expired_crashes_before_judging_the_window() {
+        let start = Instant::now();
+        let mut budget = RuntimeCrashBudget::default();
+        budget.record_crash_at(start);
+        let late = start + CRASH_WINDOW - Duration::from_millis(100);
+        budget.record_crash_at(late);
+        budget.record_crash_at(late);
+        assert!(matches!(
+            budget.admission_at(late),
+            SpawnAdmission::RetryAfter {
+                budget_exhausted: true,
+                ..
+            }
+        ));
+
+        // The instant the first crash leaves the window only two remain: the
+        // pause must lift into the short backoff (measured from the latest
+        // crash), neither staying exhausted nor falling through to Allowed.
+        // Only an admission-time prune produces this state — the records
+        // above happened before anything expired.
+        let at_window = start + CRASH_WINDOW;
+        assert_eq!(
+            budget.admission_at(at_window),
+            SpawnAdmission::RetryAfter {
+                delay: Duration::from_millis(150),
+                budget_exhausted: false,
+            }
         );
     }
 }

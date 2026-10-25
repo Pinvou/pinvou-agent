@@ -4397,6 +4397,11 @@ impl AcpPool {
         else {
             return false;
         };
+        // Idle reaping is deliberate retirement, not a crash: the budget must
+        // not survive the runtime it was tracking. Clear it right after the
+        // take, before any await, so a concurrent `get_or_spawn` for the same
+        // session neither reads the stale budget nor has a fresh crash wiped.
+        self.runtime_crash_budgets.lock().remove(session_id);
         // Same F3 contract as `evict_if_idle_for_rebind`: the take already
         // removed the runtime from the map, so the pending-request cancels
         // must go through the reclaimed runtime's own bridge — a map lookup
@@ -4405,9 +4410,6 @@ impl AcpPool {
             .await;
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
-        // Idle reaping is deliberate retirement, not a crash: the budget must
-        // not survive the runtime it was tracking.
-        self.runtime_crash_budgets.lock().remove(session_id);
         runtime.shutdown().await;
         true
     }
@@ -4460,6 +4462,9 @@ impl AcpPool {
             return matches!(taken, RebindEvictTake::NoRuntime);
         };
         self.acp_metadata_backends.write().remove(session_id);
+        // Rebind eviction is deliberate retirement, not a crash. Clear the
+        // budget right after the take, before any await (see `evict_if_idle`).
+        self.runtime_crash_budgets.lock().remove(session_id);
         // Cancel before shutdown, through the RECLAIMED runtime's own bridge
         // (review #463 F3): the take already removed the session from the map,
         // so the plain `cancel_pending_permissions` lookup would resolve
@@ -4472,8 +4477,6 @@ impl AcpPool {
             .await;
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
-        // Rebind eviction is deliberate retirement, not a crash.
-        self.runtime_crash_budgets.lock().remove(session_id);
         runtime.shutdown().await;
         true
     }
@@ -4916,6 +4919,13 @@ impl AcpPool {
             format!("session_id={session_id}"),
         );
         let mut restarted_after_stall = false;
+        let mut restarted_after_crash = false;
+        // Hold the pool-wide sessions lock until replacement insertion
+        // completes. A gap during shutdown would let concurrent callers spawn
+        // separate children, and the later insert would leak the earlier
+        // runtime. This deliberately blocks ACP entrypoints for every session
+        // during shutdown, the bounded 30-second initialize, and the currently
+        // unbounded session/load and config restoration.
         let mut sessions = self.sessions.lock().await;
         match resolve_runtime(&mut sessions, session_id, |runtime| {
             runtime.lifecycle.is_running() && !runtime.restart_requested.load(Ordering::Acquire)
@@ -4939,10 +4949,10 @@ impl AcpPool {
             }
             RuntimeLookup::Dead(runtime) => {
                 let was_running = runtime.lifecycle.is_running();
-                let captured = runtime.clone();
-                tokio::spawn(async move { captured.shutdown().await });
                 // Resolve cards from either the stalled or exited generation
-                // before the replacement watchdog observes shared pending maps.
+                // before the replacement watchdog observes shared pending maps,
+                // and before the transport goes away so Cancelled responses
+                // still reach a stalled-but-live agent.
                 self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
                     .await;
                 self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
@@ -4950,13 +4960,11 @@ impl AcpPool {
                 if was_running {
                     // Repeated stalls in one window request replacement. The
                     // first stall stays conservative because long work can
-                    // look wedged; this branch is a deliberate shutdown, so it
-                    // never feeds the crash budget.
+                    // look wedged; this branch is a deliberate retirement, so
+                    // it never feeds the crash budget and clears what the
+                    // session had accumulated.
+                    self.runtime_crash_budgets.lock().remove(session_id);
                     runtime.shutdown().await;
-                    // Card settlement and shutdown-side events must be durable
-                    // before the replacement EventBridge seeds its sequence
-                    // from the journal.
-                    runtime.bridge.flush_journal();
                     diagnostics::write(
                         &operation_id,
                         "session:restart_after_stall",
@@ -4974,6 +4982,9 @@ impl AcpPool {
                             .or_default()
                             .record_crash_at(Instant::now());
                     }
+                    // The child already exited; this only reaps it and
+                    // releases the per-generation connection task.
+                    runtime.shutdown().await;
                     diagnostics::write(
                         &operation_id,
                         "session:dead_runtime_reclaimed",
@@ -4982,44 +4993,21 @@ impl AcpPool {
                             runtime.lifecycle.generation()
                         ),
                     );
-                    // Same as the stalled branch: the reclaim-side event must hit
-                    // the journal first so the replacement bridge seeds from the
-                    // correct tail seq.
-                    runtime.bridge.flush_journal();
+                    restarted_after_crash = true;
                 }
+                // Card settlement and shutdown-side events must be durable
+                // before the replacement EventBridge seeds its sequence from
+                // the journal.
+                runtime.bridge.flush_journal();
             }
             RuntimeLookup::Missing => {}
         }
 
-        if let Some(admission) = self
-            .runtime_crash_budgets
-            .lock()
-            .get_mut(session_id)
-            .map(|budget| budget.admission_at(Instant::now()))
-        {
-            if let SpawnAdmission::RetryAfter {
-                delay,
-                budget_exhausted,
-            } = admission
-            {
-                let retry_ms = delay.as_millis().max(1);
-                let reason = if budget_exhausted {
-                    "ACP runtime exited repeatedly in a short window; automatic rebuild is paused"
-                } else {
-                    "ACP runtime just exited; backing off"
-                };
-                diagnostics::write(
-                    &operation_id,
-                    "session:spawn_throttled",
-                    format!(
-                        "session_id={session_id} retry_after_ms={retry_ms} budget_exhausted={budget_exhausted}"
-                    ),
-                );
-                bail!("{reason}; retry in {retry_ms} ms");
-            }
-        }
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
         // acp_record 处得到明确报错，而不是误导性的「当前会话不是 ACP 会话」。
+        // Readiness is judged before the crash budget: a backend that is not
+        // installed must keep surfacing its actionable setup hint instead of
+        // a throttle message once its spawn attempts have exhausted the budget.
         let backend = self.backend(session_id);
         let readiness = match backend {
             AgentBackend::CodexAcp => self.ensure_codex_ready().await.map(|_| ()),
@@ -5046,6 +5034,37 @@ impl AcpPool {
                 format!("session_id={session_id} error={error:#}"),
             );
             return Err(error);
+        }
+
+        let admission = self
+            .runtime_crash_budgets
+            .lock()
+            .get_mut(session_id)
+            .map(|budget| budget.admission_at(Instant::now()));
+        if let Some(SpawnAdmission::RetryAfter {
+            delay,
+            budget_exhausted,
+        }) = admission
+        {
+            let retry_ms = delay.as_millis().max(1);
+            let reason = if budget_exhausted {
+                "ACP runtime exited repeatedly in a short window; automatic rebuild is paused"
+            } else {
+                "ACP runtime just exited; backing off"
+            };
+            let retry_hint = if retry_ms >= 2_000 {
+                format!("about {} s", retry_ms.div_ceil(1_000))
+            } else {
+                format!("{retry_ms} ms")
+            };
+            diagnostics::write(
+                &operation_id,
+                "session:spawn_throttled",
+                format!(
+                    "session_id={session_id} retry_after_ms={retry_ms} budget_exhausted={budget_exhausted}"
+                ),
+            );
+            bail!("{reason}; retry in {retry_hint}");
         }
         diagnostics::write(
             &operation_id,
@@ -5086,6 +5105,15 @@ impl AcpPool {
                     .or_default()
                     .record_crash_at(Instant::now());
             }
+            // Same reclamation duties as the Dead arm: the generation died
+            // between initialize and publication, so cards it registered
+            // during session/load must not linger in the shared maps and its
+            // journal events must be durable before the next bridge seeds.
+            self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
+                .await;
+            self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
+                .await;
+            runtime.bridge.flush_journal();
             diagnostics::write(
                 &operation_id,
                 "session:exited_before_publish",
@@ -5094,9 +5122,11 @@ impl AcpPool {
             bail!("ACP runtime exited right after initialization; please retry");
         }
         sessions.insert(session_id.to_string(), runtime.clone());
-        if restarted_after_stall {
+        if restarted_after_stall || restarted_after_crash {
             // Promise retained history only after a real resume. Without
             // `load_session`, or when loading fails, spawn creates a fresh session.
+            // A crash replacement discloses the same way as a stall
+            // replacement: the user's agent context was rebuilt either way.
             let kind = if runtime.resumed_session {
                 "agent_session_restarted"
             } else {
@@ -5109,7 +5139,7 @@ impl AcpPool {
         diagnostics::write(
             &operation_id,
             "session:ready",
-            format!("session_id={session_id}"),
+            format!("session_id={session_id} generation={generation}"),
         );
         Ok(runtime)
     }
@@ -5379,7 +5409,18 @@ impl AcpPool {
                         let _ = tx.send(initialized.map(|response| (connection.clone(), response)));
                     }
                     if let Some(rx) = shutdown_rx.take() {
-                        let _ = rx.await;
+                        // `connect_with` runs until this closure returns; a
+                        // clean transport EOF (the child exited) does not end
+                        // it on its own and is not an error in this mode
+                        // (agent-client-protocol `connect_with` contract). Wait
+                        // for either our shutdown or the incoming close, so a
+                        // crashed child releases this task and the lifecycle
+                        // stamp below records the generation as dead instead
+                        // of leaving it "running" in the pool forever.
+                        tokio::select! {
+                            _ = rx => {}
+                            () = connection.incoming_closed() => {}
+                        }
                     }
                     Ok(())
                 })
