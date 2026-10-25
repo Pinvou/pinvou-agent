@@ -61,21 +61,21 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `6e1ee88ee`，包含 #115–#122；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-10-23）
+## 0. 当前状态（2026-10-26）
 
-- 当前公开维护头与父仓 gitlink：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`6e1ee88ee8f8ea28eec7be3d8add3a591468412a`（2026-10-26）。#118 已合入为 `a96fdec8e`，#119 为 `5861912a3`，#120 为 `f12299e69`，#121 为 `c2fdfd3e2`，#122 为 `6e1ee88ee`；本轮仅更新父仓引用，没有推进维护分支。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 84 个提交，r1 `1fafee7e2` 之上 69 个；82 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：520 files, +89901/-39349，净增 50552；253 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
-### 本次维护集成
+### 2026-10-23 批次维护集成（#115/#116/#117）
 
 - 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
 
@@ -182,6 +182,11 @@
 | `7d2636993` | T2 fix | Preserve shell defaults when task environment overlays are merged; explicit Windows names override case-insensitively. CodeWhale#115 adds generic overlay and Windows foreground/background Python stdio regressions; child-env sanitization and public signatures are unchanged. |
 | `e9a7f48da` | T2 fix | Preserve failed tool results as `is_error:true` during history recording. Existing upstream round-trip regression covers HTTP/tool errors, success and schema-loaded non-execution. CodeWhale#116; no public signature/dependency change. |
 | `ea9fdc90f` | T2 help/contract | Document the already supported Web JSONPath subset; one schema-description string changes, with a resultful parser-contract regression. No execution/parser/API/dependency change (CodeWhale#117). |
+| `a96fdec8e` | T2 修复 | 恢复可取回的完整工具输出：回移上游 #6619（`3e39820f5`，Hmbown）的 recoverable output-budget 切片——header 重的 Web 响应保留答案或可用 full-output 引用，route budget 在 engine/Web/provider wire/TUI 间共享；适配 fork 两条执行路径、保留有界 child 摘要与 legacy ownership 取回、拒绝冲突的 full-output 回放、区分正文证据与响应 envelope（#118） |
+| `5861912a3` | T1 修复 | 子智能体会话名生命周期与 wait 超时面：会话名仅由活 child（running 或带可唤醒 checkpoint 的 interrupted）持有，settled（completed/failed/cancelled/budget-exhausted）即释放，同名重试解析到重试而非读到歧义；`action=wait` 重新广告 `timeout_secs`（范围与文案钉到运行时常量，`timeout` 别名保持可解析）；spawn 拒绝文案按 holder 状态给出可操作建议，roster/`type` 枚举/工具描述如实披露各角色 scope 认领规则（#119） |
+| `f12299e69` | deps | CodeWhale 自带 `web/` 与 `telemetry-ingest/` npm lock 的安全刷新（next 16.4.3、vite、vitest），父仓不消费这两个目录（#120） |
+| `c2fdfd3e2` | CI 同步 | CodeWhale 自身 CI：恢复 `pinvou3-clean` PR 的 telemetry-ingest 车道（#121） |
+| `6e1ee88ee` | deps | CodeWhale 依赖 round-3：lock 刷新修 RUSTSEC-2026-0381/0382/0383 与 yanked clipboard-win；`codewhale-tui` 的 oauth2 改 `default-features = false`（HTTP 全走自带 reqwest，锁内 reqwest/rand 各收敛到单版本）；`codewhale-secrets` 从 keyring 3 迁移到 keyring 4.2（v1 `Entry`/`Error` API 不变；Linux 侧 keyring 4 无 keyutils-persistent 复合 store，内核 keyring 直写缓存随之取消，Secret Service 集合成为唯一持久权威 store，keyring 4 的 zbus Secret Service store 自带 secret-service crypto-rust feature，会话加密保持 RustCrypto，本 crate 无直接 secret-service 依赖）。crates 对父仓公开签名不变，父仓 `Cargo.lock` 随本 PR 重生成（#122） |
 
 除 #116 squash `e9a7f48da` 与 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
@@ -405,3 +410,14 @@ Recount at this head:78 registered commits,76 with a signoff; #116's squash mess
 The public verifier advanced to `ea9fdc90f` (CodeWhale#117) between the parent and child pushes. The entire production delta from `e9a7f48da` is one Web `fields.description` string; execution, parsing, public signatures, dependencies and persisted schema are unchanged. The added resultful test drives advertised selectors through the real parser and verifies unsupported recursive descent/filters. The new fingerprint is under existing T2; no new fork patch/topic is introduced. Recount79 registered/77 signed commits; #107/#116 remain the only missing-footer exceptions.
 
 The preceding e9 execution regressions are retained as such. This help-only update is checked through current consumer compilation, Clippy and the current foundation schema/fork contracts; retained prior full-suite counts must not be presented as fresh runs at this documentation-only head.
+
+## 2026-10-26 consumed baseline: tool-output recovery, subagent name lifecycle, deps round-3 (T2/T1)
+
+The public maintenance branch advanced by five reviewed squashes — #118 `a96fdec8e`, #119 `5861912a3`, #120 `f12299e69`, #121 `c2fdfd3e2`, #122 `6e1ee88ee` — and this parent consumes them with reference and lock updates only; it creates no new fork topic.
+
+- #118 (T2) backports the recoverable output-budget slice of upstream #6619 (`3e39820f`, Hmbown): header-heavy Web responses keep their answers or a usable full-output ref, the route budget is shared across engine/Web/provider wire/TUI, conflicting full-output replays are rejected, and body evidence is distinguished from response envelopes. The parent-side consumer work for this slice is tracked separately and is not part of this bump.
+- #119 (T1) releases session names when their child settles (completed/failed/cancelled/budget-exhausted), resolves a retried name to the live holder then the newest settled record, re-advertises `timeout_secs` for `action=wait` with the `timeout` alias still parse-accepted, and aligns spawn-refusal guidance and roster/tool text with the actual scope-claim rules. The subagent worker-ledger surface consumed by the parent keeps its shape; the roster gains no new field (the 14-field surface count was already current).
+- #120/#121 are CodeWhale-internal (its own `web/`/`telemetry-ingest/` npm locks and its CI lane); the parent consumes neither directory.
+- #122 (deps) fixes RUSTSEC-2026-0381/0382/0383 via an in-range lock refresh, drops oauth2's bundled reqwest client from `codewhale-tui` (`default-features = false`; all HTTP still goes through the tui's own client), and migrates `codewhale-secrets` from keyring 3 to keyring 4.2. The v1 `Entry`/`Error` API is unchanged, so no parent adapter is needed; on Linux the keyutils-persistent write-through cache is dropped and the Secret Service collection becomes the single durable store (keyring 4's zbus Secret Service store enables secret-service's crypto-rust feature itself, so session encryption stays RustCrypto with no direct secret-service dependency in the crate). The parent `Cargo.lock` is regenerated in the same PR because the oauth2 feature set and the keyring major both move inside the parent's dependency graph.
+
+Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f27672935` and #116 `e9a7f48da1` remain the only missing-footer exceptions. Measured drift at this head: 520 files, +89901/-39349, net +50552; 253 distinct `forkguard_*` names (floor 64). The immutable r3 closure tag remains `61cb769be`. CodeWhale-side review receipts for #118/#119/#122 live in their CodeWhale PRs; this register records the consumed public state and does not re-claim those execution boundaries for the parent tree beyond the parent gates run in this PR.
