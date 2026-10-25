@@ -1,23 +1,25 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, T09 dedicated macOS measurement independently reviewed and verified**.
+Checkpoint: **2026-10-25, T25 accepted-event network sources independently reviewed and verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **37.7%** (1770/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **37.9%** (1780/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T09 Artifact admission**. Its approved controlled
-macOS measurement observer, dedicated same-process signer/CLI and bounded service
-consumer are integrated, independently reviewed and verified as recorded below. T25's delivered archive/ACK/retention and
-protected peer/ASN/material source primitives retain their verified results.
-Original-event source/HMAC composition and contribution remain its parked gap;
-T25 stays **45%**.
+The current main task is **T25 network privacy**. Actual first-connection ASN and
+purpose/week prefix HMAC capture now compose with the original legal event,
+atomic source/missingness persistence and immutable ACK replay. This increment
+is independently reviewed and verified below; T25 is estimated at **55%**.
+Contribution eligibility, completeness watermarks and frozen privacy reports
+remain the same task's next work. T09's approved controlled macOS measurement
+component remains delivered; genuine downstream T46 production/consumption is
+still its parked gap.
 T13's protected planning workflow is delivered in service `51630257` and client
 progress `1805fcc`; its remaining active-floor/path/bridge work is parked.
 The domain, protected persistence/private owner, current HTTP/host composition and
@@ -66,7 +68,61 @@ measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
 
-## Current T09 dedicated macOS measurement increment
+## Current T25 accepted-event network-source increment
+
+The actual event path uses the immediate TCP connection capability, protected
+offline ASN selection and ready per-purpose/per-week OpenBao HMAC material.
+Collection occurs outside the final SQL transaction; the same original final
+transaction rechecks current owners and writes its version-2 source record.
+The original acceptance time, installed CurrentVersion, receipt, ACK and
+version-1 attribution remain authoritative and unchanged.
+
+A separate authenticated namespace requires the source/missingness stage and
+revokes the four old runtime publishers. Capture defaults off; an installed
+receiver still records unavailable facts for new legal events. Missing peer or
+ASN coverage preserves a legal ACK; original replay and pre-cutover receipts
+cannot acquire later source facts. Actual accounting remains part of the joined
+32 MiB/4096-point metadata bound. Raw IP/prefix values are not persisted.
+Explicit weekly-material CLI provisioning and source installation/pruning are
+documented in the service's network-event-sources.md.
+
+Independent reviews found and Root repaired array encoding in the new SQL
+profile, retained cost accounting for known missing ASN coverage, week-boundary
+comparison and configured-vs-installed realm binding. The source-private error
+wrapper preserves actual internal causes while HTTP keeps its closed response
+codes; diagnostics expose no provider messages or source data.
+
+Scoped verification passed 108 test records across 34 top-level tests,
+with zero skips or failures. This combines attribution, current source/CLI
+foundations, private collector/native definitions and six real source-integration
+controls. The latter cover actual TCP/ASN/week-HMAC acceptance and exact replay,
+missing peer, real ASN coverage gaps with retained costs, pre-cutover history,
+default-off capture with old-publisher refusal, and protected retention.
+The separate ASN foundation control also exercises real PostgreSQL. Go/SQL
+canonical byte equality and resource-limit refusal were checked on the actual
+new namespace. Earlier failed invocations remain failed history; the initial
+legal-event 503 was repaired rather than treated as an environment exemption.
+
+The required default regression passed 5,505 records, skipped 1,820 and failed
+zero (1,622 passed and 1,020 skipped top-level tests). Skips include existing
+opt-in/platform/capability entries; they were not executed passes. All-package
+vet, module integrity, Linux service build, both operator CLI builds, exact
+client contract pin and whitespace checks passed. All successful invocations
+closed naturally without a resource-floor trip before result inspection.
+
+The owner-only expired-row forms exercise the real retention transaction,
+rollback and minimal tombstones; they are explicitly synthetic storage data,
+not historical accepted events or production source evidence. No proxy topology,
+production deployment or real user traffic has been qualified. Ready source
+rows do not authorize publishing partial statistics. Contribution limits,
+cross-purpose qualification ports, completeness/k-suppression, seven-day freeze
+and fixed privacy-report integration remain unfinished.
+
+The component estimate changes T25 from 45% to **55%**, and the equal-task
+estimate from 1770 to 1780 points: **1780/47 = 37.9%**. Strict completion remains
+**8/47 (17.0%)**; all other task estimates and counts remain unchanged.
+
+## Verified T09 dedicated macOS measurement increment
 
 The finite macOS observer checks the actual built FullPack and its sole matching
 final DMG, then measures the actual read-only mounted app rather than a neighboring
@@ -981,7 +1037,7 @@ completion blocker; outstanding business implementation is.
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 45% | In progress | Purpose/week OpenBao material ownership and bounded offline ASN import/source ownership retain their delivered verification. Immutable original acceptance/CurrentVersion attribution, original ACK replay, thirty-day retention, private recovery and the current 19-owner classification are now integrated, independently reviewed and verified with real PostgreSQL and actual HTTP. Finite immediate-peer acquisition and protected ASN/material capture/recheck interfaces are integrated, with combined verification pending. Original-event source/HMAC composition, missingness, contribution limits and frozen privacy snapshots remain unimplemented; persisted attribution still says not-captured. |
+| T25 | 55% | In progress | Purpose/week OpenBao material and protected offline ASN ownership retain their delivered verification. Original acceptance/CurrentVersion attribution, private recovery and immutable ACK replay are integrated. Actual first TCP peer/ASN/week-HMAC capture, same-transaction current rechecks, mandatory version-2 source/missingness records, explicit week provisioning/source maintenance and old-publisher refusal are independently reviewed and verified with real PostgreSQL/HTTP controls; original v1 records remain not-captured. Contribution eligibility/limits, completeness watermarks, k-suppression, freeze and fixed privacy reports remain unfinished; ready source data does not authorize partial statistics. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
