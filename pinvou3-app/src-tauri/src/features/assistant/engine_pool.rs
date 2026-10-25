@@ -1206,17 +1206,18 @@ async fn teardown_failed_spawn_engine(
     engine: &AppEngine,
     forwarder: tauri::async_runtime::JoinHandle<()>,
 ) {
+    // Retire transcript writers first: the failed spawn never hydrated, so
+    // nothing it queues — before, during, or after the bounded shutdown
+    // send — may overwrite the durable transcript.
+    engine
+        .transcript_writer_active
+        .store(false, Ordering::Release);
     let handle = engine.handle.clone();
     bounded_teardown_shutdown(move |op| {
         let handle = handle.clone();
         async move { handle.send(op).await }
     })
     .await;
-    // Retire transcript writers before the abort: the failed spawn never
-    // hydrated, so nothing it queued may overwrite the durable transcript.
-    engine
-        .transcript_writer_active
-        .store(false, Ordering::Release);
     forwarder.abort();
 }
 
@@ -2725,7 +2726,6 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        let spawn_engine_started = Instant::now();
         // Load before spawning: no fallible disk read may strand a cold
         // engine, and the baseline read takes the store's mutation gate so it
         // is ordered after every already-admitted writer of a retired engine
@@ -2741,6 +2741,7 @@ impl EnginePool {
         .context("engine baseline read task failed")?
         .with_context(|| format!("load session {session_id} before spawning its engine"))?;
         let load_session_ms = elapsed_ms(load_session_started);
+        let spawn_engine_started = Instant::now();
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -9654,7 +9655,50 @@ mod scheduled_model_tests {
         );
     }
 
-    fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
+    // Fail-closed pin: a sync_session failure must tear the engine down and
+    // fail the spawn for EVERY session kind. The pre-fix lenient branch
+    // logged a non-scheduled failure and published an unhydrated engine,
+    // whose first turn then persisted over the pre-created record and lost
+    // the history; the teardown-count pin above cannot see that branch
+    // return, because it keeps the single teardown call.
+    #[test]
+    fn sync_failure_fails_the_spawn_for_every_session_kind() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let body = production_body(src, "async fn get_or_spawn_with_policy(");
+        let sync_at = body
+            .find(".sync_session(")
+            .expect("the spawn path must sync the loaded baseline");
+        let failure_arm = &body[sync_at..];
+        let teardown_at = failure_arm
+            .find("teardown_failed_spawn_engine(&engine, forwarder)")
+            .expect("a sync failure must tear the engine down");
+        let return_at = failure_arm
+            .find("return Err(error)")
+            .expect("a sync failure must fail the spawn");
+        assert!(
+            teardown_at < return_at,
+            "the engine must be torn down before the spawn error returns"
+        );
+        assert!(
+            !body.contains("sync history for"),
+            "the lenient log-and-publish branch must not return"
+        );
+        assert!(
+            !body.contains("scheduled_profile(session_id).is_some()"),
+            "the spawn path must not scope the sync failure to scheduled sessions"
+        );
+    }
+
+    /// The production body of the fn starting at `signature`, with line
+    /// comments stripped: prose routinely mentions code verbatim (the reclaim
+    /// closure says "once forwarder.abort() below"), and a naive
+    /// first-occurrence find then lands on the comment instead of the
+    /// statement and inverts an ordering read. Same mutation class the
+    /// round-36 reuse-gate pin strips for.
+    fn production_body(src: &str, signature: &str) -> String {
         let start = src.find(signature).expect("production fn must exist");
         let rest = &src[start + signature.len()..];
         // End at the next fn ITEM, not the next `pub ` token (review #463
@@ -9673,7 +9717,11 @@ mod scheduled_model_tests {
         .filter_map(|marker| rest.find(marker))
         .min()
         .map_or(src.len(), |offset| start + signature.len() + offset);
-        &src[start..end]
+        src[start..end]
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -9729,19 +9777,10 @@ mod scheduled_model_tests {
         let src = &src[..src
             .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
             .expect("the test module marker must exist")];
-        // Strip line comments before pinning: the reclaim closure's prose
-        // mentions `forwarder.abort()` verbatim, so a naive first-occurrence
-        // find lands on the comment instead of the call and inverts the
-        // ordering reads (same mutation class as the round-36 reuse-gate
-        // pin, which strips comments for the same reason).
         let body = production_body(
             src,
             "async fn reclaim_engine_entry(&self, session_id: &str, entry: EngineEntry) {",
-        )
-        .split('\n')
-        .map(|line| line.split("//").next().unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n");
+        );
         let abort_at = body
             .find("forwarder.abort()")
             .expect("reclaim must abort the forwarder");
@@ -9760,33 +9799,51 @@ mod scheduled_model_tests {
         // retired BEFORE the forwarder abort, so a queued save from the
         // retired engine can neither persist nor notify after the abort; an
         // already-admitted save keeps publishing from its blocking worker.
-        // The needle is split-tolerant (rustfmt may break the chain).
-        let retire_at = body
-            .find(".store(false, Ordering::Release)")
-            .expect("reclaimed writers must be retired");
+        // Anchor on the flag so an unrelated atomic store added earlier in
+        // the body cannot satisfy the pin; the store needle itself is
+        // split-tolerant (rustfmt may break the chain).
+        let retire_at =
+            retire_store_after_flag(&body).expect("reclaim must retire the transcript writer flag");
         assert!(
             retire_at < abort_at,
             "reclaim must retire transcript writers before aborting the forwarder"
         );
     }
 
+    /// Offset of the `transcript_writer_active` retirement store in `body`:
+    /// the first `.store(false, Ordering::Release)` at or after the first
+    /// mention of the flag.
+    fn retire_store_after_flag(body: &str) -> Option<usize> {
+        let flag_at = body.find("transcript_writer_active")?;
+        body[flag_at..]
+            .find(".store(false, Ordering::Release)")
+            .map(|offset| flag_at + offset)
+    }
+
     // Engine-recycle ordering pin for the failed-spawn teardown: the spawn
     // failed hydration, so its forwarder must not flush any queued snapshot
-    // over the durable transcript — retire writers before the abort.
-    // The needle is split-tolerant (rustfmt may break the chain).
+    // over the durable transcript — retire writers before the bounded
+    // shutdown send (the forwarder is still live across that await) and
+    // therefore before the abort.
     #[test]
     fn failed_spawn_teardown_retires_writers_before_abort() {
         let src = include_str!("engine_pool.rs");
         let body = production_body(src, "async fn teardown_failed_spawn_engine(");
-        let retire_at = body
-            .find(".store(false, Ordering::Release)")
-            .expect("failed-spawn writers must be retired");
+        let retire_at = retire_store_after_flag(&body)
+            .expect("failed-spawn teardown must retire the transcript writer flag");
+        let shutdown_at = body
+            .find("bounded_teardown_shutdown(")
+            .expect("failed-spawn teardown sends the bounded shutdown");
         let abort_at = body
             .find("forwarder.abort()")
             .expect("failed-spawn teardown aborts the forwarder");
         assert!(
-            retire_at < abort_at,
-            "failed-spawn teardown must retire transcript writers before the abort"
+            retire_at < shutdown_at,
+            "failed-spawn teardown must retire transcript writers before the shutdown send"
+        );
+        assert!(
+            shutdown_at < abort_at,
+            "failed-spawn teardown must send the shutdown before the abort"
         );
     }
 }
