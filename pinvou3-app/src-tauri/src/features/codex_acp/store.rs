@@ -2132,21 +2132,22 @@ impl SessionAgentStore {
 
     pub fn remove(&self, session_id: &str) -> Result<()> {
         let _section = self.lock_and_reload()?;
-        // Most purged sessions (plain chats) have no index entry; without
-        // this short-circuit every such purge would rewrite the whole index
-        // file for nothing, serialized inside the purge flow. It must sit
-        // AFTER `lock_and_reload`: only the fresh disk table proves durable
-        // absence. An in-memory miss on a boot-era snapshot proves nothing
-        // — a prior call whose persist failed leaves the entry on disk
-        // while memory already dropped it, and short-circuiting on that
-        // state would make the removal silently unretryable.
-        if self.records.write().remove(session_id).is_none() {
-            return Ok(());
+        // Most purged sessions (plain chats) have no index entry; the
+        // transactional no-op (`Ok(false)`: no persist, no publish) keeps
+        // such purges from rewriting the whole index file, serialized
+        // inside the purge flow. The freshness requirement stands: only the
+        // disk table reloaded under the section lock proves durable
+        // absence — an in-memory miss on a boot-era snapshot proves
+        // nothing. A failed removal stays retryable: the helper publishes
+        // only after the persist, so the entry survives in memory and on
+        // disk for the retry to find again.
+        let removed = self
+            .update_records_transactional(|candidate| Ok(candidate.remove(session_id).is_some()))?;
+        if removed {
+            // 删除会话时同步清理权威 sidecar，避免残留的 sidecar 让重建后的索引
+            // 误恢复一个已删除的原生代码会话。
+            remove_code_session_sidecar(&self.path, session_id);
         }
-        self.persist()?;
-        // 删除会话时同步清理权威 sidecar，避免残留的 sidecar 让重建后的索引
-        // 误恢复一个已删除的原生代码会话。
-        remove_code_session_sidecar(&self.path, session_id);
         Ok(())
     }
 
@@ -2223,15 +2224,20 @@ impl SessionAgentStore {
         // lane rewrites the whole table, so a newer-schema file must stop
         // here instead of being re-persisted under the current stamp.
         Self::assert_index_schema(&file)?;
-        let mut fresh = file.sessions;
-        fresh.remove(session_id);
+        // Adopt the fresh disk table first, then reuse the transactional
+        // publish-after-persist flow: a failed removal leaves both layers
+        // (and the sidecar) untouched, and an absent entry is a no-op that
+        // does not rewrite the index at all.
         {
             let mut records = self.records.write();
-            *records = fresh;
+            *records = file.sessions;
         }
-        self.persist()?;
-        // 同 `remove`：删除后清理权威 sidecar（幂等）。
-        remove_code_session_sidecar(&self.path, session_id);
+        let removed = self
+            .update_records_transactional(|candidate| Ok(candidate.remove(session_id).is_some()))?;
+        if removed {
+            // 同 `remove`：删除后清理权威 sidecar（幂等）。
+            remove_code_session_sidecar(&self.path, session_id);
+        }
         Ok(())
     }
 
@@ -5754,11 +5760,47 @@ mod tests {
             durable.sessions["session-acp"].acp_model_id.as_deref(),
             Some("model-a")
         );
+
+        // Both removal lanes share the contract: an injected persist failure
+        // leaves the record in memory, on disk, and (for the native bind)
+        // the sidecar — the retry finds the entry again in every layer.
+        store.inject_next_persist_failure();
+        assert!(store.remove_for_second_process("session-native").is_err());
+        assert!(store.get("session-native").mode.is_code());
+        let durable: AgentStoreFile =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert!(
+            durable.sessions.contains_key("session-native"),
+            "a failed second-process removal must keep the disk record"
+        );
+        store.inject_next_persist_failure();
+        assert!(store.remove("session-native").is_err());
+        assert!(store.get("session-native").mode.is_code());
+        assert!(
+            read_code_session_sidecar(store.path(), "session-native").is_some(),
+            "a failed removal must not clean the sidecar"
+        );
+        store.remove("session-native").unwrap();
+        assert!(
+            !store.get("session-native").mode.is_code(),
+            "a successful removal must drop the record from memory"
+        );
+        let durable: AgentStoreFile =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert!(
+            !durable.sessions.contains_key("session-native"),
+            "a successful removal must drop the disk record"
+        );
+        assert!(read_code_session_sidecar(store.path(), "session-native").is_none());
+
         // A no-op clear on an unknown session neither persists nor fails.
         store.inject_next_persist_failure();
         store
             .clear_acp_config_value("session-unknown", "model")
             .unwrap();
+        // Same for a removal of a session the fresh table never had.
+        store.inject_next_persist_failure();
+        store.remove("session-unknown").unwrap();
         // ...and the armed injection is still pending for the next real write.
         assert!(
             store
