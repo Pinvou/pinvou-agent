@@ -1538,7 +1538,18 @@ fn write_failure_marker(stem: &str, error: &anyhow::Error) {
 /// [`write_failure_marker`] keeps a restored marker from ever clobbering a
 /// landed receipt.
 fn failure_marker_missing(stem: &str) -> bool {
-    !done_dir().join(format!("{stem}.json")).exists()
+    // Round-12 minor 11: a MISSING or UNPARSEABLE marker both leave the
+    // waiting call unanswered (the server's poll cannot read a corrupt
+    // marker either, and the re-spool unlink never produces this shape) —
+    // the healers repair both. A readable marker of any outcome answers
+    // the call and keeps the once-per-episode dedupe.
+    match read_regular_bounded(
+        &done_dir().join(format!("{stem}.json")),
+        MAX_RESULT_MARKER_BYTES,
+    ) {
+        None => true,
+        Some(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
+    }
 }
 
 /// The payload digest of the record currently sitting at `path`, when one
@@ -1562,10 +1573,9 @@ fn parked_episode_rebinds(name: &str, root: &Path, retries: &RetryState) -> bool
     let Some(audited) = retries.stuck_episode_audited.get(name) else {
         return true;
     };
-    match record_digest(&root.join(name)).as_deref() {
-        Some(current) => audited.is_empty() || audited != current,
-        None => !audited.is_empty(),
-    }
+    // The gate's admit predicate is the arms' fresh-episode predicate —
+    // one copy, so the two decisions cannot desynchronize (round-12 nit).
+    opens_fresh_episode(Some(audited), record_digest(&root.join(name)).as_deref())
 }
 
 /// Whether this poison/exhaustion opens a FRESH stuck episode for the name:
@@ -1761,8 +1771,10 @@ struct RetryState {
     /// re-spool matches the parked identity and stays parked; a corrected
     /// payload differs and rebinds onto a fresh episode (fresh audit line +
     /// marker) instead of being silenced by the stale entry. Entries clear
-    /// when the record finally moves (every terminal arm), and the pass's
-    /// existence retain drops entries whose file was deleted externally.
+    /// when the record finally moves (the quarantine/park arms and the
+    /// maintenance move; the Done arm's receipt path and the
+    /// receipts-republish leave the entry to the pass-start retain), and
+    /// the retain drops entries whose file was deleted externally.
     stuck_episode_audited: HashMap<String, String>,
 }
 
@@ -1910,14 +1922,23 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             "[scheduled-creation] quarantined {sight_quarantines} non-UTF-8 spool name(s) on sight"
         );
     }
-    retries.attempts.retain(|name, _| root.join(name).exists());
-    retries.parked.retain(|name, _| root.join(name).exists());
-    // #680: the episode map joins the existence retain — a re-spool after
-    // an externally deleted file starts clean instead of inheriting the
-    // stale identity.
+    // Round-12 MAJOR-2: all three retains are symlink_metadata-based — an
+    // `exists` retain follows links, so a dangling link's park + identity
+    // dissolved EVERY pass and the Poison arm re-opened a fresh episode per
+    // pass (1 Hz marker rewrites forever); a dangling link has metadata and
+    // keeps its parked episode.
+    retries
+        .attempts
+        .retain(|name, _| root.join(name).symlink_metadata().is_ok());
+    retries
+        .parked
+        .retain(|name, _| root.join(name).symlink_metadata().is_ok());
+    // #680: the episode map joins the retain — a re-spool after an
+    // externally deleted file starts clean instead of inheriting the stale
+    // identity.
     retries
         .stuck_episode_audited
-        .retain(|name, _| root.join(name).exists());
+        .retain(|name, _| root.join(name).symlink_metadata().is_ok());
     // Retry only the terminal move, never the domain operation, when the
     // evidence directory recovers. Otherwise parked identities wedge forever.
     let parked: Vec<_> = retries
@@ -1948,6 +1969,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             // continues — retry only the terminal move, never the domain
             // operation, so parked records still self-heal when the
             // evidence directory recovers.
+            let mut moved = false;
             if let Some(snapshot) = RequestSnapshot::capture(&path) {
                 if snapshot.metadata.modified().ok() == Some(mtime)
                     && snapshot.still_matches(&path)
@@ -1956,25 +1978,36 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     retries.parked.remove(&name);
                     retries.attempts.remove(&name);
                     retries.stuck_episode_audited.remove(&name);
+                    moved = true;
                 }
             }
             // #680's ensure-presence on the gate path (round-10 R-2: on
             // every bump, moved or not — the record died unapplied either
             // way, so a truthful terminal answer is available in both
-            // cases): the re-spool unlinked the failure marker and no
-            // terminal arm will fire for a gated record — answer the
-            // waiting call from here. The SPECIFIC cause stays in the
-            // failed/ evidence and the audited episode; this marker states
-            // the re-spool truth.
-            if bumped {
+            // cases; round-12 minor 7: also when the quiet move SUCCEEDS —
+            // a prior pass's marker-write IO failure must not leave the
+            // moved record unanswered): the re-spool unlinked the failure
+            // marker, or the pass that owned the marker write lost it to
+            // IO — answer the waiting call from here. The SPECIFIC cause
+            // lives in the audited episode and the Scheduled Tasks panel.
+            if bumped || moved {
                 let stem = name.strip_suffix(".json").unwrap_or(&name);
                 if failure_marker_missing(stem) {
                     write_failure_marker(
                         stem,
                         &anyhow::anyhow!(
-                            "the request could not be re-applied on the app side and its earlier failure marker was removed by the re-spool; check the failed/ evidence and the Scheduled Tasks panel"
+                            "the request could not be re-applied on the app side and its earlier failure marker was not delivered; check the Scheduled Tasks panel and the audit trail"
                         ),
                     );
+                }
+                // Round-12 minor 8: consume the bump — refresh the park
+                // timestamp so one historical bump cannot keep `bumped`
+                // (the probe, the restore attempt, and its warn) live on
+                // every pass; a genuine later re-spool bumps again.
+                if bumped {
+                    retries
+                        .parked
+                        .insert(name.clone(), std::time::SystemTime::now());
                 }
             }
         }
@@ -3846,6 +3879,133 @@ mod tests {
         assert!(retries.stuck_episode_audited.is_empty());
     }
 
+    /// #680 round-12 minor 8: the bumped gate-path restore consumes the
+    /// bump — the park timestamp is refreshed, so one historical bump
+    /// cannot keep the probe + restore attempt alive on every pass.
+    #[tokio::test]
+    async fn bumped_restore_consumes_the_bump() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
+        std::fs::write(spool.join("swap.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        for _ in 0..MAX_CREATE_ATTEMPTS {
+            process_pending_spool(
+                &FailingCreator,
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+        }
+        assert!(retries.parked.contains_key("swap.json"));
+        // Controlled clock: pin the park to a past instant so the bump's
+        // stamp is neither future nor swallowed by fs granularity.
+        let parked_before = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        *retries.parked.get_mut("swap.json").expect("parked") = parked_before;
+        // Same-bytes re-spool: the gate keeps the record parked and the
+        // restore runs — and consumes the bump.
+        std::fs::write(spool.join("swap.json"), spool_record_json(&[])).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(spool.join("swap.json"))
+            .unwrap()
+            .set_modified(parked_before + std::time::Duration::from_secs(1))
+            .unwrap();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let parked_after = *retries.parked.get("swap.json").expect("still parked");
+        assert!(
+            parked_after > parked_before,
+            "the restore consumes the bump: the park timestamp is refreshed"
+        );
+        // A quiet pass after the refresh does not re-attempt the restore:
+        // the marker is untouched.
+        let marker_path = done_dir().join("swap.json");
+        let before = std::fs::read_to_string(&marker_path).expect("restored marker");
+        let before_mtime = std::fs::metadata(&marker_path).unwrap().modified().unwrap();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            std::fs::metadata(&marker_path).unwrap().modified().unwrap() == before_mtime,
+            "the refreshed park stops the per-pass restore churn"
+        );
+        let _ = before;
+    }
+
+    /// #680 round-12 minor 11: a CORRUPT marker is repaired like a missing
+    /// one — the server's poll cannot read it, so leaving it in place
+    /// answers every same-key retry with "pending" forever.
+    #[tokio::test]
+    async fn corrupt_marker_repaired_by_the_gate_path() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        for _ in 0..MAX_CREATE_ATTEMPTS {
+            process_pending_spool(
+                &FailingCreator,
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+        }
+        assert!(retries.parked.contains_key("stuck.json"));
+        let marker_path = done_dir().join("stuck.json");
+        std::fs::read_to_string(&marker_path).expect("poll 3 writes the marker");
+        // Controlled clock (see bumped_restore_consumes_the_bump).
+        let parked_at = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        *retries.parked.get_mut("stuck.json").expect("parked") = parked_at;
+        // Corrupt the marker (hostile or partial write), then re-spool the
+        // same bytes: the bump routes through the gate path and the repair
+        // replaces the unreadable marker with a readable terminal answer.
+        std::fs::write(&marker_path, b"not json{").unwrap();
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(spool.join("stuck.json"))
+            .unwrap()
+            .set_modified(parked_at + std::time::Duration::from_secs(1))
+            .unwrap();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let repaired: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&marker_path)
+                .expect("the corrupt marker is repaired for the waiting call"),
+        )
+        .unwrap();
+        assert_eq!(repaired["ok"], false);
+        assert!(
+            repaired["error"]
+                .as_str()
+                .unwrap()
+                .contains("could not be re-applied"),
+            "the repair states the re-spool truth: {:?}",
+            repaired["error"]
+        );
+    }
+
     /// #680: the parked episode's identity (and what budget there was)
     /// clears when the terminal move finally succeeds — a lingering
     /// identity would silence a fresh same-name episode.
@@ -3879,6 +4039,10 @@ mod tests {
         )
         .await;
         assert!(retries.parked.contains_key("swap.json"), "poll 1 parks");
+        // Round-12 minor 7: the poisoning pass's marker write lost to IO
+        // (simulated by removing the marker) — the quiet move below must
+        // still leave the waiting call answered.
+        std::fs::remove_file(done_dir().join("swap.json")).unwrap();
         // failed/ unlocks; no re-spool — the parked record's terminal move
         // is retried by the maintenance path itself.
         std::fs::remove_file(spool.join("failed")).unwrap();
@@ -3904,6 +4068,14 @@ mod tests {
             retries.stuck_episode_audited.is_empty(),
             "the move clears the episode entry"
         );
+        // The minor-7 restore: the moved record's missing marker is
+        // delivered by the maintenance path.
+        let restored: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("swap.json"))
+                .expect("the moved record's missing marker is restored"),
+        )
+        .unwrap();
+        assert_eq!(restored["ok"], false);
     }
 
     /// #680: the retry-exhausted park feeds the same gate — a same-bytes
@@ -3966,6 +4138,8 @@ mod tests {
         );
         assert!(retries.parked.contains_key("stuck.json"));
         // A corrected payload is a different digest: it rebinds and applies.
+        // (Current mtime: the round-12 minor-8 refresh re-based the parked
+        // timestamp, so a stamp from the old epoch would be quiet.)
         std::fs::write(
             spool.join("stuck.json"),
             spool_record_json(&[
@@ -3978,7 +4152,7 @@ mod tests {
             .write(true)
             .open(spool.join("stuck.json"))
             .unwrap()
-            .set_modified(parked_at + std::time::Duration::from_secs(1))
+            .set_modified(std::time::SystemTime::now())
             .unwrap();
         process_pending_spool(
             &CountingStateCreator(&state, applies.clone()),
@@ -4186,6 +4360,29 @@ mod tests {
             spool.join("dangling.json").symlink_metadata().is_ok(),
             "the link stays queued under its park (the platform rename refuses it)"
         );
+        // Round-12 MAJOR-2: pass 2 — the symlink_metadata retains keep the
+        // park and the episode identity alive for the dangling link (an
+        // exists-based retain follows the link, dissolves both EVERY pass,
+        // and the Poison arm rewrites the marker at 1 Hz forever).
+        let marker_path = done_dir().join("dangling.json");
+        let before = std::fs::read_to_string(&marker_path).unwrap();
+        let before_mtime = std::fs::metadata(&marker_path).unwrap().modified().unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            retries.parked.contains_key("dangling.json"),
+            "pass 2 keeps the park (the retain does not follow the link)"
+        );
+        assert!(
+            std::fs::metadata(&marker_path).unwrap().modified().unwrap() == before_mtime,
+            "pass 2 does not rewrite the marker — once per episode holds for a dangling link"
+        );
+        assert_eq!(std::fs::read_to_string(&marker_path).unwrap(), before);
     }
 
     /// #680 round-11 m-C: the Poison/Retry arms' ensure-presence repair
