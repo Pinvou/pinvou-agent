@@ -33,9 +33,11 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// [`AssetRef::kind`] of a vendor CLI binary: a versioned external asset that
 /// a package references but does not own (`docs/marketplace-unification.md`
-/// §4, `assets/cli/<name>/<version>/`). Both writers go through
-/// [`verified_cli_asset`], which records a pin only after hashing the on-disk
-/// binary against the lock table: the desktop connect path (connectors
+/// §4, `assets/cli/<name>/<version>/`). Both pin writers apply the same
+/// hash-then-record gate: a pin is recorded only after the on-disk binary's
+/// SHA-256 matches the lock table (`verified_cli_asset`, wrapping the
+/// `cli_asset_state` core the legacy scan consumes directly) — the desktop
+/// connect path (connectors
 /// `bundle_store_on_connected`) and the first-start legacy scan
 /// (`legacy_cli_records`). The headless CLI mirror deliberately connects
 /// without asset pins, so consumers must still tolerate an empty `assets`

@@ -269,8 +269,11 @@ workflows 非空                              → Workflow
    标记文件）。
 3. 登记 `BundleRecord { id, source: Upload("<zip名>"), installed: true,
    content_fingerprint, … }`，保持 store 前向兼容。
-   （现状：`credential_keys` / `assets` 镜像字段已删除——凭据由 `tool_credentials`
-   从落盘 manifest 收敛、资源完整性走 `installed` ∧ `degraded` 二态；
+   （现状：`credential_keys` 镜像字段已删除，凭据由 `tool_credentials`
+   从落盘 manifest 收敛；`assets` 已由两个 CLI pin 写入方启用——connectors
+   连接镜像与首启旧布局导入在盘上二进制 SHA-256 与 lock 表核对通过后登记
+   `AssetEntry::Ref`，插件导入本身不写 assets；资源完整性走 `installed` ∧
+   `degraded` 二态；
    `content_fingerprint` 走 `dir_fingerprint` 同口径；「插件语义版本与组件清单
    进 `extra`」未实施——组件清单由 `bundles/<id>/plugin.json` 自描述承担。）
 4. 纯 Skill 插件落盘后与现有上传技能**目录完全同构**（`bundles/<id>/skills/<name>/`），
