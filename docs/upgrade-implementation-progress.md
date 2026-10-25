@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, immutable T25 accepted-event attribution verified**.
+Checkpoint: **2026-10-25, T25 protected source-consumption increment verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -13,16 +13,19 @@ measured hours or release readiness.
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
 The current main task is **T25 network privacy**. Its immutable acceptance,
-original-ACK recovery and retention component is verified; real first-source
-capture and protected ASN/HMAC consumption remain the next implementation gap.
+original-ACK recovery and retention component is verified. The finite connection
+peer adapter and protected ASN/material capture/recheck interfaces are integrated;
+their scoped and final common verification passed. Binding those sources to genuine original
+event acceptance and contribution remains the next implementation gap.
 T13's protected planning workflow is delivered in service `51630257` and client
 progress `1805fcc`; its remaining active-floor/path/bridge work is parked.
 The domain, protected persistence/private owner, current HTTP/host composition and
 three-language administration form an independently reviewed and verified
 planning workflow. Scoped PostgreSQL/HTTPS, pure and synthetic UI, all six genuine
 three-language browser cases and final common checks passed as recorded below.
-T09 is parked pending the owner's macOS DMG/App observer architecture decision and
-the genuine downstream T46 evidence producer/consumption path. Its finite Mach-O
+T09's controlled macOS CI signed-measurement architecture is now approved;
+its implementation and genuine downstream T46 producer/consumption remain pending.
+T25 stays the sole active main task until this increment closes. T09’s finite Mach-O
 physical-entry increment is committed and pushed in service `c609f303`, with client
 progress `2426003d`; that parser does not complete DMG/App admission. Arbitrary NSIS
 layouts are outside the delivered fixed first-party Windows host profile, rather
@@ -97,10 +100,51 @@ vet, module integrity, Linux server and attribution CLI builds, client contract
 pin and whitespace checks passed. All seven command trees closed naturally
 without a memory-floor breach before result inspection.
 
-This independently usable component raises T25 from 35% to **45%**. Real first
-edge capture, protected ASN/purpose-week HMAC consumption, contribution limits
-and frozen privacy snapshots remain unimplemented. The engineering estimate
-sum is 1765, or **37.6%** across 47 tasks; strict completion remains **8/47**.
+That independently usable 55-file component was delivered in service
+`70da28f3` and client progress `fa009a16`, raising T25 from 35% to **45%**.
+At that checkpoint, real first-edge capture, protected ASN/purpose-week HMAC
+consumption, contribution limits and frozen privacy snapshots remained
+unimplemented. The engineering estimate sum was 1765, or **37.6%** across 47 tasks;
+strict completion remained **8/47**.
+
+## Current T25 protected source-consumption increment
+
+The finite direct-peer adapter is integrated with the actual server connection
+context. Acquisition defaults off; explicit `direct-peer.v1` observes only the
+immediate TCP peer and never trusts forwarding headers or a client field.
+Protected ASN and weekly-material Runtime capture/recheck interfaces now bind
+actual authenticated sources to a live original same-pool transaction. Store
+Borrow checks actual pool provenance and callback lifetime; detached results and
+old Status DTOs cannot mint these captures. Opaque wrappers redact formatting
+and cannot be restored from JSON/text.
+
+ASN rechecks selected source/active head and expiry using SQL time without file
+I/O in the final transaction. Weekly material rechecks the exact realm/purpose/
+ISO week and immutable ready m1, returning semantic reads and both exact cost
+phases/framing. Provider HMAC use remains outside the transaction. The final event
+must still perform its real joint 32 MiB metadata union; separate source budgets
+are not an event qualification or a hard download deadline.
+
+Peer-focused scoped checks recorded 551 passes across 112 top-level tests, zero
+skips/failures. Earlier invocations remain failed history; privacy fallback,
+pointer-receiver test syntax and extra-format marker assumptions were repaired
+and reverified without an environmental exemption. The original six redaction
+marker assertions and all directives' no-secret assertions remain.
+Scoped source-consumption: 92 passed, one subprocess-helper entry skipped, zero failed
+across 48 top-level tests. The real ASN/material/provider packages ran at parallelism
+two under the resource guard. Successful unchanged scopes were reused; earlier
+functional and test failures remain history, not environmental exemptions.
+Final common checks passed: 5,316 default Go records passed, 1,813 skipped,
+zero failed (2,587 top-level tests). Skipped records are unexecuted entries,
+not passes. Whole-repository vet, module integrity, Linux server and attribution
+CLI builds, client contract pin and whitespace checks passed. All seven command
+trees closed naturally without a memory-floor breach before result inspection.
+
+This increment does not yet consume these sources in the accepted-event owner.
+Persisted attribution still says `networkEvidence: not-captured`; original-ACK
+missingness/watermarks, the next attribution migration, contribution rules,
+frozen statistics and external queries remain unimplemented. T25 stays **45%**,
+the engineering estimate **37.6%**, and strict completion **8/47 (17.0%)**.
 
 ## Verified T13 planning-draft workflow increment
 
@@ -555,7 +599,10 @@ checks do not execute a macOS app or complete DMG admission.
 This does not establish compatibility with an authentic Tauri universal2 binary,
 a macOS run, a DMG filesystem or AppBundle/Info.plist, a certificate or a positive
 macOS Artifact.valid lifecycle. Complete DMG/App inspection remains an actual
-implementation gap; its observer/format architecture awaits the owner's decision.
+implementation gap. The owner has now approved a controlled macOS CI producer
+with dedicated signed measurement of the actual DMG/BundleInfo/main Mach-O and
+native read-only cleanup. Implementation, a genuine producer and service evidence
+consumption remain pending; ordinary provenance cannot replace this evidence.
 T46 reference consumption/display remains downstream and is not an Artifact.valid
 prerequisite. T09 remains **90%**; equal-task engineering **37.0%** and strict
 completion **8/47 (17.0%)** are unchanged.
@@ -857,7 +904,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 90% | In progress | Component estimate only. Upload/validation, independent FullPack custody and admission/quarantine machinery are delivered; Linux2 physical-main/XZ is committed in e7e58fa. The fixed Windows host source/profile and actual offline built-CLI workflow now have scoped verification; five owner/config checks, final common regression and the separate final built-CLI rerun passed. The finite universal2 Mach-O physical-entry reader passed scoped verification; other NSIS scripts/layouts remain unsupported outside the fixed host profile. Complete DMG filesystem/app and genuine downstream T46 reference consumption/display remain. No production installer/scan-to-valid claim; four quarantine browsers remain collected, zero executed. |
+| T09 | 90% | In progress | Component estimate only. Upload/validation, independent FullPack custody and admission/quarantine machinery are delivered; Linux2 physical-main/XZ is committed in e7e58fa. The fixed Windows host source/profile and actual offline built-CLI workflow now have scoped verification; five owner/config checks, final common regression and the separate final built-CLI rerun passed. The finite universal2 Mach-O physical-entry reader passed scoped verification; other NSIS scripts/layouts remain unsupported outside the fixed host profile. The controlled macOS CI dedicated signed-measurement architecture is approved, but complete DMG filesystem/app producer and service consumption remain unimplemented. Genuine downstream T46 reference consumption/display also remains. No production installer/scan-to-valid claim; four quarantine browsers remain collected, zero executed. |
 | T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
@@ -873,7 +920,7 @@ completion blocker; outstanding business implementation is.
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 45% | In progress | Purpose/week OpenBao material ownership and bounded offline ASN import/source ownership retain their delivered verification. Immutable original acceptance/CurrentVersion attribution, original ACK replay, thirty-day retention, private recovery and the current 19-owner classification are now integrated, independently reviewed and verified with real PostgreSQL and actual HTTP. Real first-edge inputs, protected ASN/purpose-week HMAC consumption, contribution limits and frozen privacy snapshots remain unimplemented. |
+| T25 | 45% | In progress | Purpose/week OpenBao material ownership and bounded offline ASN import/source ownership retain their delivered verification. Immutable original acceptance/CurrentVersion attribution, original ACK replay, thirty-day retention, private recovery and the current 19-owner classification are now integrated, independently reviewed and verified with real PostgreSQL and actual HTTP. Finite immediate-peer acquisition and protected ASN/material capture/recheck interfaces are integrated, with combined verification pending. Original-event source/HMAC composition, missingness, contribution limits and frozen privacy snapshots remain unimplemented; persisted attribution still says not-captured. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |

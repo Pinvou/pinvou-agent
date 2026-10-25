@@ -487,3 +487,17 @@ components whose actual scanning cannot be confirmed are explicitly incomplete
 and cannot be automatically approved. Further system-package support needs
 separate implementation and evidence; this decision does not certify a native
 execution, clean risk result or channel publication.
+
+## Approved controlled macOS native measurement (2026-10-25)
+
+The owner approved a controlled macOS CI producer for T09: perform actual
+read-only ULMO/UDZO DMG, BundleInfo and main Mach-O observations, then emit
+purpose-specific signed measurement evidence only after native cleanup completes.
+The service must bind the measured bytes/identities and verify the dedicated
+producer/purpose/predicate; ordinary DSSE provenance or a self-reported success
+cannot substitute for this evidence. The controlled producer is a trusted
+measurer: its signature authenticates its assertion, not independent proof that
+an authorized producer cannot lie. This is an explicit trust boundary, not a
+claim that CI, the producer or server consumption is already implemented.
+No deployment, installation qualification or T46 approval is authorized or
+established by this decision. T25 remains active before T09 implementation resumes.
