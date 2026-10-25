@@ -3574,7 +3574,6 @@ class CiGatePolicyTests(unittest.TestCase):
         # ruling, recorded at the cache step) — dropping targets again is a
         # policy change, not cleanup, and must revisit this pin.
         for job_name, end_marker in (
-            ("rust-test", "\n  cli-test:"),
             ("windows-rust-test", "\n  macos-rust-check:"),
             ("macos-rust-check", "\n  windows-codex-runtime-test:"),
             # Round-49 review: macos-cli-check joined the flag in round-48
@@ -3603,14 +3602,33 @@ class CiGatePolicyTests(unittest.TestCase):
             )
             self.assertIn("cache-on-failure: true", cache_step, job_name)
             self.assertIn("refs/heads/main", cache_step, job_name)
-        rust_test_cache = _without_yaml_comments(
-            self.pr_workflow.split(
-                "\n  rust-test:", maxsplit=1
-            )[1].split("\n  cli-test:", maxsplit=1)[0].split(
-                "uses: Swatinem/rust-cache@v2", maxsplit=1
-            )[1].split("\n      - name:", maxsplit=1)[0]
+        rust_test_job = self.pr_workflow.split(
+            "\n  rust-test:", maxsplit=1
+        )[1].split("\n  cli-test:", maxsplit=1)[0]
+        rust_test_cache_blocks = [
+            _without_yaml_comments(
+                rust_test_job[match.end() :].split("\n      - name:", maxsplit=1)[0]
+            )
+            for match in re.finditer(
+                r"uses: Swatinem/rust-cache@v2", rust_test_job
+            )
+        ]
+        # rust-test restores exactly one cache: its own rust-test-v2
+        # namespace, saved on main only and read-only elsewhere. Any second
+        # block is a new policy decision and must be pinned here (a lint
+        # warm restore was evaluated and rejected: the lint job compiles
+        # without this job's dev-profile overrides, so its target/ cannot
+        # satisfy test-build fingerprints, and its ~/.cargo half is already
+        # covered by this restore's prefix fallback).
+        self.assertEqual(
+            len(rust_test_cache_blocks), 1,
+            "rust-test must have exactly one rust-cache step",
         )
+        rust_test_cache = rust_test_cache_blocks[0]
+        self.assertIn("workspaces: pinvou3-app/src-tauri", rust_test_cache)
         self.assertIn("shared-key: rust-test-v2", rust_test_cache)
+        self.assertIn("cache-on-failure: true", rust_test_cache)
+        self.assertIn("refs/heads/main", rust_test_cache)
         # The re-enable is the absence of the old cache-targets: false
         # (rust-cache's default keeps target artifacts). Comments stripped:
         # the decision record above mentions the old value historically.

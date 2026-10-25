@@ -1249,6 +1249,20 @@ jobs:
         with:
           submodules: false
 
+      # / and /mnt share one disk on hosted runners. Memory setup first claims
+      # 8 GiB of swap (16 GiB when zram is unavailable), then system/Node
+      # dependencies and the Rust cache are installed/unpacked on top. Freeing
+      # space only after the cache restore can be too late: the runner may hit
+      # ENOSPC before it can even write diagnostic logs. Remove explicitly
+      # unused preinstalled SDKs before any large write and require at least
+      # 24 GiB of initial headroom; the second and third calls below re-run
+      # before and after the cache restore.
+      - name: Prepare Rust disk space before swap and caches
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py --min-free-gib 24
+
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
@@ -1345,6 +1359,15 @@ jobs:
         # 因此直接用 package-lock 驱动的 npm ci，避免额外维护一份硬编码版本并保证可复现。
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
+      # Cache extraction itself can exhaust the build disk; unused SDKs must
+      # go before the restore, not after it. Base tier only (this job needs
+      # Chrome for the e2e round, so the aggressive tier cannot be used).
+      - name: Prepare Rust disk space before cache restore
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -1373,10 +1396,10 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Single-disk hosted runners are tight on disk (PR #988: cold build had only 7.3 GiB
-      # left); remove unused preinstalled SDKs before dependency and test compilation. "base" tier:
-      # this job needs Chrome for e2e, so the "aggressive" tier (which removes /opt/google/chrome) cannot be used.
-      - name: Prepare disk space for the two Rust test rounds
+      # Reserve room after dependencies, the cache restore and the swap
+      # allocation; only unused SDKs on this disposable hosted runner are
+      # removed (PR #988: a cold build once started with only 7.3 GiB free).
+      - name: Re-check Rust disk space after cache restore
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
