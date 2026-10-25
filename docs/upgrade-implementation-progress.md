@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, Windows fixed-host final regression passed**.
+Checkpoint: **2026-10-25, finite Mach-O physical-entry scoped regression passed**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -20,10 +20,12 @@ verified upload lifecycle and validation components with the delivered
 admission/quarantine increment. Independent FullPack custody and generic
 fail-closed refusal passed their checks. The Linux physical-main/XZ follow-up is
 committed and pushed as service `e7e58fa`, with client progress `145540ee`.
-The current direct T04 increment adds fixed Windows host FullPack tooling and
-protected main-image checks. Its scoped built-CLI workflow and five owner/config
-checks passed. Final common regression and the separately rerun final CLI also
-passed, as recorded below.
+The fixed Windows host FullPack tooling and protected main-image checks are
+delivered in service `66b1e7d5`, with client progress `74d2cba0`. Its scoped
+built-CLI workflow, five owner/config checks, final common regression and final
+CLI rerun passed. The current shared physical-byte increment adds finite
+universal2 Mach-O executable-entry inspection with scoped verification below;
+it does not complete the DMG/App admission path.
 T07 signing-key lifecycle is implemented, independently reviewed and pushed. T29 signed-source
 continuation is delivered; its remaining production current-metadata/time owners
 remain parked with T26/T27.
@@ -328,8 +330,9 @@ Debian import; a test-only removal corrected it. That original invocation remain
 failed rather than environment-exempt. Actual release DEBs, original
 root/systemd scanning and a positive Artifact.valid lifecycle are not verified
 by the constructed parser fixtures. The new fixed Windows host increment below
-adds actual bounded main-image/source checks; generic NSIS payload extraction
-and DMG filesystem/application checks remain business gaps. Historical T04 role
+adds actual bounded main-image/source checks. Other NSIS scripts/layouts remain
+explicitly unsupported, not a separate required extractor. Complete DMG
+filesystem/application checks remain an implementation gap. Historical T04 role
 inspection and helper/launcher behavior are unchanged. The **90%** estimate is still component
 engineering coverage, not task completion or production admission success.
 Actual Linux/root/systemd scan plus live-cloud replica E2E remains unexecuted;
@@ -406,8 +409,9 @@ integration metadata/formatter preconditions also failed before any test ran.
 Those unsuccessful invocations are retained as such. Separate owner/configuration
 checks passed five top-level / five records, zero skips/failures, formatting and
 whitespace in their qualified closed run. Final common checks and the final built-CLI rerun passed in their separate
-qualifying invocation, recorded below. Generic NSIS payload and DMG filesystem/application
-business gaps remain, as does genuine downstream T46 evidence consumption.
+qualifying invocation, recorded below. Other NSIS scripts/layouts remain explicitly
+unsupported outside the fixed host profile. Complete DMG filesystem/application
+checks and genuine downstream T46 reference consumption/display remain to implement.
 T09 stays **90%**, equal-task engineering **37.0%**, strict completion **8/47
 (17.0%)**. No total download deadline or mandatory native certificate is added.
 
@@ -430,6 +434,32 @@ remain constructed offline source/material verification, without a production
 installer, T31 runtime, original scanner, live-cloud, browser or Artifact.valid
 lifecycle claim. A runner syntax preflight was corrected before any common
 stage started; it is not a test pass. Earlier unsuccessful runs remain recorded.
+
+## Finite universal2 Mach-O physical-entry increment
+
+The additive owned-byte reader now checks a bounded universal2 MH_EXECUTE profile:
+exact x86_64/subtype 3 and arm64/subtype 0 slices, a unique LC_MAIN per slice,
+non-overlapping bounded file/VM segments, an executable header-covering `__TEXT`,
+and actual file-backed entry bytes. ARM entries require aligned four-byte spans;
+the original FAT base is applied once. Other ABI/container/thread-entry variants
+are explicitly unsupported. The existing framing API remains unchanged.
+
+The naturally closed, resource-qualified Mach-O/packaging/verification scoped run
+recorded **323 passed, 22 skipped and zero failed**, across 116 top-level tests.
+
+The separate final required invocation also closed naturally without resource-floor
+breaches: default Go tests recorded **5,084 passed, 1,772 skipped and zero failed**,
+across 2,468 top-level tests including skips. All-package vet, module integrity,
+server build, the client contract pin and whitespace checks passed. The four new
+Mach-O top-level tests account for 40 passed records. Skips are not passes; these
+checks do not execute a macOS app or complete DMG admission.
+This does not establish compatibility with an authentic Tauri universal2 binary,
+a macOS run, a DMG filesystem or AppBundle/Info.plist, a certificate or a positive
+macOS Artifact.valid lifecycle. Complete DMG/App inspection remains an actual
+implementation gap; its observer/format architecture awaits the owner's decision.
+T46 reference consumption/display remains downstream and is not an Artifact.valid
+prerequisite. T09 remains **90%**; equal-task engineering **37.0%** and strict
+completion **8/47 (17.0%)** are unchanged.
 
 ## Completed T07 managed-purpose lifecycle
 
@@ -728,7 +758,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 90% | In progress | Component estimate only. Upload/validation, independent FullPack custody and admission/quarantine machinery are delivered; Linux2 physical-main/XZ is committed in e7e58fa. The fixed Windows host source/profile and actual offline built-CLI workflow now have scoped verification; five owner/config checks, final common regression and the separate final built-CLI rerun passed. Generic NSIS payload, DMG filesystem/app and genuine downstream T46 integration remain. No production installer/scan-to-valid claim; four quarantine browsers remain collected, zero executed. |
+| T09 | 90% | In progress | Component estimate only. Upload/validation, independent FullPack custody and admission/quarantine machinery are delivered; Linux2 physical-main/XZ is committed in e7e58fa. The fixed Windows host source/profile and actual offline built-CLI workflow now have scoped verification; five owner/config checks, final common regression and the separate final built-CLI rerun passed. The finite universal2 Mach-O physical-entry reader passed scoped verification; other NSIS scripts/layouts remain unsupported outside the fixed host profile. Complete DMG filesystem/app and genuine downstream T46 reference consumption/display remain. No production installer/scan-to-valid claim; four quarantine browsers remain collected, zero executed. |
 | T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
