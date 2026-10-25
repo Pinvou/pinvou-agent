@@ -1,31 +1,33 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, T25 protected source-consumption increment verified**.
+Checkpoint: **2026-10-25, T09 dedicated macOS measurement independently reviewed and verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **37.6%**. T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **37.7%** (1770/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T25 network privacy**. Its immutable acceptance,
-original-ACK recovery and retention component is verified. The finite connection
-peer adapter and protected ASN/material capture/recheck interfaces are integrated;
-their scoped and final common verification passed. Binding those sources to genuine original
-event acceptance and contribution remains the next implementation gap.
+The current main task is **T09 Artifact admission**. Its approved controlled
+macOS measurement observer, dedicated same-process signer/CLI and bounded service
+consumer are integrated, independently reviewed and verified as recorded below. T25's delivered archive/ACK/retention and
+protected peer/ASN/material source primitives retain their verified results.
+Original-event source/HMAC composition and contribution remain its parked gap;
+T25 stays **45%**.
 T13's protected planning workflow is delivered in service `51630257` and client
 progress `1805fcc`; its remaining active-floor/path/bridge work is parked.
 The domain, protected persistence/private owner, current HTTP/host composition and
 three-language administration form an independently reviewed and verified
 planning workflow. Scoped PostgreSQL/HTTPS, pure and synthetic UI, all six genuine
 three-language browser cases and final common checks passed as recorded below.
-T09's controlled macOS CI signed-measurement architecture is now approved;
-its implementation and genuine downstream T46 producer/consumption remain pending.
-T25 stays the sole active main task until this increment closes. T09’s finite Mach-O
+The dedicated macOS path preserves the actual whole paired provenance, separate
+measurement authority and final current-policy/Root/deny guards. Real controlled
+macOS/provider E2E is unexecuted; genuine downstream T46 producer/consumption
+remains unimplemented. T09's finite Mach-O
 physical-entry increment is committed and pushed in service `c609f303`, with client
 progress `2426003d`; that parser does not complete DMG/App admission. Arbitrary NSIS
 layouts are outside the delivered fixed first-party Windows host profile, rather
@@ -64,7 +66,58 @@ measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
 
-## Current T25 immutable accepted-event attribution increment
+## Current T09 dedicated macOS measurement increment
+
+The finite macOS observer checks the actual built FullPack and its sole matching
+final DMG, then measures the actual read-only mounted app rather than a neighboring
+build output. Fixed ULMO/UDZO and HFS+/APFS, original XML Info.plist and the finite
+universal2 main-entry profile are supported. Binary plists and unhandled variants
+remain explicitly Unsupported, not environmental exemptions. Source cleanup and
+input/tool rechecks must finish before the same-process producer can sign.
+
+The dedicated DSSE purpose/key/observer revision is independently pinned; the
+pipeline identity stays the original build pipeline. Actual whole provenance
+JSONL contains the original SLSA record first and dedicated measurement second.
+The service authenticates both exact records and their real Package/FullPack/DMG
+bindings, then rechecks current policy/Root/deny in the original final transaction
+without native/provider/file I/O there. T10's first-statement provenance observation
+and second-record syntax checks confer no native authority. Ordinary provenance,
+local JSON or a controlled CI assertion alone is not independent proof that an
+authorized producer cannot lie.
+
+The two non-overlapping scoped groups passed 545 and 30 test records:
+575 passed, two skipped, zero failed (159 passed top-level tests).
+The two skips are the existing opt-in actual NSIS and actual Windows-host CLI
+fixtures; those scenarios were not executed by this invocation. The initial
+57-record codec scope is superseded, not added. Independent source review also
+found and repaired the Package ID identifier-vs-digest mismatch, preserved
+capacity/cancellation error classes, and removed raw destructive process-group
+signals across the Wait/reap boundary; their regression controls passed.
+
+Both Intel/amd64 and Apple Silicon/arm64 macOS CLI builds and native-adapter
+test-binary compilation passed. These are compilation checks, not actual macOS
+mounting or process-cleanup execution.
+
+The required full default regression passed 5,428 test records, skipped 1,813,
+and failed zero (1,601 passed and 1,013 skipped top-level tests). Skips cover
+existing opt-in/platform/capability cases and are not executed passes.
+All-package vet, module integrity, Linux service build, exact client contract
+pin and whitespace checks passed. All invocations closed naturally without
+a resource-floor trip.
+
+No real controlled macOS environment or protected measurement key is configured;
+actual mount/provider-positive and scan-to-valid E2E remain unexecuted. The
+project's non-blocking environment policy permits delivery with that limitation
+recorded, never passed. Genuine downstream T46 producer and reference
+consumption/display remain a business implementation gap, not an Artifact.valid
+prerequisite. Native certificates remain optional.
+
+The T09 engineering estimate is **95%**, up from 90% for this independently
+usable component: estimate sum 1765 -> 1770, **1770/47 = 37.7%**. This is component coverage, not certification or
+whole T09 completion. Strict completion remains **8/47 (17.0%)**; task counts and
+all other task estimates are unchanged.
+
+## Delivered T25 immutable accepted-event attribution increment
 
 The protected archive now retains the original legal event's server acceptance
 SQL timestamp and the original workflow's installed `CurrentVersion`, with
@@ -107,7 +160,7 @@ consumption, contribution limits and frozen privacy snapshots remained
 unimplemented. The engineering estimate sum was 1765, or **37.6%** across 47 tasks;
 strict completion remained **8/47**.
 
-## Current T25 protected source-consumption increment
+## Verified T25 protected source-consumption increment
 
 The finite direct-peer adapter is integrated with the actual server connection
 context. Acquisition defaults off; explicit `direct-peer.v1` observes only the
@@ -143,8 +196,9 @@ trees closed naturally without a memory-floor breach before result inspection.
 This increment does not yet consume these sources in the accepted-event owner.
 Persisted attribution still says `networkEvidence: not-captured`; original-ACK
 missingness/watermarks, the next attribution migration, contribution rules,
-frozen statistics and external queries remain unimplemented. T25 stays **45%**,
-the engineering estimate **37.6%**, and strict completion **8/47 (17.0%)**.
+frozen statistics and external queries remain unimplemented. At that delivered
+checkpoint T25 stayed **45%**, the engineering estimate **37.6%**, and strict
+completion **8/47 (17.0%)**.
 
 ## Verified T13 planning-draft workflow increment
 
@@ -342,7 +396,13 @@ and cache observations do not replace them. Existing host staging and same-proce
 VerifiedExecutionObject custody are reused. T29 remains in progress at **75%**;
 real remote file-service and installed-host E2E gaps remain explicitly unexecuted.
 
-## Current T09 upload lifecycle, validation and storage increment
+## Historical T09 upload, validation and native-profile checkpoints
+
+The following T09 Linux/Windows/Mach-O checkpoints retain their delivery-time
+states and estimates, including then-open macOS implementation gaps. Those older
+estimates and gap descriptions are superseded by the current dedicated macOS
+measurement section above and the task table below. Original checks and failures
+are retained as historical evidence.
 
 The durable validation owner imports an authenticated original received receipt,
 creates one Artifact/job under the original T06 command, and retains exact
@@ -598,14 +658,15 @@ Mach-O top-level tests account for 40 passed records. Skips are not passes; thes
 checks do not execute a macOS app or complete DMG admission.
 This does not establish compatibility with an authentic Tauri universal2 binary,
 a macOS run, a DMG filesystem or AppBundle/Info.plist, a certificate or a positive
-macOS Artifact.valid lifecycle. Complete DMG/App inspection remains an actual
-implementation gap. The owner has now approved a controlled macOS CI producer
+macOS Artifact.valid lifecycle. At that checkpoint, complete DMG/App inspection
+was an implementation gap. The owner had approved a controlled macOS CI producer
 with dedicated signed measurement of the actual DMG/BundleInfo/main Mach-O and
-native read-only cleanup. Implementation, a genuine producer and service evidence
-consumption remain pending; ordinary provenance cannot replace this evidence.
-T46 reference consumption/display remains downstream and is not an Artifact.valid
-prerequisite. T09 remains **90%**; equal-task engineering **37.0%** and strict
-completion **8/47 (17.0%)** are unchanged.
+native read-only cleanup. Its implementation, producer and service evidence
+consumption were still pending; ordinary provenance could not replace that
+evidence. T46 reference consumption/display remained downstream and was not an
+Artifact.valid prerequisite. The checkpoint estimate was T09 **90%**, engineering
+**37.0%**, and strict completion **8/47 (17.0%)**. The current implemented finite
+measurement path and still-unexecuted native E2E are recorded above.
 
 ## Completed T07 managed-purpose lifecycle
 
@@ -904,7 +965,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 90% | In progress | Component estimate only. Upload/validation, independent FullPack custody and admission/quarantine machinery are delivered; Linux2 physical-main/XZ is committed in e7e58fa. The fixed Windows host source/profile and actual offline built-CLI workflow now have scoped verification; five owner/config checks, final common regression and the separate final built-CLI rerun passed. The finite universal2 Mach-O physical-entry reader passed scoped verification; other NSIS scripts/layouts remain unsupported outside the fixed host profile. The controlled macOS CI dedicated signed-measurement architecture is approved, but complete DMG filesystem/app producer and service consumption remain unimplemented. Genuine downstream T46 reference consumption/display also remains. No production installer/scan-to-valid claim; four quarantine browsers remain collected, zero executed. |
+| T09 | 95% | In progress | Component estimate only; independent source review, scoped verification and required common checks passed. Durable upload/validation, FullPack custody, finite Linux/Windows native profiles and admission/quarantine remain delivered. Dedicated macOS readonly observer, protected-purpose same-process signing and exact two-record service consumption are independently reviewed and verified; 575 scoped passes/2 skips plus full 5428 passes/1813 skips and both macOS target compiles are not an authentic macOS/provider or scan-to-valid positive. ULMO/UDZO, HFS+/APFS and original XML plist are finite support; unsupported variants are not environment exemptions. Genuine downstream T46 producer and reference consumption/display remain unimplemented; no complete T09/certification claim. |
 | T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
