@@ -9729,10 +9729,19 @@ mod scheduled_model_tests {
         let src = &src[..src
             .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
             .expect("the test module marker must exist")];
+        // Strip line comments before pinning: the reclaim closure's prose
+        // mentions `forwarder.abort()` verbatim, so a naive first-occurrence
+        // find lands on the comment instead of the call and inverts the
+        // ordering reads (same mutation class as the round-36 reuse-gate
+        // pin, which strips comments for the same reason).
         let body = production_body(
             src,
             "async fn reclaim_engine_entry(&self, session_id: &str, entry: EngineEntry) {",
-        );
+        )
+        .split('\n')
+        .map(|line| line.split("//").next().unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
         let abort_at = body
             .find("forwarder.abort()")
             .expect("reclaim must abort the forwarder");
