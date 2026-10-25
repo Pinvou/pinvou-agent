@@ -309,18 +309,18 @@ async fn snapshot_for_model_config(
                     target_kind,
                     metrics_applicable,
                     "offline",
-                Some(MonitorDiagnostic {
-                    code: "models_unreachable".to_string(),
-                    // The detail rides the same redaction composition as the
-                    // settings-page probe codes: reqwest's Display embeds the
-                    // full URL, and a user base_url can carry userinfo or a
-                    // token-shaped query string that must not leak into the
-                    // snapshot JSON.
-                    message: format!(
-                        "/v1/models unreachable: {}",
-                        crate::core::model_endpoint::model_probe_transport_code(&err).1
-                    ),
-                }),
+                    Some(MonitorDiagnostic {
+                        code: "models_unreachable".to_string(),
+                        // The detail rides the same redaction composition as the
+                        // settings-page probe codes: reqwest's Display embeds the
+                        // full URL, and a user base_url can carry userinfo or a
+                        // token-shaped query string that must not leak into the
+                        // snapshot JSON.
+                        message: format!(
+                            "/v1/models unreachable: {}",
+                            crate::core::model_endpoint::model_probe_transport_code(&err).1
+                        ),
+                    }),
                 ));
             }
             None
@@ -1277,7 +1277,10 @@ mod tests {
         .expect("snapshot");
         assert_eq!(http_err.health_status, "offline");
         assert_eq!(
-            http_err.diagnostic.expect("http error carries a diagnostic").code,
+            http_err
+                .diagnostic
+                .expect("http error carries a diagnostic")
+                .code,
             "models_http_error"
         );
 
@@ -1296,7 +1299,9 @@ mod tests {
         .expect("snapshot");
         assert_eq!(auth.health_status, "auth_failed");
         assert_eq!(
-            auth.diagnostic.expect("auth failure carries a diagnostic").code,
+            auth.diagnostic
+                .expect("auth failure carries a diagnostic")
+                .code,
             "auth_failed"
         );
 
@@ -1346,7 +1351,10 @@ mod tests {
         .expect("snapshot");
         assert_eq!(mismatch.health_status, "mismatch");
         assert_eq!(
-            mismatch.diagnostic.expect("mismatch carries a diagnostic").code,
+            mismatch
+                .diagnostic
+                .expect("mismatch carries a diagnostic")
+                .code,
             "model_mismatch"
         );
     }
@@ -1362,7 +1370,11 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let mock = models_mock::spawn(&[
-            ("/models", 200, r#"{"data":[{"id":"deepseek-v4-pro"}]}"#.into()),
+            (
+                "/models",
+                200,
+                r#"{"data":[{"id":"deepseek-v4-pro"}]}"#.into(),
+            ),
             // Non-Ollama local: the native follow-up stops with the 404.
             ("/api/ps", 404, "{}".into()),
             ("/metrics", 200, "".into()),
@@ -2097,7 +2109,10 @@ mod tests {
             Some(5.0)
         );
         let text = "vllm:generation_tokens_total{engine=\"0\"} +Inf\n";
-        assert_eq!(parse_prom_metric(text, "vllm:generation_tokens_total"), None);
+        assert_eq!(
+            parse_prom_metric(text, "vllm:generation_tokens_total"),
+            None
+        );
     }
 
     /// The percentage is `None` unless both counters are present, finite,
@@ -2111,7 +2126,10 @@ mod tests {
         assert_eq!(prefix_cache_hit_pct(Some(f64::NAN), Some(2.0)), None);
         assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(f64::NAN)), None);
         assert_eq!(prefix_cache_hit_pct(Some(f64::INFINITY), Some(2.0)), None);
-        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(f64::NEG_INFINITY)), None);
+        assert_eq!(
+            prefix_cache_hit_pct(Some(1.0), Some(f64::NEG_INFINITY)),
+            None
+        );
         assert_eq!(prefix_cache_hit_pct(None, Some(2.0)), None);
         assert_eq!(prefix_cache_hit_pct(Some(1.0), None), None);
         assert_eq!(prefix_cache_hit_pct(None, None), None);
