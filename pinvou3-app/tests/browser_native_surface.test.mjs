@@ -199,8 +199,17 @@ test('normal mode uses one Right Dock switcher for artifact and browser entries'
   assert.match(main, /platformCapabilities\.browserNativeDisplay/);
   assert.match(main, /invokeTauri\('browser_prepare', \{ sessionId: requestedSessionId \}\)/);
   // The lazy browser chunk is prefetched inside the workspace preparation so
-  // the fetch hides behind the Rust round-trip instead of the first paint.
-  assert.match(main, /prefetchView\('browser'\)[\s\S]*invokeTauri\('browser_prepare'/);
+  // the fetch hides behind the Rust round-trip instead of the first paint:
+  // after the browserActive early-return, before the prepare round-trip.
+  // Bounded windows keep the ordering pinned inside openBrowserDock instead of
+  // matching unrelated occurrences anywhere in the file.
+  assert.match(
+    main,
+    /if \(browserActive\) return;[\s\S]{0,400}prefetchView\('browser'\)[\s\S]{0,400}invokeTauri\('browser_prepare'/,
+  );
+  // The mobile navigation funnel (navigateFromScheduledRun → NAV_PREFETCH)
+  // prefetches the browser chunk at tap time like every other navigable view.
+  assert.match(main, /browser: \(\) => prefetchView\('browser'\)/);
   assert.match(main, /const \[browserPaneStates, setBrowserPaneStates\] = useState\(\{\}\)/);
   assert.match(main, /browserPaneStateFor\(browserPaneStates, browserSessionId\)/);
   assert.match(main, /rightDockActivePanelId=\{browserDockSelectedPanelId\}/);
@@ -329,14 +338,17 @@ test('task switches discard stale status and mount a fresh BrowserView instance'
   // (that would pin the whole pane graph back into the main chunk), and both
   // mounts go through the same React.lazy factory keyed by session.
   assert.match(main, /lazy\(\(\) => VIEW_LOADERS\.browser\(\)/);
-  assert.doesNotMatch(main, /import \{[^}]*BrowserView[^}]*\} from '\.\.\/features\/browser\/BrowserView\.jsx'/);
+  // Any import path reference (named, namespace, side-effect, or dynamic) would
+  // re-pin the pane graph into the entry; the dynamic import lives only in
+  // view-loaders.js.
+  assert.doesNotMatch(main, /['"]\.\.\/features\/browser\/BrowserView\.jsx['"]/);
   const allBrowserViews = main.match(/<LazyBrowserView\b/g) || [];
   const keyedBrowserViews = main.match(/<LazyBrowserView\s+[\s\S]{0,100}?key=\{browserSessionId\}/g) || [];
   assert.equal(allBrowserViews.length, 2, 'only the compact and dock BrowserView mounts may exist');
   assert.equal(keyedBrowserViews.length, 2, 'compact and dock BrowserView instances must both be keyed by session');
   assert.match(
     main,
-    /\{browserActive \? \(\s*<ViewErrorBoundary t=\{t\}>\s*<Suspense fallback=\{null\}>\s*<LazyBrowserView/,
+    /\{browserActive \? \(\s*<ViewErrorBoundary t=\{t\} variant="panel">\s*<Suspense fallback=\{null\}>\s*<LazyBrowserView/,
     'dock BrowserView must isolate lazy chunk loading and failures from the app root',
   );
 });

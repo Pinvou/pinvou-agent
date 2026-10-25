@@ -230,6 +230,7 @@ const NAV_PREFETCH = {
   monitor: () => prefetchView('monitor'),
   toolStore: () => prefetchView('toolStore'),
   cardpool: () => prefetchView('cardpool'),
+  browser: () => prefetchView('browser'),
 };
 
 const EMPTY_PICKER_ROWS = [];
@@ -4642,7 +4643,7 @@ const App = () => {
                 </div>
                 <div className="min-h-0 flex-1">
                   {browserActive ? (
-                    <ViewErrorBoundary t={t}>
+                    <ViewErrorBoundary t={t} variant="panel">
                       <Suspense fallback={null}>
                         <LazyBrowserView
                           key={browserSessionId}
