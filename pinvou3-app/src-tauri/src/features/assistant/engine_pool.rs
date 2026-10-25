@@ -2652,7 +2652,6 @@ impl EnginePool {
         }
         let reclaim_ms = elapsed_ms(reclaim_started);
 
-        let is_scheduled = self.store.scheduled_profile(session_id).is_some();
         let finalize_bridge_started = Instant::now();
         let bridge =
             Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
@@ -2727,6 +2726,21 @@ impl EnginePool {
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
         let spawn_engine_started = Instant::now();
+        // Load before spawning: no fallible disk read may strand a cold
+        // engine, and the baseline read takes the store's mutation gate so it
+        // is ordered after every already-admitted writer of a retired engine
+        // incarnation — the replacement observes their commits (and their
+        // transcript_committed notifications) from the start.
+        let load_session_started = Instant::now();
+        let store_for_load = self.store.clone();
+        let session_for_load = session_id.to_owned();
+        let saved = tokio::task::spawn_blocking(move || {
+            store_for_load.load_for_engine_spawn(&session_for_load)
+        })
+        .await
+        .context("engine baseline read task failed")?
+        .with_context(|| format!("load session {session_id} before spawning its engine"))?;
+        let load_session_ms = elapsed_ms(load_session_started);
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
             self.store.clone(),
@@ -2750,40 +2764,24 @@ impl EnginePool {
         // get the first turn's SessionUpdated rejected on an id mismatch,
         // ending with only the user message durable and the assistant reply
         // lost.
-        let load_session_started = Instant::now();
-        let loaded_session = self.store.load(session_id);
-        let load_session_ms = elapsed_ms(load_session_started);
         let sync_session_started = Instant::now();
-        match loaded_session {
-            Ok(saved) => {
-                if let Err(error) = engine
-                    .sync_session(session_id.to_string(), saved.messages)
-                    .await
-                {
-                    if is_scheduled {
-                        teardown_failed_spawn_engine(&engine, forwarder).await;
-                        return Err(error).with_context(|| {
-                            format!("sync scheduled session {session_id} before its first turn")
-                        });
-                    }
-                    eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
-                } else {
-                    // The hydrated history is forwarder-sanitized: old
-                    // transcript rules can no longer match the new engine's
-                    // snapshot, so prune them to stop rules accumulating per
-                    // turn. The interactive path installs rules around spawn
-                    // (reserve already marked active); the retain predicate
-                    // guarantees the in-flight reservation's rule survives.
-                    turn_lifecycle.prune_stale_transcript_rules();
-                }
-            }
-            Err(error) => {
-                teardown_failed_spawn_engine(&engine, forwarder).await;
-                return Err(error).with_context(|| {
-                    format!("load session {session_id} before spawning its engine")
-                });
-            }
+        if let Err(error) = engine
+            .sync_session(session_id.to_string(), saved.messages)
+            .await
+        {
+            // Fail the spawn instead of publishing an unhydrated engine: a
+            // published engine without its baseline would persist the first
+            // turn over the pre-created record and lose the history.
+            teardown_failed_spawn_engine(&engine, forwarder).await;
+            return Err(error)
+                .with_context(|| format!("sync session {session_id} before its first turn"));
         }
+        // The hydrated history is forwarder-sanitized: old transcript rules
+        // can no longer match the new engine's snapshot, so prune them to
+        // stop rules accumulating per turn. The interactive path installs
+        // rules around spawn (reserve already marked active); the retain
+        // predicate guarantees the in-flight reservation's rule survives.
+        turn_lifecycle.prune_stale_transcript_rules();
         let sync_session_ms = elapsed_ms(sync_session_started);
 
         self.entries.lock().await.insert(
@@ -9631,12 +9629,28 @@ mod scheduled_model_tests {
         assert_eq!(
             body.matches("teardown_failed_spawn_engine(&engine, forwarder)")
                 .count(),
-            2,
-            "both hydration-failure arms (sync failure on a scheduled session, store load failure) must use the bounded teardown"
+            1,
+            "the sync-failure arm must use the bounded teardown; a failed baseline load now precedes the spawn and leaves no engine to tear down"
         );
         assert!(
             !body.contains("engine.handle.send(Op::Shutdown)"),
             "no direct unbounded Shutdown send may remain in the spawn-failure teardown"
+        );
+        // Engine-recycle ordering pin (parity with the official fork's
+        // transcript-commit lifecycle fix): the baseline read must precede
+        // the spawn and go through the mutation-gated loader, so the
+        // replacement engine cannot start ahead of an already-admitted
+        // retired writer's commit.
+        let load_at = body
+            .find("load_for_engine_spawn(&session_for_load)")
+            .expect("the baseline read must use load_for_engine_spawn");
+        let spawn_at = body
+            .find("AppEngine::spawn_for_session(")
+            .expect("load must precede spawn");
+        assert!(load_at < spawn_at, "load must precede spawn");
+        assert!(
+            !body.contains("self.store.load(session_id)"),
+            "no ungated baseline read may remain in the spawn path"
         );
     }
 
