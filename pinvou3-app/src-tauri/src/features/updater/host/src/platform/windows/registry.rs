@@ -380,6 +380,13 @@ fn reserved_inventory_values(key: &Key, used: usize) -> Result<()> {
     Err(Error::StateCorrupt)
 }
 
+/// Actual bounded registry payloads, not a service/source capability. The sealed
+/// StartedServiceContext getter authenticates custody and current incarnation.
+pub(super) struct OriginalRootRead {
+    pub(super) metadata_record: Vec<u8>,
+    pub(super) root: Vec<u8>,
+}
+
 pub(super) struct Store {
     path: String,
 }
@@ -490,6 +497,46 @@ impl Store {
             .map_err(|_| Error::StateCorrupt)?;
         Ok(manifest)
     }
+    /// Read the original three bootstraps from one held private key. The caller
+    /// supplies its actual Store.read snapshot, never a replacement Root/pin.
+    /// Head is checked both before and after these reads; a concurrent legitimate
+    /// status update safely requires recapture, not mutation or genesis repair.
+    pub(super) fn original_root(
+        &self,
+        seed: &Seed,
+        expected: &HostRegistration,
+    ) -> Result<OriginalRootRead> {
+        expected.validate(seed)?;
+        if !crate::bootstrap::initialized(&expected.known_owner_namespaces) {
+            return Err(Error::InitialTrustUnavailable);
+        }
+        let key = self
+            .key(false, None)?
+            .ok_or(Error::InitialTrustUnavailable)?;
+        let head = read(&key, "Head")?;
+        let actual = decode_record(&head, seed)?;
+        if actual.digest()? != expected.digest()? {
+            return Err(Error::ScopeConflict);
+        }
+        let metadata_record = read(&key, METADATA_BOOTSTRAP)?;
+        let root = read(&key, METADATA_BOOTSTRAP_ROOT)?;
+        let ownership = read(&key, PREPARATION_BOOTSTRAP)?;
+        // Expected genesis only verifies the actual stored bytes. Never return
+        // expected.metadata.root_bytes()/Seed bytes instead of the actual read.
+        OwnerBootstrap::new(seed, &actual.installation_scope_id)?.check_existing(
+            &metadata_record,
+            &root,
+            &ownership,
+        )?;
+        if read(&key, "Head")? != head {
+            return Err(Error::ScopeConflict);
+        }
+        Ok(OriginalRootRead {
+            metadata_record,
+            root,
+        })
+    }
+
     pub(super) fn manifest(
         &self,
         seed: &Seed,

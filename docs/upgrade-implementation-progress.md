@@ -122,6 +122,23 @@ that environmental gap is non-blocking and is not a pass. Earlier Node/Go/Rust
 counts remain historical, without accumulation. T26 stays **20%**, the engineering
 estimate **38.5%**, and strict completion **8/47 (17.0%)**.
 
+
+**Protected original Root retrieval:** the real post-COMMIT Windows service can
+now read the exact original Root and metadata record from protected registry
+storage. Capture and consumption authenticate the running service, retained
+images, installation binding and complete three-owner bootstrap; partial or legacy
+state refuses without initialization. Capture checks a consistent Head, while the
+retained identity excludes mutable status fields, so a legal status update does
+not permanently invalidate original Root custody. This supplies immutable genesis
+DATA, not accepted-current Root, UTC or installation rights. Independent source
+review passed. The host suite passed 103 tests with one existing test ignored;
+the metadata-owner suite passed seven tests, including one new real-signature
+binding-refusal test. Windows helper/launcher builds, formatting, architecture and
+whitespace passed. Actual installed-SCM/registry race scenarios remain unexecuted,
+non-blocking and not passes. These results are separate runs, not added to earlier
+counts. Protected time/Root state, original-budget persistence and cleanup recovery
+remain later T26 work; T26 stays **20%**, overall **38.5%**, strict **8/47 (17.0%)**.
+
 T09's approved controlled macOS measurement component remains
 delivered; genuine downstream T46 production/consumption is still its parked gap.
 T13's protected planning workflow is delivered in service `51630257` and client

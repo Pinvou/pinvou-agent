@@ -209,3 +209,94 @@ fn existing_records_and_original_root_are_immutable_and_scope_bound() {
     );
     assert_eq!(expected.record_bytes(), before);
 }
+
+#[test]
+fn equal_root_bytes_cannot_borrow_another_bootstrap_binding() {
+    // Real signature/parser DATA controls, not a registry/SCM Source fixture.
+    // The same product-global Root legitimately appears under many component
+    // bindings; only the exact original record may be accepted for a binding.
+    let root = signed_root(7, 1000, 2000, 2);
+    let expected_binding = binding(&"1".repeat(64));
+    let original =
+        BootstrapAnchor::new(&expected_binding, &root, root.len() as u64, &sha256(&root)).unwrap();
+    for index in 0..6 {
+        let scope = if index == 0 {
+            "3".repeat(64)
+        } else {
+            "1".repeat(64)
+        };
+        let seed = if index == 5 {
+            "4".repeat(64)
+        } else {
+            "2".repeat(64)
+        };
+        let other_binding = BootstrapBinding::new(
+            &scope,
+            "pinvou",
+            if index == 1 { "plugin" } else { "agent" },
+            if index == 2 {
+                "linux-x86_64-deb-perMachine"
+            } else {
+                "windows-x86_64-nsis-perMachine"
+            },
+            if index == 3 { "lab" } else { "production" },
+            if index == 4 {
+                "another-installation"
+            } else {
+                "stable-installation"
+            },
+            &seed,
+        )
+        .unwrap();
+        let other =
+            BootstrapAnchor::new(&other_binding, &root, root.len() as u64, &sha256(&root)).unwrap();
+        assert_eq!(other.root_bytes(), root);
+        assert_eq!(
+            BootstrapAnchor::parse(
+                other.record_bytes(),
+                &root,
+                &expected_binding,
+                root.len() as u64,
+                &sha256(&root)
+            )
+            .err(),
+            Some(Error::ExistingStateMismatch),
+            "binding case {index}"
+        );
+        assert_eq!(
+            BootstrapAnchor::parse(
+                original.record_bytes(),
+                &root,
+                &other_binding,
+                root.len() as u64,
+                &sha256(&root)
+            )
+            .err(),
+            Some(Error::ExistingStateMismatch),
+            "reverse binding case {index}"
+        );
+    }
+    // Missing/partial storage payloads cannot be interpreted as initial genesis.
+    for missing in [&[][..], &b"{}"[..]] {
+        assert!(
+            BootstrapAnchor::parse(
+                missing,
+                &root,
+                &expected_binding,
+                root.len() as u64,
+                &sha256(&root)
+            )
+            .is_err()
+        );
+        assert!(
+            BootstrapAnchor::parse(
+                original.record_bytes(),
+                missing,
+                &expected_binding,
+                root.len() as u64,
+                &sha256(&root)
+            )
+            .is_err()
+        );
+    }
+}
