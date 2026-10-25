@@ -3774,6 +3774,16 @@ impl EnginePool {
     /// M2). The pool sets it when compact_now enqueues `Op::CompactContext`
     /// (closing the enqueue→CompactionStarted window) and the forwarder's
     /// compaction terminal events clear it.
+    /// r34 MAJOR-1: read-only probe of the execution-root rewind flag. A
+    /// compaction enqueued inside a rewind critical section persists the
+    /// engine's in-memory pre-rewind history over the truncated transcript;
+    /// compact_now must probe this before enqueuing.
+    pub(crate) fn is_execution_root_rewinding(&self, execution_root: &std::path::Path) -> bool {
+        self.execution_root_rewind_flag(execution_root)
+            .lock()
+            .clone()
+    }
+
     pub(crate) fn set_compaction_in_flight(&self, session_id: &str, in_flight: bool) {
         if in_flight {
             // Round-35 M1: re-set refreshes the timestamp — the forwarder's

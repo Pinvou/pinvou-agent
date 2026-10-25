@@ -112,7 +112,15 @@ export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { bu
     ordinal !== backendUserTurns + steeredBeyondBackend
   ) {
     const inFlightTolerance = busy && ordinal === backendUserTurns + steeredBeyondBackend + 1;
-    if (!inFlightTolerance) return new Map();
+    if (!inFlightTolerance) {
+      // r34 MAJOR-4：闲置时尾部超界的唯一合法形态是「最新轮快照缺失/失败」
+      // （预算跳过/瞬态 IO 错误）——该边界降级为仅对话照常渲染（后端 precheck
+      // 数的是完整 transcript，会如实接受），而非整会话入口消失。尾部边界若
+      // 有快照支撑，计数缺口仍是真实分叉信号 → 维持整会话拒绝。
+      const tailHasSnapshot = byTurn.get(ordinal) != null;
+      if (!tailHasSnapshot) return entries;
+      return new Map();
+    }
   }
   return entries;
 }

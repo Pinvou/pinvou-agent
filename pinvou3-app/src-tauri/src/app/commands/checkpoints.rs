@@ -1538,6 +1538,44 @@ fn ",
         );
     }
 
+    /// r34 M5 pin：破坏性命令族的 aux 显式拒绝——raw IPC 直调不得经
+    /// truncate_to_user_turn 改写 aux transcript（文件头声明已按实际行为改写）。
+    /// 删除任一拒绝必须变红（命令体无法单测直调，源码 pin 是本项目惯例）。
+    #[test]
+    fn destructive_commands_refuse_aux_sessions() {
+        let src = include_str!("checkpoints.rs");
+        for signature in [
+            "pub async fn rewind_to_turn(",
+            "pub async fn undo_last_rewind(",
+        ] {
+            let fn_start = src.find(signature).expect("production fn must exist");
+            let rest = &src[fn_start..];
+            let body_end = [
+                "
+pub ",
+                "
+pub(super) ",
+                "
+async fn ",
+                "
+fn ",
+            ]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(rest.len(), |offset| offset);
+            let body = &rest[..body_end];
+            assert!(
+                body.contains("is_aux_session_id(&session_id)"),
+                "{signature} 必须显式拒绝 aux 会话（r34 M5）"
+            );
+            assert!(
+                body.contains("辅助会话不支持检查点"),
+                "{signature} 必须携带 aux 拒绝文案（r34 M5）"
+            );
+        }
+    }
+
     /// r26 M2 pin：回退前奏必须先探活暂记、再做陈旧 Turn 和解
     /// （persist 分裂窗内 sidecar 记录不是「截断已发生」的凭据，按记录失效
     /// 会删掉暂记自己的目标快照、楔死错误信息承诺的引导重试）。

@@ -253,8 +253,19 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   // 混合：快照前后各一个 steer → 只容忍快照后那个。
   const mixed = [userTurn('t1'), steerTurn('s1'), userTurn('t2'), steerTurn('s2')];
   assert.equal(rewindEntriesByTurnId(mixed, checkpoints3, 3).size, 4, '恰差快照后的 steer → 照常渲染');
-  // 非 steer 的真计数缺口（如压缩收缩）不因 steer 容忍被掩盖。
-  assert.equal(rewindEntriesByTurnId([userTurn('t1'), userTurn('t2'), userTurn('t3')], checkpoints2, 2).size, 0, '非 steer 缺口仍拒绝');
+  // 非 steer 缺口（如压缩收缩）：r34 MAJOR-4 起尾部边界按快照支撑分类——
+  // 尾部无快照（快照失败/缺失）→ 降级为仅对话照常渲染；尾部有快照支撑 →
+  // 精确匹配维持拒绝（真实分叉信号不被掩盖）。
+  assert.equal(
+    rewindEntriesByTurnId([userTurn('t1'), userTurn('t2'), userTurn('t3')], checkpoints2, 2).size,
+    3,
+    '快照缺失尾部边界降级为仅对话照常渲染（r34 MAJOR-4）',
+  );
+  assert.equal(
+    rewindEntriesByTurnId([userTurn('t1'), userTurn('t2'), userTurn('t3')], checkpoints3, 2).size,
+    0,
+    '尾部边界有快照支撑时计数缺口仍拒绝',
+  );
 }
 
 // checkpoint 列表为空（系统无 git/快照全部失败）→ 整个会话无入口（设计 §5）。

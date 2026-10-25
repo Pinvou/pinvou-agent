@@ -502,6 +502,12 @@ assert.match(rustCommandBlock(remoteControlCommands, 'web_access_chat_for_sessio
 assert.match(rustCommandBlock(commands, 'compact_now'),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'compact_now must reject ACP sessions before EnginePool rewrites their history');
+// r34 MAJOR-1 pin: compact_now must probe the execution-root rewind flag -
+// compaction's persist inside a rewind critical section resurrects the
+// truncated transcript (conversation restored, workspace still rewound).
+assert.match(rustCommandBlock(commands, 'compact_now'),
+  /is_execution_root_rewinding\(&roots\.execution\)/,
+  'compact_now must refuse while the execution root is being rewound (r34 MAJOR-1)');
 assert.match(rustCommandBlock(commands, 'edit_last_turn'),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'edit_last_turn must reject ACP sessions before the reserve-truncate-resend path runs');
