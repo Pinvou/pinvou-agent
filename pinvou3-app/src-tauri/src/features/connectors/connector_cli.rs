@@ -767,9 +767,29 @@ fn collect_refresh_outcomes(
 /// 连接成功（授权就绪）后登记 CLI 包：`source=Builtin`，并清除 `degraded`
 /// （重连即修复，§3.2）。既有记录保留首次登记时间与 extra（见
 /// `BundleStore::upsert_preserving`）。
+///
+/// The connected CLI's lock pin (version + binary SHA-256) is recorded as an
+/// `AssetEntry::Ref` so `bundles.json` carries the asset provenance of what
+/// was actually installed; a lock-table miss degrades to a pin-less record
+/// instead of failing the connect mirror. `upsert_preserving` keeps an older
+/// pin when this writer carries none.
 pub fn bundle_store_on_connected(id: &str) {
-    use crate::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
-    let record = BundleRecord::installed_now(id, BundleSource::Builtin);
+    use crate::features::marketplace::bundle;
+    use crate::features::marketplace::store::{
+        ASSET_KIND_CLI, AssetEntry, AssetRef, BundleRecord, BundleSource, BundleStore,
+    };
+    let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
+    if let Some(bin) = bundle::cli_bundle_bin(id) {
+        if let Some(pin) = crate::platform::connector_lock::artifact_pin(bin) {
+            record.assets.push(AssetEntry::Ref(AssetRef {
+                kind: ASSET_KIND_CLI.to_string(),
+                name: bin.to_string(),
+                version: pin.version,
+                sha256: pin.binary_sha256,
+                ..AssetRef::default()
+            }));
+        }
+    }
     if let Err(e) = BundleStore::new().upsert_preserving(record) {
         log::warn!("[connectors] bundles.json 镜像写入失败（connect {id}）: {e}");
     }

@@ -33,10 +33,11 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// [`AssetRef::kind`] of a vendor CLI binary: a versioned external asset that
 /// a package references but does not own (`docs/marketplace-unification.md`
-/// §4, `assets/cli/<name>/<version>/`). Reserved schema constant: no writer
-/// records these refs today (the headless CLI deliberately connects without
-/// asset pins), so consumers must tolerate an always-empty `assets` list and
-/// the first pin writer owns proving its entries against the on-disk files.
+/// §4, `assets/cli/<name>/<version>/`). Written by the desktop connect path
+/// (connectors `bundle_store_on_connected`) and the first-start legacy scan
+/// (`legacy_cli_records`, which records a pin only after hashing the on-disk
+/// binary against it); the headless CLI mirror deliberately connects without
+/// asset pins, so consumers must still tolerate an always-empty `assets` list.
 pub const ASSET_KIND_CLI: &str = "cli";
 
 /// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
@@ -305,9 +306,9 @@ impl BundleStore {
     /// another writer recorded while a pin writer can still replace a stale
     /// pin. The flip side: "unpin all" is not expressible through this
     /// variant — a writer that genuinely wants an empty list must fall to
-    /// plain `upsert`, which replaces the whole record. No code records pins
-    /// yet; the rule exists so the first pin writer cannot silently wipe, and
-    /// its protection is per-process: each process merges against its own
+    /// plain `upsert`, which replaces the whole record. The pin writers are
+    /// the connectors' connect mirror and the first-start legacy import; the
+    /// rule's protection is per-process: each process merges against its own
     /// load-time snapshot, so cross-process writers remain last-writer-wins
     /// on the whole file.
     pub fn upsert_preserving(&self, record: BundleRecord) -> Result<(), String> {
@@ -876,20 +877,21 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
         let skills_present = bundle::cli_bundle_skill_dirs(id)
             .iter()
             .any(|d| skills_dir.join(d).join("SKILL.md").is_file());
-        let mut binary_verified = false;
+        let mut assets = Vec::new();
         let mut degraded = None;
         if let Some(bin) = bundle::cli_bundle_bin(id) {
             match cli_asset_state(bin) {
-                CliAssetState::Verified => binary_verified = true,
+                CliAssetState::Verified(asset) => assets.push(AssetEntry::Ref(asset)),
                 CliAssetState::Mismatch(reason) => degraded = Some(reason),
                 CliAssetState::Absent => {}
             }
         }
         // 技能目录与二进制都不在盘 = 未连接过，不登记
-        if !skills_present && !binary_verified && degraded.is_none() {
+        if !skills_present && assets.is_empty() && degraded.is_none() {
             continue;
         }
         out.push(BundleRecord {
+            assets,
             installed_at: now.clone(),
             degraded,
             ..BundleRecord::installed_now(id, BundleSource::Builtin)
@@ -899,7 +901,7 @@ fn legacy_cli_records() -> Vec<BundleRecord> {
 }
 
 enum CliAssetState {
-    Verified,
+    Verified(AssetRef),
     Mismatch(String),
     Absent,
 }
@@ -923,7 +925,13 @@ fn cli_asset_state(bin: &str) -> CliAssetState {
         ));
     };
     match crate::platform::hashing::sha256_file(&path) {
-        Ok(actual) if actual == pin.binary_sha256 => CliAssetState::Verified,
+        Ok(actual) if actual == pin.binary_sha256 => CliAssetState::Verified(AssetRef {
+            kind: ASSET_KIND_CLI.to_string(),
+            name: bin.to_string(),
+            version: pin.version,
+            sha256: pin.binary_sha256,
+            ..AssetRef::default()
+        }),
         Ok(actual) => CliAssetState::Mismatch(format!(
             "CLI 二进制 SHA-256 与 lock 表不符（expected {}, got {actual}），待重新下载",
             pin.binary_sha256
@@ -982,6 +990,13 @@ mod tests {
             let store = BundleStore::new();
             let mut full = record("feishu", BundleSource::Builtin);
             full.content_fingerprint = Some("abc123".to_string());
+            full.assets = vec![AssetEntry::Ref(AssetRef {
+                kind: ASSET_KIND_CLI.to_string(),
+                name: "lark-cli".to_string(),
+                version: "1.2.3".to_string(),
+                sha256: "deadbeef".to_string(),
+                ..AssetRef::default()
+            })];
             full.degraded = Some("reason".to_string());
             store.upsert(full.clone()).unwrap();
             store
