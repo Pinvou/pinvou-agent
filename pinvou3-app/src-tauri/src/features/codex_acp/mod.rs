@@ -4249,6 +4249,13 @@ impl AcpPool {
                 if runtime.busy.load(Ordering::Acquire) {
                     let turn_id = runtime.bridge.current_turn_id();
                     runtime.cancel();
+                    // Journal the cancel request before scheduling the settle
+                    // watchdog: the timeline/acp-state projection records that
+                    // the stop was requested even when the agent never answers
+                    // and the watchdog has to settle locally.
+                    runtime
+                        .bridge
+                        .emit("cancel_requested", json!({ "status": "cancelling" }));
                     // Stop cannot wait forever for the agent. An upstream adapter
                     // may never answer a dropped or absorbed prompt; field evidence
                     // showed four clicks before its own cancel floor settled it.
