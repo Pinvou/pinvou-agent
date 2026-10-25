@@ -1,7 +1,8 @@
 # 上下文压缩设计（总纲 + 分期计划）
 
 > 立档 2026-07-02。本文已取代早期 256K 调参方案；旧方案对应的 fork patch 已被上游
-> v0.8.65 吸收进 `route_budget`/`RouteLimits`，不再需要 fork。历史推导可从 Git 记录追溯。
+> v0.8.65 吸收进 `route_budget`/`RouteLimits`，不再需要 fork。早期调参推导的完整历史
+> 文档（`auto-compact-256K-tuning.md` 等）保留在官方 fork 中，未随社区版发布。
 
 ## 0. 设计目标（钉死，优先于一切参数）
 

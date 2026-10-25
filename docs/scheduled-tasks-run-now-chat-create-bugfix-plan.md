@@ -1775,7 +1775,7 @@ cd src-tauri
 cargo check --locked
 ```
 
-说明：`cargo check --locked` 不编译 `#[cfg(test)]`，要覆盖新增的后端命令测试需 `cargo check --locked --tests`。本机实际运行 Rust 测试二进制可能撞 `STATUS_ENTRYPOINT_NOT_FOUND`，根因与缓解步骤见 `docs/windows-rust-ci.md`（§What the job runs 第 6-9 步）。
+说明：`cargo check --locked` 不编译 `#[cfg(test)]`，要覆盖新增的后端命令测试需 `cargo check --locked --tests`。本机实际运行 Rust 测试二进制可能撞 `STATUS_ENTRYPOINT_NOT_FOUND`，根因与缓解步骤见 `docs/windows-rust-ci.md`（§What the job runs 第 11-13、15 步）。
 
 ### 六、交接风险
 
