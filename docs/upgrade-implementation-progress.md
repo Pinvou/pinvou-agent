@@ -1,18 +1,22 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, protected T13 planning-draft workflow verified**.
+Checkpoint: **2026-10-25, immutable T25 accepted-event attribution verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **37.3%**. T07, T08, T09, T10, T13, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **37.6%**. T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T13 protected support-floor planning drafts and original-request recovery**.
+The current main task is **T25 network privacy**. Its immutable acceptance,
+original-ACK recovery and retention component is verified; real first-source
+capture and protected ASN/HMAC consumption remain the next implementation gap.
+T13's protected planning workflow is delivered in service `51630257` and client
+progress `1805fcc`; its remaining active-floor/path/bridge work is parked.
 The domain, protected persistence/private owner, current HTTP/host composition and
 three-language administration form an independently reviewed and verified
 planning workflow. Scoped PostgreSQL/HTTPS, pure and synthetic UI, all six genuine
@@ -57,7 +61,48 @@ measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
 
-## Current T13 planning-draft workflow increment
+## Current T25 immutable accepted-event attribution increment
+
+The protected archive now retains the original legal event's server acceptance
+SQL timestamp and the original workflow's installed `CurrentVersion`, with
+immutable replay, legacy absence, thirty-day detail retention and irreversible
+tombstones. It preserves the original T20 event, signed input, T06 operation
+and ACK. Each record explicitly says `networkEvidence: not-captured`; a replay
+cannot fill missing peer, prefix, ASN or HMAC facts.
+
+Explicit owner installation/pruning and installed event-seven private recovery
+are integrated with the current floor-one, scan-one and formal-ten owners.
+The 19 private names affect global unknown-command classification only; the
+common worker retains its original due keys. Runtime connections must explicitly
+place `pg_temp` after `pg_catalog`; unsafe configuration is refused before capture.
+
+Independent code and repair reviews passed. The original accepted-history
+control passed nine Go test records, and the genuine installed HTTP lost-output
+and original-retry control passed one. The follow-up scoped invocation passed
+174 records across 52 top-level tests, with zero skips and failures. This includes
+single-connection reuse, remaining original owners, native cost/permission
+controls, pure domain/adapters, current host composition and existing HTTP
+regressions. Uninstalled HTTP regressions and classification-only due SQL
+specimens do not establish installed private-command business acceptance.
+
+Initial failed runs remain recorded. The SQL parameter-qualification repair,
+explicit safe runtime search-path precondition and test-only real-result-ID
+repair were independently reviewed and reverified. Original safety checks were
+retained; temporary diagnostics were removed.
+
+Final common: 5,286 default Go records passed, 1,803 skipped, zero failed
+(2,567 top-level tests); skipped scenarios were not executed and are not passes
+(their reasons include opt-in and platform or capability availability). Whole-repository
+vet, module integrity, Linux server and attribution CLI builds, client contract
+pin and whitespace checks passed. All seven command trees closed naturally
+without a memory-floor breach before result inspection.
+
+This independently usable component raises T25 from 35% to **45%**. Real first
+edge capture, protected ASN/purpose-week HMAC consumption, contribution limits
+and frozen privacy snapshots remain unimplemented. The engineering estimate
+sum is 1765, or **37.6%** across 47 tasks; strict completion remains **8/47**.
+
+## Verified T13 planning-draft workflow increment
 
 The independently reviewed planning domain and wire, T05 admission witness,
 private SQL owner/recovery, fixed six-route HTTP API and three-language UI are now
@@ -105,7 +150,7 @@ Cross compilation is not Linux execution; skipped records are not passes.
 
 The completed planning workflow raises the component estimate for T13 from 10%
 to **25%**. Active-floor approval/publication, ordinary prerequisite paths and
-historical bridge eligibility remain unimplemented. The estimate sum is 1755,
+historical bridge eligibility remain unimplemented. At that checkpoint the estimate sum was 1755,
 or **37.3%** across 47 tasks; strict completion stays **8/47 (17.0%)**.
 
 ## Verified T10 original scanning and coverage increment
@@ -828,7 +873,7 @@ completion blocker; outstanding business implementation is.
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 35% | In progress | Independent purpose/week OpenBao material ownership and the bounded offline ASN import/source-owner component are delivered. The latter passed pure, real PostgreSQL and real-data tests. Accepted-event attribution, retention and shared recovery candidates passed source review; their complete native acceptance/commit remain pending. First-acceptance model repair is reviewed, offline ASN grouping approved; authenticated edge inputs, purpose-qualified consumption and frozen privacy snapshots remain pending. |
+| T25 | 45% | In progress | Purpose/week OpenBao material ownership and bounded offline ASN import/source ownership retain their delivered verification. Immutable original acceptance/CurrentVersion attribution, original ACK replay, thirty-day retention, private recovery and the current 19-owner classification are now integrated, independently reviewed and verified with real PostgreSQL and actual HTTP. Real first-edge inputs, protected ASN/purpose-week HMAC consumption, contribution limits and frozen privacy snapshots remain unimplemented. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
