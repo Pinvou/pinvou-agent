@@ -1,5 +1,6 @@
 //! Protected native64 registry transaction owner; no ordinary-file fallback.
 //! Files/SCM are outside this transaction and are recovered from original intent.
+pub(super) mod budgets;
 pub(super) mod time;
 
 use super::{
@@ -701,6 +702,7 @@ impl Store {
             )?;
             owner_bootstrap_in(&private, seed, next)?;
             time::initialize_in(&private, &transaction, next)?;
+            budgets::initialize_in(&private, &transaction, next)?;
         }
         if let Some(manifest) = initial_manifest {
             if expected.is_some() || json::sha256(&manifest.root) != next.genesis_manifest_sha256 {
@@ -749,6 +751,7 @@ impl Store {
             if expected.is_none() {
                 // Fresh time genesis is part of the original definitive commit,
                 // not a later best-effort initializer or an adopted empty scope.
+                budgets::verify_fresh_in(&key, &actual)?;
                 let time = self.time_load(seed, &actual)?;
                 if time.state.revision != 1
                     || time.state.floor.is_some()

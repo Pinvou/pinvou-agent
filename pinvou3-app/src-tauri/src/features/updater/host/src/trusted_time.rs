@@ -40,7 +40,7 @@ impl Binding {
             original_install_operation_id: host.original_install_operation_id.clone(),
         }
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if ![
             &self.product,
             &self.component,
@@ -86,7 +86,7 @@ impl Incarnation {
         value.validate()?;
         Ok(value)
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.host_epoch == 0
             || self.host_epoch > json::SAFE_MAX
             || !json::digest(&self.instance_nonce)
@@ -152,7 +152,7 @@ impl CounterEvidence {
             awake_after: c.awake().latest_100ns().to_string(),
         }
     }
-    fn data(&self) -> Result<CounterObservation> {
+    pub(crate) fn data(&self) -> Result<CounterObservation> {
         fn ticks(s: &str) -> Result<u64> {
             if s.is_empty()
                 || s.len() > 20
@@ -313,6 +313,33 @@ impl State {
         state.validate(original)?;
         Ok(state)
     }
+    /// Pure eligibility DATA only. The native live source must additionally
+    /// authenticate the actual store, live SCM incarnation and fresh counters.
+    pub(crate) fn anchor_for_live(
+        &self,
+        actual_policy: &[u8],
+        incarnation: &Incarnation,
+    ) -> Result<&Evidence> {
+        if self.status != Status::CleanupPending || !self.cleanup_pending {
+            return Err(Error::SourceUnavailable);
+        }
+        let evidence = self.evidence.as_ref().ok_or(Error::SourceUnavailable)?;
+        if self.incarnation.as_ref() != Some(incarnation) || evidence.incarnation != *incarnation {
+            return Err(Error::ServiceIdentityRefused);
+        }
+        // Even a loosening or exact semantic rewrite requires a fresh anchor;
+        // this source never borrows new policy into an old signed observation.
+        Policy::parse(actual_policy, &self.binding)?;
+        if actual_policy != evidence.policy.as_bytes()
+            || self.denied_key_ids != evidence.denied_key_ids
+        {
+            return Err(Error::SourceUnavailable);
+        }
+        if self.floor != Some(evidence.earliest) {
+            return Err(Error::StateCorrupt);
+        }
+        Ok(evidence)
+    }
     pub(crate) fn current_root<'a>(&'a self, original: &'a [u8]) -> &'a [u8] {
         self.roots.last().map_or(original, |s| s.as_bytes())
     }
@@ -410,7 +437,9 @@ impl State {
                 if next.incarnation != self.incarnation
                     || Some(&e.incarnation) != next.incarnation.as_ref()
                     || next.denied_key_ids != e.denied_key_ids
-                    || e.floor_before != self.floor.unwrap_or(0)
+                    // Native publication additionally requires exact equality
+                    // with max(actual time floor, protected budget live floor).
+                    || e.floor_before < self.floor.unwrap_or(0)
                     || e.base_root_count != self.roots.len()
                 {
                     return Err(Error::StateCorrupt);
@@ -434,6 +463,188 @@ pub(crate) fn root_version(raw: &[u8], product: &str) -> Result<u64> {
         return Err(Error::StateCorrupt);
     }
     Ok(shape.version())
+}
+
+/// Enclosing UTC DATA at one counter observation. These numbers alone cannot
+/// prove SCM continuity, a live source, a cleanup census or a current permission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UtcInterval {
+    earliest: u64,
+    latest: u64,
+}
+impl UtcInterval {
+    pub(crate) fn earliest_millis(self) -> u64 {
+        self.earliest
+    }
+    pub(crate) fn latest_millis(self) -> u64 {
+        self.latest
+    }
+}
+
+/// Advance the entire signed anchor interval using enclosing native elapsed
+/// bounds. The Windows owner separately proves that both samples belong to the
+/// same real SCM incarnation and that the anchor/policy are still protected.
+/// Suspend-inclusive native elapsed is the established project's elapsed-time
+/// reference; this adds no drift, anchor-age or absolute-UTC metrology policy.
+pub(crate) fn advance_interval(
+    anchor_earliest: u64,
+    anchor_latest: u64,
+    received: CounterObservation,
+    current: CounterObservation,
+) -> Result<UtcInterval> {
+    if anchor_earliest > anchor_latest || anchor_latest > json::SAFE_MAX {
+        return Err(Error::Unavailable);
+    }
+    // The original received bracket must remain the origin. A caller cannot
+    // replace it with a fresh sample to erase sleep or already elapsed time.
+    let elapsed = current.elapsed_since(received)?.suspend_inclusive();
+    let earliest = anchor_earliest
+        .checked_add(elapsed.floor_millis()?)
+        .filter(|n| *n <= json::SAFE_MAX)
+        .ok_or(Error::Unavailable)?;
+    let latest = anchor_latest
+        .checked_add(elapsed.ceil_millis()?)
+        .filter(|n| *n <= json::SAFE_MAX)
+        .ok_or(Error::Unavailable)?;
+    Ok(UtcInterval { earliest, latest })
+}
+
+/// Context/window checks only. Actual Root custody and the accepted continuous
+/// signature lineage belong to the native source, not this pure DATA helper.
+pub(crate) fn check_root_interval(raw: &[u8], product: &str, interval: UtcInterval) -> Result<()> {
+    let envelope = decode_canonical_envelope(raw, InputKind::Metadata)
+        .map_err(|_| Error::StateCorrupt)?
+        .check_full_schema()
+        .map_err(|_| Error::StateCorrupt)?;
+    let signed = envelope.envelope().signed();
+    let shape = signed
+        .root_policy_shape()
+        .map_err(|_| Error::StateCorrupt)?;
+    if shape.product() != product {
+        return Err(Error::StateCorrupt);
+    }
+    // root_policy_shape validates these as safe, positive integer fields. Keep
+    // explicit checks here rather than relying on a lossy numeric cast.
+    let time = |name: &str| -> Result<u64> {
+        signed.value()[name]
+            .as_f64()
+            .filter(|n| {
+                n.is_finite() && *n >= 0.0 && *n <= json::SAFE_MAX as f64 && n.trunc() == *n
+            })
+            .map(|n| n as u64)
+            .ok_or(Error::StateCorrupt)
+    };
+    let issued = time("issuedAt")?;
+    let expires = time("expiresAt")?;
+    if issued > interval.earliest || expires <= interval.latest {
+        return Err(Error::SourceUnavailable);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod live_interval_tests {
+    use super::*;
+    fn sample(low: u64, awake_low: u64, awake_high: u64, high: u64) -> CounterObservation {
+        CounterObservation::from_bracket(low, awake_low, awake_high, high).unwrap()
+    }
+    #[test]
+    fn advancing_preserves_both_anchor_edges_and_outward_fractional_rounding() {
+        let received = sample(10_000, 8_000, 15_000, 20_000);
+        let current = sample(30_001, 25_000, 35_000, 50_001);
+        let interval = advance_interval(100, 120, received, current).unwrap();
+        assert_eq!(interval.earliest_millis(), 101);
+        assert_eq!(interval.latest_millis(), 125);
+        // A point estimate or using only awake time would lose this enclosure.
+        assert!(interval.latest_millis() - interval.earliest_millis() > 20);
+    }
+    #[test]
+    fn suspend_time_is_not_erased_and_exact_and_submillisecond_bounds_differ() {
+        let received = sample(10_000, 8_000, 8_000, 10_000);
+        let exact = sample(20_000, 8_000, 8_000, 20_000);
+        assert_eq!(
+            advance_interval(100, 120, received, exact).unwrap(),
+            UtcInterval {
+                earliest: 101,
+                latest: 121
+            }
+        );
+        let fractional = sample(19_999, 8_000, 8_000, 19_999);
+        assert_eq!(
+            advance_interval(100, 120, received, fractional).unwrap(),
+            UtcInterval {
+                earliest: 100,
+                latest: 121
+            }
+        );
+    }
+    #[test]
+    fn reverse_and_overflowing_observations_never_become_an_interval() {
+        let received = sample(10_000, 8_000, 8_000, 10_000);
+        let earlier = sample(9_999, 7_999, 7_999, 9_999);
+        assert!(advance_interval(100, 120, received, earlier).is_err());
+        assert!(advance_interval(121, 120, received, received).is_err());
+        let later = sample(20_000, 9_000, 9_000, 20_000);
+        assert!(advance_interval(json::SAFE_MAX, json::SAFE_MAX, received, later).is_err());
+        assert!(advance_interval(0, json::SAFE_MAX + 1, received, received).is_err());
+    }
+    #[test]
+    fn accepted_root_must_cover_the_complete_current_interval_at_both_edges() {
+        let vectors: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../../../specs/upgrade/v1/vectors/time/anchor.json"
+        )))
+        .unwrap();
+        let raw = vectors["cases"][1]["trustedRootBytes"]
+            .as_str()
+            .unwrap()
+            .as_bytes();
+        let root: serde_json::Value = serde_json::from_slice(raw).unwrap();
+        let issued = root["signed"]["issuedAt"].as_u64().unwrap();
+        let expires = root["signed"]["expiresAt"].as_u64().unwrap();
+        check_root_interval(
+            raw,
+            "pinvou",
+            UtcInterval {
+                earliest: issued,
+                latest: expires - 1,
+            },
+        )
+        .unwrap();
+        assert!(
+            check_root_interval(
+                raw,
+                "pinvou",
+                UtcInterval {
+                    earliest: issued - 1,
+                    latest: issued
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            check_root_interval(
+                raw,
+                "pinvou",
+                UtcInterval {
+                    earliest: expires - 1,
+                    latest: expires
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            check_root_interval(
+                raw,
+                "other",
+                UtcInterval {
+                    earliest: issued,
+                    latest: issued
+                }
+            )
+            .is_err()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -518,6 +729,36 @@ mod tests {
         });
         unknown.transition(&s, &raw, &original).unwrap();
         (s, raw, original)
+    }
+    #[test]
+    fn live_anchor_data_rejects_unknown_policy_deny_and_cross_incarnation() {
+        // DATA controls using an actual public signature vector. This helper
+        // does not mint a native live source or a successful SCM fixture.
+        let (state, _, _) = anchored();
+        let policy = state.evidence.as_ref().unwrap().policy.as_bytes();
+        let current_incarnation = state.incarnation.as_ref().unwrap();
+        state.anchor_for_live(policy, current_incarnation).unwrap();
+        let mut unknown = state.clone();
+        unknown.status = Status::Unknown;
+        assert!(
+            unknown
+                .anchor_for_live(policy, current_incarnation)
+                .is_err()
+        );
+        assert!(state.anchor_for_live(policy, &incarnation(2)).is_err());
+        let mut changed: Policy = json::decode(policy, false).unwrap();
+        changed.max_round_trip_ms += 1;
+        assert!(
+            state
+                .anchor_for_live(&json::encode(&changed, false).unwrap(), current_incarnation)
+                .is_err()
+        );
+        let mut denied = state.clone();
+        denied.denied_key_ids.push("a".repeat(64));
+        assert!(denied.anchor_for_live(policy, current_incarnation).is_err());
+        let mut absent = state.clone();
+        absent.evidence = None;
+        assert!(absent.anchor_for_live(policy, current_incarnation).is_err());
     }
     #[test]
     fn retained_real_signature_vector_rejects_response_root_nonce_and_floor_mutation() {

@@ -114,6 +114,12 @@ impl TimeOwner {
             self.snapshot = store.time_commit(host, &self.snapshot, &unknown, Some(&policy))?;
             self.commit_uncertain = false;
         }
+        let floor = self
+            .snapshot
+            .state
+            .floor
+            .unwrap_or(0)
+            .max(store.budget_time_floor(seed, &current)?.unwrap_or(0));
         let base_root_count = self.snapshot.state.roots.len();
         let trusted_root = self
             .snapshot
@@ -155,7 +161,7 @@ impl TimeOwner {
                         .ceil_millis()?,
                     max_round_trip_millis: policy.policy.max_round_trip_ms,
                     max_uncertainty_millis: policy.policy.max_uncertainty_ms,
-                    trusted_time_floor_millis: self.snapshot.state.floor.unwrap_or(0),
+                    trusted_time_floor_millis: floor,
                 };
                 if verify_time_response(
                     &response,
@@ -199,7 +205,7 @@ impl TimeOwner {
                         incarnation: self.incarnation.clone(),
                         policy: String::from_utf8(policy.raw.clone())
                             .map_err(|_| Error::StateCorrupt)?,
-                        floor_before: self.snapshot.state.floor.unwrap_or(0),
+                        floor_before: floor,
                         base_root_count,
                         denied_key_ids: denied.clone(),
                         earliest: checked.earliest_millis(),

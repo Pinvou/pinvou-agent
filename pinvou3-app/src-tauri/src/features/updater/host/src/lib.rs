@@ -11,6 +11,7 @@ mod platform;
 mod profile;
 mod registration;
 mod restart;
+mod time_budget;
 mod trusted_time;
 
 pub use error::Error;

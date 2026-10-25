@@ -263,6 +263,93 @@ fn policy_in(key: &Key, binding: &Binding) -> Result<PolicySnapshot> {
     let policy = Policy::parse(&raw, binding)?;
     Ok(PolicySnapshot { raw, policy })
 }
+/// A native transaction-bound read set, minted only below from fixed protected
+/// keys. Detached State/Policy values cannot construct this capability.
+pub(in crate::platform::windows) struct LiveTimeReadSet<'tx> {
+    private: &'tx Key,
+    transaction: &'tx Handle,
+    host_digest: String,
+    snapshot: TimeSnapshot,
+    policy: PolicySnapshot,
+}
+impl LiveTimeReadSet<'_> {
+    pub(in crate::platform::windows) fn state(&self) -> &State {
+        &self.snapshot.state
+    }
+    pub(in crate::platform::windows) fn policy(&self) -> &PolicySnapshot {
+        &self.policy
+    }
+    pub(in crate::platform::windows) fn original_root(&self) -> &[u8] {
+        &self.snapshot.original_root
+    }
+    /// Detached identity DATA for a budget's historical observation record.
+    pub(in crate::platform::windows) fn head_sha256(&self) -> String {
+        json::sha256(&self.snapshot.raw)
+    }
+    pub(in crate::platform::windows) fn protected_floor_millis(&self) -> Result<u64> {
+        let key = open(
+            self.private.0,
+            budgets::NAMESPACE,
+            false,
+            Some(self.transaction),
+        )?
+        .ok_or(Error::SetupIncomplete)?;
+        let floor =
+            budgets::floor_for_binding(&key, &self.snapshot.state.binding, Some(self.transaction))?;
+        Ok(self
+            .snapshot
+            .state
+            .floor
+            .unwrap_or(0)
+            .max(floor.unwrap_or(0)))
+    }
+    /// Recheck the exact read set in its original native transaction. The
+    /// caller retains the original BootstrapGuard; this does not acquire a
+    /// second guard or open a detached transaction around a captured DTO.
+    pub(in crate::platform::windows) fn recheck(&self, host: &StartedServiceContext) -> Result<()> {
+        let seed = &host.context.seed;
+        let store = Store::new(seed);
+        let actual = store
+            .read_in(seed, Some(self.transaction))?
+            .ok_or(Error::SetupIncomplete)?;
+        host.authenticate_running(&actual)?;
+        if actual.digest()? != self.host_digest {
+            return Err(Error::ScopeConflict);
+        }
+        let observed = state_in(self.private, &actual, Some(self.transaction))?;
+        if observed.raw != self.snapshot.raw
+            || observed.original_root != self.snapshot.original_root
+        {
+            return Err(Error::ScopeConflict);
+        }
+        let time = open(self.private.0, NAMESPACE, false, Some(self.transaction))?
+            .ok_or(Error::SetupIncomplete)?;
+        if policy_in(&time, &observed.state.binding)?.raw != self.policy.raw {
+            return Err(Error::ScopeConflict);
+        }
+        Ok(())
+    }
+}
+/// Registry descendants alone can mint this source. This function does not
+/// initialize missing state, repair policy or remove the recovery barrier.
+pub(super) fn current_in<'tx>(
+    private: &'tx Key,
+    actual: &HostRegistration,
+    transaction: &'tx Handle,
+) -> Result<LiveTimeReadSet<'tx>> {
+    let snapshot = state_in(private, actual, Some(transaction))?;
+    let time =
+        open(private.0, NAMESPACE, false, Some(transaction))?.ok_or(Error::SetupIncomplete)?;
+    let policy = policy_in(&time, &snapshot.state.binding)?;
+    Ok(LiveTimeReadSet {
+        private,
+        transaction,
+        host_digest: actual.digest()?,
+        snapshot,
+        policy,
+    })
+}
+
 /// Called only after the actual new original scope was proven absent in this
 /// SAME transaction. It cannot adopt an existing/legacy/partial registration.
 pub(super) fn initialize_in(
@@ -397,6 +484,22 @@ impl Store {
                 }
             }
             _ => return Err(Error::StateCorrupt),
+        }
+        if next.status == Status::CleanupPending {
+            let actual_floor = current
+                .state
+                .floor
+                .unwrap_or(0)
+                .max(budgets::floor_in(&private, &actual, Some(&transaction))?.unwrap_or(0));
+            if next
+                .evidence
+                .as_ref()
+                .ok_or(Error::StateCorrupt)?
+                .floor_before
+                != actual_floor
+            {
+                return Err(Error::ScopeConflict);
+            }
         }
         let raw = json::encode(&header(next), false)?;
         let history =

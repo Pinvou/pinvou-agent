@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-26, T26 protected anchor workflow in progress**.
+Checkpoint: **2026-10-26, T26 native time and original-budget kernel in progress**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -55,6 +55,7 @@ The delivered foundations are:
 | Actual service time issuer and original Root reader | Service `d0e7fee94` | Scoped 100 including real PostgreSQL/OpenBao 1; default 5762 PASS/1828 SKIP, vet/build/contract checks |
 | Actual Windows counters bound to the committed SCM incarnation | Client `de0fa18d2` | Host 103 PASS/one existing ignored, including four new math/raw-API tests; role builds and guards |
 | Protected exact original Root custody and consumption recheck | Client `49e266a3e` | Host 103 PASS/one existing ignored; metadata-owner 7 PASS including one new binding-refusal test; role builds and guards |
+| Startup acquisition and atomic protected anchor/deny/barrier | Client `434484d2` | Host 115 PASS/one existing ignored; role builds, non-static-CRT library and guards |
 
 These are separate historical runs with overlapping tests, not additive totals.
 The Root reader returns exact original canonical DATA, including expired/time-less
@@ -94,15 +95,59 @@ Network/policy failure preserves existing setup-only IPC while leaving time
 unavailable. The saved interval is historical at its recorded native sample,
 not commit-time UTC or a durable Known-clock/installation capability.
 
-Current increment verification: 115 host tests passed, with one existing test ignored. The 12 new tests are included in 115: five business/crypto DATA controls, four Windows nonce/cancellation controls and three native-descriptor/capacity DATA controls. Standalone helper/launcher builds, the non-static-CRT library check, formatting, architecture and whitespace passed. The library check is not a full desktop application build; the unchanged service/Node/verifier suites were not repeated.
+The current Windows companion implements a transaction-borrowed native interval
+source. It advances the original signed interval with actual same-incarnation
+suspend-inclusive counters, keeps enclosing floor/ceil bounds and refuses an
+expired Root window, changed policy/deny, different incarnation, missing source
+or a backward interval. No point-valued ordinary wall clock supplies authority.
+
+Its protected budget kernel records ten fixed window kinds: coordination/freeze,
+backup preparation, full validation, three execution purposes, the health total
+and two checks, and consume waiting. The scope, original operation and kind select
+one original window; reopening preserves its first interval, original cutoff and
+spent high-water. Preparation keeps the earlier session restriction; explicit
+qualified durations cannot exceed the validation/execution caps. Health retains
+the original total/check lineage, at most two check identities and related
+historical spending. Before requires the entire interval and retained spending
+to be below the cutoff; spanning is Unknown and confirmed exhaustion is sticky.
+There is no download budget.
+
+Only actual protected same-transaction records supply health parents/siblings.
+A separate protected, scope/genesis-bound policy must explicitly configure the
+six qualified durations. It has no defaults and is not T03 certification. The
+budget namespace is created in the original fresh registration transaction;
+missing existing/partial namespaces are refused. Exact policy, native host,
+previous Head and retained history are checked before atomic publication;
+post-COMMIT ambiguity remains outcome-unknown.
+
+Every successful native sample is retained, including an initial sample when
+the final sample becomes unavailable. Its lower bound advances the protected
+global watermark and its upper bound/spending cannot be refunded. The final
+missing sample still yields Unknown, or retains previously confirmed exhaustion.
+Fresh signed time must include this watermark, with the maximum rechecked in
+the final native transaction. Related health-child knowledge is read from actual
+protected siblings when the total/next check reopens. These two cases were found
+during independent review/self-review, repaired and independently re-reviewed.
+
+These are budget intentions and as-of assessments. They are not proof that a
+T28/T32/T36 stage started, stopped or succeeded. Those actual owners must
+authenticate their original operation/session and compose first actions with
+the budget port; no public IPC command, installer action or execution permission
+is added. The recovery barrier stays set. No backup/secret census is inferred.
+
+Current increment verification: 132 host tests passed, with one existing test ignored. The 17 new tests are included in 132: five live-interval/Root-window DATA controls, seven budget-model tests, three native index/policy DATA controls and two observation/health-family regressions. Helper/launcher builds, the non-static-CRT library check, formatting, architecture and whitespace passed. The unchanged service, public
+contract, Node and dedicated-verifier suites were not repeated. The library
+check remains distinct from a full desktop application build.
+
 Actual installed-SCM, TxR crash/power-loss, suspend/reboot and protected-policy
 provisioning E2E remain unexecuted in the available environment. These gaps are
 non-blocking under the owner rule and are not passes. Production UTC accuracy,
 a complete recovery cleanup and whole-platform qualification are not established.
 
-Still required for T26 are the actual current UTC/deadline consumer, durable
-original-budget records, real backup/secret obligation census and cleanup owners,
-successful cleanup before releasing the barrier, and remaining platform adapters.
+Still required for T26 are integration with actual stage/record owners, approved
+target budgets, real backup/secret obligation census and cleanup owners,
+successful cleanup before releasing the barrier, three-language recovery reasons
+and entry points, and remaining platform adapters.
 No empty-census callback, default budget or cleanup-complete claim replaces them.
 T26 stays **20%**, the engineering estimate **1810/47 = 38.5%**, and strict
 completion **8/47 (17.0%)**. T03 remains its sole direct prerequisite; other main
@@ -1338,7 +1383,7 @@ completion blocker; outstanding business implementation is.
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | 85% | In progress | Delivered full-platform network-week read/export requires current all-product/component/channel/target operations.read and returns the same authenticated canonical body. Scoped51 plus native1 and the final required Go/build/contract checks passed as recorded above. Source-v2, protected internal freeze/CLI/host, independent Stage/Release capture, restricted Stage reader and callable three-language disclosure remain delivered with their historical verification above. The Release-purpose restricted owner still needs genuine T18 selector/issuance source-class production; self-reported facts/default primary/fake authority cannot replace it. T21 atomic projection/cursor consumption and T24 report ownership remain separate tasks, not T25 prerequisites. |
-| T26 | 20% | In progress | The time policy and dedicated role are approved; delivered source includes the nonce-bound issuer/verifier, fixed Root transport, real Windows incarnation/original-Root custody and atomic protected anchor/deny/cleanup barrier. Current verification and non-blocking unexecuted native E2E are recorded above. Actual UTC/deadline consumers, durable original-budget/obligation records, real cleanup owners and other platform adapters remain incomplete; preparation budgets remain unapproved. No durable Known clock or installation permission is claimed. |
+| T26 | 20% | In progress | Nonce-bound issuer/verifier, fixed Root transport, Windows incarnation/Root custody and protected anchor/deny/barrier are delivered. The current native interval/original-budget kernel preserves scope/operation/kind, original cutoffs, spending and global time watermark; its timing intentions do not prove actual stage execution. Verification is recorded above. Actual stage composition, approved target budgets, backup/secret census and cleanup, three-language recovery and other platform adapters remain incomplete. No durable Known clock or installation permission is claimed. |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
 | T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; the service pins the committed contract and passes cross-language/real-Transit verification; protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |

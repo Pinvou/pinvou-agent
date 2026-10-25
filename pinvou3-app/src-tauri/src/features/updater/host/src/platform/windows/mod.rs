@@ -30,6 +30,7 @@ pub(crate) fn read_monotonic_counters() -> Result<crate::monotonic::CounterObser
 
 mod installed;
 mod installed_images;
+mod live_time;
 mod original_root;
 mod time_owner;
 mod time_service;
