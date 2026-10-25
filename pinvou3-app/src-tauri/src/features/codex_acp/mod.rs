@@ -1635,8 +1635,7 @@ pub struct AcpPool {
     /// window back off respawns and finally pause automatic rebuilds until the
     /// window clears. Cleared whenever a runtime is deliberately discarded
     /// (evict / rebind / idle reap / stable reuse).
-    runtime_crash_budgets:
-        Arc<parking_lot::Mutex<HashMap<String, RuntimeCrashBudget>>>,
+    runtime_crash_budgets: Arc<parking_lot::Mutex<HashMap<String, RuntimeCrashBudget>>>,
     login_states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
     login_inputs: Arc<Mutex<HashMap<AgentBackend, ChildStdin>>>,
     codex_upgrade_required: Arc<AtomicBool>,
@@ -4915,8 +4914,7 @@ impl AcpPool {
         let mut restarted_after_stall = false;
         let mut sessions = self.sessions.lock().await;
         match resolve_runtime(&mut sessions, session_id, |runtime| {
-            runtime.lifecycle.is_running()
-                && !runtime.restart_requested.load(Ordering::Acquire)
+            runtime.lifecycle.is_running() && !runtime.restart_requested.load(Ordering::Acquire)
         }) {
             RuntimeLookup::Reusable(runtime) => {
                 if runtime_is_stable(&runtime.lifecycle) {
