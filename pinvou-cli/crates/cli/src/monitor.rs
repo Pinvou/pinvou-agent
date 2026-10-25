@@ -420,7 +420,9 @@ mod tests {
         VllmSnapshot {
             status,
             model_id: None,
-            provider: "local".to_owned(),
+            // The real producer emits `ModelPreset::as_str()` here; pin the
+            // real spelling so a drift in the preset strings surfaces.
+            provider: "local_vllm".to_owned(),
             model: Some("served-model".to_owned()),
             configured_model: Some("configured-model".to_owned()),
             target_kind: "local".to_owned(),
@@ -674,5 +676,48 @@ mod tests {
             "{human_without}"
         );
         assert!(human_with.contains("Cpu: test-cpu"), "{human_with}");
+    }
+
+    /// The `vllm` object is serialized whole from the shared `VllmSnapshot`
+    /// (`serde_json::to_value`), so an app-crate field change widens this
+    /// lane's JSON silently — the leftover shape guard above watches top-level
+    /// keys only. This pin makes the widening conscious: a field added to or
+    /// removed from `VllmSnapshot` fails here until this list is updated in
+    /// the same change (serde declaration order; `serde_json` preserves it).
+    #[test]
+    fn snapshot_vllm_object_keeps_a_stable_key_set() {
+        let sample = MonitorSnapshot {
+            vllm: Some(probe(VllmStatus::Ready, "verified")),
+            ..MonitorSnapshot::default()
+        };
+        let (_, value) = snapshot_payload(&sample, Some(1)).expect("renders");
+        assert_eq!(
+            keys(&value["vllm"]),
+            [
+                "status",
+                "model_id",
+                "provider",
+                "model",
+                "configured_model",
+                "target_kind",
+                "metrics_applicable",
+                "health_status",
+                "diagnostic",
+                "metric_diagnostics",
+                "max_model_len",
+                "num_requests_running",
+                "num_requests_waiting",
+                "prefix_cache_hit_pct",
+                "prefix_cache_hits",
+                "prefix_cache_queries",
+                "ttft_sum_s",
+                "ttft_count",
+                "tpot_sum_s",
+                "tpot_count",
+                "generation_tokens_total",
+                "prompt_tokens_total",
+            ],
+            "the vllm object's key set moved — update this pin in the same change"
+        );
     }
 }
