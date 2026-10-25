@@ -528,12 +528,22 @@ function enforceLazyChunks() {
 // thousand step leaves 808 B web headroom at the CI measurement; this cap
 // does not promise headroom for unrelated main changes.
 //
-// 2026-10-25 (lazy browser route + vendor chunk groups, measured): the
-// browser view moved into the lazy route table and the markdown-vendor /
-// chat-view codeSplitting groups landed, so the startup graph no longer
-// carries the browser pane graph or the markdown stack. Measured desktop
-// 125,334 B and web 127,564 B (previously 502,952 / 506,357 B). The 507_000
-// ceiling stays in place as headroom; any future raise or re-cut follows the
+// 2026-10-25 (lazy browser route + web vendor groups, measured): the browser
+// view moved into the lazy route table, so the startup graph no longer
+// carries the browser pane graph. The web build additionally groups ChatView
+// and the marked/dompurify stack out of the entry file; both chunks still
+// load at startup (static dependency), so the groups are entry-file layout
+// and cache stability, not a startup reduction. highlight.js stays ungrouped
+// because its 48 low-frequency fence languages are dynamic imports
+// (syntax-highlighter.js) — grouping the package hoisted ~176 kB of them
+// into the web startup graph, and the desktop chat-view group this was first
+// tried with absorbed the pet/reader windows' shared modules (+0.5 MB per
+// aux window); both shapes were measured and removed. Measured entry:
+// desktop 484,660 B and web 127,605 B (previously 502,952 / 506,357 B).
+// Measured startup closures: desktop main window 1,096,545 B and web
+// 1,093,018 B (previously 1,114,837 / 1,114,426 B); pet/reader windows are
+// byte-identical to base. The 507_000 ceiling stays as the desktop
+// projection (22 kB headroom); any future raise or re-cut follows the
 // measured-projection policy above.
 export const MAIN_ENTRY_BUDGET_BYTES = 507_000;
 
@@ -609,9 +619,9 @@ export default defineConfig(({ mode }) => {
             // Single-entry web build has no multi-entry sharing, so react-dom/
             // react/scheduler would stay inlined in main and trip the 500 kB
             // chunk warning. Extract them into a dedicated vendor chunk; the
-            // multi-entry UI build already gets an equivalent separate shared
-            // chunk from rolldown's automatic splitting, so this only applies
-            // to the web mode.
+            // multi-entry UI build gets an equivalent separate shared chunk
+            // from rolldown's automatic splitting, so the vendor group only
+            // applies to the web mode.
             codeSplitting: {
               groups: [
                 {
@@ -619,11 +629,15 @@ export default defineConfig(({ mode }) => {
                   test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
                 },
                 {
-                  // Markdown rendering is only needed after a conversation view
-                  // loads. Keep its parser, sanitizer, and syntax highlighter out
-                  // of the Web shell's startup chunk.
+                  // marked and dompurify stay statically imported by the entry,
+                  // so this group only moves them out of the entry file for
+                  // cache stability, not out of the startup graph. highlight.js
+                  // must stay ungrouped: its 48 low-frequency fence languages
+                  // are dynamic imports (syntax-highlighter.js), and grouping
+                  // the package merges them into this statically-preloaded
+                  // chunk, hoisting ~176 kB into the web startup graph.
                   name: 'markdown-vendor',
-                  test: /node_modules[\\/](marked|dompurify|highlight\.js)[\\/]/,
+                  test: /node_modules[\\/](marked|dompurify)[\\/]/,
                 },
                 {
                   // Keep ChatView statically imported so the desktop/web shell
@@ -636,17 +650,7 @@ export default defineConfig(({ mode }) => {
               ],
             },
           }
-        : {
-            codeSplitting: {
-              groups: [{
-                // The desktop multi-entry build shares dependencies
-                // automatically, but ChatView itself still needs an explicit
-                // static group to keep the main entry within budget.
-                name: 'chat-view',
-                test: /[\\/]features[\\/]chat[\\/]ChatView\.jsx$/,
-              }],
-            },
-          },
+        : undefined,
     },
   },
   };
