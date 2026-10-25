@@ -1,11 +1,12 @@
 # Upgrade implementation decisions and certification proposal
 
-Date: 2026-10-19. Status: health, strict time policy and backend stack approved;
+Date: 2026-10-25. Status: health, cross-boot unknown-time policy and backend stack approved;
 candidate platform/data coverage and the measurement proposal approved for
 isolated experiments; concrete budgets and physical qualification remain pending.
 
 This supplements the [V1.0 task decision register](pinvou-upgrade-platform-development-tasks.zh-CN.md#10-实施前需要确认的决策).
-It does not change R/D/S/C/F/M/K, approve new support boundaries, or complete T03.
+This revision synchronizes the owner-approved time-policy change in R/D/S/C/F/M/K.
+It does not approve new platform/data boundaries or complete T03/T26.
 The inventory below is based on repository source, not inspection of user profiles,
 credentials, browser contents or production data. Paths are symbolic local examples.
 
@@ -13,8 +14,9 @@ credentials, browser contents or production data. Paths are symbolic local examp
 
 The product owner requested a platform/data inventory and proposals; preparation
 budgets must follow a test proposal, actual measurements and approval of concrete
-values. The suggested local health criteria are approved. Strict trustworthy time
-option A is approved: ordinary offline operation and shutdown are not fault exceptions.
+values. The suggested local health criteria are approved. On 2026-10-25 the owner
+superseded strict time option A with the cross-boot unknown-time policy below.
+Normal offline operation and shutdown are still not component-damage faults.
 The backend stack is approved: Go, Gin, pgx and PostgreSQL 17; React, TypeScript
 and Vite for administration; PostgreSQL durable jobs/transactional outbox, OIDC
 with self-hosted Keycloak available for community deployment, and separate signing
@@ -50,7 +52,7 @@ On 2026-10-19 the owner approved using the existing candidate platform/data list
 and measurement proposal for isolated experiments. This approves the experimental
 work, including the three synthetic workload tiers; it does not certify that
 coverage, approve new application support boundaries, approve a concrete
-preparation budget, or relax strict time option A. The first standalone program
+preparation budget, or approve concrete budgets; the later time-policy decision below supersedes A. The first standalone program
 is [platform lab v0](../tools/upgrade-platform-lab/README.md); its reported
 unsupported capabilities remain explicit.
 
@@ -67,9 +69,8 @@ or production deployment. Actual installation/security positives require an
 identified isolated Windows test host, real intended machine identities and
 independent bootstrap artifact/anchor inputs. T42 production server deployment
 remains deferred. Registry approval is not a prerequisite for building the
-initial helper/launcher and its controlled first-install integration. Existing
-strict trustworthy-time, preparation-budget and complete writer-scope requirements
-remain unchanged.
+initial helper/launcher and its controlled first-install integration. Preparation-budget and complete writer-scope requirements remain unchanged;
+time follows the superseding 2026-10-25 decision below.
 
 ## Platform certification candidates
 
@@ -107,10 +108,13 @@ authorization remain required. A file hash computed by an untrusted caller or em
 by the same installer is not an independent trust source.
 
 Initial physical environments: lowest approved OS per architecture, each other
-listed OS major, and each distinct certified time provider. Virtual machines can
-verify logic and races but cannot substitute for physical clock/power-loss evidence.
-All four targetKeys remain candidates; lack of proven time capability blocks their
-certification rather than silently reducing modes or dropping a target.
+listed OS major, and each distinct time provider. Verify real reboot/suspend,
+protected state, fresh server anchors and cleanup recovery for every target.
+A VM test cannot establish properties absent from its actual clock mechanism;
+the superseding policy no longer requires universal offline powered-off elapsed
+time. All four targetKeys remain candidates. Missing real anchor verification,
+durable state or refusal/recovery behavior still blocks the dependent capability;
+no platform or mode is silently removed.
 
 Source anchors: [README](../README.md), [Windows overlay](../pinvou3-app/src-tauri/config/platforms/windows/tauri.conf.json),
 [Linux overlay](../pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json),
@@ -203,8 +207,9 @@ The bootstrap sequence avoids depending on later production tasks for T03's inpu
    for owner approval; synthetic-writer results do not prove the real app's writers
    already implement cooperation or that a production package is certified.
 3. Freeze the T03 v1 interfaces, bounded preparation policy and consistency tests
-   only when those initial values are approved and the strict time path has real
-   evidence. An unproven time provider remains unproven, not an assumed capability.
+   only when those initial values are approved and the selected authenticated-time,
+   unknown/refusal and recovery path has real evidence. An unproven provider remains
+   unproven, not an assumed capability.
 4. T28/T30/T33–T35 and related tasks implement the production workflows/adapters
    against v1, then repeat measurements with the real app, users and services.
    Exceeding the approved budget fails certification; revised values require
@@ -274,47 +279,51 @@ Explicit identity/data errors fail immediately; retry cannot hide them. Network 
 account unavailability alone is not local health failure. A failed original
 transaction remains failed even if a separate higher forward repair succeeds.
 
-## Strict trustworthy time research and certification gate
+## Approved cross-boot unknown-time policy (2026-10-25)
 
-Option A preserves R §17.1: signed anchors plus OS wall time are insufficient by
-themselves. Offline shutdown duration must be provable, with uncertainty handled
-without early deletion or extended normal retention. A component that never had
-this capability cannot use `retention_time_fault` as its initial implementation.
+This explicitly supersedes option A. The owner approved relaxing the physical
+cleanup timing during unprovable offline powered-off intervals, without relaxing
+code review, original credential windows, protected ownership or execution safety.
 
-| Primitive | Documented property | Gap for strict certification |
-|---|---|---|
-| Windows interrupt time | Since last system start; ordinary date adjustments do not change it | No independent proof of elapsed ordinary power-off duration |
-| Linux CLOCK_BOOTTIME | Monotonic since boot and includes suspension | A new boot/power-off interval needs an independent trusted source |
-| macOS mach_continuous_time | Includes sleep in its continuously increasing counter | Does not itself establish trustworthy elapsed powered-off time across boots |
-| TPM2 readclock | TPM powered-on time and reset/restart information | Powered-off elapsed time is not a battery-backed trusted UTC clock |
+- Use verified server time anchors and proven local monotonic continuity. Do not
+  treat ordinary wall time, an old signed timestamp, arbitrary HTTPS or a caller
+  trusted flag as current time. Recovery anchors require authentication under the
+  existing trust chain, binding to the current request and proven freshness.
+- On unprovable continuity across boot, persist trusted_time_unavailable and pause
+  new time-dependent preparation/backup/preinstall/install/activation. Confirmed
+  damage separately records retention_time_fault. Ordinary offline operation with
+  intact continuity still uses the original deadlines normally.
+- Preserve original deadlines, first starts and spent budgets. Immediately clear
+  recovery-query secrets and every recoverable copy conservatively; retain only
+  secret-free request/lineage/fence/reconciliation evidence. This does not prove
+  cancellation, retirement, expiry or safe unfreeze, and never renews credentials.
+- Keep existing encrypted backups and key references protected and disclose in
+  three languages that physical retention may exceed the original deadline.
+  Do not guess early deletion. Fresh trusted time recovery must persist its anchor
+  and cleanup barrier, then process original deadlines immediately (first scan,
+  at most ten minutes). Dependent actions resume only after due cleanup succeeds;
+  cleanup failure or recovery crash keeps the barrier. Never recreate old secrets.
+- Time synchronization may communicate before cleanup. It grants no upgrade
+  eligibility or gate bypass. Existing gates remain; crossed-boundary execution
+  converges safely and unprovable remaining execution/health budget keeps its
+  existing failure handling. A new anchor does not restart an old budget.
+- Indefinitely offline/unknown devices may retain encrypted backup data until
+  trustworthy recovery or explicit administrator deletion. Do not claim the
+  former powered-off physical deletion hard bound remains guaranteed.
 
-Research candidate hardware/platform mechanisms with an independently protected,
-power-off-capable time source and verifiable continuity, integrity, uncertainty and
-failure detection. Do not claim a generic RTC, TPM, online time server or VM clock
-provides that mechanism. No concrete portable mechanism is currently certified.
+Platform adapters must verify date jumps, sleep/reboot, unknown versus damage,
+secret clearing, original-state durability, stale/replayed anchors, cleanup
+boundaries/failures and restart of an incomplete recovery barrier. T03 still owns
+the measured concrete preparation budgets and contract; T26 owns real timing and
+recovery integration. The 50 GiB experiment remains deferred. This decision does
+not approve budgets, implement these owners, certify exact local modes or replace
+T46/T43 acceptance.
 
-The test matrix must cover date jumps forward/back, sleep/hibernate, normal reboot,
-shutdown across before/equal/after boundaries, clock-source damage, persisted state
-tampering and recovery without resetting original deadlines. Observe elapsed time
-with an independent laboratory reference; the test device remains offline and must
-clean expired objects before permitting its first network connection. Short-boundary
-primitive tests and model tests do not replace required long-duration/accuracy and
-failure evidence. Cover backup/key/staging rules and immediate recovery-secret
-cleanup on confirmed time fault independently; no secret is retained merely to
-permit an extended query window.
-
-T03 owns the experimental interfaces/adapters and measurement program described
-above as well as its final semantic contract and consistency tests. Final
-contract/capability freeze requires approved initial target budgets and an explicit
-proven time path; later production measurements and certification remain mandatory.
-T26/T33–T35/T46 cannot claim implementation/certification through fixtures. Under
-the chosen policy, unsupported hardware blocks certification; any support-policy
-change must return to the owner as a separate decision.
-
-References: [Windows interrupt time](https://learn.microsoft.com/en-us/windows/win32/sysinfo/interrupt-time),
-[Linux clock_gettime](https://man7.org/linux/man-pages/man2/clock_gettime.2.html),
-[Apple mach_time.h](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/mach_time.h),
-[TPM2 readclock](https://github.com/tpm2-software/tpm2-tools/blob/master/man/tpm2_readclock.1.md).
+Windows interrupt time, Linux CLOCK_BOOTTIME, macOS mach_continuous_time and TPM2
+readclock may supply only their documented continuity properties. None is deemed
+a portable proof of powered-off elapsed time. Such hardware proof is no longer
+a prerequisite under this policy; true source validation and safe unknown/recovery
+handling remain mandatory.
 
 ## Approved backend technology and repository boundary
 
@@ -378,10 +387,11 @@ PostgreSQL evidence: [synchronous replication](https://www.postgresql.org/docs/1
 3. Review actual measurements, remaining unsupported capabilities and concrete
    proposed budgets. The approved experimental plan does not approve those values.
 
-Strict time option A, local health criteria and the backend stack are already
-approved, and the separate `UpdateServer` repository has been supplied; these are
-not asked again. Hardware/time mechanism research remains technical work; unresolved
-feasibility must be disclosed rather than treated as approval to relax the policy.
+The superseding 2026-10-25 time policy, local health criteria and backend stack
+are approved, and the separate `UpdateServer` repository has been supplied; these
+are not pending decisions. Real authenticated time/continuity and durable recovery
+remain implementation and verification work; approval does not prove those
+capabilities or approve any concrete preparation budget.
 
 ## Native package certificate decision (2026-10-21)
 

@@ -66,7 +66,7 @@ staging_completed、staging_failed、staging_cancelled 结束预安装执行占�
 
 GateRecord按 scope/原endpoint/当前hop/关联事务分别持久化。强制门当前hop未越界且健康、终点可信失效时安全取消后可解本次强制门；仅路径失效保持受限门，过去hop越界不影响新hop判定。独立失败门只由同scope/原失败关联、严格高于本机受保护写入最高目标且forced时高于原终点、完整活动身份/全部数据/健康成功的前向修复解除，原失败不改写。时间未知不提前入门、不凭日期解门；离线未来forced决定及越界状态按需求§5.5/§17.1。
 
-required备份首字节登记、初始24h/consume_pending+61d/confirmed consumed60d及终态7/1/30d较早期限按需求§11.5，本地预算/可信期限不因重启/离线/普通日期变更延长。notRequired没有备份但仍有ConsumeAttempt。仅确认计时组件损坏进入 retention_time_fault，保留加密备份/解密密钥、三语告知并禁新依赖动作，立即删recovery secret及副本，不延服务端查询；恢复按原期限首轮≤10min清理，永久故障由管理员明确删除。删除期限对象不解除对账占用；越界安全收敛不被故障中止。
+required备份首字节登记、初始24h/consume_pending+61d/confirmed consumed60d及终态7/1/30d较早期限按需求§11.5，原deadline/已耗预算不因重启/离线/日期变更延长。跨启动trusted_time_unavailable与confirmed retention_time_fault分别记录，均暂停新依赖动作、隐藏staged提示、保持既有门/fencing/对账占用，并立即保守删recovery secret及副本；notRequired无备份仍须保护ConsumeAttempt及处置。既有加密备份/密钥访问控制及三语超期告知保持，不把未知当已到期/取消/退休；可信连续区间继续清理。新鲜请求绑定可信服务端授时恢复后先按原期限首轮≤10min清理，再恢复依赖动作，失败暂停；旧secret不重建、服务端窗口不延。永久未知保留及管理员明确删除不宣称离线物理硬上限；已越界继续安全收敛，不因授时重置健康/执行预算或改旧失败。
 
 ## 4. 发布实体状态机
 

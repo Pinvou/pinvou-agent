@@ -5,6 +5,12 @@ Date: 2026-10-19. This records three isolated synthetic development smokes of
 independent static reviews and primary repairs. It does not approve a preparation
 budget, establish a 30-run baseline, certify a target or complete T03/T46.
 
+Policy note (2026-10-25): the owner superseded strict time option A with the
+[cross-boot unknown-time policy](upgrade-implementation-decisions.md#approved-cross-boot-unknown-time-policy-2026-10-25).
+The original measurements and limitations below remain historical facts; they
+do not validate the new trusted-anchor, durable pause or cleanup-recovery path.
+No reported result or concrete budget is changed by this note.
+
 The owner approved the existing candidate platform/data/measurement proposal for
 isolated experiments. The program uses actual child-process SQLite/WAL writers,
 generation-bound saved/frozen evidence, AES-256-GCM, file fsync and complete

@@ -260,7 +260,19 @@ membership, and creates independent Beta/Internal drafts atomically. Permanent
 batch replay rechecks the actual operator's current target permissions without
 creating duplicate drafts or acquiring new source eligibility.
 
-Trusted time faults, protected OS facts, physical shutdown/offline timers, backup
-budgets and actual certification are T03 and later adapters. The models require
-trusted time; they do not substitute wall-clock guesses or claim that those
-pending platform decisions have been solved.
+The owner approved the cross-boot unknown-time policy on 2026-10-25
+(R section17.1, D section13). Unknown continuity pauses time-dependent new actions,
+preserves original deadlines/spent budgets and execution/reconciliation fences,
+and conservatively clears recovery-query secrets without changing server
+outcomes/windows. Authenticated fresh request-bound server time recovery must
+complete original-deadline cleanup before dependent actions resume; cleanup
+failure retains the pause. Confirmed component damage remains distinct.
+
+Existing executable models accept an already trusted numeric now. Their
+half-open credential windows and server timeout/retention guards are unchanged;
+they do not implement local clock collection, protected anchors, cross-boot
+unknown handling or the cleanup barrier. T03/T26 must supply those real
+adapters, durable records and conformance tests with their owners. This document
+does not claim that a caller-supplied boolean, wall clock or a new pure model
+proves those platform capabilities. No universal powered-off elapsed-time
+hardware or pre-network physical cleanup guarantee is required by this policy.

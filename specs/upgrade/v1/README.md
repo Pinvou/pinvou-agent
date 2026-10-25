@@ -13,6 +13,14 @@ encoding choices made here. The [model contract](model-contracts.md) defines T02
 atomic boundaries and read-only owner ports. T03 defines actual platform,
 protected storage and backup interfaces; it is not implemented by these models.
 
+The owner-approved 2026-10-25 time policy is in R section17.1 and D section13:
+cross-boot time uncertainty pauses dependent actions, preserves original
+deadlines/budgets and clears query secrets conservatively; fresh authenticated
+server time recovery must finish original-deadline cleanup before resuming.
+Existing numeric trusted-now models do not implement that local clock/persistent
+recovery barrier. No API Schema, signature byte vector or T01 contract-profile
+byte change is introduced by this documentation update.
+
 ## Run
 
 Requires Node.js 22 or newer. Ajv 8.20.0 is the only direct dependency, isolated

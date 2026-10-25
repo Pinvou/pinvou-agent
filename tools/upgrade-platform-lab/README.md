@@ -61,8 +61,9 @@ Unix directory fsync is reported only when actually observed. A file fsync or
 same-process readback never certifies machine-crash or power-loss durability.
 
 Measurements use a same-boot monotonic clock. Wall time only labels a report.
-Trusted elapsed shutdown time remains unproven under approved option A; no
-original deadline, retained secret or product budget is changed by this program.
+The owner superseded strict time option A on 2026-10-25. This program does not
+implement the new authenticated-time/cross-boot-unknown/cleanup-recovery path; no
+original deadline, retained secret or product budget is changed by its measurements.
 Reports identify the exact runtime module bytes by SHA-256. Report aggregation
 rejects duplicate run identities and mixed prototypes, workloads or machine
 environments. It reports sample count, nearest-rank p95, lower median and maximum;
@@ -81,8 +82,10 @@ Run at least 30 independent successes for each approved baseline and cold/warm
 storage class on the dedicated laboratory matrix, then adverse cases and real
 application/user/service integration as described by the proposal. A development
 volume smoke is useful primitive evidence only. Unavailable cold-cache control,
-distinct-user admission, protected key custody, restart/power-loss recovery and
-trusted power-off time remain explicit blockers for final T03/T46 qualification.
+distinct-user admission, protected key custody, restart/power-loss durability and
+real authenticated-time/unknown/recovery behavior remain unproven capabilities
+for final T03/T46 qualification. Universal offline powered-off elapsed-time proof
+is no longer a prerequisite; see the approved implementation decision register.
 
 ## Repeated measurement series
 

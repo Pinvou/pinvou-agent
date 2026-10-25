@@ -130,7 +130,7 @@ consume 胜出时，authorization→consumed、transaction 创建、session→au
 
 consume-status输入为recovery secret、product/component、installationScopeId、purpose、authorizationJti、consumeKey、transactionId及consumeRequestDigest；原字段/Hash规范以凭据规范§3.2为准。服务端以 secret 计算 recoveryHandleHash，再按规范公式计算 statusBindingHash，与 tombstone 值做常量时间比较；不接受仅凭 installId、installationScopeId、transactionId 或幂等键的查询。任一字段错误、记录不存在或边界关闭都返回同一无信息错误并共享限流策略。它只在 `now<authorizationExp+61d` 时返回 consumed/cancelled/expired 与 transactionId，达到边界后无论 tombstone 是否仍存在都返回统一关闭结果；不返回制品、事件内容或任何凭据。secret及完整可重放组合不得写URL/普通日志/指标/审计正文，受保护审计只保留用途需要的无秘密最小lineage/摘要。
 
-全部用途确认consumed后以产品锁更新ConsumeAttempt的原事务归属；required另把LocalBackupRecord转transaction_retention，保存服务端transactionStartedAt并固定hardCleanupAt=transactionStartedAt+60d，notRequired不创建备份记录；确认 cancelled/expired 后转 terminal/session retention。在 consume_pending 的 `now == pendingCleanupAt`，或 transaction_retention 的 `now == hardCleanupAt` 及之后，无论网络状态和服务端查询是否可用，launcher/helper 都必须在下一次本地扫描中删除平台管理的快照、staging 与密钥引用并进入 `pending_cleanup_completed`；运行中每10min扫描，关机跨边界下次启动且联网前扫描；此为正常已认证可信期限能力的规则，普通离线/日期改变不能触发故障例外。用户明确导出的副本使用独立路径、记录和审计，不能修改或延长平台 LocalBackupRecord。本机在硬上限前取得可信 succeeded/abandoned/failed 终态时，清理时刻改为 `min(hardCleanupAt, terminalAt+7d|1d|30d)`。consume_pending、transaction_retention、清理与 helper 接管竞争同一产品锁和 LocalBackupRecord revision；任一 CAS 失败零写入重算。
+全部用途确认consumed后以产品锁更新ConsumeAttempt的原事务归属；required另把LocalBackupRecord转transaction_retention，保存服务端transactionStartedAt并固定hardCleanupAt=transactionStartedAt+60d，notRequired不创建备份。可信时间可判定且now>=pendingCleanupAt或hardCleanupAt时，launcher/helper在首轮、最迟10min清理到期平台快照、staging、密钥并进入pending_cleanup_completed。跨启动无法可信判定则保护原deadline/已耗预算并暂停依赖动作，不凭墙钟猜测到期；可信授时恢复后经同一屏障按原期限清理，完成前不放行，失败仍暂停。+61d/+60d均不因暂停、重启或联网重算。合法终态仍取min(hardCleanupAt,terminalAt+7d|1d|30d)。用户明确导出副本独立路径/记录/审计；备份清理、consume_pending→transaction_retention、helper接管与时间恢复竞争同一产品锁和各记录revision，CAS失败零写入重算，删除对象不释放对账占用。
 
 ### 8.1 本地停用、故障例外及独立对账
 
@@ -138,7 +138,7 @@ consume-status输入为recovery secret、product/component、installationScopeId
 
 联网合法恢复原结果，核对未消费取消/失效或已消费安全取消/既有终态后，以独立处置解除占用。旧窗口/secret不可用时，MFA最小权限管理角色签发独立任务，绑定原请求/授权事务/scope/purpose、本地永久停用证明与任务修订；可信helper核对全部安全事实，服务端核对旧授权及占用后原子追加唯一处置/审计，不改旧终态或补旧事件/执行权。缺失历史保留未知，证据不足保持保护及前向修复；失败/丢ACK恢复同任务，再升级须全新准备/required备份。
 
-confirmed retention_time_fault仅保留既有加密备份及解密密钥引用/访问控制，三语告知可能超期及修复/管理员明确删除入口；立即删consume secret及副本，禁止新增依赖可信期限的动作/staged激活，已越界安全收敛。恢复原期限首轮≤10min清理，永久故障由管理员明确删除；不延服务端+61d/+62d，普通断网/回拨/延期不豁免硬上限。删除secret/备份/过期槽不释放对账占用或复活旧执行。
+跨启动trusted_time_unavailable与confirmed retention_time_fault分别持久化；两者立即保守清除consume查询secret及可恢复副本，保留原请求摘要/lineage/原期限/预算/fencing等无秘密对账证据，不伪造消费结果、退休或取消。既有加密备份/密钥保持访问控制、三语超期告知及授时/修复/管理员删除入口；新依赖动作和staged激活暂停，已越界安全收敛。恢复只接受真实验证的新鲜请求绑定服务端时间锚，持久化锚和待清理屏障，原期限首轮≤10min清理，完成后才放行，崩溃重试不能跳过未完成清理；不重建旧secret、不延服务器+61d/+62d。普通离线不冒组件损坏；连续性仍可信时正常清理，不能声称永久离线断电物理删除保证。
 
 ## 9. 事件签名密钥 deny
 
@@ -160,7 +160,7 @@ RecoveryReview覆盖当前阶段及全部原原因组、各原阈值/最小样�
 
 正式版同步另须覆盖：无显式渠道选择拒绝、部分渠道无权限整批零写入、部分 targetKey 缺少有效 Stable 来源、来源在准备与提交间暂停/撤回/到期/吊销、目标基线在提交前推进至相同或更高版本、草稿与批次/幂等结果提交任一点崩溃、响应丢失和超过 24 小时重试、同键不同配置、不同键并发同步同一目标、已有同版本投放冲突、目标首次激活与候选唯一约束冲突。草稿创建最多一次，各渠道后续独立审批和暂停/撤回，共享制品吊销仍使全部引用渠道失败关闭。
 
-至少覆盖：响应提交前后断连、事务提交未知、租约到期前/等于/后 1 ms、旧所有者延迟提交、恢复任务重复执行、两级 metadata head 与跨 component/scope 并发发布、PublishMetadataRefresh 与选择发布并发、双 component genesis/active Root 轮换与同版本分叉拒绝、staging 后其他 scope 发布/Root 或 supportFloor 变化、所有 generation 变化的 Target 相等校验、Registry 多渠道全成全败、紧急 deny 事务提交前/任务登记点/签名前/发布前崩溃后的 reconciliation 收敛、元数据/SupplyChainApproval 到期或新 revision 恢复、deny/generation/Registry/基线/Rollout/BridgeEligibility 在计算与提交之间变化、四种 endpoint/hop 组合的两链分别失效、unactivated 固定响应、staged 15m/清理 24h 边界、paused Rollout 直接 complete 拒绝、当前 baseline 普通 supersede 拒绝、validate 双并发、渠道切换与 consume 竞争、24 小时会话四方竞争、30 天事务超时、事件 key deny 外部不可区分、consume 领域提交后 tombstone 前崩溃零窗口、正确 secret 配错误 consumeKey/digest、pendingCleanupAt 前 1ms/等于/后 1ms及关机跨边界重启、confirmed consumed 后永久离线 hardCleanupAt、consume-status +61d 关闭与 tombstone +62d 删除、部分备份写入崩溃，以及 consume/cancel/expire 的全部竞争顺序。同一授权/请求任何顺序不得产生两个结果、两个相应用途事务、丢失tombstone或失效资格新凭据。另覆盖三用途×备份策略错绑/未知停用5min/查询丢失独立任务/lateACK不复活，准备先于冻结、多用户/槽互斥/原预安装终态确认，取消激活新修订继承期限，计时故障secret立即删除/恢复清理，下载跨24h及多会话阶段归属不变，全部质量原因/精确目标/较高修复不充样本，证据迟到最终评估冲突及两类查询族不可旁路。
+至少覆盖：响应提交前后断连、事务提交未知、租约到期前/等于/后 1 ms、旧所有者延迟提交、恢复任务重复执行、两级 metadata head 与跨 component/scope 并发发布、PublishMetadataRefresh 与选择发布并发、双 component genesis/active Root 轮换与同版本分叉拒绝、staging 后其他 scope 发布/Root 或 supportFloor 变化、所有 generation 变化的 Target 相等校验、Registry 多渠道全成全败、紧急 deny 事务提交前/任务登记点/签名前/发布前崩溃后的 reconciliation 收敛、元数据/SupplyChainApproval 到期或新 revision 恢复、deny/generation/Registry/基线/Rollout/BridgeEligibility 在计算与提交之间变化、四种 endpoint/hop 组合的两链分别失效、unactivated 固定响应、staged 15m/清理 24h 边界、paused Rollout 直接 complete 拒绝、当前 baseline 普通 supersede 拒绝、validate 双并发、渠道切换与 consume 竞争、24 小时会话四方竞争、30 天事务超时、事件 key deny 外部不可区分、consume 领域提交后 tombstone 前崩溃零窗口、正确 secret 配错误 consumeKey/digest、pendingCleanupAt 前 1ms/等于/后 1ms及关机跨边界重启、confirmed consumed 后可信连续区间 hardCleanupAt及跨启动未知/恢复、consume-status +61d 关闭与 tombstone +62d 删除、部分备份写入崩溃，以及 consume/cancel/expire 的全部竞争顺序。同一授权/请求任何顺序不得产生两个结果、两个相应用途事务、丢失tombstone或失效资格新凭据。另覆盖三用途×备份策略错绑/未知停用5min/查询丢失独立任务/lateACK不复活，准备先于冻结、多用户/槽互斥/原预安装终态确认，取消激活新修订继承期限，跨启动未知与故障secret立即删除/新鲜授时恢复屏障/清理失败暂停/原预算不刷新，下载跨24h及多会话阶段归属不变，全部质量原因/精确目标/较高修复不充样本，证据迟到最终评估冲突及两类查询族不可旁路。
 
 附加故障注入：下载超过24h/长期网络等待且合法状态可确认只阻止扩量不自动冻结；审批失联间隔内外、凭据/会话轮换和丢ACK去重、新状态恢复独立投影不解冻结。原时间统计/公开周快照不被续接或迟到证据重写。
 

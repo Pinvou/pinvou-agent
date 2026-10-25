@@ -66,3 +66,5 @@ ForwardPathPolicy 是 Registry 快照内的版本化不可变对象。每条允�
 固定测试至少覆盖：同一应用版本两个合法且不同的画像、未知画像、因配置错误导致多个画像匹配、helper 身份漂移、launcher 世代漂移、状态收紧、状态恢复、forward-only 精确单边命中/零命中/多命中/目标不高于来源/渠道错绑/policy 换版、Registry 在 check/validate/consume 之间变化、清理授权越界、新旧 Registry 并发、Stable/Beta/Internal 原子扇出、两级 head 冲突及 metadata_sync_pending。服务端不得静默把未知来源当作 `0.0.0` 或任意可升级版本。
 
 追加验收：画像摘要排除自身/运行代次/资格policy引用，ForwardPathPolicy hash与来源ID无循环；稳定事实相同而运行epoch不同仍匹配同一画像、完整请求digest及本地所有权不同，状态/计划变化仍旧凭据失效。清理与新准备/接管/对账及槽引用竞争不得误删；三用途/activationMode/backupPolicy冲突失败关闭，长下载续接不绕过Registry当前资格。
+
+时间能力认证遵循需求 §17.1 的已批准跨启动未知规则：证明真实可信授时、启动连续性判定、受保护原期限/预算、暂停及恢复清理；不再要求所有 target 独立证明永久离线断电经过时长。仅声明能力或提供调用方 trusted 标记不能代替实际本地模式证据，未知不授予安装/激活权；其他平台、画像、模式及数据范围不因本次规则变更而缩减。
