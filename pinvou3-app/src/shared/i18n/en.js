@@ -299,7 +299,7 @@ export const dictEn = {
         modelContextWindow: 'Context Window (tokens)',
 
 
-        clearSearch: 'Clear search',  sendMsg: 'Send', apiKeyGateTitle: 'API Key required', apiKeyGateDesc: 'The current model is a cloud model. Configure an API Key to start chatting.', apiKeyGateBtn: 'Configure',
+        clearSearch: 'Clear search', clearInput: 'Clear input', sendMsg: 'Send', apiKeyGateTitle: 'API Key required', apiKeyGateDesc: 'The current model is a cloud model. Configure an API Key to start chatting.', apiKeyGateBtn: 'Configure',
 
         detectingLocalVllm: 'Detecting…',
 

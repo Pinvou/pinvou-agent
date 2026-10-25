@@ -300,7 +300,7 @@ export const dictZh = {
         modelContextWindow: '上下文窗口（tokens）',
 
 
-        clearSearch: '清除搜索',  sendMsg: '发送', apiKeyGateTitle: '需要配置 API Key', apiKeyGateDesc: '当前模型为云端模型，需要先配置 API Key 才能开始对话。', apiKeyGateBtn: '去配置',
+        clearSearch: '清除搜索', clearInput: '清除输入', sendMsg: '发送', apiKeyGateTitle: '需要配置 API Key', apiKeyGateDesc: '当前模型为云端模型，需要先配置 API Key 才能开始对话。', apiKeyGateBtn: '去配置',
 
         detectingLocalVllm: '检测中…',
 

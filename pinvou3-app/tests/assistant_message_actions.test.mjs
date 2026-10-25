@@ -396,6 +396,7 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiConversation.copyReplySuccess, `${language}.uiConversation.copyReplySuccess must exist`);
   assert.ok(dict[language].uiConversation.copyReplyFailed, `${language}.uiConversation.copyReplyFailed must exist`);
   assert.ok(dict[language].uiConversation.retryReply, `${language}.uiConversation.retryReply must exist`);
+  assert.ok(dict[language].clearInput, `${language}.clearInput must exist`);
   for (const key of [
     'exportReply', 'exportReplyTitle', 'exportMarkdown', 'exportMarkdownHint', 'exportHtml', 'exportHtmlHint', 'exportSuccess', 'exportFailed',
     'shareReply', 'shareReplyTitle', 'shareSystem', 'shareSystemHint', 'shareApps', 'shareSuccess', 'shareFailed', 'shareUnavailable',

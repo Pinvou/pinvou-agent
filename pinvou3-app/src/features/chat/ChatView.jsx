@@ -5,7 +5,7 @@ import {
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
 import { sceneStatusKey } from './scene_status_key.js';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { boundDraftNoticeMode as boundDraftNoticeModeOf } from './bound-draft-mode.js';
@@ -1286,6 +1286,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [setInputText]);
       const handleComposerInputChange = useCallback((value) => {
         setInputText(value);
+        // Emptying the composer cancels a pending voice result: the transcription must
+        // not land later in a draft the user already cleared.
+        if (!String(value || '').trim() && bridge.voice && typeof bridge.voice.abandonVoiceResult === 'function') {
+          bridge.voice.abandonVoiceResult();
+        }
         const currentTemplate = getPersonalWorkbenchTemplateById(personalWorkbenchTemplateIdRef.current);
         if (!currentTemplate) return;
         if (!isPersonalWorkbenchTemplateDraftForTemplate(value, currentTemplate)) {
@@ -2239,6 +2244,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         && !firstTurnPending
         && (hasDraftText || hasReadyAttachment || hasSessionRefs);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
+      // One-click draft clear: hidden while the composer is empty, disabled while a
+      // voice capture/rewrite is in flight (clearing mid-capture would race the write-back).
+      const canClearInput = hasDraftText && !voiceActive;
+      function handleClearInput() {
+        if (!canClearInput) return;
+        handleComposerInputChange('');
+        composerRef.current?.focus();
+      }
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const dispatchChatMessage = useCallback(async (text, voiceMeta, voiceOwner) => {
         if (!bridge.available) return false;
@@ -4275,6 +4288,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
+                {hasDraftText && (
+                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                      canClearInput
+                        ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'
+                        : 'text-gray-400 cursor-not-allowed opacity-60'
+                    }`}>
+                    <Trash2 size={18} />
+                  </button>
+                )}
                 <VoiceComposerButton
                   refProp={voiceAsrPopoverRef}
                   voiceInput={voiceInput}

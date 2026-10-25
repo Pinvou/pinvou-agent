@@ -4013,7 +4013,16 @@ export function CodexAcpView({
                   ))}
                 </div>
               )}
-              <textarea ref={voiceComposerTextareaRef} value={draft} onChange={event => setDraft(event.target.value)}
+              <textarea ref={voiceComposerTextareaRef} value={draft} onChange={event => {
+                const value = event.target.value;
+                // Emptying the composer cancels a pending voice result so the
+                // transcription cannot land later in the cleared draft.
+                if (!value.trim() && bridge.voice && typeof bridge.voice.getVoiceOperationId === 'function' && typeof bridge.voice.abandonVoiceResult === 'function') {
+                  const operationId = bridge.voice.getVoiceOperationId(activeId || null, isNativeAgent ? 'native' : 'acp');
+                  if (operationId) bridge.voice.abandonVoiceResult(operationId);
+                }
+                setDraft(value);
+              }}
                 onPaste={handlePaste}
                 onKeyDown={event => {
                   if (nativeVoice.editPreview) {
