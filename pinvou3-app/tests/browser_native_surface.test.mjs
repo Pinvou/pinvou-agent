@@ -110,6 +110,10 @@ test('IPC capability is granted only to named WebViews and not inherited by chil
 
 test('browser presentation renders only the native surface without screenshot streaming', () => {
   assert.match(nativeSurfaceCoordinator, /browser_show_native_surface/);
+  // The view drives the one physical surface only through the coordinator;
+  // a direct surface command in the view would bypass its ownership and
+  // visibility-sequence protocol.
+  assert.doesNotMatch(browserView, /browser_(?:show|hide)_native_surface|browser_begin_surface_generation/);
   assert.doesNotMatch(browserView, /listenTauri\(['"]browser:frame/);
   assert.doesNotMatch(browserView, /browser_set_streaming/);
   assert.doesNotMatch(browserView, /data:image\/(?:jpeg|png);base64/);
@@ -201,14 +205,16 @@ test('normal mode uses one Right Dock switcher for artifact and browser entries'
   // The lazy browser chunk is prefetched inside the workspace preparation so
   // the fetch hides behind the Rust round-trip instead of the first paint:
   // after the browserActive early-return, before the prepare round-trip.
-  // Bounded windows keep the ordering pinned inside openBrowserDock instead of
-  // matching unrelated occurrences anywhere in the file.
-  assert.match(
-    main,
-    /if \(browserActive\) return;[\s\S]{0,400}prefetchView\('browser'\)[\s\S]{0,400}invokeTauri\('browser_prepare'/,
-  );
-  // The mobile navigation funnel (navigateFromScheduledRun → NAV_PREFETCH)
+  // Both anchors occur once in the file, so the two bounded windows pin the
+  // ordering inside openBrowserDock without matching unrelated occurrences.
+  assert.equal((main.match(/if \(browserActive\) return;/g) || []).length, 1);
+  assert.equal((main.match(/invokeTauri\('browser_prepare'/g) || []).length, 1);
+  assert.match(main, /if \(browserActive\) return;[\s\S]{0,600}prefetchView\('browser'\)/);
+  assert.match(main, /prefetchView\('browser'\)[\s\S]{0,800}invokeTauri\('browser_prepare'/);
+  // Exactly two call sites: the dock funnel above and the NAV_PREFETCH entry,
+  // through which the mobile navigation funnel (navigateFromScheduledRun)
   // prefetches the browser chunk at tap time like every other navigable view.
+  assert.equal((main.match(/prefetchView\('browser'\)/g) || []).length, 2);
   assert.match(main, /browser: \(\) => prefetchView\('browser'\)/);
   assert.match(main, /const \[browserPaneStates, setBrowserPaneStates\] = useState\(\{\}\)/);
   assert.match(main, /browserPaneStateFor\(browserPaneStates, browserSessionId\)/);
@@ -338,10 +344,12 @@ test('task switches discard stale status and mount a fresh BrowserView instance'
   // (that would pin the whole pane graph back into the main chunk), and both
   // mounts go through the same React.lazy factory keyed by session.
   assert.match(main, /lazy\(\(\) => VIEW_LOADERS\.browser\(\)/);
-  // Any import path reference (named, namespace, side-effect, or dynamic) would
-  // re-pin the pane graph into the entry; the dynamic import lives only in
-  // view-loaders.js.
-  assert.doesNotMatch(main, /['"]\.\.\/features\/browser\/BrowserView\.jsx['"]/);
+  // Any quoted reference to the BrowserView module path from the entry (named,
+  // namespace, side-effect or dynamic import, with or without the .jsx
+  // extension) would re-pin the pane graph into the entry; the dynamic import
+  // lives only in view-loaders.js. The build-time lazy-chunk gate
+  // (lazyChunkContracts.browser) is the second net for any other spelling.
+  assert.doesNotMatch(main, /['"]\.\.\/features\/browser\/BrowserView(?:\.jsx)?['"]/);
   const allBrowserViews = main.match(/<LazyBrowserView\b/g) || [];
   const keyedBrowserViews = main.match(/<LazyBrowserView\s+[\s\S]{0,100}?key=\{browserSessionId\}/g) || [];
   assert.equal(allBrowserViews.length, 2, 'only the compact and dock BrowserView mounts may exist');
