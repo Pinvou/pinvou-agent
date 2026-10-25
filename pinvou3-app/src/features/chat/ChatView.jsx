@@ -4289,7 +4289,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 {hasDraftText && (
-                  <button onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                  <button type="button" onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       canClearInput
                         ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'
