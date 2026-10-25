@@ -37,6 +37,19 @@ const TIMELINE_APPEND_BUFFER_BYTES: usize = 64 * 1024;
 /// (see `load_timeline_last_seq`).
 const TIMELINE_TAIL_BYTES: u64 = 256 * 1024;
 
+/// The journal's crash-recovery anchors flush synchronously: resume and
+/// orphan-turn recovery read them after a crash, so they must never depend
+/// on buffered chunk bytes. `cancel_requested` flushes too: it exists to
+/// record that the user asked to stop a turn the agent may never answer,
+/// which is exactly the window an app crash would otherwise erase it from.
+/// Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
+fn flushes_timeline_synchronously(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "turn_started" | "turn_completed" | "cancel_requested"
+    )
+}
+
 /// Codex ACP 页面唯一消费的事件合同。
 ///
 /// 该合同刻意不复用 `chat:*`：ACP 的 reasoning、tool update、permission、
@@ -1004,17 +1017,7 @@ impl EventBridge {
                     data,
                 },
             };
-            // Turn boundaries are the journal's crash-recovery anchors: they
-            // flush synchronously so resume and orphan-turn recovery never
-            // depend on buffered chunk bytes. A cancel request flushes too:
-            // it exists to record that the user asked to stop a turn the
-            // agent may never answer, which is exactly the window an app
-            // crash would otherwise erase it from.
-            // Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
-            let flush_timeline = matches!(
-                event_type,
-                "turn_started" | "turn_completed" | "cancel_requested"
-            );
+            let flush_timeline = flushes_timeline_synchronously(event_type);
             if let Err(error) = self.append_timeline(&envelope, flush_timeline) {
                 eprintln!(
                     "[pinvou3-app] append Codex ACP timeline failed for {}: {error:#}",
@@ -2538,6 +2541,29 @@ mod tests {
         let second: AcpEventEnvelope = serde_json::from_str(&lines[1]).unwrap();
         assert_eq!(first.seq, 1);
         assert_eq!(second.event.event_type, "turn_started");
+    }
+
+    #[test]
+    fn timeline_flush_set_is_exactly_the_crash_anchors() {
+        // The emit path consults this predicate to decide the synchronous
+        // flush, so membership drift here silently moves an event into (or
+        // out of) the crash-durable window.
+        for event_type in ["turn_started", "turn_completed", "cancel_requested"] {
+            assert!(
+                flushes_timeline_synchronously(event_type),
+                "{event_type} must flush the journal synchronously"
+            );
+        }
+        for event_type in [
+            "agent_message_chunk",
+            "permission_requested",
+            "runtime_notice",
+        ] {
+            assert!(
+                !flushes_timeline_synchronously(event_type),
+                "{event_type} must ride the buffered append window"
+            );
+        }
     }
 
     #[test]
