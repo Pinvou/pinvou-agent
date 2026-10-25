@@ -59,3 +59,8 @@ pub(crate) fn execute_launcher(_: Option<&str>) -> Result<()> {
 pub(crate) fn install_local() -> Result<u32> {
     Err(Error::Unsupported)
 }
+
+/// No Windows counter or SCM capability is borrowed by another target.
+pub(crate) fn read_monotonic_counters() -> Result<crate::monotonic::CounterObservation> {
+    Err(Error::Unsupported)
+}

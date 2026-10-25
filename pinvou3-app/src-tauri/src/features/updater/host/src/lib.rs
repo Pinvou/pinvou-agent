@@ -6,6 +6,7 @@ mod handoff;
 mod identity;
 mod ipc;
 mod json;
+mod monotonic;
 mod platform;
 mod profile;
 mod registration;

@@ -22,6 +22,12 @@ mod source;
 
 mod controller;
 
+mod monotonic;
+/// Raw native counter DATA only. This does not authenticate a service context.
+pub(crate) fn read_monotonic_counters() -> Result<crate::monotonic::CounterObservation> {
+    monotonic::read_counters()
+}
+
 mod installed;
 mod installed_images;
 pub(crate) use installed_images::{InstalledImages, inspect_images};

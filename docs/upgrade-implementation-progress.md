@@ -99,6 +99,29 @@ completion **8/47 (17.0%)**. Concrete preparation budgets and the protected
 native-host recovery workflow remain unimplemented or unapproved as recorded
 above; no deployment or whole-T26 completion is claimed.
 
+**Current Windows monotonic source increment:** based on delivered service
+`d0e7fee94` / client `9b2d182a5`, the integrated adapter reads actual
+`QueryInterruptTimePrecise` and `QueryUnbiasedInterruptTimePrecise` counters,
+keeping suspend-inclusive and awake bounds distinct with conservative rounding.
+Only a real post-COMMIT `StartedServiceContext` can mint the private incarnation
+sample, with actual service/process and protected registration authentication
+before and after sampling, binding installation scope, host epoch, instance nonce
+and PID/creation identity. Raw counters alone supply no UTC, installation right
+or cross-boot continuity. This increment adds no persistent namespace, budget
+ledger, worker, cleanup barrier or policy default. The four new arithmetic/raw-API
+tests are included in the 103 passed host tests; one existing test remained ignored. Windows helper
+and launcher builds, formatting, architecture and whitespace checks passed. The
+first build invocation omitted the existing required static-CRT flag; the corrected
+invocation passed without changing the guard. A supplementary macOS library check
+was not executed: its locked libc dependency was absent, and the checksum-pinned
+archive download hit a connection timeout. An earlier fetch used an incorrect zero
+timeout; that invocation failure is not an environment waiver. No dependency or
+lockfile changed, and macOS host support is not claimed. Installed-SCM,
+suspend/resume and reboot E2E remain not run in the available environment;
+that environmental gap is non-blocking and is not a pass. Earlier Node/Go/Rust
+counts remain historical, without accumulation. T26 stays **20%**, the engineering
+estimate **38.5%**, and strict completion **8/47 (17.0%)**.
+
 T09's approved controlled macOS measurement component remains
 delivered; genuine downstream T46 production/consumption is still its parked gap.
 T13's protected planning workflow is delivered in service `51630257` and client
