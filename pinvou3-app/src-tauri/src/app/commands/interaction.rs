@@ -21,6 +21,15 @@ pub async fn compact_now(
     if acp_pool.is_acp(&sid) {
         return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
     }
+    // r34 MAJOR-1：rewind 临界区栅栏——压缩在回退/反悔的截断持久化窗口内
+    // 落地时，引擎内存中的回退前历史会整体覆写已截断的 transcript（对话
+    // 复活、工作区仍回退、undo 永久消失）。与 rewind/undo 同款执行根标志
+    // 探针（roots 解析失败按未回退放行，与历史行为一致）。
+    if let Ok(roots) = store.session_roots(&sid) {
+        if pool.is_execution_root_rewinding(&roots.execution) {
+            return Err("会话绑定的项目目录正在回退/回滚，请稍后再压缩".to_string());
+        }
+    }
     pool.compact_now(&sid)
         .await
         .map_err(|e| format!("compact_now: {e:#}"))
