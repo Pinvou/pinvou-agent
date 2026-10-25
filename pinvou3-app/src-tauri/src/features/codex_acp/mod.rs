@@ -1743,20 +1743,26 @@ impl Drop for InstallActiveGuard {
 /// timeout, cancel) so a stale pid never kills a process the OS has since reused.
 ///
 /// Reclaim semantics follow whether the direct child has been reaped by a wait:
-/// - Not yet reaped (panic, wait error, early error return): the pid still names
-///   a live process, so the armed `Drop` reclaims the whole tree by pid -- after
-///   such an exit nobody can cancel the descendants spawned by npm / the vendor
-///   script. Unix kills the process group (the installer runs as its own group
-///   leader); Windows uses the bounded `taskkill /T`, the same path the cancel
-///   command uses.
-/// - Reaped (failure status, timeout, cancel): the pid may already be reused and
-///   `Drop` must never kill by it; the caller settles through
-///   [`InstallChildGuard::mark_reaped`] instead, which on unix reclaims the
-///   process group once more (survivors of the leader are still members, an
-///   empty group is ESRCH-safe) and on Windows skips the kill (`taskkill /T` on
-///   a dead root cannot reach its orphans), then disarms the `Drop`.
-/// - Explicit success (including the idempotent kind): `disarm()`; the installer
-///   wound down its own children and nothing is reclaimed.
+/// - Not yet reaped (early error return, a panic before the wait, a wait that
+///   returned `Err`): the reap state is unknown — the pid may still name a live
+///   process, or may already have been freed. The armed `Drop` still reclaims
+///   the whole tree by pid as a best effort, because after such an exit nobody
+///   can cancel the descendants spawned by npm / the vendor script. Unix kills
+///   the process group (the installer runs as its own group leader; ESRCH-safe,
+///   at worst a no-op); Windows uses the bounded `taskkill /T`, the same path
+///   the cancel command uses — there a freed-and-recycled pid could hit an
+///   unrelated tree, accepted because this arm only fires on exits that never
+///   reached a terminal wait.
+/// - Reaped (the wait returned `Ok`): settle immediately at the wait site
+///   through [`InstallChildGuard::settle_reaped`] — after a reap the pid may
+///   already be recycled and the `Drop` must never kill by it. The failure and
+///   timeout exits then call [`InstallChildGuard::reclaim_group_survivors`]
+///   once: unix reclaims the process group (survivors of the leader are still
+///   members, an empty group is ESRCH-safe); Windows skips the kill
+///   (`taskkill /T` on a dead root cannot reach its orphans).
+/// - Explicit success (including the idempotent kind): settled at the same
+///   wait site and nothing is reclaimed — the installer wound down its own
+///   children.
 struct InstallChildGuard {
     install_children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
     backend: AgentBackend,
@@ -1781,26 +1787,28 @@ impl InstallChildGuard {
         }
     }
 
-    /// Marks the install as finished successfully: Drop then only unregisters
-    /// the pid and never terminates the process tree.
-    fn disarm(&mut self) {
+    /// The caller's wait returned `Ok`: the direct child has been reaped and
+    /// its pid no longer names a live process. Settle immediately at the wait
+    /// site — before any further await or fallible step — so a panic in
+    /// between can never drop the guard armed on a pid the OS may already
+    /// have handed to another process.
+    fn settle_reaped(&mut self) {
         self.armed = false;
     }
 
-    /// The caller reaped the direct child: its pid no longer names a live
-    /// process and may already be recycled, so the Drop kill must never fire
-    /// against it. Unix reclaims the process group once here — survivors that
-    /// outlived the leader are still members, an empty group is ESRCH-safe —
-    /// while Windows skips the kill, because `taskkill /T` on a dead root
-    /// cannot reach its orphans and a recycled pid would hit an unrelated
-    /// process tree.
-    fn mark_reaped(&mut self) {
+    /// Best-effort reclaim of process-group survivors after the leader was
+    /// reaped on a failure/timeout exit. Survivors that outlived the leader
+    /// are still group members, so one group kill reaches them; an empty
+    /// group is ESRCH-safe. Windows skips the kill: `taskkill /T` walks the
+    /// parent-child snapshot from the given root, a dead root's orphans are
+    /// re-parented and unreachable, and by a possibly recycled pid the kill
+    /// would hit an unrelated process tree.
+    fn reclaim_group_survivors(&self) {
         if !crate::platform::capabilities::is_windows() {
             if let Some(pid) = self.pid {
                 kill_install_process_tree(pid);
             }
         }
-        self.armed = false;
     }
 }
 
