@@ -429,7 +429,10 @@ mod tests {
         assert!(
             privileged_helper_execution_error(
                 "恢复共享知识库",
-                "pkexec timed out after 3600s: subprocess tree termination requested"
+                // Fixture mirrors the real platform::process timeout format:
+                // the captured-output detail follows the "timed out after"
+                // clause.
+                "pkexec timed out after 3600s: no subprocess output"
             )
             .contains("等待超时")
         );

@@ -1064,7 +1064,7 @@ mod tests {
     fn probe_error_messages_distinguish_timeout_from_missing_install() {
         // fixtures use the real platform::process message formats.
         let timeout = ProbeError::classify(String::from(
-            "lark-cli timed out after 30s: subprocess tree termination requested",
+            "lark-cli timed out after 30s: no subprocess output",
         ));
         assert!(matches!(timeout, ProbeError::Timeout(_)));
         assert!(timeout.message().contains("探测超时"));
@@ -1125,7 +1125,7 @@ mod tests {
 
         // 超时/执行异常维持原分型文案,同样不得降级。
         let timeout = ProbeError::classify(String::from(
-            "dws timed out after 30s: subprocess tree termination requested",
+            "dws timed out after 30s: no subprocess output",
         ));
         match logout_probe_verdict(label, Err(timeout)) {
             LogoutProbeVerdict::Unconfirmed(message) => {
