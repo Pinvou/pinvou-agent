@@ -854,11 +854,13 @@ impl SessionAgentStore {
             self.persist_records(&candidate)?;
             *records = candidate;
         }
-        // 辅助索引已在上方（发布前）持久化；这里只清理权威 sidecar：persist
-        // 失败时 sidecar 仍在，与磁盘索引保持一致，不会出现「sidecar 已删、
-        // 索引未更新」的中间态；若 sidecar 清理失败，残留 sidecar 会在下次启动
-        // 扫描时被识别为 ACP 会话残留并清理（见 mod.rs
-        // `restore_code_native_sessions_from_sidecars`）。
+        // The auxiliary index was persisted above (before publish); only the
+        // authoritative sidecar is cleaned here. If persist failed the sidecar is
+        // still present and consistent with the on-disk index, so there is no
+        // "sidecar deleted, index not updated" intermediate state. If the sidecar
+        // cleanup itself fails, the leftover is recognised as an ACP session
+        // remnant and removed by the next startup scan (see mod.rs
+        // `restore_code_native_sessions_from_sidecars`).
         // 该会话不再是原生代码会话：清理权威 sidecar，防止辅助索引重建时误恢复。
         remove_code_session_sidecar(&self.path, session_id);
         Ok(())

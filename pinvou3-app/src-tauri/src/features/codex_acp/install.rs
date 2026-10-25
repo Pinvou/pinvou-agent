@@ -706,8 +706,10 @@ async fn run_managed_install(
     let mut child = command
         .spawn()
         .with_context(|| stage.spawn_context.clone())?;
-    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销，且
-    // 只有明确成功才解除异常回收——panic/错误返回的 Drop 会按 pid 回收整树。
+    // Register the pid after spawn so the cancel command can kill the tree; the
+    // guard unregisters on every exit of this function, and only an explicit
+    // success disarms the abnormal-exit reclaim -- a Drop from a panic or error
+    // return kills the whole tree by pid.
     let mut child_guard = InstallChildGuard::register(install_children, backend, child.id());
     // A cancel may land between spawn and pid registration: recheck once
     // right after registering.

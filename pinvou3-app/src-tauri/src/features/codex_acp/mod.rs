@@ -1738,12 +1738,16 @@ impl Drop for InstallActiveGuard {
     }
 }
 
-/// 安装子进程登记 guard：spawn 成功后登记 pid，drop 时（完成/失败/超时/取消
-/// 任意出口）统一注销，避免残留 pid 在后续取消时误杀被系统复用的进程。
-/// 只有明确成功（含幂等成功）才 `disarm()`；其余任何出口（错误返回、超时、
-/// 取消、panic）Drop 时按 pid 回收整个子进程树——panic/提前错误返回之后，
-/// npm/官方脚本派生的后代进程已无人能取消，只能一直占用资源。unix 按进程组
-/// 杀（安装进程独立成组），Windows 走有界 `taskkill /T`，与取消命令同一实现。
+/// Registration guard for the install child process: registers the pid after a
+/// successful spawn and unregisters it on every exit path (completion, failure,
+/// timeout, cancel) so a stale pid never kills a process the OS has since reused.
+/// Only an explicit success (including the idempotent kind) calls `disarm()`;
+/// every other exit (error return, timeout, cancel, panic) reclaims the whole
+/// child tree by pid in `Drop` -- after a panic or early error return nobody can
+/// cancel the descendants spawned by npm / the vendor script, so they would keep
+/// consuming resources. Unix kills the process group (the installer runs as its
+/// own group leader); Windows uses the bounded `taskkill /T`, the same path the
+/// cancel command uses.
 struct InstallChildGuard {
     install_children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
     backend: AgentBackend,
@@ -4978,8 +4982,9 @@ impl AcpPool {
                             runtime.lifecycle.generation()
                         ),
                     );
-                    // 与卡死分支同理：回收侧事件先落盘，替代实例的 bridge 才能
-                    // 从 journal 尾部播种到正确的 seq。
+                    // Same as the stalled branch: the reclaim-side event must hit
+                    // the journal first so the replacement bridge seeds from the
+                    // correct tail seq.
                     runtime.bridge.flush_journal();
                 }
             }
@@ -4999,9 +5004,9 @@ impl AcpPool {
             {
                 let retry_ms = delay.as_millis().max(1);
                 let reason = if budget_exhausted {
-                    "ACP runtime 在短时间内连续退出，已暂停自动重建"
+                    "ACP runtime exited repeatedly in a short window; automatic rebuild is paused"
                 } else {
-                    "ACP runtime 刚刚退出，正在退避"
+                    "ACP runtime just exited; backing off"
                 };
                 diagnostics::write(
                     &operation_id,
@@ -5010,7 +5015,7 @@ impl AcpPool {
                         "session_id={session_id} retry_after_ms={retry_ms} budget_exhausted={budget_exhausted}"
                     ),
                 );
-                bail!("{reason}，请在 {retry_ms} 毫秒后重试");
+                bail!("{reason}; retry in {retry_ms} ms");
             }
         }
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
@@ -5086,7 +5091,7 @@ impl AcpPool {
                 "session:exited_before_publish",
                 format!("session_id={session_id} generation={generation}"),
             );
-            bail!("ACP runtime 在初始化完成后立即退出，请重试");
+            bail!("ACP runtime exited right after initialization; please retry");
         }
         sessions.insert(session_id.to_string(), runtime.clone());
         if restarted_after_stall {
