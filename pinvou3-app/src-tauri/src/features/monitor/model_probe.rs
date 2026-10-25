@@ -34,6 +34,10 @@ pub struct VllmSnapshot {
     /// `verified` / `unverified` / `missing_api_key` / `auth_failed` / `offline` / `mismatch`。
     pub health_status: String,
     pub diagnostic: Option<MonitorDiagnostic>,
+    /// Per-metric notices. Mostly metric failures (`metrics_unavailable`),
+    /// but `context_window_inferred` is a display-window notice and fires for
+    /// remote targets too (`metrics_applicable == false`) — do not gate
+    /// rendering of this vec on metrics applicability.
     pub metric_diagnostics: Vec<MonitorDiagnostic>,
     pub max_model_len: Option<u32>,
     pub num_requests_running: Option<f64>,
@@ -305,30 +309,25 @@ async fn snapshot_for_model_config(
                     target_kind,
                     metrics_applicable,
                     "offline",
-                    Some(MonitorDiagnostic {
-                        code: "models_unreachable".to_string(),
-                        message: format!("/v1/models unreachable: {err}"),
-                    }),
+                Some(MonitorDiagnostic {
+                    code: "models_unreachable".to_string(),
+                    // The detail rides the same redaction composition as the
+                    // settings-page probe codes: reqwest's Display embeds the
+                    // full URL, and a user base_url can carry userinfo or a
+                    // token-shaped query string that must not leak into the
+                    // snapshot JSON.
+                    message: format!(
+                        "/v1/models unreachable: {}",
+                        crate::core::model_endpoint::model_probe_transport_code(&err).1
+                    ),
+                }),
                 ));
             }
             None
         }
-        None if target_kind == "local" => {
-            return Some(VllmSnapshot::with_base(
-                VllmStatus::Offline,
-                model_id,
-                provider,
-                None,
-                configured_model,
-                target_kind,
-                metrics_applicable,
-                "offline",
-                Some(MonitorDiagnostic {
-                    code: "models_unverified".to_string(),
-                    message: "/v1/models was not probed".to_string(),
-                }),
-            ));
-        }
+        // `None` only happens for remote targets with no API key (the probe
+        // is skipped for them); local targets always probe above, so no
+        // local arm is needed here.
         None => None,
     };
 
@@ -412,7 +411,7 @@ async fn snapshot_for_model_config(
     if window_from_inference {
         metric_diagnostics.push(MonitorDiagnostic {
             code: "context_window_inferred".to_string(),
-            message: "context length inferred from the model name / vendor preset; the remote endpoint does not report it".to_string(),
+            message: "context length inferred from the model name / vendor preset; the endpoint does not report it directly".to_string(),
         });
     }
 
@@ -431,10 +430,7 @@ async fn snapshot_for_model_config(
     let prefix_cache_queries = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_queries_total"));
-    let prefix_hit_pct = match (prefix_cache_hits, prefix_cache_queries) {
-        (Some(h), Some(q)) if q > 0.0 => Some(h / q * 100.0),
-        _ => None,
-    };
+    let prefix_hit_pct = prefix_cache_hit_pct(prefix_cache_hits, prefix_cache_queries);
 
     let perf = metrics_text
         .as_deref()
@@ -457,7 +453,9 @@ async fn snapshot_for_model_config(
     }
     let health_status = match status {
         VllmStatus::Mismatch => "mismatch",
-        VllmStatus::Offline => "offline",
+        // No `Offline` arm: `status` is only ever Ready/Busy here (built from
+        // the queue gauges, then possibly downgraded to Mismatch); every
+        // Offline snapshot exits through the early `with_base` returns above.
         _ if target_kind == "remote"
             && api_key
                 .map(str::trim)
@@ -469,23 +467,7 @@ async fn snapshot_for_model_config(
         _ if target_kind == "remote" && served_model.is_none() => "unverified",
         _ => "verified",
     };
-    let diagnostic = match health_status {
-        "missing_api_key" => Some(MonitorDiagnostic {
-            code: "missing_api_key".to_string(),
-            message: "remote model has no API key configured; online probe skipped".to_string(),
-        }),
-        "unverified" => Some(MonitorDiagnostic {
-            code: "remote_unverified".to_string(),
-            message: "remote endpoint returned no model list; showing the configured model"
-                .to_string(),
-        }),
-        "mismatch" => Some(MonitorDiagnostic {
-            code: "model_mismatch".to_string(),
-            message: "configured model name differs from the one reported by the local server"
-                .to_string(),
-        }),
-        _ => None,
-    };
+    let diagnostic = health_diagnostic(health_status);
 
     // happy-path:从带默认值的 base 起步,再逐项覆盖真实解析值。
     let mut snapshot = VllmSnapshot::with_base(
@@ -517,6 +499,42 @@ async fn snapshot_for_model_config(
     snapshot.generation_tokens_total = perf.generation_tokens_total;
     snapshot.prompt_tokens_total = perf.prompt_tokens_total;
     Some(snapshot)
+}
+
+/// The happy-path diagnostic for a computed `health_status` (extracted as a
+/// pure function so every arm is unit-pinnable — the remote arms are not
+/// reachable from a loopback mock server). The early-exit branches above
+/// build their own `MonitorDiagnostic` inline instead.
+fn health_diagnostic(health_status: &str) -> Option<MonitorDiagnostic> {
+    match health_status {
+        "missing_api_key" => Some(MonitorDiagnostic {
+            code: "missing_api_key".to_string(),
+            message: "remote model has no API key configured; online probe skipped".to_string(),
+        }),
+        "unverified" => Some(MonitorDiagnostic {
+            code: "remote_unverified".to_string(),
+            message: "remote endpoint returned no model list; showing the configured model"
+                .to_string(),
+        }),
+        "mismatch" => Some(MonitorDiagnostic {
+            code: "model_mismatch".to_string(),
+            message: "configured model name differs from the one reported by the local server"
+                .to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// Lifetime prefix-cache hit rate: hits / queries × 100. Both are vLLM
+/// Prometheus counters (monotonic over the vLLM process lifetime). `None`
+/// unless both counters are present, finite, and queries is positive, so the
+/// UI shows "—" instead of NaN/∞ when the server reports nothing yet or a
+/// degenerate export slipped through.
+fn prefix_cache_hit_pct(hits: Option<f64>, queries: Option<f64>) -> Option<f64> {
+    match (hits, queries) {
+        (Some(h), Some(q)) if q > 0.0 && h.is_finite() && q.is_finite() => Some(h / q * 100.0),
+        _ => None,
+    }
 }
 
 fn parse_models_response(
@@ -796,7 +814,12 @@ fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
         };
         let token = value_part.split_whitespace().next()?;
         if let Ok(v) = token.parse::<f64>() {
-            return Some(v);
+            // Prometheus exports `NaN` / `+Inf` for degenerate series and
+            // Rust's f64 FromStr accepts both; they are not measurements, so
+            // skip them and keep scanning (a later finite series wins).
+            if v.is_finite() {
+                return Some(v);
+            }
         }
     }
     None
@@ -1097,7 +1120,7 @@ mod tests {
             Some("qwen3.8".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "vllm".to_string(),
+            "local_vllm".to_string(),
             Some("secret"),
             None,
         )
@@ -1132,7 +1155,7 @@ mod tests {
             Some("qwen3.8".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "vllm".to_string(),
+            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1144,6 +1167,233 @@ mod tests {
             "keyless servers must not receive an Authorization header"
         );
         assert_eq!(snap.status, VllmStatus::Busy);
+    }
+
+    /// The happy-path snapshot surfaces the parsed gauges, the lifetime
+    /// prefix-cache percentage, and the identity fields, with no diagnostics
+    /// to report. Pins the review round-1 red arms: hardwiring `model_id`,
+    /// dropping the hit-pct assignment, or inventing a diagnostic on the
+    /// verified path must all go red here.
+    #[tokio::test]
+    async fn snapshot_happy_path_surfaces_metrics_identity_and_no_diagnostic() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"data":[{"id":"happy-model","max_model_len":131072}]}"#.into(),
+            ),
+            (
+                "/metrics",
+                200,
+                "vllm:num_requests_running 2\n\
+                 vllm:num_requests_waiting 1\n\
+                 vllm:prefix_cache_hits_total 30\n\
+                 vllm:prefix_cache_queries_total 40\n"
+                    .into(),
+            ),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("happy-model".to_string()),
+            ModelPreset::LocalVllm,
+            Some("saved-42".to_string()),
+            "local_vllm".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot");
+        assert_eq!(snap.status, VllmStatus::Busy, "running=2 is Busy");
+        assert_eq!(snap.num_requests_running, Some(2.0));
+        assert_eq!(snap.num_requests_waiting, Some(1.0));
+        assert_eq!(
+            snap.prefix_cache_hit_pct,
+            Some(75.0),
+            "hits/queries × 100 must reach the snapshot"
+        );
+        assert_eq!(snap.model_id.as_deref(), Some("saved-42"));
+        assert_eq!(snap.provider, "local_vllm");
+        assert_eq!(snap.health_status, "verified");
+        assert!(snap.diagnostic.is_none(), "verified carries no diagnostic");
+        assert!(
+            snap.metric_diagnostics.is_empty(),
+            "a listed window over a served /metrics must carry no notices: {:?}",
+            snap.metric_diagnostics
+        );
+    }
+
+    /// Every early-exit and health branch carries its diagnostic code, and
+    /// the unreachable-local message must not echo raw credentials (the
+    /// detail goes through the same redaction composition as the settings
+    /// probe codes — reqwest's Display embeds the full request URL, and a
+    /// user base_url can carry userinfo or a token-shaped query). The remote
+    /// arms (missing_api_key / remote_unverified) are pinned by the
+    /// `health_diagnostic` unit test below; a loopback mock cannot classify
+    /// as `remote`.
+    #[tokio::test]
+    async fn snapshot_carries_diagnostic_codes_per_health_branch() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        // Transport error → models_unreachable, no raw base_url credentials.
+        let refused = snapshot_for_model_config(
+            "http://user:secret5@127.0.0.1:1",
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            "local_vllm".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot even when unreachable");
+        assert_eq!(refused.status, VllmStatus::Offline);
+        assert_eq!(refused.health_status, "offline");
+        let unreachable = refused.diagnostic.expect("offline carries a diagnostic");
+        assert_eq!(unreachable.code, "models_unreachable");
+        assert!(
+            !unreachable.message.contains("secret5"),
+            "the diagnostic must not echo base_url credentials: {unreachable:?}"
+        );
+
+        // Non-success HTTP (not 401/403) → models_http_error with the status.
+        let mock = models_mock::spawn(&[("/models", 500, "boom".into())]);
+        let http_err = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            "local_vllm".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(http_err.health_status, "offline");
+        assert_eq!(
+            http_err.diagnostic.expect("http error carries a diagnostic").code,
+            "models_http_error"
+        );
+
+        // 401 with a key → auth_failed.
+        let mock = models_mock::spawn(&[("/models", 401, "{}".into())]);
+        let auth = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            "local_vllm".to_string(),
+            Some("secret"),
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(auth.health_status, "auth_failed");
+        assert_eq!(
+            auth.diagnostic.expect("auth failure carries a diagnostic").code,
+            "auth_failed"
+        );
+
+        // /metrics missing → metrics_unavailable (a local target classifies
+        // any loopback base, so this fires for a Deepseek-preset model too).
+        let mock = models_mock::spawn(&[(
+            "/models",
+            200,
+            r#"{"data":[{"id":"windowless-model","max_model_len":8192}]}"#.into(),
+        )]);
+        let no_metrics = snapshot_for_model_config(
+            &mock.base_url,
+            Some("windowless-model".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            "local_vllm".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(
+            no_metrics
+                .metric_diagnostics
+                .iter()
+                .map(|d| d.code.as_str())
+                .collect::<Vec<_>>(),
+            ["metrics_unavailable"]
+        );
+
+        // Mismatch → model_mismatch (the only health_diagnostic arm a
+        // loopback target can reach end to end).
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"served-other"}]}"#.into()),
+            ("/metrics", 200, "".into()),
+        ]);
+        let mismatch = snapshot_for_model_config(
+            &mock.base_url,
+            Some("configured-name".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            "local_vllm".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(mismatch.health_status, "mismatch");
+        assert_eq!(
+            mismatch.diagnostic.expect("mismatch carries a diagnostic").code,
+            "model_mismatch"
+        );
+    }
+
+    /// The inferred-window notice fires for local targets too (a listing
+    /// without a window whose native follow-up fails, with a recognizable
+    /// model name) — the message must stay endpoint-neutral. Pins that
+    /// stripping the push or the code must go red.
+    #[tokio::test]
+    async fn snapshot_reports_context_window_inferred_on_local_targets() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"deepseek-v4-pro"}]}"#.into()),
+            // Non-Ollama local: the native follow-up stops with the 404.
+            ("/api/ps", 404, "{}".into()),
+            ("/metrics", 200, "".into()),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("deepseek-v4-pro".to_string()),
+            ModelPreset::Deepseek,
+            None,
+            "local_vllm".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(
+            snap.max_model_len,
+            Some(1_000_000),
+            "the inferred v4 window must reach the display scale"
+        );
+        let codes: Vec<_> = snap
+            .metric_diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect();
+        assert_eq!(codes, ["context_window_inferred"]);
+        let inferred = &snap.metric_diagnostics[0];
+        assert!(
+            !inferred.message.contains("remote"),
+            "the notice fires locally too; the copy must be endpoint-neutral: {inferred:?}"
+        );
     }
 
     /// The display follow-up on a local Ollama endpoint: /api/ps effective
@@ -1538,7 +1788,7 @@ mod tests {
             Some("wiring-e2e-model".into()),
             ModelPreset::LocalVllm,
             None,
-            "vllm".to_string(),
+            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1570,7 +1820,7 @@ mod tests {
             Some("wiring-e2e-listed".into()),
             ModelPreset::LocalVllm,
             None,
-            "vllm".to_string(),
+            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1832,6 +2082,58 @@ mod tests {
     fn prom_metric_returns_none_for_missing() {
         let text = "some_other_metric 1.0";
         assert!(parse_prom_metric(text, "vllm:num_requests_running").is_none());
+    }
+
+    /// Prometheus exports `NaN` / `+Inf` for degenerate series and Rust's
+    /// f64 FromStr accepts both spellings; they are not measurements. The
+    /// parser must skip them and keep scanning — a later finite series of
+    /// the same name wins, an all-degenerate family yields None.
+    #[test]
+    fn prom_metric_skips_non_finite_values() {
+        let text = "vllm:generation_tokens_total NaN\n\
+                    vllm:generation_tokens_total{engine=\"0\"} 5.0\n";
+        assert_eq!(
+            parse_prom_metric(text, "vllm:generation_tokens_total"),
+            Some(5.0)
+        );
+        let text = "vllm:generation_tokens_total{engine=\"0\"} +Inf\n";
+        assert_eq!(parse_prom_metric(text, "vllm:generation_tokens_total"), None);
+    }
+
+    /// The percentage is `None` unless both counters are present, finite,
+    /// and queries is positive — the "UI shows — instead of NaN" contract,
+    /// pinned here because the guard is invisible to the wiring tests (the
+    /// happy-path mock always reports a positive query count).
+    #[test]
+    fn prefix_cache_hit_pct_guards_division_and_non_finite_counters() {
+        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(2.0)), Some(50.0));
+        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(0.0)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(f64::NAN), Some(2.0)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(f64::NAN)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(f64::INFINITY), Some(2.0)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(f64::NEG_INFINITY)), None);
+        assert_eq!(prefix_cache_hit_pct(None, Some(2.0)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(1.0), None), None);
+        assert_eq!(prefix_cache_hit_pct(None, None), None);
+    }
+
+    /// All four arms of the happy-path diagnostic map. The remote arms are
+    /// not reachable from a loopback mock server (they classify as `local`),
+    /// so this unit pin is their only red arm.
+    #[test]
+    fn health_diagnostic_covers_every_health_branch() {
+        let d = health_diagnostic("missing_api_key").expect("missing key diagnoses");
+        assert_eq!(d.code, "missing_api_key");
+        let d = health_diagnostic("unverified").expect("unverified diagnoses");
+        assert_eq!(d.code, "remote_unverified");
+        let d = health_diagnostic("mismatch").expect("mismatch diagnoses");
+        assert_eq!(d.code, "model_mismatch");
+        for quiet in ["verified", "offline", "auth_failed"] {
+            assert!(
+                health_diagnostic(quiet).is_none(),
+                "{quiet} carries no happy-path diagnostic (early exits build their own)"
+            );
+        }
     }
 
     /// 2026-06-10 real /metrics capture from a local vLLM nightly (NVFP4)
