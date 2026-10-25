@@ -913,6 +913,7 @@ function ConversationUserQuotes({ quotes, hasBody }) {
 function ConversationTurnView({
   turn,
   virtualized = false,
+  onRetry,
   now,
   pendingByTool = EMPTY_PENDING_BY_TOOL,
   onRespond = noopOnRespond,
@@ -1032,7 +1033,11 @@ function ConversationTurnView({
           })}
           {assistantFooterVisible && <AssistantMessageFooter>
             {assistantAvailable && (
-              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={c} />
+              <AssistantMessageActions
+                resolveText={() => assistantResponseText(turn)}
+                copy={c}
+                onRetry={onRetry ? () => onRetry(turn) : undefined}
+              />
             )}
             {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
               <ConversationStatusBadge status={turn.status} copy={c} />
@@ -1245,7 +1250,13 @@ export function ConversationTimeline({
         {turns.map((turn, index) => (
           <React.Fragment key={turn.id}>
             {renderBeforeTurn?.(turn, index)}
-            <ConversationTurn turn={turn} {...props} virtualized={false} />
+            {/* Regenerate targets the newest turn only, so older turns never render a retry control. */}
+            <ConversationTurn
+              turn={turn}
+              {...props}
+              virtualized={false}
+              onRetry={index === turns.length - 1 ? props.onRetry : undefined}
+            />
           </React.Fragment>
         ))}
       </>
@@ -1272,7 +1283,12 @@ export function ConversationTimeline({
         }}
       >
         {beforeTurn}
-        <ConversationTurn turn={turn} {...props} virtualized />
+        <ConversationTurn
+          turn={turn}
+          {...props}
+          virtualized
+          onRetry={virtualRow.index === turns.length - 1 ? props.onRetry : undefined}
+        />
       </div>
     );
   });
@@ -1289,7 +1305,12 @@ export function ConversationTimeline({
         }}
       >
         {renderBeforeTurn?.(liveTurn, liveTurnIndex)}
-        <ConversationTurn turn={liveTurn} {...props} virtualized />
+        <ConversationTurn
+          turn={liveTurn}
+          {...props}
+          virtualized
+          onRetry={liveTurnIndex === turns.length - 1 ? props.onRetry : undefined}
+        />
       </div>,
     );
   }

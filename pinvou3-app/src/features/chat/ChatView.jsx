@@ -3717,6 +3717,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     busy={busy}
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
+                    onRetry={(turn) => {
+                      // Regenerate: re-send the last user turn verbatim. The timeline only
+                      // hands us the newest turn; skip while a reply is streaming.
+                      if (!busy && turn.userText && bridge.available) {
+                        bridge.interaction.editLastTurn(turn.userText);
+                      }
+                    }}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}

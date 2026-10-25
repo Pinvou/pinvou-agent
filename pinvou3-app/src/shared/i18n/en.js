@@ -778,6 +778,7 @@ dictEn.uiKnowledge = {
 };
 
 Object.assign(dictEn.uiConversation, {
+  retryReply: 'Regenerate',
   callingTool: name => `Calling ${name}`,
   copyCode: 'Copy code',
   inputPlaceholder: 'Enter a value',

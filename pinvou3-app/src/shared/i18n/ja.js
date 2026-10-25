@@ -781,6 +781,7 @@ dictJa.uiKnowledge = {
 };
 
 Object.assign(dictJa.uiConversation, {
+  retryReply: '再生成',
   callingTool: name => `${name} を呼び出し中`,
   copyCode: 'コードをコピー',
   inputPlaceholder: '入力してください',

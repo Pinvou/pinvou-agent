@@ -395,6 +395,7 @@ for (const language of ['zh', 'en', 'ja']) {
   assert.ok(dict[language].uiConversation.copyReply, `${language}.uiConversation.copyReply must exist`);
   assert.ok(dict[language].uiConversation.copyReplySuccess, `${language}.uiConversation.copyReplySuccess must exist`);
   assert.ok(dict[language].uiConversation.copyReplyFailed, `${language}.uiConversation.copyReplyFailed must exist`);
+  assert.ok(dict[language].uiConversation.retryReply, `${language}.uiConversation.retryReply must exist`);
   for (const key of [
     'exportReply', 'exportReplyTitle', 'exportMarkdown', 'exportMarkdownHint', 'exportHtml', 'exportHtmlHint', 'exportSuccess', 'exportFailed',
     'shareReply', 'shareReplyTitle', 'shareSystem', 'shareSystemHint', 'shareApps', 'shareSuccess', 'shareFailed', 'shareUnavailable',
@@ -444,7 +445,19 @@ assert.match(nativeHandler, /commands::assistant_response::export_assistant_resp
 assert.match(nativeHandler, /commands::assistant_response::open_assistant_share_target/);
 assert.doesNotMatch(actions, /targetRef|querySelector/);
 assert.doesNotMatch(clipboard, /querySelectorAll|data-assistant-copy-source/);
-assert.match(timeline, /<AssistantMessageFooter>[\s\S]*?<AssistantMessageActions resolveText=\{\(\) => assistantResponseText\(turn\)\} copy=\{c\}/);
+// Regenerate affordance: the footer button renders only with an onRetry handler and
+// re-sends the turn through the bridge without any analytics payload.
+assert.match(actions, /data-testid="assistant-message-retry"/);
+assert.match(actions, /aria-label=\{copy\.retryReply\}/);
+assert.match(chatView, /onRetry=\{\(turn\) => \{/);
+assert.match(chatView, /editLastTurn\(turn\.userText\)/);
+assert.doesNotMatch(chatView, /retryReason|telemetryTurnId/);
+assert.match(timeline, /<AssistantMessageActions\n\s*resolveText=\{\(\) => assistantResponseText\(turn\)\}\n\s*copy=\{c\}\n\s*onRetry=\{onRetry \? \(\) => onRetry\(turn\) : undefined\}\n\s*\/>/);
+// Only the newest turn carries the retry handler, in every render path
+// (plain map, virtualized history rows, and the live tail).
+assert.match(timeline, /onRetry=\{index === turns\.length - 1 \? props\.onRetry : undefined\}/);
+assert.match(timeline, /onRetry=\{virtualRow\.index === turns\.length - 1 \? props\.onRetry : undefined\}/);
+assert.match(timeline, /onRetry=\{liveTurnIndex === turns\.length - 1 \? props\.onRetry : undefined\}/);
 // The legacy codex Turn footer was removed along with the old timeline; the completed-response actions contract is carried solely by the unified timeline.
 
 console.log('assistant message actions tests passed');
