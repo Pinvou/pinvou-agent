@@ -1613,6 +1613,8 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
         // WeCom scan-to-authorize page (wecom-cli auth init landing page)
         "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abc",
         "https://work.weixin.qq.com/ai/qc/c?s=abc&for_native=true",
+        // WeCom developer docs site (the wecom-bot config dialog "view docs" button)
+        "https://developer.work.weixin.qq.com/document/path/91770",
         // DingTalk device authorization login page (printed by `dws auth login --device`, carries user_code)
         "https://login.dingtalk.com/device?user_code=ABCDEF",
         "http://localhost:8080/",
@@ -1633,6 +1635,7 @@ fn external_allowlist_allows_known_targets_rejects_lookalikes() {
         "https://export-download.canva.cn.evil.com/example/preview.png",
         "https://meeting.tencent.com.evil.com/qrcode-login.html",
         "https://work.weixin.qq.com.evil.com/ai/qc/gen",
+        "https://developer.work.weixin.qq.com.evil.com/document/path/91770",
         "https://login.dingtalk.com.evil.com/device",
         "https://dingtalk.com.evil.com/device",
         "https://docs.qq.com.evil.com/scenario/open-claw.html?nlc=1",

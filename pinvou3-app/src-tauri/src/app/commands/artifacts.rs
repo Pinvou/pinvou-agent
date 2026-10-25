@@ -747,6 +747,8 @@ const EXTERNAL_URL_ALLOWLIST: &[&str] = &[
     "https://meeting.tencent.com/",
     // WeCom scan-to-authorize page (the gen landing page printed by `wecom-cli auth init`); connecting WeCom opens the browser here
     "https://work.weixin.qq.com/",
+    // WeCom official developer docs site (the "view official docs" button in the WeCom Group Bot key dialog links here)
+    "https://developer.work.weixin.qq.com/",
     // DingTalk device authorization login page (the user_code login page printed by `dws auth login --device`); connecting DingTalk opens the browser here
     "https://login.dingtalk.com/",
     // Obsidian 官网:知识库连接器探测到未安装时,引导用户下载
