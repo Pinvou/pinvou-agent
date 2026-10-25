@@ -33,11 +33,13 @@ const SCHEMA_VERSION: u32 = 1;
 
 /// [`AssetRef::kind`] of a vendor CLI binary: a versioned external asset that
 /// a package references but does not own (`docs/marketplace-unification.md`
-/// §4, `assets/cli/<name>/<version>/`). Written by the desktop connect path
-/// (connectors `bundle_store_on_connected`) and the first-start legacy scan
-/// (`legacy_cli_records`, which records a pin only after hashing the on-disk
-/// binary against it); the headless CLI mirror deliberately connects without
-/// asset pins, so consumers must still tolerate an always-empty `assets` list.
+/// §4, `assets/cli/<name>/<version>/`). Both writers go through
+/// [`verified_cli_asset`], which records a pin only after hashing the on-disk
+/// binary against the lock table: the desktop connect path (connectors
+/// `bundle_store_on_connected`) and the first-start legacy scan
+/// (`legacy_cli_records`). The headless CLI mirror deliberately connects
+/// without asset pins, so consumers must still tolerate an empty `assets`
+/// list.
 pub const ASSET_KIND_CLI: &str = "cli";
 
 /// 上传包的用户自定义 UI 展示名/说明在记录 `extra` map 里的 key（只改展示，
@@ -132,8 +134,11 @@ pub struct AssetRef {
 /// One `BundleRecord.assets` entry. An entry that does not parse as an
 /// [`AssetRef`] (a shape written by another version, a missing field, a
 /// non-string value) is kept verbatim as `Unrecognized`: it must neither fail
-/// the whole `bundles.json` load nor be dropped by the next write. The
-/// retained value is endpoint-authored data: render it as data, never as
+/// the whole `bundles.json` load nor be dropped by a write that edits the
+/// record in place. The exception is a writer that replaces the whole list:
+/// `upsert_preserving` swaps in a non-empty incoming `assets` verbatim (that
+/// is how a stale pin gets replaced) and drops unrecognized entries with it.
+/// The retained value is endpoint-authored data: render it as data, never as
 /// markup, wherever a future consumer surfaces it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -306,7 +311,9 @@ impl BundleStore {
     /// another writer recorded while a pin writer can still replace a stale
     /// pin. The flip side: "unpin all" is not expressible through this
     /// variant — a writer that genuinely wants an empty list must fall to
-    /// plain `upsert`, which replaces the whole record. The pin writers are
+    /// plain `upsert`, which replaces the whole record. A non-empty incoming
+    /// list likewise replaces the whole stored list, `Unrecognized` entries
+    /// included. The pin writers are
     /// the connectors' connect mirror and the first-start legacy import; the
     /// rule's protection is per-process: each process merges against its own
     /// load-time snapshot, so cross-process writers remain last-writer-wins
@@ -940,6 +947,16 @@ fn cli_asset_state(bin: &str) -> CliAssetState {
     }
 }
 
+/// 连接镜像与旧布局导入共用的登记口径：盘上二进制 SHA-256 与 lock 表匹配才返回
+/// 其资产引用；二进制缺失/不匹配/无 lock 条目 → `None`（调用方降级为无 pin 记录，
+/// 不据此置 `degraded` —— 存证缺失不能推翻连接本身的成功）。
+pub(crate) fn verified_cli_asset(bin: &str) -> Option<AssetRef> {
+    match cli_asset_state(bin) {
+        CliAssetState::Verified(asset) => Some(asset),
+        CliAssetState::Mismatch(_) | CliAssetState::Absent => None,
+    }
+}
+
 /// Test-only fixture: register `id` as an installed record of `source` in the
 /// default bundle store (`BundleRecord::installed_now`) — the shape the
 /// scope/command gate tests plant before exercising a gate. New gate tests
@@ -1508,6 +1525,29 @@ mod tests {
                 store.get("feishu").unwrap().unwrap().assets,
                 vec![cli_asset("1.1.0")]
             );
+        });
+    }
+
+    /// 登记口径的不匹配腿：旧布局位上有二进制但内容与 lock 表不符（无 lock
+    /// 条目的平台是同一 Mismatch 臂的「lock 表无条目」）→ 拒绝给 pin。Verified
+    /// 腿需要对 lock 内嵌哈希求 preimage，单测不可构造，由 ensure/installer 的
+    /// 同一 SHA-256 校验链覆盖。
+    #[test]
+    fn verified_cli_asset_needs_the_hash_to_match_the_lock_table() {
+        with_temp_home("pinvou3-cli-asset-mismatch", || {
+            let Some(bin) = bundle::cli_bundle_bin("feishu") else {
+                panic!("feishu 是内置 CLI 包，必有二进制名");
+            };
+            let dir = paths::managed_connector_bin_dir()
+                .expect("受支持平台必有 connectors/<platform>/bin 布局");
+            std::fs::create_dir_all(&dir).unwrap();
+            let planted = dir.join(connector_lock::executable_name(bin));
+            std::fs::write(&planted, b"not the pinned bytes").unwrap();
+            assert!(
+                matches!(cli_asset_state(bin), CliAssetState::Mismatch(_)),
+                "哈希不符（或无 lock 条目）必须落在 Mismatch 臂"
+            );
+            assert!(verified_cli_asset(bin).is_none(), "Mismatch 不得给 pin");
         });
     }
 

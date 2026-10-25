@@ -768,27 +768,21 @@ fn collect_refresh_outcomes(
 /// （重连即修复，§3.2）。既有记录保留首次登记时间与 extra（见
 /// `BundleStore::upsert_preserving`）。
 ///
-/// The connected CLI's lock pin (version + binary SHA-256) is recorded as an
-/// `AssetEntry::Ref` so `bundles.json` carries the asset provenance of what
-/// was actually installed; a lock-table miss degrades to a pin-less record
-/// instead of failing the connect mirror. `upsert_preserving` keeps an older
-/// pin when this writer carries none.
+/// 与首启旧布局导入共用同一登记口径（store 的 `verified_cli_asset`）：对盘上
+/// 二进制重新计算 SHA-256 并与 lock 表核对，匹配才把版本+哈希登记为
+/// `AssetEntry::Ref`；二进制缺失/不匹配/无 lock 条目（如走 npm 的 tmeet、
+/// 用户自装的 PATH 二进制）一律降级为无 pin 记录，不使连接镜像失败，也不据此
+/// 置 `degraded`。记录里的 sha256 是持久化存证，不得指向未经验证的字节。
+/// `upsert_preserving` 在本写入者不携带 pin 时保留旧 pin。
 pub fn bundle_store_on_connected(id: &str) {
-    use crate::features::marketplace::bundle;
     use crate::features::marketplace::store::{
-        ASSET_KIND_CLI, AssetEntry, AssetRef, BundleRecord, BundleSource, BundleStore,
+        AssetEntry, BundleRecord, BundleSource, BundleStore, verified_cli_asset,
     };
+    let asset =
+        crate::features::marketplace::bundle::cli_bundle_bin(id).and_then(verified_cli_asset);
     let mut record = BundleRecord::installed_now(id, BundleSource::Builtin);
-    if let Some(bin) = bundle::cli_bundle_bin(id) {
-        if let Some(pin) = crate::platform::connector_lock::artifact_pin(bin) {
-            record.assets.push(AssetEntry::Ref(AssetRef {
-                kind: ASSET_KIND_CLI.to_string(),
-                name: bin.to_string(),
-                version: pin.version,
-                sha256: pin.binary_sha256,
-                ..AssetRef::default()
-            }));
-        }
+    if let Some(asset) = asset {
+        record.assets.push(AssetEntry::Ref(asset));
     }
     if let Err(e) = BundleStore::new().upsert_preserving(record) {
         log::warn!("[connectors] bundles.json 镜像写入失败（connect {id}）: {e}");
@@ -852,6 +846,27 @@ mod tests {
     }
     use super::*;
     use std::io::{Error, Read};
+
+    /// 连接镜像的存证口径：盘上二进制无法通过 hash 核对（缺失/不匹配/无 lock
+    /// 条目）时必须降级为无 pin 记录，而非携带 lock 表的「应然」pin。
+    #[test]
+    fn connect_mirror_degrades_to_pin_less_record_without_a_verifiable_binary() {
+        use crate::platform::test_support::with_temp_home;
+        with_temp_home("pinvou3-connect-mirror-pin-less", || {
+            super::bundle_store_on_connected("feishu");
+            let record = crate::features::marketplace::store::BundleStore::new()
+                .get("feishu")
+                .unwrap()
+                .expect("connect 必须登记记录");
+            assert!(record.installed);
+            assert_eq!(record.degraded, None);
+            assert!(
+                record.assets.is_empty(),
+                "盘上无可校验二进制时必须写无 pin 记录: {:?}",
+                record.assets
+            );
+        });
+    }
 
     /// Round-32 minor 9 (review #455): the attribution builder records every
     /// gate even when one fails — a broken gate must not blind the rest, and
