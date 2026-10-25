@@ -43,6 +43,30 @@ test('every view loader has an explicit lazy chunk contract', () => {
   );
 });
 
+test('web codeSplitting groups stay deliberate; desktop keeps automatic splitting', () => {
+  // The entry-budget gate only measures the entry FILE, not the startup
+  // closure (entry + statically imported chunks + index.html modulepreload),
+  // so these pins carry the structural protection the byte gate cannot.
+  const webOutput = createViteConfig({ command: 'build', mode: 'web' }).build.rolldownOptions.output;
+  assert.deepEqual(
+    webOutput.codeSplitting.groups.map(group => group.name),
+    ['vendor', 'markdown-vendor', 'chat-view'],
+  );
+  // highlight.js must stay ungrouped: its 48 low-frequency fence languages
+  // are dynamic imports (syntax-highlighter.js), and grouping the package
+  // merges them into the statically-preloaded markdown-vendor chunk, hoisting
+  // ~176 kB into the web startup graph.
+  const markdownGroup = webOutput.codeSplitting.groups.find(group => group.name === 'markdown-vendor');
+  assert.match(String(markdownGroup.test), /marked\|dompurify/u);
+  assert.doesNotMatch(String(markdownGroup.test), /highlight/u);
+  // The desktop multi-entry build keeps rolldown's automatic splitting: an
+  // explicit recursive group there absorbed the pet/reader windows' shared
+  // modules into the chat-view chunk and inflated those windows' startup
+  // payload by ~0.5 MB each.
+  const desktopOutput = createViteConfig({ command: 'build', mode: 'production' }).build.rolldownOptions.output;
+  assert.equal(desktopOutput, undefined);
+});
+
 test('scheduled task cards have a production lazy-chunk gate', () => {
   assert.deepEqual(lazyToolChunkContracts.scheduledTaskCard,
     ['features/tools/scheduled-task-card.jsx', 'ScheduledTaskToolCard']);
