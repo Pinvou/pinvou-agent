@@ -455,6 +455,13 @@ impl SessionStore {
         Ok(session)
     }
 
+    /// Engine replacement must observe every already-admitted writer from
+    /// the retired incarnation, including its commit notification.
+    pub(crate) fn load_for_engine_spawn(&self, id: &str) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        self.load(id)
+    }
+
     /// Pack one session into a full-fidelity `.tar.xz` archive, reusing the
     /// base `deepseek_tui::session_export`. The archive contains the full
     /// context (system prompt, all turn messages, tool calls and results)
@@ -1189,6 +1196,44 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Revision-guarded transcript replacement: the write lands only when
+    /// `expected_revision` still matches the durable content, and a
+    /// truncating overwrite is refused outright. Keeps a stale writer from
+    /// clobbering a newer transcript between its read and its write.
+    pub fn compare_and_swap_messages(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        messages: Vec<Message>,
+    ) -> Result<String> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.is_scheduled_session(id)? {
+            bail!("Cannot replace messages for scheduled-run session '{id}'");
+        }
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for transcript CAS"))?;
+        let current_revision = transcript_revision(&session.messages)?;
+        if current_revision != expected_revision {
+            bail!("session_revision_conflict: session content changed since the expected revision");
+        }
+        if looks_like_truncating_overwrite(&session.messages, &messages) {
+            bail!(
+                "refusing to overwrite {} existing messages with {} unrelated messages",
+                session.messages.len(),
+                messages.len()
+            );
+        }
+
+        let next_revision = transcript_revision(&messages)?;
+        session.metadata.message_count = messages.len();
+        session.metadata.updated_at = Utc::now();
+        session.messages = messages;
+        self.persist_then_reconcile(&session, "transcript CAS")?;
+        Ok(next_revision)
+    }
+
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {
@@ -1230,7 +1275,26 @@ impl SessionStore {
         id: &str,
         state: &ChatEngineState,
     ) -> Result<SavedSession> {
+        self.persist_chat_engine_state_with_commit(id, state, || true, |_| {})?
+            .context("chat engine persistence was retired")
+    }
+
+    /// The notification runs in the same blocking transaction as the write.
+    /// Aborting its async waiter cannot abandon a durable commit's marker.
+    /// `admit` is checked under the mutation gate: queued writers from a
+    /// retired engine cannot run after its replacement reads its baseline.
+    /// Neither callback may re-enter a mutating SessionStore method.
+    pub(crate) fn persist_chat_engine_state_with_commit(
+        &self,
+        id: &str,
+        state: &ChatEngineState,
+        admit: impl FnOnce() -> bool,
+        committed: impl FnOnce(&SavedSession),
+    ) -> Result<Option<SavedSession>> {
         let _mutation = self.scheduled_mutation.lock();
+        if !admit() {
+            return Ok(None);
+        }
         if self.scheduled_profiles.read().contains_key(id) {
             bail!("Session '{id}' is a scheduled-run session");
         }
@@ -1252,7 +1316,8 @@ impl SessionStore {
             || format!("persist chat engine state for {id}"),
             "committed engine state save",
         )?;
-        Ok(session)
+        committed(&session);
+        Ok(Some(session))
     }
 
     /// Whether a durable chat record already exists for `id`. The headless

@@ -1519,6 +1519,71 @@ fn chat_session_has_messages_reflects_the_durable_transcript() {
 }
 
 #[test]
+fn queued_engine_snapshot_checks_retirement_under_the_mutation_gate() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _restore = paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+    let tmp = tempfile::tempdir().unwrap();
+    // SAFETY: ENV_LOCK serializes test environment changes.
+    unsafe { std::env::set_var("PINVOU3_HOME", tmp.path()) };
+    let store = SessionStore::boot_with_scheduled_root(tmp.path().join("scheduled")).unwrap();
+    let session = store
+        .create_new("/model".into(), None, tmp.path().into())
+        .unwrap();
+    let messages = vec![
+        user_text("first task"),
+        assistant_text("answer"),
+        user_text("next task"),
+    ];
+    store
+        .update_messages(&session.metadata.id, messages.clone())
+        .unwrap();
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mutation = store.scheduled_mutation.lock();
+    let worker_store = store.clone();
+    let worker_active = active.clone();
+    let id = session.metadata.id.clone();
+    let state = ChatEngineState {
+        messages: messages[..2].to_vec(),
+        system_prompt: None,
+        model: "/model".into(),
+        workspace: tmp.path().into(),
+    };
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (admit_tx, admit_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        worker_store.persist_chat_engine_state_with_commit(
+            &id,
+            &state,
+            || {
+                admit_tx.send(()).unwrap();
+                worker_active.load(std::sync::atomic::Ordering::Acquire)
+            },
+            |_| panic!("retired writer notified"),
+        )
+    });
+    started_rx.recv().unwrap();
+    assert!(
+        matches!(
+            admit_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "writer admission must wait for the mutation gate"
+    );
+    active.store(false, std::sync::atomic::Ordering::Release);
+    drop(mutation);
+    admit_rx.recv().unwrap();
+    assert!(worker.join().unwrap().unwrap().is_none());
+    assert_eq!(
+        store
+            .load_for_engine_spawn(&session.metadata.id)
+            .unwrap()
+            .messages,
+        messages
+    );
+}
+
+#[test]
 fn admitted_display_fallback_is_revision_guarded_for_append_and_edit() {
     let (store, _g) = isolated_store();
     let session = store

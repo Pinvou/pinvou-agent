@@ -1212,6 +1212,11 @@ async fn teardown_failed_spawn_engine(
         async move { handle.send(op).await }
     })
     .await;
+    // Retire transcript writers before the abort: the failed spawn never
+    // hydrated, so nothing it queued may overwrite the durable transcript.
+    engine
+        .transcript_writer_active
+        .store(false, Ordering::Release);
     forwarder.abort();
 }
 
@@ -3314,6 +3319,7 @@ impl EnginePool {
         let EngineEntry {
             engine, forwarder, ..
         } = entry;
+        let transcript_writer_active = engine.transcript_writer_active.clone();
         let shell_reclaim = self.turn_shell_tasks.begin_reclaim(session_id);
         let shell_reclaim_for_drain = shell_reclaim.clone();
         let shell_reclaim_for_terminal = shell_reclaim.clone();
@@ -3371,6 +3377,11 @@ impl EnginePool {
                 // detached straggler lingers like an undelivered Shutdown
                 // does (accepted #483 residue), and holds no gate, pool, or
                 // session-map state, so it cannot re-block evict/delete.
+                // Retire queued transcript writers before the abort: an
+                // already-admitted save still publishes its commit from the
+                // blocking worker, but a queued one must be refused instead
+                // of overwriting the replacement engine's transcript.
+                transcript_writer_active.store(false, Ordering::Release);
                 forwarder.abort();
                 bounded_while_holding_turn_gate("forwarder drain", async move {
                     let _ = forwarder.await;
@@ -9721,6 +9732,38 @@ mod scheduled_model_tests {
         assert!(
             !body.contains("tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)"),
             "no direct unbounded forwarder join may remain in reclaim"
+        );
+        // Engine-recycle ordering pin: queued transcript writers must be
+        // retired BEFORE the forwarder abort, so a queued save from the
+        // retired engine can neither persist nor notify after the abort; an
+        // already-admitted save keeps publishing from its blocking worker.
+        // The needle is split-tolerant (rustfmt may break the chain).
+        let retire_at = body
+            .find(".store(false, Ordering::Release)")
+            .expect("reclaimed writers must be retired");
+        assert!(
+            retire_at < abort_at,
+            "reclaim must retire transcript writers before aborting the forwarder"
+        );
+    }
+
+    // Engine-recycle ordering pin for the failed-spawn teardown: the spawn
+    // failed hydration, so its forwarder must not flush any queued snapshot
+    // over the durable transcript — retire writers before the abort.
+    // The needle is split-tolerant (rustfmt may break the chain).
+    #[test]
+    fn failed_spawn_teardown_retires_writers_before_abort() {
+        let src = include_str!("engine_pool.rs");
+        let body = production_body(src, "async fn teardown_failed_spawn_engine(");
+        let retire_at = body
+            .find(".store(false, Ordering::Release)")
+            .expect("failed-spawn writers must be retired");
+        let abort_at = body
+            .find("forwarder.abort()")
+            .expect("failed-spawn teardown aborts the forwarder");
+        assert!(
+            retire_at < abort_at,
+            "failed-spawn teardown must retire transcript writers before the abort"
         );
     }
 }
