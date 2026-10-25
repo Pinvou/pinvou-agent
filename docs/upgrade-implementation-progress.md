@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25 03:54 Asia/Shanghai**.
+Checkpoint: **2026-10-25 08:17 Asia/Shanghai**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -16,9 +16,10 @@ The current main task is **T09 Artifact-valid admission and quarantine**.
 T10 channel risk review, exceptions and current-risk reads are delivered; its
 remaining actual selection-widening composition is parked until T14 supplies the
 real qualification producer. The fixed T08 adapter is delivered. T09 now extends its verified upload lifecycle and validation components with an
-integrated admission/quarantine increment. Independent FullPack custody and
-fail-closed installer refusal are integrated and passed the final common checks;
-this checkpoint precedes the delivery commit.
+delivered admission/quarantine increment. Independent FullPack custody and
+generic fail-closed installer refusal passed its final common checks. The next
+explicit Linux physical-main/XZ increment is integrated and formatted, with
+the final common checks passed. This checkpoint precedes its delivery commit.
 T07 signing-key lifecycle is implemented, independently reviewed and pushed. T29 signed-source
 continuation is delivered; its remaining production current-metadata/time owners
 remain parked with T26/T27.
@@ -305,17 +306,28 @@ Independent FullPack primary Put/Open/full-hash/underlying-EOF/Close and every
 replica's separate child readback, with signed identity/typed reference/report
 binding, is integrated and covered by this final common run. Its added tests
 exercise real signed-child extraction and corrupt/tail/EOF/Close/durability
-failures, not a successful native scan or valid Artifact. Windows NSIS stub/Version and Linux
-DEB metadata do not establish actual main-payload architecture; DMG filesystem/app
-verification is also absent. All four current targets therefore lack positive
-final-installer qualification. The required source correction fails closed with
-`NativeUnsupported` after physical profile success, retaining blocked state; it
-is verified by the final common tests, including unchanged historical T04
-observations, and does not implement the missing main-payload verifier. Existing T04 inspection and
-real helper/launcher profiles are narrower and unchanged. These are functional
-implementation gaps, not environment exemptions. The **90%** estimate describes
-component engineering coverage only, not a working positive production admission
-loop. Actual Linux/root/systemd scan plus live-cloud replica E2E remains unexecuted;
+failures, not a successful native scan or valid Artifact. Without an explicit
+protected profile, all four generic target paths still return NativeUnsupported.
+The new `pinvou3-desktop-deb.v1` profile, available only for the two exact Linux
+DEB targets, adds actual bounded physical main-image checks with full TAR
+inventory, fixed ordinary0755 path/ancestors, control identity, ELF62/183,
+file-backed executable entry, ARM64 instruction alignment and Linux ABI rules.
+Its exact scope/compiled rules and explicit XZ dictionary/block capacities join
+the durable original admission binding; no arbitrary path or certificate input
+is introduced. Bounded single-stream LZMA2 XZ uses checked original framing and
+actual Reader2 consumption before two SDK passes, not a claimed aggregate heap
+bound. Debian control is the version source, not an embedded ELF version.
+
+These integrated sources passed the final common checks recorded below.
+The first scoped invocation `73097` failed because of an unused verification-test
+Debian import; a test-only removal corrected it. That original invocation remains
+failed rather than environment-exempt. Actual release DEBs, original
+root/systemd scanning and a positive Artifact.valid lifecycle are not verified
+by the constructed parser fixtures. Windows NSIS main-payload and DMG
+filesystem/application qualification remain business gaps; historical T04 and
+helper/launcher paths are unchanged. The **90%** estimate is still component
+engineering coverage, not task completion or production admission success.
+Actual Linux/root/systemd scan plus live-cloud replica E2E remains unexecuted;
 that environment-only gap is distinct from the implementation gaps. Native
 certificates remain optional. T10 risk and T46 release/Target qualification are
 downstream boundaries, not Artifact.valid prerequisites; the genuine downstream
@@ -324,8 +336,30 @@ T09 still owes consuming and displaying genuine T46 evidence references bound
 to the exact source/target, host platform, Artifact, activation mode, data/backup
 range and finite preparation/execution budgets. The genuine producer is not yet
 delivered; this integration gap does not make T46 an Artifact.valid prerequisite.
-This checkpoint records the verified increment before its delivery commit. The estimate does not
+The preceding admission/quarantine delivery is committed; the new Linux follow-up
+passed its final common checks and awaits its delivery commit. The estimate does not
 change the strict **8/47 (17.0%)** completion ratio or mark T09 complete.
+
+## Linux profile follow-up verification
+
+The first common invocation `22648` also remains failed: its trailing-slash
+negative could not be constructed by archive/tar.Writer. The repaired fixture
+changes the unique completed physical TAR header and recomputes its checksum,
+then retains the original real-parser refusal assertion. No business rule was
+weakened, and neither test failure is an environment exemption.
+
+After the test-only repairs, the final common invocation closed naturally
+without resource-floor breaches: 4,899 default Go test records passed,
+1,771 were skipped and none failed; 2,440 top-level tests include skips.
+Linux server and scanner-test binary compilation, all-package vet, module
+integrity, all command builds, client contract pins and whitespace passed.
+Normal Go test-cache reuse was retained for unchanged packages; the repaired
+packaging tests reexecuted, including the physical trailing-slash negative.
+These are code/format/configuration regressions, not authentic production-DEB,
+Linux/root scanner, live-cloud, Artifact.valid or upgrade-mode acceptance.
+The initial unused-import invocation remains failed as recorded above. New
+rules do not replace an already-bound original configuration or unknown scan;
+apply the compiled profile before a new explicit upload and its unique enqueue.
 
 ## Completed T07 managed-purpose lifecycle
 
@@ -624,7 +658,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 90% | In progress | Component engineering estimate only. Upload birth/Join/rejection are delivered; admission/quarantine machinery passed scoped/common checks. Independent FullPack custody and fail-closed installer refusal are integrated and verified; none of four targets has actual main-payload qualification; main-payload implementation remains pending. Four browsers collected, zero executed; real Linux/cloud E2E unexecuted. No positive production admission-loop or whole-task completion claim. T10/T46 remain downstream, native certificates optional. |
+| T09 | 90% | In progress | Component engineering estimate only. Upload lifecycle/rejection and admission/quarantine machinery with independent FullPack custody are delivered. Default generic final-installer paths remain unsupported; the explicit Linux2 DEB physical-main/XZ follow-up is integrated and passed the final common checks, with no production DEB/native Artifact.valid success claim. Windows/DMG main-payload business gaps and genuine T46 integration remain. Four browsers collected, zero executed; skips/unexecuted E2E are not passes. |
 | T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
