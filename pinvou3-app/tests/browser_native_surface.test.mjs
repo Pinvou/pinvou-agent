@@ -9,6 +9,10 @@ const browserView = readFileSync(
   path.join(projectRoot, 'src', 'features', 'browser', 'BrowserView.jsx'),
   'utf8',
 );
+const nativeSurfaceCoordinator = readFileSync(
+  path.join(projectRoot, 'src', 'features', 'browser', 'native-surface-coordinator.js'),
+  'utf8',
+);
 const browserManager = readFileSync(
   path.join(projectRoot, 'src-tauri', 'src', 'features', 'browser', 'mod.rs'),
   'utf8',
@@ -105,7 +109,7 @@ test('IPC capability is granted only to named WebViews and not inherited by chil
 });
 
 test('browser presentation renders only the native surface without screenshot streaming', () => {
-  assert.match(browserView, /browser_show_native_surface/);
+  assert.match(nativeSurfaceCoordinator, /browser_show_native_surface/);
   assert.doesNotMatch(browserView, /listenTauri\(['"]browser:frame/);
   assert.doesNotMatch(browserView, /browser_set_streaming/);
   assert.doesNotMatch(browserView, /data:image\/(?:jpeg|png);base64/);
@@ -194,6 +198,9 @@ test('normal mode uses one Right Dock switcher for artifact and browser entries'
   assert.match(main, /browserDockAvailable=\{browserDockAvailable\}/);
   assert.match(main, /platformCapabilities\.browserNativeDisplay/);
   assert.match(main, /invokeTauri\('browser_prepare', \{ sessionId: requestedSessionId \}\)/);
+  // The lazy browser chunk is prefetched inside the workspace preparation so
+  // the fetch hides behind the Rust round-trip instead of the first paint.
+  assert.match(main, /prefetchView\('browser'\)[\s\S]*invokeTauri\('browser_prepare'/);
   assert.match(main, /const \[browserPaneStates, setBrowserPaneStates\] = useState\(\{\}\)/);
   assert.match(main, /browserPaneStateFor\(browserPaneStates, browserSessionId\)/);
   assert.match(main, /rightDockActivePanelId=\{browserDockSelectedPanelId\}/);
@@ -260,16 +267,16 @@ test('native surface suspension is centrally derived for every occlusion path', 
   assert.match(attachmentDropOverlay, /useRightDockOcclusion\(`attachment-drop-\$\{overlayId\}`, active\)/);
   assert.match(attachmentDropOverlay, /if \(active && !publicationReady\) return null/);
   assert.match(browserView, /if \(shouldSuspendNativeSurface\) \{[\s\S]{0,160}claimNativeSurfaceHide/);
-  assert.match(browserView, /const nativeSurfaceCoordinator = \{/);
-  assert.match(browserView, /nativeSurfaceCoordinator\.owner !== owner/);
+  assert.match(nativeSurfaceCoordinator, /const nativeSurfaceCoordinator = \{/);
+  assert.match(nativeSurfaceCoordinator, /nativeSurfaceCoordinator\.owner !== owner/);
   assert.match(browserView, /disposed \|\| !ownsNativeSurfaceShow/);
   assert.match(browserView, /let lastShownBoundsKey = ''/);
   assert.match(browserView, /if \(boundsKey === lastShownBoundsKey\) return;/);
   assert.match(browserView, /if \(shown\) lastShownBoundsKey = boundsKey;/);
-  assert.match(browserView, /browser_begin_surface_generation/);
-  assert.match(browserView, /visibilityGeneration/);
-  assert.match(browserView, /visibilitySequence/);
-  assert.doesNotMatch(browserView, /visibilityEpoch|nextNativeSurfaceVisibilityEpoch/);
+  assert.match(nativeSurfaceCoordinator, /browser_begin_surface_generation/);
+  assert.match(nativeSurfaceCoordinator, /visibilityGeneration/);
+  assert.match(nativeSurfaceCoordinator, /visibilitySequence/);
+  assert.doesNotMatch(nativeSurfaceCoordinator, /visibilityEpoch|nextNativeSurfaceVisibilityEpoch/);
 });
 
 test('occluding UI, task switches, and Right Dock state publish only after native hide ACK', () => {
@@ -283,17 +290,17 @@ test('occluding UI, task switches, and Right Dock state publish only after nativ
   assert.match(main, /setPublishedBrowserOverlayIntent\(browserOverlayIntent\)/);
   assert.match(main, /browserOverlayPublicationReady && createPortal/);
   assert.match(main, /closeBrowserDock\(selectedSessionId\)/);
-  assert.match(browserView, /export async function acquireNativeSurfaceTransitionHide/);
-  assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.size > 0/);
-  assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.add\(owner\)/);
-  assert.match(browserView, /nativeSurfaceCoordinator\.transitionOwners\.delete\(owner\)/);
-  assert.match(browserView, /const hide = claimNativeSurfaceHide\(owner, sessionId\)/);
-  assert.match(browserView, /await hide/);
-  assert.match(browserView, /retainOnFailure = false/);
-  assert.match(browserView, /createDegradedNativeSurfaceHideLease\(\{/);
-  assert.match(browserView, /isFailedNativeSurfaceHideGenerationCurrent\(\{/);
-  assert.match(browserView, /retryHide: \(\) => claimNativeSurfaceHide\(owner, sessionId\)/);
-  assert.doesNotMatch(browserView, /failedIntentOwner === owner/);
+  assert.match(nativeSurfaceCoordinator, /export async function acquireNativeSurfaceTransitionHide/);
+  assert.match(nativeSurfaceCoordinator, /nativeSurfaceCoordinator\.transitionOwners\.size > 0/);
+  assert.match(nativeSurfaceCoordinator, /nativeSurfaceCoordinator\.transitionOwners\.add\(owner\)/);
+  assert.match(nativeSurfaceCoordinator, /nativeSurfaceCoordinator\.transitionOwners\.delete\(owner\)/);
+  assert.match(nativeSurfaceCoordinator, /const hide = claimNativeSurfaceHide\(owner, sessionId\)/);
+  assert.match(nativeSurfaceCoordinator, /await hide/);
+  assert.match(nativeSurfaceCoordinator, /retainOnFailure = false/);
+  assert.match(nativeSurfaceCoordinator, /createDegradedNativeSurfaceHideLease\(\{/);
+  assert.match(nativeSurfaceCoordinator, /isFailedNativeSurfaceHideGenerationCurrent\(\{/);
+  assert.match(nativeSurfaceCoordinator, /retryHide: \(\) => claimNativeSurfaceHide\(owner, sessionId\)/);
+  assert.doesNotMatch(nativeSurfaceCoordinator, /failedIntentOwner === owner/);
   assert.match(main, /requestBrowserUiCommitAck\(\)\.then/);
   assert.match(main, /useLayoutEffect\(\(\) => \{[\s\S]*?browserUiCommitWaitersRef/);
   assert.match(main, /if \(!browserUiCommitMountedRef\.current\) return Promise\.resolve\(false\)/);
@@ -318,8 +325,20 @@ test('task switches discard stale status and mount a fresh BrowserView instance'
   assert.match(browserView, /const tabsRequestEpochRef = useRef\(0\)/);
   assert.match(browserView, /sessionIdRef\.current === requestedSessionId/);
   assert.match(browserView, /st\?\.sessionId !== requestedSessionId/);
-  const keyedBrowserViews = main.match(/<BrowserView\s+[\s\S]{0,100}?key=\{browserSessionId\}/g) || [];
+  // The browser view is a lazy route: the entry must not statically import it
+  // (that would pin the whole pane graph back into the main chunk), and both
+  // mounts go through the same React.lazy factory keyed by session.
+  assert.match(main, /lazy\(\(\) => VIEW_LOADERS\.browser\(\)/);
+  assert.doesNotMatch(main, /import \{[^}]*BrowserView[^}]*\} from '\.\.\/features\/browser\/BrowserView\.jsx'/);
+  const allBrowserViews = main.match(/<LazyBrowserView\b/g) || [];
+  const keyedBrowserViews = main.match(/<LazyBrowserView\s+[\s\S]{0,100}?key=\{browserSessionId\}/g) || [];
+  assert.equal(allBrowserViews.length, 2, 'only the compact and dock BrowserView mounts may exist');
   assert.equal(keyedBrowserViews.length, 2, 'compact and dock BrowserView instances must both be keyed by session');
+  assert.match(
+    main,
+    /\{browserActive \? \(\s*<ViewErrorBoundary t=\{t\}>\s*<Suspense fallback=\{null\}>\s*<LazyBrowserView/,
+    'dock BrowserView must isolate lazy chunk loading and failures from the app root',
+  );
 });
 
 test('user takeover is visible, recovers after idle, and supports immediate handoff', () => {

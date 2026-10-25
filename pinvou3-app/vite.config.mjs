@@ -427,6 +427,7 @@ export const lazyChunkContracts = {
   cardpool: ['features/personas/Personas.jsx', 'Personas'],
   toolStore: ['features/tools/ToolStoreView.jsx', 'ToolStoreView'],
   scheduled: ['features/scheduled/ScheduledTasksView.jsx', 'ScheduledTasksView'],
+  browser: ['features/browser/BrowserView.jsx', 'BrowserView'],
   knowledge: ['features/knowledge/KnowledgeView.jsx', 'KnowledgeView'],
   monitor: ['features/monitor/MonitorView.jsx', 'MonitorView'],
   search: ['features/search/SearchView.jsx', 'SearchView'],
@@ -526,6 +527,14 @@ function enforceLazyChunks() {
 // (verified by chunk diff — no comments or dead code ride along). The next
 // thousand step leaves 808 B web headroom at the CI measurement; this cap
 // does not promise headroom for unrelated main changes.
+//
+// 2026-10-25 (lazy browser route + vendor chunk groups, measured): the
+// browser view moved into the lazy route table and the markdown-vendor /
+// chat-view codeSplitting groups landed, so the startup graph no longer
+// carries the browser pane graph or the markdown stack. Measured desktop
+// 125,334 B and web 127,564 B (previously 502,952 / 506,357 B). The 507_000
+// ceiling stays in place as headroom; any future raise or re-cut follows the
+// measured-projection policy above.
 export const MAIN_ENTRY_BUDGET_BYTES = 507_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
@@ -604,13 +613,40 @@ export default defineConfig(({ mode }) => {
             // chunk from rolldown's automatic splitting, so this only applies
             // to the web mode.
             codeSplitting: {
-              groups: [{
-                name: 'vendor',
-                test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
-              }],
+              groups: [
+                {
+                  name: 'vendor',
+                  test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+                },
+                {
+                  // Markdown rendering is only needed after a conversation view
+                  // loads. Keep its parser, sanitizer, and syntax highlighter out
+                  // of the Web shell's startup chunk.
+                  name: 'markdown-vendor',
+                  test: /node_modules[\\/](marked|dompurify|highlight\.js)[\\/]/,
+                },
+                {
+                  // Keep ChatView statically imported so the desktop/web shell
+                  // and source-contract tests retain the same startup semantics,
+                  // while preventing the large component module from inflating
+                  // the entry chunk beyond its per-chunk budget.
+                  name: 'chat-view',
+                  test: /[\\/]features[\\/]chat[\\/]ChatView\.jsx$/,
+                },
+              ],
             },
           }
-        : undefined,
+        : {
+            codeSplitting: {
+              groups: [{
+                // The desktop multi-entry build shares dependencies
+                // automatically, but ChatView itself still needs an explicit
+                // static group to keep the main entry within budget.
+                name: 'chat-view',
+                test: /[\\/]features[\\/]chat[\\/]ChatView\.jsx$/,
+              }],
+            },
+          },
     },
   },
   };
