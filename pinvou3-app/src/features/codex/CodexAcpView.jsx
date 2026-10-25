@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
+import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
 import {
   Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, MessageSquare, Monitor, Paperclip,
   RefreshCw, Send, Sparkles, StopCircle, Upload, User,
@@ -834,6 +835,9 @@ export function CodexAcpView({
   const [voiceAsrPopoverOpen, setVoiceAsrPopoverOpen] = useState(false);
   const voiceAsrPopoverRef = useRef(null);
   const voiceComposerTextareaRef = useRef(null);
+  // Auto-grow the composer with its content, clamped to the code page's 48-192px band;
+  // the textarea keeps overflow scrolling once the clamp height is reached.
+  useAutoResizeTextarea(voiceComposerTextareaRef, draft, { min: 48, max: 192 });
   // Mounted-state ref: after unmount/view switch, reject in-flight ASR/LLM callbacks from
   // writing back (the hook's isStillActive defense line).
   const composerMountedRef = useRef(true);
@@ -4045,7 +4049,7 @@ export function CodexAcpView({
                   }
                 }}
                 placeholder={codexCopy.placeholder}
-                rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
+                rows={1} className="w-full min-h-[48px] max-h-48 overflow-y-auto resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
               <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2 text-[10px] text-gray-400">
                   {!activeId && (
