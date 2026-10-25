@@ -306,18 +306,18 @@ const WORKER_THREAD_NAME: &str = "computer-use-backend";
 fn install_worker_panic_redaction() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
+        crate::core::panic_hooks::chain(move |info| {
             if std::thread::current().name() == Some(WORKER_THREAD_NAME) {
                 let location = info
                     .location()
                     .map(|location| format!("{}:{}", location.file(), location.line()))
                     .unwrap_or_else(|| "unknown location".to_string());
                 eprintln!("[computer_use] panic at {location}: payload withheld");
+                true
             } else {
-                previous(info);
+                false
             }
-        }));
+        });
     });
 }
 
@@ -384,9 +384,12 @@ fn worker_loop(
             }
             Ok(None) => return,
             Err(panic) => {
+                // Deref first: `&panic` would unsize-coerce the Box itself to
+                // `&dyn Any` (a Box is also `Any`), and every payload downcast
+                // would fail.
                 eprintln!(
                     "[computer_use] backend worker panicked: {}",
-                    panic_payload_summary(&panic)
+                    panic_payload_summary(&*panic)
                 );
                 let _ = request.reply.send(Err(ComputerUseError::failed(
                     "the computer use backend panicked while handling the request; \
@@ -1182,7 +1185,8 @@ fn emergency_cleanup(handle: BackendHandle) {
     if let Err(panic) = result {
         eprintln!(
             "[computer_use] emergency cleanup panicked: {}",
-            panic_payload_summary(&panic)
+            // Deref first — see the worker dispatch arm above.
+            panic_payload_summary(&*panic)
         );
     }
 }
@@ -1574,6 +1578,230 @@ mod tests {
             .expect("a cancelled CONTROL request must still execute, not be skipped");
         drop(req_tx);
         worker.join().expect("worker exits when channel closes");
+    }
+
+    /// Backend that panics with a sensitive-looking payload only when typing.
+    struct PanicOnTypeBackend;
+
+    impl ComputerUseBackend for PanicOnTypeBackend {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                screenshot: true,
+                input: true,
+                ui_tree: false,
+                notes: "panic-on-type".to_string(),
+            }
+        }
+
+        fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+            Ok(Capture {
+                rgba: vec![0u8; 4 * 4 * 4],
+                width: 4,
+                height: 4,
+                origin_x: 0,
+                origin_y: 0,
+                input_scale_x: 1.0,
+                input_scale_y: 1.0,
+                input_aligned: true,
+            })
+        }
+
+        fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+            Ok((10, 20))
+        }
+
+        fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn click(&mut self, _button: MouseButton, _count: u8) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_down(&mut self, _button: MouseButton) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn mouse_up(&mut self, _button: MouseButton) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn drag(&mut self, _from: (i32, i32), _to: (i32, i32)) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn scroll(
+            &mut self,
+            _direction: ScrollDirection,
+            _clicks: u32,
+        ) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn type_text(&mut self, _text: &str) -> Result<(), ComputerUseError> {
+            // A String payload is the production-sensitive case: it is what
+            // can embed typed input content, and it is what the default hook
+            // would print to stderr before catch_unwind runs.
+            let payload = String::from("cu-dispatch-payload-sentinel-do-not-print");
+            panic!("{payload}");
+        }
+
+        fn key_chord(&mut self, _keys: &[Key]) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn hold_key(&mut self, _keys: &[Key], _ms: u64) -> Result<(), ComputerUseError> {
+            Ok(())
+        }
+
+        fn ui_tree(&mut self, _opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
+            Err(ComputerUseError::unsupported("ui_tree", "mock has no tree"))
+        }
+
+        fn element_at_point(
+            &mut self,
+            _x: i32,
+            _y: i32,
+        ) -> Result<Option<ElementInfo>, ComputerUseError> {
+            Ok(None)
+        }
+    }
+
+    /// Runs the test binary as a child with a hard watchdog: `output()` alone
+    /// blocks until exit, so a wedged child would otherwise hang the suite
+    /// until the CI job cap. The filtered single-test output is a few
+    /// kilobytes, far below the pipe buffer, so not draining while polling
+    /// cannot stall the child.
+    fn run_isolated_child(
+        mut command: std::process::Command,
+    ) -> (std::process::ExitStatus, String, String) {
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+        const BUDGET: Duration = Duration::from_secs(60);
+        let mut child = command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("test binary can respawn itself");
+        let deadline = Instant::now() + BUDGET;
+        let status = loop {
+            match child.try_wait().expect("child status pollable") {
+                Some(status) => break status,
+                None if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("isolated child did not exit within {BUDGET:?}");
+                }
+                None => std::thread::sleep(Duration::from_millis(50)),
+            }
+        };
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout piped")
+            .read_to_string(&mut stdout)
+            .expect("stdout readable after exit");
+        child
+            .stderr
+            .take()
+            .expect("stderr piped")
+            .read_to_string(&mut stderr)
+            .expect("stderr readable after exit");
+        (status, stdout, stderr)
+    }
+
+    /// fork-guard APP pin: a panic raised while dispatching on the named
+    /// worker must be redacted by the process hook — the payload must not
+    /// reach stderr even though the default hook prints payloads before
+    /// catch_unwind runs — while a panic on any other thread still reaches
+    /// the previous (default) hook. The hook is process-global state, so the
+    /// scenario runs in an isolated child process.
+    #[test]
+    fn worker_thread_panics_are_redacted_and_other_panics_forwarded() {
+        const CHILD: &str = "PINVOU_CU_PANIC_REDACTION_CHILD";
+        const PAYLOAD: &str = "cu-dispatch-payload-sentinel-do-not-print";
+        const FORWARDED: &str = "cu-unowned-payload-sentinel";
+        if std::env::var_os(CHILD).is_some() {
+            let (req_tx, req_rx) = channel::<BackendRequest>();
+            let (startup_tx, startup_rx) = channel::<Result<(), ComputerUseError>>();
+            let factory: BackendFactory =
+                Box::new(|| Ok(Box::new(PanicOnTypeBackend) as Box<dyn ComputerUseBackend>));
+            // Named exactly like the production spawn: the hook redacts by
+            // thread name, so an unnamed test worker would take the forward
+            // path and prove nothing.
+            let worker = std::thread::Builder::new()
+                .name(WORKER_THREAD_NAME.to_string())
+                .spawn(move || worker_loop(factory, req_rx, startup_tx))
+                .expect("worker spawns");
+            assert!(startup_rx.recv().expect("startup channel alive").is_ok());
+            let (reply_tx, reply_rx) = channel::<BackendResult>();
+            req_tx
+                .send(BackendRequest {
+                    kind: BackendRequestKind::TypeText {
+                        text: "should never be typed".into(),
+                    },
+                    reply: reply_tx,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    control: false,
+                })
+                .expect("worker alive");
+            let error = reply_rx
+                .recv()
+                .expect("worker must still answer a panicked dispatch")
+                .err()
+                .expect("panicked dispatch must reply with an error");
+            assert!(
+                error.to_string().contains("backend panicked"),
+                "unexpected error: {error}"
+            );
+            drop(req_tx);
+            worker
+                .join()
+                .expect("worker survives the caught panic and exits when the channel closes");
+            // Control: a panic outside the worker scope must reach the
+            // previous (default) hook — redaction must not swallow the
+            // process.
+            let unowned = std::thread::spawn(|| {
+                assert!(std::panic::catch_unwind(|| panic!("{FORWARDED}")).is_err());
+            });
+            unowned.join().unwrap();
+            return;
+        }
+        let module = module_path!().split_once("::").unwrap().1;
+        let filter =
+            format!("{module}::worker_thread_panics_are_redacted_and_other_panics_forwarded");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", &filter, "--nocapture"])
+            .env(CHILD, "1");
+        let (status, stdout, stderr) = run_isolated_child(command);
+        assert!(
+            status.success(),
+            "worker redaction regression failed: {status}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        );
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "isolated test matched zero cases\n--- stdout ---\n{stdout}"
+        );
+        assert!(
+            !stderr.contains(PAYLOAD),
+            "worker panic payload leaked to stderr — redaction did not run before catch_unwind\n--- stderr ---\n{stderr}"
+        );
+        assert_eq!(
+            stderr.matches("[computer_use] panic at ").count(),
+            1,
+            "the worker panic must be redacted exactly once\n--- stderr ---\n{stderr}"
+        );
+        assert!(
+            stderr.contains("string panic payload (content withheld)"),
+            "the caught-panic summary must keep withholding content\n--- stderr ---\n{stderr}"
+        );
+        assert!(
+            stderr.contains(FORWARDED),
+            "a panic outside the worker scope must still reach the default hook\n--- stderr ---\n{stderr}"
+        );
     }
 
     /// Regression: the request channel is unbounded, so with a wedged
