@@ -2770,9 +2770,12 @@ impl EnginePool {
             .sync_session(session_id.to_string(), saved.messages)
             .await
         {
-            // Fail the spawn instead of publishing an unhydrated engine: a
-            // published engine without its baseline would persist the first
-            // turn over the pre-created record and lose the history.
+            // Fail the spawn instead of publishing the engine: sync_session
+            // fails only when the engine's ops channel is already closed, so
+            // the engine is dead, and entry_is_fresh checks no liveness — a
+            // cached dead engine would fail every later turn opaquely until
+            // an evict, a model switch, or a restart. Leaving nothing cached
+            // makes the next spawn a natural retry.
             teardown_failed_spawn_engine(&engine, forwarder).await;
             return Err(error)
                 .with_context(|| format!("sync session {session_id} before its first turn"));
@@ -9656,11 +9659,13 @@ mod scheduled_model_tests {
     }
 
     // Fail-closed pin: a sync_session failure must tear the engine down and
-    // fail the spawn for EVERY session kind. The pre-fix lenient branch
-    // logged a non-scheduled failure and published an unhydrated engine,
-    // whose first turn then persisted over the pre-created record and lost
-    // the history; the teardown-count pin above cannot see that branch
-    // return, because it keeps the single teardown call.
+    // fail the spawn for EVERY session kind. sync_session fails only on a
+    // closed ops channel — the engine is already dead — and the pre-fix
+    // lenient branch logged a non-scheduled failure and cached that dead
+    // engine anyway (entry_is_fresh checks no liveness), bricking every
+    // later turn behind an opaque send error; the teardown-count pin above
+    // cannot see that branch return, because it keeps the single teardown
+    // call.
     #[test]
     fn sync_failure_fails_the_spawn_for_every_session_kind() {
         let src = include_str!("engine_pool.rs");
@@ -9719,7 +9724,11 @@ mod scheduled_model_tests {
         .map_or(src.len(), |offset| start + signature.len() + offset);
         src[start..end]
             .split('\n')
-            .map(|line| line.split("//").next().unwrap_or(line))
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -9800,8 +9809,9 @@ mod scheduled_model_tests {
         // retired engine can neither persist nor notify after the abort; an
         // already-admitted save keeps publishing from its blocking worker.
         // Anchor on the flag so an unrelated atomic store added earlier in
-        // the body cannot satisfy the pin; the store needle itself is
-        // split-tolerant (rustfmt may break the chain).
+        // the body cannot satisfy the pin; a rustfmt-split `.store(...)`
+        // argument list would fail the needle loudly, which is the desired
+        // sensitivity.
         let retire_at =
             retire_store_after_flag(&body).expect("reclaim must retire the transcript writer flag");
         assert!(
@@ -9826,7 +9836,7 @@ mod scheduled_model_tests {
     // shutdown send (the forwarder is still live across that await) and
     // therefore before the abort.
     #[test]
-    fn failed_spawn_teardown_retires_writers_before_abort() {
+    fn forkguard_failed_spawn_teardown_retires_writers_before_abort() {
         let src = include_str!("engine_pool.rs");
         let body = production_body(src, "async fn teardown_failed_spawn_engine(");
         let retire_at = retire_store_after_flag(&body)
@@ -11000,7 +11010,11 @@ mod probed_facts_wiring_tests {
             .expect("next method boundary");
         let fn_body = source[fn_start..fn_end]
             .lines()
-            .map(|line| line.split("//").next().unwrap_or(line))
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let compact: String = fn_body.chars().filter(|c| !c.is_whitespace()).collect();
@@ -11060,7 +11074,7 @@ mod tests {
             // revert of the clause must not self-satisfy the pin (the
             // same mutation class its three sibling pins defend against).
             .split('\n')
-            .map(|line| line.split("//").next().unwrap_or(line))
+            .map(|line| line.split("//").next().expect("split always yields one item"))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(

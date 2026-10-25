@@ -2224,7 +2224,11 @@ mod transcript_persist_pins {
             .map_or(src.len(), |offset| start + signature.len() + offset);
         src[start..end]
             .split('\n')
-            .map(|line| line.split("//").next().unwrap_or(line))
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
