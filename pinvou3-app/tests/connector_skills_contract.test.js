@@ -23,7 +23,14 @@ const docs = files.filter(
   (f) => path.basename(f).toLowerCase().endsWith(".md") && !path.basename(f).startsWith("NOTICE"),
 );
 const read = (f) => fs.readFileSync(f, "utf8");
-const rel = (f) => path.relative(root, f);
+// Windows checkouts produce backslash separators from path.relative; the
+// assertion messages embed these paths, so normalize them to repository form.
+const repositoryRelative = (relative) => relative.replace(/\\/g, "/");
+const rel = (f) => repositoryRelative(path.relative(root, f));
+for (const relative of ["dingtalk-skills/dws/scripts/calendar_schedule_meeting.py",
+  "dingtalk-skills\\dws\\scripts\\calendar_schedule_meeting.py"]) {
+  assert.equal(repositoryRelative(relative), "dingtalk-skills/dws/scripts/calendar_schedule_meeting.py");
+}
 // 规则 1/4 判定前剥掉 URL 与行内代码段:黑名单/宿主断言是子串匹配,上游正文
 // 在 URL(如 …/recovery-guide)或代码标识符中合法出现这些词不是违例。
 const stripAnchors = (line) =>

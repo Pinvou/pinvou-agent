@@ -1016,6 +1016,34 @@ try {
   assert.equal(happyCard.state, 'done');
   assert.equal(happyCard.success, true, 'the sweep must not downgrade an already-settled tool');
 
+  // Subscription manifest invariant: NATIVE_CHAT_EVENTS must map one-to-one
+  // onto every chat:* branch of applyNativeChatEvent. A manifest entry
+  // missing for an existing handler means a backend broadcast never reaches
+  // the code that knows how to render it (chat:plan_resolved once failed
+  // silently this way: the handler, the backend broadcast and the unit tests
+  // all existed — only the manifest entry was missing).
+  const laneSource = readFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), 'utf8');
+  const acpViewSource = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  const handledEvents = [...laneSource.matchAll(/case '(chat:[a-z_]+)':/g)].map(match => match[1]);
+  const listStart = acpViewSource.indexOf('const NATIVE_CHAT_EVENTS = [');
+  const listEnd = acpViewSource.indexOf('];', listStart);
+  assert.ok(listStart >= 0 && listEnd > listStart, 'NATIVE_CHAT_EVENTS must stay declared in CodexAcpView');
+  const listedEvents = [...acpViewSource.slice(listStart, listEnd).matchAll(/'(chat:[a-z_]+)'/g)].map(match => match[1]);
+  assert.ok(handledEvents.length >= 20, 'the native lane must keep handling the full chat event set');
+  assert.deepEqual(
+    [...new Set(handledEvents)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
+    [...new Set(listedEvents)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
+    'every applyNativeChatEvent branch needs a NATIVE_CHAT_EVENTS entry (and vice versa)',
+  );
+  // The dedup in the set comparison above would mask duplicates: one extra
+  // manifest entry = Promise.all subscribing to the same event twice (double
+  // delivery per card), one extra branch = the same event handled twice. Each
+  // side must be duplicate-free on its own.
+  assert.equal(new Set(listedEvents).size, listedEvents.length,
+    'NATIVE_CHAT_EVENTS must not carry a duplicate entry (a duplicate double-subscribes the event)');
+  assert.equal(new Set(handledEvents).size, handledEvents.length,
+    'applyNativeChatEvent must not carry a duplicate chat:* branch');
+
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {
   rmSync(temp, { recursive: true, force: true });
