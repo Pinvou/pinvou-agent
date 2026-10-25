@@ -4333,6 +4333,7 @@ export function CodexAcpView({
           // 「回退到第 N 轮」确认弹窗：变更摘要（懒加载 diff）+ 对话截断位置 +
           // 错误如实上屏；确认后 confirmRewind 走 rewind_to_turn 编排。
           <React.Suspense fallback={null}>
+          <ViewErrorBoundary t={t} variant="panel">
           <RewindConfirmDialog
             entry={rewindTarget}
             previewState={rewindTarget.checkpoint
@@ -4345,6 +4346,7 @@ export function CodexAcpView({
             onCancel={cancelRewind}
             onConfirm={confirmRewind}
           />
+          </ViewErrorBoundary>
         </React.Suspense>
         )}
         {rewindUndoEntry && (
@@ -4352,6 +4354,7 @@ export function CodexAcpView({
           // N 轮对话；reloadFailed 时降级为「重试加载」语义。本地副本驱动，
           // 与 undoState 生命周期解耦（见状态声明处注释）。
           <React.Suspense fallback={null}>
+          <ViewErrorBoundary t={t} variant="panel">
           <RewindUndoConfirmDialog
             state={rewindUndoEntry}
             error={rewindUndoError}
@@ -4361,6 +4364,7 @@ export function CodexAcpView({
             onCancel={cancelRewindUndo}
             onConfirm={confirmRewindUndo}
           />
+          </ViewErrorBoundary>
         </React.Suspense>
         )}
         {pendingBranchSwitch && (

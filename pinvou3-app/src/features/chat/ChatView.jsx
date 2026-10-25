@@ -19,8 +19,9 @@ import { describeKeychain, workspaceNoticeTone } from '../projects/workspacePick
 import { interpretFolderEnsureOutcomes } from '../projects/folderEnsure.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
-// 底栏选择器懒加载（r11）：composer-shared 压缩后 ~21KB，只在用户聚焦输入框
-// 底栏时才需要；Suspense fallback 用等宽 pill 占位（PanelSuspense 同款）。
+// 底栏选择器懒加载（r11）：composer-shared 压缩后 ~21KB；React.lazy 在首次
+// 渲染即拉取 chunk（非聚焦触发），Suspense fallback 用等宽 pill 占位
+// （PanelSuspense 同款），外层 ViewErrorBoundary 容纳 chunk 加载失败。
 const ComposerModelSelector = React.lazy(() => import('../settings/composer-shared.jsx')
   .then(m => ({ default: m.ComposerModelSelector })));
 const ComposerToolMenu = React.lazy(() => import('../settings/composer-shared.jsx')

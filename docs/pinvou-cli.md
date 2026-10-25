@@ -163,7 +163,10 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   rewind a session whose GUI Code session may be mid-turn or merely open.
   Deny-drift (r24 M7): work-mode (plain chat) sessions the GUI can now rewind
   are refused by `code checkpoints` (it still gates on native code sessions) —
-  deny-only; a work-mode session has no CLI rewind entry at all. Similarly, `agent run
+  deny-only; a work-mode session has no CLI rewind entry at all.
+  Old-binary skew (r33 minor 25): a pre-PR binary ignores `pending_rewind.json`
+  and runs the stale sweep unconditionally mid-pending — the exact r26-M2 wedge;
+  upgrade the binary before rewinding a session a newer GUI has touched. Similarly, `agent run
   --session` does not lock the session against concurrent GUI use. Remaining
   shared stores (plugins `installed.json` and the memory JSONL files —
   round-41 review: `settings.json` and the rewind-backup map
