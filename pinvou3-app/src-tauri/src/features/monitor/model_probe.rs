@@ -268,7 +268,7 @@ async fn snapshot_for_model_config(
                 "auth_failed",
                 Some(MonitorDiagnostic {
                     code: "auth_failed".to_string(),
-                    message: format!("模型接口鉴权失败 (HTTP {})", r.status().as_u16()),
+                    message: format!("model endpoint authentication failed (HTTP {})", r.status().as_u16()),
                 }),
             ));
         }
@@ -285,7 +285,7 @@ async fn snapshot_for_model_config(
                     "offline",
                     Some(MonitorDiagnostic {
                         code: "models_http_error".to_string(),
-                        message: format!("/v1/models 返回 HTTP {}", r.status().as_u16()),
+                        message: format!("/v1/models returned HTTP {}", r.status().as_u16()),
                     }),
                 ));
             }
@@ -304,7 +304,7 @@ async fn snapshot_for_model_config(
                     "offline",
                     Some(MonitorDiagnostic {
                         code: "models_unreachable".to_string(),
-                        message: format!("/v1/models 不可达: {err}"),
+                        message: format!("/v1/models unreachable: {err}"),
                     }),
                 ));
             }
@@ -322,7 +322,7 @@ async fn snapshot_for_model_config(
                 "offline",
                 Some(MonitorDiagnostic {
                     code: "models_unverified".to_string(),
-                    message: "未探测 /v1/models".to_string(),
+                    message: "/v1/models was not probed".to_string(),
                 }),
             ));
         }
@@ -388,7 +388,7 @@ async fn snapshot_for_model_config(
     let mut metric_diagnostics = if metrics_applicable && metrics_text.is_none() {
         vec![MonitorDiagnostic {
             code: "metrics_unavailable".to_string(),
-            message: "本地 /metrics 不可用或未返回 Prometheus 指标".to_string(),
+            message: "local /metrics is unavailable or returned no Prometheus metrics".to_string(),
         }]
     } else {
         Vec::new()
@@ -409,7 +409,7 @@ async fn snapshot_for_model_config(
     if window_from_inference {
         metric_diagnostics.push(MonitorDiagnostic {
             code: "context_window_inferred".to_string(),
-            message: "上下文长度由模型名/供应商预设推断，远端模型接口未直接提供".to_string(),
+            message: "context length inferred from the model name / vendor preset; the remote endpoint does not report it".to_string(),
         });
     }
 
@@ -419,9 +419,9 @@ async fn snapshot_for_model_config(
     let waiting = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:num_requests_waiting"));
-    // 历史累计 prefix cache 命中率: hits/queries × 100。两个都是 vLLM Prometheus
-    // counter (单调递增,vLLM 进程生命周期内累积)。queries=0 时返回 None 显示 "—"
-    // 而非 NaN。
+    // Lifetime prefix-cache hit rate: hits / queries × 100. Both are vLLM
+    // Prometheus counters (monotonic over the vLLM process lifetime). With
+    // queries == 0 return None so the UI shows "—" instead of NaN.
     let prefix_cache_hits = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_hits_total"));
@@ -469,15 +469,15 @@ async fn snapshot_for_model_config(
     let diagnostic = match health_status {
         "missing_api_key" => Some(MonitorDiagnostic {
             code: "missing_api_key".to_string(),
-            message: "远端模型未配置 API Key，跳过在线探测".to_string(),
+            message: "remote model has no API key configured; online probe skipped".to_string(),
         }),
         "unverified" => Some(MonitorDiagnostic {
             code: "remote_unverified".to_string(),
-            message: "远端模型未返回可用模型列表，保留当前配置展示".to_string(),
+            message: "remote endpoint returned no model list; showing the configured model".to_string(),
         }),
         "mismatch" => Some(MonitorDiagnostic {
             code: "model_mismatch".to_string(),
-            message: "配置模型名与本地服务返回模型名不一致".to_string(),
+            message: "configured model name differs from the one reported by the local server".to_string(),
         }),
         _ => None,
     };
