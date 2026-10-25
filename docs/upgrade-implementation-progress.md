@@ -1,31 +1,46 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, T25 quality-purpose sources and Stage contribution increment**.
+Checkpoint: **2026-10-25, T25 complete public network-week read/export delivery**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **38.3%** (1800/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **38.5%** (1810/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T25 network privacy**. Its delivered protected
-internal network-week owner remains at the service `da69bb9e` / client `b60dcfc9`
-baseline. This batch adds independent Stage/Release-purpose source capture,
-Stage-only fixed DATA policy, the restricted Stage reader and related retention
-coverage, plus a callable three-language disclosure contract. Verification is
-recorded below. T25's component estimate is **75%**; it remains in progress.
-The owner has approved a complete unique network report with explicit read
-permission across every actual product/component/channel/target scope; partial
-grants are refused without filtering. The public read/export composition remains
-unfinished. Release-purpose contribution calculation/reader ownership is also
-unfinished, with the report week now approved as protected workflow FirstStartedAt.
-Late events stay in that original workflow/week; event source/key weeks remain
-original acceptance weeks. T21's atomic projection/cursor consumption and T24's quality
-report owner are separate tasks, not additional T25 prerequisites.
+The current main task is **T25 network privacy**. The previously verified
+quality-purpose source, restricted Stage reader and three-language disclosure
+batch is service `5d76` / client `aaf5cec7`; its historical verification remains
+below. This increment adds the complete platform network-week public read
+and export composition. Both approved policies remain decided: explicit
+all-product/component/channel/target `operations.read` is required without
+partial-scope filtering, and the Release report week is the protected original
+workflow FirstStartedAt. Late events remain in that workflow/week; source and key
+weeks remain original acceptance weeks.
+
+This public increment passed the scoped and final checks recorded below.
+T25 is **85%** (still in progress), increasing the overall engineering estimate
+from 1800 to **1810/47 = 38.5%**. These estimates do not complete T25. The remaining
+Release-purpose restricted owner needs a genuine T18 source selector/issuance
+producer and authenticated source class; it cannot accept self-reported facts,
+assume a default primary source or manufacture authority. T21's atomic quality
+projection/cursor consumption and T24's report owner are their separate tasks,
+not additional prerequisites for implementing the T25 ports.
+The dependency audit found no production download-info issuance/selection source
+behind T18; that path first needs T17 current qualification and T14 formal
+baseline activation. T11/T12/T13 still lack their approved active sources, and
+T11 needs genuine T46 local qualification. T26 currently supplies timing/budget
+math rather than a durable trusted-time host. Under the still-current strict
+time option A, T03 has no certified portable powered-off elapsed-time mechanism
+or approved target preparation budgets. The proposed alternative time semantics
+has been returned to the owner for decision; it is not adopted by this delivery.
+Complete the earliest genuine prerequisite before resuming downstream production
+composition, rather than adding placeholder source ports.
+
 T09's approved controlled macOS measurement component remains
 delivered; genuine downstream T46 production/consumption is still its parked gap.
 T13's protected planning workflow is delivered in service `51630257` and client
@@ -76,7 +91,66 @@ measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
 
-## Current T25 quality-purpose sources and Stage contribution increment
+## Current T25 complete public network-week read/export delivery
+
+The public composition reuses the installed network-week owner, configured realm,
+actual pool and T05 source factory. Fixed POST `/v1/admin/network-weeks/read` and
+`/export` accept only the existing closed protocol-version/week request. Current
+OIDC/session activity, Origin/CSRF and safe denial audit remain in place; callers
+cannot supply a realm, product list, leaf filter, cursor or replacement body.
+
+One same-pool serializable transaction authenticates the persisted snapshot and
+its T05 MAC witness, joins the actual current protected product inventory with
+the frozen record's original products, and authenticates current principal and
+provision facts. Each product needs one explicit `operations.read` grant with all
+component/channel/target breadth flags true. Null dimensions are exact, partial
+grants are not combined into a wide grant, and empty inventory cannot bypass
+authorization. The same transaction holds the current scope relation lock and
+rejects filtered/replaced relation kinds, RLS/policies, inheritance/rules,
+unexpected triggers, owner drift and runtime write privileges before this
+census. The complete joined metadata/read costs keep the existing
+4096-point / 32 MiB limit; errors do not return a partial or fabricated report.
+
+Read and export share the same path and exact canonical public bytes. Export
+adds only a fixed filename header. A stored unavailable result stays unavailable;
+not-frozen absence does not create an operation or run a freeze. Admission-off
+keeps authorized historical reads and the original private recovery owner. No
+new Engine, schema, migration, permission, MFA rule or three-language T40 page is
+introduced. Product/source/basis/HMAC details remain private. Cross-leaf prefix7,
+k=20 and independent purposes are unchanged.
+
+The scoped increment passed 51 test records (10 top-level tests), with no
+failures or skips, plus one genuine PostgreSQL/T05/source/OpenBao-fixture
+read/export acceptance test. The same native test was rerun after the Root
+scope-inventory repair and passed: an actual RLS policy hiding a newly added
+product makes both read/export methods return unavailable without a body; after exact policy
+restoration the missing grant is denied, and real reprovisioning restores the
+original frozen bytes. These repeated executions count as one native scenario.
+
+Final required default Go regression passed 5674 test records and
+skipped 1816 records, with zero failures (1693 top-level
+passes and 1019 top-level skips). Formatting, go vet, go mod verify,
+Windows and Linux server builds, the pinned client contract check and service
+whitespace checks passed. All recorded command trees exited naturally with no
+resource-floor trip. No frontend source changed, so the previous batch's UI and
+TypeScript results are retained without claiming a new UI/typecheck pass.
+
+The test source distinguishes real PostgreSQL/T05 publication and permission
+checks from transport-only business stubs and schema-owner inventory/corruption
+controls. A complete available historical-week calendar E2E remains unexecuted;
+no synthetic accepted history is promoted into that result. The prior source and
+Stage batch's qualified counts below are retained, not added again as new public
+read/export acceptance.
+
+T25's component estimate is **85%**, overall **1810/47 = 38.5%**;
+strict **8/47 (17.0%)** and all task counts remain unchanged. Release-purpose
+restricted contribution ownership remains unfinished until the real T18
+selector/issuance path supplies the authenticated source class. It must refuse
+self-reported source facts, a guessed primary source or fake current authority.
+T24 remains a separate downstream report owner, not a T25 prerequisite. T25 is
+not complete.
+
+## Delivered T25 quality-purpose sources and Stage contribution increment
 
 Independent `stage-quality` and `release-quality` accepted-event sources use
 actual first-peer prefix material, separate original purpose/week OpenBao keys,
@@ -145,8 +219,8 @@ on an ordinary plan, not an SN-selected-plan positive or T14/T17 qualification.
 The verified source/Stage-port/disclosure coverage increases T25's component
 estimate from 65% to **75%**, overall **1800/47 = 38.3%**. Strict completion remains
 **8/47 (17.0%)**, with task status counts unchanged. This is an engineering
-estimate, not measured hours or whole-task acceptance. T25 still owes its release-purpose restricted contribution owner
-and the decided full-scope public report/read/export implementation. T21 owns
+estimate, not measured hours or whole-task acceptance. At that checkpoint, T25 still owed its release-purpose restricted contribution
+owner and the decided full-scope public report/read/export implementation. T21 owns
 atomic quality projection/cursor consumption; T24 owns release-quality report
 calculation/freeze. Their incompleteness is not a prerequisite excuse for the
 T25 ports. T25 is not complete.
@@ -180,7 +254,8 @@ startup never migrates. The actual private recovery/due loops cancel and join,
 and the fixed week command joins the existing nineteen private names for unknown
 classification only. Common worker Keys remain unchanged. No public HTTP
 read/export, wildcard grant, partial-scope report or cross-purpose qualification
-is introduced; public authorization is still pending the owner's decision.
+was introduced in that internal-only batch; the subsequently approved public
+authorization policy and current implementation candidate are recorded above.
 
 Current scoped verification: **82 passed, zero skipped and zero failed**, across
 39 top-level cases. This combines the public/domain and T05 port controls, source
@@ -1195,7 +1270,7 @@ completion blocker; outstanding business implementation is.
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 75% | In progress | Original accepted-event attribution, source-v2 capture and the protected internal network-week freeze/CLI/host component remain delivered. This batch adds independent Stage/Release-purpose capture, the Stage DATA policy and actual-token reader with transitive week/window closure, bounded retention coverage and a callable three-language disclosure contract; the verification record above distinguishes real native source coverage, synthetic expiry controls and unexecuted scenarios. Release-purpose contribution calculation/reader ownership and full-scope public network authorization/read/export remain T25 work. T21 owns atomic quality projection/cursor consumption and T24 its release-quality report owner; neither is an additional prerequisite for finishing T25 ports. |
+| T25 | 85% | In progress | Delivered full-platform network-week read/export requires current all-product/component/channel/target operations.read and returns the same authenticated canonical body. Scoped51 plus native1 and the final required Go/build/contract checks passed as recorded above. Source-v2, protected internal freeze/CLI/host, independent Stage/Release capture, restricted Stage reader and callable three-language disclosure remain delivered with their historical verification above. The Release-purpose restricted owner still needs genuine T18 selector/issuance source-class production; self-reported facts/default primary/fake authority cannot replace it. T21 atomic projection/cursor consumption and T24 report ownership remain separate tasks, not T25 prerequisites. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
