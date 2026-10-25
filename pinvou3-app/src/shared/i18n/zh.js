@@ -182,6 +182,22 @@ const acpProvidersZh = {
 
 export const dictZh = {
   ...browserZh,
+  uiUpgradeNetworkPrivacy: {
+    "locale": "zh-CN",
+    "title": "升级网络来源数据",
+    "purposeTitle": "处理目的",
+    "purposeBody": "服务启用本项处理时，可使用网络来源数据进行网络质量统计、限制重复贡献，帮助识别升级网络中的质量问题。具体服务是否启用由其配置决定。",
+    "formTitle": "数据形式",
+    "formBody": "启用本项处理后，服务在受控内存中把直接连接的网络地址转换为网络运营商分类（ASN）和截断前缀（IPv4 /24、IPv6 /48），生成按用途和周隔离的前缀 HMAC。业务记录不保存原始 IP 或明文前缀。周汇总只包含平台、安装目标、版本系列、发布渠道和 ASN 分类上的计数，贡献不足阈值的计数不公开。",
+    "keysTitle": "用途与周隔离",
+    "keysBody": "启用本项处理后，前缀 HMAC 使用各用途、各 ISO UTC 周独立且不可导出的密钥，不与其他用途、其他周或 SN 灰度选择共享关联密钥。",
+    "retentionTitle": "保留规则",
+    "retentionBody": "ASN 和前缀 HMAC 来源明细从服务首次合法接受事件起最多保留 30 天，到期须由服务方清除或不可逆汇总。匿名周汇总及最小重放与完整性标记可独立保留；标记仅含用途、首次接受时间、不可逆记录摘要和阶段窗口绑定，不含原始 IP、明文前缀、前缀 HMAC、ASN 或安装身份。具体服务的保留执行由服务方保证。",
+    "logsTitle": "独立安全日志",
+    "logsBody": "本项业务处理不持久化原始 IP 或明文前缀。如服务另有受限安全访问日志，原始 IP 在该独立日志中的保留不得超过 7 天；明文前缀不得写入日志。",
+    "separationTitle": "与其他用途分开",
+    "separationBody": "网络来源处理与 SN 灰度选择分别说明和设置，不用于许可校验、广告追踪、设备身份认证或决定升级制品能否准入。"
+  },
         langTag: 'zh',
         acpAgent: 'ACP Agent',
         newChat: '新对话', currentChat: '当前对话', searchChats: '搜索对话', scheduledPlans: '定时任务', monitor: '运行状态', multiAgentDesktopOnly: '此蜂群对话当前仅在桌面端可用。', toolStore: '插件中心', cardPool: '专家池', recent: '历史对话',   sidebarTaskList: '任务列表', sidebarTaskFilter: '筛选', sidebarTaskFilterAll: '全部', sidebarTaskFilterPinned: '置顶', sidebarTaskFilterCode: '项目', sidebarTaskFilterCodeSessions: '代码会话', sidebarTaskFilterScheduled: '定时任务', sidebarTaskSort: '排序', sidebarTaskSortPinnedFirst: '置顶优先', sidebarTaskSortRecent: '最近更新', sidebarTaskEmpty: '暂无任务', sidebarViewAll: '查看全部', sidebarSection: '任务列表', sidebarDateGrouping: '按日期折叠', sidebarDateGroupingDesc: '任务列表按日期分组，今天默认展开', chatSection: '对话', chatStreamingAnimation: '流式回复淡入', chatStreamingAnimationDesc: 'AI 回复流式输出时，新内容淡入显示', sidebarNavExpand: '展开导航', sidebarNavCollapse: '收起导航', sidebarCollapseAll: '折叠', sidebarExpandAll: '展开', sidebarTaskStyle: '样式', sidebarResize: '拖拽调整边栏宽度，双击复位', settings: '设置', tearoffTitle: '撕离窗口',  mobileMore: '更多',

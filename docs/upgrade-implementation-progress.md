@@ -1,26 +1,32 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, T25 protected internal network-week ownership component**.
+Checkpoint: **2026-10-25, T25 quality-purpose sources and Stage contribution increment**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **38.1%** (1790/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **38.3%** (1800/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T25 network privacy**. Its protected internal
-whole-week freeze, explicit local CLI and installed host/private-worker increment
-builds on delivered first-peer ASN/week-HMAC capture and immutable legal ACKs.
-T25 is estimated at **65%** for component coverage, not whole-task completion or
-certification. The ordinary public full-scope read/export policy still awaits the
-owner's decision; no public report endpoint or filtered report is supplied.
-Stage/release-purpose restricted contribution ports and the T40 three-language
-purpose/form/retention contract remain T25 work. Their real quality/report
-consumers belong to T21/T24. T09's approved controlled macOS measurement component remains
+The current main task is **T25 network privacy**. Its delivered protected
+internal network-week owner remains at the service `da69bb9e` / client `b60dcfc9`
+baseline. This batch adds independent Stage/Release-purpose source capture,
+Stage-only fixed DATA policy, the restricted Stage reader and related retention
+coverage, plus a callable three-language disclosure contract. Verification is
+recorded below. T25's component estimate is **75%**; it remains in progress.
+The owner has approved a complete unique network report with explicit read
+permission across every actual product/component/channel/target scope; partial
+grants are refused without filtering. The public read/export composition remains
+unfinished. Release-purpose contribution calculation/reader ownership is also
+unfinished, with the report week now approved as protected workflow FirstStartedAt.
+Late events stay in that original workflow/week; event source/key weeks remain
+original acceptance weeks. T21's atomic projection/cursor consumption and T24's quality
+report owner are separate tasks, not additional T25 prerequisites.
+T09's approved controlled macOS measurement component remains
 delivered; genuine downstream T46 production/consumption is still its parked gap.
 T13's protected planning workflow is delivered in service `51630257` and client
 progress `1805fcc`; its remaining active-floor/path/bridge work is parked.
@@ -70,7 +76,82 @@ measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
 
-## Current T25 protected internal network-week ownership increment
+## Current T25 quality-purpose sources and Stage contribution increment
+
+Independent `stage-quality` and `release-quality` accepted-event sources use
+actual first-peer prefix material, separate original purpose/week OpenBao keys,
+and mandatory same-original-COMMIT persistence. They do not require ASN or a
+ready network-quality source and do not reuse `quality-prefix` HMACs. Missing
+peer/material and safely classified source unavailability preserve a legal ACK
+with explicit missingness; SQL, integrity, cancellation and incomplete costs
+remain errors. Legacy receipts never acquire new source facts on replay.
+
+The Stage DATA calculation fixes 1/1/7 quotas and the original window/group's
+cross-week installation limit without metric/outcome overrides. It authenticates
+no source by itself. The restricted Stage reader derives its real
+workflow/T47/window/plan/group and complete related source closure from actual
+protected rows and the original live pool token. Its transitive week/window
+closure includes other groups' older allowances. Existing dangling window/fact
+references are errors; missing current lineage never silently disappears.
+Current verification requires the same actual reader, pool and live token.
+
+Explicit owner pruning keeps only purpose, original accepted time and
+irreversible record/source/window bindings needed to identify lost coverage.
+It keeps no prefix HMAC, ASN, installation identity, outcome or source body.
+Authenticated non-Stage markers and disconnected history do not block a current
+Stage component; connected expired Stage detail remains unknown. The 30-day
+retention rule still requires timely owner maintenance; no automatic schedule
+or retained eligibility decision is supplied.
+
+The T40-facing callable contract has complete Simplified Chinese/English/Japanese
+purpose, data-form and retention copy through the real lazy i18n loader. Its
+implemented-purpose field describes capability, never whether a deployment has
+enabled collection. It adds no T40 settings UI, network request, native right or
+collection/export authorization. SN selection remains separately disclosed.
+
+The scoped selection passed 61 records (26 top-level tests), with three existing
+PostgreSQL controls skipped because their separate opt-ins were absent. Four
+actual source/replay PostgreSQL/OpenBao cases passed. The actual Stage/window
+case then passed, including foreign/ended-token refusal, provider-independent
+historical reading, dangling-window error, genuine SN-state constructor mode,
+and pruning/coverage mechanics. Its first failure was a test intent passing SQL
+NULL where the unchanged non-abort API requires an empty string; the exact
+fixture repair was independently reviewed and verified.
+
+Final default regression passed **5,624 records**, skipped **1,815**, and failed
+zero (1,684 passed and 1,018 skipped top-level tests). Formatting, all-package vet,
+module integrity, Windows and Linux service builds, client contract pin, UI
+build, six disclosure tests, scoped and full UI lint, architecture and whitespace
+checks passed. All cited successful executions closed naturally without a
+resource-floor trip. Local dependency restoration followed the existing lock
+with scripts disabled; package and lock files were unchanged. Two earlier full
+UI lint attempts hit the memory floor; a 1,024 MiB Node heap completed the same
+full lint without changing checks or guard limits.
+
+Full TypeScript checking remains **failed with 11,876 diagnostics**. A read-only
+comparison with the original three dictionaries and without the new module found
+the same 11,876 diagnostics: 11,822 primary tuples matched exactly; 54 existing
+missing-member errors retained their file, mapped line, column, code, member and
+suggestion, with only inferred dictionary type previews changed. There were no
+new primary diagnostic sites or missing members in this comparison. The strict
+exact-message comparison still failed with 54 replacements; it is not a full
+typecheck pass, and span lengths/related-information ranges were not compared.
+
+The previous week-owner batch counts below remain historical. Genuine complete
+available historical-week calendar E2E remains NOT RUN; no backdated accepted
+source is introduced. The genuine SN-state check is constructor/mode coverage
+on an ordinary plan, not an SN-selected-plan positive or T14/T17 qualification.
+
+The verified source/Stage-port/disclosure coverage increases T25's component
+estimate from 65% to **75%**, overall **1800/47 = 38.3%**. Strict completion remains
+**8/47 (17.0%)**, with task status counts unchanged. This is an engineering
+estimate, not measured hours or whole-task acceptance. T25 still owes its release-purpose restricted contribution owner
+and the decided full-scope public report/read/export implementation. T21 owns
+atomic quality projection/cursor consumption; T24 owns release-quality report
+calculation/freeze. Their incompleteness is not a prerequisite excuse for the
+T25 ports. T25 is not complete.
+
+## Delivered T25 protected internal network-week ownership increment
 
 The source-reviewed component owns one immutable result for each complete ISO
 UTC week in its explicitly installed realm. It authenticates the original legal
@@ -139,9 +220,10 @@ This component estimate changes T25 from 55% to **65%**, increasing the equal-ta
 estimate from 1780 to 1790 points: **1790/47 = 38.1%**. Strict completion remains
 **8/47 (17.0%)**; eighteen tasks remain in progress and all other task estimates
 and counts are unchanged. Protected internal freeze is not ordinary public
-report delivery or completion of T25. Full-scope public permission/report wiring,
-stage/release-purpose restricted ports and the three-language disclosure
-contract remain T25 work. The T21/T24 quality/report consumers are separate tasks
+report delivery or completion of T25. At that checkpoint, full-scope public
+permission/report wiring, stage/release-purpose restricted ports and the
+three-language disclosure contract remained T25 work; the current batch status
+is recorded above. The T21/T24 quality/report consumers are separate tasks
 and do not become additional prerequisites for completing the T25 ports.
 
 ## Delivered T25 accepted-event network-source increment
@@ -1113,7 +1195,7 @@ completion blocker; outstanding business implementation is.
 | T22 | 0% | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
-| T25 | 65% | In progress | Delivered original acceptance/CurrentVersion attribution, real first TCP peer/ASN/week-HMAC capture, atomic source-v2/missingness persistence and immutable legal ACKs remain verified. This batch adds the protected complete-week reader, fixed T05/native freeze ownership, original T06 atomic publication, state-only install/freeze CLI and explicit-realm host recovery/due lifecycle; current batch verification is recorded in its section above. Internal fixed-leaf contribution limits and k-suppression do not constitute an ordinary public report. Public full-scope authorization/read/export awaits the owner decision and implementation; stage/release-purpose restricted ports and the T40 disclosure contract remain T25 work. Their quality/report consumers belong to T21/T24. |
+| T25 | 75% | In progress | Original accepted-event attribution, source-v2 capture and the protected internal network-week freeze/CLI/host component remain delivered. This batch adds independent Stage/Release-purpose capture, the Stage DATA policy and actual-token reader with transitive week/window closure, bounded retention coverage and a callable three-language disclosure contract; the verification record above distinguishes real native source coverage, synthetic expiry controls and unexecuted scenarios. Release-purpose contribution calculation/reader ownership and full-scope public network authorization/read/export remain T25 work. T21 owns atomic quality projection/cursor consumption and T24 its release-quality report owner; neither is an additional prerequisite for finishing T25 ports. |
 | T26 | 20% | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |

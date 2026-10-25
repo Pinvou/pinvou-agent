@@ -501,3 +501,25 @@ an authorized producer cannot lie. This is an explicit trust boundary, not a
 claim that CI, the producer or server consumption is already implemented.
 No deployment, installation qualification or T46 approval is authorized or
 established by this decision. T25 remains active before T09 implementation resumes.
+
+
+## 2026-10-25 — Complete network reports and original workflow weeks
+
+The owner approved one complete network-source weekly report for each installed
+platform realm. Reading and exporting it require explicit operations.read
+covering all actual product, component, channel and target scopes. Partial
+permissions are refused; the report is not filtered, recalculated or partially
+exported for them. The prefix-per-week maximum of seven remains shared across
+all leaves.
+
+The release-quality report week is the week of the original protected workflow
+FirstStartedAt, as saved by the service. Late events update that original
+workflow and do not move it to a new week or count it again. Network-source
+reports continue to use the event's original first legal acceptance week.
+Purpose/week HMAC material likewise remains bound to the original source
+acceptance week; a workflow/report week does not relabel source key material.
+
+These decisions define the remaining T25/T24 boundary. They do not assert that
+the public read/export composition or release-purpose contribution port has
+already been implemented. Current delivery coverage is recorded in
+[the progress ledger](upgrade-implementation-progress.md).

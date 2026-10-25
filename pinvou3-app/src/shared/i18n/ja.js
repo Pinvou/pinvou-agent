@@ -181,6 +181,22 @@ const acpProvidersJa = {
 
 const jaBase = {
   ...browserJa,
+  uiUpgradeNetworkPrivacy: {
+    "locale": "ja",
+    "title": "更新時のネットワーク送信元データ",
+    "purposeTitle": "処理の目的",
+    "purposeBody": "この処理が有効な場合、サービスはネットワーク送信元データを品質統計と重複した寄与の制限に使用し、更新配信ネットワークの品質問題の把握に役立てることができます。実際に有効かどうかは、各サービスの設定によって決まります。",
+    "formTitle": "データの形式",
+    "formBody": "この処理が有効な場合、サービスは管理されたメモリ内で、直接接続のネットワークアドレスからネットワーク事業者の分類（ASN）と切り詰めたプレフィックス（IPv4 /24、IPv6 /48）を取得し、用途と週ごとに分離したプレフィックス HMAC を生成します。業務記録に元の IP アドレスや平文のプレフィックスは保存しません。週次集計にはプラットフォーム、インストール対象、バージョン系列、リリースチャネル、ASN 分類別の件数のみを含め、寄与数がしきい値未満の件数は公開しません。",
+    "keysTitle": "用途と週の分離",
+    "keysBody": "この処理が有効な場合、プレフィックス HMAC には、用途と ISO UTC 週ごとに独立したエクスポート不能の鍵を使います。他の用途、他の週、SN による段階配信の選択と関連付け用の鍵を共有しません。",
+    "retentionTitle": "保持の規則",
+    "retentionBody": "ASN とプレフィックス HMAC の元データは、サービスがイベントを初めて正当に受け付けた時点から最大 30 日間保持でき、期限後はサービス提供者が削除または不可逆に集計する必要があります。匿名の週次集計と最小限の再送・完全性確認マーカーは別に保持される場合があります。マーカーの内容は用途、初回受付時刻、不可逆の記録・ステージウィンドウのダイジェストに限定され、元の IP、平文プレフィックス、プレフィックス HMAC、ASN、インストール識別子は含みません。各サービスの保持ルールの実施はサービス提供者が保証します。",
+    "logsTitle": "独立したセキュリティログ",
+    "logsBody": "この業務処理は元の IP アドレスや平文のプレフィックスを永続化しません。サービスが別途アクセス制限付きのセキュリティアクセスログを保持する場合、そのログ内の元の IP アドレスの保持は最大 7 日間とし、平文のプレフィックスはログに記録してはいけません。",
+    "separationTitle": "他の用途との区別",
+    "separationBody": "ネットワーク送信元の処理と SN による段階配信の選択は、個別に説明・設定します。ネットワーク送信元データは、ライセンス確認、広告追跡、デバイス認証、更新アーティファクトの受け入れ可否の判断には使用しません。"
+  },
         langTag: 'ja',
         acpAgent: 'ACP Agent',
         newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', multiAgentDesktopOnly: 'このスワーム会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴',   sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'プロジェクト', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', chatSection: 'チャット', chatStreamingAnimation: 'ストリーミング応答のフェードイン', chatStreamingAnimationDesc: 'AIの応答のストリーミング中に、新しい内容をフェードインで表示します', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', tearoffTitle: '切り離し',  mobileMore: 'その他',

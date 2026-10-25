@@ -181,6 +181,22 @@ const acpProvidersEn = {
 
 export const dictEn = {
   ...browserEn,
+  uiUpgradeNetworkPrivacy: {
+    "locale": "en",
+    "title": "Upgrade network-source data",
+    "purposeTitle": "Purpose",
+    "purposeBody": "When enabled, the service can use network-source data for network quality statistics and limiting repeated contributions, to help identify problems in upgrade delivery networks. Whether a particular service enables this processing depends on its configuration.",
+    "formTitle": "Data forms",
+    "formBody": "When this processing is enabled, in controlled memory, the service converts the direct connection address into a network operator classification (ASN) and a truncated prefix (IPv4 /24 or IPv6 /48), then derives a purpose- and week-specific prefix HMAC. Business records store neither the raw IP address nor the plaintext prefix. Weekly aggregates contain counts by platform, installation target, version series, release channel and ASN class; counts below the contribution threshold are not disclosed.",
+    "keysTitle": "Purpose and week separation",
+    "keysBody": "When this processing is enabled, prefix HMACs use independent, non-exportable keys for each purpose and ISO UTC week. No linking key is shared with another purpose, another week or SN rollout selection.",
+    "retentionTitle": "Retention rules",
+    "retentionBody": "ASN and prefix-HMAC source details may be retained for at most 30 days from the first lawful server acceptance of the event, after which the service provider must delete them or aggregate them irreversibly. Anonymous weekly aggregates and minimal replay and completeness markers may be retained separately. Markers contain only purpose, first acceptance time and irreversible record and Stage-window digests, with no raw IP, plaintext prefix, prefix HMAC, ASN or installation identity. The service provider is responsible for enforcing retention for its service.",
+    "logsTitle": "Separate security logs",
+    "logsBody": "This business processing does not persist raw IP addresses or plaintext prefixes. If a service separately keeps restricted security access logs, raw IP addresses in those logs must not be retained for more than 7 days; plaintext prefixes must not be written to logs.",
+    "separationTitle": "Separate from other purposes",
+    "separationBody": "Network-source processing and SN rollout selection have separate disclosures and settings. Network-source data is not used for license checks, advertising tracking, device authentication or deciding whether an upgrade artifact is admissible."
+  },
         langTag: 'en',
         acpAgent: 'ACP Agent',
         newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Status', multiAgentDesktopOnly: 'This swarm conversation is currently available only in the desktop app.', toolStore: 'Plugin Center', cardPool: 'Card Deck', recent: 'History',   sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Projects', sidebarTaskFilterCodeSessions: 'Code sessions', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', chatSection: 'Chat', chatStreamingAnimation: 'Streaming fade-in', chatStreamingAnimationDesc: 'Fade in new content as AI responses stream in', sidebarNavExpand: 'Expand navigation', sidebarNavCollapse: 'Collapse navigation', sidebarCollapseAll: 'Collapse', sidebarExpandAll: 'Expand', sidebarTaskStyle: 'Style', sidebarResize: 'Drag to resize the sidebar; double-click to reset', settings: 'Settings', tearoffTitle: 'Detached',  mobileMore: 'More',
