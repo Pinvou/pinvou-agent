@@ -714,10 +714,12 @@ async fn run_managed_install(
     // guard settles at the wait site so the Drop never kills by the freed pid.
     let mut child_guard = InstallChildGuard::register(install_children, backend, child.id());
     // A cancel may land between spawn and pid registration: recheck once
-    // right after registering.
+    // right after registering. The Windows tree kill is a bounded (2 s)
+    // taskkill; the blocking pool keeps it off the async worker (unix is a
+    // single kill(2) syscall either way).
     if install_cancelled.lock().contains(&backend) {
         if let Some(pid) = child.id() {
-            kill_install_process_tree(pid);
+            let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
         }
     }
     emit_install_progress(app, backend, "command", &stage.command_line);
@@ -744,9 +746,10 @@ async fn run_managed_install(
             // whole tree while the pid is still live, then let the wait
             // observe the exit. After that wait the pid is reaped: settle so
             // the Drop never re-kills, then reclaim group survivors once for
-            // descendants that outlived the leader.
+            // descendants that outlived the leader. Like the cancel recheck,
+            // the (Windows-bounded) tree kill runs on the blocking pool.
             if let Some(pid) = child.id() {
-                kill_install_process_tree(pid);
+                let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
             }
             let _ = child.wait().await;
             child_guard.settle_reaped();
