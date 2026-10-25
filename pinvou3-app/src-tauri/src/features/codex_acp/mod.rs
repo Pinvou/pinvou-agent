@@ -1741,13 +1741,22 @@ impl Drop for InstallActiveGuard {
 /// Registration guard for the install child process: registers the pid after a
 /// successful spawn and unregisters it on every exit path (completion, failure,
 /// timeout, cancel) so a stale pid never kills a process the OS has since reused.
-/// Only an explicit success (including the idempotent kind) calls `disarm()`;
-/// every other exit (error return, timeout, cancel, panic) reclaims the whole
-/// child tree by pid in `Drop` -- after a panic or early error return nobody can
-/// cancel the descendants spawned by npm / the vendor script, so they would keep
-/// consuming resources. Unix kills the process group (the installer runs as its
-/// own group leader); Windows uses the bounded `taskkill /T`, the same path the
-/// cancel command uses.
+///
+/// Reclaim semantics follow whether the direct child has been reaped by a wait:
+/// - Not yet reaped (panic, wait error, early error return): the pid still names
+///   a live process, so the armed `Drop` reclaims the whole tree by pid -- after
+///   such an exit nobody can cancel the descendants spawned by npm / the vendor
+///   script. Unix kills the process group (the installer runs as its own group
+///   leader); Windows uses the bounded `taskkill /T`, the same path the cancel
+///   command uses.
+/// - Reaped (failure status, timeout, cancel): the pid may already be reused and
+///   `Drop` must never kill by it; the caller settles through
+///   [`InstallChildGuard::mark_reaped`] instead, which on unix reclaims the
+///   process group once more (survivors of the leader are still members, an
+///   empty group is ESRCH-safe) and on Windows skips the kill (`taskkill /T` on
+///   a dead root cannot reach its orphans), then disarms the `Drop`.
+/// - Explicit success (including the idempotent kind): `disarm()`; the installer
+///   wound down its own children and nothing is reclaimed.
 struct InstallChildGuard {
     install_children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
     backend: AgentBackend,
@@ -1777,17 +1786,35 @@ impl InstallChildGuard {
     fn disarm(&mut self) {
         self.armed = false;
     }
+
+    /// The caller reaped the direct child: its pid no longer names a live
+    /// process and may already be recycled, so the Drop kill must never fire
+    /// against it. Unix reclaims the process group once here — survivors that
+    /// outlived the leader are still members, an empty group is ESRCH-safe —
+    /// while Windows skips the kill, because `taskkill /T` on a dead root
+    /// cannot reach its orphans and a recycled pid would hit an unrelated
+    /// process tree.
+    fn mark_reaped(&mut self) {
+        if !crate::platform::capabilities::is_windows() {
+            if let Some(pid) = self.pid {
+                kill_install_process_tree(pid);
+            }
+        }
+        self.armed = false;
+    }
 }
 
 impl Drop for InstallChildGuard {
     fn drop(&mut self) {
         self.install_children.lock().remove(&self.backend);
-        // Unregistering must not keep the entry alive, but an armed Drop — any
-        // unsuccessful exit — still reclaims the whole child tree outside the
-        // registry lock.
+        // Unregistering must not keep the entry alive, but an armed Drop — an
+        // exit that never reached a terminal wait — still reclaims the whole
+        // child tree outside the registry lock. Detached: the Windows kill is
+        // bounded (2 s) but must not stall the runtime worker that is
+        // unwinding this frame.
         if self.armed {
             if let Some(pid) = self.pid {
-                kill_install_process_tree(pid);
+                std::thread::spawn(move || kill_install_process_tree(pid));
             }
         }
     }
