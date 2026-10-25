@@ -40,7 +40,7 @@ Every human-authored commit must include a valid `Signed-off-by`:
 git commit -s
 ```
 
-Use `--signoff` when amending or rebasing existing commits. See [DCO.md](DCO.md). CI rejects unsigned human commits; trusted Dependabot and GitHub Actions bot commits and merge commits (more than one parent) are exempt.
+Use `--signoff` when amending or rebasing existing commits. See [DCO.md](DCO.md). The `DCO` workflow enforces the `Signed-off-by` trailer on every human-authored pull-request commit; trusted Dependabot and GitHub Actions bot commits and merge commits (more than one parent) are exempt. It runs on pull requests only — direct pushes to `main` are not DCO-checked, so keep signing commits locally. The separate commit-message check (`scripts/validate-commit-msg.py`) only validates message format and does not inspect sign-offs.
 
 ## Where changes belong
 

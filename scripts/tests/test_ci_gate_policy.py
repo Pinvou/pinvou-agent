@@ -2147,6 +2147,34 @@ class CiGatePolicyTests(unittest.TestCase):
             # appears WITHOUT its paired restore-plus-explicit-status
             # handling.
 
+    def test_commit_message_push_lane_skips_only_without_a_usable_boundary(self):
+        # The push lane validates before..HEAD. A ref creation reports the
+        # zero SHA and a force-push may report a head the fresh checkout no
+        # longer has; with no usable boundary the validator's missing-base
+        # fallback sweeps the whole lineage and false-reds on
+        # pre-convention history. The job must skip explicitly in both
+        # cases and never fall through to the validator without a real
+        # boundary — in particular no rev-list root fallback: root..HEAD is
+        # the whole lineage minus the root commit, byte-identical to the
+        # old behavior. commit-message's job-level if is deliberately not
+        # in GATE_JOB_LEVEL_IFS (its skip is caught by required-gate's base
+        # check), so this pins the run block instead.
+        body = _without_yaml_comments(
+            self.pr_workflow.split(
+                "\n  commit-message:", maxsplit=1
+            )[1].split("\n  version-consistency:", maxsplit=1)[0]
+        )
+        zero_guard = body.index(
+            'if [ "$before" = "0000000000000000000000000000000000000000" ]'
+        )
+        missing_guard = body.index('git cat-file -e "$before^{commit}"')
+        skip = body.index("exit 0")
+        validate = body.index('validate-commit-msg.py --range "$before"')
+        self.assertLess(zero_guard, missing_guard)
+        self.assertLess(missing_guard, skip)
+        self.assertLess(skip, validate)
+        self.assertNotIn("rev-list --max-parents=0", body)
+
     def test_gate_job_level_ifs_are_pinned_verbatim(self):
         # Round-52 review: a job-level `if: >-` folded block can get
         # `&& false` appended inside its `${{ }}` block (or after `}}` on

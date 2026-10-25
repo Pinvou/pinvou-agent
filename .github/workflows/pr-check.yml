@@ -128,6 +128,20 @@ jobs:
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
           else
             before="${{ github.event.before }}"
+            # A ref creation reports the zero SHA as `before`, and a
+            # force-push reports the previous head, which a fresh checkout
+            # may no longer contain. Either way there is no usable old
+            # boundary: the validator's missing-base fallback sweeps the
+            # whole lineage and false-reds on pre-convention history. Skip
+            # instead — those commits reached main through pull requests,
+            # whose base..head lane validates format, and dco.yml enforces
+            # the sign-off trailers there. Sign-offs are never this job's
+            # concern.
+            if [ "$before" = "0000000000000000000000000000000000000000" ] || \
+              ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              echo "No usable push boundary (ref created or history rewritten); skipping commit-message range validation."
+              exit 0
+            fi
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
           fi
 
