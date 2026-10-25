@@ -822,15 +822,10 @@ impl SessionAgentStore {
             }
             _ => Vec::new(),
         };
-        {
-            let mut records = self.records.write();
-            // Publish only after the candidate has been durably replaced.
-            // Holding the write lock throughout the persist also prevents a
-            // concurrent writer from publishing over this snapshot in between.
-            // Mutating a clone instead of the live map keeps memory and disk
-            // consistent when the persist fails: the error propagates before
-            // anything is published, so a "failed bind" can never report bound.
-            let mut candidate = records.clone();
+        // Persist before publish: a failed persist leaves memory, disk and
+        // the sidecar on the previous binding, so a "failed bind" can never
+        // report bound (see `update_records_transactional`).
+        self.update_records_transactional(|candidate| {
             let record = candidate.entry(session_id.to_string()).or_default();
             if record.acp_session_id.is_some()
                 && (record.backend != backend
@@ -851,9 +846,8 @@ impl SessionAgentStore {
             // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
             record.mode = SessionMode::Plain;
-            self.persist_records(&candidate)?;
-            *records = candidate;
-        }
+            Ok(true)
+        })?;
         // The auxiliary index was persisted above (before publish); only the
         // authoritative sidecar is cleaned here. If persist failed the sidecar is
         // still present and consistent with the on-disk index, so there is no
@@ -893,9 +887,11 @@ impl SessionAgentStore {
             }
             _ => Vec::new(),
         };
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
+        // Persist before publish (same contract as set_acp_workspace): a
+        // failed persist leaves the record unchanged in memory and on disk,
+        // and the sidecar below is only written for a published binding.
+        self.update_records_transactional(|candidate| {
+            let record = candidate.entry(session_id.to_string()).or_default();
             if record.acp_session_id.is_some() && record.backend.is_acp() {
                 anyhow::bail!("ACP 会话已开始，不能更换 Agent；请新建会话");
             }
@@ -917,8 +913,8 @@ impl SessionAgentStore {
             // replaced keychain.
             record.explicit_ancestor_roots = Vec::new();
             record.mode = SessionMode::Code;
-        }
-        self.persist()?;
+            Ok(true)
+        })?;
         // 权威 sidecar：辅助索引损坏/丢失后据此恢复原生代码会话类型与项目绑定。
         // 写失败已逐条记日志；缺失的 sidecar 由启动时回填自愈补写。
         let (record_roots, record_explicit) = {
@@ -2042,9 +2038,8 @@ impl SessionAgentStore {
         config_values: HashMap<String, String>,
     ) -> Result<()> {
         let _section = self.lock_and_reload()?;
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
+        self.update_records_transactional(|candidate| {
+            let record = candidate.entry(session_id.to_string()).or_default();
             record.acp_session_id = Some(acp_session_id);
             record.acp_model_id = model_id
                 .clone()
@@ -2056,8 +2051,9 @@ impl SessionAgentStore {
                     .acp_config_values
                     .insert("model".to_string(), model_id);
             }
-        }
-        self.persist()
+            Ok(true)
+        })
+        .map(|_| ())
     }
 
     pub fn set_acp_config_value(
@@ -2067,9 +2063,8 @@ impl SessionAgentStore {
         value_id: &str,
     ) -> Result<()> {
         let _section = self.lock_and_reload()?;
-        {
-            let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
+        self.update_records_transactional(|candidate| {
+            let record = candidate.entry(session_id.to_string()).or_default();
             record
                 .acp_config_values
                 .insert(config_id.to_string(), value_id.to_string());
@@ -2078,16 +2073,16 @@ impl SessionAgentStore {
             } else if config_id == "mode" {
                 record.acp_mode_id = Some(value_id.to_string());
             }
-        }
-        self.persist()
+            Ok(true)
+        })
+        .map(|_| ())
     }
 
     pub fn clear_acp_config_value(&self, session_id: &str, config_id: &str) -> Result<()> {
         let _section = self.lock_and_reload()?;
-        {
-            let mut records = self.records.write();
-            let Some(record) = records.get_mut(session_id) else {
-                return Ok(());
+        self.update_records_transactional(|candidate| {
+            let Some(record) = candidate.get_mut(session_id) else {
+                return Ok(false);
             };
             record.acp_config_values.remove(config_id);
             if config_id == "model" {
@@ -2095,8 +2090,9 @@ impl SessionAgentStore {
             } else if config_id == "mode" {
                 record.acp_mode_id = None;
             }
-        }
-        self.persist()
+            Ok(true)
+        })
+        .map(|_| ())
     }
 
     pub(super) fn restore_missing_acp_record(
@@ -2114,9 +2110,8 @@ impl SessionAgentStore {
             anyhow::bail!("恢复的 ACP 会话索引不完整");
         }
         let _section = self.lock_and_reload()?;
-        {
-            let mut records = self.records.write();
-            if records
+        self.update_records_transactional(|candidate| {
+            if candidate
                 .get(session_id)
                 .is_some_and(|record| record.backend.is_acp())
             {
@@ -2130,10 +2125,9 @@ impl SessionAgentStore {
             if !source_holds_recovery() {
                 return Ok(false);
             }
-            records.insert(session_id.to_string(), recovered);
-        }
-        self.persist()?;
-        Ok(true)
+            candidate.insert(session_id.to_string(), recovered);
+            Ok(true)
+        })
     }
 
     pub fn remove(&self, session_id: &str) -> Result<()> {
@@ -2360,32 +2354,54 @@ impl SessionAgentStore {
         {
             anyhow::bail!("恢复的原生代码会话临时目录不应保存项目工作目录");
         }
-        {
-            let mut records = self.records.write();
-            if records
+        self.update_records_transactional(|candidate| {
+            if candidate
                 .get(session_id)
                 .is_some_and(|record| record.mode.is_code())
             {
                 return Ok(false);
             }
-            if records
+            if candidate
                 .get(session_id)
                 .is_some_and(|record| record.backend.is_acp())
             {
                 anyhow::bail!("会话已是 ACP 会话，拒绝用原生代码会话 sidecar 覆盖");
             }
-            records.insert(session_id.to_string(), record);
-        }
-        self.persist()?;
-        Ok(true)
+            candidate.insert(session_id.to_string(), record);
+            Ok(true)
+        })
     }
 
     fn persist(&self) -> Result<()> {
-        // Keep the read lock through the file replacement. Together with the
-        // transactional writers holding the write lock, this serializes use of
-        // the shared `.tmp` path and preserves snapshot order.
+        // Snapshot and file replacement happen under one read guard, so a
+        // persist can no longer finish after a newer snapshot's persist and
+        // clobber the file with stale state. (The temp file name is unique per
+        // call; the guard is about snapshot order, not the temp path.)
         let records = self.records.read();
         self.persist_records(&records)
+    }
+
+    /// Persist-before-publish for whole-table updates. `update` mutates a
+    /// candidate clone of the live table; when it returns `Ok(true)` the
+    /// candidate is persisted and only then published into the live map, so a
+    /// persist failure leaves memory, disk and sidecars on the previous state
+    /// and the error propagates before anything is observable. `Ok(false)`
+    /// means nothing changed: neither persist nor publish happens. The write
+    /// lock is held throughout so no concurrent writer can publish over the
+    /// snapshot being persisted; callers still take `lock_and_reload` first
+    /// for the cross-process section.
+    fn update_records_transactional(
+        &self,
+        update: impl FnOnce(&mut HashMap<String, SessionAgentRecord>) -> Result<bool>,
+    ) -> Result<bool> {
+        let mut records = self.records.write();
+        let mut candidate = records.clone();
+        if !update(&mut candidate)? {
+            return Ok(false);
+        }
+        self.persist_records(&candidate)?;
+        *records = candidate;
+        Ok(true)
     }
 
     /// Fail exactly the next persistence for this store. The injection is
@@ -5632,6 +5648,124 @@ mod tests {
         );
         assert!(!after_retry.mode.is_code());
         assert!(read_code_session_sidecar(store.path(), "session-atomic").is_none());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sibling_writers_persist_before_publish() {
+        // The same contract as set_acp_workspace for the other whole-table
+        // writers: an injected persist failure must leave memory, disk and
+        // (for native binds) the sidecar untouched.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-sibling-writers-persist-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let store = SessionAgentStore::for_test(root.join("session-agents.json"));
+
+        // bind_code_native_session: nothing published, no sidecar minted.
+        store.inject_next_persist_failure();
+        assert!(
+            store
+                .bind_code_native_session(
+                    "session-native",
+                    CodexWorkspaceKind::Project,
+                    Some(workspace.clone()),
+                    Vec::new(),
+                )
+                .is_err()
+        );
+        assert!(!store.get("session-native").mode.is_code());
+        assert!(
+            !store.path().exists(),
+            "a failed first persist must not create the index"
+        );
+        assert!(read_code_session_sidecar(store.path(), "session-native").is_none());
+        store
+            .bind_code_native_session(
+                "session-native",
+                CodexWorkspaceKind::Project,
+                Some(workspace.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(store.get("session-native").mode.is_code());
+        assert!(read_code_session_sidecar(store.path(), "session-native").is_some());
+
+        // set_acp_session / set_acp_config_value / clear_acp_config_value:
+        // the record on disk and in memory stays what the last successful
+        // persist wrote.
+        store
+            .set_acp_workspace(
+                "session-acp",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+                Vec::new(),
+            )
+            .unwrap();
+        store.inject_next_persist_failure();
+        assert!(
+            store
+                .set_acp_session(
+                    "session-acp",
+                    "acp-1".to_string(),
+                    Some("model-a".to_string()),
+                    HashMap::new(),
+                )
+                .is_err()
+        );
+        assert_eq!(store.get("session-acp").acp_session_id, None);
+        assert_eq!(store.get("session-acp").acp_model_id, None);
+        store
+            .set_acp_session(
+                "session-acp",
+                "acp-1".to_string(),
+                Some("model-a".to_string()),
+                HashMap::new(),
+            )
+            .unwrap();
+        store.inject_next_persist_failure();
+        assert!(
+            store
+                .set_acp_config_value("session-acp", "model", "model-b")
+                .is_err()
+        );
+        assert_eq!(
+            store.get("session-acp").acp_model_id.as_deref(),
+            Some("model-a")
+        );
+        store.inject_next_persist_failure();
+        assert!(
+            store
+                .clear_acp_config_value("session-acp", "model")
+                .is_err()
+        );
+        assert_eq!(
+            store.get("session-acp").acp_model_id.as_deref(),
+            Some("model-a")
+        );
+        let durable: AgentStoreFile =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(
+            durable.sessions["session-acp"].acp_model_id.as_deref(),
+            Some("model-a")
+        );
+        // A no-op clear on an unknown session neither persists nor fails.
+        store.inject_next_persist_failure();
+        store
+            .clear_acp_config_value("session-unknown", "model")
+            .unwrap();
+        // ...and the armed injection is still pending for the next real write.
+        assert!(
+            store
+                .set_acp_config_value("session-acp", "mode", "plan")
+                .is_err()
+        );
+        assert_eq!(store.get("session-acp").acp_mode_id, None);
 
         let _ = fs::remove_dir_all(&root);
     }
