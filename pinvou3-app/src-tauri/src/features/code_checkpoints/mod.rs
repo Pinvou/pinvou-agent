@@ -905,6 +905,31 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
     Ok(())
 }
 
+/// r32 MAJOR-3 backstop：icase pathspec 的 rm 每次调用只移除一个大小写
+/// 变体（git 2.43 实证：.env 与 .ENV 同存时 `:(icase).env` 仅移除 .ENV）。
+/// purge 后按同组 pathspec 列出幸存条目，再逐条精确路径 `rm --cached`
+/// （精确路径 rm 无此怪癖），确保任何变体都无法抵达 checkout-index。
+fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
+    let patterns = secret_pathspecs();
+    let mut list_args: Vec<&str> = vec!["ls-files", "--"];
+    list_args.extend(patterns.iter().map(String::as_str));
+    let survivors = git_ok(repo, work_tree, &list_args)?;
+    for path in survivors.lines().filter(|line| !line.trim().is_empty()) {
+        let output = git(
+            repo,
+            work_tree,
+            &["rm", "-r", "--cached", "--quiet", "-f", "--", path],
+        )?;
+        if !output.status.success() {
+            bail!(
+                "git rm --cached 幸存变体失败: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// 从影子 index 清除被否定行击穿而暂存的 SHADOW_EXCLUDES 条目（r22 R1）。
 /// 与秘密腿不同：依赖/构建目录命中不 bail——标准 keepfile 惯用法
 /// （`dist/*` + `!dist/.gitkeep`）会把无辜 keepfile 送进 pathspec 命中集，
@@ -1200,7 +1225,9 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // objects 里的原文不在清理范围，随 LRU 淘汰与 gc 回收。
     let migration_marker = info_dir.join("secret-excludes-v1");
     if !fresh && !migration_marker.exists() {
-        match purge_secret_patterns_from_index(&repo, execution_root) {
+        match purge_secret_patterns_from_index(&repo, execution_root)
+            .and_then(|()| purge_secret_survivors_exactly(&repo, execution_root))
+        {
             Ok(()) => {
                 fs::write(&migration_marker, "1\n").ok();
             }
@@ -1463,111 +1490,119 @@ fn create_checkpoint_preserving(
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()
         .to_string();
-    let mut index = load_index(ledger_root)?;
-    let previous = index.entries.last().cloned();
-    let commit = match previous {
-        Some(previous) => {
-            let previous_tree = git_ok(
-                &repo,
-                &execution_root,
-                &["rev-parse", &format!("{}^{{tree}}", previous.commit)],
-            )?;
-            if previous_tree.trim() == tree {
-                previous.commit
-            } else {
-                commit_tree(&repo, &execution_root, &tree, kind)?
+    // r32 MAJOR-4：index RMW 跨度持进程内串行锁（钩子线程的作废写与本快照
+    // 的新条目写互斥；跨度内的 LRU 作废不再重复取锁）。守卫到 save 之后
+    // 返回时释放。
+    // r32 MAJOR-4：index RMW 跨度（load→save）整体持进程内串行锁——钩子线程
+    // 的作废写与本快照的新条目写互斥（否则互相丢失更新：作废被复活 / 新条目
+    // 被丢）。跨度内的 LRU 作废不再重复取锁；守卫在闭包返回后释放。
+    with_index_write_lock(ledger_root, || -> Result<CheckpointMeta> {
+        let mut index = load_index(ledger_root)?;
+        let previous = index.entries.last().cloned();
+        let commit = match previous {
+            Some(previous) => {
+                let previous_tree = git_ok(
+                    &repo,
+                    &execution_root,
+                    &["rev-parse", &format!("{}^{{tree}}", previous.commit)],
+                )?;
+                if previous_tree.trim() == tree {
+                    previous.commit
+                } else {
+                    commit_tree(&repo, &execution_root, &tree, kind)?
+                }
             }
-        }
-        None => commit_tree(&repo, &execution_root, &tree, kind)?,
-    };
-    let meta = CheckpointMeta {
-        id: format!("c{}-{}", index.entries.len() + 1, now_nanos()),
-        turn,
-        kind,
-        label: normalize_checkpoint_label(label),
-        commit,
-        created_at: now_seconds(),
-    };
-    // 每条 checkpoint 一个 ref：orphan commit 只有被 ref 指着才可达，否则
-    // git gc（含下面的 --auto）会把未淘汰的历史快照对象当垃圾清掉。
-    git_ok(
-        &repo,
-        &execution_root,
-        &[
-            "update-ref",
-            &format!("refs/checkpoints/{}", meta.id),
-            &meta.commit,
-        ],
-    )?;
-    index.entries.push(meta.clone());
-    // 淘汰辅助：把最老的可淘汰条目（跳过 preserve）移出 index 并删其 ref。
-    // 返回实际淘汰条数。最新一条（刚登记的 meta）恒保留：压力分支名额滚存时
-    // 会把 preserve 挡下的名额落到它头上——刚创建的 PreRestore 被裁掉再被
-    // gc --prune=now 物理删除，undo 绑定静默断裂（评审 M3）。
-    let mut preserve_with_newest: Vec<&str> = preserve.to_vec();
-    preserve_with_newest.push(meta.id.as_str());
-    let preserve_set = &preserve_with_newest;
-    let evict_oldest = |index: &mut CheckpointIndex, count: usize| -> usize {
-        let mut evicted_ids = Vec::new();
-        let mut kept = Vec::with_capacity(index.entries.len());
-        let mut evictable_left = count;
-        for entry in index.entries.drain(..) {
-            if evictable_left > 0 && !preserve_set.contains(&entry.id.as_str()) {
-                evicted_ids.push(entry.id);
-                evictable_left -= 1;
-            } else {
-                kept.push(entry);
+            None => commit_tree(&repo, &execution_root, &tree, kind)?,
+        };
+        let meta = CheckpointMeta {
+            id: format!("c{}-{}", index.entries.len() + 1, now_nanos()),
+            turn,
+            kind,
+            label: normalize_checkpoint_label(label),
+            commit,
+            created_at: now_seconds(),
+        };
+        // 每条 checkpoint 一个 ref：orphan commit 只有被 ref 指着才可达，否则
+        // git gc（含下面的 --auto）会把未淘汰的历史快照对象当垃圾清掉。
+        git_ok(
+            &repo,
+            &execution_root,
+            &[
+                "update-ref",
+                &format!("refs/checkpoints/{}", meta.id),
+                &meta.commit,
+            ],
+        )?;
+        index.entries.push(meta.clone());
+        // 淘汰辅助：把最老的可淘汰条目（跳过 preserve）移出 index 并删其 ref。
+        // 返回实际淘汰条数。最新一条（刚登记的 meta）恒保留：压力分支名额滚存时
+        // 会把 preserve 挡下的名额落到它头上——刚创建的 PreRestore 被裁掉再被
+        // gc --prune=now 物理删除，undo 绑定静默断裂（评审 M3）。
+        let mut preserve_with_newest: Vec<&str> = preserve.to_vec();
+        preserve_with_newest.push(meta.id.as_str());
+        let preserve_set = &preserve_with_newest;
+        let evict_oldest = |index: &mut CheckpointIndex, count: usize| -> usize {
+            let mut evicted_ids = Vec::new();
+            let mut kept = Vec::with_capacity(index.entries.len());
+            let mut evictable_left = count;
+            for entry in index.entries.drain(..) {
+                if evictable_left > 0 && !preserve_set.contains(&entry.id.as_str()) {
+                    evicted_ids.push(entry.id);
+                    evictable_left -= 1;
+                } else {
+                    kept.push(entry);
+                }
             }
+            index.entries = kept;
+            for id in &evicted_ids {
+                let _ = git(
+                    &repo,
+                    &execution_root,
+                    &["update-ref", "-d", &format!("refs/checkpoints/{id}")],
+                );
+            }
+            evicted_ids.len()
+        };
+        if index.entries.len() > MAX_CHECKPOINTS {
+            let overflow = index.entries.len() - MAX_CHECKPOINTS;
+            // 被裁掉的条目删 ref，commit 变为不可达，交给 git 后台回收；
+            // 回收失败不影响裁剪语义（索引已裁，对象留到下次 gc）。
+            evict_oldest(&mut index, overflow);
+            let _ = git(&repo, &execution_root, &["gc", "--auto", "--quiet"]);
         }
-        index.entries = kept;
-        for id in &evicted_ids {
-            let _ = git(
-                &repo,
-                &execution_root,
-                &["update-ref", "-d", &format!("refs/checkpoints/{id}")],
-            );
-        }
-        evicted_ids.len()
-    };
-    if index.entries.len() > MAX_CHECKPOINTS {
-        let overflow = index.entries.len() - MAX_CHECKPOINTS;
-        // 被裁掉的条目删 ref，commit 变为不可达，交给 git 后台回收；
-        // 回收失败不影响裁剪语义（索引已裁，对象留到下次 gc）。
-        evict_oldest(&mut index, overflow);
-        let _ = git(&repo, &execution_root, &["gc", "--auto", "--quiet"]);
-    }
-    // 存储压力闸（对齐底座 MAX_SNAPSHOT_SIZE_MB）：LRU 裁条目不裁字节，大文件
-    // 项目单靠条目数守不住体积。超预算时裁到一半条目 + 主动 gc 收敛（至少保留
-    // 最新一条——刚登记的本条；被裁的 undo 绑定由可反悔判定如实收敛）。
-    let total_bytes = shadow_repo_bytes(&repo);
-    if total_bytes > MAX_SHADOW_REPO_BYTES as u64 && index.entries.len() > 1 {
-        // 评审 M5 内容性超额断路：先读打包体积（count-objects -v 的 size-pack，
-        // 只读对象库统计、不做任何打包）。打包体积本身已 ≥ 预算 → 超额是内容
-        // 性的（工作区大且不可压缩），gc --prune=now 无法收敛——此前该分支每轮
-        // 登记都触发「裁半 + 全量 gc」（591MB 实测一次 10s+，且在持有 turn 预约
-        // 的发送路径内联执行），条目数 1↔2 振荡、只剩最近一轮可回退，与确认
-        // 弹窗「最近 20 个」披露矛盾。跳过裁剪与 gc：条目仍受 MAX_CHECKPOINTS
-        // 上限约束；字节上限由 turn_snapshot_hard_stopped 硬停兜底（r8 M3——
-        // 打包 ≥ 2× 预算即拒绝新的 Turn 快照，此模式不再是只增不减）。
-        if pressure_breaker_engaged(total_bytes, packed_repo_bytes(&repo, &execution_root)) {
+        // 存储压力闸（对齐底座 MAX_SNAPSHOT_SIZE_MB）：LRU 裁条目不裁字节，大文件
+        // 项目单靠条目数守不住体积。超预算时裁到一半条目 + 主动 gc 收敛（至少保留
+        // 最新一条——刚登记的本条；被裁的 undo 绑定由可反悔判定如实收敛）。
+        let total_bytes = shadow_repo_bytes(&repo);
+        if total_bytes > MAX_SHADOW_REPO_BYTES as u64 && index.entries.len() > 1 {
+            // 评审 M5 内容性超额断路：先读打包体积（count-objects -v 的 size-pack，
+            // 只读对象库统计、不做任何打包）。打包体积本身已 ≥ 预算 → 超额是内容
+            // 性的（工作区大且不可压缩），gc --prune=now 无法收敛——此前该分支每轮
+            // 登记都触发「裁半 + 全量 gc」（591MB 实测一次 10s+，且在持有 turn 预约
+            // 的发送路径内联执行），条目数 1↔2 振荡、只剩最近一轮可回退，与确认
+            // 弹窗「最近 20 个」披露矛盾。跳过裁剪与 gc：条目仍受 MAX_CHECKPOINTS
+            // 上限约束；字节上限由 turn_snapshot_hard_stopped 硬停兜底（r8 M3——
+            // 打包 ≥ 2× 预算即拒绝新的 Turn 快照，此模式不再是只增不减）。
+            if pressure_breaker_engaged(total_bytes, packed_repo_bytes(&repo, &execution_root)) {
+                eprintln!(
+                    "[checkpoints] shadow repo over {}MB budget is content-driven (packed size ≥ budget); keeping entries, skipping futile gc",
+                    MAX_SHADOW_REPO_BYTES / 1024 / 1024,
+                );
+                save_index(ledger_root, &index)?;
+                return Ok(meta);
+            }
+            let target = (index.entries.len() / 2).max(1);
+            let drain_count = index.entries.len() - target;
+            let evicted = evict_oldest(&mut index, drain_count);
+            let _ = git(&repo, &execution_root, &["gc", "--prune=now", "--quiet"]);
             eprintln!(
-                "[checkpoints] shadow repo over {}MB budget is content-driven (packed size ≥ budget); keeping entries, skipping futile gc",
+                "[checkpoints] shadow repo over {}MB budget, pruned {evicted} oldest entries",
                 MAX_SHADOW_REPO_BYTES / 1024 / 1024,
             );
-            save_index(ledger_root, &index)?;
-            return Ok(meta);
         }
-        let target = (index.entries.len() / 2).max(1);
-        let drain_count = index.entries.len() - target;
-        let evicted = evict_oldest(&mut index, drain_count);
-        let _ = git(&repo, &execution_root, &["gc", "--prune=now", "--quiet"]);
-        eprintln!(
-            "[checkpoints] shadow repo over {}MB budget, pruned {evicted} oldest entries",
-            MAX_SHADOW_REPO_BYTES / 1024 / 1024,
-        );
-    }
-    save_index(ledger_root, &index)?;
-    Ok(meta)
+        save_index(ledger_root, &index)?;
+        Ok(meta)
+    })
 }
 
 fn commit_tree(repo: &Path, work_tree: &Path, tree: &str, kind: CheckpointKind) -> Result<String> {
@@ -1645,11 +1680,35 @@ pub fn write_pending_rewind(
     // 重试）允许重写；其它新回退在此如实拒绝。否则 fresh PreRestore 会快照
     // 已半恢复的树成为新绑定，而 P1（真前态唯一副本）既不被暂记引用也不被
     // sidecar 引用，应用内从此不可达（standalone restore 已移除）。
-    if let Ok(Some(existing)) = live_pending_rewind(ledger_root) {
-        let same_boundary = existing.checkpoint_id == checkpoint_id
-            && existing.keep_turns == keep_turns
-            && existing.transcript_revision == transcript_revision;
-        if !same_boundary {
+    // r32 MAJOR-1：读腿 fail-closed——真实 IO 错误不得吞成「无暂记」（否则
+    // 覆写照常进行，P1 被替换 = 不可恢复孤儿）。
+    let existing = match live_pending_rewind(ledger_root) {
+        Ok(Some(existing)) => Some(existing),
+        Ok(None) => None,
+        Err(error) => {
+            return Err(
+                anyhow::Error::from(error).context("读取回退暂记失败（fail-closed，拒绝覆盖）")
+            );
+        }
+    };
+    if let Some(existing) = existing {
+        // r32 MAJOR-2：按失败腿分流——revision 前进（truncate 前发生了不经
+        // 对账前奏的 transcript 写入：edit_last_turn / compact_now / 定时投递）
+        // 时，同边界重试必然 matcher None + 本守卫拒绝 = 死循环；此时正确动作
+        // 是发送一条新消息（快照前奏的 reconcile 重放会自动完成被中断的回退）。
+        // 目标/keepTurns 不同才是真正的「边界冲突」文案。
+        let revision_moved = existing.transcript_revision != transcript_revision;
+        let same_target =
+            existing.checkpoint_id == checkpoint_id && existing.keep_turns == keep_turns;
+        if same_target && revision_moved {
+            bail!(
+                "存在未完成的回退暂记（目标 {}，保留 {} 轮），且对话在暂记后发生了变化：\
+                 发送一条新消息即可自动完成被中断的回退，无需重试回退",
+                existing.checkpoint_id,
+                existing.keep_turns
+            );
+        }
+        if !same_target {
             bail!(
                 "存在未完成的回退暂记（目标 {}，保留 {} 轮）：请先按错误信息重试同一回退完成截断，或撤销后重试；本次目标不同，已拒绝覆盖",
                 existing.checkpoint_id,
@@ -1841,6 +1900,10 @@ pub fn apply_restore(
     // 迁移的效果被一次回滚复活）。恢复前按同一模式清影子 index（只动 index）。
     purge_secret_patterns_from_index(&repo, &execution_root)
         .context("清理快照中的敏感文件条目失败")?;
+    // r32 MAJOR-3 backstop：icase 幸存变体精确清除（restore 路径无 validate
+    // bail 兜底）。
+    purge_secret_survivors_exactly(&repo, &execution_root)
+        .context("清理快照中的敏感文件幸存变体失败")?;
     // r19 M4：被击穿的旧快照 tree 含账本路径（checkpoints/index.json、
     // pending_rewind.json、.pinvou3/**——M1 根洞时期的树，或 negate 击穿）
     // 时，checkout-index -f -a 把陈旧账本覆写到活账本上、协议中途自毁。
@@ -2306,9 +2369,32 @@ fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
 /// `gc --auto` 模式），保留原有条目顺序；PreRestore 条目（turn=None）不动——
 /// 被截分支的代码状态已由本次 rewind 强制的 PreRestore 快照兜底，不丢反悔能力。
 /// 返回作废条数；无符合条件条目时幂等返回 0（不触碰磁盘）。
+/// r32 MAJOR-4：index.json 的进程内读改写串行锁——messages-shrunk 钩子线程
+/// （compaction 作废）与 turn 快照的 load→save 跨度互斥，否则两条 RMW 链
+/// 互相丢失更新（作废被复活 / 新条目被丢）。进程内；跨进程（CLI）锁列
+/// follow-up（既有披露）。按账本根分桶，不同会话不互斥。
+fn with_index_write_lock<R>(ledger_root: &Path, f: impl FnOnce() -> R) -> R {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let key = ledger_root.to_string_lossy().to_ascii_lowercase();
+    let bucket = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _guard = bucket.lock();
+    f()
+}
+
 pub fn invalidate_turn_checkpoints_after(ledger_root: &Path, keep_turns: u32) -> Result<usize> {
-    invalidate_entries_if(ledger_root, |entry| {
-        entry.kind == CheckpointKind::Turn && entry.turn.is_some_and(|turn| turn > keep_turns)
+    // r32 MAJOR-4：作废写与快照 RMW 跨度串行（钩子线程亦经此函数入锁）。
+    with_index_write_lock(ledger_root, || {
+        invalidate_entries_if(ledger_root, |entry| {
+            entry.kind == CheckpointKind::Turn && entry.turn.is_some_and(|turn| turn > keep_turns)
+        })
     })
 }
 
@@ -3022,6 +3108,28 @@ mod tests {
         // 不同边界（不同目标）→ 拒绝且原暂记原样保留。
         let refused = write_pending_rewind(ledger.path(), "c-other", 2, "p2", "rev-a");
         assert!(refused.is_err(), "不同边界的新回退必须被拒绝");
+        let pending = live_pending_rewind(ledger.path()).unwrap().unwrap();
+        assert_eq!(pending.checkpoint_id, first.id);
+        assert_eq!(pending.pre_restore_id, "p1");
+        // r32 MAJOR-2：同目标 + revision 前进（暂记后发生了不经对账前奏的
+        // transcript 写入）→ 按失败腿分流的专属文案（指引发送新消息自动完成，
+        // 而非注定被再次拒绝的「重试同一回退」）。
+        let revision_moved = write_pending_rewind(
+            ledger.path(),
+            &first.id,
+            1,
+            "p1",
+            "rev-a-but-transcript-moved",
+        );
+        assert!(
+            revision_moved.is_err()
+                && revision_moved
+                    .unwrap_err()
+                    .to_string()
+                    .contains("自动完成被中断的回退"),
+            "同目标 + revision 前进必须携带自动完成指引文案"
+        );
+        // 原暂记保持（未被覆盖）。
         let pending = live_pending_rewind(ledger.path()).unwrap().unwrap();
         assert_eq!(pending.checkpoint_id, first.id);
         assert_eq!(pending.pre_restore_id, "p1");

@@ -3929,6 +3929,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // 确认后 confirmRewind 走 rewind_to_turn 编排（共享 hook）。车道门与
             // chip 一致：定时上下文激活（如定时创建向导接管当前会话）时收回弹窗。
             <React.Suspense fallback={null}>
+            <ViewErrorBoundary t={t} variant="panel">
             <RewindConfirmDialog
               entry={rewindTarget}
               previewState={rewindTarget.checkpoint
@@ -3942,12 +3943,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               onCancel={cancelRewind}
               onConfirm={confirmRewind}
             />
+            </ViewErrorBoundary>
           </React.Suspense>
           )}
           {isRewindLane && rewindUndoEntry && (
             // 「撤销回退」轻量确认：说明将恢复文件（有绑定回滚点时）与被截掉的
             // N 轮对话；reloadFailed 时降级为「重试加载」语义。车道门同上。
             <React.Suspense fallback={null}>
+            <ViewErrorBoundary t={t} variant="panel">
             <RewindUndoConfirmDialog
               state={rewindUndoEntry}
               error={rewindUndoError}
@@ -3957,6 +3960,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               onCancel={cancelRewindUndo}
               onConfirm={confirmRewindUndo}
             />
+            </ViewErrorBoundary>
           </React.Suspense>
           )}
           {voiceIntroOpen && (
@@ -4441,10 +4445,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                       engine always assembles plain config there), so the
                       entry hides up front instead of erroring on click. */}
                   <React.Suspense fallback={<span className="inline-flex h-[26px] w-16" />}>
+                  <ViewErrorBoundary t={t} variant="panel">
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} multiAgentAvailable={!scheduledRunContext} />
+                  </ViewErrorBoundary>
                 </React.Suspense>
                   <React.Suspense fallback={<span className="inline-flex h-[26px] w-16" />}>
+                  <ViewErrorBoundary t={t} variant="panel">
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
+                  </ViewErrorBoundary>
                 </React.Suspense>
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
