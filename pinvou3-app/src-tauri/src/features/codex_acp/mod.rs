@@ -1739,11 +1739,17 @@ impl Drop for InstallActiveGuard {
     }
 }
 
-/// 安装子进程 pid 登记 guard：spawn 成功后登记，drop 时（完成/失败/超时/取消
+/// 安装子进程登记 guard：spawn 成功后登记 pid，drop 时（完成/失败/超时/取消
 /// 任意出口）统一注销，避免残留 pid 在后续取消时误杀被系统复用的进程。
+/// 只有明确成功（含幂等成功）才 `disarm()`；其余任何出口（错误返回、超时、
+/// 取消、panic）Drop 时按 pid 回收整个子进程树——panic/提前错误返回之后，
+/// npm/官方脚本派生的后代进程已无人能取消，只能一直占用资源。unix 按进程组
+/// 杀（安装进程独立成组），Windows 走有界 `taskkill /T`，与取消命令同一实现。
 struct InstallChildGuard {
     install_children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
     backend: AgentBackend,
+    pid: Option<u32>,
+    armed: bool,
 }
 
 impl InstallChildGuard {
@@ -1758,13 +1764,29 @@ impl InstallChildGuard {
         Self {
             install_children: install_children.clone(),
             backend,
+            pid,
+            armed: true,
         }
+    }
+
+    /// Marks the install as finished successfully: Drop then only unregisters
+    /// the pid and never terminates the process tree.
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
 impl Drop for InstallChildGuard {
     fn drop(&mut self) {
         self.install_children.lock().remove(&self.backend);
+        // Unregistering must not keep the entry alive, but an armed Drop — any
+        // unsuccessful exit — still reclaims the whole child tree outside the
+        // registry lock.
+        if self.armed {
+            if let Some(pid) = self.pid {
+                kill_install_process_tree(pid);
+            }
+        }
     }
 }
 

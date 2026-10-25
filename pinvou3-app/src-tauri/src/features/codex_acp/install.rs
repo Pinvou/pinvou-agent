@@ -706,12 +706,15 @@ async fn run_managed_install(
     let mut child = command
         .spawn()
         .with_context(|| stage.spawn_context.clone())?;
-    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
-    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
+    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销，且
+    // 只有明确成功才解除异常回收——panic/错误返回的 Drop 会按 pid 回收整树。
+    let mut child_guard = InstallChildGuard::register(install_children, backend, child.id());
     // A cancel may land between spawn and pid registration: recheck once
     // right after registering.
     if install_cancelled.lock().contains(&backend) {
-        let _ = child.kill().await;
+        if let Some(pid) = child.id() {
+            kill_install_process_tree(pid);
+        }
     }
     emit_install_progress(app, backend, "command", &stage.command_line);
     let stdout = child.stdout.take().context(stage.stdout_context)?;
@@ -726,7 +729,12 @@ async fn run_managed_install(
                 &format!("{}:timeout", stage.diag_stage),
                 format!("timeout_seconds={}", TIMEOUT.as_secs()),
             );
-            let _ = child.kill().await;
+            // The direct kill would orphan npm/brew descendants; reclaim the
+            // whole tree (the armed guard's Drop would do the same, but the
+            // explicit kill lets the wait below observe the exit).
+            if let Some(pid) = child.id() {
+                kill_install_process_tree(pid);
+            }
             let _ = child.wait().await;
             bail!("{}", stage.timeout_message);
         }
@@ -746,6 +754,9 @@ async fn run_managed_install(
             .idempotent_ok
             .is_some_and(|is_done| is_done(&stdout, &stderr))
     {
+        // Only an (idempotent) success disarms the reclaim: every other exit
+        // leaves the guard armed so its Drop reclaims the child tree.
+        child_guard.disarm();
         return Ok(());
     }
     // The process was cancelled by the user (taskkill/kill) and reaches here with a failure status: rewrite to cancelled semantics.
@@ -1031,6 +1042,83 @@ pub(super) fn node_major_version(version: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plain long-lived fixture standing in for an installer (no real package
+    /// manager involved). Unix makes it its own process-group leader through
+    /// the platform primitive — the same contract the managed install channels
+    /// run under — so the pid-based group kill used by the guard reaches the
+    /// whole tree; Windows relies on `taskkill /T` tree semantics.
+    fn spawn_install_fixture() -> (std::process::Child, u32) {
+        let (program, args): (&str, &[&str]) = if std::env::consts::OS == "windows" {
+            // `ping -n 30` idles ~30 seconds; there is no portable sleep.
+            ("ping", &["-n", "30", "-w", "1000", "127.0.0.1"])
+        } else {
+            ("sleep", &["30"])
+        };
+        let mut command = std::process::Command::new(program);
+        command.args(args);
+        crate::platform::process::std_process_group_leader(&mut command);
+        command.stdin(std::process::Stdio::null());
+        let child = command.spawn().expect("spawn install fixture");
+        let pid = child.id();
+        (child, pid)
+    }
+
+    fn wait_exited(child: &mut std::process::Child, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if child.try_wait().expect("poll install fixture").is_some() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} left the install fixture running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    pub(super) fn install_child_guard_drop_reclaims_tree_and_disarm_preserves_it() {
+        let children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>> =
+            Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let backend = AgentBackend::ClaudeAcp;
+
+        // Armed Drop (any unsuccessful exit) terminates the fixture and
+        // unregisters the pid.
+        let (mut child, pid) = spawn_install_fixture();
+        let guard = InstallChildGuard::register(&children, backend, Some(pid));
+        assert_eq!(children.lock().get(&backend).copied(), Some(pid));
+        drop(guard);
+        wait_exited(&mut child, "armed guard Drop");
+        assert!(
+            children.lock().get(&backend).is_none(),
+            "guard Drop must unregister the pid"
+        );
+
+        // Disarmed Drop (idempotent success) preserves the fixture; cleanup is
+        // an explicit tree kill, exactly like the cancel command.
+        let (mut child, pid) = spawn_install_fixture();
+        let mut guard = InstallChildGuard::register(&children, backend, Some(pid));
+        guard.disarm();
+        drop(guard);
+        assert!(
+            children.lock().get(&backend).is_none(),
+            "disarmed guard Drop must still unregister the pid"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(
+            child.try_wait().expect("poll disarmed fixture").is_none(),
+            "disarmed guard Drop killed a successful install"
+        );
+        kill_install_process_tree(pid);
+        let _ = child.wait();
+
+        // A spawn without a pid registers nothing and reclaims nothing.
+        let guard = InstallChildGuard::register(&children, backend, None);
+        drop(guard);
+        assert!(children.lock().get(&backend).is_none());
+    }
 
     #[test]
     pub(super) fn managed_path_is_versioned() {
