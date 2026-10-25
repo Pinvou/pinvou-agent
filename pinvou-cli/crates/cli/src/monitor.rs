@@ -419,16 +419,27 @@ mod tests {
     fn probe(status: VllmStatus, health: &str) -> VllmSnapshot {
         VllmSnapshot {
             status,
+            model_id: None,
+            provider: "local".to_owned(),
             model: Some("served-model".to_owned()),
             configured_model: Some("configured-model".to_owned()),
             target_kind: "local".to_owned(),
             metrics_applicable: true,
             health_status: health.to_owned(),
+            diagnostic: None,
+            metric_diagnostics: Vec::new(),
             max_model_len: Some(8192),
+            num_requests_running: None,
+            num_requests_waiting: None,
+            prefix_cache_hit_pct: Some(50.0),
             prefix_cache_hits: Some(1.0),
             prefix_cache_queries: Some(2.0),
             ttft_sum_s: Some(0.5),
             ttft_count: Some(1.0),
+            tpot_sum_s: None,
+            tpot_count: None,
+            generation_tokens_total: None,
+            prompt_tokens_total: None,
         }
     }
 
