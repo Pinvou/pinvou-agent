@@ -4019,11 +4019,18 @@ export function CodexAcpView({
               )}
               <textarea ref={voiceComposerTextareaRef} value={draft} onChange={event => {
                 const value = event.target.value;
-                // Emptying the composer cancels a pending voice result so the
-                // transcription cannot land later in the cleared draft.
-                if (!value.trim() && bridge.voice && typeof bridge.voice.getVoiceOperationId === 'function' && typeof bridge.voice.abandonVoiceResult === 'function') {
-                  const operationId = bridge.voice.getVoiceOperationId(activeId || null, isNativeAgent ? 'native' : 'acp');
-                  if (operationId) bridge.voice.abandonVoiceResult(operationId);
+                // Emptying the composer abandons this page's pending voice result —
+                // in-flight through the bridge's live voice state, completed-but-
+                // adoptable through the operation registry ('codex' owner, as booked
+                // at start) — so the transcription can neither land in the cleared
+                // draft (terminal operations skip the write-back) nor be adopted by
+                // an unrelated later send.
+                if (!value.trim() && bridge.voice && typeof bridge.voice.abandonVoiceResult === 'function') {
+                  const pendingOperationId = (nativeVoiceActive && nativeVoiceInput.operationId)
+                    || (typeof bridge.voice.getVoiceOperationId === 'function'
+                      ? bridge.voice.getVoiceOperationId(activeId || null, 'codex')
+                      : null);
+                  if (pendingOperationId) bridge.voice.abandonVoiceResult(pendingOperationId);
                 }
                 setDraft(value);
               }}

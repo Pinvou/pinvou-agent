@@ -551,8 +551,8 @@ test("identity: the hook forwards lane identity and cancels an in-flight recordi
   // completed notice during the writeback await.
   assert.match(
     sources.web,
-    /if \(session\.telemetryTerminal\) return;\s*setVoiceInputStatus\("completed"/,
-    "the web completed notice must respect the terminal latch like the desktop lane",
+    /if \(session\.telemetryTerminal\) \{\s*setVoiceInputStatus\("idle"[\s\S]*?\}\s*setVoiceInputStatus\("completed"/,
+    "the web completed notice must respect the terminal latch (and reset the stuck status) like the desktop lane",
   );
   // A transcription that lands after supersession must terminalize its
   // operation (the continuation can never deliver; an early plain return
@@ -948,4 +948,56 @@ test("sends: dispatched sends settle their voice operation as accepted in both l
     /const dismissVoice = useCallback\(\(\) => \{[\s\S]*?dismissVoiceInput\(\);/,
     "the hook exposes the dismiss-without-ending primitive",
   );
+});
+
+// ── Abandon-on-clear round 1: cleared drafts must not receive late results ──
+
+function abandonHarness(lane) {
+  const source = sources[lane];
+  const fnStart = source.indexOf("  function abandonCompletedVoiceResult(");
+  assert.ok(fnStart >= 0, `${lane} bridge must keep abandonCompletedVoiceResult`);
+  const bodyEnd = source.indexOf("\n  }\n", fnStart);
+  assert.ok(bodyEnd > fnStart, `${lane} abandonCompletedVoiceResult must stay a self-contained slice`);
+  const terminalCalls = [];
+  const sandbox = {
+    voiceOperations: new Map(), state: {},
+    trackVoiceTerminal(reason, operation) { terminalCalls.push(reason); operation.telemetryTerminal = true; },
+  };
+  sandbox.window = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(`${source.slice(fnStart, bodyEnd + 6)}\nthis.abandonCompletedVoiceResult = abandonCompletedVoiceResult;`, sandbox);
+  return { sandbox, terminalCalls };
+}
+
+test("both lanes: a result recorded for another session survives clearing the viewed draft", () => {
+  for (const [lane, harness] of [["desktop", abandonHarness("desktop")], ["web", abandonHarness("web")]]) {
+    const { sandbox, terminalCalls } = harness;
+    const operation = {
+      operationId: "voiceop_cross", sessionId: "session-a", ownerKind: "chat",
+      pendingSubmission: false, telemetryTerminal: false, voiceResultReady: true,
+    };
+    sandbox.voiceOperations.set("voiceop_cross", operation);
+    sandbox.state = { activeSessionId: "session-b", voiceInput: { status: "completed", operationId: "voiceop_cross" } };
+    sandbox.abandonCompletedVoiceResult();
+    assert.equal(terminalCalls.length, 0, `${lane} a cross-session clear must not touch the foreign operation`);
+    assert.equal(operation.telemetryTerminal, false, `${lane} a cross-session result must not be terminated by another session's clear`);
+    assert.equal(sandbox.state.voiceInput.operationId, "voiceop_cross", `${lane} the foreign result keeps its notice binding`);
+    // The fix must not over-block: clearing the owning session's draft still terminates.
+    sandbox.state.activeSessionId = "session-a";
+    sandbox.abandonCompletedVoiceResult();
+    assert.equal(operation.telemetryTerminal, true, `${lane} a same-session clear still terminates the result`);
+  }
+});
+
+test("both lanes: the terminal latch gates the write-back itself, not only the completed notice", () => {
+  for (const [lane, source] of [["desktop", sources.desktop], ["web", sources.web]]) {
+    const finishStart = source.indexOf("async function finishVoiceInput(");
+    assert.ok(finishStart >= 0, `${lane} bridge must keep finishVoiceInput`);
+    const writebackCall = source.indexOf("await session.writeback(", finishStart);
+    assert.ok(writebackCall > finishStart, `${lane} finishVoiceInput must call the write-back`);
+    const gate = source.lastIndexOf("if (session.telemetryTerminal) {", writebackCall);
+    assert.ok(gate > finishStart, `${lane} must check the terminal latch before the write-back so an abandoned result never lands in the cleared draft`);
+    const idleReset = source.indexOf('setVoiceInputStatus("idle"', gate);
+    assert.ok(idleReset > gate && idleReset < writebackCall, `${lane} abandoning mid-pipeline must reset the active status instead of leaving the pill stuck`);
+  }
 });
