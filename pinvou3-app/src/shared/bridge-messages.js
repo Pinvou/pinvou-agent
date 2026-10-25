@@ -135,7 +135,7 @@
   // user turn. Match the complete canonical shape only: a user's mention or
   // quotation of the tag must remain visible.
   function isContextUpdateRuntimeMessage(value) {
-    const text = String(value || "").trim().replace(/\r\n/g, "\n");
+    const text = String(value || "").trim().replaceAll("\r\n", "\n");
     const prefix = [
       "<context_update>",
       "Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):",
