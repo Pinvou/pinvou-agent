@@ -582,6 +582,29 @@ fn persist_code_session_sidecar(path: &Path, sidecar: &CodeSessionSidecar) -> Re
         .with_context(|| format!("保存 {} 失败", path.display()))
 }
 
+/// Test-only persist-failure seam (see
+/// [`SessionAgentStore::inject_next_persist_failure`]). Keyed by store path so
+/// parallel tests never see one another's fault. Production never arms it.
+#[cfg(test)]
+static INJECTED_PERSIST_FAILURE_PATHS: std::sync::Mutex<Vec<PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Consumes the armed injection for `path`, if any; returns whether one was
+/// armed (the next persist for that store must fail).
+#[cfg(test)]
+fn take_injected_persist_failure(path: &Path) -> bool {
+    let mut failures = INJECTED_PERSIST_FAILURE_PATHS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match failures.iter().position(|injected| injected == path) {
+        Some(index) => {
+            failures.swap_remove(index);
+            true
+        }
+        None => false,
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct AgentStoreFile {
     #[serde(default = "store_version")]
@@ -801,7 +824,14 @@ impl SessionAgentStore {
         };
         {
             let mut records = self.records.write();
-            let record = records.entry(session_id.to_string()).or_default();
+            // Publish only after the candidate has been durably replaced.
+            // Holding the write lock throughout the persist also prevents a
+            // concurrent writer from publishing over this snapshot in between.
+            // Mutating a clone instead of the live map keeps memory and disk
+            // consistent when the persist fails: the error propagates before
+            // anything is published, so a "failed bind" can never report bound.
+            let mut candidate = records.clone();
+            let record = candidate.entry(session_id.to_string()).or_default();
             if record.acp_session_id.is_some()
                 && (record.backend != backend
                     || record.workspace_kind != kind
@@ -821,12 +851,14 @@ impl SessionAgentStore {
             // ACP 会话不是代码模式会话：绑定 ACP 时重置为 plain 模式，
             // 避免 is_code_session() 误判、且 restore 时不会拒绝 ACP 覆盖。
             record.mode = SessionMode::Plain;
+            self.persist_records(&candidate)?;
+            *records = candidate;
         }
-        // 先持久化辅助索引，再清理权威 sidecar：persist 失败时 sidecar 仍在，与
-        // 磁盘索引保持一致，不会出现「sidecar 已删、索引未更新」的中间态；若 sidecar
-        // 清理失败，残留 sidecar 会在下次启动扫描时被识别为 ACP 会话残留并清理
-        // （见 mod.rs `restore_code_native_sessions_from_sidecars`）。
-        self.persist()?;
+        // 辅助索引已在上方（发布前）持久化；这里只清理权威 sidecar：persist
+        // 失败时 sidecar 仍在，与磁盘索引保持一致，不会出现「sidecar 已删、
+        // 索引未更新」的中间态；若 sidecar 清理失败，残留 sidecar 会在下次启动
+        // 扫描时被识别为 ACP 会话残留并清理（见 mod.rs
+        // `restore_code_native_sessions_from_sidecars`）。
         // 该会话不再是原生代码会话：清理权威 sidecar，防止辅助索引重建时误恢复。
         remove_code_session_sidecar(&self.path, session_id);
         Ok(())
@@ -2347,12 +2379,35 @@ impl SessionAgentStore {
     }
 
     fn persist(&self) -> Result<()> {
+        // Keep the read lock through the file replacement. Together with the
+        // transactional writers holding the write lock, this serializes use of
+        // the shared `.tmp` path and preserves snapshot order.
+        let records = self.records.read();
+        self.persist_records(&records)
+    }
+
+    /// Fail exactly the next persistence for this store. The injection is
+    /// keyed by each test's unique path, so parallel tests cannot consume one
+    /// another's failure.
+    #[cfg(test)]
+    pub(crate) fn inject_next_persist_failure(&self) {
+        INJECTED_PERSIST_FAILURE_PATHS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(self.path.clone());
+    }
+
+    fn persist_records(&self, records: &HashMap<String, SessionAgentRecord>) -> Result<()> {
+        #[cfg(test)]
+        if take_injected_persist_failure(&self.path) {
+            anyhow::bail!("injected session agent persist failure");
+        }
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
         let value = AgentStoreFile {
             version: STORE_VERSION,
-            sessions: self.records.read().clone(),
+            sessions: records.clone(),
         };
         // atomic_write, like every other rebind lane (review #463 round-21
         // SF-7): the plain fs::write+rename pair skipped the fsync, so a
@@ -5485,6 +5540,98 @@ mod tests {
             vec![workspace, root.clone()]
         );
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn acp_workspace_persist_failure_keeps_the_complete_previous_binding() {
+        // Persist-before-publish: a failing persist must leave BOTH the
+        // in-memory record and the durable file describing the previous
+        // binding. Mutating in place before persisting would make a "failed
+        // bind" still report bound until restart — memory and disk diverged.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-acp-bind-persist-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let first_workspace = root.join("first-workspace");
+        let second_workspace = root.join("second-workspace");
+        fs::create_dir_all(&first_workspace).unwrap();
+        fs::create_dir_all(&second_workspace).unwrap();
+        let store = SessionAgentStore::for_test(root.join("session-agents.json"));
+
+        store
+            .bind_code_native_session(
+                "session-atomic",
+                CodexWorkspaceKind::Project,
+                Some(first_workspace.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+        let before = store.get("session-atomic");
+        assert_eq!(before.backend, AgentBackend::Deepseek);
+        assert_eq!(before.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(
+            before.workspace_path.as_deref(),
+            Some(first_workspace.as_path())
+        );
+        assert!(before.mode.is_code());
+
+        store.inject_next_persist_failure();
+        assert!(
+            store
+                .set_acp_workspace(
+                    "session-atomic",
+                    AgentBackend::CodexAcp,
+                    CodexWorkspaceKind::Project,
+                    Some(second_workspace.clone()),
+                    Vec::new(),
+                )
+                .is_err(),
+            "the injected persist failure must fail the bind"
+        );
+
+        // The failed attempt mutated nothing in memory.
+        let after_failure = store.get("session-atomic");
+        assert_eq!(after_failure.backend, before.backend);
+        assert_eq!(after_failure.workspace_kind, before.workspace_kind);
+        assert_eq!(after_failure.workspace_path, before.workspace_path);
+        assert_eq!(after_failure.mode, before.mode);
+        // ...and nothing on disk.
+        let durable_after_failure: AgentStoreFile = serde_json::from_slice(
+            &fs::read(store.path()).expect("read binding after injected failure"),
+        )
+        .expect("parse binding after injected failure");
+        let durable_record = &durable_after_failure.sessions["session-atomic"];
+        assert_eq!(durable_record.backend, before.backend);
+        assert_eq!(durable_record.workspace_kind, before.workspace_kind);
+        assert_eq!(durable_record.workspace_path, before.workspace_path);
+        assert_eq!(durable_record.mode, before.mode);
+        assert!(
+            read_code_session_sidecar(store.path(), "session-atomic").is_some(),
+            "a failed ACP bind must not remove the authoritative native sidecar"
+        );
+
+        // The retry without the injection succeeds and publishes both layers.
+        store
+            .set_acp_workspace(
+                "session-atomic",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(second_workspace.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+        let after_retry = store.get("session-atomic");
+        assert_eq!(after_retry.backend, AgentBackend::CodexAcp);
+        assert_eq!(after_retry.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(
+            after_retry.workspace_path.as_deref(),
+            Some(second_workspace.as_path())
+        );
+        assert!(!after_retry.mode.is_code());
+        assert!(read_code_session_sidecar(store.path(), "session-atomic").is_none());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
