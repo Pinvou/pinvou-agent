@@ -2244,14 +2244,6 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         && !firstTurnPending
         && (hasDraftText || hasReadyAttachment || hasSessionRefs);
       const sceneCapabilityPreparing = sceneCapabilityStatus && sceneCapabilityStatus.kind === 'preparing';
-      // One-click draft clear: hidden while the composer is empty, disabled while a
-      // voice capture/rewrite is in flight (clearing mid-capture would race the write-back).
-      const canClearInput = hasDraftText && !voiceActive;
-      function handleClearInput() {
-        if (!canClearInput) return;
-        handleComposerInputChange('');
-        composerRef.current?.focus();
-      }
       // eslint-disable-next-line sonarjs/cognitive-complexity -- scene-capability preflight and send orchestration are cohesive in a single callback; split refactor tracked separately
       const dispatchChatMessage = useCallback(async (text, voiceMeta, voiceOwner) => {
         if (!bridge.available) return false;
@@ -2630,6 +2622,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             variant="timeline"
           />
         : undefined), [activeSessionId, t]);
+      const retryLastTurn = useCallback((turn) => {
+        // Regenerate: re-send the last user turn verbatim. The timeline only
+        // hands us the newest turn; skip while a reply is streaming.
+        if (!busy && turn && turn.userText && bridge.available) {
+          bridge.interaction.editLastTurn(turn.userText);
+        }
+      }, [busy]);
       const timelineAssistantAvatar = useMemo(() => (
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
           <PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName} />
@@ -3454,6 +3453,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         });
       }
 
+      // One-click draft clear: hidden while the composer is empty, disabled while a
+      // voice capture/rewrite is in flight or an edit rewrite preview is armed
+      // (clearing mid-capture would race the write-back; clearing with a pending
+      // preview would strand a stale card). Declared after the voice hook so the
+      // preview flag is in scope.
+      const canClearInput = hasDraftText && !voiceActive && !chatVoice.editPreview;
+      function handleClearInput() {
+        if (!canClearInput) return;
+        handleComposerInputChange('');
+        composerRef.current?.focus();
+      }
+
       function resolveVoiceShortcutIntro(value) {
         const resolve = voiceIntroResolveRef.current;
         voiceIntroResolveRef.current = null;
@@ -3730,13 +3741,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     busy={busy}
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
-                    onRetry={(turn) => {
-                      // Regenerate: re-send the last user turn verbatim. The timeline only
-                      // hands us the newest turn; skip while a reply is streaming.
-                      if (!busy && turn.userText && bridge.available) {
-                        bridge.interaction.editLastTurn(turn.userText);
-                      }
-                    }}
+                    onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}
@@ -4289,7 +4294,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 {hasDraftText && (
-                  <button type="button" onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                  <button type="button" data-testid="chat-clear-input" onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
                     className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
                       canClearInput
                         ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'

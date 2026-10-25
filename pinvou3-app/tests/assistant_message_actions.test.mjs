@@ -450,10 +450,24 @@ assert.doesNotMatch(clipboard, /querySelectorAll|data-assistant-copy-source/);
 // re-sends the turn through the bridge without any analytics payload.
 assert.match(actions, /data-testid="assistant-message-retry"/);
 assert.match(actions, /aria-label=\{copy\.retryReply\}/);
-assert.match(chatView, /onRetry=\{\(turn\) => \{/);
+assert.match(chatView, /const retryLastTurn = useCallback\(\(turn\) => \{/);
 assert.match(chatView, /editLastTurn\(turn\.userText\)/);
+assert.match(chatView, /onRetry=\{isMultiAgentReadOnly \? undefined : retryLastTurn\}/);
 assert.doesNotMatch(chatView, /retryReason|telemetryTurnId/);
-assert.match(timeline, /<AssistantMessageActions\n\s*resolveText=\{\(\) => assistantResponseText\(turn\)\}\n\s*copy=\{c\}\n\s*onRetry=\{onRetry \? \(\) => onRetry\(turn\) : undefined\}\n\s*\/>/);
+// Clear-input affordance: pinned like every other composer control (testid +
+// consumption of its i18n key, so the key cannot be orphaned), and the
+// eligibility must include the armed edit-preview guard.
+assert.match(chatView, /data-testid="chat-clear-input"/);
+assert.match(chatView, /onClick=\{handleClearInput\}/);
+assert.match(chatView, /aria-label=\{t\.clearInput\}/);
+assert.match(chatView, /const canClearInput = hasDraftText && !voiceActive && !chatVoice\.editPreview;/);
+assert.match(timeline, /<AssistantMessageActions\n\s*resolveText=\{\(\) => assistantResponseText\(turn\)\}\n\s*copy=\{c\}\n\s*onRetry=\{retryHandler\}\n\s*\/>/);
+// Regenerate re-sends raw turn text: turns carrying an attachment marker line
+// (files would be dropped, the marker resent as body text) and empty-text
+// turns (nothing to re-send) must not render the control at all.
+assert.match(timeline, /import \{ splitAttachmentLine \} from '\.\.\/attachments\/attachment-message\.js';/);
+assert.match(timeline, /function retryHandlerForTurn\(onRetry, turn\)/);
+assert.match(timeline, /splitAttachmentLine\(userText\)\.attachments\.length === 0/);
 // Only the newest turn carries the retry handler, in every render path
 // (plain map, virtualized history rows, and the live tail).
 assert.match(timeline, /onRetry=\{index === turns\.length - 1 \? props\.onRetry : undefined\}/);

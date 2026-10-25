@@ -5,6 +5,7 @@ import { StatusDot } from '../../components/StatusDot.jsx';
 import { zhDict } from '../../shared/i18n.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
+import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { useThrottledValue } from './useThrottledValue.js';
 import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 import {
@@ -871,6 +872,17 @@ function isEqualConversationValue(left, right) {
   return true;
 }
 
+// Regenerate re-sends the raw turn text through editLastTurn, which has no
+// attachments surface: a turn carrying an attachment marker line would drop
+// its files and resend the marker as literal body text, and empty text has
+// nothing to re-send. Neither renders a retry control.
+function retryHandlerForTurn(onRetry, turn) {
+  const userText = String(turn.userText || '');
+  const retryable = typeof onRetry === 'function' && !!userText.trim()
+    && splitAttachmentLine(userText).attachments.length === 0;
+  return retryable ? () => onRetry(turn) : undefined;
+}
+
 /**
  * @param {Record<string, unknown>} prev - previous props
  * @param {Record<string, unknown>} next - next props
@@ -962,6 +974,7 @@ function ConversationTurnView({
   const assistantFooterVisible = !running
     && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error);
   const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;
+  const retryHandler = retryHandlerForTurn(onRetry, turn);
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length || userQuotes.length)
@@ -1036,7 +1049,7 @@ function ConversationTurnView({
               <AssistantMessageActions
                 resolveText={() => assistantResponseText(turn)}
                 copy={c}
-                onRetry={onRetry ? () => onRetry(turn) : undefined}
+                onRetry={retryHandler}
               />
             )}
             {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
