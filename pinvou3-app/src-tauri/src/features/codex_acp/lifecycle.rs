@@ -17,6 +17,12 @@
 //! running for two minutes clears the budget, so a runtime that only fails
 //! every few minutes is never throttled — the budget targets tight loops.
 //!
+//! Detection boundary: a dead generation is observed through the transport
+//! (`incoming_closed`), which resolves only once every writer of the runtime
+//! child's stdout pipe is gone. A child that exits while a forked descendant
+//! keeps the pipe open stays `running` here; the stall watchdog (with a turn
+//! in flight) or the idle reaper still reclaims it later.
+//!
 //! Ported from the official fork's `codex_acp/lifecycle.rs` (crash-budget
 //! core). The controller-only custody helpers that share the upstream file
 //! (turn-retirement gate, owned pool takes) stay unported: they serve the
