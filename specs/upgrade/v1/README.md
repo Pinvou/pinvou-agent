@@ -111,7 +111,7 @@ calling this function with a DTO does not establish those facts. API contract
 validation checks time syntax separately instead of applying credential iat/nbf
 semantics. Missing time policies or explicit limits fail closed.
 
-This batch's JS/Rust source passed independent source review. The Node reference
+The delivered Time reference batch's JS/Rust source passed independent source review. The Node reference
 suite passed 219 tests; the Rust codec, verifier and HTTP crates passed 160, 75
 and 4 tests respectively. One existing opt-in TLS test remained ignored.
 Formatting, architecture and whitespace checks passed. Generated schemas,
@@ -120,6 +120,24 @@ unchanged.
 Neither this result nor the vectors prove an actual issuer's SQL/UTC accuracy,
 configured production time keys, protected host continuity, durable budget ledger
 or cleanup recovery. T26 remains incomplete and concrete T03 budgets unapproved.
+
+### Fixed Root history GET
+
+`GET /v1/upgrade/roots/{product}/{version}.json` distributes at most 1 MiB of
+original canonical T01 Root Envelope bytes. Product is a bounded ASCII
+identifier and version an exact positive safe-integer decimal selector. The
+OpenAPI `trust-metadata` GET is independent of the existing 27 POST client
+operations. Rust `pinvou_upgrade_http::get_root_once` returns original
+`Found(ReceivedRoot)` or closed `Missing` DATA; it checks Schema/context and the
+exact selector, without requiring recovered time. Expired or time-less Root
+bytes can therefore reach the dedicated protected-anchor continuity verifier.
+
+A closed `ROOT_NOT_FOUND` 404 does not prove chain tail, latest/current Root or
+absence of a later version. Received Root bytes cannot establish their own
+anchor, clock, installation permission or current eligibility. The fixed-origin
+reader preserves the existing TLS/no-proxy/no-redirect/no-retry/identity-encoding
+and connect/idle-read rules, with no total elapsed download deadline. See the
+[Root retrieval profile](contract-profile.md#fixed-root-history-retrieval).
 
 ### Metadata and publication helpers
 

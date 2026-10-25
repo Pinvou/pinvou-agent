@@ -65,7 +65,15 @@ func main() {
 		os.Exit(1)
 	}
 	var cases []wireCase
-	if json.Unmarshal(data, &cases) != nil || len(cases) != 26 {
+	if json.Unmarshal(data, &cases) != nil || len(cases) != 27 {
+		os.Exit(1)
+	}
+	rootData, err := os.ReadFile(os.Args[3])
+	if err != nil {
+		os.Exit(1)
+	}
+	var roots map[string]string
+	if json.Unmarshal(rootData, &roots) != nil || roots["1"] == "" || roots["2"] == "" {
 		os.Exit(1)
 	}
 	state := &records{}
@@ -108,6 +116,10 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Set-Cookie", "synthetic-fixture=not-a-real-secret; Secure; HttpOnly")
+		if r.Method == http.MethodGet {
+			rootGet(w, r, roots)
+			return
+		}
 		for _, c := range cases {
 			if c.Path == r.URL.Path && c.Request == string(body) {
 				io.WriteString(w, c.Response)
@@ -249,4 +261,111 @@ func main() {
 		fmt.Fprintln(os.Stderr, "fixture output unavailable")
 		os.Exit(1)
 	}
+}
+
+// Isolated GET fixtures are deliberately structural DATA, never Root authority.
+// Only pinvou/1 and pinvou/2 are original public signed vector bytes.
+func rootGet(w http.ResponseWriter, r *http.Request, roots map[string]string) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) != 6 || parts[1] != "v1" || parts[2] != "upgrade" || parts[3] != "roots" {
+		w.WriteHeader(500)
+		return
+	}
+	product := parts[4]
+	version := strings.TrimSuffix(parts[5], ".json")
+	if product == "pinvou" {
+		if version == "3" {
+			w.WriteHeader(404)
+			io.WriteString(w, `{"protocolVersion":1,"code":"ROOT_NOT_FOUND"}`)
+			return
+		}
+		if raw, ok := roots[version]; ok {
+			io.WriteString(w, raw)
+			return
+		}
+		w.WriteHeader(500)
+		return
+	}
+	raw := []byte(roots["1"])
+	switch product {
+	case "redirect":
+		w.Header().Set("Location", "/redirected")
+		w.WriteHeader(302)
+		return
+	case "foreign-redirect":
+		w.Header().Set("Location", "https://redirect.test.invalid/redirected")
+		w.WriteHeader(307)
+		return
+	case "status":
+		w.WriteHeader(503)
+		return
+	case "gzip":
+		w.Header().Set("Content-Encoding", "gzip")
+	case "media":
+		w.Header().Set("Content-Type", "text/html")
+	case "oversize":
+		w.Header().Set("Content-Length", "1048577")
+		raw = []byte(" ")
+	case "chunk-oversize":
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		raw = []byte(strings.Repeat(" ", 1048577))
+	case "body-wait":
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	case "noncanonical":
+		raw = append(raw, '\n')
+	case "wrong-context": // Original pinvou Root deliberately differs from selector.
+	case "bad-missing":
+		w.WriteHeader(404)
+		io.WriteString(w, `{"protocolVersion":1,"code":"ROOT_NOT_FOUND","latest":true}`)
+		return
+	case "truncated":
+		connection, writer, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		fmt.Fprintf(writer, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", len(raw)+1)
+		writer.Write(raw)
+		writer.Flush()
+		return
+	case "connection-drop":
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			connection.Close()
+		}
+		return
+	case "progress":
+		var value map[string]any
+		if json.Unmarshal(raw, &value) != nil {
+			w.WriteHeader(500)
+			return
+		}
+		value["signed"].(map[string]any)["product"] = "progress"
+		raw, _ = json.Marshal(value) // ASCII-only fixture keys/values; lexical canonical order.
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		for offset := 0; offset < len(raw); offset += 128 {
+			end := offset + 128
+			if end > len(raw) {
+				end = len(raw)
+			}
+			if _, err := w.Write(raw[offset:end]); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			time.Sleep(50 * time.Millisecond)
+		}
+		return
+	default:
+		w.WriteHeader(500)
+		return
+	}
+	w.Write(raw)
 }

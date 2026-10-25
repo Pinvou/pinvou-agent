@@ -1,4 +1,4 @@
-"""Real fixed-origin control POST and rejection tests; no production endpoint I/O."""
+"""Real fixed-origin control POST/Root GET and rejection tests; no production endpoint I/O."""
 import argparse
 import json
 import os
@@ -25,28 +25,36 @@ def read_line(pipe):
 def verify(records, cases, address):
     assert records["ProxyHits"] == 0
     assert records["RedirectHits"] == 0
-    requests = records["Requests"]
-    assert len(requests) == 70, len(requests)  # 26 +19x2 +error+cap+chunked+TLSrestore+cancellation+progress
-    first = requests[:26]
+    requests = [item for item in records["Requests"] if item["Method"] == "POST"]
+    gets = [item for item in records["Requests"] if item["Method"] == "GET"]
+    assert len(requests) == len(cases) + 44, len(requests)  # baseline + original negative/restoration census
+    assert len(gets) == 17, len(gets)
+    assert len(records["Requests"]) == len(requests) + len(gets)
+    first = requests[:len(cases)]
     for observed, expected in zip(first, cases):
         assert observed["Path"] == expected["path"]
         assert observed["Body"] == expected["request"], "canonical POST bytes changed"
-    for item in requests:
-        assert item["Method"] == "POST"
+    for item in requests + gets:
+        assert item["Method"] in ("POST", "GET")
         assert item["Host"] == "update.pinvou.com:" + address.rsplit(":", 1)[1]
         assert item["AcceptEncoding"] == "identity"
-        assert item["ContentType"] == "application/json"
+        assert item["ContentType"] == ("application/json" if item["Method"] == "POST" else "")
         assert item["CacheControl"] == "no-store"
         assert not item["HasAuthorization"]
         assert not item["HasCookie"]
         assert not item["HasProxyAuthorization"]
         assert "?" not in item["Path"]
-    modes = [json.loads(item["Body"]).get("transactionId") for item in requests[26:]]
+    modes = [json.loads(item["Body"]).get("transactionId") for item in requests[len(cases):]]
     assert modes.count("case-restore") == 20
     assert modes.count("case-cancel") == 1
     assert modes.count("case-connection-drop") == 1, "connection loss was automatically resubmitted"
     assert modes.count("case-progress") == 1
-    print(f"Control HTTPS wire assertions passed ({len(requests)} requests, all 26 routes)")
+    for item in gets:
+        assert item["Body"] == ""
+    assert [item["Path"] for item in gets[:3]] == [
+        "/v1/upgrade/roots/pinvou/1.json", "/v1/upgrade/roots/pinvou/2.json", "/v1/upgrade/roots/pinvou/3.json"]
+    assert sum(item["Path"] == "/v1/upgrade/roots/connection-drop/1.json" for item in gets) == 1
+    print(f"Control HTTPS wire assertions passed ({len(requests)} POSTs, all {len(cases)} routes; {len(gets)} Root GETs)")
 
 
 def main():
@@ -60,12 +68,17 @@ def main():
     reference = repo / "specs/upgrade/v1/reference/canonical-json.mjs"
     cases_raw = subprocess.check_output(["node", str(crate / "tests/wire-oracle.mjs"), str(reference)])
     cases = json.loads(cases_raw)
+    assert len(cases) == 27
     subprocess.run(["cargo", "test", "--locked", "--no-run"], cwd=crate, check=True)
     hidden = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     with tempfile.TemporaryDirectory(prefix="pinvou-control-https-") as directory:
         temporary = Path(directory).resolve()
         cases_path = temporary / "wire-cases.json"
         cases_path.write_bytes(cases_raw)
+        vectors = json.loads((repo / "specs/upgrade/v1/vectors/time/anchor.json").read_text(encoding="utf-8"))
+        root_path = temporary / "root-wire-cases.json"
+        root_path.write_text(json.dumps({"1": vectors["cases"][0]["trustedRootBytes"],
+            "2": vectors["cases"][0]["rootSuccessors"][0]}), encoding="utf-8")
         peer_path = temporary / ("tls-peer.exe" if os.name == "nt" else "tls-peer")
         go_env = os.environ.copy()
         for key in ("GOOS", "GOARCH", "GOFLAGS"):
@@ -73,7 +86,7 @@ def main():
         go_env.update(GOENV="off", GOPROXY="off", GOTOOLCHAIN="local", CGO_ENABLED="0")
         subprocess.run([args.go, "build", "-o", str(peer_path), str(crate / "tests/fixtures/tls-server.go")],
                        env=go_env, check=True, creationflags=hidden)
-        peer = subprocess.Popen([str(peer_path), str(cases_path), str(temporary / "cancel-seen")], stdin=subprocess.PIPE,
+        peer = subprocess.Popen([str(peer_path), str(cases_path), str(temporary / "cancel-seen"), str(root_path)], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, text=True, creationflags=hidden)
         try:
             fixture = read_line(peer.stdout)

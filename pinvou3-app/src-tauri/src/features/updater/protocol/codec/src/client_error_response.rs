@@ -63,7 +63,14 @@ fn allowed_responses(openapi: &Value) -> Result<Allowed, ClientErrorResponseErro
     let paths = openapi["paths"].as_object().ok_or(unavailable)?;
     let mut allowed = Allowed::new();
     for path in paths.values() {
-        let post = &path["post"];
+        // Root distribution is a separate GET DATA transport. This registry
+        // owns only POST error contracts; it must still reject a malformed
+        // POST or a missing member of the complete POST operation catalog.
+        let post = match path.get("post") {
+            Some(post) => post,
+            None if path.get("get").is_some() => continue,
+            None => return Err(unavailable),
+        };
         let name = post["operationId"].as_str().ok_or(unavailable)?;
         let Ok(operation) = name.parse::<ClientResponseOperation>() else {
             continue;
@@ -210,6 +217,9 @@ mod tests {
         let original: Value = serde_json::from_str(OPENAPI).unwrap();
         assert_eq!(allowed_responses(&original).unwrap().len(), 27);
         let paths = original["paths"].as_object().unwrap();
+        let root_get = &paths["/v1/upgrade/roots/{product}/{version}.json"];
+        assert_eq!(root_get["get"]["operationId"], "read-root");
+        assert!(root_get.get("post").is_none());
         let (key, value) = paths
             .iter()
             .find(|(_, path)| path["post"]["operationId"] == "check")
@@ -218,6 +228,21 @@ mod tests {
         duplicate["paths"]["/duplicate-check"] = value.clone();
         assert_eq!(
             allowed_responses(&duplicate).err(),
+            Some(ClientErrorResponseError::SchemaUnavailable)
+        );
+        // Replacing a required POST with a GET must not satisfy its census.
+        let mut replaced = original.clone();
+        let operation = replaced["paths"][key].as_object_mut().unwrap();
+        let post = operation.remove("post").unwrap();
+        operation.insert("get".to_owned(), post);
+        assert_eq!(
+            allowed_responses(&replaced).err(),
+            Some(ClientErrorResponseError::SchemaUnavailable)
+        );
+        let mut malformed = original.clone();
+        malformed["paths"][key]["post"] = Value::Null;
+        assert_eq!(
+            allowed_responses(&malformed).err(),
             Some(ClientErrorResponseError::SchemaUnavailable)
         );
         let mut missing = original.clone();

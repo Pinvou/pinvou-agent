@@ -195,7 +195,7 @@ fn header_boundaries_reject_encoding_framing_media_type_and_oversize() {
         Err(ControlHttpError::InvalidHeaders)
     );
 }
-fn fixture_profile(trusted: bool) -> Profile {
+pub(super) fn fixture_profile(trusted: bool) -> Profile {
     let path = std::env::var_os("PINVOU_CONTROL_TLS_FIXTURE").expect("run isolated HTTPS harness");
     let v: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     let cert =

@@ -293,6 +293,32 @@ A legacy Root without a time policy keeps its original metadata verification
 meaning but cannot authorize a clock response. Original crypto vectors remain
 unchanged; dedicated public-only time vectors are separate.
 
+## Fixed Root history retrieval
+
+T26 also adds fixed-origin `GET /v1/upgrade/roots/{product}/{version}.json` to
+obtain original Root bytes before a client has recovered trusted time. Product
+uses the bounded ASCII identifier alphabet. Version is a positive safe integer
+in exact ASCII decimal, without a leading zero, sign, exponent or alternate URL
+encoding. The path accepts no query. This `trust-metadata` GET is separate from
+the unchanged 27 client POST operations; it introduces no additional
+`ClientOperation` or command request body.
+
+A successful response is the complete original canonical T01 Root Envelope,
+limited to 1 MiB, without a wrapper. The Rust HTTP reader checks canonical bytes,
+closed Schema, Root descriptor/policy shape and exact requested product/version.
+It does not check a current time window or authenticate a Root signature,
+threshold, continuity, latest head or new anchor. Expired and time-less Roots
+remain readable DATA; retain every original signature for the separate verifier.
+The client must authenticate consecutive successors from its independently
+protected Root and perform the dedicated time response's final interval checks.
+
+A 404 body is exactly `{protocolVersion:1,code:"ROOT_NOT_FOUND"}`. It is only
+Missing DATA, never proof that a version is the chain tail or latest/current
+Root. Other failures do not become Missing. The transport reuses the fixed
+origin's TLS, no-proxy, no-redirect, no-retry, identity-encoding and bounded
+connect/idle-read rules. It adds no total or cumulative download deadline and
+provides no clock, installation or execution authority.
+
 ## Control and transition contract
 
 T02 adds bundled OpenAPI 3.1, closed API Schemas and finite executable atomic

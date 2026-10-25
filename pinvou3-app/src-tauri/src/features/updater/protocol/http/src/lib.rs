@@ -1,10 +1,12 @@
-//! One fixed-origin client POST. Transport evidence is not signed/current authority.
+//! Fixed-origin client POST and Root GET. Transport is not signed/current authority.
 use pinvou_upgrade_codec::{
     ClientHttpResponseError, ClientRequestError, ClientRequestOperation, Document, Error, InputKind,
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
+mod roots;
 mod routes;
 pub use pinvou_upgrade_codec::ClientRequestOperation as Operation;
+pub use roots::{ReceivedRoot, RootGetError, RootGetResult, get_root_once};
 
 pub const CONTROL_ORIGIN: &str = "https://update.pinvou.com";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -124,34 +126,7 @@ async fn post_with_profile(
         .canonical_bytes()
         .map_err(ControlHttpError::RequestJson)?;
     let path = routes::path(operation)?;
-    let builder = reqwest::Client::builder()
-        .https_only(true)
-        .min_tls_version(reqwest::tls::Version::TLS_1_2)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .no_gzip()
-        .no_brotli()
-        .no_zstd()
-        .no_deflate()
-        .pool_max_idle_per_host(0)
-        .connect_timeout(profile.connect)
-        .read_timeout(profile.read_idle);
-    #[cfg(test)]
-    let (builder, origin) = match profile.fixture {
-        Some((address, cert)) => (
-            builder
-                .add_root_certificate(cert)
-                .resolve("update.pinvou.com", address),
-            format!("{CONTROL_ORIGIN}:{}", address.port()),
-        ),
-        None => (builder, CONTROL_ORIGIN.to_owned()),
-    };
-    #[cfg(not(test))]
-    let origin = CONTROL_ORIGIN;
-    let client = builder
-        .build()
-        .map_err(|_| ControlHttpError::ClientUnavailable)?;
+    let (client, origin) = client_with_profile(profile)?;
     let mut response = client
         .post(format!("{origin}{path}"))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -190,6 +165,37 @@ async fn post_with_profile(
         document,
         bytes,
     })
+}
+fn client_with_profile(profile: Profile) -> Result<(reqwest::Client, String), ControlHttpError> {
+    let builder = reqwest::Client::builder()
+        .https_only(true)
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .no_gzip()
+        .no_brotli()
+        .no_zstd()
+        .no_deflate()
+        .pool_max_idle_per_host(0)
+        .connect_timeout(profile.connect)
+        .read_timeout(profile.read_idle);
+    #[cfg(test)]
+    let (builder, origin) = match profile.fixture {
+        Some((address, cert)) => (
+            builder
+                .add_root_certificate(cert)
+                .resolve("update.pinvou.com", address),
+            format!("{CONTROL_ORIGIN}:{}", address.port()),
+        ),
+        None => (builder, CONTROL_ORIGIN.to_owned()),
+    };
+    #[cfg(not(test))]
+    let origin = CONTROL_ORIGIN.to_owned();
+    let client = builder
+        .build()
+        .map_err(|_| ControlHttpError::ClientUnavailable)?;
+    Ok((client, origin))
 }
 fn ows(text: &str) -> &str {
     text.trim_matches([' ', '\t'])
