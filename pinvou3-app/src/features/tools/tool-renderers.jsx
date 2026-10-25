@@ -471,7 +471,13 @@ const ToolOutput = ({ item, t }) => {
               aria-expanded={expanded}
               className={`flex items-center gap-2 px-2 py-1 rounded-[8px] cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
               onClick={() => setExpanded(!expanded)}
-              onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(!expanded); } }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  setExpanded(!expanded);
+                }
+              }}
             >
               <Wrench size={12} className={iconColor} />
               <span className={`text-[12px] ${mutedColor}`}>{item.name}</span>
@@ -498,7 +504,13 @@ const ToolOutput = ({ item, t }) => {
             aria-expanded={expanded}
             className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
             onClick={() => setExpanded(!expanded)}
-            onKeyDown={(event) => { if (event.target !== event.currentTarget) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(!expanded); } }}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setExpanded(!expanded);
+              }
+            }}
           >
             <Wrench size={14} className={statusColor} />
             <span className={`text-[13px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]`}>

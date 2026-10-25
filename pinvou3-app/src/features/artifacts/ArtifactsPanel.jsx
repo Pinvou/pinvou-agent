@@ -726,7 +726,13 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     return (
                       // biome-ignore lint/a11y/useSemanticElements: the list row has multiple nested layouts and inline buttons; a button would break existing styles
                       <div key={a.path} role="button" tabIndex={0} onClick={() => preview(a)}
-                        onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); preview(a); } }}
+                        onKeyDown={(e) => {
+                          if (e.target !== e.currentTarget) return;
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            preview(a);
+                          }
+                        }}
                         className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer
                           ${sel && sel.path === a.path ? 'bg-[#E8EDF2] dark:bg-[#333537]' : 'hover:bg-[#F0F4F9] dark:hover:bg-[#282A2C]'}`}>
                         <ArtifactTileIcon name={a.basename} />

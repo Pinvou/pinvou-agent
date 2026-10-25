@@ -30,7 +30,7 @@ test('role=button rows with nested buttons guard Enter/Space against bubbled key
   const artifactsPanel = read('src/features/artifacts/ArtifactsPanel.jsx');
   assert.match(
     artifactsPanel,
-    /onKeyDown=\{\(e\) => \{ if \(e\.target !== e\.currentTarget\) return;/,
+    /onKeyDown=\{\(e\) => \{\s+if \(e\.target !== e\.currentTarget\) return;/,
     'the artifacts row hosts the locate <button>; its key handler must ignore bubbled keys',
   );
   assert.match(
