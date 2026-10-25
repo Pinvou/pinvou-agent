@@ -6737,10 +6737,12 @@ dependencies = [
 name = "pinvou-upgrade-host"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "find-msvc-tools",
  "pinvou-upgrade-archive",
  "pinvou-upgrade-byte-check",
  "pinvou-upgrade-codec",
+ "pinvou-upgrade-control-http",
  "pinvou-upgrade-custody",
  "pinvou-upgrade-metadata-owner",
  "pinvou-upgrade-native-evidence",
@@ -6751,6 +6753,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tokio",
  "windows 0.62.2",
  "windows-sys 0.61.2",
 ]

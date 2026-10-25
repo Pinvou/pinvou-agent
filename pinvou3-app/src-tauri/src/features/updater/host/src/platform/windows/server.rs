@@ -30,6 +30,7 @@ impl Drop for Workers {
 }
 pub(super) fn serve(host: StartedServiceContext, stop: Arc<Event>) -> Result<()> {
     let core = Arc::new(Core::new(host));
+    let mut time_worker = super::time_service::TimeWorker::start(core.clone(), stop.clone())?;
     // Keep all instances alive through reuse: the service never closes the
     // last listening name between clients, allowing a name-squatting gap.
     let mut pipes = Vec::with_capacity(CONNECTIONS);
@@ -60,7 +61,7 @@ pub(super) fn serve(host: StartedServiceContext, stop: Arc<Event>) -> Result<()>
         std::thread::sleep(Duration::from_millis(100));
     }
     drop(workers);
-    Ok(())
+    time_worker.stop_and_join()
 }
 fn session(core: &Arc<Core>, pipe: &Pipe, stop: &Event) -> Result<()> {
     let mut authenticated = false;

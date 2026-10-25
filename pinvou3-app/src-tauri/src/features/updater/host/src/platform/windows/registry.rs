@@ -1,5 +1,7 @@
 //! Protected native64 registry transaction owner; no ordinary-file fallback.
 //! Files/SCM are outside this transaction and are recovered from original intent.
+pub(super) mod time;
+
 use super::{
     handle::Handle,
     security::{NativeSecurity, inspect_registry},
@@ -698,6 +700,7 @@ impl Store {
                 owners.ownership.record_bytes(),
             )?;
             owner_bootstrap_in(&private, seed, next)?;
+            time::initialize_in(&private, &transaction, next)?;
         }
         if let Some(manifest) = initial_manifest {
             if expected.is_some() || json::sha256(&manifest.root) != next.genesis_manifest_sha256 {
@@ -742,6 +745,17 @@ impl Store {
             let actual = self.read(seed)?.ok_or(Error::StateCommitUnknown)?;
             if actual.digest()? != next.digest()? {
                 return Err(Error::StateCommitUnknown);
+            }
+            if expected.is_none() {
+                // Fresh time genesis is part of the original definitive commit,
+                // not a later best-effort initializer or an adopted empty scope.
+                let time = self.time_load(seed, &actual)?;
+                if time.state.revision != 1
+                    || time.state.floor.is_some()
+                    || !time.state.cleanup_pending
+                {
+                    return Err(Error::StateCommitUnknown);
+                }
             }
             Ok(())
         };

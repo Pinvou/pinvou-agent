@@ -11,6 +11,7 @@ mod platform;
 mod profile;
 mod registration;
 mod restart;
+mod trusted_time;
 
 pub use error::Error;
 pub use restart::{CommittedRestart, PreparedRestart};

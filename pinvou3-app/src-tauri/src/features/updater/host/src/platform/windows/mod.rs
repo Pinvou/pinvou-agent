@@ -31,6 +31,9 @@ pub(crate) fn read_monotonic_counters() -> Result<crate::monotonic::CounterObser
 mod installed;
 mod installed_images;
 mod original_root;
+mod time_owner;
+mod time_service;
+mod time_transport;
 pub(crate) use installed_images::{InstalledImages, inspect_images};
 
 mod client;

@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, T26 fixed Root retrieval increment in progress**.
+Checkpoint: **2026-10-26, T26 protected anchor workflow in progress**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -35,109 +35,78 @@ not additional prerequisites for implementing the T25 ports.
 The dependency audit found no production download-info issuance/selection source
 behind T18; that path first needs T17 current qualification and T14 formal
 baseline activation. T11/T12/T13 still lack their approved active sources, and
-T11 needs genuine T46 local qualification. T26 has timing/budget math and the
-independently source-reviewed dedicated time contract/reference increment; it
-still lacks a durable trusted-time host. On 2026-10-25 the owner superseded
-strict A: unprovable cross-boot continuity pauses time-dependent actions, retains
-original deadlines/spent budgets, conservatively clears query secrets, and
-requires fresh authenticated server time plus successful original-deadline cleanup
-before resuming. The earlier policy-only documentation delivery synchronized
-these rules without changing wire bytes. The owner has now separately approved
-the dedicated Root time role and coordinated unreleased V1 update, without a
-legacy clock fallback. Concrete preparation budgets remain unapproved.
+T11 needs genuine T46 local qualification. T26 remains the main task.
 
-The delivered Time reference increment specifies closed `/v1/upgrade/time` requests and
-direct canonical time Envelopes, full Root Envelope references, continuous dual
-Root thresholds, original nonce/monotonic brackets and explicit safe UTC interval
-policy. Generic verification cannot use a signed time to supply its own now.
-The Node reference suite passed 219 tests. The Rust codec, verifier and HTTP
-crates passed 160, 75 and 4 tests respectively; one existing opt-in TLS test
-remained ignored. Independent source review, formatting, architecture and
-whitespace checks passed. Schemas, OpenAPI and the public time vector were
-generated; the original crypto vectors are unchanged. These results cover the
-client contract and verification, not the service issuer, protected host clock,
-durable original-budget ledger or cleanup recovery barrier. T26 remains **20%**; the overall estimate stays **1810/47 = 38.5%** and
-strict completion remains **8/47 (17.0%)**. T03 is its sole direct prerequisite;
-other downstream tasks stay parked. No completion count or percentage increases.
+### Current T26 protected anchor workflow (2026-10-26)
 
-### Current T26 Root retrieval increment
+The approved cross-boot policy pauses time-dependent actions when continuity
+cannot be proved, preserves original deadlines/spent budgets, conservatively
+clears recovery-query secrets and requires authenticated fresh server time plus
+successful original-deadline cleanup before resuming. The dedicated Root time
+role and coordinated unreleased V1 update are approved; no legacy clock fallback
+is provided. Concrete T03 preparation budgets remain unapproved.
 
-The fixed-origin Root GET adds a real source for complete original canonical
-Root Envelopes, including expired and time-less history, before trusted-time
-recovery. It is bounded to 1 MiB and exact product/version selectors, and stays
-outside the unchanged 27 POST client-operation catalog. The Rust result is
-schema/context DATA, not an authenticated anchor, latest/current Root or clock.
-A closed 404 is only Missing DATA and cannot establish chain tail. Existing TLS,
-no-proxy/no-redirect/no-retry, identity-encoding and connect/idle limits remain;
-there is no total download deadline.
+The delivered foundations are:
 
-The service reader uses actual T07 protected anchor/history and the configured
-product allowlist. The history read itself does not request an Enabled time
-issuer or signing RPC; current host composition exposes it only through the
-enabled time owner. This transport supplies no durable host anchor, restart
-continuity, original-budget ledger, cleanup barrier or installation authority.
-The delivered Time batch's 219 Node / 239 Rust results above remain historical
-facts and are not added to this increment's results.
+| Component | Delivery | Historical verification |
+|---|---|---|
+| Closed time contract and no-now verifier | Client `37ca93504` | Node 219; codec 160/verifier 75/HTTP 4, with one existing TLS opt-in ignored |
+| Fixed original-Root transport | Client `9b2d182a5` | Node 11; affected codec 18; HTTP 9 including both real TLS tests, 71 POSTs across 27 operations and 17 Root GETs |
+| Actual service time issuer and original Root reader | Service `d0e7fee94` | Scoped 100 including real PostgreSQL/OpenBao 1; default 5762 PASS/1828 SKIP, vet/build/contract checks |
+| Actual Windows counters bound to the committed SCM incarnation | Client `de0fa18d2` | Host 103 PASS/one existing ignored, including four new math/raw-API tests; role builds and guards |
+| Protected exact original Root custody and consumption recheck | Client `49e266a3e` | Host 103 PASS/one existing ignored; metadata-owner 7 PASS including one new binding-refusal test; role builds and guards |
 
-Root retrieval verification: The scoped Root GET/API Node tests passed 11 tests. The affected codec targets
-passed 18 tests. The HTTP crate passed its seven ordinary tests and both opt-in
-real TLS tests; the full TLS run passed nine tests and verified 71 POSTs across
-all 27 client operations plus 17 Root GETs. These HTTP counts overlap and are
-not added together. Formatting, architecture and whitespace checks passed.
-The finite service owner also passed its scoped real PostgreSQL/OpenBao test,
-including natural-lease background recovery, unchanged original result identity,
-no-RPC nonce replay, atomic KeyUse/response publication, stop fencing and actual
-historical Root GET. The initial premature-lease test expectation and the POST
-error registry GET assumption were repaired and independently re-reviewed;
-neither failure was treated as an environment waiver. Full service-suite results
-are recorded separately in the service repository. These results do not prove
-production UTC accuracy, native host continuity, durable preparation budgets or
-the cleanup recovery barrier.
+These are separate historical runs with overlapping tests, not additive totals.
+The Root reader returns exact original canonical DATA, including expired/time-less
+history; Missing is not chain-tail evidence. The fixed control origin, TLS,
+no-proxy/no-redirect, canonical framing and per-object limits remain. There is no
+total download deadline. Earlier invocation and functional failures were repaired;
+they were not relabeled as environment passes. The original crypto vectors remain
+unchanged.
 
-T26 stays **20%**, the equal-task estimate **1810/47 = 38.5%**, and strict
-completion **8/47 (17.0%)**. Concrete preparation budgets and the protected
-native-host recovery workflow remain unimplemented or unapproved as recorded
-above; no deployment or whole-T26 completion is claimed.
+The current Windows increment connects real BCrypt 32-byte nonces, fixed Root GET
+and time POST, actual incarnation-bound counter observations and the dedicated
+verifier to one native registry transaction. Fresh verification starts at the
+protected accepted current Root and checks only new successors against current
+deny; retained historical crypto is not retroactively invalidated by new deny.
+Captured protected-policy denials are durably accumulated before network I/O.
+Final publication rechecks actual host state, original Root custody, exact policy
+bytes and prior time Head, then atomically saves accepted Root originals,
+nondecreasing time floor, request/response/counter/incarnation evidence and
+`cleanup_pending`. Post-COMMIT ambiguity poisons the in-memory publisher until a
+genuine protected reopen; no guessed no-write retry or rollback is provided.
 
-**Current Windows monotonic source increment:** based on delivered service
-`d0e7fee94` / client `9b2d182a5`, the integrated adapter reads actual
-`QueryInterruptTimePrecise` and `QueryUnbiasedInterruptTimePrecise` counters,
-keeping suspend-inclusive and awake bounds distinct with conservative rounding.
-Only a real post-COMMIT `StartedServiceContext` can mint the private incarnation
-sample, with actual service/process and protected registration authentication
-before and after sampling, binding installation scope, host epoch, instance nonce
-and PID/creation identity. Raw counters alone supply no UTC, installation right
-or cross-boot continuity. This increment adds no persistent namespace, budget
-ledger, worker, cleanup barrier or policy default. The four new arithmetic/raw-API
-tests are included in the 103 passed host tests; one existing test remained ignored. Windows helper
-and launcher builds, formatting, architecture and whitespace checks passed. The
-first build invocation omitted the existing required static-CRT flag; the corrected
-invocation passed without changing the guard. A supplementary macOS library check
-was not executed: its locked libc dependency was absent, and the checksum-pinned
-archive download hit a connection timeout. An earlier fetch used an incorrect zero
-timeout; that invocation failure is not an environment waiver. No dependency or
-lockfile changed, and macOS host support is not claimed. Installed-SCM,
-suspend/resume and reboot E2E remain not run in the available environment;
-that environmental gap is non-blocking and is not a pass. Earlier Node/Go/Rust
-counts remain historical, without accumulation. T26 stays **20%**, the engineering
-estimate **38.5%**, and strict completion **8/47 (17.0%)**.
+Time genesis is created only in the same actual transaction as a genuinely new
+original installation intent. Existing/partial/legacy absence never initializes
+itself or implies empty budgets, backups or secrets. The previous Host Head,
+three bootstrap names, Seed and original CAS rules remain. Policy is an explicit
+scope/genesis-bound protected registry value with no RTT/uncertainty defaults;
+absence keeps time unavailable. Root bodies and request/response/policy evidence
+use separate bounded native blobs rather than expanded strings in Head. Retained
+successor originals have a checked aggregate 1 MiB implementation capacity,
+excluding the independent original Root; exceeding it refuses acquisition and
+preserves prior state. This capacity is unrelated to the server 32 MiB batch limit.
 
+A single SCM-owned worker performs startup acquisition and retains the actual
+Core context. Stop cancels its HTTP future and joins the owned runtime/thread.
+There is no detached worker, periodic retry or fixed DNS stop-latency claim.
+Network/policy failure preserves existing setup-only IPC while leaving time
+unavailable. The saved interval is historical at its recorded native sample,
+not commit-time UTC or a durable Known-clock/installation capability.
 
-**Protected original Root retrieval:** the real post-COMMIT Windows service can
-now read the exact original Root and metadata record from protected registry
-storage. Capture and consumption authenticate the running service, retained
-images, installation binding and complete three-owner bootstrap; partial or legacy
-state refuses without initialization. Capture checks a consistent Head, while the
-retained identity excludes mutable status fields, so a legal status update does
-not permanently invalidate original Root custody. This supplies immutable genesis
-DATA, not accepted-current Root, UTC or installation rights. Independent source
-review passed. The host suite passed 103 tests with one existing test ignored;
-the metadata-owner suite passed seven tests, including one new real-signature
-binding-refusal test. Windows helper/launcher builds, formatting, architecture and
-whitespace passed. Actual installed-SCM/registry race scenarios remain unexecuted,
-non-blocking and not passes. These results are separate runs, not added to earlier
-counts. Protected time/Root state, original-budget persistence and cleanup recovery
-remain later T26 work; T26 stays **20%**, overall **38.5%**, strict **8/47 (17.0%)**.
+Current increment verification: 115 host tests passed, with one existing test ignored. The 12 new tests are included in 115: five business/crypto DATA controls, four Windows nonce/cancellation controls and three native-descriptor/capacity DATA controls. Standalone helper/launcher builds, the non-static-CRT library check, formatting, architecture and whitespace passed. The library check is not a full desktop application build; the unchanged service/Node/verifier suites were not repeated.
+Actual installed-SCM, TxR crash/power-loss, suspend/reboot and protected-policy
+provisioning E2E remain unexecuted in the available environment. These gaps are
+non-blocking under the owner rule and are not passes. Production UTC accuracy,
+a complete recovery cleanup and whole-platform qualification are not established.
+
+Still required for T26 are the actual current UTC/deadline consumer, durable
+original-budget records, real backup/secret obligation census and cleanup owners,
+successful cleanup before releasing the barrier, and remaining platform adapters.
+No empty-census callback, default budget or cleanup-complete claim replaces them.
+T26 stays **20%**, the engineering estimate **1810/47 = 38.5%**, and strict
+completion **8/47 (17.0%)**. T03 remains its sole direct prerequisite; other main
+tasks stay parked. No deployment or whole-T26 completion is claimed.
 
 T09's approved controlled macOS measurement component remains
 delivered; genuine downstream T46 production/consumption is still its parked gap.
@@ -1369,7 +1338,7 @@ completion blocker; outstanding business implementation is.
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | 85% | In progress | Delivered full-platform network-week read/export requires current all-product/component/channel/target operations.read and returns the same authenticated canonical body. Scoped51 plus native1 and the final required Go/build/contract checks passed as recorded above. Source-v2, protected internal freeze/CLI/host, independent Stage/Release capture, restricted Stage reader and callable three-language disclosure remain delivered with their historical verification above. The Release-purpose restricted owner still needs genuine T18 selector/issuance source-class production; self-reported facts/default primary/fake authority cannot replace it. T21 atomic projection/cursor consumption and T24 report ownership remain separate tasks, not T25 prerequisites. |
-| T26 | 20% | In progress | Cross-boot unknown handling and the dedicated Root time role/coordinated V1 extension are approved. Timing/budget math and the delivered closed time/reference contract are available; the fixed Root history transport adds original-byte DATA, not protected host continuity, a durable original-budget ledger or cleanup recovery barrier. The delivered Time batch passed 219 Node and 239 Rust tests; one existing opt-in TLS test remained ignored. Root retrieval results are recorded above. Protected native-host composition, approved preparation budgets and conformance remain pending |
+| T26 | 20% | In progress | The time policy and dedicated role are approved; delivered source includes the nonce-bound issuer/verifier, fixed Root transport, real Windows incarnation/original-Root custody and atomic protected anchor/deny/cleanup barrier. Current verification and non-blocking unexecuted native E2E are recorded above. Actual UTC/deadline consumers, durable original-budget/obligation records, real cleanup owners and other platform adapters remain incomplete; preparation budgets remain unapproved. No durable Known clock or installation permission is claimed. |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
 | T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; the service pins the committed contract and passes cross-language/real-Transit verification; protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |
