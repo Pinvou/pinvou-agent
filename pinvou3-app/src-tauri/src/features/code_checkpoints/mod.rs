@@ -429,12 +429,22 @@ pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root:
 /// git 原生语义）；秘密的三层防护（exclude/purge/过滤）恒为大小写不敏感，
 /// 不依赖探测结果（见 ensure_repo 的 info/exclude 注释）。
 fn fs_is_case_insensitive(dir: &Path) -> bool {
-    let probe = dir.join(format!(".Pinvou-Icase-Probe-{}", std::process::id()));
+    // r33 minor 13：探针名追加纳秒后缀——pid 键名在同根并发会话间会
+    // AlreadyExists 冲突、第二个 ensure_repo 得到假阴性。
+    let probe = dir.join(format!(
+        ".Pinvou-Icase-Probe-{}-{}",
+        std::process::id(),
+        now_nanos()
+    ));
     let insensitive = match fs::File::create_new(&probe)
         .and_then(|mut f| std::io::Write::write_all(&mut f, b""))
     {
         Ok(()) => {
-            let other = dir.join(format!(".PINVOU-ICASE-PROBE-{}", std::process::id()));
+            let other = dir.join(format!(
+                ".PINVOU-ICASE-PROBE-{}-{}",
+                std::process::id(),
+                now_nanos()
+            ));
             fs::metadata(&other).is_ok()
         }
         Err(_) => false,
@@ -911,14 +921,28 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
 /// （精确路径 rm 无此怪癖），确保任何变体都无法抵达 checkout-index。
 fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
     let patterns = secret_pathspecs();
-    let mut list_args: Vec<&str> = vec!["ls-files", "--"];
+    // r33 minor 6：-z（NUL 分隔）——ls-files 的 C 引号输出会把含引号/反斜杠
+    // 的幸存路径变成不可解析形态，rm 回扫失败会让 restore 确定性中止。
+    let mut list_args: Vec<&str> = vec!["ls-files", "-z", "--"];
     list_args.extend(patterns.iter().map(String::as_str));
     let survivors = git_ok(repo, work_tree, &list_args)?;
-    for path in survivors.lines().filter(|line| !line.trim().is_empty()) {
+    for path in survivors
+        .as_bytes()
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
         let output = git(
             repo,
             work_tree,
-            &["rm", "-r", "--cached", "--quiet", "-f", "--", path],
+            &[
+                "rm",
+                "-r",
+                "--cached",
+                "--quiet",
+                "-f",
+                "--",
+                &String::from_utf8_lossy(path),
+            ],
         )?;
         if !output.status.success() {
             bail!(
@@ -1776,7 +1800,6 @@ pub fn matching_pending_pre_restore(
 /// 同样做索引成员校验；不删除暂记（由成功后的统一清理收口）。
 pub fn pending_pre_restore_for_degraded(
     ledger_root: &Path,
-    keep_turns: u32,
     transcript_revision: &str,
 ) -> Result<Option<String>> {
     let path = pending_rewind_path(ledger_root);
@@ -1792,7 +1815,12 @@ pub fn pending_pre_restore_for_degraded(
         let _ = fs::remove_file(&path);
         return Ok(None);
     };
-    if pending.keep_turns != keep_turns || pending.transcript_revision != transcript_revision {
+    // r33 MAJOR-2：绑定判定只看 transcript revision——revision 匹配证明该
+    // 暂记属于本次回退上下文（apply 已把工作区带到目标树），此时绑定 P1 是
+    // 连贯语义（无论 apply 是否跑过）；keep_turns 不再参与判定——不同边界
+    // 的降级回退在崩溃暂记在飞时同样必须绑 P1，否则 P1 被孤儿化、「代码
+    // 保持不变」的通知失实。
+    if pending.transcript_revision != transcript_revision {
         return Ok(None);
     }
     if find_checkpoint(ledger_root, &pending.pre_restore_id).is_err() {
@@ -2413,14 +2441,18 @@ pub fn invalidate_stale_turn_checkpoints(
     keep_turns: u32,
     created_before: i64,
 ) -> Result<usize> {
-    invalidate_entries_if(ledger_root, |entry| {
-        entry.kind == CheckpointKind::Turn
-            && entry.turn.is_some_and(|turn| turn > keep_turns)
-            // <= 故意不收紧为 <：秒级精度下同秒条目无法区分归属，按被截分支
-            // 处理是安全方向——误删新分支锚点只让后续回退到该轮降级为仅对话，
-            // 漏删被截锚点会重新引入 first-wins 劫持，且该截止随记录固定、
-            // 不会被后续和解自动修正。
-            && entry.created_at <= created_before
+    // r33 MAJOR-1：与 create/钩子作废同锁——否则 rewind 前奏的陈旧和解与
+    // 在飞钩子作废互相丢失更新（作废被复活 → first-wins 劫持回归）。
+    with_index_write_lock(ledger_root, || {
+        invalidate_entries_if(ledger_root, |entry| {
+            entry.kind == CheckpointKind::Turn
+                && entry.turn.is_some_and(|turn| turn > keep_turns)
+                // <= 故意不收紧为 <：秒级精度下同秒条目无法区分归属，按被截分支
+                // 处理是安全方向——误删新分支锚点只让后续回退到该轮降级为仅对话，
+                // 漏删被截锚点会重新引入 first-wins 劫持，且该截止随记录固定、
+                // 不会被后续和解自动修正。
+                && entry.created_at <= created_before
+        })
     })
 }
 
@@ -2463,7 +2495,10 @@ fn invalidate_entries_if(
 /// 精确删除，覆盖 turn 序号为 None（计数失败兜底）的情形；幂等，不存在即 false。
 pub fn drop_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<bool> {
     validate_checkpoint_id(checkpoint_id)?;
-    Ok(invalidate_entries_if(ledger_root, |e| e.id == checkpoint_id)? > 0)
+    // r33 MAJOR-1：drop 的 RMW 同锁串行（对钩子/create 皆然）。
+    with_index_write_lock(ledger_root, || {
+        Ok(invalidate_entries_if(ledger_root, |e| e.id == checkpoint_id)? > 0)
+    })
 }
 
 /// 测试专用 git 可用性探测，供本模块测试与命令层测试
@@ -3163,7 +3198,7 @@ mod tests {
         let ledger = TestDir::new("degraded-io-ledger");
         let pending_path = ledger.path().join("pending_rewind.json");
         fs::create_dir_all(&pending_path).unwrap();
-        let result = pending_pre_restore_for_degraded(ledger.path(), 1, "rev");
+        let result = pending_pre_restore_for_degraded(ledger.path(), "rev");
         assert!(
             result.is_err(),
             "真实 IO 错误必须 fail-closed（r30 MAJOR-2 变异实证：映射 None 时全绿）"
@@ -3192,18 +3227,17 @@ mod tests {
             .expect("write pending");
 
         assert_eq!(
-            pending_pre_restore_for_degraded(ledger.path(), 2, "rev-9").expect("degraded match"),
+            pending_pre_restore_for_degraded(ledger.path(), "rev-9").expect("degraded match"),
             Some(pre_restore.id.clone()),
             "同 keepTurns+revision（忽略目标 id）必须命中",
         );
         assert_eq!(
-            pending_pre_restore_for_degraded(ledger.path(), 3, "rev-9").expect("degraded match"),
-            None,
-            "keepTurns 不同不携带",
+            pending_pre_restore_for_degraded(ledger.path(), "rev-9").expect("degraded match"),
+            Some(pre_restore.id.clone()),
+            "r33 MAJOR-2：revision 匹配即绑定（keepTurns 不再参与判定）",
         );
         assert_eq!(
-            pending_pre_restore_for_degraded(ledger.path(), 2, "rev-other")
-                .expect("degraded match"),
+            pending_pre_restore_for_degraded(ledger.path(), "rev-other").expect("degraded match"),
             None,
             "revision 不同不携带",
         );

@@ -498,6 +498,11 @@ pub async fn checkpoint_diff(
 ) -> Result<CheckpointDiff, String> {
     let (ledger, execution) =
         resolve_native_session_roots(&session_id, &store, |id| acp_pool.is_acp(id))?;
+    // r33 minor 11：aux 会话拒绝——diff 的 ensure_repo 会在 aux 私有目录
+    // materialize 影子仓库（一行拒绝，与破坏性命令族同口径）。
+    if crate::features::sessions::is_aux_session_id(&session_id) {
+        return Err("辅助会话不支持检查点差异预览".to_string());
+    }
     // 软忙碌门：diff 会先 add -A 写影子 index，turn 进行中会与引擎写文件及
     // create_checkpoint 抢同一 index.lock（偶发失败或抓到写了一半的中间态），
     // 如实拒绝让前端稍后重试（确认弹窗只在空闲时可开，竞态窗口在点击之后）。
@@ -1080,10 +1085,8 @@ pub async fn rewind_to_turn(
         // 评审 r7 minor 4：降级回退携带同边界失败全量回退的暂记 PreRestore——
         // 代码已在那次尝试中回退，undo 必须能恢复它（记录不得承诺「代码保持
         // 不变」而与实际不符）。无匹配暂记（真降级）保持 None 语义不变。
-        None => {
-            checkpoints::pending_pre_restore_for_degraded(&ledger, keep_turns, &transcript_revision)
-                .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
-        }
+        None => checkpoints::pending_pre_restore_for_degraded(&ledger, &transcript_revision)
+            .map_err(|error| format!("读取回退暂记失败: {error:#}"))?,
     };
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
