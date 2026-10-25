@@ -417,10 +417,11 @@ GATE_JOB_LEVEL_IFS = {
         "(needs.changes.outputs.frontend == 'true' || "
         "needs.changes.outputs.pet == 'true') }}"
     ),
+    # relay-test runs on drafts as well: the suite is short and draft
+    # feedback beats a queue-time surprise on relay-touching changes.
     "relay-test": (
         "${{ !cancelled() && needs.changes.outputs.relay == 'true' && "
-        "(github.event_name == 'merge_group' || (github.event_name == "
-        "'pull_request' && github.event.pull_request.draft == false)) }}"
+        "(github.event_name == 'merge_group' || github.event_name == 'pull_request') }}"
     ),
     "release-contract-test": (
         "${{ !cancelled() && github.event.action != 'closed' && "
@@ -3590,6 +3591,15 @@ class CiGatePolicyTests(unittest.TestCase):
             )[0]
             self.assertNotIn("RUSTFLAGS", body, step_name)
             self.assertNotIn("CARGO_PROFILE_DEV_LTO", body, step_name)
+
+    def test_relay_test_keeps_the_ten_minute_cap_that_justifies_draft_runs(self):
+        # Running relay-test on drafts is justified by its 10-minute cap
+        # (the job-level if comment and GATE_JOB_LEVEL_IFS say so); a
+        # silent bump would invalidate that tradeoff with no red.
+        job = self.pr_workflow.split(
+            "\n  relay-test:", maxsplit=1
+        )[1].split("\n  release-contract-test:", maxsplit=1)[0]
+        self.assertIn("timeout-minutes: 10", job)
 
     def test_main_rust_caches_save_on_failure_and_rust_test_keeps_targets(self):
         # cache-on-failure keeps one failed main run from stranding a
