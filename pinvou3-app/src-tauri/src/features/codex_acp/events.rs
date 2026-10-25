@@ -1006,9 +1006,15 @@ impl EventBridge {
             };
             // Turn boundaries are the journal's crash-recovery anchors: they
             // flush synchronously so resume and orphan-turn recovery never
-            // depend on buffered chunk bytes.
+            // depend on buffered chunk bytes. A cancel request flushes too:
+            // it exists to record that the user asked to stop a turn the
+            // agent may never answer, which is exactly the window an app
+            // crash would otherwise erase it from.
             // Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
-            let flush_timeline = matches!(event_type, "turn_started" | "turn_completed");
+            let flush_timeline = matches!(
+                event_type,
+                "turn_started" | "turn_completed" | "cancel_requested"
+            );
             if let Err(error) = self.append_timeline(&envelope, flush_timeline) {
                 eprintln!(
                     "[pinvou3-app] append Codex ACP timeline failed for {}: {error:#}",
@@ -2321,15 +2327,18 @@ mod tests {
             event(3, Some("turn-completed"), "turn_completed"),
             event(4, None, "cancel_requested"),
             event(5, Some("turn-orphan-2"), "turn_started"),
+            // The live stop path tags the envelope with the busy turn: that
+            // shape must neither close the turn nor open a second one.
+            event(6, Some("turn-orphan-2"), "cancel_requested"),
         ];
         assert_eq!(
             orphaned_turn_ids(&events),
             vec!["turn-orphan-1", "turn-orphan-2"],
-            "global cancel events must not accidentally close a persisted turn"
+            "cancel events, global or turn-tagged, must not close a persisted turn"
         );
 
-        events.push(event(6, Some("turn-orphan-1"), "turn_completed"));
-        events.push(event(7, Some("turn-orphan-2"), "turn_completed"));
+        events.push(event(7, Some("turn-orphan-1"), "turn_completed"));
+        events.push(event(8, Some("turn-orphan-2"), "turn_completed"));
         assert!(
             orphaned_turn_ids(&events).is_empty(),
             "re-running recovery after terminal events must be a no-op"

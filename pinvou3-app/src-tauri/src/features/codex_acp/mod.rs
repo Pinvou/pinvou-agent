@@ -4280,9 +4280,11 @@ impl AcpPool {
                     let turn_id = runtime.bridge.current_turn_id();
                     runtime.cancel();
                     // Journal the cancel request before scheduling the settle
-                    // watchdog: the timeline/acp-state projection records that
-                    // the stop was requested even when the agent never answers
-                    // and the watchdog has to settle locally.
+                    // watchdog: the timeline journal then records that the
+                    // stop was requested even when the agent never answers and
+                    // the watchdog has to settle locally. This is a journal
+                    // record only — acp-state `lastStatus` is not patched and
+                    // the UI renders no cancelling state from it.
                     runtime
                         .bridge
                         .emit("cancel_requested", json!({ "status": "cancelling" }));
