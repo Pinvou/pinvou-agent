@@ -1299,6 +1299,19 @@ fn chat_engine_state(messages: Vec<Message>) -> ChatEngineState {
     }
 }
 
+/// Persist an engine snapshot the way an always-admitted forwarder would,
+/// without a commit hook.
+fn persist_engine_state(
+    store: &SessionStore,
+    id: &str,
+    state: &ChatEngineState,
+) -> deepseek_tui::session_manager::SavedSession {
+    store
+        .persist_chat_engine_state_with_commit(id, state, || true, |_| {})
+        .expect("persist engine snapshot")
+        .expect("an always-true admit gate admits")
+}
+
 #[test]
 fn ordinary_session_updated_snapshot_is_persisted_authoritatively() {
     let (store, _g) = isolated_store();
@@ -1316,12 +1329,11 @@ fn ordinary_session_updated_snapshot_is_persisted_authoritatively() {
         user_text("visible user prompt"),
         assistant_text("authoritative answer"),
     ];
-    let saved = store
-        .persist_chat_engine_state(
-            &session.metadata.id,
-            &chat_engine_state(authoritative.clone()),
-        )
-        .expect("persist ordinary SessionUpdated");
+    let saved = persist_engine_state(
+        &store,
+        &session.metadata.id,
+        &chat_engine_state(authoritative.clone()),
+    );
 
     assert_eq!(saved.messages, authoritative);
     assert_eq!(saved.metadata.message_count, 2);
@@ -3368,8 +3380,8 @@ fn stamp_resolved_provider_records_vendor_route_over_engine_default() {
 /// the next resume (review #713 round 2: ("moonshot", Some("openai")) —
 /// "declares built-in kind 'moonshot' but exact provider id 'openai' names
 /// a different route") even with both providers configured, and
-/// persist_chat_engine_state preserves the metadata fields verbatim, so
-/// nothing downstream heals it.
+/// persist_chat_engine_state_with_commit preserves the metadata fields
+/// verbatim, so nothing downstream heals it.
 #[test]
 fn stamp_resolved_provider_rewrites_stale_exact_id_on_route_switch() {
     let (store, _g) = isolated_store();
@@ -5494,9 +5506,7 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
     state.system_prompt = Some(SystemPrompt::Text(
         "前文摘要：Conversation Summary (Auto-Generated)\n……".to_string(),
     ));
-    store
-        .persist_chat_engine_state(&with_marker.metadata.id, &state)
-        .expect("persist with marker");
+    persist_engine_state(&store, &with_marker.metadata.id, &state);
     store
         .update_messages(&without_marker.metadata.id, messages())
         .expect("seed plain");
