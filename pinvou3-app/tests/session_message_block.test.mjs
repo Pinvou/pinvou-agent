@@ -198,3 +198,32 @@ test('JS↔Rust drift pin: the messaging module still carries the verbatim block
     'the JS header must equal the Rust MESSAGE_BLOCK_HEADER literal',
   );
 });
+
+test('JS↔Rust drift pin: the Ask-rule tool name stays byte-identical to the session-reader manifest registration', () => {
+  // The tie is pinned textually (same pattern as the drift test above): the
+  // execpolicy Ask rule is built from the Rust constant, so a rename on
+  // either side — the manifest registration or the constant — would silently
+  // stop the rule from matching. One more assistant -> marketplace Rust
+  // reference would breach the registered architecture envelope, so the tie
+  // lives here instead of in the Rust tests: a rename on either side turns
+  // the node suite red.
+  const manifest = JSON.parse(readFileSync(
+    new URL('../resources/mcp-servers/session-reader/manifest.json', import.meta.url), 'utf8'));
+  const sendTool = 'mcp_session-reader_send_message_to_session';
+  assert.ok(
+    manifest.mcp_tools.includes(sendTool),
+    'the manifest must register the cross-session send tool under its full name',
+  );
+  assert.deepEqual(
+    manifest.tool_features[sendTool],
+    ['session-messaging'],
+    'the send tool must map to its own session-messaging feature',
+  );
+  const bridgeRs = readFileSync(
+    new URL('../src-tauri/src/features/assistant/platform/bridge.rs', import.meta.url), 'utf8');
+  assert.match(
+    bridgeRs,
+    /MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_session";/,
+    'the Ask-rule constant must stay byte-identical to the manifest registration',
+  );
+});

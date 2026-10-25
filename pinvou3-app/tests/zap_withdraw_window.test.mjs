@@ -36,17 +36,29 @@ function loadChatApi() {
     { filename: 'src/platform/tauri/bridge/chat.js' },
   );
   const factory = root.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
-  return (state, invoke) => factory({
+  // The real chat.js machinery temporarily swaps the per-session working set
+  // through runSyncOnSession for background-session drops; the stub below
+  // mirrors that buffer switching so the harness exercises the same code
+  // path (a no-op stub would hide a restore aimed at the wrong buffer).
+  return (state, invoke, buffers = {}) => factory({
     state,
-    sessionStates: {},
+    sessionStates: buffers,
     invoke,
     notify() {},
     bt(key) { return key; },
-    runSyncOnSession(sid, fn) { fn(); },
+    runSyncOnSession(sid, fn) {
+      if (sid === state.activeSessionId) return fn();
+      const original = { ...state };
+      Object.assign(state, buffers[sid], { activeSessionId: sid });
+      try { return fn(); } finally {
+        Object.assign(buffers[sid], state);
+        Object.assign(state, original);
+      }
+    },
     TAURI: true,
     turnUsageDirty: {},
     safeConsoleInfo() {},
-    getBuffer() { return null; },
+    getBuffer(sid) { return buffers[sid] || null; },
     timeStr() { return ''; },
   });
 }
@@ -193,4 +205,78 @@ test('a dropped inside the window with nothing restorable reports the lost varia
   } finally {
     api.clearOutcomeReconcileWatchdog('A', 'st-9');
   }
+});
+
+test('a background-session drop restores its own draft and leaves the active session unchanged', async () => {
+  const state = { activeSessionId: 'A', composerDraft: 'active draft', draftEpoch: 7,
+    queued: [], busy: false, messages: [], chatItems: [], settings: { language: 'en' } };
+  const buffer = { composerDraft: 'background draft', queued: [{ id: 'q1', text: 'recover me',
+    displayText: 'recover me', steered: true, steerId: 'st-bg', attachments: [] }],
+    busy: true, messages: [], chatItems: [] };
+  let releaseWithdraw;
+  const pending = new Promise((resolve) => { releaseWithdraw = resolve; });
+  const calls = [];
+  const api = loadChatApi()(state, (name) => {
+    calls.push(name);
+    return name === 'withdraw_steer' ? pending : Promise.resolve({});
+  }, { B: buffer });
+  const run = api.interruptAndSendQueued('B', 'q1');
+  await waitForWithdrawInvoke(calls);
+  try {
+    api.settleSteerDropped('B', 'st-bg');
+    releaseWithdraw('not_pending');
+    assert.equal(await run, true);
+    assert.equal(buffer.composerDraft, 'background draft\nrecover me');
+    assert.equal(state.composerDraft, 'active draft');
+    assert.equal(state.draftEpoch, 7);
+    assert.equal(state.activeSessionId, 'A');
+    assert.equal(state.chatItems.length, 0);
+    assert.deepEqual([...notices(buffer)], ['⚠️ steerFailed']);
+    assert.ok(!calls.includes('send_message'), 'an uncertain withdrawal must never resend');
+  } finally {
+    api.clearOutcomeReconcileWatchdog('B', 'st-bg');
+  }
+});
+
+test('the lost-message notice copy is non-empty and language-specific in every locale', () => {
+  // The recovery notice is emitted by the bridge's own BT_TABLE before any
+  // React dictionary is guaranteed to be loaded, so the copy must resolve
+  // from that eager table alone: non-empty for every UI language, never the
+  // bare key echoed back, and distinct per language (a copied fallback would
+  // silently show one locale's sentence in the other two).
+  const bridgeSource = fs.readFileSync(path.join(appRoot, 'src', 'platform', 'tauri', 'bridge.js'), 'utf8');
+  const tableStart = bridgeSource.indexOf('const BT_TABLE = {');
+  // The slice carries the shipped BT_TABLE plus the shipped bt forwarder;
+  // the forwarder delegates through the shared-base cluster accessor.
+  const sliceEnd = bridgeSource.indexOf('function isDefaultChatTitle', tableStart);
+  assert.ok(tableStart >= 0 && sliceEnd > tableStart, 'BT_TABLE must stay declared in the desktop bridge');
+  // bt delegates to the shared-base cluster accessor; the sandbox loads the
+  // shared base and wires the accessor against the sliced BT_TABLE exactly
+  // like the shipped bridge does.
+  const btInSandbox = (language, key) => {
+    const context = vm.createContext({ state: { settings: { language } }, console });
+    vm.runInContext('this.window = this;', context);
+    vm.runInContext(
+      fs.readFileSync(path.join(appRoot, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'),
+      context,
+      { filename: 'src/shared/bridge-shared-helpers.js' },
+    );
+    vm.runInContext(`this.pinvouSharedtauriMain = () => this.__mainCluster || (this.__mainCluster = window.PinvouBridgeShared.create("tauriMain", {
+      state, BT_TABLE: { get value() { return BT_TABLE; } }, invoke: async () => null,
+      notify: () => {}, addChatItem: () => {},
+    }));`, context);
+    vm.runInContext(bridgeSource.slice(tableStart, sliceEnd), context, {
+      filename: 'src/platform/tauri/bridge.js#BT_TABLE',
+    });
+    return vm.runInContext(`bt(${JSON.stringify(key)})`, context);
+  };
+  const perLanguage = ['en', 'ja', 'zh'].map((language) => btInSandbox(language, 'steerFailedLost'));
+  for (const [index, language] of ['en', 'ja', 'zh', 'zh-Hans'].entries()) {
+    const resolved = language === 'zh-Hans' ? btInSandbox(language, 'steerFailedLost') : perLanguage[index];
+    assert.equal(typeof resolved, 'string', `${language}: the notice must resolve to a string`);
+    assert.ok(resolved.length > 0, `${language}: the notice must not be empty`);
+    assert.notEqual(resolved, 'steerFailedLost', `${language}: the key must not echo back untranslated`);
+    assert.match(resolved, /^(?!⚠️)/, `${language}: the prefix is added by the caller, the copy stays bare`);
+  }
+  assert.equal(new Set(perLanguage).size, 3, 'en/ja/zh copies must be pairwise distinct');
 });

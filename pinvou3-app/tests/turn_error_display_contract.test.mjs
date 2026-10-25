@@ -173,4 +173,58 @@ assert.ok(
   'stable-code localization must run before the redact fallback',
 );
 
+// Exercise the real classifier helper, not only its optional/missing fallback.
+vm.runInContext(read('src', 'shared', 'model-service-errors.js'), context, {
+  filename: 'src/shared/model-service-errors.js',
+});
+assert.equal(typeof windowObject.PinvouModelServiceErrors.redactTechnicalDetail, 'function');
+
+// Execute the shipped desktop localization table and error-display block.
+// Surrounding turn mutation is excluded: it is exercised by error-isolation
+// tests. bt delegates to the shared-base cluster accessor; the sandbox loads
+// the shared base and wires the accessor against the shipped BT_TABLE exactly
+// like the desktop bridge does.
+const desktopBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
+const desktopContext = vm.createContext({
+  window: windowObject,
+  state: { settings: {} },
+});
+vm.runInContext(read('src', 'shared', 'bridge-shared-helpers.js'), desktopContext, { filename: 'src/shared/bridge-shared-helpers.js' });
+vm.runInContext(`this.pinvouSharedtauriMain = () => this.__mainCluster || (this.__mainCluster = window.PinvouBridgeShared.create("tauriMain", {
+  state, BT_TABLE: { get value() { return BT_TABLE; } }, invoke: async () => null,
+  notify: () => {}, addChatItem: () => {},
+}));`, desktopContext);
+vm.runInContext(desktopBridgeSource.slice(
+  desktopBridgeSource.indexOf('const BT_TABLE = {'),
+  desktopBridgeSource.indexOf('function isDefaultChatTitle'),
+), desktopContext);
+vm.runInContext(`function displayDesktopError(err) { ${displaySection}\nreturn errorText; }`, desktopContext);
+for (const [language, { marker, tail }] of Object.entries(LOCALE_MARKERS)) {
+  await withLanguage(language, () => {
+    desktopContext.state.settings.language = language;
+    const localized = displayTurnError(new Error(`session_model_binding_stale: ${STALE_ID}`));
+    assert.match(localized, new RegExp(marker));
+    assert.match(localized, new RegExp(tail));
+    assert.ok(localized.includes(STALE_ID));
+    const raw = 'gateway rejected Authorization: Bearer fixture-private-value';
+    const redacted = displayTurnError(new Error(raw));
+    assert.ok(!redacted.includes('fixture-private-value'), `${language}: real helper must redact credentials`);
+    assert.doesNotMatch(redacted, /^Error:/);
+    assert.equal(displayTurnError(raw), redacted, `${language}: Error and string share the real redaction path`);
+    assert.equal(displayTurnError(new Error('disk full')), 'disk full');
+    const pathError = 'read C:\\fixture-project\\private-notes.md failed: permission denied';
+    assert.equal(windowObject.PinvouModelServiceErrors.isModelServiceError(pathError), false);
+    assert.equal(displayTurnError(new Error(pathError)), pathError, 'local file errors keep their actionable path');
+    const withSecret = `${pathError}; password: "fixture sensitive text"`;
+    const pathRedacted = displayTurnError(new Error(withSecret));
+    assert.ok(pathRedacted.includes('C:\\fixture-project\\private-notes.md'));
+    assert.ok(!pathRedacted.includes('fixture sensitive text'));
+    for (const input of [`session_model_binding_stale: ${STALE_ID}`, raw, withSecret, 'disk full']) {
+      assert.equal(desktopContext.displayDesktopError(new Error(input)), displayTurnError(new Error(input)),
+        `${language}: actual desktop and web blocks agree with the real helper loaded`);
+      assert.equal(desktopContext.displayDesktopError(input), displayTurnError(input));
+    }
+  });
+}
+
 console.log('turn_error_display_contract: ok');
