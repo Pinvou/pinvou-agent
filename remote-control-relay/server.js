@@ -1,5 +1,6 @@
 import http from "node:http";
 import crypto from "node:crypto";
+import { isIP } from "node:net";
 import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -200,15 +201,23 @@ function boundedInteger(raw, fallback, min, max) {
 }
 
 function normalizeIp(value) {
-  const ip = String(value || "").trim();
-  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+  if (typeof value !== "string" || value.length > 128) return "";
+  const ip = value.trim();
+  if (!isIP(ip)) return "";
+  return ip.startsWith("::ffff:") && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
 }
 
 function parseIpSet(value) {
-  return new Set(String(value || "")
-    .split(",")
-    .map(normalizeIp)
-    .filter(Boolean));
+  const result = new Set();
+  for (const item of String(value || "").split(",")) {
+    if (!item.trim()) continue;
+    const ip = normalizeIp(item);
+    // Fail closed: a typo must shrink the trust set to nothing at startup,
+    // never silently open the proxy allowlist to every client.
+    if (!ip) throw new Error("proxy_ip_configuration_invalid");
+    result.add(ip);
+  }
+  return result;
 }
 
 function parseOriginSet(value) {
@@ -216,10 +225,10 @@ function parseOriginSet(value) {
   for (const item of String(value || "").split(",").map((part) => part.trim()).filter(Boolean)) {
     let parsed;
     try { parsed = new URL(item); } catch {
-      throw new Error(`invalid PINVOU_REMOTE_ALLOWED_WEB_ORIGINS entry: ${item}`);
+      throw new Error("invalid PINVOU_REMOTE_ALLOWED_WEB_ORIGINS entry");
     }
     if (!/^https?:$/.test(parsed.protocol) || parsed.origin === "null") {
-      throw new Error(`invalid browser WebSocket origin: ${item}`);
+      throw new Error("invalid browser WebSocket origin");
     }
     origins.add(parsed.origin.toLowerCase());
   }
@@ -258,11 +267,13 @@ function sourceAllowed(req) {
 function clientIp(req) {
   const peer = peerIp(req);
   if (!TRUSTED_PROXY_IPS.has(peer)) return peer || "unknown";
-  const forwarded = String(req.headers["x-forwarded-for"] || "")
-    .split(",")
-    .map(normalizeIp)
-    .filter(Boolean);
-  return forwarded.at(-1) || normalizeIp(req.headers["x-real-ip"]) || peer || "unknown";
+  const header = req.headers["x-forwarded-for"];
+  // Only the rightmost proxy-appended address is authoritative. Never skip a
+  // malformed final item and fall back to an attacker-controlled earlier item.
+  if (typeof header === "string" && header.length <= 4096) {
+    return normalizeIp(header.split(",").at(-1)) || peer || "unknown";
+  }
+  return (header === undefined ? normalizeIp(req.headers["x-real-ip"]) : "") || peer || "unknown";
 }
 
 function consumeRateLimit(buckets, ip, limit, windowMs, now = Date.now()) {
@@ -369,6 +380,66 @@ function hasLegacyTokenAlias(message) {
   return Object.hasOwn(message, "token") || Object.hasOwn(message, "pairing_token");
 }
 
+// JSON.parse silently keeps the last occurrence of a repeated object key, so
+// {"v":1,"v":2} would be treated as a v2 frame even though it was written as
+// a v1 frame first. Scan the raw wire text before parsing and reject any
+// object whose version key appears twice, including escaped spellings.
+function assertNoDuplicateVersionKey(text) {
+  let cursor = 0;
+  const skipWhitespace = () => {
+    while (cursor < text.length && /\s/u.test(text[cursor])) cursor += 1;
+  };
+  const readString = () => {
+    const start = cursor;
+    cursor += 1;
+    while (cursor < text.length) {
+      if (text[cursor] === "\\") { cursor += 2; continue; }
+      if (text[cursor++] === "\"") return JSON.parse(text.slice(start, cursor));
+    }
+    throw new Error("unterminated string");
+  };
+  const scanValue = (depth = 0) => {
+    if (depth > 128) throw new Error("nesting too deep");
+    skipWhitespace();
+    const head = text[cursor];
+    if (head === "\"") { readString(); return; }
+    if (head === "{") {
+      cursor += 1;
+      const keys = new Set();
+      skipWhitespace();
+      if (text[cursor] === "}") { cursor += 1; return; }
+      for (;;) {
+        skipWhitespace();
+        if (text[cursor] !== "\"") throw new Error("malformed object");
+        const key = readString();
+        if (key === "v" && keys.has("v")) throw new Error("duplicate version key");
+        keys.add(key);
+        skipWhitespace();
+        if (text[cursor++] !== ":") throw new Error("malformed object");
+        scanValue(depth + 1);
+        skipWhitespace();
+        const delimiter = text[cursor++];
+        if (delimiter === "}") return;
+        if (delimiter !== ",") throw new Error("malformed object");
+      }
+    }
+    if (head === "[") {
+      cursor += 1;
+      skipWhitespace();
+      if (text[cursor] === "]") { cursor += 1; return; }
+      for (;;) {
+        scanValue(depth + 1);
+        skipWhitespace();
+        const delimiter = text[cursor++];
+        if (delimiter === "]") return;
+        if (delimiter !== ",") throw new Error("malformed array");
+      }
+    }
+    while (cursor < text.length && !/[\s,}\]]/u.test(text[cursor])) cursor += 1;
+  };
+  scanValue();
+}
+
 function validEndpointId(value) {
   return typeof value === "string"
     && value.length >= 4
@@ -407,7 +478,8 @@ async function loadRelayState() {
     }
   } catch (error) {
     if (error?.code === "ENOENT") return;
-    throw new Error(`failed to load relay state: ${error.message}`, { cause: error });
+    // Do not interpolate the failure reason: it can embed filesystem paths.
+    throw new Error("relay_state_load_failed", { cause: error });
   }
 
   let state;
@@ -874,10 +946,11 @@ async function revokeFromSocket(ws, msg) {
   ws.authTimer = null;
   try {
     await persistRevocation(endpointId);
-  } catch (error) {
+  } catch {
     endpoint.revoking = false;
     ws.revokePending = false;
-    console.error(`failed to persist revocation for ${endpointId}: ${error.message}`);
+    // Fixed event code only: never log the endpoint id or raw error text.
+    console.error("[relay-error] revocation_persist_failed");
     rejectSocket(ws, "revoke_persistence_failed", "failed to persist endpoint revocation");
     return;
   }
@@ -979,8 +1052,10 @@ wss.on("connection", (ws, req) => {
       return;
     }
     let msg;
+    const rawText = String(raw);
     try {
-      msg = JSON.parse(String(raw));
+      assertNoDuplicateVersionKey(rawText);
+      msg = JSON.parse(rawText);
     } catch {
       send(ws, { v: 2, type: "error", code: "bad_json", message: "bad json" });
       return;
@@ -1015,8 +1090,8 @@ wss.on("connection", (ws, req) => {
       return;
     }
     if (msg.type === "desktop_endpoint_revoke") {
-      void revokeFromSocket(ws, msg).catch((error) => {
-        console.error(`unexpected endpoint revoke failure: ${error.message}`);
+      void revokeFromSocket(ws, msg).catch(() => {
+        console.error("[relay-error] revocation_unexpected_failure");
         rejectSocket(ws, "revoke_failed", "endpoint revocation failed");
       });
       return;
@@ -1075,7 +1150,7 @@ heartbeatTimer.unref();
 
 server.listen(PORT, HOST, () => {
   console.log(
-    `pinvou remote relay listening on http://${HOST}:${PORT}`
+    "pinvou remote relay listening"
     + ` (protocol=v2, max_endpoints=${MAX_ENDPOINTS}`
     + `, max_ws_connections=${MAX_WS_CONNECTIONS}`
     + `, ws_connect_limit=${WS_CONNECT_LIMIT}/${WS_CONNECT_WINDOW_MS}ms`
@@ -1088,3 +1163,18 @@ server.listen(PORT, HOST, () => {
     + `, max_payload=${MAX_PAYLOAD_BYTES})`,
   );
 });
+
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(heartbeatTimer);
+  for (const ws of wss.clients) {
+    try { ws.terminate(); } catch {}
+  }
+  try { server.close(); } catch {}
+  process.exit(0);
+}
+
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);

@@ -1020,3 +1020,47 @@ test("proxy allowlist keeps local health checks available", async () => {
     await stopRelay(isolated.child);
   }
 });
+
+test("rejects a duplicate version key before JSON.parse collapses it", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+  const error = nextMessage(ws, "error");
+  // Last-wins parsing would turn this frame into a v2 frame; the wire-level
+  // guard must reject it as bad_json instead.
+  ws.send('{"v":1,"v":2,"type":"web_client_join"}');
+  assert.equal((await error).code, "bad_json");
+});
+
+test("invalid or partially invalid proxy IP configuration fails startup instead of opening the allowlist", async () => {
+  for (const variable of ["PINVOU_REMOTE_ALLOWED_PROXY_IPS", "PINVOU_REMOTE_TRUSTED_PROXY_IPS"]) {
+    for (const value of ["not-an-ip", "127.0.0.1,not-an-ip"]) {
+      const child = spawn(process.execPath, [join(relayDir, "server.js")], {
+        cwd: relayDir,
+        env: {
+          ...process.env,
+          PORT: String(await getFreePort()),
+          PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
+          PINVOU_REMOTE_WEB_DIR: webDir,
+          PINVOU_REMOTE_STATE_PATH: join(
+            testRoot,
+            `proxy-invalid-${variable}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`,
+          ),
+          [variable]: value,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = "";
+      let errors = "";
+      child.stdout.on("data", (chunk) => { output += String(chunk); });
+      child.stderr.on("data", (chunk) => { errors += String(chunk); });
+      try {
+        await waitForExit(child, 10000);
+        assert.notEqual(child.exitCode, 0);
+        assert.match(errors, /proxy_ip_configuration_invalid/u);
+        assert.doesNotMatch(output, /pinvou remote relay listening/u);
+      } finally {
+        await stopRelay(child);
+      }
+    }
+  }
+});
