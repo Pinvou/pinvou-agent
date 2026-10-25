@@ -1,31 +1,34 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, finite Mach-O physical-entry scoped regression passed**.
+Checkpoint: **2026-10-25, protected T13 planning-draft workflow verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **37.0%**. T07, T08, T09, T10, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **37.3%**. T07, T08, T09, T10, T13, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
-The current main task is **T09 Artifact-valid admission and quarantine**.
+The current main task is **T13 protected support-floor planning drafts and original-request recovery**.
+The domain, protected persistence/private owner, current HTTP/host composition and
+three-language administration form an independently reviewed and verified
+planning workflow. Scoped PostgreSQL/HTTPS, pure and synthetic UI, all six genuine
+three-language browser cases and final common checks passed as recorded below.
+T09 is parked pending the owner's macOS DMG/App observer architecture decision and
+the genuine downstream T46 evidence producer/consumption path. Its finite Mach-O
+physical-entry increment is committed and pushed in service `c609f303`, with client
+progress `2426003d`; that parser does not complete DMG/App admission. Arbitrary NSIS
+layouts are outside the delivered fixed first-party Windows host profile, rather
+than an additional mandatory T09 implementation.
 T10 channel risk review, exceptions and current-risk reads are delivered; its
-remaining actual selection-widening composition is parked until T14 supplies the
-real qualification producer. The fixed T08 adapter is delivered. T09 extends its
-verified upload lifecycle and validation components with the delivered
-admission/quarantine increment. Independent FullPack custody and generic
-fail-closed refusal passed their checks. The Linux physical-main/XZ follow-up is
-committed and pushed as service `e7e58fa`, with client progress `145540ee`.
-The fixed Windows host FullPack tooling and protected main-image checks are
-delivered in service `66b1e7d5`, with client progress `74d2cba0`. Its scoped
-built-CLI workflow, five owner/config checks, final common regression and final
-CLI rerun passed. The current shared physical-byte increment adds finite
-universal2 Mach-O executable-entry inspection with scoped verification below;
-it does not complete the DMG/App admission path.
+remaining selection-widening composition stays parked until T14 supplies the real
+qualification producer. The fixed T08 adapter is delivered. T09's independent
+FullPack custody, fail-closed admission/quarantine machinery, Linux physical-main/XZ
+(service `e7e58fa`, client `145540ee`) and finite Windows host FullPack/tooling
+(service `66b1e7d5`, client `74d2cba0`) retain their previously recorded verification.
 T07 signing-key lifecycle is implemented, independently reviewed and pushed. T29 signed-source
 continuation is delivered; its remaining production current-metadata/time owners
 remain parked with T26/T27.
@@ -53,6 +56,57 @@ not complete its enclosing task. T42 deployment and T03's 50 GiB / 500,000-file
 measurement remain explicitly deferred. Downloads have no fixed total deadline.
 The 32 MiB limit applies to the joined new publication-signing batch; stored
 graphs and package downloads have separate bounds.
+
+## Current T13 planning-draft workflow increment
+
+The independently reviewed planning domain and wire, T05 admission witness,
+private SQL owner/recovery, fixed six-route HTTP API and three-language UI are now
+integrated against the current service. Current host wiring keeps scan1, formal10
+and floor1 in exact global unknown-command classification only; the common
+worker retains its original Keys, and private recovery is canceled and joined
+independently. Existing T09/T10 management entries and full-scope callers remain.
+
+This workflow saves declared planning inputs with a deterministic scope head and
+immutable revisions, durable saved/stale outcomes and exact-original lookup and
+Resume. A proven request-bound no-admit fact permits explicit correction with a
+new key; an unknown response or absent lookup never does. None of these facts
+establishes an active floor, current path or publication permission.
+
+The existing six-route contract pin is unchanged. No result from an old component
+run or another owner is counted as this batch's passing workflow.
+
+Independent source and repair reviews passed. The naturally closed scoped
+invocation recorded 155 passed Go test records, one skipped and zero failed,
+across 75 top-level tests including skips. It exercised actual PostgreSQL,
+original TLS/signed-OIDC HTTPS, concurrent CAS, authority and private recovery.
+The new genuine-browser opt-in was skipped there and executed separately below.
+All 17 pure floor UI cases passed without skips or retries; the admin build also
+passed. An unchanged management browser case was skipped in that pure invocation.
+
+The synthetic UI follow-up passed all 11 controls without skips or retries.
+The separate genuine browser invocation passed both fixed cases in English,
+Simplified Chinese and Japanese: six browser cases, zero skips/retries/failures.
+Its Go caller passed one top-level and three locale subtests, including each
+locale's exact original/revision/outcome/MAC census and current readiness.
+Synthetic API controls do not establish authentication or database behavior.
+
+Initial synthetic and genuine invocations remain failed history. Their test-only
+repairs corrected the expected canonical JSON key order and awaited observable
+correction completion before checking pending storage. Original request, new-key,
+permission and native-state assertions were retained. A one-locale diagnostic
+also failed before the latter repair; no failure is relabeled an environment pass.
+
+The final cleared-opt-in regression recorded 5,207 passed, 1,788 skipped and zero
+failed Go test records, across 2,531 top-level tests including skips. All-package
+vet, module integrity, Linux server build, native floor CLI build, the unchanged
+client contract pin and whitespace checks passed. All original outer command
+trees closed naturally without resource-floor breaches before output review.
+Cross compilation is not Linux execution; skipped records are not passes.
+
+The completed planning workflow raises the component estimate for T13 from 10%
+to **25%**. Active-floor approval/publication, ordinary prerequisite paths and
+historical bridge eligibility remain unimplemented. The estimate sum is 1755,
+or **37.3%** across 47 tasks; strict completion stays **8/47 (17.0%)**.
 
 ## Verified T10 original scanning and coverage increment
 
@@ -762,7 +816,7 @@ completion blocker; outstanding business implementation is.
 | T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
-| T13 | 10% | In progress | Delivered planning domain and authority port; protected persistence, private recovery, HTTP/admin and genuine E2E candidates passed scoped source review. Contract routes and service sync are pushed; complete workflow tests/commit remain pending, as do active-floor approvals/publication, ordinary prerequisite paths and historical bridge eligibility. |
+| T13 | 25% | In progress | Protected planning-draft persistence, immutable history, exact-original recovery, fixed HTTP and three-language administration are implemented, independently reviewed and verified with actual PostgreSQL/HTTPS and six genuine browser cases. Active-floor approvals/publication, ordinary prerequisite paths and historical bridge eligibility remain unimplemented. |
 | T14 | 40% | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
 | T15 | 0% | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | 0% | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
