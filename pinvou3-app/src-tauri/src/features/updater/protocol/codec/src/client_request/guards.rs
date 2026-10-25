@@ -34,6 +34,13 @@ fn hash(value: &Value) -> Result<String, ClientRequestError> {
 }
 pub(super) fn assert_relationships(value: &Value, operation: Op) -> Result<(), ClientRequestError> {
     match operation {
+        Op::Time => {
+            Document {
+                value: value.clone(),
+            }
+            .time_request_shape()
+            .map_err(|_| ClientRequestError::InvalidContract)?;
+        }
         Op::Check => {
             if !value["supportedIncrementalAlgorithms"]
                 .as_array()

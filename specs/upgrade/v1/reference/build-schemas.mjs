@@ -21,7 +21,7 @@ const nullable = (schema) => ({ anyOf: [schema, { type: 'null' }] });
 const array = (items, minimum = 0) => ({ type: 'array', items, minItems: minimum, maxItems: 4096 });
 const object = (properties, optional = []) => ({ type: 'object', properties,
   required: Object.keys(properties).filter((key) => !optional.includes(key)), additionalProperties: false });
-const roles = ['root', 'timestamp', 'snapshot', 'target', 'release', 'package', 'decision',
+const roles = ['root', 'timestamp', 'snapshot', 'target', 'release', 'package', 'time', 'decision',
   'download', 'authorization-preinstall', 'authorization-install', 'authorization-activate',
   'helper-cleanup', 'telemetry-event', 'preinstall-transaction-event',
   'install-transaction-event', 'activate-transaction-event',
@@ -29,6 +29,8 @@ const roles = ['root', 'timestamp', 'snapshot', 'target', 'release', 'package', 
 
 const defs = {
   identifier, hash, version, integer, positive, text, channel, targetKey,
+  timeNonce: { type: 'string', minLength: 43, maxLength: 43, pattern: '^[A-Za-z0-9_-]{43}$' },
+  timeRoot: object({ version: positive, sha256: sourceHash }),
   byteIdentity: object({ size: positive, sha256: hash }),
   downloadSourceBinding: object({ sourceId: sourceIdentifier, objectId: sourceIdentifier,
     objectVersion: sourceIdentifier, urlSha256: sourceHash }),
@@ -97,9 +99,12 @@ const defs = {
   signature: object({ keyId: hash, signature: { type: 'string', pattern: '^[A-Za-z0-9_-]{86}$' } }),
   signingKey: object({ keyId: hash, algorithm: { const: 'ed25519' },
     publicKey: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' } }),
-  rolePolicy: object({ role: { enum: roles }, component: nullable(identifier),
+  rolePolicy: { ...object({ role: { enum: roles }, component: nullable(identifier),
     channel: nullable(channel), targetKey: nullable(targetKey), threshold: positive,
-    keyIds: { ...array(hash, 1), uniqueItems: true } }),
+    keyIds: { ...array(hash, 1), uniqueItems: true } }), allOf: [{
+      if: { properties: { role: { const: 'time' } }, required: ['role'] },
+      then: { properties: { component: sourceIdentifier, channel: { type: 'null' }, targetKey: { type: 'null' } } },
+    }] },
   stableFacts: object({ product: identifier, component: identifier, targetKey,
     canonicalAppVersion: version, application: ref('nativeIdentity'), helper: ref('nativeIdentity'),
     launcher: ref('nativeIdentity'), installation: object({ format: { enum: ['nsis', 'deb', 'dmg'] },
@@ -137,6 +142,12 @@ function metadata(role, scope, fields, optional = []) {
   add(`metadata/${role}`, envelope(object({ ...context(role, scope, role === 'root' ? { type: 'null' } : identifier),
     ...revision, ...expiration, ...fields }, optional)));
 }
+// Time is a dedicated nonce-bound response, not metadata freshness or a credential.
+add('time/request', object({ protocolVersion: { const: 1 }, product: sourceIdentifier,
+  component: sourceIdentifier, requestNonce: ref('timeNonce'), root: ref('timeRoot') }));
+add('time/response', envelope(object({ ...context('time', emptyScope, sourceIdentifier), product: sourceIdentifier,
+  purpose: { const: 'trusted-time.v1' }, requestNonce: ref('timeNonce'), root: ref('timeRoot'),
+  serverTime: integer, uncertaintyMs: integer })));
 metadata('root', emptyScope, { keys: array(ref('signingKey'), 1), roles: array(ref('rolePolicy'), 1) });
 metadata('timestamp', emptyScope, { snapshot: ref('metadataReference') });
 metadata('snapshot', emptyScope, { entries: array(ref('metadataReference'), 1) });

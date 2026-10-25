@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn frozen_openapi_membership_requires_every_client_operation_without_duplicates() {
         let original: Value = serde_json::from_str(OPENAPI).unwrap();
-        assert_eq!(allowed_responses(&original).unwrap().len(), 26);
+        assert_eq!(allowed_responses(&original).unwrap().len(), 27);
         let paths = original["paths"].as_object().unwrap();
         let (key, value) = paths
             .iter()

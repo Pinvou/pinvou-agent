@@ -47,6 +47,8 @@ pub use metadata_semantics::{
 };
 mod context;
 pub use context::{ContextBindingError, assert_supplied_expected_context};
+mod time;
+pub use time::{TimeContractError, TimeRequestShape, TimeResponseShape};
 mod schema;
 pub use schema::{SchemaCheckedEnvelope, SchemaError};
 mod high_water;

@@ -31,6 +31,14 @@ component head 的 rootHeadRevisionAtPublish 可以落后于 current RootPublish
 
 Root 轮换只使用产品级 PublishRootChange。Release 续签和不改变可选择集合的 Target/Snapshot/Timestamp 续签使用 PublishMetadataRefresh：绑定两级 base head 与完整 current 集合，在同一事务比较 Root head、CAS component head并原子更新 current 指针，不递增 selectionGeneration；如同时改变可选择集合则必须使用 PublishSelectionChange。任一冲突对应的签名集合不得发布或覆盖新 head。
 
+### 1.1 独立 time 授权角色
+
+除六类元数据及既有凭据外，Root 可显式授权独立 `time` 角色：product/component 维度，component 非 null，channel/targetKey 均为 null；签名 scope 为 `{}`，purpose 固定 `trusted-time.v1`。固定 `/v1/upgrade/time` 的请求与直接响应 Envelope、64 KiB 边界、32-byte canonical nonce、最终完整 Root envelope SHA/version 及区间规则见 [contract-profile](contract-profile.md#dedicated-fresh-request-time-response)。time 不使用 iat/nbf/exp，不是带新安装资格的凭据，也不改变 Timestamp/Snapshot 的原语义。
+
+专用 bootstrap 验证只从已保护 Root 字节/最高版本及 deny 出发，逐后继核旧、新阈值，再核本次 time 签名及 nonce；必须以原实际发送/接收边界和显式保护策略得到完整 UTC 区间，验证最终 Root 有效窗口及已保护时间下界后才接受。过期旧 Root 只能延续信任链，不能以其旧 issuedAt 或自带 key 恢复 now；通用 verifier 不接受 time 自证当前时间。重试保留原 nonce/Root/send，Root 改变需新尝试，不提供旧 Timestamp/iat/墙钟回退。
+
+这是已批准的未上线 `protocolVersion=1` 协同扩展，生成 Schema/API、JS/Rust verifier 与服务端固定合同必须同步。旧 Root 缺 time policy 不因此失去原元数据验证能力，但不授予任何时钟权。实际授时来源、受保护接受、原预算和恢复清理能力仍须各 owner 完整实现并验收。
+
 ## 2. 决定凭据
 
 成功 check 的决定凭据必须至少绑定：`jti`、`iat`、`nbf`、`exp`、decisionId/revision、telemetrySessionId、requestNonce、installId/installationScopeId、product/component/channel/channelRevision/targetKey、host OS/arch 与客户端事实摘要、currentVersion、selectionGeneration、metadataSet（Root/Timestamp/Snapshot/Target 及 endpointChain/hopChain 引用的全部 Release Manifest）的身份、version/revision 与 expiresAt、Registry 版本/sourceProfileId、forward-only 时的 policy ID/revision/hash 与命中边摘要、updater/helper/launcher 事实摘要及 `updateAvailable`。签发点必须满足 `Target.selectionGeneration == SelectionScope.selectionGeneration` 且不存在 metadata_sync_pending。unactivated SelectionScope 固定返回 HTTP 409、`SCOPE_UNACTIVATED`、`retryable=true` 和普通检查间隔，不创建决定或 telemetrySession，因而不适用 metadataSet Schema。

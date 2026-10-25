@@ -1,7 +1,9 @@
 // Actual complete client request contract; no verifier or current authority claim.
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
 import{pathToFileURL}from'node:url';
 const root=pathToFileURL(process.argv[1]);
+const timeVector=JSON.parse(await readFile(new URL('../vectors/time/anchor.json',root),'utf8')).cases[0];
 const{OPERATIONS}=await import(new URL('./build-api.mjs',root));
 const{assertApiContract,assertApiShape}=await import(new URL('./api-registry.mjs',root));
 const{parseJson,canonicalize}=await import(new URL('./canonical-json.mjs',root));
@@ -17,6 +19,7 @@ const facts={stableFacts:f.sourceFacts,host:f.claims.decision.host,clientFactsDi
   updaterFactsDigest:HASH,helperFactsDigest:HASH,launcherFactsDigest:HASH};
 const localFacts={factType:'local-state'};
 function baseline(operation) {
+  if(operation==='time')return structuredClone(timeVector.request);
   const v={protocolVersion:1,scope:structuredClone(scope)};
   const authPurpose=operation.split('-').at(-1);
   if(operation==='check'||operation==='refresh') {
@@ -121,6 +124,9 @@ for(const operation of operations) {
       installationScopeId:'other-scope',channel:'beta',channelRevision:2,targetKey:'linux-arm64-deb-perMachine'})) {
       mutate('scope-'+field+'-negative',v=>v.scope[field]=other);
     }
+  }
+  if(operation==='time') {
+    mutate('nonce-encoding-negative',v=>v.requestNonce='A'.repeat(42)+'B');
   }
   if(operation==='check') {
     mutate('incremental-algorithm-negative',v=>v.supportedIncrementalAlgorithms=['bsdiff']);

@@ -25,5 +25,5 @@ const cases=OPERATIONS.filter(o=>!o.management).map(o=>{
     request:Buffer.from(canonicalize(req)).toString('utf8'),
     response:Buffer.from(canonicalize(res)).toString('utf8')};
 });
-assert.equal(cases.length,26);
+assert.equal(cases.length,27);
 process.stdout.write(JSON.stringify(cases));

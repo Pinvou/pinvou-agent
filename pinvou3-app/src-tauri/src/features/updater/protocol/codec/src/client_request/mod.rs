@@ -6,12 +6,13 @@ use crate::{
     ConsumeDigestError, CredentialSemanticsError, Document, Error, InputKind,
     MetadataSemanticsError,
 };
-/// Requests and responses use the same exact frozen 26-client operation catalog.
+/// Requests and responses use the same exact frozen 27-client operation catalog.
 /// Alias preserves the established enum, name parsing and existing interfaces.
 pub type ClientRequestOperation = crate::ClientResponseOperation;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientRequestError {
     Json(Error),
+    TrustedTime(crate::TimeContractError),
     Semantics(CredentialSemanticsError),
     Time(MetadataSemanticsError),
     Digest(ConsumeDigestError),
@@ -29,6 +30,10 @@ impl std::fmt::Display for ClientRequestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Json(e) => e.fmt(f),
+            Self::TrustedTime(crate::TimeContractError::InvalidRequest) => {
+                f.write_str("API_CONTRACT_INVALID")
+            }
+            Self::TrustedTime(e) => e.fmt(f),
             Self::Semantics(e) => e.fmt(f),
             Self::Time(e) => e.fmt(f),
             Self::Digest(e) => e.fmt(f),
@@ -58,6 +63,12 @@ impl Document {
             Document::parse(&canonical, InputKind::Metadata).map_err(ClientRequestError::Json)?;
         if !registry::validator(operation)?.is_valid(reparsed.value()) {
             return Err(ClientRequestError::InvalidContract);
+        }
+        if operation == ClientRequestOperation::Time {
+            return reparsed
+                .time_request_shape()
+                .map(|_| ())
+                .map_err(ClientRequestError::TrustedTime);
         }
         credentials::assert_credentials(reparsed.value())?;
         guards::assert_relationships(reparsed.value(), operation)

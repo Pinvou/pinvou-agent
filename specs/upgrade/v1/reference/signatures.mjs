@@ -4,9 +4,10 @@ import { domainBytes, equalDigest, sha256 } from './digests.mjs';
 import { requireCondition } from './errors.mjs';
 import { validateClaims, validateSchema } from './schema-registry.mjs';
 import { checkSemantics, METADATA_LIFETIMES, sameJson } from './semantics.mjs';
+import { assertTimeRequest, assertTimeClaims } from './time-contract.mjs';
 
 const isMetadata = (role) => Object.hasOwn(METADATA_LIFETIMES, role) || role === 'package';
-const schemaName = (role) => `${isMetadata(role) ? 'metadata' : 'credentials'}/${role}`;
+const schemaName = (role) => role === 'time' ? 'time/response' : `${isMetadata(role) ? 'metadata' : 'credentials'}/${role}`;
 
 export function signingInput(signed) {
   return domainBytes('pinvou-upgrade-signed-v1', { protocolVersion: signed.protocolVersion,
@@ -51,7 +52,11 @@ export function validateTrustedRoot(root) {
       requireCondition(policy.component === null && policy.channel === null && policy.targetKey === null,
         'ROOT_SCOPE_INVALID');
       requireCondition(policy.threshold >= 2 && policy.keyIds.length >= 3, 'ROOT_THRESHOLD_INVALID');
-    } else requireCondition(policy.component !== null, 'ROLE_SCOPE_INVALID');
+    } else {
+      requireCondition(policy.component !== null, 'ROLE_SCOPE_INVALID');
+      if (policy.role === 'time') requireCondition(policy.channel === null && policy.targetKey === null,
+        'TIME_POLICY_SCOPE_INVALID');
+    }
   }
   requireCondition(rootPolicies === 1, 'ROOT_POLICY_MISSING');
   return keys;
@@ -121,6 +126,7 @@ export function assertHighWater(envelope, bytes, highWater) {
  * neither persists acceptance nor grants current online execution eligibility.
  */
 export function verifyEnvelope(bytes, { trustedRoot, expected, now, highWater, production = true, deniedKeyIds = [] }) {
+  requireCondition(expected?.role !== 'time', 'TIME_BOOTSTRAP_REQUIRED');
   const envelope = parseEnvelope(bytes, expected);
   requireCondition(envelope.signatures.every((signature) => !deniedKeyIds.includes(signature.keyId)), 'SIGNING_KEY_DENIED');
   const keys = validateTrustedRoot(trustedRoot);
@@ -130,6 +136,96 @@ export function verifyEnvelope(bytes, { trustedRoot, expected, now, highWater, p
   checkSemantics(envelope.signed, { now, production });
   if (isMetadata(envelope.signed.role)) assertHighWater(envelope, bytes, highWater);
   return envelope;
+}
+
+function timeRoot(bytes, product) {
+  const envelope = parseEnvelope(bytes, { role: 'root', product, component: null, scope: {} });
+  const root = envelope.signed;
+  const keys = validateTrustedRoot(root);
+  // Intrinsic window structure only. In particular, issuedAt is never used as
+  // now to promote an expired historical Root into a current clock authority.
+  requireCondition(Number.isSafeInteger(root.issuedAt) && root.issuedAt >= 0
+    && Number.isSafeInteger(root.expiresAt) && root.expiresAt > root.issuedAt
+    && root.expiresAt - root.issuedAt <= METADATA_LIFETIMES.root, 'TIME_ROOT_WINDOW_INVALID');
+  return { envelope, root, keys };
+}
+
+function timeContext(context) {
+  const required = ['request', 'trustedRootBytes', 'sentMonotonicMs', 'receivedMonotonicMs',
+    'maxRoundTripMs', 'maxUncertaintyMs', 'trustedTimeFloor', 'deniedKeyIds'];
+  requireCondition(context !== null && typeof context === 'object' && !Array.isArray(context)
+    && required.every((field) => Object.hasOwn(context, field))
+    && Object.keys(context).every((field) => required.includes(field) || field === 'rootSuccessors'),
+  'TIME_CONTEXT_REQUIRED');
+  for (const field of ['sentMonotonicMs', 'receivedMonotonicMs', 'maxRoundTripMs',
+    'maxUncertaintyMs', 'trustedTimeFloor']) {
+    requireCondition(Number.isSafeInteger(context[field]) && context[field] >= 0, 'TIME_CONTEXT_INVALID');
+  }
+  requireCondition(context.receivedMonotonicMs >= context.sentMonotonicMs, 'TIME_MONOTONIC_INVALID');
+  const rtt = context.receivedMonotonicMs - context.sentMonotonicMs;
+  requireCondition(rtt <= context.maxRoundTripMs, 'TIME_RTT_EXCEEDED');
+  const denied = context.deniedKeyIds;
+  requireCondition(Array.isArray(denied) && denied.length <= 4096
+    && denied.every((id) => typeof id === 'string' && id.length === 64 && /^[0-9a-f]{64}$/u.test(id))
+    && new Set(denied).size === denied.length, 'TIME_DENY_SET_INVALID');
+  const successors = Object.hasOwn(context, 'rootSuccessors') ? context.rootSuccessors : [];
+  requireCondition(Array.isArray(successors) && successors.length <= 4096, 'ROOT_CHAIN_INVALID');
+  return { rtt, denied, successors };
+}
+
+/** Pure reference calculation, NOT an actual clock collector or protected
+ * capability. The caller supplies the original protected Root bytes, known
+ * deny set, original live-request monotonic brackets, explicit policy and
+ * protected lower bound. Sent milliseconds must round down before transmission;
+ * received milliseconds must round up after the original response is available
+ * for verification. Independently truncating both can underestimate RTT. Server
+ * uncertainty must include its sampling quantization and actual source error.
+ * Zero-valued pure policies assert no real zero-latency/source-error guarantee.
+ * A DTO, wall clock or old signed iat proves none of
+ * those inputs. The result is DATA as of receivedMonotonicMs only; durable
+ * acceptance, boot continuity and cleanup barriers remain T26 owner work.
+ */
+export function verifyTimeResponse(bytes, context) {
+  const { rtt, denied, successors } = timeContext(context);
+  const request = assertTimeRequest(context.request);
+  let currentBytes = context.trustedRootBytes;
+  let current = timeRoot(currentBytes, request.product);
+  // The starting bytes must already be independently protected. Their original
+  // Envelope may retain old+new transition signatures; rechecking those against
+  // only its current Root policy would incorrectly reject a legitimate anchor.
+  let newestIssuedAt = current.root.issuedAt;
+  for (const nextBytes of successors) {
+    const next = timeRoot(nextBytes, request.product);
+    requireCondition(next.root.version === current.root.version + 1, 'ROOT_CONTINUITY_INVALID');
+    requireCondition(next.envelope.signatures.every((signature) => !denied.includes(signature.keyId)),
+      'SIGNING_KEY_DENIED');
+    verifySignatures(next.envelope, new Map([...current.keys, ...next.keys]),
+      [policyFor(current.root, next.root), policyFor(next.root, next.root)]);
+    newestIssuedAt = Math.max(newestIssuedAt, next.root.issuedAt);
+    current = next;
+    currentBytes = nextBytes;
+  }
+  const root = { version: current.root.version, sha256: sha256(currentBytes) };
+  requireCondition(sameJson(request.root, root), 'TIME_ROOT_BINDING_INVALID');
+  const envelope = parseEnvelope(bytes, { role: 'time', product: request.product,
+    component: request.component, scope: {} });
+  const claims = assertTimeClaims(envelope.signed);
+  requireCondition(claims.requestNonce === request.requestNonce && sameJson(claims.root, root),
+    'TIME_REQUEST_BINDING_INVALID');
+  requireCondition(envelope.signatures.every((signature) => !denied.includes(signature.keyId)),
+    'SIGNING_KEY_DENIED');
+  verifySignatures(envelope, current.keys, [policyFor(current.root, claims)]);
+  // All calculations are exact before converting back to the V1 safe integer
+  // domain. A capacity failure cannot become a clipped, apparently usable time.
+  requireCondition(claims.uncertaintyMs <= context.maxUncertaintyMs, 'TIME_UNCERTAINTY_EXCEEDED');
+  const lower = BigInt(claims.serverTime) - BigInt(claims.uncertaintyMs);
+  const upper = BigInt(claims.serverTime) + BigInt(claims.uncertaintyMs) + BigInt(rtt);
+  requireCondition(lower >= 0n && upper <= BigInt(Number.MAX_SAFE_INTEGER), 'TIME_INTERVAL_OVERFLOW');
+  const earliest = Number(lower), latest = Number(upper);
+  requireCondition(earliest >= context.trustedTimeFloor, 'TIME_ROLLBACK');
+  requireCondition(newestIssuedAt <= earliest && current.root.expiresAt > latest, 'TIME_ROOT_WINDOW_CLOSED');
+  return Object.freeze({ earliest, latest, asOfMonotonicMs: context.receivedMonotonicMs,
+    root: Object.freeze(root) });
 }
 
 /** Archive verification proves immutable Package identity only, even after the
@@ -162,6 +258,7 @@ export function verifyArchivedRelease(bytes, { archivedRoot, expected }) {
 
 export function signEnvelope(signed, privateKeys) {
   validateClaims(schemaName(signed.role), signed);
+  if (signed.role === 'time') assertTimeClaims(signed);
   const signatures = privateKeys.map((key) => {
     const descriptor = publicKeyDescriptor(key);
     return { keyId: descriptor.keyId, signature: sign(null, signingInput(signed), key).toString('base64url') };

@@ -7,6 +7,7 @@ import { assertFloorPageBounds } from './api-floor-pages.mjs';
 import { consumeRequestDigest, sha256 } from './digests.mjs';
 import { requireCondition } from './errors.mjs';
 import { checkSemantics, sameJson } from './semantics.mjs';
+import { assertTimeRequest, assertTimeClaims } from './time-contract.mjs';
 
 const ajv = new Ajv2020({ strict: true, allErrors: false, validateFormats: false });
 for (const name of trustSchemas.keys()) ajv.addSchema(parseJson(await readFile(new URL(`../schemas/${name}.json`, import.meta.url))));
@@ -45,8 +46,19 @@ export function assertApiContract(operationName, direction, value) {
   const checked = JSON.parse(Buffer.from(canonical).toString('utf8'));
   assertApiShape(shape, checked);
   if (privatePage) assertFloorPageBounds(checked);
+  if (operationName === 'time') {
+    requireCondition(canonical.length <= 65_536, 'TIME_BODY_TOO_LARGE');
+    if (direction === 'request') assertTimeRequest(value);
+  }
   for (const envelope of embeddedCredentials(value)) {
     requireCondition(canonicalize(envelope).length <= 65_536, 'CREDENTIAL_TOO_LARGE');
+    if (envelope.signed.role === 'time') {
+      requireCondition(operationName === 'time' && direction === 'response' && envelope === value,
+        'TIME_RESPONSE_CONTEXT_INVALID');
+      // Shape/nonce only: neither a signed time nor any iat is a trusted now here.
+      assertTimeClaims(envelope.signed);
+      continue;
+    }
     checkSemantics(envelope.signed, { now: Math.max(envelope.signed.iat, envelope.signed.nbf) });
     if (value.scope !== undefined && !operation.management) {
       const claims = envelope.signed;

@@ -51,7 +51,7 @@ fn operation_names_are_exact_roundtrips_and_never_accept_aliases_or_management()
             );
         }
     }
-    assert_eq!(names.len(), 26);
+    assert_eq!(names.len(), 27);
     for name in [
         "",
         "other",
@@ -108,7 +108,7 @@ fn actual_original_inventory_and_all_cross_operation_acceptance_and_errors_match
         .collect();
     let actual: BTreeSet<_> = Operation::ALL.into_iter().map(|op| op.as_str()).collect();
     assert_eq!(actual, expected);
-    assert_eq!(actual.len(), 26);
+    assert_eq!(actual.len(), 27);
     let management = original["management"].as_array().unwrap();
     // Keep an exact independent inventory: adding a management contract must
     // never accidentally make it a client response operation.
@@ -196,7 +196,7 @@ fn actual_original_inventory_and_all_cross_operation_acceptance_and_errors_match
     }
     assert_eq!(positives, expected);
     eprintln!(
-        "matched {} actual original cases over 26 client and {} excluded management operations",
+        "matched {} actual original cases over 27 client and {} excluded management operations",
         cases.len(),
         management.len()
     );

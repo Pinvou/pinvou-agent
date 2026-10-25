@@ -214,7 +214,9 @@ impl Document {
                 {
                     return Err(RootPolicyError::InvalidPolicy);
                 }
-            } else if identity.1.is_none() {
+            } else if identity.1.is_none()
+                || role == "time" && (identity.2.is_some() || identity.3.is_some())
+            {
                 return Err(RootPolicyError::InvalidPolicy);
             }
             // Already positive integral binary64 <= actual members <=4096.

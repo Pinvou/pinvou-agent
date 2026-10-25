@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:time:request",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "product": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "maxLength": 128,
+      "not": {
+        "pattern": "[^A-Za-z0-9._:-]"
+      }
+    },
+    "component": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "maxLength": 128,
+      "not": {
+        "pattern": "[^A-Za-z0-9._:-]"
+      }
+    },
+    "requestNonce": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/timeNonce"
+    },
+    "root": {
+      "$ref": "urn:pinvou:upgrade:v1:common#/$defs/timeRoot"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "product",
+    "component",
+    "requestNonce",
+    "root"
+  ],
+  "additionalProperties": false
+}

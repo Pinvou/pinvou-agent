@@ -18,8 +18,11 @@ cross-boot time uncertainty pauses dependent actions, preserves original
 deadlines/budgets and clears query secrets conservatively; fresh authenticated
 server time recovery must finish original-deadline cleanup before resuming.
 Existing numeric trusted-now models do not implement that local clock/persistent
-recovery barrier. No API Schema, signature byte vector or T01 contract-profile
-byte change is introduced by this documentation update.
+recovery barrier. The earlier policy-only documentation update changed no wire
+bytes. The subsequent owner-approved dedicated time role now adds the explicit
+[time request/response profile](contract-profile.md#dedicated-fresh-request-time-response)
+and fixed T26 API; client/service contracts must update together without a legacy
+clock fallback. This does not implement the protected owner or recovery barrier.
 
 ## Run
 
@@ -54,6 +57,12 @@ node specs/upgrade/v1/reference/build-schemas.mjs
 node specs/upgrade/v1/reference/build-api.mjs
 ```
 
+The separate public time vector generator is
+`node specs/upgrade/v1/reference/generate-time-vectors.mjs`. It writes
+`vectors/time/anchor.json` with direct and continuous-Root-successor cases; fresh
+private keys stay in generator memory. Ordinary tests read the committed vector.
+Do not regenerate the original `vectors/crypto` files for this extension.
+
 Tests compare artifacts with their source, compile every Schema, test RFC 8785,
 verify independently checked fixed signature/hash vectors, exercise required
 fields and nested field tampering, and run the CLI end to end. Fixed vectors
@@ -67,7 +76,8 @@ were discarded. They are not production trust anchors or credentials.
 | `canonical-json.mjs` | Bounded strict parsing and RFC 8785 canonical bytes |
 | `build-schemas.mjs`, `schema-registry.mjs` | Closed field contracts and local Schema validation |
 | `digests.mjs` | Artifact identities, stable facts, consume/status hashes and salted commitments |
-| `signatures.mjs` | Scoped Ed25519 thresholds, continuous root successors and pure high-water guards |
+| `signatures.mjs` | Scoped Ed25519 thresholds, continuous Root successors, dedicated time interval verification and pure high-water guards |
+| `time-contract.mjs` | Closed time syntax and canonical nonce checks; no clock authority |
 | `semantics.mjs` | Declared bindings and strict time/purpose constraints |
 | `metadata-chain.mjs` | Public membership, candidate opening and Release-to-Package binding |
 | `cli.mjs` | Bounded local file input and stable diagnostic output |
@@ -81,6 +91,37 @@ Root. The caller supplies trusted expected context, current deny information and
 where applicable, accepted high-water state. `assertBindings` compares a complete
 expected fact projection with authenticated claims. It does not make client
 self-reported facts trustworthy.
+
+### Dedicated T26 time API and reference function
+
+`POST /v1/upgrade/time` takes the exact `time/request` and returns the direct
+canonical `time/response` Envelope, with 64 KiB limits on each body. It does not
+create a session, decision or install permission. The complete wire and bootstrap
+rules are in the [contract profile](contract-profile.md#dedicated-fresh-request-time-response).
+The generic CLI `verify`/`verifyEnvelope` path deliberately refuses time; do not
+pass serverTime or an old signed iat as its trusted now.
+
+`verifyTimeResponse(bytes, context)` requires `request`, `trustedRootBytes`,
+`sentMonotonicMs`, `receivedMonotonicMs`, `maxRoundTripMs`, `maxUncertaintyMs`,
+`trustedTimeFloor` and `deniedKeyIds`; `rootSuccessors` is an optional ordered
+array of original continuous Root Envelope bytes. It takes no now/wall-clock
+argument and returns frozen `{earliest,latest,asOfMonotonicMs,root}` DATA only.
+A caller must prove the input provenance and conservative send/receive brackets;
+calling this function with a DTO does not establish those facts. API contract
+validation checks time syntax separately instead of applying credential iat/nbf
+semantics. Missing time policies or explicit limits fail closed.
+
+This batch's JS/Rust source passed independent source review. The Node reference
+suite passed 219 tests; the Rust codec, verifier and HTTP crates passed 160, 75
+and 4 tests respectively. One existing opt-in TLS test remained ignored.
+Formatting, architecture and whitespace checks passed. Generated schemas,
+OpenAPI and the public time vector are current; original crypto vectors are
+unchanged.
+Neither this result nor the vectors prove an actual issuer's SQL/UTC accuracy,
+configured production time keys, protected host continuity, durable budget ledger
+or cleanup recovery. T26 remains incomplete and concrete T03 budgets unapproved.
+
+### Metadata and publication helpers
 
 `verifyPublicChain` verifies the complete supplied public component snapshot;
 unreferenced Release/Package objects cannot be added as a public candidate catalog.
@@ -103,12 +144,13 @@ recovery but returns only after an unexpired final Root validates. The ordinary
 envelope verifier accepts only the caller's existing Root; new Root acceptance
 must use these explicit continuous-transition functions.
 
-No production keys, API endpoints, remote signer, installer, application state,
-permission prompt, database, backup, download deadline or runtime Node dependency
-is introduced into the desktop application by this task.
+The reference code does not install production keys, implement a production
+endpoint, or introduce a remote signer, installer, application state, permission
+prompt, database, backup, download deadline or runtime Node dependency into the
+desktop application.
 
 `openapi.yaml` uses JSON serialization, a valid YAML 1.2 subset. All OpenAPI
-references are bundled and local. The service/admin implementation belongs in a
-separate repository whose location and technology are still to be provided.
-Authentication providers, remote signing, RPO=0 transactions, secure physical
-facts, production server E2E and OS certification remain later tasks.
+references are bundled and local. The service/admin implementation is separate;
+this reference package does not implement its current-source transactions or
+configure deployment. Actual time issuance, secure physical clock/state facts,
+production recovery E2E and OS certification require their real owners.

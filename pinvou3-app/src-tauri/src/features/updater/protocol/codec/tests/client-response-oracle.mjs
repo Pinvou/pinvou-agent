@@ -1,7 +1,9 @@
 // Complete original non-management operation table and response acceptance.
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
 import{pathToFileURL}from'node:url';
 const root=pathToFileURL(process.argv[1]);
+const timeVector=JSON.parse(await readFile(new URL('../vectors/time/anchor.json',root),'utf8')).cases[0];
 const{OPERATIONS}=await import(new URL('./build-api.mjs',root));
 const{assertApiContract,assertApiShape}=await import(new URL('./api-registry.mjs',root));
 const{parseJson}=await import(new URL('./canonical-json.mjs',root));
@@ -12,8 +14,9 @@ const f=createFixtureSet();
 const envelope=role=>parseJson(f.sign(f.claims[role]));
 const operations=OPERATIONS.filter(op=>!op.management).map(op=>op.name);
 const management=OPERATIONS.filter(op=>op.management).map(op=>op.name);
-assert.equal(operations.length,26);
+assert.equal(operations.length,27);
 function baseline(operation) {
+  if(operation==='time')return JSON.parse(timeVector.responseBytes);
   const v={protocolVersion:1,requestId:'request-1'};
   if(operation==='check'||operation==='refresh') {
     v.decision=envelope('decision');v.telemetryCredential=envelope('telemetry-event');
@@ -73,7 +76,12 @@ for(const operation of operations) {
   const value=baseline(operation);emit(operation,'complete-positive',value);
   for(const other of operations)emit(other,'cross-family-from-'+operation,value);
   emit(operation,'extra-field-negative',{...value,extra:null});
-  emit(operation,'request-independent-positive',{...value,requestId:'another-request'});
+  if(operation==='time')emit(operation,'request-id-wrapper-negative',{...value,requestId:'another-request'});
+  else emit(operation,'request-independent-positive',{...value,requestId:'another-request'});
+  if(operation==='time') {
+    const nonce=structuredClone(value);nonce.signed.requestNonce='A'.repeat(42)+'B';
+    emit(operation,'nonce-encoding-negative',nonce);
+  }
   if(operation==='check'||operation==='refresh') {
     const mismatch=structuredClone(value);mismatch.telemetryCredential.signed.installId='other-install';
     emit(operation,'identity-binding-negative',mismatch);

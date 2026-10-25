@@ -8,6 +8,7 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientResponseOperation {
+    Time,
     Check,
     Refresh,
     DownloadInfo,
@@ -36,7 +37,8 @@ pub enum ClientResponseOperation {
     RecoveryReviewAction,
 }
 impl ClientResponseOperation {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
+        Self::Time,
         Self::Check,
         Self::Refresh,
         Self::DownloadInfo,
@@ -66,6 +68,7 @@ impl ClientResponseOperation {
     ];
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Time => "time",
             Self::Check => "check",
             Self::Refresh => "refresh",
             Self::DownloadInfo => "download-info",
@@ -99,6 +102,7 @@ impl std::str::FromStr for ClientResponseOperation {
     type Err = ClientResponseError;
     fn from_str(name: &str) -> Result<Self, Self::Err> {
         match name {
+            "time" => Ok(Self::Time),
             "check" => Ok(Self::Check),
             "refresh" => Ok(Self::Refresh),
             "download-info" => Ok(Self::DownloadInfo),
@@ -132,6 +136,7 @@ impl std::str::FromStr for ClientResponseOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientResponseError {
     UnknownOperation,
+    TrustedTime(crate::TimeContractError),
     Json(Error),
     Check(CheckResponseError),
     Download(DownloadInfoContractError),
@@ -145,6 +150,10 @@ impl std::fmt::Display for ClientResponseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownOperation => f.write_str("API_OPERATION_UNKNOWN"),
+            Self::TrustedTime(crate::TimeContractError::InvalidResponse) => {
+                f.write_str("API_CONTRACT_INVALID")
+            }
+            Self::TrustedTime(error) => error.fmt(f),
             Self::Json(e) => e.fmt(f),
             Self::Check(e) => e.fmt(f),
             Self::Download(e) => e.fmt(f),
@@ -167,6 +176,9 @@ impl Document {
         operation: ClientResponseOperation,
     ) -> Result<(), ClientResponseError> {
         match operation {
+            ClientResponseOperation::Time => self
+                .assert_supplied_time_response_contract()
+                .map_err(ClientResponseError::TrustedTime),
             ClientResponseOperation::Check => self
                 .assert_supplied_check_response_contract(CheckResponseOperation::Check)
                 .map_err(ClientResponseError::Check),

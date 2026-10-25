@@ -84,7 +84,7 @@ pub(super) fn canonical_version(value: &Value) -> bool {
     parts.next().is_none()
 }
 
-pub(super) const ROLES: [&str; 20] = [
+pub(super) const ROLES: [&str; 21] = [
     "root",
     "timestamp",
     "snapshot",
@@ -105,4 +105,5 @@ pub(super) const ROLES: [&str; 20] = [
     "recovery-review-action",
     "reconciliation-event",
     "recovery-review-event",
+    "time",
 ];

@@ -393,3 +393,20 @@ async fn real_https_posts_all_client_routes_and_rejects_unsafe_wire_results() {
     pending.abort();
     assert!(matches!(pending.await, Err(error) if error.is_cancelled()));
 }
+
+#[tokio::test]
+async fn dedicated_time_request_wire_limit_is_enforced_before_network() {
+    let mut raw = wire_cases()
+        .iter()
+        .find(|c| c["operation"] == "time")
+        .unwrap()["request"]
+        .as_str()
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    raw.resize(65_537, b' ');
+    assert!(matches!(
+        post_once(Operation::Time, &raw).await,
+        Err(ControlHttpError::RequestJson(Error::InputLimit))
+    ));
+}

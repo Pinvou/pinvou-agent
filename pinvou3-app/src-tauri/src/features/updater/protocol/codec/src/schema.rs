@@ -9,7 +9,7 @@ const COMMON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../../../../../specs/upgrade/v1/schemas/common.json"
 ));
-const SCHEMAS: [(&str, &str); 20] = [
+const SCHEMAS: [(&str, &str); 21] = [
     (
         "root",
         include_str!(concat!(
@@ -150,6 +150,13 @@ const SCHEMAS: [(&str, &str); 20] = [
             "/../../../../../../../specs/upgrade/v1/schemas/credentials/recovery-review-event.json"
         )),
     ),
+    (
+        "time",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../../../../specs/upgrade/v1/schemas/time/response.json"
+        )),
+    ),
 ];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchemaError {
@@ -210,6 +217,20 @@ fn registry() -> Result<&'static Registry, SchemaError> {
         })
         .as_ref()
         .map_err(|error| *error)
+}
+
+// Internal shape reuse for the dedicated time API. No cryptographic authority.
+pub(crate) fn assert_role_value(role: &str, value: &Value) -> Result<(), SchemaError> {
+    let validator = registry()?
+        .validators
+        .iter()
+        .find(|(name, _)| *name == role)
+        .ok_or(SchemaError::Unavailable)?;
+    if validator.1.is_valid(value) {
+        Ok(())
+    } else {
+        Err(SchemaError::InvalidEnvelope)
+    }
 }
 
 /// Original canonical envelope satisfying its complete frozen role Schema.

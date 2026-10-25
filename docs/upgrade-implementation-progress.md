@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25, approved time-policy synchronization after T25 public read/export**.
+Checkpoint: **2026-10-25, T26 dedicated time contract/reference increment in progress**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -13,7 +13,7 @@ measured hours or release readiness.
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
 T25 network privacy is parked at **85%** after its complete public read/export
-increment. The next main task is **T26 trusted time and recovery**, with T03 as
+increment. The current main task is **T26 trusted time and recovery**, with T03 as
 its sole direct prerequisite. The previously verified
 quality-purpose source, restricted Stage reader and three-language disclosure
 batch is service `5d76` / client `aaf5cec7`; its historical verification remains
@@ -35,15 +35,29 @@ not additional prerequisites for implementing the T25 ports.
 The dependency audit found no production download-info issuance/selection source
 behind T18; that path first needs T17 current qualification and T14 formal
 baseline activation. T11/T12/T13 still lack their approved active sources, and
-T11 needs genuine T46 local qualification. T26 currently supplies timing/budget
-math rather than a durable trusted-time host. On 2026-10-25 the owner superseded
+T11 needs genuine T46 local qualification. T26 has timing/budget math and the
+independently source-reviewed dedicated time contract/reference increment; it
+still lacks a durable trusted-time host. On 2026-10-25 the owner superseded
 strict A: unprovable cross-boot continuity pauses time-dependent actions, retains
 original deadlines/spent budgets, conservatively clears query secrets, and
 requires fresh authenticated server time plus successful original-deadline cleanup
-before resuming. The normative documents are synchronized by this delivery;
-the actual collector, protected owner and recovery barrier are not implemented
-by this documentation change. Concrete preparation budgets remain unapproved.
-The next implementation focus is T26 with T03 as its sole direct prerequisite;
+before resuming. The earlier policy-only documentation delivery synchronized
+these rules without changing wire bytes. The owner has now separately approved
+the dedicated Root time role and coordinated unreleased V1 update, without a
+legacy clock fallback. Concrete preparation budgets remain unapproved.
+
+The current reference increment specifies closed `/v1/upgrade/time` requests and
+direct canonical time Envelopes, full Root Envelope references, continuous dual
+Root thresholds, original nonce/monotonic brackets and explicit safe UTC interval
+policy. Generic verification cannot use a signed time to supply its own now.
+The Node reference suite passed 219 tests. The Rust codec, verifier and HTTP
+crates passed 160, 75 and 4 tests respectively; one existing opt-in TLS test
+remained ignored. Independent source review, formatting, architecture and
+whitespace checks passed. Schemas, OpenAPI and the public time vector were
+generated; the original crypto vectors are unchanged. These results cover the
+client contract and verification, not the service issuer, protected host clock,
+durable original-budget ledger or cleanup recovery barrier. T26 remains **20%**; the overall estimate stays **1810/47 = 38.5%** and
+strict completion remains **8/47 (17.0%)**. T03 is its sole direct prerequisite;
 other downstream tasks stay parked. No completion count or percentage increases.
 
 T09's approved controlled macOS measurement component remains
@@ -1276,7 +1290,7 @@ completion blocker; outstanding business implementation is.
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | 85% | In progress | Delivered full-platform network-week read/export requires current all-product/component/channel/target operations.read and returns the same authenticated canonical body. Scoped51 plus native1 and the final required Go/build/contract checks passed as recorded above. Source-v2, protected internal freeze/CLI/host, independent Stage/Release capture, restricted Stage reader and callable three-language disclosure remain delivered with their historical verification above. The Release-purpose restricted owner still needs genuine T18 selector/issuance source-class production; self-reported facts/default primary/fake authority cannot replace it. T21 atomic projection/cursor consumption and T24 report ownership remain separate tasks, not T25 prerequisites. |
-| T26 | 20% | In progress | The cross-boot unknown-time policy is approved and synchronized; existing timing/budget math does not implement authenticated server anchors, protected durable original budgets or the cleanup recovery barrier. Real host composition and conformance remain pending |
+| T26 | 20% | In progress | Cross-boot unknown handling and the dedicated Root time role/coordinated V1 extension are approved. Timing/budget math and the source-reviewed closed time/reference contract do not implement an actual current-source issuer, protected host continuity, durable original-budget ledger or cleanup recovery barrier. The 219 Node reference tests and 239 Rust tests passed; one existing opt-in TLS test remained ignored. Real host composition, approved preparation budgets and conformance remain pending |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
 | T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; the service pins the committed contract and passes cross-language/real-Transit verification; protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |

@@ -13,8 +13,13 @@ mod package;
 mod renewal;
 mod signatures;
 mod successor;
+mod time;
 use envelope::parse_bound_envelope;
 pub use successor::{ActiveMetadataInput, SignatureCheckedRootSuccessor, verify_root_successor};
+pub use time::{
+    SignatureCheckedTimeResponse, SuppliedTimeObservation, TimeVerificationError,
+    TimeVerificationInputs, verify_time_response,
+};
 
 pub use archive::{ArchivedEnvelopeIdentity, verify_archived_package, verify_archived_release};
 pub use candidate::{
@@ -129,6 +134,9 @@ pub fn verify_with_supplied_root<'a>(
     bytes: &[u8],
     inputs: VerificationInputs<'a>,
 ) -> Result<SignatureCheckedEnvelope<'a>, VerificationError> {
+    if inputs.expected.value().get("role").and_then(|v| v.as_str()) == Some("time") {
+        return Err(VerificationError::TimeResponseRequired);
+    }
     let envelope = parse_bound_envelope(bytes, inputs.expected)?;
     let expected_role = inputs.expected.value()["role"].as_str();
     let denied: BTreeSet<&str> = inputs.denied_key_ids.iter().map(String::as_str).collect();

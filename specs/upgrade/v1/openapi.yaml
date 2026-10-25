@@ -12,6 +12,203 @@
     }
   ],
   "paths": {
+    "/v1/upgrade/time": {
+      "post": {
+        "operationId": "time",
+        "tags": [
+          "client"
+        ],
+        "x-owner-task": "T26",
+        "x-purpose": "trusted-time.v1",
+        "x-error-codes": [
+          "CONTRACT_INVALID",
+          "METADATA_SYNC_PENDING",
+          "RATE_LIMITED",
+          "SERVICE_UNAVAILABLE"
+        ],
+        "security": [],
+        "description": "T26 fresh-request time observation. No session, upgrade eligibility or credential renewal. Request and response are bounded to 64 KiB; the response is the direct canonical signed Envelope.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/api.time-request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Canonical time Envelope only; no unsigned wrapper or requestId. Clock recovery additionally requires protected Root continuity, the original nonce, caller-proven monotonic send/receive observations and explicit uncertainty/RTT policies.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/api.time-response"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable error; no secrets or record-existence details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocolVersion": {
+                          "const": 1
+                        },
+                        "requestId": {
+                          "$ref": "#/components/schemas/common/$defs/identifier"
+                        },
+                        "code": {
+                          "const": "CONTRACT_INVALID"
+                        },
+                        "retryable": {
+                          "const": false
+                        }
+                      },
+                      "required": [
+                        "protocolVersion",
+                        "requestId",
+                        "code",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stable error; no secrets or record-existence details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocolVersion": {
+                          "const": 1
+                        },
+                        "requestId": {
+                          "$ref": "#/components/schemas/common/$defs/identifier"
+                        },
+                        "code": {
+                          "const": "METADATA_SYNC_PENDING"
+                        },
+                        "retryable": {
+                          "const": true
+                        },
+                        "retryAfterMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 300000
+                        }
+                      },
+                      "required": [
+                        "protocolVersion",
+                        "requestId",
+                        "code",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Stable error; no secrets or record-existence details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocolVersion": {
+                          "const": 1
+                        },
+                        "requestId": {
+                          "$ref": "#/components/schemas/common/$defs/identifier"
+                        },
+                        "code": {
+                          "const": "RATE_LIMITED"
+                        },
+                        "retryable": {
+                          "const": true
+                        },
+                        "retryAfterMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 300000
+                        }
+                      },
+                      "required": [
+                        "protocolVersion",
+                        "requestId",
+                        "code",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Stable error; no secrets or record-existence details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocolVersion": {
+                          "const": 1
+                        },
+                        "requestId": {
+                          "$ref": "#/components/schemas/common/$defs/identifier"
+                        },
+                        "code": {
+                          "const": "SERVICE_UNAVAILABLE"
+                        },
+                        "retryable": {
+                          "const": true
+                        },
+                        "retryAfterMs": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 300000
+                        }
+                      },
+                      "required": [
+                        "protocolVersion",
+                        "requestId",
+                        "code",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-maximum-request-bytes": 65536,
+        "x-maximum-response-bytes": 65536
+      }
+    },
     "/v1/upgrade/check": {
       "post": {
         "operationId": "check",
@@ -16006,6 +16203,33 @@
               "macos-universal-dmg-perMachine"
             ]
           },
+          "timeNonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "timeRoot": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "version",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
           "byteIdentity": {
             "type": "object",
             "properties": {
@@ -17117,6 +17341,7 @@
                   "target",
                   "release",
                   "package",
+                  "time",
                   "decision",
                   "download",
                   "authorization-preinstall",
@@ -17197,7 +17422,39 @@
               "threshold",
               "keyIds"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "role": {
+                      "const": "time"
+                    }
+                  },
+                  "required": [
+                    "role"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                      "maxLength": 128,
+                      "not": {
+                        "pattern": "[^A-Za-z0-9._:-]"
+                      }
+                    },
+                    "channel": {
+                      "type": "null"
+                    },
+                    "targetKey": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ]
           },
           "stableFacts": {
             "type": "object",
@@ -17484,6 +17741,129 @@
             "additionalProperties": false
           }
         }
+      },
+      "time.request": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "protocolVersion": {
+            "const": 1
+          },
+          "product": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:-]"
+            }
+          },
+          "component": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "maxLength": 128,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:-]"
+            }
+          },
+          "requestNonce": {
+            "$ref": "#/components/schemas/common/$defs/timeNonce"
+          },
+          "root": {
+            "$ref": "#/components/schemas/common/$defs/timeRoot"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "product",
+          "component",
+          "requestNonce",
+          "root"
+        ],
+        "additionalProperties": false
+      },
+      "time.response": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "signed": {
+            "type": "object",
+            "properties": {
+              "protocolVersion": {
+                "const": 1
+              },
+              "role": {
+                "const": "time"
+              },
+              "product": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                "maxLength": 128,
+                "not": {
+                  "pattern": "[^A-Za-z0-9._:-]"
+                }
+              },
+              "component": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                "maxLength": 128,
+                "not": {
+                  "pattern": "[^A-Za-z0-9._:-]"
+                }
+              },
+              "scope": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              },
+              "purpose": {
+                "const": "trusted-time.v1"
+              },
+              "requestNonce": {
+                "$ref": "#/components/schemas/common/$defs/timeNonce"
+              },
+              "root": {
+                "$ref": "#/components/schemas/common/$defs/timeRoot"
+              },
+              "serverTime": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "uncertaintyMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "protocolVersion",
+              "role",
+              "product",
+              "component",
+              "scope",
+              "purpose",
+              "requestNonce",
+              "root",
+              "serverTime",
+              "uncertaintyMs"
+            ],
+            "additionalProperties": false
+          },
+          "signatures": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/common/$defs/signature"
+            },
+            "minItems": 1,
+            "maxItems": 4096
+          }
+        },
+        "required": [
+          "signed",
+          "signatures"
+        ],
+        "additionalProperties": false
       },
       "metadata.root": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -21336,6 +21716,7 @@
           "target",
           "release",
           "package",
+          "time",
           "decision",
           "download",
           "authorization-preinstall",
@@ -24379,6 +24760,14 @@
           "lossIntervalMs"
         ],
         "additionalProperties": false
+      },
+      "api.time-request": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/components/schemas/time.request"
+      },
+      "api.time-response": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": "#/components/schemas/time.response"
       },
       "api.check-request": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -279,6 +279,20 @@ Root 轮换只使用产品级 PublishRootChange。Release 续签和不改变可�
 
 联网确认旧消费结果并取消/失效未消费授权，或核对已消费的安全取消/既有终态后，才以独立处置解除对账占用。+61d 查询关闭、secret 丢失或旧凭据不能合法恢复时，由 MFA、最小权限、受控故障角色签发独立对账任务；绑定原请求摘要、scope、purpose、authorization/transaction ID、本地停用证明及任务自身修订。helper 核对旧活动身份/数据、无本次受保护写入、无活跃写入者及永久 fencing，服务端核对旧授权及范围占用，全部满足才放行。历史结果缺失保留未知，处置只追加关联记录、不改 reporting_timeout 等原终态，不补签旧事件/授权，不授予下载或执行权；失败/丢 ACK 恢复同一任务，证明不足保留保护和人工前向修复入口。新升级完整重新准备及 required 备份，不重置任何原期限。
 
+### 9.7 专用请求绑定授时
+
+T26 只通过固定 `POST /v1/upgrade/time` 恢复服务端时间锚。请求与直接签名 Envelope 响应均最多 64 KiB；闭形字段及 T01 原域分离字节以 [time 契约](../specs/upgrade/v1/contract-profile.md#dedicated-fresh-request-time-response) 为准。新增 `time` 角色及 `purpose=trusted-time.v1`，Root policy 的 component 必填，channel/targetKey 均为 null；signed.scope 恰为空对象。该用途既不是 Timestamp 元数据，也不是决定、下载或安装凭据，不能授予升级资格。
+
+客户端必须从独立受保护的完整 Root 字节及最高版本/deny 事实出发；后继逐版本满足旧、新 Root 两个阈值，禁止远程重置或跳版本。过期旧 Root 仅能验证连续后继，不能以其 issuedAt 或旧 time/Decision 时间证明当前时间。临时候选仅在签名、完整最终 Root envelope SHA/version、原请求 nonce、已知 deny 和完整安全区间均通过后才能接受。通用 envelope 验证不得用 time.serverTime 回填 now 取得自证结果。
+
+requestNonce 是实际 owner 为本次活跃请求产生的 32 字节随机数，以恰好 43 字符 canonical base64url 编码并解码复验。重试不得刷新原请求 nonce、原 Root 引用或首次单调发送边界来缩短 RTT；Root 改变时须验证连续新链、废弃旧尝试，并创建新 nonce/发送观测。普通应用自报 nonce、启动身份、trusted 标记或计时值不构成实际请求/连续性证明。
+
+以实际同一连续区间内发送向下取整、接收向上取整的毫秒边界计算 RTT，得到接收时 UTC 区间 `[serverTime-uncertaintyMs, serverTime+uncertaintyMs+RTT]`。全部数值、减加及 Root 窗口必须安全且不溢出；所有历史 Root 的 issuedAt 不晚于区间下界，最终 Root 的 expiresAt 严格晚于上界。下界不得低于实际受保护时间下界。最大 RTT、最大 uncertainty、下界和已知 deny 集必须由保护上下文显式提供；缺失、超限、反向观测或不明来源一律拒绝，不猜生产默认值。零误差/零 RTT 的纯边界向量不证明实际网络或 UTC 无误差。
+
+服务端必须使用实际 SQL UTC 观测及覆盖采样量化/来源误差的受保护 uncertainty；签名只认证被授权 time issuer 的陈述，不独立证明服务器时钟准确。不得接收请求中的 serverTime、成功标记或 clock DTO 作为来源。签名 RPC 在 SQL 事务外进行，响应暴露前在真实一致事务内重核 current Root/deny、time issuer epoch、accepted material、scope 与授时策略/来源状态；变化或不明则拒绝。受控签名 adapter 或参考区间计算本身不等于该发行 owner 已实现。
+
+本扩展按已批准的未上线 V1 协同更新执行，不提供旧字段、普通 HTTPS/Date、旧 iat 或 Timestamp 的时钟回退。无 time 授权的旧 Root 仍可按原规则验证元数据，但不能授权授时；持久锚、启动连续性、原预算和清理恢复屏障另按 §11 及需求 §17.1 实现并验收。
+
 ## 10. SN、安装标识与认证边界
 
 - SN 只参与候选灰度包含/排除/稳定百分比分桶；灰度命中可决定本轮候选资格，但 SN 本身不是设备认证、scope 绑定、许可证或执行授权凭据。

@@ -46,6 +46,16 @@ for (const operation of OPERATIONS) {
     security: operation.management ? [{ managementIdentity: [] }] : [],
     description: 'Validate the closed contract and current server-owned read set. A schema-valid request grants no permission.',
     requestBody: { required: true, content: { 'application/json': { schema: { $ref: `#/components/schemas/api.${operation.name}-request` } } } }, responses } };
+  if (operation.name === 'time') {
+    const post = paths[operation.path].post;
+    post['x-maximum-request-bytes'] = 65_536;
+    post['x-maximum-response-bytes'] = 65_536;
+    post.description = 'T26 fresh-request time observation. No session, upgrade eligibility or credential renewal. '
+      + 'Request and response are bounded to 64 KiB; the response is the direct canonical signed Envelope.';
+    post.responses[200].description = 'Canonical time Envelope only; no unsigned wrapper or requestId. '
+      + 'Clock recovery additionally requires protected Root continuity, the original nonce, caller-proven '
+      + 'monotonic send/receive observations and explicit uncertainty/RTT policies.';
+  }
 }
 export const openapi = { openapi: '3.1.0', jsonSchemaDialect: 'https://json-schema.org/draft/2020-12/schema',
   info: { title: 'Pinvou Upgrade V1 Control Contract', version: '1.0.0',

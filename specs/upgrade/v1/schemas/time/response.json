@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pinvou:upgrade:v1:time:response",
+  "type": "object",
+  "properties": {
+    "signed": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "const": 1
+        },
+        "role": {
+          "const": "time"
+        },
+        "product": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "maxLength": 128,
+          "not": {
+            "pattern": "[^A-Za-z0-9._:-]"
+          }
+        },
+        "component": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "maxLength": 128,
+          "not": {
+            "pattern": "[^A-Za-z0-9._:-]"
+          }
+        },
+        "scope": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "purpose": {
+          "const": "trusted-time.v1"
+        },
+        "requestNonce": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/timeNonce"
+        },
+        "root": {
+          "$ref": "urn:pinvou:upgrade:v1:common#/$defs/timeRoot"
+        },
+        "serverTime": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "uncertaintyMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "role",
+        "product",
+        "component",
+        "scope",
+        "purpose",
+        "requestNonce",
+        "root",
+        "serverTime",
+        "uncertaintyMs"
+      ],
+      "additionalProperties": false
+    },
+    "signatures": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:pinvou:upgrade:v1:common#/$defs/signature"
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "signed",
+    "signatures"
+  ],
+  "additionalProperties": false
+}

@@ -12,6 +12,9 @@ const prepare = { preparation: common('preparation'), freezeEpoch: nullable(comm
   preinstallSlot: nullable(object({ slotIdentity: identifier, slotRevision: common('positive'), state: literal('inactive') })) };
 const commonErrors = ['CONTRACT_INVALID', 'CREDENTIAL_INVALID', 'REVISION_CONFLICT', 'QUALIFICATION_CHANGED',
   'METADATA_SYNC_PENDING', 'RATE_LIMITED', 'SERVICE_UNAVAILABLE'];
+operation('time', 'T26', 'upgrade/time', { $ref: 'urn:pinvou:upgrade:v1:time:request' },
+{ $ref: 'urn:pinvou:upgrade:v1:time:response' }, 'trusted-time.v1',
+['CONTRACT_INVALID', 'METADATA_SYNC_PENDING', 'RATE_LIMITED', 'SERVICE_UNAVAILABLE']);
 operation('check', 'T17', 'upgrade/check', requestShape({ requestNonce: identifier, facts: api('current-facts'),
   grayTargeting: api('gray-targeting'),
   executionPurpose: { enum: ['preinstall', 'install', 'activate'] },

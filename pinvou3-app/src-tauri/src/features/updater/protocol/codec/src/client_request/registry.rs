@@ -12,7 +12,11 @@ macro_rules! frozen {
         ))
     };
 }
-const RESOURCES: [(&str, &str); 18] = [
+const RESOURCES: [(&str, &str); 19] = [
+    (
+        "urn:pinvou:upgrade:v1:time:request",
+        frozen!("time/request.json"),
+    ),
     (
         "urn:pinvou:upgrade:v1:api:current-facts",
         frozen!("api/current-facts.json"),
@@ -80,7 +84,11 @@ const RESOURCES: [(&str, &str); 18] = [
         frozen!("credentials/telemetry-event.json"),
     ),
 ];
-const SCHEMAS: [(ClientRequestOperation, &str); 26] = [
+const SCHEMAS: [(ClientRequestOperation, &str); 27] = [
+    (
+        ClientRequestOperation::Time,
+        frozen!("api/time-request.json"),
+    ),
     (
         ClientRequestOperation::Check,
         frozen!("api/check-request.json"),
@@ -278,7 +286,7 @@ mod tests {
                 .map(|op| op.as_str())
                 .collect()
         );
-        assert_eq!(names.len(), 26);
+        assert_eq!(names.len(), 27);
         for (op, _) in SCHEMAS {
             assert!(validator(op).is_ok());
         }

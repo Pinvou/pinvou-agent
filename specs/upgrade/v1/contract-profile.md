@@ -1,10 +1,11 @@
 # Upgrade protocol V1 byte and trust profile
 
-Applies to T01 artifacts. These choices were confirmed for implementation on
+Applies to T01 artifacts and the dedicated T26 time extension. These choices were confirmed for implementation on
 2026-10-09: Ed25519, initial Root 2-of-3 threshold, other roles initially one valid
-signature, and the resource limits below. The service/backend lives in a separate
-repository whose location and technology have not yet been selected. This package
-does not select that backend or introduce a production key service.
+signature, and the resource limits below. The owner-approved 2026-10-25 dedicated
+time extension keeps protocolVersion 1 and requires coordinated client/service
+contract updates without a legacy clock fallback. This reference package does
+not configure production custody, a time source or deployment.
 
 ## Closed JSON and resource limits
 
@@ -19,6 +20,7 @@ components without leading zeros. String data is not normalized with NFC/NFD.
 |---|---:|
 | Complete metadata envelope | 1,048,576 bytes |
 | Complete credential envelope | 65,536 bytes |
+| Time request or complete time response Envelope | 65,536 bytes each |
 | Nested values below the root | 32 levels |
 | Decoded individual string, including an object key | 65,536 UTF-8 bytes |
 | Members in any object or array | 4,096 |
@@ -56,6 +58,8 @@ Signing input is the ASCII string `pinvou-upgrade-signed-v1`, one **NUL byte**
 
 The display strings above denote objects/values, not literal wire placeholders.
 Metadata roles are `root`, `timestamp`, `snapshot`, `target`, `release`, `package`.
+The separate `time` role has its own closed request/response profile below; it is
+neither metadata membership nor an upgrade credential.
 Credential roles/types, `aud`, `purpose`, `credentialPurpose` and event models are
 closed by their individual Schemas. Domain separation includes the full signed
 body, so identities, roles, lifetimes and conditional fields cannot be swapped.
@@ -165,7 +169,9 @@ and `0` never substitute for the NUL byte.
 ## Time and lifecycle separation
 
 All times are safe-integer UTC epoch milliseconds. Current time is trusted input,
-not inferred from an incoming envelope. Valid windows are half-open; equality at
+not inferred by generic envelope verification. The dedicated time bootstrap path
+below authenticates a fresh response and calculates bounded interval DATA; actual
+protected acceptance and continuity still belong to T26. Valid windows are half-open; equality at
 expiration rejects. Metadata uses issuedAt/expiresAt; credentials use iat/nbf/exp.
 Occurrence is `[nbf,eventNotAfter)` and upload is `[nbf,exp)`.
 
@@ -187,6 +193,105 @@ act as a download deadline. Workflow/session handoff, events deduplication,
 late-diagnostic routing and original-stage quality are T02/T17/T20/T21/T44 duties.
 Only explicit isolated contract fixtures may contain incrementalPackages; normal
 production verification rejects them, and empty capabilities select FullPack.
+
+## Dedicated fresh-request time response
+
+T26 owns fixed `POST /v1/upgrade/time`. The request has exactly:
+
+```text
+{protocolVersion:1, product, component, requestNonce, root:{version,sha256}}
+```
+
+The response is the direct canonical T01 Envelope, exactly `{signed,signatures}`,
+without an unsigned requestId, wrapper, Date/header time or clock-success flag.
+Its signed body has exactly:
+
+```text
+{protocolVersion:1, role:"time", product, component, scope:{},
+ purpose:"trusted-time.v1", requestNonce, root:{version,sha256},
+ serverTime, uncertaintyMs}
+```
+
+The displays name fields; they are not literal JSON fixture values. Schemas are
+`time/request` and `time/response`. Product and component are bounded identifiers;
+component is nonnull. The Root time policy matches that component exactly and has
+null channel/targetKey. There is no installation, channel, target or credential
+scope, no iat/nbf/exp and no grant of download or execution rights. Time signatures
+use the original T01 domain and the exact Root-declared time threshold/key set;
+a Timestamp or Decision key is not implicitly a time key.
+
+Nonce is exactly 32 CSPRNG bytes represented by 43 canonical unpadded base64url
+characters, with decoding and round-trip equality required. The actual host owns
+the live request and original monotonic send/receive association. Both root refs
+have a positive safe version and a 64-lowercase-hex SHA-256 of the **entire final
+canonical Root Envelope, including its original signatures**. Hashing only the
+Root signed body is wrong. Request and response refs must equal the final
+Root's actual version/hash. The request cannot establish an independent anchor.
+
+Bootstrap verification starts from the actual protected Root bytes/highest
+accepted state and known deny information. Each supplied successor is consecutive
+and satisfies both old/new Root thresholds under the original bytes. Expired
+historical Roots can authenticate continuous successors, not present time. No
+old issuedAt, credential iat or caller-provided now is used to make a candidate
+current. The original protected starting Envelope may retain historical old+new
+cross-signatures; it must not be rejected merely by applying only its new policy
+to those already authenticated historical signatures.
+
+Before acceptance, privately verify the closed time body, original nonce,
+product/component, full Root refs, scoped time signatures and known deny set.
+Given caller-proven same-continuity monotonic integer brackets, compute:
+
+```text
+RTT = receivedMonotonicMs - sentMonotonicMs
+UTC interval at receipt = [serverTime - uncertaintyMs,
+                           serverTime + uncertaintyMs + RTT]
+```
+
+Sent is rounded down before transmission and receipt rounded up, so independent
+truncation cannot hide elapsed time. The result is only as of that original
+receive point; the actual owner must conservatively advance it to later use.
+Server uncertainty includes actual UTC source error and sampling quantization.
+The service must derive serverTime from actual SQL UTC and protected source/error
+policy, never from client claims. An authorized time signature authenticates the
+issuer's assertion; it is not independent physical proof that the issuer's clock
+is accurate.
+
+All input values and results must remain nonnegative safe integers without
+underflow, overflow or clipping. Explicit protected maxRoundTripMs,
+maxUncertaintyMs, trustedTimeFloor and known denied-key IDs are required, with no
+guessed defaults. RTT must be nonnegative and within policy; declared uncertainty
+must fit policy. Every Root's issuedAt is at or before the interval's lower end;
+all Root windows retain their structural 365-day maximum, and the final Root's
+expiresAt is strictly greater than the upper end. The lower end cannot regress
+below the protected time floor. Policy/floor provenance is an actual owner duty,
+not a successful DATA/Schema check. Zero-valued pure boundary policies do not
+claim zero real clock error or network latency.
+
+Retries retain the original request/nonce, Root ref and first send bracket;
+receiving an old response cannot reset the RTT origin. Root change or an
+abandoned/expired attempt requires a fresh nonce and genuinely new send
+observation after authenticating the successor chain's structure and dual
+signatures, not rebinding the old request. Its final current window is checked
+with the new response interval, not a guessed now before requesting time.
+The server must refuse stale Root bindings and unknown/unconfigured sources.
+Provider RPC occurs outside SQL transactions. Before exposing the signed result,
+the real issuer must recheck actual current Root/deny, role/epoch/material,
+scope, SQL/source state and protected policy in its final consistent transaction.
+A finite signing adapter alone does not implement this issuer workflow.
+
+`verifyEnvelope` refuses time; `verifyTimeResponse` has no trusted-now argument.
+Its immutable return `{earliest,latest,asOfMonotonicMs,root}` is reference DATA,
+not a live clock capability, metadata acceptance or installation permit. The
+protected T26 owner must persist anchors, original deadlines/spent budgets and
+recovery barriers. Fresh time does not reset old budgets or renew credentials;
+cleanup under the original deadlines must finish before dependent actions resume.
+
+This is an approved coordinated change to unreleased V1: Schema/API artifacts,
+JS/Rust verification and the server pinned bundle must update together. There is
+no fallback to old field sets, ordinary HTTPS, wall time or Timestamp semantics.
+A legacy Root without a time policy keeps its original metadata verification
+meaning but cannot authorize a clock response. Original crypto vectors remain
+unchanged; dedicated public-only time vectors are separate.
 
 ## Control and transition contract
 

@@ -8,6 +8,7 @@
     "target",
     "release",
     "package",
+    "time",
     "decision",
     "download",
     "authorization-preinstall",

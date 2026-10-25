@@ -393,6 +393,27 @@ are not pending decisions. Real authenticated time/continuity and durable recove
 remain implementation and verification work; approval does not prove those
 capabilities or approve any concrete preparation budget.
 
+## Approved dedicated time role and coordinated V1 extension (2026-10-25)
+
+The owner approved a dedicated Root-delegated `time` role and the coordinated
+update of the unreleased V1 contract, without a legacy clock fallback. The wire
+protocolVersion stays 1. Generators, API schemas, JS/Rust verification and the
+service's pinned contract must move together; this is not a promise that older
+V1 parsers accept a Root containing the new role.
+
+The fixed `/v1/upgrade/time` response uses the original T01 canonical signing
+domain, purpose `trusted-time.v1`, exact product/component scope, the original
+fresh 32-byte nonce and the full final Root Envelope hash/version. Explicit
+protected RTT/uncertainty policy, monotonic brackets, known deny state and time
+floor are mandatory. Old Root issuedAt, credential iat, wall time and ordinary
+HTTPS are not replacement time sources. See the
+[closed time contract](../specs/upgrade/v1/contract-profile.md#dedicated-fresh-request-time-response).
+
+This approves the protocol/trust design, not production UTC accuracy, configured
+keys, a deployed issuer, protected host continuity, durable budgets or recovery
+cleanup. Concrete T03 preparation budgets remain unapproved. Clock restoration
+never renews credentials, resets original budgets or grants installation rights.
+
 ## Native package certificate decision (2026-10-21)
 
 The owner removed mandatory native code-signing certificates for update packages,

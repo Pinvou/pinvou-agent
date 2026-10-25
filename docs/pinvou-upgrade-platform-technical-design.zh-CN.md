@@ -363,6 +363,14 @@ TrustedDeadlineProvider 输出已到/未到/不可可信判定，并将受保护
 
 恢复路径只接受经现有信任链验证、绑定本次请求且可证明新鲜度的服务端时间锚；旧签名时间或普通墙钟不够。恢复屏障顺序为：校验并持久化锚 → 各 owner 持产品锁/revision 核对原 deadline → 立即清理已到期备份/staging/密钥 → 清理成功后才恢复依赖时间的升级动作；已到期清理首轮最迟十分钟，失败保持暂停。校时通信本身不授升级权，最终 check/消费/紧前复核仍执行；未知期间保留不是延长原 deadline，不宣称永久离线物理删除硬上限。实际授时验证、持久化、各 owner 原子反应和崩溃恢复都必须实现并认证，本文不以输入一个 trusted 布尔量充当生产证据。
 
+### 13.1 T26 专用授时与原期限恢复接点
+
+授时协议采用安全要求 §9.7 与 [time 字节契约](../specs/upgrade/v1/contract-profile.md#dedicated-fresh-request-time-response)：固定 `/v1/upgrade/time`、独立 Root time 角色、原活跃 nonce、完整 canonical Root envelope 引用及接收时完整 UTC 区间。客户端先将后继作为私有候选做连续双阈值验证，再核 time 签名和显式 RTT/uncertainty/已保护下界；最终 Root 覆盖整个区间前不产生可信时钟能力，不能循环调用需要 trusted now 的决定验证器。
+
+服务端发行 owner 必须从真实 SQL 时间和受保护来源误差取得 sample，读取 actual current Root/deny/issuer/material；TX 外签名后最终重核，禁止 RPC 持 SQL 事务或用普通请求 DTO 代替来源。Root 引用改变时旧请求不转绑，新 nonce 与新发送观测另起新尝试；同一尝试的重试不能刷新首次发送边界。策略未配置或来源/当前 guard 变化即拒绝，不使用旧角色回退。
+
+受保护 host 将通过验证的锚、实际接收单调边界与原 ledger revision 关联提交；跨启动连续性未知仍先持久化暂停/清 secret，并保存原期限与已耗预算。恢复锚先置 cleanup barrier，再由各实际 owner 重读原对象/期限并清理，完整成功后才解除依赖动作的屏障；旧 recovery secret 不重建。参考 JS/Rust 只提供语法、签名和区间 DATA，不提供实际时钟、持久化、备份清理或安装资格。T03 具体预算仍须实测/批准，不把计时上限当准备预算；这些运行时接线未因协议扩展而完成。
+
 ## 14. 平台适配器与本地执行预算
 
 公共接口按语义定义，具体 OS 算法、返回类型和固定向量由各平台契约冻结：

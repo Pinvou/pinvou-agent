@@ -106,8 +106,17 @@ async fn post_with_profile(
     raw_request: &[u8],
     profile: Profile,
 ) -> Result<ReceivedResponse, ControlHttpError> {
-    let document =
-        Document::parse(raw_request, InputKind::Metadata).map_err(ControlHttpError::RequestJson)?;
+    let kind = if operation == Operation::Time {
+        InputKind::Credential
+    } else {
+        InputKind::Metadata
+    };
+    let response_limit = if operation == Operation::Time {
+        65_536
+    } else {
+        MAX_RESPONSE_BYTES
+    };
+    let document = Document::parse(raw_request, kind).map_err(ControlHttpError::RequestJson)?;
     document
         .assert_supplied_client_request_contract(operation)
         .map_err(ControlHttpError::RequestContract)?;
@@ -157,13 +166,21 @@ async fn post_with_profile(
     check_headers(response.headers())?;
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(network_error)? {
-        if chunk.len() > MAX_RESPONSE_BYTES - bytes.len() {
+        if chunk.len() > response_limit - bytes.len() {
             return Err(ControlHttpError::ResponseTooLarge);
         }
         bytes.extend_from_slice(&chunk);
     }
-    let document =
-        Document::parse(&bytes, InputKind::Metadata).map_err(ControlHttpError::ResponseJson)?;
+    let document = Document::parse(&bytes, kind).map_err(ControlHttpError::ResponseJson)?;
+    if operation == Operation::Time
+        && status == 200
+        && document
+            .canonical_bytes()
+            .map_err(ControlHttpError::ResponseJson)?
+            != bytes
+    {
+        return Err(ControlHttpError::ResponseJson(Error::Canonicalization));
+    }
     document
         .assert_supplied_client_http_response_contract(operation, status)
         .map_err(ControlHttpError::ResponseContract)?;
