@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-25 08:17 Asia/Shanghai**.
+Checkpoint: **2026-10-25, Windows fixed-host final regression passed**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -15,11 +15,15 @@ measured hours or release readiness.
 The current main task is **T09 Artifact-valid admission and quarantine**.
 T10 channel risk review, exceptions and current-risk reads are delivered; its
 remaining actual selection-widening composition is parked until T14 supplies the
-real qualification producer. The fixed T08 adapter is delivered. T09 now extends its verified upload lifecycle and validation components with an
-delivered admission/quarantine increment. Independent FullPack custody and
-generic fail-closed installer refusal passed its final common checks. The next
-explicit Linux physical-main/XZ increment is integrated and formatted, with
-the final common checks passed. This checkpoint precedes its delivery commit.
+real qualification producer. The fixed T08 adapter is delivered. T09 extends its
+verified upload lifecycle and validation components with the delivered
+admission/quarantine increment. Independent FullPack custody and generic
+fail-closed refusal passed their checks. The Linux physical-main/XZ follow-up is
+committed and pushed as service `e7e58fa`, with client progress `145540ee`.
+The current direct T04 increment adds fixed Windows host FullPack tooling and
+protected main-image checks. Its scoped built-CLI workflow and five owner/config
+checks passed. Final common regression and the separately rerun final CLI also
+passed, as recorded below.
 T07 signing-key lifecycle is implemented, independently reviewed and pushed. T29 signed-source
 continuation is delivered; its remaining production current-metadata/time owners
 remain parked with T26/T27.
@@ -323,9 +327,10 @@ The first scoped invocation `73097` failed because of an unused verification-tes
 Debian import; a test-only removal corrected it. That original invocation remains
 failed rather than environment-exempt. Actual release DEBs, original
 root/systemd scanning and a positive Artifact.valid lifecycle are not verified
-by the constructed parser fixtures. Windows NSIS main-payload and DMG
-filesystem/application qualification remain business gaps; historical T04 and
-helper/launcher paths are unchanged. The **90%** estimate is still component
+by the constructed parser fixtures. The new fixed Windows host increment below
+adds actual bounded main-image/source checks; generic NSIS payload extraction
+and DMG filesystem/application checks remain business gaps. Historical T04 role
+inspection and helper/launcher behavior are unchanged. The **90%** estimate is still component
 engineering coverage, not task completion or production admission success.
 Actual Linux/root/systemd scan plus live-cloud replica E2E remains unexecuted;
 that environment-only gap is distinct from the implementation gaps. Native
@@ -336,9 +341,10 @@ T09 still owes consuming and displaying genuine T46 evidence references bound
 to the exact source/target, host platform, Artifact, activation mode, data/backup
 range and finite preparation/execution budgets. The genuine producer is not yet
 delivered; this integration gap does not make T46 an Artifact.valid prerequisite.
-The preceding admission/quarantine delivery is committed; the new Linux follow-up
-passed its final common checks and awaits its delivery commit. The estimate does not
-change the strict **8/47 (17.0%)** completion ratio or mark T09 complete.
+The Linux follow-up passed its final common checks and is committed/pushed in
+service `e7e58fa`, with client progress `145540ee`. The current Windows increment
+is scoped verification, not another completed task. The estimate does not change
+the strict **8/47 (17.0%)** completion ratio or mark T09 complete.
 
 ## Linux profile follow-up verification
 
@@ -360,6 +366,70 @@ Linux/root scanner, live-cloud, Artifact.valid or upgrade-mode acceptance.
 The initial unused-import invocation remains failed as recorded above. New
 rules do not replace an already-bound original configuration or unknown scan;
 apply the compiled profile before a new explicit upload and its unique enqueue.
+
+## Windows fixed-host tooling and admission-profile increment
+
+The explicit `pinvou3-windows-host-source.v1` profile now handles canonical
+`installer.exe`, `pinvou-upgrade-helper.exe`, `pinvou-upgrade-launcher.exe` and the
+complete embedded-catalog `app/` files. Actual RCDATA 34101..34109 binds production
+host Manifest v2 and inventory/shard v1 under the strict ASCII profile. The same
+verified FullPack supplies actual x64 main/helper/launcher executable mappings;
+main FileVersion/ProductVersion match the application version. Every declared
+helper artifact shares the entire same physical helper identity, without duplicate
+aliases; distinct alternate helpers remain unsupported. Zero-byte app resources
+are allowed, native/evidence remain nonempty and resource ZIPs remain original
+recursively inspected bytes.
+
+The existing offline prepare/assemble/verify commands accept the optional local
+`sourceProfile` plus relative `sourceDirectory` with `inputs: []`. Collection uses
+the real installer's declared inventory, not a caller app list or whole local
+directory census. Unrelated local source files are ignored; no protected T31
+namespace or all-ancestor no-reparse proof is inferred. The final FullPack itself
+still has exact membership. The protected exact-scope/rule reference binds the
+admission configuration; Windows-only settings do not require XZ, while mixed
+Linux profiles retain their original XZ capacities and canonical references.
+
+Independent scoped source/repair reviews passed. Codec checks recorded
+**115 passed / four skipped records**, across **28 top-level tests**. The actual
+built CLI invocation closed naturally without a resource-floor breach: formatting,
+build and packaging/CLI checks passed **188 records / three skips**, across
+**35 top-level tests**. The new fixed-host CLI test and all eight subcases actually
+performed prepare -> real external test signature -> assemble -> verify,
+byte-identity checks, tamper/restoration, no overwrite and source refusal. This
+proves an offline material process with constructed fixtures, not a production
+installer, T31 runtime, original scanning, cloud replicas, new real browsers or a
+positive Artifact.valid lifecycle. Skips are not passes.
+
+The initial integrated core compile failed on an unused archive import and ran
+zero tests; the exact import-only repair passed independent source review. Earlier
+integration metadata/formatter preconditions also failed before any test ran.
+Those unsuccessful invocations are retained as such. Separate owner/configuration
+checks passed five top-level / five records, zero skips/failures, formatting and
+whitespace in their qualified closed run. Final common checks and the final built-CLI rerun passed in their separate
+qualifying invocation, recorded below. Generic NSIS payload and DMG filesystem/application
+business gaps remain, as does genuine downstream T46 evidence consumption.
+T09 stays **90%**, equal-task engineering **37.0%**, strict completion **8/47
+(17.0%)**. No total download deadline or mandatory native certificate is added.
+
+
+## Final Windows fixed-host regression
+
+The final common invocation closed naturally without resource-floor breaches.
+Default Go tests recorded **5,044 passed, 1,772 skipped and zero failed**, across
+2,464 top-level tests including skips. Changed-source formatting, Linux server
+and scanner-test binary compilation, all-package vet, module integrity, all
+command builds, the client contract pin and whitespace checks passed. Normal
+Go test-cache reuse covered 103 unchanged packages; skips are not passes and
+Linux cross compilation is not Linux execution.
+
+After those command builds, the final built upgrade-pack executable separately
+passed the fixed-host CLI test and all eight subcases: **nine passed records,
+zero skips/failures, one top-level test**. The default suite's skip for this
+opt-in test is not counted as that separately executed pass. These results
+remain constructed offline source/material verification, without a production
+installer, T31 runtime, original scanner, live-cloud, browser or Artifact.valid
+lifecycle claim. A runner syntax preflight was corrected before any common
+stage started; it is not a test pass. Earlier unsuccessful runs remain recorded.
 
 ## Completed T07 managed-purpose lifecycle
 
@@ -658,7 +728,7 @@ completion blocker; outstanding business implementation is.
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | 100% | Implemented; independently reviewed and verified | Nineteen exact managed scopes, original recovery/cleanup, Root/history, mixed-current key rotation, actual retention, Target scope isolation and permanent retirement; native/browser/common checks passed. Old Target cross-version handoff remains unexecuted; production custody/deployment are deferred. |
 | T08 | 100% | Implemented; independently reviewed and verified | Internal atomic publication/renewal, original T06 business composition, active deny/pending, durable job storage and callable reconciliation worker; independent review, native regressions, browser and common checks passed. T14 eligibility and host startup composition remain explicit separate boundaries. |
-| T09 | 90% | In progress | Component engineering estimate only. Upload lifecycle/rejection and admission/quarantine machinery with independent FullPack custody are delivered. Default generic final-installer paths remain unsupported; the explicit Linux2 DEB physical-main/XZ follow-up is integrated and passed the final common checks, with no production DEB/native Artifact.valid success claim. Windows/DMG main-payload business gaps and genuine T46 integration remain. Four browsers collected, zero executed; skips/unexecuted E2E are not passes. |
+| T09 | 90% | In progress | Component estimate only. Upload/validation, independent FullPack custody and admission/quarantine machinery are delivered; Linux2 physical-main/XZ is committed in e7e58fa. The fixed Windows host source/profile and actual offline built-CLI workflow now have scoped verification; five owner/config checks, final common regression and the separate final built-CLI rerun passed. Generic NSIS payload, DMG filesystem/app and genuine downstream T46 integration remain. No production installer/scan-to-valid claim; four quarantine browsers remain collected, zero executed. |
 | T10 | 90% | In progress | Scan capture/strict coverage plus formal Target/channel risk review, bounded exceptions, revocation/expiry, highest-current risk guards and the fixed T08 tightening adapter are delivered and independently reviewed/verified. Genuine selection restoration/widening still needs T14 actual qualification and publication composition. Linux/systemd and formal complete-lifecycle/browser E2E remain unexecuted and non-blocking. |
 | T11 | 65% | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | 55% | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
