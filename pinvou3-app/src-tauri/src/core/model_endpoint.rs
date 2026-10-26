@@ -810,10 +810,20 @@ pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
 /// Display redaction staying complete. One scrub here covers both
 /// surfaces permanently (was: identical ladders in settings.rs and the
 /// CLI's models.rs).
+/// Redaction composition for model-probe diagnostic text that embeds
+/// user-derived URL parts: URL-userinfo strip first, then the secret-shape
+/// pass. Real transport errors cannot carry userinfo (reqwest strips it at
+/// builder construction), but a base_url can carry a token-shaped secret in
+/// its PATH (gateway-prefix patterns), so any composed message quoting a
+/// probed path or error detail goes through here before serialization.
+pub fn redact_model_probe_text(text: &str) -> String {
+    crate::platform::credential_store::redact_secret(
+        &crate::platform::redact_url_credentials_in_text(text),
+    )
+}
+
 pub fn model_probe_transport_code(err: &reqwest::Error) -> (&'static str, String) {
-    let raw = crate::platform::credential_store::redact_secret(
-        &crate::platform::redact_url_credentials_in_text(&err.to_string()),
-    );
+    let raw = redact_model_probe_text(&err.to_string());
     let lower = raw.to_lowercase();
     let code = if err.is_timeout() {
         "timeout"

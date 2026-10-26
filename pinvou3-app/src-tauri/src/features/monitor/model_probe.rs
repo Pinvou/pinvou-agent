@@ -297,11 +297,11 @@ async fn snapshot_for_model_config(
                     "offline",
                     Some(MonitorDiagnostic {
                         code: "models_http_error".to_string(),
-                        message: format!(
+                        message: crate::core::model_endpoint::redact_model_probe_text(&format!(
                             "{} returned HTTP {}",
                             probe_url_path(Some(r.url())),
                             r.status().as_u16()
-                        ),
+                        )),
                     }),
                 ));
             }
@@ -320,16 +320,18 @@ async fn snapshot_for_model_config(
                     "offline",
                     Some(MonitorDiagnostic {
                         code: "models_unreachable".to_string(),
-                        // The detail rides the same redaction composition as the
-                        // settings-page probe codes: reqwest's Display embeds the
-                        // full URL, and a user base_url can carry userinfo or a
-                        // token-shaped query string that must not leak into the
-                        // snapshot JSON.
-                        message: format!(
+                        // The composed message rides the same redaction
+                        // composition as the settings-page probe codes:
+                        // reqwest's Display embeds the full URL (userinfo,
+                        // token-shaped query), and the quoted probed path can
+                        // itself carry a token-shaped secret on a
+                        // gateway-prefix base_url — none of it may leak into
+                        // the snapshot JSON.
+                        message: crate::core::model_endpoint::redact_model_probe_text(&format!(
                             "{} unreachable: {}",
                             probe_url_path(err.url()),
                             crate::core::model_endpoint::model_probe_transport_code(&err).1
-                        ),
+                        )),
                     }),
                 ));
             }
@@ -890,8 +892,10 @@ fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
 /// The path actually requested by the models probe, for diagnostic copy.
 /// The probe URL is `upstream + "/models"` — the `/v1` prefix is not
 /// synthesized, so a root upstream like `http://host:8000` probes
-/// `/models` — and the copy must name the path that was really hit. A URL
-/// path carries no credentials (userinfo lives in the authority).
+/// `/models` — and the copy must name the path that was really hit. A
+/// path carries no userinfo (that lives in the authority) but can carry a
+/// token-shaped secret on a gateway-prefix base_url, so callers route the
+/// composed message through `redact_model_probe_text`.
 fn probe_url_path(url: Option<&reqwest::Url>) -> &str {
     match url {
         Some(u) => u.path(),
@@ -1401,6 +1405,32 @@ mod tests {
              {unreachable:?}"
         );
 
+        // A token-shaped path prefix (gateway-pattern base_url) is user data
+        // too: the probed path is scrubbed like any other URL fragment, even
+        // with no userinfo present.
+        let path_refused = snapshot_for_model_config(
+            "http://127.0.0.1:1/sk-live-abcdef123456xyz/v1",
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot even when unreachable");
+        let path_unreachable = path_refused
+            .diagnostic
+            .expect("offline carries a diagnostic");
+        assert_eq!(path_unreachable.code, "models_unreachable");
+        assert!(
+            !path_unreachable.message.contains("abcdef123456xyz"),
+            "the probed path must not echo a token-shaped prefix: {path_unreachable:?}"
+        );
+        assert!(
+            path_unreachable.message.contains("[REDACTED]"),
+            "the scrub covers the path prefix: {path_unreachable:?}"
+        );
+
         // Non-success HTTP (not 401/403) → models_http_error with the status.
         let mock = models_mock::spawn(&[("/models", 500, "boom".into())]);
         let http_err = snapshot_for_model_config(
@@ -1421,6 +1451,33 @@ mod tests {
         assert_eq!(
             http_diag.message, "/models returned HTTP 500",
             "the message quotes the path actually probed"
+        );
+
+        // Same scrub for the HTTP-error copy: a gateway-prefix base_url
+        // quoting a token-shaped path must not leak it through the snapshot.
+        let mock = models_mock::spawn(&[("/sk-live-abcdef123456xyz/models", 500, "boom".into())]);
+        let token_base = format!("{}/sk-live-abcdef123456xyz", mock.base_url);
+        let path_err = snapshot_for_model_config(
+            &token_base,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        let path_http_diag = path_err
+            .diagnostic
+            .expect("http error carries a diagnostic");
+        assert_eq!(path_http_diag.code, "models_http_error");
+        assert!(
+            !path_http_diag.message.contains("abcdef123456xyz"),
+            "a token-shaped path prefix must be scrubbed from the copy: {path_http_diag:?}"
+        );
+        assert!(
+            path_http_diag.message.contains("[REDACTED]"),
+            "the scrub replaces the token path: {path_http_diag:?}"
         );
 
         // 401 with a key → auth_failed.
