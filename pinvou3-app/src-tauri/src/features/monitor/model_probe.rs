@@ -3,7 +3,7 @@
 //! 职责边界——本模块只管「向 upstream 探一次模型健康 + 拉本地 vLLM `/metrics`」，
 //! 不涉及系统自指标采集（CPU/GPU/内存见 [`super::self_metrics`]）。
 //! Entrypoints: [`active_model_snapshot`] / [`snapshot_for_model_config`].
-//! 对外类型：[`VllmSnapshot`] / [`VllmStatus`]。
+//! 对外类型：[`VllmSnapshot`] / [`VllmStatus`] / [`HealthStatus`] / [`MonitorDiagnostic`]。
 
 use std::time::Duration;
 
@@ -14,13 +14,9 @@ use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
 /// 当前模型运行态 + 本地 vLLM 指标。字段名暂保留 vllm 兼容前端。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct VllmSnapshot {
     pub status: VllmStatus,
-    /// Current active model id / preset, for diagnosing whether a hot model
-    /// switch follows the user's selection.
-    pub model_id: Option<String>,
-    pub provider: String,
     /// vLLM `/v1/models` 返回的真实模型名。
     pub model: Option<String>,
     /// 用户 settings 中配置的模型名（与 `model` 可能不同）。
@@ -31,23 +27,30 @@ pub struct VllmSnapshot {
     pub target_kind: String,
     /// vLLM Prometheus 指标是否适用(= `target_kind == "local"`);云端 API 无 /metrics。
     pub metrics_applicable: bool,
-    /// `verified` / `unverified` / `missing_api_key` / `auth_failed` / `offline` / `mismatch`。
-    pub health_status: String,
+    /// 健康判定的权威通道。枚举经 serde 渲染成既有的 snake_case wire 字符串
+    /// (前端/CLI 已消费的取值逐字不变);用枚举而非 `String`,是让 producer
+    /// 与消费方在字面量上不可能漂移(round-2 审:一个拼写 typo 就能让诊断
+    /// 静默消失且零测试红)。
+    pub health_status: HealthStatus,
+    /// `health_status` 的精化诊断,恒有不变式
+    /// `diagnostic.is_some() == (health_status == HealthStatus::Offline)`:
+    /// `offline` 精化为 `models_http_error`(带 `http_status`)或
+    /// `models_unreachable`(带 `transport`/`endpoint`);其余健康态自身即
+    /// 结论,恒为 `None`。条目只携带机器可判定的稳定字段、不含人读 prose
+    /// (UI 文案按 `code` 走 `shared/i18n.js` 映射,见 `MonitorDiagnostic`)。
     pub diagnostic: Option<MonitorDiagnostic>,
-    /// Per-metric notices. Mostly metric failures (`metrics_unavailable`),
-    /// but `context_window_inferred` is a display-window notice and fires for
-    /// remote targets too (`metrics_applicable == false`) — do not gate
-    /// rendering of this vec on metrics applicability.
-    pub metric_diagnostics: Vec<MonitorDiagnostic>,
+    /// 稳定 `code` 的非致命通知,与健康判定相互独立:`metrics_unavailable`
+    /// (本地 /metrics 完全读不到——传输错误/非 2xx/正文读失败;200 但正文
+    /// 为空或非 Prometheus 时不触发)、`context_window_inferred`(展示窗口
+    /// 来自模型名/预设推断;`metrics_applicable == false` 的远端目标同样
+    /// 触发——不要按 metrics 适用性门控本 vec 的渲染)。
+    pub notices: Vec<MonitorDiagnostic>,
     pub max_model_len: Option<u32>,
+    /// vLLM 队列深度 gauges(`status` 的 Busy 判定源,CLI 人读行渲染为
+    /// `queue=R/W`)。取该指标名的第一个 Prometheus series:data-parallel
+    /// (`engine="0"/"1"`)下是 engine 0 的队列,不是全机汇总。
     pub num_requests_running: Option<f64>,
     pub num_requests_waiting: Option<f64>,
-    /// Cumulative prefix-cache hit rate: hits_total / queries_total × 100.
-    /// Reflects how much of the KV cache is reused across repeated prompt
-    /// prefixes, which directly drives first-token latency. Replaced the
-    /// instantaneous kv_cache_usage_perc, which stayed at 0-2% in
-    /// single-user scenarios and carried no signal.
-    pub prefix_cache_hit_pct: Option<f64>,
     /// prefix cache 原始计数器（hits_total / queries_total）。前端「清除统计」
     /// 用基准点对各累计 counter 做减法重算命中率,必须拿到原始分子/分母,
     /// 只给百分比无法做区间重算。
@@ -58,18 +61,12 @@ pub struct VllmSnapshot {
     /// 换模型 = 重启进程 = 自动归零，因此天然按模型分段。
     pub ttft_sum_s: Option<f64>,
     pub ttft_count: Option<f64>,
-    /// TPOT histogram cumulative values. Warning: the real metric names carry
-    /// a `request_` prefix (vllm:request_time_per_output_token_seconds_*),
-    /// locked against a real /metrics capture on 2026-06-10.
-    pub tpot_sum_s: Option<f64>,
-    pub tpot_count: Option<f64>,
-    pub generation_tokens_total: Option<f64>,
-    pub prompt_tokens_total: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VllmStatus {
+    #[default]
     Offline,
     Ready,
     Busy,
@@ -77,10 +74,52 @@ pub enum VllmStatus {
     Mismatch,
 }
 
+/// 健康判定。serde 渲染(`rename_all = "snake_case"`)与既有 wire 字符串逐字一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    Verified,
+    AuthFailed,
+    #[default]
+    Offline,
+    MissingApiKey,
+    Unverified,
+    Mismatch,
+}
+
+impl HealthStatus {
+    /// 与 serde 渲染逐字一致的人读标签(CLI 人读行用);由 CLI 的
+    /// `health_label_matches_the_serde_rendering_of_every_variant` 及显式
+    /// 字面量断言钉死,防 `rename_all` 变更静默改 wire。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HealthStatus::Verified => "verified",
+            HealthStatus::AuthFailed => "auth_failed",
+            HealthStatus::Offline => "offline",
+            HealthStatus::MissingApiKey => "missing_api_key",
+            HealthStatus::Unverified => "unverified",
+            HealthStatus::Mismatch => "mismatch",
+        }
+    }
+}
+
+/// 结构化诊断条目:只有机器可判定的稳定事实。`code` 是稳定分类,人读文案
+/// 必须由 UI 按 `code` 走 `shared/i18n.js` 映射,快照不携带 prose——
+/// reqwest 的 `Display` 会内嵌完整请求 URL(用户 base_url 可能带 userinfo
+/// 或 token 形查询串),所以诊断一律从解析后的字段构造,不经错误文本。
 #[derive(Debug, Clone, Serialize)]
 pub struct MonitorDiagnostic {
     pub code: String,
-    pub message: String,
+    /// HTTP 错误时的状态码。
+    pub http_status: Option<u16>,
+    /// 传输错误时的分类,词表与 `core::model_endpoint::model_probe_transport_code`
+    /// 一致(`timeout` / `connection_refused` / `network_error`),但改用
+    /// reqwest 的结构化 flag 判定(真实 reqwest 错误的 `Display` 不含
+    /// source 链,那边的字符串臂对它们是死代码)。
+    pub transport: Option<&'static str>,
+    /// 目标端点的 `scheme://host:port` 安全子集:userinfo 在 reqwest 构建
+    /// 请求时已被剥除,查询串在此按构造丢弃。
+    pub endpoint: Option<String>,
 }
 
 impl VllmSnapshot {
@@ -88,51 +127,8 @@ impl VllmSnapshot {
     /// 健康态 `verified` 且进程 Ready/Busy。原先该谓词在 GUI command 与
     /// CLI status_payload 各自手写一遍字面量匹配,单点收口避免字符串漂移。
     pub fn is_online(&self) -> bool {
-        self.health_status == "verified"
+        self.health_status == HealthStatus::Verified
             && matches!(self.status, VllmStatus::Ready | VllmStatus::Busy)
-    }
-
-    /// 构造一份带核心标识字段的快照,所有 vLLM `/metrics` 派生字段(`prefix_cache_*` /
-    /// `ttft_*` / `max_model_len`)缺省 None。调用方(健康探测的各早退分支 +
-    /// happy-path 起点)共享同一组「指标缺失」默认值,happy-path 再逐项覆盖真实解析值。
-    ///
-    /// 这是原来散落在 `snapshot_for_model_config` 中的「离线 / 早退」构造块与
-    /// `base_model_snapshot` helper 的收敛入口——行为保持:字段值与原三处构造完全一致。
-    fn with_base(
-        status: VllmStatus,
-        model_id: Option<String>,
-        provider: String,
-        model: Option<String>,
-        configured_model: Option<String>,
-        target_kind: &str,
-        metrics_applicable: bool,
-        health_status: &str,
-        diagnostic: Option<MonitorDiagnostic>,
-    ) -> Self {
-        VllmSnapshot {
-            status,
-            model_id,
-            provider,
-            model,
-            configured_model,
-            target_kind: target_kind.to_string(),
-            metrics_applicable,
-            health_status: health_status.to_string(),
-            diagnostic,
-            metric_diagnostics: Vec::new(),
-            max_model_len: None,
-            num_requests_running: None,
-            num_requests_waiting: None,
-            prefix_cache_hit_pct: None,
-            prefix_cache_hits: None,
-            prefix_cache_queries: None,
-            ttft_sum_s: None,
-            ttft_count: None,
-            tpot_sum_s: None,
-            tpot_count: None,
-            generation_tokens_total: None,
-            prompt_tokens_total: None,
-        }
     }
 }
 
@@ -154,8 +150,6 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
             .and_then(|m| (m.preset != ModelPreset::LocalVllm).then(|| m.model.clone()))
     });
     let api_key = model.as_ref().and_then(model_api_key);
-    let model_id = model.as_ref().map(|m| m.id.clone());
-    let provider = preset.as_str().to_string();
     // The context window the user explicitly declares in the model form must
     // join the monitor / live-dot display scale; otherwise after saving 1M the
     // chat page (chat:usage denominator) and the monitor page / progress-bar
@@ -165,8 +159,6 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
         &upstream,
         configured_model,
         preset,
-        model_id,
-        provider,
         api_key.as_deref(),
         configured_context,
     )
@@ -223,8 +215,6 @@ async fn snapshot_for_model_config(
     upstream: &str,
     configured_model: Option<String>,
     preset: ModelPreset,
-    model_id: Option<String>,
-    provider: String,
     api_key: Option<&str>,
     configured_context: Option<u32>,
 ) -> Option<VllmSnapshot> {
@@ -261,67 +251,60 @@ async fn snapshot_for_model_config(
             if r.status() == reqwest::StatusCode::UNAUTHORIZED
                 || r.status() == reqwest::StatusCode::FORBIDDEN =>
         {
-            return Some(VllmSnapshot::with_base(
-                VllmStatus::Offline,
-                model_id,
-                provider,
-                configured_model.clone(),
+            // auth_failed 即结论本身,无需精化诊断。
+            return Some(VllmSnapshot {
+                status: VllmStatus::Offline,
+                model: configured_model.clone(),
                 configured_model,
-                target_kind,
+                target_kind: target_kind.to_string(),
                 metrics_applicable,
-                "auth_failed",
-                Some(MonitorDiagnostic {
-                    code: "auth_failed".to_string(),
-                    message: format!(
-                        "model endpoint authentication failed (HTTP {})",
-                        r.status().as_u16()
-                    ),
-                }),
-            ));
+                health_status: HealthStatus::AuthFailed,
+                ..VllmSnapshot::default()
+            });
         }
         Some(Ok(r)) => {
             if target_kind == "local" {
-                return Some(VllmSnapshot::with_base(
-                    VllmStatus::Offline,
-                    model_id,
-                    provider,
-                    configured_model.clone(),
+                return Some(VllmSnapshot {
+                    status: VllmStatus::Offline,
+                    model: configured_model.clone(),
                     configured_model,
-                    target_kind,
+                    target_kind: target_kind.to_string(),
                     metrics_applicable,
-                    "offline",
-                    Some(MonitorDiagnostic {
+                    health_status: HealthStatus::Offline,
+                    diagnostic: Some(MonitorDiagnostic {
                         code: "models_http_error".to_string(),
-                        message: format!("/v1/models returned HTTP {}", r.status().as_u16()),
+                        http_status: Some(r.status().as_u16()),
+                        transport: None,
+                        endpoint: endpoint_root(Some(r.url())),
                     }),
-                ));
+                    ..VllmSnapshot::default()
+                });
             }
             None
         }
         Some(Err(err)) => {
             if target_kind == "local" {
-                return Some(VllmSnapshot::with_base(
-                    VllmStatus::Offline,
-                    model_id,
-                    provider,
-                    configured_model.clone(),
+                // 结构化 detail 取代 reqwest 的 `Display`:Display 内嵌完整
+                // 请求 URL(用户 base_url 可能带 userinfo 或 token 形查询串,
+                // 通用脱敏对无数字的查询值会漏),所以诊断只从解析后的字段
+                // 构造——`endpoint` 取 `err.url()` 的 scheme/host/port 子集
+                // (userinfo 在请求构建时已被剥除,查询串按构造丢弃),错误
+                // 文本一律不进快照。
+                return Some(VllmSnapshot {
+                    status: VllmStatus::Offline,
+                    model: configured_model.clone(),
                     configured_model,
-                    target_kind,
+                    target_kind: target_kind.to_string(),
                     metrics_applicable,
-                    "offline",
-                    Some(MonitorDiagnostic {
+                    health_status: HealthStatus::Offline,
+                    diagnostic: Some(MonitorDiagnostic {
                         code: "models_unreachable".to_string(),
-                        // The detail rides the same redaction composition as the
-                        // settings-page probe codes: reqwest's Display embeds the
-                        // full URL, and a user base_url can carry userinfo or a
-                        // token-shaped query string that must not leak into the
-                        // snapshot JSON.
-                        message: format!(
-                            "/v1/models unreachable: {}",
-                            crate::core::model_endpoint::model_probe_transport_code(&err).1
-                        ),
+                        http_status: None,
+                        transport: Some(transport_class(&err)),
+                        endpoint: endpoint_root(err.url()),
                     }),
-                ));
+                    ..VllmSnapshot::default()
+                });
             }
             None
         }
@@ -387,10 +370,16 @@ async fn snapshot_for_model_config(
         Some(r) if r.status().is_success() => r.text().await.ok(),
         _ => None,
     };
-    let mut metric_diagnostics = if metrics_applicable && metrics_text.is_none() {
+    // `metrics_unavailable` fires only when the local /metrics could not be
+    // read at all (transport error, non-success status, body read failure);
+    // a 200 with an empty or non-Prometheus body parses to all-`None` fields
+    // without a notice.
+    let mut notices = if metrics_applicable && metrics_text.is_none() {
         vec![MonitorDiagnostic {
             code: "metrics_unavailable".to_string(),
-            message: "local /metrics is unavailable or returned no Prometheus metrics".to_string(),
+            http_status: None,
+            transport: None,
+            endpoint: None,
         }]
     } else {
         Vec::new()
@@ -409,9 +398,11 @@ async fn snapshot_for_model_config(
     let (max_model_len, window_from_inference) =
         display_context_window(configured_context, target_kind, max_model_len, inferred);
     if window_from_inference {
-        metric_diagnostics.push(MonitorDiagnostic {
+        notices.push(MonitorDiagnostic {
             code: "context_window_inferred".to_string(),
-            message: "context length inferred from the model name / vendor preset; the endpoint does not report it directly".to_string(),
+            http_status: None,
+            transport: None,
+            endpoint: None,
         });
     }
 
@@ -421,16 +412,14 @@ async fn snapshot_for_model_config(
     let waiting = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:num_requests_waiting"));
-    // Lifetime prefix-cache hit rate: hits / queries × 100. Both are vLLM
-    // Prometheus counters (monotonic over the vLLM process lifetime). With
-    // queries == 0 return None so the UI shows "—" instead of NaN.
+    // prefix cache 原始计数器: hits/queries 都是 vLLM Prometheus counter (单调递增,
+    // vLLM 进程生命周期内累积)。前端用基准点做减法重算区间命中率。
     let prefix_cache_hits = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_hits_total"));
     let prefix_cache_queries = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_queries_total"));
-    let prefix_hit_pct = prefix_cache_hit_pct(prefix_cache_hits, prefix_cache_queries);
 
     let perf = metrics_text
         .as_deref()
@@ -452,88 +441,70 @@ async fn snapshot_for_model_config(
         );
     }
     let health_status = match status {
-        VllmStatus::Mismatch => "mismatch",
+        VllmStatus::Mismatch => HealthStatus::Mismatch,
         // No `Offline` arm: `status` is only ever Ready/Busy here (built from
         // the queue gauges, then possibly downgraded to Mismatch); every
-        // Offline snapshot exits through the early `with_base` returns above.
+        // Offline snapshot exits through the early returns above, which carry
+        // the offline refinement diagnostic themselves.
         _ if target_kind == "remote"
             && api_key
                 .map(str::trim)
                 .filter(|key| !key.is_empty())
                 .is_none() =>
         {
-            "missing_api_key"
+            HealthStatus::MissingApiKey
         }
-        _ if target_kind == "remote" && served_model.is_none() => "unverified",
-        _ => "verified",
+        _ if target_kind == "remote" && served_model.is_none() => HealthStatus::Unverified,
+        _ => HealthStatus::Verified,
     };
-    let diagnostic = health_diagnostic(health_status);
 
-    // happy-path:从带默认值的 base 起步,再逐项覆盖真实解析值。
-    let mut snapshot = VllmSnapshot::with_base(
+    // happy-path:全字段逐项构造(不用 `..default()`),结构体加字段时这里
+    // 与三个早退构造一起编译失败,强制有意识地补齐。
+    Some(VllmSnapshot {
         status,
-        model_id,
-        provider,
-        if target_kind == "remote" {
+        model: if target_kind == "remote" {
             configured_model.clone().or(served_model)
         } else {
             served_model
         },
         configured_model,
-        target_kind,
+        target_kind: target_kind.to_string(),
         metrics_applicable,
         health_status,
-        diagnostic,
-    );
-    snapshot.metric_diagnostics = metric_diagnostics;
-    snapshot.max_model_len = max_model_len;
-    snapshot.num_requests_running = running;
-    snapshot.num_requests_waiting = waiting;
-    snapshot.prefix_cache_hit_pct = prefix_hit_pct;
-    snapshot.prefix_cache_hits = prefix_cache_hits;
-    snapshot.prefix_cache_queries = prefix_cache_queries;
-    snapshot.ttft_sum_s = perf.ttft_sum_s;
-    snapshot.ttft_count = perf.ttft_count;
-    snapshot.tpot_sum_s = perf.tpot_sum_s;
-    snapshot.tpot_count = perf.tpot_count;
-    snapshot.generation_tokens_total = perf.generation_tokens_total;
-    snapshot.prompt_tokens_total = perf.prompt_tokens_total;
-    Some(snapshot)
+        diagnostic: None,
+        notices,
+        max_model_len,
+        num_requests_running: running,
+        num_requests_waiting: waiting,
+        prefix_cache_hits,
+        prefix_cache_queries,
+        ttft_sum_s: perf.ttft_sum_s,
+        ttft_count: perf.ttft_count,
+    })
 }
 
-/// The happy-path diagnostic for a computed `health_status` (extracted as a
-/// pure function so every arm is unit-pinnable — the remote arms are not
-/// reachable from a loopback mock server). The early-exit branches above
-/// build their own `MonitorDiagnostic` inline instead.
-fn health_diagnostic(health_status: &str) -> Option<MonitorDiagnostic> {
-    match health_status {
-        "missing_api_key" => Some(MonitorDiagnostic {
-            code: "missing_api_key".to_string(),
-            message: "remote model has no API key configured; online probe skipped".to_string(),
-        }),
-        "unverified" => Some(MonitorDiagnostic {
-            code: "remote_unverified".to_string(),
-            message: "remote endpoint returned no model list; showing the configured model"
-                .to_string(),
-        }),
-        "mismatch" => Some(MonitorDiagnostic {
-            code: "model_mismatch".to_string(),
-            message: "configured model name differs from the one reported by the local server"
-                .to_string(),
-        }),
-        _ => None,
-    }
+/// `scheme://host:port` 子集——URL 中可安全进入快照的部分:reqwest 在构建
+/// 请求时已剥除 userinfo,查询串在此按构造丢弃,所以 base_url 携带凭据
+/// (userinfo 或 token 形查询串)都不可能泄漏进诊断。
+fn endpoint_root(url: Option<&reqwest::Url>) -> Option<String> {
+    let url = url?;
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    })
 }
 
-/// Lifetime prefix-cache hit rate: hits / queries × 100. Both are vLLM
-/// Prometheus counters (monotonic over the vLLM process lifetime). `None`
-/// unless both counters are present, finite, and queries is positive, so the
-/// UI shows "—" instead of NaN/∞ when the server reports nothing yet or a
-/// degenerate export slipped through.
-fn prefix_cache_hit_pct(hits: Option<f64>, queries: Option<f64>) -> Option<f64> {
-    match (hits, queries) {
-        (Some(h), Some(q)) if q > 0.0 && h.is_finite() && q.is_finite() => Some(h / q * 100.0),
-        _ => None,
+/// 传输错误分类,取自 reqwest 的结构化 flag(而非 `Display` 文本——真实
+/// reqwest 错误的 Display 不含 source 链,`model_probe_transport_code` 的
+/// 字符串臂对它们是死代码)。词表与该 helper 保持一致。
+fn transport_class(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connection_refused"
+    } else {
+        "network_error"
     }
 }
 
@@ -770,26 +741,17 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
     preset.context_window_fallback(model)
 }
 
-/// Six cumulative inference-performance metrics, parsed uniformly, `None`
-/// when absent.
+/// 推理性能相关的累计指标（TTFT 直方图），统一解析、统一缺省 None。
 #[derive(Debug, Default)]
 struct PerfMetrics {
     ttft_sum_s: Option<f64>,
     ttft_count: Option<f64>,
-    tpot_sum_s: Option<f64>,
-    tpot_count: Option<f64>,
-    generation_tokens_total: Option<f64>,
-    prompt_tokens_total: Option<f64>,
 }
 
 fn parse_perf_metrics(text: &str) -> PerfMetrics {
     PerfMetrics {
         ttft_sum_s: parse_prom_metric(text, "vllm:time_to_first_token_seconds_sum"),
         ttft_count: parse_prom_metric(text, "vllm:time_to_first_token_seconds_count"),
-        tpot_sum_s: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_sum"),
-        tpot_count: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_count"),
-        generation_tokens_total: parse_prom_metric(text, "vllm:generation_tokens_total"),
-        prompt_tokens_total: parse_prom_metric(text, "vllm:prompt_tokens_total"),
     }
 }
 
@@ -1119,8 +1081,6 @@ mod tests {
             &mock.base_url,
             Some("qwen3.8".to_string()),
             ModelPreset::LocalVllm,
-            None,
-            "local_vllm".to_string(),
             Some("secret"),
             None,
         )
@@ -1155,8 +1115,6 @@ mod tests {
             Some("qwen3.8".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
-            None,
             None,
         )
         .await
@@ -1169,13 +1127,13 @@ mod tests {
         assert_eq!(snap.status, VllmStatus::Busy);
     }
 
-    /// The happy-path snapshot surfaces the parsed gauges, the lifetime
-    /// prefix-cache percentage, and the identity fields, with no diagnostics
-    /// to report. Pins the review round-1 red arms: hardwiring `model_id`,
-    /// dropping the hit-pct assignment, or inventing a diagnostic on the
-    /// verified path must all go red here.
+    /// The happy-path snapshot surfaces the parsed queue gauges under the
+    /// verified health with no diagnostic and no notice. Red arms: swapping
+    /// the two queue assignments, hardwiring either gauge to `None`, or
+    /// inventing a diagnostic/notice on the verified path must all go red
+    /// here.
     #[tokio::test]
-    async fn snapshot_happy_path_surfaces_metrics_identity_and_no_diagnostic() {
+    async fn snapshot_happy_path_surfaces_queue_gauges_without_diagnostics() {
         use crate::core::model_endpoint::models_mock;
         let _lock = crate::platform::paths::tests::ENV_LOCK
             .lock()
@@ -1200,8 +1158,6 @@ mod tests {
             &mock.base_url,
             Some("happy-model".to_string()),
             ModelPreset::LocalVllm,
-            Some("saved-42".to_string()),
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1210,56 +1166,66 @@ mod tests {
         assert_eq!(snap.status, VllmStatus::Busy, "running=2 is Busy");
         assert_eq!(snap.num_requests_running, Some(2.0));
         assert_eq!(snap.num_requests_waiting, Some(1.0));
-        assert_eq!(
-            snap.prefix_cache_hit_pct,
-            Some(75.0),
-            "hits/queries × 100 must reach the snapshot"
-        );
-        assert_eq!(snap.model_id.as_deref(), Some("saved-42"));
-        assert_eq!(snap.provider, "local_vllm");
-        assert_eq!(snap.health_status, "verified");
+        assert_eq!(snap.health_status, HealthStatus::Verified);
         assert!(snap.diagnostic.is_none(), "verified carries no diagnostic");
         assert!(
-            snap.metric_diagnostics.is_empty(),
+            snap.notices.is_empty(),
             "a listed window over a served /metrics must carry no notices: {:?}",
-            snap.metric_diagnostics
+            snap.notices
         );
     }
 
-    /// Every early-exit and health branch carries its diagnostic code, and
-    /// the unreachable-local message must not echo raw credentials (the
-    /// detail goes through the same redaction composition as the settings
-    /// probe codes — reqwest's Display embeds the full request URL, and a
-    /// user base_url can carry userinfo or a token-shaped query). The remote
-    /// arms (missing_api_key / remote_unverified) are pinned by the
-    /// `health_diagnostic` unit test below; a loopback mock cannot classify
-    /// as `remote`.
+    /// Every branch carries the right structured diagnostic. The offline
+    /// refinement is built from parsed fields, never from reqwest's
+    /// `Display` (which embeds the full request URL): a token-shaped query
+    /// on the base_url must stay out of the snapshot entirely, so replacing
+    /// the endpoint construction with the raw error Display must go red
+    /// here. The other health verdicts (`auth_failed` / `missing_api_key` /
+    /// `unverified` / `mismatch`) are self-describing and carry
+    /// `diagnostic: None` — their producer strings are enum variants now,
+    /// so a typo is a compile error rather than a silent drift (round-2
+    /// audit: the stringly-typed producer could drop the diagnostic with
+    /// zero red tests).
     #[tokio::test]
-    async fn snapshot_carries_diagnostic_codes_per_health_branch() {
+    async fn snapshot_carries_structured_diagnostics_per_health_branch() {
         use crate::core::model_endpoint::models_mock;
         let _lock = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
 
-        // Transport error → models_unreachable, no raw base_url credentials.
+        // Transport error → models_unreachable with the transport class and
+        // the scheme/host/port endpoint; the query never leaks.
         let refused = snapshot_for_model_config(
-            "http://user:secret5@127.0.0.1:1",
+            "http://127.0.0.1:1?token=secret5",
             Some("m".to_string()),
             ModelPreset::LocalVllm,
-            None,
-            "local_vllm".to_string(),
             None,
             None,
         )
         .await
         .expect("a local target yields a snapshot even when unreachable");
         assert_eq!(refused.status, VllmStatus::Offline);
-        assert_eq!(refused.health_status, "offline");
+        assert_eq!(refused.health_status, HealthStatus::Offline);
         let unreachable = refused.diagnostic.expect("offline carries a diagnostic");
         assert_eq!(unreachable.code, "models_unreachable");
+        assert_eq!(
+            unreachable.transport,
+            Some("connection_refused"),
+            "a refused loopback connect classifies as connection_refused"
+        );
         assert!(
-            !unreachable.message.contains("secret5"),
-            "the diagnostic must not echo base_url credentials: {unreachable:?}"
+            unreachable.http_status.is_none(),
+            "a transport failure carries no HTTP status"
+        );
+        assert_eq!(
+            unreachable.endpoint.as_deref(),
+            Some("http://127.0.0.1:1"),
+            "the endpoint keeps scheme/host/port for diagnosis"
+        );
+        let rendered = format!("{unreachable:?}");
+        assert!(
+            !rendered.contains("secret5") && !rendered.contains("token="),
+            "the diagnostic must not echo the request URL or its query: {rendered}"
         );
 
         // Non-success HTTP (not 401/403) → models_http_error with the status.
@@ -1269,40 +1235,35 @@ mod tests {
             Some("m".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
-            None,
             None,
         )
         .await
         .expect("snapshot");
-        assert_eq!(http_err.health_status, "offline");
-        assert_eq!(
-            http_err
-                .diagnostic
-                .expect("http error carries a diagnostic")
-                .code,
-            "models_http_error"
-        );
+        assert_eq!(http_err.health_status, HealthStatus::Offline);
+        let http_diag = http_err
+            .diagnostic
+            .expect("http error carries a diagnostic");
+        assert_eq!(http_diag.code, "models_http_error");
+        assert_eq!(http_diag.http_status, Some(500));
+        assert!(http_diag.transport.is_none());
 
-        // 401 with a key → auth_failed.
+        // 401 with a key → auth_failed; the verdict is the answer, so no
+        // refinement diagnostic rides along.
         let mock = models_mock::spawn(&[("/models", 401, "{}".into())]);
         let auth = snapshot_for_model_config(
             &mock.base_url,
             Some("m".to_string()),
             ModelPreset::LocalVllm,
-            None,
-            "local_vllm".to_string(),
             Some("secret"),
             None,
         )
         .await
         .expect("snapshot");
-        assert_eq!(auth.health_status, "auth_failed");
-        assert_eq!(
+        assert_eq!(auth.health_status, HealthStatus::AuthFailed);
+        assert!(
+            auth.diagnostic.is_none(),
+            "auth_failed is self-describing and carries no refinement: {:?}",
             auth.diagnostic
-                .expect("auth failure carries a diagnostic")
-                .code,
-            "auth_failed"
         );
 
         // /metrics missing → metrics_unavailable (a local target classifies
@@ -1317,23 +1278,20 @@ mod tests {
             Some("windowless-model".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
-            None,
             None,
         )
         .await
         .expect("snapshot");
         assert_eq!(
             no_metrics
-                .metric_diagnostics
+                .notices
                 .iter()
                 .map(|d| d.code.as_str())
                 .collect::<Vec<_>>(),
             ["metrics_unavailable"]
         );
 
-        // Mismatch → model_mismatch (the only health_diagnostic arm a
-        // loopback target can reach end to end).
+        // Mismatch → the verdict itself; no refinement diagnostic.
         let mock = models_mock::spawn(&[
             ("/models", 200, r#"{"data":[{"id":"served-other"}]}"#.into()),
             ("/metrics", 200, "".into()),
@@ -1343,19 +1301,14 @@ mod tests {
             Some("configured-name".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
-            None,
             None,
         )
         .await
         .expect("snapshot");
-        assert_eq!(mismatch.health_status, "mismatch");
-        assert_eq!(
-            mismatch
-                .diagnostic
-                .expect("mismatch carries a diagnostic")
-                .code,
-            "model_mismatch"
+        assert_eq!(mismatch.health_status, HealthStatus::Mismatch);
+        assert!(
+            mismatch.diagnostic.is_none(),
+            "mismatch is self-describing and carries no refinement"
         );
     }
 
@@ -1384,8 +1337,6 @@ mod tests {
             Some("deepseek-v4-pro".to_string()),
             ModelPreset::Deepseek,
             None,
-            "local_vllm".to_string(),
-            None,
             None,
         )
         .await
@@ -1395,16 +1346,12 @@ mod tests {
             Some(1_000_000),
             "the inferred v4 window must reach the display scale"
         );
-        let codes: Vec<_> = snap
-            .metric_diagnostics
-            .iter()
-            .map(|d| d.code.as_str())
-            .collect();
+        let codes: Vec<_> = snap.notices.iter().map(|d| d.code.as_str()).collect();
         assert_eq!(codes, ["context_window_inferred"]);
-        let inferred = &snap.metric_diagnostics[0];
+        let inferred = &snap.notices[0];
         assert!(
-            !inferred.message.contains("remote"),
-            "the notice fires locally too; the copy must be endpoint-neutral: {inferred:?}"
+            inferred.http_status.is_none() && inferred.transport.is_none(),
+            "an inferred-window notice is a plain code, no transport/http detail: {inferred:?}"
         );
     }
 
@@ -1800,8 +1747,6 @@ mod tests {
             Some("wiring-e2e-model".into()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
-            None,
             None,
         )
         .await
@@ -1831,8 +1776,6 @@ mod tests {
             &listed.base_url,
             Some("wiring-e2e-listed".into()),
             ModelPreset::LocalVllm,
-            None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -2102,84 +2045,34 @@ mod tests {
     /// the same name wins, an all-degenerate family yields None.
     #[test]
     fn prom_metric_skips_non_finite_values() {
-        let text = "vllm:generation_tokens_total NaN\n\
-                    vllm:generation_tokens_total{engine=\"0\"} 5.0\n";
+        let text = "vllm:prefix_cache_hits_total NaN\n\
+                    vllm:prefix_cache_hits_total{engine=\"0\"} 5.0\n";
         assert_eq!(
-            parse_prom_metric(text, "vllm:generation_tokens_total"),
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
             Some(5.0)
         );
-        let text = "vllm:generation_tokens_total{engine=\"0\"} +Inf\n";
+        let text = "vllm:prefix_cache_hits_total{engine=\"0\"} +Inf\n";
         assert_eq!(
-            parse_prom_metric(text, "vllm:generation_tokens_total"),
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
             None
         );
     }
 
-    /// The percentage is `None` unless both counters are present, finite,
-    /// and queries is positive — the "UI shows — instead of NaN" contract,
-    /// pinned here because the guard is invisible to the wiring tests (the
-    /// happy-path mock always reports a positive query count).
-    #[test]
-    fn prefix_cache_hit_pct_guards_division_and_non_finite_counters() {
-        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(2.0)), Some(50.0));
-        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(0.0)), None);
-        assert_eq!(prefix_cache_hit_pct(Some(f64::NAN), Some(2.0)), None);
-        assert_eq!(prefix_cache_hit_pct(Some(1.0), Some(f64::NAN)), None);
-        assert_eq!(prefix_cache_hit_pct(Some(f64::INFINITY), Some(2.0)), None);
-        assert_eq!(
-            prefix_cache_hit_pct(Some(1.0), Some(f64::NEG_INFINITY)),
-            None
-        );
-        assert_eq!(prefix_cache_hit_pct(None, Some(2.0)), None);
-        assert_eq!(prefix_cache_hit_pct(Some(1.0), None), None);
-        assert_eq!(prefix_cache_hit_pct(None, None), None);
-    }
-
-    /// All four arms of the happy-path diagnostic map. The remote arms are
-    /// not reachable from a loopback mock server (they classify as `local`),
-    /// so this unit pin is their only red arm.
-    #[test]
-    fn health_diagnostic_covers_every_health_branch() {
-        let d = health_diagnostic("missing_api_key").expect("missing key diagnoses");
-        assert_eq!(d.code, "missing_api_key");
-        let d = health_diagnostic("unverified").expect("unverified diagnoses");
-        assert_eq!(d.code, "remote_unverified");
-        let d = health_diagnostic("mismatch").expect("mismatch diagnoses");
-        assert_eq!(d.code, "model_mismatch");
-        for quiet in ["verified", "offline", "auth_failed"] {
-            assert!(
-                health_diagnostic(quiet).is_none(),
-                "{quiet} carries no happy-path diagnostic (early exits build their own)"
-            );
-        }
-    }
-
-    /// 2026-06-10 real /metrics capture from a local vLLM nightly (NVFP4)
-    /// build. Note the real TPOT histogram names carry the `request_` prefix.
+    /// 2026-06-10 本机 vLLM nightly(NVFP4) /metrics 实抓片段（TTFT 相关行）。
     const REAL_METRICS_FIXTURE: &str = "\
 # HELP vllm:prompt_tokens_total Number of prefill tokens processed.\n\
 # TYPE vllm:prompt_tokens_total counter\n\
 vllm:prompt_tokens_total{engine=\"0\",model_name=\"qwen36_35b_256k\"} 4.1367205e+07\n\
-# HELP vllm:generation_tokens_total Number of generation tokens processed.\n\
-# TYPE vllm:generation_tokens_total counter\n\
-vllm:generation_tokens_total{engine=\"0\",model_name=\"qwen36_35b_256k\"} 295648.0\n\
 vllm:time_to_first_token_seconds_bucket{engine=\"0\",le=\"0.001\",model_name=\"qwen36_35b_256k\"} 0.0\n\
 vllm:time_to_first_token_seconds_created{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1.7654321e+09\n\
 vllm:time_to_first_token_seconds_count{engine=\"0\",model_name=\"qwen36_35b_256k\"} 498.0\n\
-vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1049.8486831188202\n\
-vllm:request_time_per_output_token_seconds_count{engine=\"0\",model_name=\"qwen36_35b_256k\"} 495.0\n\
-vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 6.363213540238716\n";
+vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"} 1049.8486831188202\n";
 
     #[test]
     fn perf_metrics_parse_from_real_fixture() {
         let m = parse_perf_metrics(REAL_METRICS_FIXTURE);
         assert_eq!(m.ttft_sum_s, Some(1049.8486831188202));
         assert_eq!(m.ttft_count, Some(498.0));
-        assert_eq!(m.tpot_sum_s, Some(6.363213540238716));
-        assert_eq!(m.tpot_count, Some(495.0));
-        assert_eq!(m.generation_tokens_total, Some(295648.0));
-        // Scientific-notation counters must parse too.
-        assert_eq!(m.prompt_tokens_total, Some(4.1367205e+07));
     }
 
     #[test]
@@ -2187,10 +2080,6 @@ vllm:request_time_per_output_token_seconds_sum{engine=\"0\",model_name=\"qwen36_
         let m = parse_perf_metrics("some_other_metric 1.0\n");
         assert!(m.ttft_sum_s.is_none());
         assert!(m.ttft_count.is_none());
-        assert!(m.tpot_sum_s.is_none());
-        assert!(m.tpot_count.is_none());
-        assert!(m.generation_tokens_total.is_none());
-        assert!(m.prompt_tokens_total.is_none());
     }
 
     /// 运行状态上下文长度推断：覆盖设置页全部云端模型（2026-07 逐厂商核实，

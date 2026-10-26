@@ -158,8 +158,8 @@ fn status_payload(
     // the `"verified"` literal here — see get_backend_status's twin.
     let online = snapshot.is_some_and(VllmSnapshot::is_online);
     let health_status = snapshot
-        .map(|snapshot| snapshot.health_status.clone())
-        .unwrap_or_else(|| "unavailable".to_owned());
+        .map(|snapshot| snapshot.health_status.as_str())
+        .unwrap_or("unavailable");
     // An unreadable clock renders like the other absent measurements: `null`
     // in JSON, `-` in the human row.
     let checked = measured_cell(now_ms);
@@ -300,7 +300,7 @@ fn snapshot_payload(
         Some(vllm) => format!(
             "Backend: {}\thealth={}\tmodel={}\twindow={}",
             status_label(vllm.status),
-            vllm.health_status,
+            vllm.health_status.as_str(),
             remote_cell(vllm.model.as_deref()),
             measured_cell(vllm.max_model_len),
         ),
@@ -409,6 +409,7 @@ fn redact(error: &impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinvou3_lib::features::monitor::{HealthStatus, MonitorDiagnostic};
 
     /// Hermetic shape guards. The end-to-end `monitor status|snapshot` tests
     /// need a display host and a model endpoint and therefore live behind
@@ -416,32 +417,29 @@ mod tests {
     /// neither, so it is asserted here and always runs. That split is the
     /// point: while the shape assertion was `#[ignore]`d with the probe, the
     /// two `status` branches drifted to different key sets unnoticed.
-    fn probe(status: VllmStatus, health: &str) -> VllmSnapshot {
+    /// Hermetic base fixture. A real verified local snapshot reports the
+    /// served model for both names and a live queue, so those are the
+    /// defaults here; `..VllmSnapshot::default()` keeps a field addition a
+    /// compile-and-pin concern instead of a 20-line literal to touch blindly.
+    /// (Fixture coherence: the offline case is constructed explicitly where
+    /// it is used — a real offline snapshot always carries its refinement
+    /// diagnostic.)
+    fn probe(status: VllmStatus, health: HealthStatus) -> VllmSnapshot {
         VllmSnapshot {
             status,
-            model_id: None,
-            // The real producer emits `ModelPreset::as_str()` here; pin the
-            // real spelling so a drift in the preset strings surfaces.
-            provider: "local_vllm".to_owned(),
             model: Some("served-model".to_owned()),
-            configured_model: Some("configured-model".to_owned()),
+            configured_model: Some("served-model".to_owned()),
             target_kind: "local".to_owned(),
             metrics_applicable: true,
-            health_status: health.to_owned(),
-            diagnostic: None,
-            metric_diagnostics: Vec::new(),
+            health_status: health,
             max_model_len: Some(8192),
-            num_requests_running: None,
-            num_requests_waiting: None,
-            prefix_cache_hit_pct: Some(50.0),
+            num_requests_running: Some(2.0),
+            num_requests_waiting: Some(1.0),
             prefix_cache_hits: Some(1.0),
             prefix_cache_queries: Some(2.0),
             ttft_sum_s: Some(0.5),
             ttft_count: Some(1.0),
-            tpot_sum_s: None,
-            tpot_count: None,
-            generation_tokens_total: None,
-            prompt_tokens_total: None,
+            ..VllmSnapshot::default()
         }
     }
 
@@ -460,7 +458,10 @@ mod tests {
     #[test]
     fn status_json_has_one_key_set_in_both_branches() {
         let (_, without_model) = status_payload(None, Some(7));
-        let (_, with_model) = status_payload(Some(&probe(VllmStatus::Ready, "verified")), Some(7));
+        let (_, with_model) = status_payload(
+            Some(&probe(VllmStatus::Ready, HealthStatus::Verified)),
+            Some(7),
+        );
         assert_eq!(keys(&without_model), keys(&with_model));
         assert_eq!(keys(&with_model), STATUS_KEYS);
     }
@@ -555,7 +556,19 @@ mod tests {
     fn status_json_never_carries_the_dropped_upstream_key() {
         for payload in [
             status_payload(None, Some(7)).1,
-            status_payload(Some(&probe(VllmStatus::Offline, "offline")), Some(7)).1,
+            status_payload(
+                Some(&VllmSnapshot {
+                    diagnostic: Some(MonitorDiagnostic {
+                        code: "models_unreachable".to_owned(),
+                        http_status: None,
+                        transport: Some("connection_refused"),
+                        endpoint: Some("http://127.0.0.1:1".to_owned()),
+                    }),
+                    ..probe(VllmStatus::Offline, HealthStatus::Offline)
+                }),
+                Some(7),
+            )
+            .1,
         ] {
             assert!(
                 !keys(&payload).iter().any(|key| key == "upstream"),
@@ -569,7 +582,10 @@ mod tests {
     #[test]
     fn status_human_has_one_line_set_in_both_branches() {
         let (without_model, _) = status_payload(None, Some(7));
-        let (with_model, _) = status_payload(Some(&probe(VllmStatus::Busy, "verified")), Some(7));
+        let (with_model, _) = status_payload(
+            Some(&probe(VllmStatus::Busy, HealthStatus::Verified)),
+            Some(7),
+        );
         let labels = |text: &str| -> Vec<String> {
             text.lines()
                 .map(|line| {
@@ -606,15 +622,21 @@ mod tests {
         // read offline even when health is verified (dropping either
         // conjunct used to pass the whole suite).
         assert!(
-            status_payload(Some(&probe(VllmStatus::Ready, "unverified")), Some(7))
-                .0
-                .contains("Online: false"),
+            status_payload(
+                Some(&probe(VllmStatus::Ready, HealthStatus::Unverified)),
+                Some(7)
+            )
+            .0
+            .contains("Online: false"),
             "an unverified health status must not read online"
         );
         assert!(
-            status_payload(Some(&probe(VllmStatus::Offline, "verified")), Some(7))
-                .0
-                .contains("Online: false"),
+            status_payload(
+                Some(&probe(VllmStatus::Offline, HealthStatus::Verified)),
+                Some(7)
+            )
+            .0
+            .contains("Online: false"),
             "a non-ready status must not read online even with verified health"
         );
     }
@@ -687,7 +709,7 @@ mod tests {
     #[test]
     fn snapshot_vllm_object_keeps_a_stable_key_set() {
         let sample = MonitorSnapshot {
-            vllm: Some(probe(VllmStatus::Ready, "verified")),
+            vllm: Some(probe(VllmStatus::Ready, HealthStatus::Verified)),
             ..MonitorSnapshot::default()
         };
         let (_, value) = snapshot_payload(&sample, Some(1)).expect("renders");
@@ -695,27 +717,20 @@ mod tests {
             keys(&value["vllm"]),
             [
                 "status",
-                "model_id",
-                "provider",
                 "model",
                 "configured_model",
                 "target_kind",
                 "metrics_applicable",
                 "health_status",
                 "diagnostic",
-                "metric_diagnostics",
+                "notices",
                 "max_model_len",
                 "num_requests_running",
                 "num_requests_waiting",
-                "prefix_cache_hit_pct",
                 "prefix_cache_hits",
                 "prefix_cache_queries",
                 "ttft_sum_s",
                 "ttft_count",
-                "tpot_sum_s",
-                "tpot_count",
-                "generation_tokens_total",
-                "prompt_tokens_total",
             ],
             "the vllm object's key set moved — update this pin in the same change"
         );
