@@ -52,7 +52,7 @@ B. recommendations = 需 **Boss 拿主意**的决策点/缺信息：选项、偏
 }"#;
 
 /// 核账模式 prompt（§3，sim 验证收敛）：对同一产出物的复审，只核账、禁新增、终态。
-/// 治 tejz7cxrd5jd0 的不收敛——暴增/翻案/永久挂账/无终态。
+/// 治复审不收敛——暴增/翻案/永久挂账/无终态。
 const RECONCILE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问。这是对**同一产出物**的复审（核账模式），不是重新自由批评。
 给你【上轮账目】（上次立的问题）+【当前产物】（已修订版本）。严格按规则核账：
 1. 逐条核对账目对照产物：**已改好的不要再列进 issues**（视为闭合）；只把**没改/没改对**的留在 issues 里，说明还差什么。
@@ -88,7 +88,7 @@ const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
 /// 本地审查实测 5–19s，旧版 5s 必挂；放宽到 30s（设计 §9）。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂巴黎 session 20117 字
+/// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
 /// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§4.1）。
 const FULL_FEED_CHAR_LIMIT: usize = 24_000;
 
@@ -352,7 +352,7 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
 
 /// 账目是否已被 Boss 结清、核账不再核（§3）：accept=缺陷接受现状、confirmed=需核实但 Boss
 /// 已确认没问题。其余(modify/verify/adopt/ask/pending)都保留进核账。kind 分流后新增的 confirmed
-/// 也得跳过，否则 Boss 已确认的账会被重核→震荡（pkx4clhny5jd0 实测暴露）。
+/// 也得跳过，否则 Boss 已确认的账会被重核→震荡。
 fn is_ledger_closed(resolution: Option<&str>) -> bool {
     matches!(resolution, Some("accept") | Some("confirmed"))
 }
@@ -1117,7 +1117,7 @@ mod tests {
     }
 
     /// 核账跳过哪些动作的契约：只有 accept(接受现状)/confirmed(需核实已确认)算已结，其余
-    /// 都保留核。漏掉 confirmed 会让 Boss 已确认的账被重核→震荡(pkx4clhny5jd0 实测暴露)。
+    /// 都保留核。漏掉 confirmed 会让 Boss 已确认的账被重核→震荡。
     #[test]
     fn ledger_closed_only_for_accept_and_confirmed() {
         assert!(is_ledger_closed(Some("accept")));

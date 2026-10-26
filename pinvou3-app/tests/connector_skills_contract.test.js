@@ -1,6 +1,6 @@
 // 连接器技能包口径契约：把历次审查（2026-08-16 六轮）确认的品悟适配规则固化为
 // CI 门禁，防止下次上游 sync 时机械迁移把已修复的问题带回来。
-// 规则来源见各 NOTICE 的「本地修改登记」；上游历史登记（NOTICE 文件本身）豁免扫描。
+// 规则来源见各 NOTICE 的本地修改登记/摘要；上游历史登记（NOTICE 文件本身）豁免扫描。
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -66,9 +66,8 @@ for (const f of docs) {
     // Real dws 1.0.64 quick command (reads the doc whiteboard OpenNodes
     // snapshot; see the whiteboard.md command table), unrelated to the
     // lark-side whiteboard +query removed in lark-cli 1.0.87 — exempted
-    // per domain. Rationale registered in NOTICE-dingtalk.md (rule 9's
-    // EXEMPT_FILES only collects file-level exemptions; rule-scoped
-    // exemptions register inline here plus in the domain NOTICE).
+    // per domain. (EXEMPT_FILES only collects file-level exemptions;
+    // rule-scoped exemptions register inline here.)
     if (gone === "whiteboard +query" && rel(f).includes("dingtalk-skills")) continue;
     const hit = proseLines.find((l) => l.includes(gone) && !removedCtx.test(l));
     assert.ok(!hit, `${rel(f)}: 引用已删除对象 ${gone}: ${hit?.trim()}`);
@@ -84,7 +83,7 @@ const removedFiles = [
   ["lark-skills", "lark-calendar", "references", "lark-calendar-freebusy.md"],
 ];
 for (const parts of removedFiles) {
-  assert.ok(!fs.existsSync(bundle(...parts)), `${parts.join("/")}: 已删除文件复发（见 NOTICE 登记）`);
+  assert.ok(!fs.existsSync(bundle(...parts)), `${parts.join("/")}: 已删除文件复发（排除理由见对应 NOTICE）`);
 }
 
 // 2) 引擎工具名唯一口径 + 自更新禁令
@@ -401,15 +400,15 @@ assert.ok(
 // cwd），非宿主断言（负向断言见上）；历史审查记录（NOTICE*.md）整体豁免由 docs 过滤实现。
 // EXEMPT_FILES collects file-level exemptions only. Rule-scoped / domain-scoped
 // exemptions (e.g. the dingtalk whiteboard +query continue above) live inline at
-// the exemption point and are registered in the domain's NOTICE file instead.
+// the exemption point together with their rationale.
 const EXEMPT_FILES = [];
 assert.deepEqual(EXEMPT_FILES, [], "新增豁免须在此登记文件与理由，不得静默扩权");
 
 // 10) dws 不得再引用不存在的 `calendar participant *` 命令组（2026-10-07
 // 模型向文本审计：dws calendar 的参会人二级子命令是 `attendee`，无
 // `participant` 组；危险表/references/脚本照抄会让模型执行不存在的命令，
-// 而 SKILL.md 错误处理又禁止自行换方案，任务直接卡死。已改 7 个文件 8 处，
-// 见 NOTICE-dingtalk.md 2026-10-07 节第 1 条）。todo 模块的
+// 而 SKILL.md 错误处理又禁止自行换方案，任务直接卡死。已改 7 个文件 8 处）。
+// todo 模块的
 // `task add-participant`/`remove-participant` 是另一真实命令组、todo
 // `--participants` flag、`--role-types ...participant` 与 minutes 的
 // `participants` API 字段名均不含 `calendar participant`，不受影响。

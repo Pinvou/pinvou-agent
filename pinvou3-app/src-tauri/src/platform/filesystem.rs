@@ -3150,7 +3150,7 @@ pub(crate) mod tests {
 
         // create_secret_file truncate-opens the final path in place, so a
         // legacy world-readable file must also be repaired on open.
-        let secret = dir.join("telemetry.json");
+        let secret = dir.join("private.json");
         std::fs::write(&secret, b"stale\n").unwrap();
         std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
         drop(create_secret_file(&secret).unwrap());
