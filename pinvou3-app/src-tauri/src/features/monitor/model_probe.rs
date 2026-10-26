@@ -155,7 +155,6 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
     });
     let api_key = model.as_ref().and_then(model_api_key);
     let model_id = model.as_ref().map(|m| m.id.clone());
-    let provider = preset.as_str().to_string();
     // The context window the user explicitly declares in the model form must
     // join the monitor / live-dot display scale; otherwise after saving 1M the
     // chat page (chat:usage denominator) and the monitor page / progress-bar
@@ -166,7 +165,6 @@ pub async fn active_model_snapshot() -> Option<VllmSnapshot> {
         configured_model,
         preset,
         model_id,
-        provider,
         api_key.as_deref(),
         configured_context,
     )
@@ -229,7 +227,6 @@ async fn snapshot_for_model_config(
     configured_model: Option<String>,
     preset: ModelPreset,
     model_id: Option<String>,
-    provider: String,
     api_key: Option<&str>,
     configured_context: Option<u32>,
 ) -> Option<VllmSnapshot> {
@@ -240,6 +237,9 @@ async fn snapshot_for_model_config(
         vllm_target_kind(upstream)
     };
     let metrics_applicable = target_kind == "local";
+    // The provider spelling is a property of the preset, derived here so a
+    // caller cannot thread a divergent value into the snapshot.
+    let provider = preset.as_str().to_string();
 
     // 1) /models 健康
     let models_url = models_probe_url(upstream);
@@ -297,7 +297,11 @@ async fn snapshot_for_model_config(
                     "offline",
                     Some(MonitorDiagnostic {
                         code: "models_http_error".to_string(),
-                        message: format!("/v1/models returned HTTP {}", r.status().as_u16()),
+                        message: format!(
+                            "{} returned HTTP {}",
+                            probe_url_path(Some(r.url())),
+                            r.status().as_u16()
+                        ),
                     }),
                 ));
             }
@@ -322,7 +326,8 @@ async fn snapshot_for_model_config(
                         // token-shaped query string that must not leak into the
                         // snapshot JSON.
                         message: format!(
-                            "/v1/models unreachable: {}",
+                            "{} unreachable: {}",
+                            probe_url_path(err.url()),
                             crate::core::model_endpoint::model_probe_transport_code(&err).1
                         ),
                     }),
@@ -399,34 +404,6 @@ async fn snapshot_for_model_config(
         },
         _ => None,
     };
-    let mut metric_diagnostics = if metrics_applicable && metrics_text.is_none() {
-        vec![MonitorDiagnostic {
-            code: "metrics_unavailable".to_string(),
-            message: "local /metrics is unavailable or returned no Prometheus metrics".to_string(),
-        }]
-    } else {
-        Vec::new()
-    };
-    // The display window goes through the unified precedence (see
-    // display_context_window): an explicit user declaration wins first, a local
-    // deployment's probe value min-clamps; a cloud probe value (usually a list
-    // entry from a proxy/gateway, unrelated to or stale for the configured
-    // model) must not override the user declaration, otherwise saving 1M gets
-    // the progress bar knocked back to 131K. Probe and catalog/preset fallbacks
-    // only fill in when no declaration exists.
-    let inferred = infer_context_window(
-        preset,
-        configured_model.as_deref().or(served_model.as_deref()),
-    );
-    let (max_model_len, window_from_inference) =
-        display_context_window(configured_context, target_kind, max_model_len, inferred);
-    if window_from_inference {
-        metric_diagnostics.push(MonitorDiagnostic {
-            code: "context_window_inferred".to_string(),
-            message: "context length inferred from the model name / vendor preset; the endpoint does not report it directly".to_string(),
-        });
-    }
-
     let running = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:num_requests_running"));
@@ -448,6 +425,40 @@ async fn snapshot_for_model_config(
         .as_deref()
         .map(parse_perf_metrics)
         .unwrap_or_default();
+
+    let mut metric_diagnostics = Vec::new();
+    // An unreachable /metrics and a /metrics that answers with a body no
+    // Prometheus series parses leave every metric field None alike; flag
+    // both so an all-None snapshot is never silently read as "no traffic".
+    if metrics_applicable
+        && running.is_none()
+        && waiting.is_none()
+        && prefix_cache_hits.is_none()
+        && prefix_cache_queries.is_none()
+        && perf == PerfMetrics::default()
+    {
+        metric_diagnostics.push(MonitorDiagnostic {
+            code: "metrics_unavailable".to_string(),
+            message: "local /metrics is unreachable or returned no parseable Prometheus metrics"
+                .to_string(),
+        });
+    }
+    // The display window goes through the unified precedence (see
+    // display_context_window): an explicit user declaration wins first, a local
+    // deployment's probe value min-clamps; a cloud probe value (usually a list
+    // entry from a proxy/gateway, unrelated to or stale for the configured
+    // model) must not override the user declaration, otherwise saving 1M gets
+    // the progress bar knocked back to 131K. Probe and catalog/preset fallbacks
+    // only fill in when no declaration exists.
+    let inferred = infer_context_window(
+        preset,
+        configured_model.as_deref().or(served_model.as_deref()),
+    );
+    let (max_model_len, window_from_inference) =
+        display_context_window(configured_context, target_kind, max_model_len, inferred);
+    if window_from_inference {
+        metric_diagnostics.push(context_window_inferred_diagnostic());
+    }
 
     let mut status = match (running, waiting) {
         (Some(r), _) if r > 0.0 => VllmStatus::Busy,
@@ -513,6 +524,20 @@ async fn snapshot_for_model_config(
     Some(snapshot)
 }
 
+/// The notice for a display window the monitor could only fill by inferring
+/// it from the model name / vendor preset. Endpoint-neutral by contract: the
+/// condition (no user declaration, no probe value, inference hit) fires for
+/// local and remote targets alike and must never be gated on metrics
+/// applicability.
+fn context_window_inferred_diagnostic() -> MonitorDiagnostic {
+    MonitorDiagnostic {
+        code: "context_window_inferred".to_string(),
+        message:
+            "context length inferred from the model name / vendor preset; the endpoint does not report it directly"
+                .to_string(),
+    }
+}
+
 /// The happy-path diagnostic for a computed `health_status` (extracted as a
 /// pure function so every arm is unit-pinnable — the remote arms are not
 /// reachable from a loopback mock server). The early-exit branches above
@@ -525,7 +550,8 @@ fn health_diagnostic(health_status: &str) -> Option<MonitorDiagnostic> {
         }),
         "unverified" => Some(MonitorDiagnostic {
             code: "remote_unverified".to_string(),
-            message: "remote endpoint returned no model list; showing the configured model"
+            message: "remote endpoint unreachable or returned no usable model list; showing the \
+                      configured model"
                 .to_string(),
         }),
         "mismatch" => Some(MonitorDiagnostic {
@@ -789,7 +815,7 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
 
 /// Six cumulative inference-performance metrics, parsed uniformly, `None`
 /// when absent.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 struct PerfMetrics {
     ttft_sum_s: Option<f64>,
     ttft_count: Option<f64>,
@@ -859,6 +885,18 @@ fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
         }
     }
     total
+}
+
+/// The path actually requested by the models probe, for diagnostic copy.
+/// The probe URL is `upstream + "/models"` — the `/v1` prefix is not
+/// synthesized, so a root upstream like `http://host:8000` probes
+/// `/models` — and the copy must name the path that was really hit. A URL
+/// path carries no credentials (userinfo lives in the authority).
+fn probe_url_path(url: Option<&reqwest::Url>) -> &str {
+    match url {
+        Some(u) => u.path(),
+        None => "/models",
+    }
 }
 
 /// Offset of the labels-block closing `}` in `rest` (the text after the
@@ -1177,7 +1215,6 @@ mod tests {
             Some("qwen3.8".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             Some("secret"),
             None,
         )
@@ -1212,7 +1249,6 @@ mod tests {
             Some("qwen3.8".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1258,7 +1294,6 @@ mod tests {
             Some("happy-model".to_string()),
             ModelPreset::LocalVllm,
             Some("saved-42".to_string()),
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1311,7 +1346,6 @@ mod tests {
             Some("dp-model".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1343,7 +1377,6 @@ mod tests {
             Some("m".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1357,6 +1390,16 @@ mod tests {
             !unreachable.message.contains("secret5"),
             "the diagnostic must not echo base_url credentials: {unreachable:?}"
         );
+        assert!(
+            unreachable.message.contains("[REDACTED]"),
+            "the redaction composition must replace the embedded URL — not rely on reqwest's \
+             own userinfo stripping: {unreachable:?}"
+        );
+        assert!(
+            unreachable.message.starts_with("/models unreachable: "),
+            "the message names the path actually probed, not a hardcoded /v1/models: \
+             {unreachable:?}"
+        );
 
         // Non-success HTTP (not 401/403) → models_http_error with the status.
         let mock = models_mock::spawn(&[("/models", 500, "boom".into())]);
@@ -1365,19 +1408,19 @@ mod tests {
             Some("m".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
         .await
         .expect("snapshot");
         assert_eq!(http_err.health_status, "offline");
+        let http_diag = http_err
+            .diagnostic
+            .expect("http error carries a diagnostic");
+        assert_eq!(http_diag.code, "models_http_error");
         assert_eq!(
-            http_err
-                .diagnostic
-                .expect("http error carries a diagnostic")
-                .code,
-            "models_http_error"
+            http_diag.message, "/models returned HTTP 500",
+            "the message quotes the path actually probed"
         );
 
         // 401 with a key → auth_failed.
@@ -1387,7 +1430,6 @@ mod tests {
             Some("m".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             Some("secret"),
             None,
         )
@@ -1413,7 +1455,6 @@ mod tests {
             Some("windowless-model".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1439,7 +1480,6 @@ mod tests {
             Some("configured-name".to_string()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1457,8 +1497,10 @@ mod tests {
 
     /// The inferred-window notice fires for local targets too (a listing
     /// without a window whose native follow-up fails, with a recognizable
-    /// model name) — the message must stay endpoint-neutral. Pins that
-    /// stripping the push or the code must go red.
+    /// model name) — the message must stay endpoint-neutral. The mock's
+    /// /metrics answers 200 with an empty body, so the
+    /// metrics-unparseable notice rides along before it: the two notices
+    /// must coexist rather than crowd each other out.
     #[tokio::test]
     async fn snapshot_reports_context_window_inferred_on_local_targets() {
         use crate::core::model_endpoint::models_mock;
@@ -1480,7 +1522,6 @@ mod tests {
             Some("deepseek-v4-pro".to_string()),
             ModelPreset::Deepseek,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1496,7 +1537,11 @@ mod tests {
             .iter()
             .map(|d| d.code.as_str())
             .collect();
-        assert_eq!(codes, ["context_window_inferred"]);
+        assert_eq!(
+            codes,
+            ["metrics_unavailable", "context_window_inferred"],
+            "an unparseable /metrics body flags itself and does not crowd out the window notice"
+        );
         let inferred = &snap.metric_diagnostics[0];
         assert!(
             !inferred.message.contains("remote"),
@@ -1896,7 +1941,6 @@ mod tests {
             Some("wiring-e2e-model".into()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -1928,7 +1972,6 @@ mod tests {
             Some("wiring-e2e-listed".into()),
             ModelPreset::LocalVllm,
             None,
-            "local_vllm".to_string(),
             None,
             None,
         )
@@ -2316,6 +2359,11 @@ mod tests {
         assert_eq!(d.code, "missing_api_key");
         let d = health_diagnostic("unverified").expect("unverified diagnoses");
         assert_eq!(d.code, "remote_unverified");
+        assert!(
+            d.message.contains("unreachable"),
+            "the arm also covers probe transport/HTTP failures (remote targets only exit \
+             through here), not just an empty roster: {d:?}"
+        );
         let d = health_diagnostic("mismatch").expect("mismatch diagnoses");
         assert_eq!(d.code, "model_mismatch");
         for quiet in ["verified", "offline", "auth_failed"] {
@@ -2324,6 +2372,60 @@ mod tests {
                 "{quiet} carries no happy-path diagnostic (early exits build their own)"
             );
         }
+    }
+
+    /// The inferred-window notice is endpoint-neutral by construction: the
+    /// condition fires for local and remote targets alike, so the copy must
+    /// blame neither, and the code is part of the snapshot contract.
+    #[test]
+    fn context_window_inferred_notice_is_endpoint_neutral_by_construction() {
+        let d = context_window_inferred_diagnostic();
+        assert_eq!(d.code, "context_window_inferred");
+        assert!(
+            !d.message.contains("remote"),
+            "the notice fires locally too; the copy must be endpoint-neutral: {d:?}"
+        );
+        assert!(
+            !d.message.contains(" local"),
+            "the notice fires for remote targets too: {d:?}"
+        );
+    }
+
+    /// A /metrics that answers HTTP 200 with a body no Prometheus series
+    /// parses must flag itself: the resulting all-None snapshot must not be
+    /// silently readable as "no traffic". (Transport failure and non-200 are
+    /// pinned by `snapshot_carries_diagnostic_codes_per_health_branch`.)
+    #[tokio::test]
+    async fn snapshot_flags_a_metrics_body_with_no_parseable_prometheus_metrics() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"m"}]}"#.into()),
+            ("/metrics", 200, "<html>not prometheus</html>".into()),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(snap.status, VllmStatus::Ready);
+        assert!(snap.num_requests_running.is_none());
+        let codes: Vec<_> = snap
+            .metric_diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"metrics_unavailable"),
+            "an HTTP 200 body with no parseable series must flag itself: {codes:?}"
+        );
     }
 
     /// 2026-06-10 real /metrics capture from a local vLLM nightly (NVFP4)
