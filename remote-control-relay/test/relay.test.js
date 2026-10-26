@@ -1155,3 +1155,13 @@ test("rejects malformed Host headers instead of crashing", async () => {
     await stopRelay(isolated.child);
   }
 });
+
+test("rejects frames nested beyond the wire depth cap as bad_json", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+  const error = nextMessage(ws, "error");
+  // The wire guard caps nesting at 128 levels. JSON.parse alone would accept
+  // this frame and fail later with a less specific rejection.
+  ws.send(`{"payload":${"[".repeat(200)}${"]".repeat(200)}}`);
+  assert.equal((await error).code, "bad_json");
+});

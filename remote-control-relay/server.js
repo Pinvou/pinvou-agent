@@ -443,6 +443,8 @@ function assertNoDuplicateVersionKey(text) {
     while (cursor < text.length && !/[\s,}\]]/u.test(text[cursor])) cursor += 1;
   };
   scanValue();
+  skipWhitespace();
+  if (cursor !== text.length) throw new Error("trailing content");
 }
 
 function validEndpointId(value) {
