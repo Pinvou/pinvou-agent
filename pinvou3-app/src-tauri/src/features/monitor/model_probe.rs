@@ -123,7 +123,7 @@ pub struct MonitorDiagnostic {
     /// HTTP 错误时的状态码。
     pub http_status: Option<u16>,
     /// 传输错误时的分类,词表与 `core::model_endpoint::model_probe_transport_code`
-    /// 一致(`timeout` / `connection_refused` / `network_error`),但改用
+    /// 一致(`timeout` / `dns_failed` / `connection_refused` / `network_error`),但改用
     /// reqwest 的结构化 flag 判定(真实 reqwest 错误的 `Display` 不含
     /// source 链,那边的字符串臂对它们是死代码)。
     pub transport: Option<&'static str>,
@@ -517,6 +517,11 @@ fn endpoint_root(url: Option<&reqwest::Url>) -> Option<String> {
 fn transport_class(err: &reqwest::Error) -> &'static str {
     if err.is_timeout() {
         "timeout"
+    } else if err.is_dns() {
+        // Must precede `is_connect()`: hyper-util files resolver failures
+        // under its Connect kind too, so the DNS check only classifies if it
+        // runs first.
+        "dns_failed"
     } else if err.is_connect() {
         "connection_refused"
     } else {
@@ -1303,6 +1308,34 @@ mod tests {
         assert!(
             codes.contains(&"metrics_unavailable"),
             "an HTTP 200 body with no parseable series must flag itself: {codes:?}"
+        );
+    }
+
+    /// A hostname that cannot resolve classifies as `dns_failed`, not
+    /// `connection_refused`: hyper-util wraps resolver failures in its
+    /// Connect kind, so `is_connect()` alone mislabels them (round-2
+    /// adjudication finding). `.invalid` is reserved by RFC 6761 to never
+    /// resolve.
+    #[tokio::test]
+    async fn snapshot_classifies_dns_failures_as_dns_failed() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let snap = snapshot_for_model_config(
+            "http://pinvou-monitor-probe.invalid:1",
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local-preset target yields a snapshot even when unresolvable");
+        let diagnostic = snap.diagnostic.expect("offline carries a diagnostic");
+        assert_eq!(diagnostic.code, "models_unreachable");
+        assert_eq!(diagnostic.transport, Some("dns_failed"));
+        assert_eq!(
+            diagnostic.endpoint.as_deref(),
+            Some("http://pinvou-monitor-probe.invalid:1")
         );
     }
 
