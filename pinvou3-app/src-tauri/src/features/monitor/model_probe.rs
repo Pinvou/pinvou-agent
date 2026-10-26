@@ -217,9 +217,11 @@ fn shared_probe_client() -> Option<&'static reqwest::Client> {
     crate::core::model_endpoint::shared_probe_client_with_timeout(None)
 }
 
-/// Upper bound for a `/metrics` response body read into memory per poll.
-/// Real vLLM exports are tens of KB; this only guards a hostile or
-/// misconfigured endpoint.
+/// Upper bound for a `/metrics` response body read into memory per poll,
+/// enforced on the declared Content-Length before buffering. Chunked
+/// responses declare no length and are bounded only by the 3 s request
+/// timeout (targets are loopback/private). Real vLLM exports are tens of
+/// KB; this only guards a hostile or misconfigured endpoint.
 const MAX_METRICS_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
 async fn snapshot_for_model_config(
@@ -337,9 +339,9 @@ async fn snapshot_for_model_config(
             }
             None
         }
-        // `None` only happens for remote targets with no API key (the probe
-        // is skipped for them); local targets always probe above, so no
-        // local arm is needed here.
+        // `None` happens for remote or unparseable (`invalid`) targets with
+        // no API key — the probe is skipped for them; local targets always
+        // probe above, so no local arm is needed here.
         None => None,
     };
 
@@ -441,7 +443,8 @@ async fn snapshot_for_model_config(
     {
         metric_diagnostics.push(MonitorDiagnostic {
             code: "metrics_unavailable".to_string(),
-            message: "local /metrics is unreachable or returned no parseable Prometheus metrics"
+            message: "local /metrics could not be sampled: unreachable, refused (oversize \
+                      body), or no expected vllm metrics in the body"
                 .to_string(),
         });
     }
