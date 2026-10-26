@@ -282,10 +282,13 @@ pub(super) struct NativeSecurity {
 impl NativeSecurity {
     #[allow(unsafe_code)]
     fn from_aces(users: &str) -> Result<Self> {
+        Self::from_sddl(&format!("O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA){users}"))
+    }
+    #[allow(unsafe_code)]
+    fn from_sddl(sddl: &str) -> Result<Self> {
         use windows_sys::Win32::Security::Authorization::{
             ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
         };
-        let sddl = format!("O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA){users}");
         let wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
         let mut pointer = ptr::null_mut();
         let mut size = 0;
@@ -325,6 +328,85 @@ impl NativeSecurity {
     }
     pub(super) fn mutex() -> Result<Self> {
         Self::from_aces("")
+    }
+    /// Exact writer/keeper policy. OW intentionally replaces the implicit owner
+    /// WRITE_DAC grant with explicit READ_CONTROL; native behavior is not yet
+    /// qualified by this source. No general owner/trusted-SID rule applies.
+    pub(super) fn writer_job(service_sid: &str) -> Result<Self> {
+        Self::from_sddl(&writer_job_sddl(service_sid)?)
+    }
+    #[allow(unsafe_code)]
+    pub(super) fn inspect_writer_job(&self, handle: HANDLE) -> Result<()> {
+        use windows_sys::Win32::Security::{
+            Authorization::SE_KERNEL_OBJECT, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+        };
+        let mut owner = ptr::null_mut();
+        let mut actual_acl = ptr::null_mut();
+        let mut actual = ptr::null_mut();
+        if unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                ptr::null_mut(),
+                &mut actual_acl,
+                ptr::null_mut(),
+                &mut actual,
+            )
+        } != 0
+        {
+            return Err(Error::Unavailable);
+        }
+        let _actual = LocalDescriptor(actual);
+        if actual.is_null() || actual_acl.is_null() || sid_string(owner)? != "S-1-5-18" {
+            return Err(Error::SecurityRefused);
+        }
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorControl(actual, &mut control, &mut revision) } == 0
+            || control & SE_DACL_PROTECTED == 0
+        {
+            return Err(Error::SecurityRefused);
+        }
+        let mut expected_owner = ptr::null_mut();
+        let mut defaulted_owner = 0;
+        if unsafe {
+            GetSecurityDescriptorOwner(self.descriptor.0, &mut expected_owner, &mut defaulted_owner)
+        } == 0
+            || sid_string(expected_owner)? != "S-1-5-18"
+        {
+            return Err(Error::SecurityRefused);
+        }
+        let mut present = 0;
+        let mut expected_acl = ptr::null_mut();
+        let mut defaulted = 0;
+        if unsafe {
+            GetSecurityDescriptorDacl(
+                self.descriptor.0,
+                &mut present,
+                &mut expected_acl,
+                &mut defaulted,
+            )
+        } == 0
+            || present == 0
+            || expected_acl.is_null()
+        {
+            return Err(Error::SecurityRefused);
+        }
+        let expected_info = writer_job_acl_information(expected_acl)?;
+        let actual_info = writer_job_acl_information(actual_acl)?;
+        // Compare raw native ACE bytes in exact order. This includes OW as
+        // OWNER RIGHTS (S-1-3-4), flags, masks and dedicated service SID; it must
+        // NOT pass through the generic trusted-owner policy above.
+        for index in 0..3 {
+            if writer_job_ace_bytes(expected_acl, &expected_info, index)?
+                != writer_job_ace_bytes(actual_acl, &actual_info, index)?
+            {
+                return Err(Error::SecurityRefused);
+            }
+        }
+        Ok(())
     }
     pub(super) fn pipe() -> Result<Self> {
         // Exact data IO/query/synchronize; omit FILE_APPEND_DATA=4 because it
@@ -375,6 +457,73 @@ impl NativeSecurity {
         Ok(())
     }
 }
+fn writer_job_sddl(service_sid: &str) -> Result<String> {
+    let parts: Vec<_> = service_sid
+        .strip_prefix("S-1-5-80-")
+        .ok_or(Error::SecurityRefused)?
+        .split('-')
+        .collect();
+    if parts.len() != 5
+        || parts.iter().any(|part| {
+            part.parse::<u32>()
+                .ok()
+                .is_none_or(|value| value.to_string() != *part)
+        })
+    {
+        return Err(Error::SecurityRefused);
+    }
+    Ok(format!(
+        "O:SYG:SYD:P(A;;RC;;;OW)(A;;0x00020007;;;SY)(A;;0x00020004;;;{service_sid})"
+    ))
+}
+#[allow(unsafe_code)]
+fn writer_job_acl_information(acl: *mut ACL) -> Result<ACL_SIZE_INFORMATION> {
+    let mut information = ACL_SIZE_INFORMATION::default();
+    if unsafe {
+        GetAclInformation(
+            acl,
+            (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+        || information.AceCount != 3
+        || information.AclBytesInUse > 1024
+    {
+        return Err(Error::SecurityRefused);
+    }
+    Ok(information)
+}
+#[allow(unsafe_code)]
+fn writer_job_ace_bytes(
+    acl: *mut ACL,
+    information: &ACL_SIZE_INFORMATION,
+    index: u32,
+) -> Result<Vec<u8>> {
+    let mut raw = ptr::null_mut();
+    if unsafe { GetAce(acl, index, &mut raw) } == 0 || raw.is_null() {
+        return Err(Error::SecurityRefused);
+    }
+    let start = acl as usize;
+    let end = start
+        .checked_add(information.AclBytesInUse as usize)
+        .ok_or(Error::SecurityRefused)?;
+    let address = raw as usize;
+    if address < start
+        || address
+            .checked_add(size_of::<ACE_HEADER>())
+            .is_none_or(|v| v > end)
+    {
+        return Err(Error::SecurityRefused);
+    }
+    // SAFETY: GetAce returned a native ACL member; header and complete ACE
+    // extent are bounded against the retained descriptor before making a slice.
+    let length = unsafe { (*raw.cast::<ACE_HEADER>()).AceSize } as usize;
+    if length < size_of::<ACE_HEADER>() || address.checked_add(length).is_none_or(|v| v > end) {
+        return Err(Error::SecurityRefused);
+    }
+    Ok(unsafe { std::slice::from_raw_parts(raw.cast::<u8>(), length) }.to_vec())
+}
 pub(super) fn seal_service(handle: HANDLE) -> Result<()> {
     NativeSecurity::service()?.seal_dacl(handle, SE_SERVICE)?;
     inspect_service(handle)
@@ -382,6 +531,24 @@ pub(super) fn seal_service(handle: HANDLE) -> Result<()> {
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+    #[test]
+    fn writer_job_descriptor_is_exact_owner_rights_system_and_query_service_policy() {
+        assert_eq!(
+            writer_job_sddl("S-1-5-80-1-2-3-4-5").unwrap(),
+            "O:SYG:SYD:P(A;;RC;;;OW)(A;;0x00020007;;;SY)(A;;0x00020004;;;S-1-5-80-1-2-3-4-5)"
+        );
+        for invalid in [
+            "S-1-5-18",
+            "S-1-5-80-1-2-3-4",
+            "S-1-5-80-01-2-3-4-5",
+            "S-1-5-80-4294967296-2-3-4-5",
+            "S-1-5-80-1-2-3-4-5)(A;;GA;;;WD)",
+        ] {
+            assert_eq!(writer_job_sddl(invalid), Err(Error::SecurityRefused));
+        }
+        // This checks DATA construction only. Owner-rights access behavior,
+        // native ACE normalization/order and restricted-token effects are UNRUN.
+    }
     #[test]
     fn service_default_quarantine_is_closed_and_final_policy_removes_custom_control() {
         let before = AccessPolicy::Service { quarantine: true };
@@ -399,5 +566,169 @@ mod policy_tests {
         assert!(!AccessPolicy::Mutex.permits_untrusted(0x100000));
         assert!(AccessPolicy::File { owned: true }.permits_untrusted(0xa01200a9));
         assert!(!AccessPolicy::File { owned: true }.permits_untrusted(0x01000000));
+    }
+}
+
+// Candidate addition to append inside the actual windows/security.rs module.
+// This file is a source block, not a new production module or test runner.
+#[cfg(test)]
+mod writer_job_owned_policy_tests {
+    use super::super::{handle::Handle, pipe::nonce, process::RetainedProcess};
+    use super::*;
+    use windows_sys::Win32::{
+        Foundation::{
+            CompareObjectHandles, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS,
+            GetHandleInformation, GetLastError, SetLastError,
+        },
+        Security::Authorization::SE_KERNEL_OBJECT,
+        Storage::FileSystem::WRITE_DAC,
+        System::{
+            JobObjects::{
+                CreateJobObjectW, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+                JobObjectBasicAccountingInformation, OpenJobObjectW, QueryInformationJobObject,
+            },
+            Threading::GetCurrentProcess,
+        },
+    };
+
+    const QUERY_AND_READ_CONTROL: u32 = 0x0002_0004;
+    const FIXTURE_SERVICE_SID: &str = "S-1-5-80-1-2-3-4-5";
+
+    #[allow(unsafe_code)]
+    fn owned_empty_job(sddl: &str, label: &str) -> (Handle, Vec<u16>) {
+        let security = NativeSecurity::from_sddl(sddl).unwrap();
+        let attributes = security.attributes();
+        let name = format!("Local\\PinvouWriterOwnedAcl-{}-{label}", nonce().unwrap());
+        let name: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
+        unsafe { SetLastError(0) };
+        let raw = unsafe { CreateJobObjectW(&attributes, name.as_ptr()) };
+        let status = unsafe { GetLastError() };
+        let job = Handle::owned(raw).unwrap();
+        // Never adopt, alter or enumerate an existing object. These fixtures
+        // assign no process and all handles remain ordinary owned test handles.
+        assert_ne!(status, ERROR_ALREADY_EXISTS, "exclusive owned job required");
+        (job, name)
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn ordinary_owner_rights_blocks_implicit_write_dac_but_query_copy_remains_usable() {
+        let current = RetainedProcess::current().unwrap();
+        let sid = &current.token.user.sid;
+        assert_ne!(
+            sid.as_str(),
+            "S-1-5-18",
+            "ordinary-user fixture; this is not SYSTEM qualification"
+        );
+        assert_ne!(sid.as_str(), FIXTURE_SERVICE_SID);
+        // Keep the exact OW/mask policy, substituting the actual ordinary user
+        // for SYSTEM owner/ACE only. Omit explicit group assignment so Windows
+        // uses the real token's default group without any group/owner privilege.
+        let policy = format!(
+            "O:{sid}D:P(A;;RC;;;OW)(A;;0x00020007;;;{sid})(A;;0x00020004;;;{FIXTURE_SERVICE_SID})"
+        );
+        let (job, name) = owned_empty_job(&policy, "owner-rights");
+
+        let mut owner = ptr::null_mut();
+        let mut acl = ptr::null_mut();
+        let mut descriptor = ptr::null_mut();
+        let status = unsafe {
+            GetSecurityInfo(
+                job.raw(),
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                ptr::null_mut(),
+                &mut acl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        let _descriptor = LocalDescriptor(descriptor);
+        assert_eq!(status, 0);
+        assert_eq!(sid_string(owner).unwrap(), *sid);
+        assert!(!descriptor.is_null() && !acl.is_null());
+        let mut control = 0;
+        let mut revision = 0;
+        assert_ne!(
+            unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) },
+            0
+        );
+        assert_ne!(control & SE_DACL_PROTECTED, 0);
+
+        // This is a real access check while the original object remains held.
+        // If unexpectedly allowed, own that returned handle before asserting so
+        // failure still closes only the fixture's own handles.
+        unsafe { SetLastError(0) };
+        let raw = unsafe { OpenJobObjectW(WRITE_DAC, 0, name.as_ptr()) };
+        let denied_status = unsafe { GetLastError() };
+        let unexpected_write = if raw.is_null() {
+            None
+        } else {
+            Some(Handle::owned(raw).unwrap())
+        };
+        assert!(
+            unexpected_write.is_none(),
+            "OW READ_CONTROL must suppress implicit owner WRITE_DAC"
+        );
+        assert_eq!(denied_status, ERROR_ACCESS_DENIED);
+
+        let query =
+            Handle::owned(unsafe { OpenJobObjectW(QUERY_AND_READ_CONTROL, 0, name.as_ptr()) })
+                .unwrap();
+        assert_ne!(unsafe { CompareObjectHandles(query.raw(), job.raw()) }, 0);
+        let mut flags = 0;
+        assert_ne!(unsafe { GetHandleInformation(query.raw(), &mut flags) }, 0);
+        assert_eq!(flags & 1, 0);
+
+        let mut copied = ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    job.raw(),
+                    GetCurrentProcess(),
+                    &mut copied,
+                    QUERY_AND_READ_CONTROL,
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        let copied = Handle::owned(copied).unwrap();
+        assert_ne!(unsafe { CompareObjectHandles(copied.raw(), job.raw()) }, 0);
+        assert_ne!(unsafe { GetHandleInformation(copied.raw(), &mut flags) }, 0);
+        assert_eq!(flags & 1, 0);
+        let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        let mut written = 0;
+        assert_ne!(
+            unsafe {
+                QueryInformationJobObject(
+                    copied.raw(),
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    &mut written,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            written as usize,
+            size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>()
+        );
+        assert_eq!(accounting.ActiveProcesses, 0); // This owned fixture is empty; no production proof is minted.
+
+        // Small positive control distinguishes OWNER RIGHTS from an environment
+        // that simply denies every WRITE_DAC open. The explicit user mask still
+        // omits WRITE_DAC; without OW, the actual owner receives it implicitly.
+        let without_ow =
+            format!("O:{sid}D:P(A;;0x00020007;;;{sid})(A;;0x00020004;;;{FIXTURE_SERVICE_SID})");
+        let (_control, control_name) = owned_empty_job(&without_ow, "implicit-owner-control");
+        let _owner_write =
+            Handle::owned(unsafe { OpenJobObjectW(WRITE_DAC, 0, control_name.as_ptr()) }).unwrap();
+        // No security setter, token privilege adjustment, impersonation, process
+        // assignment, SYSTEM/service fixture or keeper ACK is exercised.
     }
 }

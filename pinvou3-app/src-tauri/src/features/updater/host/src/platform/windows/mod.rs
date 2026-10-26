@@ -37,7 +37,9 @@ mod time_service;
 mod time_transport;
 pub(crate) use installed_images::{InstalledImages, inspect_images};
 
+mod app_writer;
 mod client;
+pub(crate) use app_writer::{AppWriterAdmission, admit_current_app_writer};
 pub(crate) use client::{inspect_trusted_time, request_trusted_time_refresh};
 
 mod launch;
@@ -48,7 +50,12 @@ pub(crate) fn prepare_restart() -> crate::error::Result<crate::restart::Prepared
     restart::begin()
 }
 
+mod keeper_spawn;
 mod peer;
+mod writer_coordinator;
+mod writer_job;
+mod writer_keeper;
+mod writer_service;
 
 mod bootstrap;
 mod dispatch;
@@ -69,6 +76,7 @@ pub(crate) fn execute_helper(mode: crate::entry::HelperMode) -> Result<()> {
     crate::profile::Seed::embedded()?;
     match mode {
         crate::entry::HelperMode::Service => service::dispatch(),
+        crate::entry::HelperMode::WriterCustody => writer_keeper::run(),
         crate::entry::HelperMode::PrepareInstall => controller::prepare_install(),
         crate::entry::HelperMode::PrepareLocalInstall => controller::prepare_local_install(),
         // No real metadata/consume handoff producer is installed in this batch.

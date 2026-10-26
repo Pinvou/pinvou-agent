@@ -1,5 +1,10 @@
 //! This host profile requires Windows native SCM, process, ACL and TxR semantics.
 use crate::error::{Error, Result};
+/// Configured unsupported hosts cannot construct startup writer admission.
+pub(crate) enum AppWriterAdmission {}
+pub(crate) fn admit_current_app_writer() -> Result<AppWriterAdmission> {
+    Err(Error::Unsupported)
+}
 pub(crate) struct InstalledImages;
 impl InstalledImages {
     pub(crate) fn recheck(&mut self, _: &mut dyn FnMut() -> bool) -> Result<()> {

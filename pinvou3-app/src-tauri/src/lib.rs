@@ -857,6 +857,15 @@ pub(crate) fn remove_agents_index_entry(
 }
 
 pub fn run() {
+    // Native writer admission precedes every environment, log, cache, runtime
+    // or WebView initialization that may create App data or descendants.
+    let _writer_admission = match features::updater::startup_admission::before_any_writer() {
+        Ok(admission) => admission,
+        Err(code) => {
+            features::updater::startup_admission::show_failure(code);
+            std::process::exit(1);
+        }
+    };
     // WebKitGTK reads its RemoteInspector endpoint while constructing the first
     // WebContext, so the browser feature must reserve it before Tauri starts.
     features::browser::prepare_process_environment();

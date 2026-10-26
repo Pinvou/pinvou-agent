@@ -1,6 +1,8 @@
 //! Windows first-install host. Data models are not protected capabilities.
 //! Shipping app integration remains disabled until actual named-profile acceptance.
+mod app_writer;
 mod bootstrap;
+pub use app_writer::{AppWriterAdmission, AppWriterStartup, admit_current_app_writer};
 mod error;
 mod handoff;
 mod identity;

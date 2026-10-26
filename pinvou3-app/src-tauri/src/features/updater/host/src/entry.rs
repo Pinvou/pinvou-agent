@@ -7,6 +7,7 @@ pub(crate) enum HelperMode {
     InstallLocal,
     InspectInstalledImages,
     Service,
+    WriterCustody,
     PrepareInstall,
     PrepareLocalInstall,
     PrepareMetadataUpgrade,
@@ -41,6 +42,7 @@ fn helper(values: &[String]) -> Result<HelperMode> {
         ["--install-local"] => Ok(HelperMode::InstallLocal),
         ["--inspect-installed-images"] => Ok(HelperMode::InspectInstalledImages),
         ["--service"] => Ok(HelperMode::Service),
+        ["--writer-custody"] => Ok(HelperMode::WriterCustody),
         ["--installer-stage", stage] => match *stage {
             "prepare-install" => Ok(HelperMode::PrepareInstall),
             "prepare-local-install" => Ok(HelperMode::PrepareLocalInstall),
@@ -143,6 +145,17 @@ mod tests {
     use super::*;
     #[test]
     fn role_arguments_are_closed_before_native_effects() {
+        assert_eq!(
+            helper(&["--writer-custody".into()]),
+            Ok(HelperMode::WriterCustody)
+        );
+        for values in [
+            vec!["--writer-custody".into(), "64".into()],
+            vec!["--writer-custody=64".into()],
+            vec!["--installer-stage".into(), "writer-custody".into()],
+        ] {
+            assert_eq!(helper(&values), Err(Error::IpcInvalid));
+        }
         assert_eq!(
             helper(&["--installer-stage".into(), "prepare-install".into()]),
             Ok(HelperMode::PrepareInstall)

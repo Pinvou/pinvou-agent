@@ -10,6 +10,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
+mod publication;
+
 pub(super) const NAMESPACE: &str = "time-budgets-v1";
 const MAX_WINDOWS: usize = 4096;
 
@@ -207,8 +209,36 @@ fn read_head(key: &Key, binding: &Binding, tx: Option<&Handle>) -> Result<(Head,
     }
     Ok((h, raw))
 }
-fn window_key(id: &WindowId) -> Result<String> {
+pub(super) fn window_key(id: &WindowId) -> Result<String> {
     Ok(json::sha256(&json::encode(id, false)?))
+}
+
+/// Actual protected original preparation window, read in the caller's TxR.
+/// This is historical DATA, not a fresh time assessment or a stage permit.
+/// An unindexed existing window is corruption, never evidence of first use.
+pub(super) fn preparation_window_in(
+    private: &Key,
+    actual: &HostRegistration,
+    tx: Option<&Handle>,
+    operation_id: &str,
+) -> Result<Option<(BudgetWindow, u64)>> {
+    let id = WindowId::new(
+        Binding::from_host(actual),
+        operation_id.to_owned(),
+        WindowKind::PrepFreeze,
+    )?;
+    let key = open(private.0, NAMESPACE, false, tx)?.ok_or(Error::SetupIncomplete)?;
+    let (head, _) = read_head(&key, id.binding(), tx)?;
+    match read_window(&key, &head, &id, tx)? {
+        Some((record, _)) => Ok(Some((record.window, record.revision))),
+        None => {
+            let path = format!("windows\\{}", window_key(&id)?);
+            if open(key.0, &path, false, tx)?.is_some() {
+                return Err(Error::StateCorrupt);
+            }
+            Ok(None)
+        }
+    }
 }
 fn read_window(
     key: &Key,
@@ -528,6 +558,64 @@ pub(in crate::platform::windows) struct Snapshot {
     pub(in crate::platform::windows) assessment: Assessment,
     pub(in crate::platform::windows) revision: u64,
 }
+impl Snapshot {
+    pub(in crate::platform::windows) fn id(&self) -> &WindowId {
+        self.window.id()
+    }
+    pub(in crate::platform::windows) fn origin(&self) -> TimeInterval {
+        self.window.origin()
+    }
+    pub(in crate::platform::windows) fn original_duration_ms(&self) -> u64 {
+        self.window.original_duration_ms()
+    }
+    pub(in crate::platform::windows) fn original_deadline_ms(&self) -> u64 {
+        self.window.original_deadline_ms()
+    }
+    /// This is the current tightening cutoff. An immutable original Session
+    /// cutoff must separately come from that protected original Session.
+    pub(in crate::platform::windows) fn session_cutoff_ms(&self) -> Option<u64> {
+        self.window.session_cutoff_ms()
+    }
+    pub(in crate::platform::windows) fn spent_max_ms(&self) -> u64 {
+        self.window.spent_max_ms()
+    }
+    pub(in crate::platform::windows) fn assessment(&self) -> Assessment {
+        self.assessment
+    }
+    pub(in crate::platform::windows) fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+/// Native in-transaction write receipt, constructed only by publish_budget_in.
+/// Private exact bytes support readback; no serialization, native clock, caller
+/// constructor, IPC representation, commit or stage-action authority exists.
+pub(super) struct Publication {
+    snapshot: Snapshot,
+    id: WindowId,
+    expected_host_sha256: String,
+    window_key: String,
+    previous_window_revision: Option<u64>,
+    head_revision: u64,
+    head_bytes: Vec<u8>,
+    window_bytes: Vec<u8>,
+}
+impl Publication {
+    pub(super) fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
+    }
+    pub(super) fn window_key(&self) -> &str {
+        &self.window_key
+    }
+    /// Actual protected prior presence, before this publication. The T28 owner
+    /// must cross-check this with its original operation record in the SAME TxR.
+    pub(super) fn previous_window_revision(&self) -> Option<u64> {
+        self.previous_window_revision
+    }
+    pub(super) fn into_snapshot(self) -> Snapshot {
+        self.snapshot
+    }
+}
 fn parent(
     key: &Key,
     head: &Head,
@@ -611,6 +699,18 @@ fn observe(
     )))
 }
 
+fn validate_id(id: &WindowId) -> Result<()> {
+    if WindowId::new(
+        id.binding().clone(),
+        id.operation_id().to_owned(),
+        id.kind(),
+    )? != *id
+    {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(())
+}
+
 impl Store {
     /// Records and evaluates only a budget window. It never performs an actual
     /// stage, clears cleanup_pending, relaxes a fence, deletes a secret or
@@ -623,14 +723,7 @@ impl Store {
         command: Command,
     ) -> Result<Snapshot> {
         let seed = &host.context.seed;
-        if WindowId::new(
-            id.binding().clone(),
-            id.operation_id().to_owned(),
-            id.kind(),
-        )? != *id
-        {
-            return Err(Error::StateCorrupt);
-        }
+        validate_id(id)?;
         let before = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
         host.authenticate_running(&before)?;
         if Binding::from_host(&before) != *id.binding() {
@@ -648,12 +741,41 @@ impl Store {
             return Err(Error::ScopeConflict);
         }
         let private = self.key(true, Some(&tx))?.ok_or(Error::SetupIncomplete)?;
-        let key = open(private.0, NAMESPACE, true, Some(&tx))?.ok_or(Error::SetupIncomplete)?;
-        let (head, head_raw) = read_head(&key, id.binding(), Some(&tx))?;
-        let old = read_window(&key, &head, id, Some(&tx))?;
+        let publication = self.publish_budget_in(host, &actual, &private, &tx, id, command)?;
+        drop(private);
+        if unsafe { CommitTransaction(tx.raw()) } == 0 {
+            return Err(Error::StateCommitUnknown);
+        }
+        drop(tx);
+        publication.readback_after_commit(self, host)?;
+        Ok(publication.into_snapshot())
+    }
+
+    /// Publish one original budget window in the caller's EXISTING native TxR.
+    /// The caller retains the real BootstrapGuard and owns commit/readback. Its
+    /// private key and authenticated registration must come from this Store and
+    /// transaction. There is no clock/context injection or namespace healing.
+    /// The returned assessment is as-of DATA, never a future action permit.
+    pub(super) fn publish_budget_in(
+        &self,
+        host: &StartedServiceContext,
+        actual: &HostRegistration,
+        private: &Key,
+        tx: &Handle,
+        id: &WindowId,
+        command: Command,
+    ) -> Result<Publication> {
+        validate_id(id)?;
+        host.authenticate_running(actual)?;
+        if Binding::from_host(actual) != *id.binding() {
+            return Err(Error::ScopeConflict);
+        }
+        let key = open(private.0, NAMESPACE, true, Some(tx))?.ok_or(Error::SetupIncomplete)?;
+        let (head, head_raw) = read_head(&key, id.binding(), Some(tx))?;
+        let old = read_window(&key, &head, id, Some(tx))?;
         // The time source is constructed here from the exact protected native
         // key and original transaction, never supplied by this method's caller.
-        let source = match time::current_in(&private, &actual, &tx) {
+        let source = match time::current_in(private, actual, tx) {
             Ok(s) => Some(s),
             Err(
                 Error::PrerequisiteUnavailable
@@ -666,7 +788,7 @@ impl Store {
         let initial = observe(host, source.as_ref())?;
         let total = match id.kind() {
             WindowKind::HealthCheck1 | WindowKind::HealthCheck2 => {
-                Some(parent(&key, &head, id, WindowKind::HealthTotal, &tx)?)
+                Some(parent(&key, &head, id, WindowKind::HealthTotal, tx)?)
             }
             _ => None,
         };
@@ -703,7 +825,7 @@ impl Store {
                         }
                         WindowKind::HealthCheck1 | WindowKind::HealthCheck2 => {
                             let previous = if id.kind() == WindowKind::HealthCheck2 {
-                                Some(parent(&key, &head, id, WindowKind::HealthCheck1, &tx)?)
+                                Some(parent(&key, &head, id, WindowKind::HealthCheck1, tx)?)
                             } else {
                                 None
                             };
@@ -750,7 +872,7 @@ impl Store {
             _ => {}
         }
         if id.kind() == WindowKind::HealthTotal {
-            retain_family(&key, &head, &mut window, &tx)?;
+            retain_family(&key, &head, &mut window, tx)?;
         }
         // Every successful real sample contributes timing knowledge, even if
         // the later sample becomes unavailable. Do not drop its upper spend
@@ -765,6 +887,7 @@ impl Store {
         if let Some((record, _)) = &old {
             record.window.check_successor(&window)?;
         }
+        let previous_window_revision = old.as_ref().map(|(record, _)| record.revision);
         let record = Record {
             revision: old.as_ref().map_or(Ok(1), |x| {
                 x.0.revision.checked_add(1).ok_or(Error::Unavailable)
@@ -808,26 +931,26 @@ impl Store {
             return Err(Error::ScopeConflict);
         }
         let final_host = self
-            .read_in(seed, Some(&tx))?
+            .read_in(&host.context.seed, Some(tx))?
             .ok_or(Error::SetupIncomplete)?;
         host.authenticate_running(&final_host)?;
         if final_host.digest()? != actual.digest()? {
             return Err(Error::ScopeConflict);
         }
-        let windows = open(key.0, "windows", true, Some(&tx))?.ok_or(Error::StateCorrupt)?;
+        let windows = open(key.0, "windows", true, Some(tx))?.ok_or(Error::StateCorrupt)?;
         let own = if old.is_none() {
-            create(windows.0, &name, &tx, false, true)?
+            create(windows.0, &name, tx, false, true)?
         } else {
-            open(windows.0, &name, true, Some(&tx))?.ok_or(Error::StateCorrupt)?
+            open(windows.0, &name, true, Some(tx))?.ok_or(Error::StateCorrupt)?
         };
-        let revision = create(own.0, &revision_name(record.revision), &tx, false, true)?;
+        let revision = create(own.0, &revision_name(record.revision), tx, false, true)?;
         write(&revision, "Record", &raw)?;
-        let history = open(key.0, "history", true, Some(&tx))?.ok_or(Error::StateCorrupt)?;
-        let index_revision = create(history.0, &revision_name(next.revision), &tx, false, true)?;
+        let history = open(key.0, "history", true, Some(tx))?.ok_or(Error::StateCorrupt)?;
+        let index_revision = create(history.0, &revision_name(next.revision), tx, false, true)?;
         write(&index_revision, "Record", &next_raw)?;
         write(&key, "Head", &next_raw)?;
-        let (seen, seen_raw) = read_head(&key, id.binding(), Some(&tx))?;
-        let seen_window = read_window(&key, &seen, id, Some(&tx))?.ok_or(Error::StateCorrupt)?;
+        let (seen, seen_raw) = read_head(&key, id.binding(), Some(tx))?;
+        let seen_window = read_window(&key, &seen, id, Some(tx))?.ok_or(Error::StateCorrupt)?;
         if seen_raw != next_raw || seen_window.1 != raw {
             return Err(Error::StateCorrupt);
         }
@@ -841,52 +964,19 @@ impl Store {
         drop(own);
         drop(windows);
         drop(key);
-        drop(private);
-        if unsafe { CommitTransaction(tx.raw()) } == 0 {
-            return Err(Error::StateCommitUnknown);
-        }
-        drop(tx);
-        let verify = || -> Result<()> {
-            let current = self.read(seed)?.ok_or(Error::StateCommitUnknown)?;
-            host.authenticate_running(&current)?;
-            if current.digest()? != actual.digest()? {
-                return Err(Error::StateCommitUnknown);
-            }
-            let private = self.key(false, None)?.ok_or(Error::StateCommitUnknown)?;
-            let key = open(private.0, NAMESPACE, false, None)?.ok_or(Error::StateCommitUnknown)?;
-            let history = open(
-                key.0,
-                &format!("history\\{}", revision_name(next.revision)),
-                false,
-                None,
-            )?
-            .ok_or(Error::StateCommitUnknown)?;
-            let written = open(
-                key.0,
-                &format!("windows\\{}\\{}", name, revision_name(record.revision)),
-                false,
-                None,
-            )?
-            .ok_or(Error::StateCommitUnknown)?;
-            if unsafe { RegFlushKey(key.0) } != 0
-                || unsafe { RegFlushKey(history.0) } != 0
-                || unsafe { RegFlushKey(written.0) } != 0
-            {
-                return Err(Error::StateCommitUnknown);
-            }
-            let (readback, bytes) = read_head(&key, id.binding(), None)?;
-            let (_, window_bytes) =
-                read_window(&key, &readback, id, None)?.ok_or(Error::StateCommitUnknown)?;
-            if bytes != next_raw || window_bytes != raw {
-                return Err(Error::StateCommitUnknown);
-            }
-            Ok(())
-        };
-        verify().map_err(|_| Error::StateCommitUnknown)?;
-        Ok(Snapshot {
-            window: record.window,
-            assessment,
-            revision: record.revision,
+        Ok(Publication {
+            snapshot: Snapshot {
+                window: record.window,
+                assessment,
+                revision: record.revision,
+            },
+            id: id.clone(),
+            expected_host_sha256: actual.digest()?,
+            window_key: name,
+            previous_window_revision,
+            head_revision: next.revision,
+            head_bytes: next_raw,
+            window_bytes: raw,
         })
     }
 }

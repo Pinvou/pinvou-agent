@@ -1,6 +1,7 @@
 //! Immutable first-install genesis data, not a preparation/freeze capability.
 //! Native protected creation, atomic commit and readback belong to the adapter.
 mod binding;
+pub mod live;
 pub use binding::BootstrapBinding;
 
 use pinvou_upgrade_codec::{Document, InputKind};

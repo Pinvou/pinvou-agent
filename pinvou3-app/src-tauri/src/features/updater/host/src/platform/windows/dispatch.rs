@@ -23,13 +23,16 @@ pub(super) struct ActionLease {
     launcher: Option<Arc<RetainedProcess>>,
 }
 pub(super) struct Core {
-    pub(super) host: StartedServiceContext,
+    pub(super) host: Arc<StartedServiceContext>,
     actions: Mutex<Actions<ActionLease>>,
     pub(super) time: Arc<super::time_service::RefreshControl>,
+    pub(super) writers: super::writer_coordinator::WriterCoordinator,
 }
 impl Core {
-    pub(super) fn new(host: StartedServiceContext) -> Self {
+    pub(super) fn new(host: StartedServiceContext, stop: Arc<super::pipe::Event>) -> Self {
+        let host = Arc::new(host);
         Self {
+            writers: super::writer_coordinator::WriterCoordinator::new(Arc::clone(&host), stop),
             host,
             actions: Mutex::new(Actions::new()),
             time: Arc::new(super::time_service::RefreshControl::new()),
@@ -110,6 +113,50 @@ fn state_reply(id: &str, snapshot: Snapshot, epoch: u64) -> ipc::StateReply {
     }
 }
 impl Connection {
+    fn writer_admit(
+        &self,
+        request: &ipc::Request,
+        record: &HostRegistration,
+        pipe: &Pipe,
+    ) -> Result<(Vec<u8>, bool)> {
+        let _: ipc::Empty = request.body()?;
+        if self.bootstrap || self.peer.role != Role::App {
+            return Err(Error::PeerRefused);
+        }
+        let actual = self.authorize(pipe)?;
+        if actual.installation_scope_id != record.installation_scope_id
+            || actual.host_epoch != record.host_epoch
+        {
+            return Err(Error::ScopeConflict);
+        }
+        let participant = self
+            .core
+            .writers
+            .admit(&self.peer, pipe)
+            .map_err(|failure| {
+                use super::writer_coordinator::FailureKind;
+                match failure.kind {
+                    FailureKind::Refused => failure.error,
+                    FailureKind::Unknown => Error::HandoffOutcomeUnknown,
+                    FailureKind::StateCommitUnknown => Error::StateCommitUnknown,
+                }
+            })?;
+        let confirmed = self.authorize(pipe)?;
+        if confirmed.host_epoch != actual.host_epoch
+            || confirmed.installation_scope_id != actual.installation_scope_id
+        {
+            return Err(Error::HandoffOutcomeUnknown);
+        }
+        self.reply(
+            request,
+            ipc::WriterAdmissionReply {
+                installation_scope_id: confirmed.installation_scope_id,
+                host_epoch: confirmed.host_epoch,
+                process: self.peer.process.selector.clone(),
+                participant,
+            },
+        )
+    }
     pub(super) fn authorize(&self, pipe: &Pipe) -> Result<HostRegistration> {
         self.peer.recheck(pipe)?;
         let record = self.core.record()?;
@@ -140,7 +187,11 @@ impl Connection {
         &self,
         request: &ipc::Request,
         record: &HostRegistration,
+        pipe: &Pipe,
     ) -> Result<(Vec<u8>, bool)> {
+        if request.kind == "writer-admit" {
+            return self.writer_admit(request, record, pipe);
+        }
         let epoch = record.host_epoch;
         self.core.actions()?.reap_expired(Instant::now())?;
         if self.bootstrap {
@@ -535,11 +586,15 @@ impl Connection {
         request: &ipc::Request,
         record: &HostRegistration,
         cached: &[u8],
+        pipe: &Pipe,
     ) -> Result<Vec<u8>> {
         if !ipc::cached_success(cached)? {
             return Ok(cached.to_vec());
         }
         match request.kind.as_str() {
+            "writer-admit" => self
+                .writer_admit(request, record, pipe)
+                .map(|(bytes, _)| bytes),
             "time-status" => {
                 require_time_app(self.peer.role)?;
                 let _: ipc::Empty = request.body()?;
@@ -595,7 +650,7 @@ impl Connection {
                 Ok(cached.to_vec())
             }
             "restart-commit-exit" | "restart-status" | "restart-cancel" => {
-                self.dispatch(request, record).map(|(bytes, _)| bytes)
+                self.dispatch(request, record, pipe).map(|(bytes, _)| bytes)
             }
             "restart-ready" | "restart-arm" => {
                 let (_, original) = ipc::response::<ipc::StateReply>(

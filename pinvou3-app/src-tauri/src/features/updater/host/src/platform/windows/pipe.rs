@@ -156,6 +156,22 @@ pub(super) struct Pipe {
     server: bool,
 }
 impl Pipe {
+    /// Fixed-purpose keeper transport only. The service creates its sole server
+    /// instance; the restricted child inherits an exact reduced server handle.
+    /// These operations do not authenticate that child or grant writer custody.
+    pub(super) fn keeper_listener(seed: &Seed) -> Result<Self> {
+        super::writer_keeper::create_listener(seed)
+    }
+    pub(super) fn keeper_connect(seed: &Seed) -> Result<Self> {
+        Self::connect_named(&super::writer_keeper::pipe_name(seed))
+    }
+    pub(super) fn keeper_from_owned_server(handle: Handle) -> Self {
+        // Only writer_keeper's native fixed-profile constructors call this.
+        Self {
+            handle,
+            server: true,
+        }
+    }
     #[allow(unsafe_code)]
     fn create_named(name: &str, first: bool, security: Option<&NativeSecurity>) -> Result<Self> {
         let name = wide(name);

@@ -74,6 +74,17 @@ remains deferred. Registry approval is not a prerequisite for building the
 initial helper/launcher and its controlled first-install integration. Preparation-budget and complete writer-scope requirements remain unchanged;
 time follows the superseding 2026-10-25 decision below.
 
+On 2026-10-26 the owner approved a fixed-purpose restricted keeper child while
+retaining one LocalSystem service. The keeper retains only query/read-control
+Job handles; it cannot install packages or write business data. Native Windows
+observation showed that a Job name becomes unavailable after its last handle
+closes even while member processes remain alive. The service must therefore
+obtain actual keeper retention acknowledgement before admitting an App writer.
+Service restart authenticates the same surviving keeper and original protected
+records. Missing names, PID equality and connection loss are not exit proofs;
+loss of both service and keeper remains unknown. This approves the process
+architecture, not installing a service or running an E2E scenario on this device.
+
 ## Approved initial engineering preparation budgets (2026-10-26)
 
 The owner approved configurable initial coordination/freeze **120,000 ms** and

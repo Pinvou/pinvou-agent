@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-26, initial engineering preparation policy pushed; T03 observation contracts and independent consumer implemented and locally verified**.
+Checkpoint: **2026-10-27, Windows GUI writer admission and restricted keeper recovery implemented; full T28 preparation remains in progress**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -10,6 +10,39 @@ other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
+
+The current main task is **T28 Windows preparation**, with T26 original-budget
+composition as its direct prerequisite. Other unfinished tasks are parked.
+The current component connects an early GUI App startup barrier, the actual
+authenticated service, protected writer journal, native Job custody and the
+owner-approved restricted keeper. A bounded pending-release index preserves
+retirement work across service restart. Scoped V3 review covers this component;
+the task completion counts below are unchanged.
+CLI/headless admission, real Session preparation, Saved acknowledgements, complete
+writer freezing and other platforms remain outside this App admission component
+and are still required by T28. No new E2E tests are being run.
+
+Current-source local verification passed the host's **188 tests, zero failed,
+one existing ignored**, including ordinary owned native Job and Event fixtures.
+Both normal-CRT library tests and static-CRT standalone all-target linked tests
+closed naturally; helper/launcher harnesses contain no additional test cases.
+All three real App library compositions compiled: default without the host,
+default with `upgrade-host-production`, and no-default with `upgrade-host-lab`.
+Ownership tests, CI-selection policy, architecture, scoped formatting, UI lint,
+language tests, UI/Web builds and the Safari 14 compatibility audit passed;
+unchanged-source evidence is inherited only for its original scope. A minimal
+Event-ordering negative control failed the intended assertion; exact restoration
+passed. Earlier runs requiring forced compiler-helper cleanup remain excluded.
+
+Five independent first reports were frozen before findings were exchanged;
+original-finder repair reviews and separate non-author adjudication apply to the
+fixed component. Local compilation and owned native fixtures do not verify an
+installed LocalSystem/restricted-keeper journey, multi-user recovery, current CI,
+merge or release readiness. The next T28 slice must connect the genuine original
+upgrade Session to all affected writers, durable saving, physical drain and
+safe release. In particular, an admitted writer whose reply was lost must enter
+the same preparation inventory before a later admission retry can proceed;
+the present component has no native preparation producer proving that case.
 
 The scoped T03 increment adds the versioned
 [platform/backup observation contracts](../specs/upgrade/v1/platforms/README.md)
@@ -49,8 +82,7 @@ component does not complete either task or its production/platform milestones.
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
 T25 network privacy is parked at **85%** after its complete public read/export
-increment. The current main task is **T26 trusted time and recovery**, with T03 as
-the only prerequisite currently being worked. The task graph also retains the
+increment. The task graph also retains the
 T33/T34/T35 platform-adapter dependencies; they are not completed by this Windows
 increment. The previously verified
 quality-purpose source, restricted Stage reader and three-language disclosure
@@ -73,7 +105,7 @@ not additional prerequisites for implementing the T25 ports.
 The dependency audit found no production download-info issuance/selection source
 behind T18; that path first needs T17 current qualification and T14 formal
 baseline activation. T11/T12/T13 still lack their approved active sources, and
-T11 needs genuine T46 local qualification. T26 remains the main task.
+T11 needs genuine T46 local qualification. These other tasks remain parked.
 
 ### Initial engineering preparation policy (2026-10-26)
 

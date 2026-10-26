@@ -146,6 +146,7 @@ pub(crate) fn failure(
 pub(crate) struct Capabilities {
     pub(crate) status: bool,
     pub(crate) launch_registered_application: bool,
+    pub(crate) writer_admission: bool,
     pub(crate) prepare: bool,
     pub(crate) freeze: bool,
     pub(crate) backup: bool,
@@ -161,6 +162,7 @@ impl Capabilities {
         Self {
             status: true,
             launch_registered_application: launch,
+            writer_admission: launch,
             prepare: false,
             freeze: false,
             backup: false,
@@ -184,6 +186,12 @@ macro_rules! body {
     }
 }
 body!(Empty {});
+body!(WriterAdmissionReply {
+    installation_scope_id: String,
+    host_epoch: u64,
+    process: crate::identity::ProcessSelector,
+    participant: pinvou_upgrade_ownership::live::Participant
+});
 body!(BeginBody {
     client_intent_id: String
 });
@@ -525,6 +533,7 @@ impl Capabilities {
     pub(crate) fn is_exact(&self, status: bool, launch: bool) -> bool {
         self.status == status
             && self.launch_registered_application == launch
+            && self.writer_admission == (status && launch)
             && !self.prepare
             && !self.freeze
             && !self.backup

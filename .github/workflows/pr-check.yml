@@ -208,6 +208,7 @@ jobs:
           predicate-quantifier: some-with-excludes
           filters: |
             rust_code:
+              - 'pinvou3-app/src/shared/i18n/startup-admission.js'
               - 'pinvou3-app/src-tauri/src/features/updater/download/archive/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/package/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/cache/**'
@@ -239,6 +240,7 @@ jobs:
             # isolated leaf-feature boundaries are explicitly low risk; changes
             # to their registration or app command surface still run full tests.
             rust_full:
+              - 'pinvou3-app/src/shared/i18n/startup-admission.js'
               # Round-1 fix wave (PR #715 review): the loong64 cross-pipeline
               # scripts are build inputs of the rust legs — the pr-check
               # rust-loongarch64-check leg executes the toolchain/sysroot
@@ -1131,6 +1133,16 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked --all-targets -- --test-threads=1
 
+
+      # Dependency unit tests are not selected by the parent App test command.
+      - name: Check independent upgrade ownership
+        working-directory: pinvou3-app/src-tauri/src/features/updater/ownership
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets -- --test-threads=1
 
       - name: Check independent upgrade native signature evidence
         working-directory: pinvou3-app/src-tauri/src/features/updater/native-evidence
@@ -2177,6 +2189,18 @@ jobs:
           cargo test --locked --all-targets -- --test-threads=1
 
 
+      # Ordinary owned-process/Job tests only; installed service acceptance
+      # stays explicitly opt-in and is not enabled by this regression gate.
+      - name: Check native Windows upgrade host and ownership
+        if: ${{ matrix.phase == 'regression' }}
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo test --manifest-path pinvou3-app/src-tauri/src/features/updater/ownership/Cargo.toml --locked --all-targets -- --test-threads=1
+          # Standalone helper/launcher targets intentionally reject dynamic CRT.
+          # Keep the runner's linker flags and scope this only to the host crate.
+          RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static" cargo test --manifest-path pinvou3-app/src-tauri/src/features/updater/host/Cargo.toml --target x86_64-pc-windows-msvc --locked --all-targets -- --test-threads=1
+
       - name: Check native Windows upgrade native signature evidence
         if: ${{ matrix.phase == 'regression' }}
         working-directory: pinvou3-app/src-tauri/src/features/updater/native-evidence
@@ -2242,6 +2266,15 @@ jobs:
           set -e
           echo "WINDOWS_RUST_TIMING phase=all-targets-check step=cargo-check elapsed_seconds=$((SECONDS-started)) status=$status"
           exit "$status"
+
+      # Default App compilation above keeps the explicit disabled-build branch.
+      # Check the enabled startup barrier with default local-embed too, then the
+      # smaller lab feature without defaults. No application/service is run.
+      - name: Check Windows App upgrade host feature composition
+        if: ${{ matrix.phase == 'all-targets-check' }}
+        run: |
+          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --features upgrade-host-production --locked
+          cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib --no-default-features --features upgrade-host-lab --locked
 
       # The pinvou-cli Windows branches (exe/cmd candidates, cmd /D /S /C
       # shims, taskkill tree kill, CREATE_NO_WINDOW) only compile-check on a

@@ -6,6 +6,7 @@
 /* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block, sonarjs/no-hardcoded-secrets -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
 import { dictEn } from './en.js';
 import { browserJa } from './browser.js';
+import startupAdmission from './startup-admission.js';
 
 const conversationJa = {
   completed:'完了', failed:'失敗', interrupted:'中断', cancelled:'キャンセル済み', limitReached:'上限に到達', processing:'処理中', processingActive:'処理中',
@@ -180,6 +181,7 @@ const acpProvidersJa = {
 };
 
 const jaBase = {
+  startupAdmission: startupAdmission.ja,
   ...browserJa,
   uiUpgradeNetworkPrivacy: {
     "locale": "ja",

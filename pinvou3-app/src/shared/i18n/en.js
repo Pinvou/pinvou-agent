@@ -6,6 +6,7 @@
 
 /* eslint-disable sonarjs/no-nested-template-literals, sonarjs/no-unenclosed-multiline-block -- compact i18n dictionary: nested templates mirror the copy structure one-to-one; credential field names are false-positive secrets */
 import { browserEn } from './browser.js';
+import startupAdmission from './startup-admission.js';
 
 const conversationEn = {
   completed:'Completed', failed:'Failed', interrupted:'Interrupted', cancelled:'Cancelled', limitReached:'Limit reached', processing:'Processing', processingActive:'Processing',
@@ -180,6 +181,7 @@ const acpProvidersEn = {
 };
 
 export const dictEn = {
+  startupAdmission: startupAdmission.en,
   ...browserEn,
   uiUpgradeNetworkPrivacy: {
     "locale": "en",

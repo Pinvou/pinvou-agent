@@ -580,6 +580,33 @@ class CiGatePolicyTests(unittest.TestCase):
         cls.pr_workflow = PR_WORKFLOW.read_text(encoding="utf-8")
         cls.release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
+    def test_upgrade_admission_runs_nested_tests_and_enabled_app_composition(self):
+        # The shared JS resource is also an exact Rust include_str input.
+        catalog = "pinvou3-app/src/shared/i18n/startup-admission.js"
+        for section, following in (("rust_code", "rust_dependencies"), ("rust_full", "cli_rust")):
+            block = self.pr_workflow.split(f"            {section}:", 1)[1].split(f"            {following}:", 1)[0]
+            self.assertTrue(_matches_paths_filter(catalog, _extract_quoted_paths(block)))
+        linux = _extract_job_block(self.pr_workflow, "rust-lint")
+        windows = _extract_job_block(self.pr_workflow, "windows-rust-test")
+        step = linux.split("- name: Check independent upgrade ownership", 1)[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("if:", step)
+        self.assertIn("working-directory: pinvou3-app/src-tauri/src/features/updater/ownership", step)
+        self.assertIn("cargo test --locked --all-targets -- --test-threads=1", step)
+        native = windows.split("- name: Check native Windows upgrade host and ownership", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("matrix.phase == 'regression'", native)
+        for component in ("ownership", "host"):
+            target = " --target x86_64-pc-windows-msvc" if component == "host" else ""
+            self.assertIn(f"cargo test --manifest-path pinvou3-app/src-tauri/src/features/updater/{component}/Cargo.toml{target} --locked --all-targets -- --test-threads=1", native)
+        self.assertIn('RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static" cargo test --manifest-path pinvou3-app/src-tauri/src/features/updater/host/Cargo.toml', native)
+        composition = windows.split("- name: Check Windows App upgrade host feature composition", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("matrix.phase == 'all-targets-check'", composition)
+        self.assertIn("--lib --features upgrade-host-production --locked", composition)
+        self.assertIn("--lib --no-default-features --features upgrade-host-lab --locked", composition)
+        for selected in (native, composition):
+            self.assertNotIn("continue-on-error", selected)
+            self.assertNotIn("native-acceptance-hooks", selected)
+            self.assertNotIn("--ignored", selected)
+
     def test_upgrade_package_binding_routes_all_fixture_changes(self):
         block = self.pr_workflow.split("            rust_code:", 1)[1].split(
             "            rust_dependencies:", 1

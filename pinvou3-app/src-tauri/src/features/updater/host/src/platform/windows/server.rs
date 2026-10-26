@@ -29,7 +29,8 @@ impl Drop for Workers {
     }
 }
 pub(super) fn serve(host: StartedServiceContext, stop: Arc<Event>) -> Result<()> {
-    let core = Arc::new(Core::new(host));
+    let core = Arc::new(Core::new(host, Arc::clone(&stop)));
+    let _writer_worker = super::writer_service::WriterWorker::start(core.clone(), stop.clone())?;
     let mut time_worker = super::time_service::TimeWorker::start(core.clone(), stop.clone())?;
     // Keep all instances alive through reuse: the service never closes the
     // last listening name between clients, allowing a name-squatting gap.
@@ -150,12 +151,10 @@ fn session(core: &Arc<Core>, pipe: &Pipe, stop: &Event) -> Result<()> {
             let record = connection.authorize(pipe)?;
             let reply = match sequencer.check(&request) {
                 Ok(ipc::Dispatch::Replay(cached)) => connection
-                    .replay(&request, &record, cached)
-                    .or_else(|error| {
-                    ipc::failure(Some(&session), Some(request.sequence), error)
-                })?,
+                    .replay(&request, &record, cached, pipe)
+                    .or_else(|error| ipc::failure(Some(&session), Some(request.sequence), error))?,
                 Ok(ipc::Dispatch::New) => {
-                    let (reply, grant) = match connection.dispatch(&request, &record) {
+                    let (reply, grant) = match connection.dispatch(&request, &record, pipe) {
                         Ok(reply) => reply,
                         Err(error) => (
                             ipc::failure(Some(&session), Some(request.sequence), error)?,

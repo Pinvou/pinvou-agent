@@ -1,10 +1,10 @@
 use crate::Error;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Validated identity data only, not a protected scope capability. The native
 /// adapter must derive every field from its original installation intent.
-#[derive(Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BootstrapBinding {
     installation_scope_id: String,
     product: String,
@@ -100,7 +100,7 @@ pub(crate) fn digest(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-fn identifier(value: &str) -> bool {
+pub(crate) fn identifier(value: &str) -> bool {
     let bytes = value.as_bytes();
     (1..=128).contains(&bytes.len())
         && bytes[0].is_ascii_alphanumeric()

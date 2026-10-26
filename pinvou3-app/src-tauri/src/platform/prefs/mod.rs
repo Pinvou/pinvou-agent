@@ -249,7 +249,7 @@ pub enum Language {
     Ja,
 }
 impl Language {
-    fn from_system_locale(locale: Option<&str>) -> Self {
+    pub(crate) fn from_system_locale(locale: Option<&str>) -> Self {
         let Some(locale) = locale.map(str::trim).filter(|locale| !locale.is_empty()) else {
             return Language::En;
         };

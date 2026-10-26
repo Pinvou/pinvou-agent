@@ -11,6 +11,10 @@ The two standalone executables use closed arguments:
 - `pinvou-upgrade-helper --profile` describes public compiled inputs only.
 - `pinvou-upgrade-helper --install-local` accepts no additional argument. An already elevated local administrator explicitly selects the complete package in that helper's parent directory; the command holds and validates its files, creates the fixed protected source, and starts only that retained installer. It does not request elevation or authorize a metadata upgrade. Existing installations admit only the exact original source for repair. A partial protected source is preserved and refused.
 - `pinvou-upgrade-helper --service` enters the real SCM dispatcher only.
+- `pinvou-upgrade-helper --writer-custody` is the service's fixed restricted child
+  mode, with one inherited private listener and query/read-control Job handles.
+  It accepts no caller PID, handle, path or command arguments and performs no
+  installation or business-data writes.
 - `pinvou-upgrade-helper --installer-stage <stage>` accepts only `prepare-install`, `prepare-local-install`, `prepare-metadata-upgrade`, `verify-files`, `start-service`, `prepare-remove`, `remove-target`, or `launch-desktop`, from the actual independently protected original source installer. `prepare-metadata-upgrade` currently refuses with `InitialTrustUnavailable` until its authenticated producer is implemented; it never falls back to local installation.
 - `pinvou-upgrade-launcher` starts the fixed registered app as its ordinary interactive user. Its only additional mode is `--restart-handoff <restart-id>`, authenticated against the actual original association.
 
@@ -29,6 +33,47 @@ App restart preserves one authenticated association while existing app cleanup r
 Fixed English diagnostics contain no sensitive paths or native error payloads. Exit codes: 0 success, 10 disabled/unsupported/trust unavailable, 11 invalid identity/context/input, 12 busy/referenced, 13 corrupt/repair required, 14 outcome unknown, 15 unavailable/incomplete prerequisites. No service, certificate root, clock or machine registry test changes are permitted on the development host.
 
 This workflow does not establish Artifact validity, production Publisher mapping, ApprovedRegistry, current upgrade qualification, trusted wall time, data freeze/backup readiness, or install/consume permissions. Those owners remain independent.
+
+## GUI App writer admission
+
+An enabled GUI host completes `admit_current_app_writer()` before initializing
+App data, logs, runtimes or descendants. The authenticated empty `writer-admit`
+request contains no caller-selected process or scope. The service observes the
+actual App peer, publishes its protected original intent, assigns that original
+to a non-breakaway Job, obtains the actual restricted keeper's receipt, and
+commits/readbacks admission before replying. The App verifies its exact native
+incarnation, scope and host epoch and retains an opaque receipt. A configured
+host failure stops startup with shared Chinese, English and Japanese copy.
+The existing build without the optional host remains explicitly disabled;
+within a host build only an explicitly absent embedded profile bypasses admission.
+
+A reservation still held in its pre-assignment native type can be reclaimed
+only after its continuously held original has exited and the guarded owner has
+confirmed exact journal absence or retired the exact Reserved record. This
+separate proof never opens/releases a possibly foreign named Job, infers Job
+zero, or discharges preparation obligations.
+
+Pipe disconnect never closes the writer record. Maintenance requires the actual
+terminal native observations, publishes Closed, releases exact keeper custody,
+and finally removes the bounded pending-release entry. Retained native handles,
+typed acknowledgements and protected readbacks preserve uncertain outcomes.
+Validated one-use challenge events have scoped ownership on every actor return;
+subsequent authenticated requests reclaim exact orphan events from interrupted
+delivery only at strictly older native service-epoch/request-serial orders. A
+producer transport timeout does not prove the actor has finished: equal/later
+events remain held for their legitimate successor. Unknown objects and the Job
+census are never relaxed.
+Restart selects original records and the same actual keeper; it does not create
+a replacement from a missing name. One observed keeper exit can retire only
+already Closed custody; loss of both processes remains unknown. Service stop
+cancels local IPC waits without treating cancellation as successful release.
+The journal holds at most 128 combined active and pending-release writers, with
+individual retained histories and no lifetime admission quota.
+
+This component covers the GUI App and its subsequently contained descendants.
+It does not certify delegated writers, CLI/headless entrypoints, Saved receipts,
+Session preparation, a filesystem fence or installation rights. The immutable
+fresh-install namespaces are not recreated from a legacy or corrupt load.
 
 ## Retained download byte staging
 

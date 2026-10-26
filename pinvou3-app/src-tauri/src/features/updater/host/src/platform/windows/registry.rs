@@ -1,8 +1,11 @@
 //! Protected native64 registry transaction owner; no ordinary-file fallback.
 //! Files/SCM are outside this transaction and are recovered from original intent.
 pub(super) mod budgets;
+pub(super) mod keeper;
+pub(super) mod preparation;
 pub(super) mod retention;
 pub(super) mod time;
+pub(super) mod writers;
 
 use super::{
     handle::Handle,
@@ -787,6 +790,9 @@ impl Store {
             owner_bootstrap_in(&private, seed, next)?;
             time::initialize_in(&private, &transaction, next)?;
             budgets::initialize_in(&private, &transaction, next)?;
+            preparation::initialize_in(&private, &transaction, next)?;
+            writers::init_in(&private, &transaction, next)?;
+            keeper::init_in(&private, &transaction, next)?;
             retention::initialize_in(&private, &transaction, next)?;
         }
         if let Some(manifest) = initial_manifest {
@@ -837,6 +843,9 @@ impl Store {
                 // Fresh time genesis is part of the original definitive commit,
                 // not a later best-effort initializer or an adopted empty scope.
                 budgets::verify_fresh_in(&key, &actual)?;
+                preparation::verify_fresh_in(&key, &actual)?;
+                writers::verify_fresh_in(&key, &actual)?;
+                keeper::verify_fresh_in(&key, &actual)?;
                 retention::verify_fresh_in(&key, &actual)?;
                 time::verify_fresh_policy_in(&key, &actual)?;
                 let time = self.time_load(seed, &actual)?;

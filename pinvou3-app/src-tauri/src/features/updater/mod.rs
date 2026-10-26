@@ -25,6 +25,7 @@ use tauri::AppHandle;
 pub(crate) mod download;
 mod platform;
 pub(crate) mod protocol;
+pub(crate) mod startup_admission;
 pub(crate) mod timing;
 pub(crate) mod trusted_time;
 
