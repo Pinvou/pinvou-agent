@@ -165,7 +165,9 @@ function waitForExit(child, timeoutMs = 3000) {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("timeout waiting for relay exit")), timeoutMs);
-    child.once("exit", () => {
+    // Resolve on "close", not "exit": only "close" guarantees stdio (which the
+    // assertions below inspect) has fully drained.
+    child.once("close", () => {
       clearTimeout(timer);
       resolve();
     });
@@ -738,7 +740,7 @@ test("revoke tombstone survives Relay restart and permits a fresh endpoint id", 
 test("revoke fails closed without ACK when the tombstone cannot be persisted", async () => {
   const blockedParent = join(testRoot, `blocked-state-parent-${Date.now()}`);
   const statePath = join(blockedParent, "relay-state.json");
-  const isolated = await spawnRelay({ PINVOU_REMOTE_STATE_PATH: statePath });
+  const isolated = await spawnRelayCapture({ PINVOU_REMOTE_STATE_PATH: statePath });
   const endpointId = `endpoint_revoke_failure_${Date.now()}`;
   const accessToken = "access-token-revoke-failure-000000001";
   const desktopSecret = "desktop-secret-revoke-failure-00000001";
@@ -759,6 +761,12 @@ test("revoke fails closed without ACK when the tombstone cannot be persisted", a
     }));
     assert.equal((await persistenceError).code, "revoke_persistence_failed");
     await waitForClose(desktop.ws);
+
+    // Persistence failures log the fixed event code only: never the endpoint
+    // id (a persistent device identifier) nor raw fs error text (paths).
+    assert.match(isolated.errors(), /\[relay-error\] revocation_persist_failed/u);
+    assert.ok(!isolated.errors().includes(endpointId), "endpoint id leaked into stderr");
+    assert.doesNotMatch(isolated.errors(), /ENOTDIR|EACCES|ENOSPC/u);
 
     await rm(blockedParent, { force: true });
     const reconnect = await registerDesktop(
@@ -1068,32 +1076,14 @@ test("rejects a duplicate version key before JSON.parse collapses it", async (t)
 test("invalid or partially invalid proxy IP configuration fails startup instead of opening the allowlist", async () => {
   for (const variable of ["PINVOU_REMOTE_ALLOWED_PROXY_IPS", "PINVOU_REMOTE_TRUSTED_PROXY_IPS"]) {
     for (const value of ["not-an-ip", "127.0.0.1,not-an-ip", ",,,"]) {
-      const child = spawn(process.execPath, [join(relayDir, "server.js")], {
-        cwd: relayDir,
-        env: {
-          ...process.env,
-          PORT: String(await getFreePort()),
-          PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
-          PINVOU_REMOTE_WEB_DIR: webDir,
-          PINVOU_REMOTE_STATE_PATH: join(
-            testRoot,
-            `proxy-invalid-${variable}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`,
-          ),
-          [variable]: value,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let output = "";
-      let errors = "";
-      child.stdout.on("data", (chunk) => { output += String(chunk); });
-      child.stderr.on("data", (chunk) => { errors += String(chunk); });
+      const isolated = await spawnRelayCapture({ [variable]: value }, { awaitListening: false });
       try {
-        await waitForExit(child, 10000);
-        assert.notEqual(child.exitCode, 0);
-        assert.match(errors, /proxy_ip_configuration_invalid/u);
-        assert.doesNotMatch(output, /pinvou remote relay listening/u);
+        await waitForExit(isolated.child, 10000);
+        assert.notEqual(isolated.child.exitCode, 0);
+        assert.match(isolated.errors(), /proxy_ip_configuration_invalid/u);
+        assert.doesNotMatch(isolated.output(), /pinvou remote relay listening/u);
       } finally {
-        await stopRelay(child);
+        await stopRelay(isolated.child);
       }
     }
   }
@@ -1151,6 +1141,79 @@ test("rejects malformed Host headers instead of crashing", async () => {
     const follower = await openSocket(isolated.wsUrl);
     closeSocket(follower);
     assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("attributes trusted-proxy connections to the rightmost forwarded address", async () => {
+  const isolated = await spawnRelayCapture({
+    WS_CONNECT_LIMIT: "2",
+    WS_CONNECT_WINDOW_MS: "60000",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "127.0.0.1",
+  });
+  let first;
+  let second;
+  try {
+    // A mapped prefix whose remainder is not an IP, an over-long final item,
+    // and a garbage final item all normalize to nothing: the connection must
+    // collapse onto the peer address instead of attacker-chosen junk.
+    first = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "::ffff:not-an-ip" } });
+    second = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": `1.2.3.4, ${"a".repeat(200)}` } });
+    // The peer bucket is now full, so a connection with no XFF is rejected...
+    assert.equal(await rejectedUpgrade(isolated.wsUrl), 429);
+    // ...while a valid forwarded address still gets its own bucket.
+    const own = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "198.51.100.7" } });
+    closeSocket(own);
+  } finally {
+    closeSocket(first);
+    closeSocket(second);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("shuts down with exit code 0 on SIGTERM and does not log the bind address", async () => {
+  const isolated = await spawnRelayCapture({});
+  const ws = await openSocket(isolated.wsUrl);
+  try {
+    isolated.child.kill("SIGTERM");
+    await waitForExit(isolated.child, 5000);
+    assert.equal(isolated.child.exitCode, 0);
+    assert.equal(isolated.child.signalCode, null);
+    assert.doesNotMatch(isolated.output(), /listening on /u);
+  } finally {
+    closeSocket(ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("configuration errors do not echo the offending value", async () => {
+  const isolated = await spawnRelayCapture(
+    { PINVOU_REMOTE_ALLOWED_WEB_ORIGINS: "https://good.example, ftp://evil.example" },
+    { awaitListening: false },
+  );
+  try {
+    await waitForExit(isolated.child, 10000);
+    assert.notEqual(isolated.child.exitCode, 0);
+    assert.match(isolated.errors(), /invalid browser WebSocket origin/u);
+    assert.ok(!isolated.errors().includes("ftp://evil.example"), "offending origin echoed into stderr");
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("relay state load failures surface a fixed message without paths", async () => {
+  const stateDirectory = join(testRoot, `state-as-dir-${Date.now()}`);
+  await mkdir(stateDirectory, { recursive: true });
+  const isolated = await spawnRelayCapture(
+    { PINVOU_REMOTE_STATE_PATH: stateDirectory },
+    { awaitListening: false },
+  );
+  try {
+    await waitForExit(isolated.child, 10000);
+    assert.notEqual(isolated.child.exitCode, 0);
+    assert.match(isolated.errors(), /relay_state_load_failed/u);
+    assert.ok(!isolated.errors().includes(stateDirectory), "state path leaked into stderr");
   } finally {
     await stopRelay(isolated.child);
   }
