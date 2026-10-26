@@ -219,6 +219,11 @@ fn shared_probe_client() -> Option<&'static reqwest::Client> {
     crate::core::model_endpoint::shared_probe_client_with_timeout(None)
 }
 
+/// Upper bound for a `/metrics` response body read into memory per poll.
+/// Real vLLM exports are tens of KB; this only guards a hostile or
+/// misconfigured endpoint.
+const MAX_METRICS_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
 async fn snapshot_for_model_config(
     upstream: &str,
     configured_model: Option<String>,
@@ -384,7 +389,14 @@ async fn snapshot_for_model_config(
         None => None,
     };
     let metrics_text = match metrics_resp {
-        Some(r) if r.status().is_success() => r.text().await.ok(),
+        Some(r) if r.status().is_success() => match r.content_length() {
+            // Bound the buffered body: this poll runs at ~1 Hz and a
+            // misbehaving endpoint must not balloon memory. Chunked
+            // responses carry no declared length; the 3 s request timeout
+            // above bounds those.
+            Some(n) if n > MAX_METRICS_BODY_BYTES => None,
+            _ => r.text().await.ok(),
+        },
         _ => None,
     };
     let mut metric_diagnostics = if metrics_applicable && metrics_text.is_none() {
@@ -793,32 +805,72 @@ fn parse_perf_metrics(text: &str) -> PerfMetrics {
     }
 }
 
-/// 从 Prometheus 文本里抽某个指标的第一个数值，例如：
-/// `vllm:num_requests_running{engine="0",model_name="/model"} 0.0` → 0.0
+/// Sum a metric across every one of its series in the Prometheus text, e.g.
+/// `vllm:num_requests_running{engine="0"} 3` plus `{engine="1"} 2` → `5.0`.
+/// vLLM with `data_parallel_size > 1` exports one series per `engine` label,
+/// and every metric consumed here is additive (queue gauges, monotonic
+/// counters), so the engine-wide total is the honest published number —
+/// returning the first series would silently report engine 0 only.
+///
+/// Per-line robustness: comment lines are skipped; the metric name must end
+/// at a boundary (space, tab, `{`, or end of line), so the `_created` /
+/// `_bucket` / `_sum` / `_count` siblings of a counter never match; a
+/// truncated labels block or a non-numeric sample skips only that line; and
+/// `NaN` / `+Inf` degenerate samples (which Rust's `f64 FromStr` accepts)
+/// are skipped rather than summed.
 fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
+    let mut total: Option<f64> = None;
     for line in text.lines() {
         let line = line.trim();
-        if line.starts_with('#') {
+        if line.starts_with('#') || !line.starts_with(name) {
             continue;
         }
-        if !line.starts_with(name) {
-            continue;
-        }
-        // 跳过指标名称 + 可选 `{labels}`，找最后一个空格后的数字
         let after_name = &line[name.len()..];
-        let value_part = if after_name.starts_with('{') {
-            let close = after_name.find('}')?;
-            after_name[close + 1..].trim()
+        if !(after_name.is_empty()
+            || after_name.starts_with(' ')
+            || after_name.starts_with('\t')
+            || after_name.starts_with('{'))
+        {
+            continue;
+        }
+        let value_part = if let Some(rest) = after_name.strip_prefix('{') {
+            match closing_label_brace(rest) {
+                Some(close) => rest[close + 1..].trim(),
+                // Truncated body (labels never close): skip this line only.
+                None => continue,
+            }
         } else {
             after_name.trim()
         };
-        let token = value_part.split_whitespace().next()?;
-        if let Ok(v) = token.parse::<f64>() {
-            // Prometheus exports `NaN` / `+Inf` for degenerate series and
-            // Rust's f64 FromStr accepts both; they are not measurements, so
-            // skip them and keep scanning (a later finite series wins).
+        if let Ok(v) = value_part
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .parse::<f64>()
+        {
             if v.is_finite() {
-                return Some(v);
+                *total.get_or_insert(0.0) += v;
+            }
+        }
+    }
+    total
+}
+
+/// Offset of the labels-block closing `}` in `rest` (the text after the
+/// opening `{`), honoring quoted label values — a `}` inside quotes is part
+/// of the value, not the block end. `None` means the block never closes.
+fn closing_label_brace(rest: &str) -> Option<usize> {
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (i, ch) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+        } else {
+            match ch {
+                '\\' if in_quotes => escaped = true,
+                '"' => in_quotes = !in_quotes,
+                '}' if !in_quotes => return Some(i),
+                _ => {}
             }
         }
     }
@@ -1224,6 +1276,45 @@ mod tests {
             "a listed window over a served /metrics must carry no notices: {:?}",
             snap.metric_diagnostics
         );
+    }
+
+    /// The snapshot wiring sums multi-engine `/metrics` series: a
+    /// `data_parallel_size > 1` export must publish the engine-wide queue
+    /// depth and hit rate, not engine 0's series.
+    #[tokio::test]
+    async fn snapshot_sums_multi_engine_metrics() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"dp-model"}]}"#.into()),
+            (
+                "/metrics",
+                200,
+                "vllm:num_requests_running{engine=\"0\"} 1\n\
+                 vllm:num_requests_running{engine=\"1\"} 2\n\
+                 vllm:prefix_cache_hits_total{engine=\"0\"} 10\n\
+                 vllm:prefix_cache_hits_total{engine=\"1\"} 20\n\
+                 vllm:prefix_cache_queries_total{engine=\"0\"} 40\n\
+                 vllm:prefix_cache_queries_total{engine=\"1\"} 60\n"
+                    .into(),
+            ),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("dp-model".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            "local_vllm".to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(snap.status, VllmStatus::Busy, "running 1+2 is Busy");
+        assert_eq!(snap.num_requests_running, Some(3.0));
+        assert_eq!(snap.prefix_cache_hit_pct, Some(30.0), "(10+20)/(40+60)");
     }
 
     /// Every early-exit and health branch carries its diagnostic code, and
@@ -2112,6 +2203,75 @@ mod tests {
         assert_eq!(
             parse_prom_metric(text, "vllm:generation_tokens_total"),
             None
+        );
+    }
+
+    /// With `data_parallel_size > 1` vLLM exports one series per `engine`
+    /// label; every metric consumed here is additive, so the parser must sum
+    /// the series — returning the first would publish engine 0 only. Also
+    /// pins that the `_created` sibling of a counter never joins a sum and
+    /// that a non-finite series is skipped, not summed and not fatal.
+    #[test]
+    fn prom_metric_sums_series_across_engine_labels() {
+        let text = "vllm:num_requests_running{engine=\"0\",model_name=\"m\"} 3\n\
+                    vllm:num_requests_running{engine=\"1\",model_name=\"m\"} 2\n\
+                    vllm:num_requests_waiting{engine=\"0\"} 0\n\
+                    vllm:num_requests_waiting{engine=\"1\"} 4\n\
+                    vllm:prefix_cache_hits_total{engine=\"0\"} 30\n\
+                    vllm:prefix_cache_hits_total{engine=\"1\"} 10\n\
+                    vllm:prefix_cache_queries_total{engine=\"0\"} 40\n\
+                    vllm:prefix_cache_queries_total{engine=\"1\"} 20\n\
+                    vllm:prompt_tokens_total_created 1.7e9\n\
+                    vllm:prompt_tokens_total{engine=\"0\"} 100\n\
+                    vllm:prompt_tokens_total{engine=\"1\"} 23\n\
+                    vllm:generation_tokens_total{engine=\"0\"} NaN\n\
+                    vllm:generation_tokens_total{engine=\"1\"} 7\n";
+        assert_eq!(
+            parse_prom_metric(text, "vllm:num_requests_running"),
+            Some(5.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:num_requests_waiting"),
+            Some(4.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
+            Some(40.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_queries_total"),
+            Some(60.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prompt_tokens_total"),
+            Some(123.0),
+            "the _created sibling must never join the sum"
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:generation_tokens_total"),
+            Some(7.0),
+            "a non-finite series is skipped, not summed"
+        );
+    }
+
+    /// A labels block that never closes (truncated body) must cost only its
+    /// own line, and a `}` inside a quoted label value must not be mistaken
+    /// for the block end.
+    #[test]
+    fn prom_metric_skips_malformed_lines_without_aborting_the_scan() {
+        let truncated = "vllm:num_requests_running{engine=\"0\" 3\n\
+             vllm:num_requests_running{engine=\"1\"} 2\n";
+        assert_eq!(
+            parse_prom_metric(truncated, "vllm:num_requests_running"),
+            Some(2.0),
+            "one malformed line must not void the later series"
+        );
+        let quoted = "vllm:num_requests_running{model_name=\"a}b\"} 4\n\
+                      vllm:num_requests_running{model_name=\"c\"} 1\n";
+        assert_eq!(
+            parse_prom_metric(quoted, "vllm:num_requests_running"),
+            Some(5.0),
+            "a quoted '}}' is part of the label value, not the block end"
         );
     }
 
