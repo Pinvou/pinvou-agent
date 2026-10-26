@@ -202,10 +202,13 @@ pub(crate) fn external_tokio_command(executable: &Path) -> tokio::process::Comma
 /// completed child's output is returned in full even when a daemonized
 /// descendant inherited the capture handles, and the wall-clock timeout
 /// stays effective regardless of descendants (issue #536). Capture is
-/// bounded: if either stream exceeds [`MAX_CAPTURE_BYTES`], the whole
-/// process tree is terminated regardless of the kill-tree flag — a runaway
-/// writer is never allowed to outlive the caller — and the error carries
-/// the truncated output.
+/// bounded: if either stream exceeds [`MAX_CAPTURE_BYTES`] while this call
+/// is running, the whole process tree is terminated regardless of the
+/// kill-tree flag, and the error carries the truncated output. The bound is
+/// an in-call guarantee: a descendant that escapes the tree kill (e.g. it
+/// called setsid) can keep writing to the unlinked capture file after this
+/// call returns — the space is reclaimed when it exits, and the planned
+/// Windows Job-Object follow-up closes that residual gap.
 pub(crate) fn output_with_timeout(
     mut command: Command,
     timeout: Duration,
@@ -304,13 +307,16 @@ fn output_with_timeout_inner(
                     String::new()
                 };
                 let _ = child.kill();
-                // The wait error itself is already the caller's diagnostic;
-                // the reap outcome is dropped by convention. Bounded reaping
-                // keeps this path within its time budget too: capture lives
-                // in temp files, so neither a child that refuses to die nor
-                // a surviving descendant can extend this call (issue #536).
-                let _ = reap_killed_child(&mut child, REAP_GRACE);
-                return Err(format!("{program} wait error: {error}{kill_note}"));
+                // The wait error itself is the caller's primary diagnostic,
+                // so the captured output stays out of this message; kill and
+                // reap failures are still folded in. Bounded reaping keeps
+                // this path within its time budget too: capture lives in
+                // temp files, so neither a child that refuses to die nor a
+                // surviving descendant can extend this call (issue #536).
+                let reap_note = reap_note_suffix(reap_killed_child(&mut child, REAP_GRACE));
+                return Err(format!(
+                    "{program} wait error: {error}{reap_note}{kill_note}"
+                ));
             }
         }
     };
@@ -403,15 +409,26 @@ fn capture_limit_exceeded(file: &std::fs::File) -> bool {
 
 /// Read a capture file back, clipped to [`MAX_CAPTURE_BYTES`]. The extra
 /// probe byte distinguishes "exactly at the limit" from "clipped", and a
-/// clipped read gets [`CAPTURE_TRUNCATED_MARKER`] appended so truncation is
-/// never silent.
+/// clipped read — or a capture that cannot be read back in full — gets
+/// [`CAPTURE_TRUNCATED_MARKER`] appended so an incomplete capture is never
+/// mistaken for the child's complete output.
 fn read_capture(file: &mut std::fs::File) -> Vec<u8> {
     let mut buffer = Vec::new();
-    if file.seek(SeekFrom::Start(0)).is_ok() {
-        let _ = file.take(MAX_CAPTURE_BYTES + 1).read_to_end(&mut buffer);
+    // A capture that cannot be read back in full must never pass for the
+    // child's complete output: a failed seek or read gets the same
+    // truncation marker as a clipped read.
+    let mut read_failed = file.seek(SeekFrom::Start(0)).is_err();
+    if !read_failed {
+        read_failed = file
+            .take(MAX_CAPTURE_BYTES + 1)
+            .read_to_end(&mut buffer)
+            .is_err();
     }
-    if buffer.len() as u64 > MAX_CAPTURE_BYTES {
+    let clipped = buffer.len() as u64 > MAX_CAPTURE_BYTES;
+    if clipped {
         buffer.truncate(MAX_CAPTURE_BYTES as usize);
+    }
+    if read_failed || clipped {
         buffer.extend_from_slice(CAPTURE_TRUNCATED_MARKER);
     }
     buffer
@@ -550,16 +567,32 @@ pub(crate) fn kill_process_tree(pid: u32) -> std::io::Result<()> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        if taskkill
-            .wait_timeout(WINDOWS_TASKKILL_TIMEOUT)
-            .is_ok_and(|finished| finished.is_none())
-        {
+        let finished = match taskkill.wait_timeout(WINDOWS_TASKKILL_TIMEOUT) {
+            Ok(finished) => finished,
+            Err(error) => {
+                return Err(std::io::Error::other(format!(
+                    "taskkill for pid {pid} wait failed: {error}"
+                )));
+            }
+        };
+        let Some(status) = finished else {
             let _ = taskkill.kill();
             let _ = taskkill.wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!("taskkill for pid {pid} exceeded the kill budget"),
             ));
+        };
+        // A failing taskkill must not be folded into a successful
+        // termination claim: `taskkill /T` walks live parent→child links, so
+        // once the root process is gone it cannot reach orphaned
+        // descendants — a nonzero exit (typically "process not found") means
+        // the tree kill did NOT happen, not that there was nothing to kill.
+        let code = status.code().unwrap_or(-1);
+        if code != 0 {
+            return Err(std::io::Error::other(format!(
+                "taskkill for pid {pid} exited with status {code}; descendants of the exited process were not terminated"
+            )));
         }
         return Ok(());
     }
@@ -684,10 +717,12 @@ mod tests {
     const DESCENDANT_STARTUP_HANDSHAKE: Duration = Duration::from_secs(20);
     static PROCESS_FIXTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Serializes the tests that re-exec this test binary as a fixture: the
-    /// copies inherit `PATH`-based command resolution and occupy CPU while
-    /// writing their scripted output, so they must not interleave with each
-    /// other or with the kill-tree test's PATH manipulation.
+    /// Serializes the tests that re-exec this test binary as a fixture so
+    /// their marker files and CPU-heavy copies never interleave. This lock
+    /// deliberately does NOT compose with the kill-tree test's `PATH_LOCK`:
+    /// the fixture copies resolve only `current_exe()` (an absolute path)
+    /// and touch only marker files, so a concurrently mutated `PATH` cannot
+    /// affect them and no shared lock is needed.
     fn lock_process_fixture() -> std::sync::MutexGuard<'static, ()> {
         PROCESS_FIXTURE_LOCK
             .lock()
@@ -719,6 +754,31 @@ mod tests {
         marker.exists()
     }
 
+    /// Spawns the long-lived `descendant_success` copy with inherited
+    /// capture handles and waits for its running marker. Shared by the
+    /// retention ("descendant") and tree-kill ("overflow_tree") modes.
+    fn spawn_descendant_and_wait_for_running_marker() {
+        let mut descendant = output_fixture_command("descendant_success");
+        descendant.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+
+            // Give the successful descendant an independent console
+            // lifecycle so this fixture models a real helper that outlives
+            // its completed launcher while retaining the launcher's capture
+            // handles.
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            descendant.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        }
+        let _child = descendant.spawn().unwrap();
+        assert!(wait_for_fixture_marker(
+            "running",
+            DESCENDANT_STARTUP_HANDSHAKE
+        ));
+    }
+
     /// Re-exec fixture for the capture tests: with OUTPUT_FIXTURE_ENV set,
     /// this same test binary runs a scripted mode instead of the normal
     /// test pass — writing real output volumes to whatever its stdout/stderr
@@ -742,32 +802,30 @@ mod tests {
             }
             Ok("overflow_exit") => {
                 // Writes past the capture limit in one burst and exits
-                // cleanly, so only the post-exit re-check can catch it.
+                // cleanly. Whether the in-flight check or the post-exit
+                // re-check fires depends on scheduling; the pinned contract
+                // is the caller-visible one: an overflow is an error, never
+                // a silently truncated success.
                 let payload = vec![b'x'; MAX_CAPTURE_BYTES as usize + 64 * 1024];
                 std::io::stdout().write_all(&payload).unwrap();
                 std::io::stderr().write_all(&payload).unwrap();
             }
             Ok("descendant") => {
-                let mut descendant = output_fixture_command("descendant_success");
-                descendant.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt as _;
-
-                    // Give the successful descendant an independent console
-                    // lifecycle so this fixture models a real helper that
-                    // outlives its completed launcher while retaining the
-                    // launcher's capture handles.
-                    const DETACHED_PROCESS: u32 = 0x0000_0008;
-                    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-                    descendant.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-                }
-                let _child = descendant.spawn().unwrap();
-                assert!(wait_for_fixture_marker(
-                    "running",
-                    DESCENDANT_STARTUP_HANDSHAKE
-                ));
+                spawn_descendant_and_wait_for_running_marker();
                 println!("descendant-started");
+            }
+            Ok("overflow_tree") => {
+                // Overflow while a live descendant holds the inherited
+                // capture handles: the whole group must die with the
+                // launcher, so the tree-kill tests can pin actual
+                // descendant death instead of just the error text. The
+                // descendant records its pid in the pid marker before
+                // raising the running marker.
+                spawn_descendant_and_wait_for_running_marker();
+                let payload = vec![b'x'; 64 * 1024];
+                loop {
+                    std::io::stdout().write_all(&payload).unwrap();
+                }
             }
             Ok("descendant_success") => {
                 if let Some(pid) = fixture_marker("pid") {
@@ -969,6 +1027,10 @@ mod tests {
         let error = output_with_timeout(command, Duration::from_millis(100)).unwrap_err();
 
         assert!(error.contains("timed out after"));
+        // Pins the real detail text end-to-end: the two connector/pkexec
+        // fixture files hard-code this exact wording, so a wording change
+        // in `subprocess_output_detail` must fail here first.
+        assert!(error.contains("no subprocess output"), "{error}");
         // The plain variant never requests a process-tree termination on
         // timeout: no tree-termination claim may appear (only the
         // capture-limit paths request one unconditionally), and a *failed*
@@ -1172,9 +1234,13 @@ mod tests {
     #[test]
     fn output_capture_does_not_deadlock_when_buffers_are_large() {
         let _fixture_lock = lock_process_fixture();
+        // The budget must absorb a cold re-exec of the test binary
+        // (multi-second on a loaded/AV-scanned Windows runner); on success
+        // paths the child exits on its own, so a larger ceiling costs
+        // nothing.
         let output = output_with_timeout_and_kill_tree(
             output_fixture_command("flood"),
-            Duration::from_secs(5),
+            Duration::from_secs(30),
         )
         .unwrap();
 
@@ -1186,28 +1252,87 @@ mod tests {
     /// A child that keeps writing past the capture limit must be stopped:
     /// the poll loop notices the crossed bound mid-flight and terminates
     /// the whole tree, reporting an overflow error instead of a truncated
-    /// success.
+    /// success. The fixture holds a live descendant while overflowing, so
+    /// the descendant-death assertion below pins an actual tree kill, not
+    /// just the error text.
     #[test]
     fn output_capture_limit_terminates_process_tree() {
         let _fixture_lock = lock_process_fixture();
-        let error = output_with_timeout_and_kill_tree(
-            output_fixture_command("overflow"),
-            Duration::from_secs(5),
-        )
-        .unwrap_err();
+        let temporary = tempfile::tempdir().unwrap();
+        let marker = temporary.path().join("tree-overflow-marker");
+        let mut command = output_fixture_command("overflow_tree");
+        command.env(OUTPUT_FIXTURE_MARKER_ENV, &marker);
+        let error =
+            output_with_timeout_and_kill_tree(command, Duration::from_secs(30)).unwrap_err();
 
         assert!(error.contains("output exceeded"), "{error}");
+        assert_descendant_fixture_died(&marker);
     }
 
-    /// A writer fast enough to cross the limit and exit cleanly between two
-    /// poll iterations must still be caught: the post-exit re-check turns
-    /// the overflow into an error instead of a silently truncated success.
+    /// Pins the load-bearing wiring for "the tree is terminated on overflow
+    /// regardless of the kill-tree flag": the plain variant must also make
+    /// its child a process-group leader, or the unconditional group kill
+    /// degenerates into a no-op (the leader's pid names no group) and the
+    /// descendant survives. Removing the `std_process_group_leader` call in
+    /// `output_with_timeout` fails the descendant-death assertion below.
+    #[test]
+    fn plain_output_limit_also_terminates_the_process_tree() {
+        let _fixture_lock = lock_process_fixture();
+        let temporary = tempfile::tempdir().unwrap();
+        let marker = temporary.path().join("plain-overflow-marker");
+        let mut command = output_fixture_command("overflow_tree");
+        command.env(OUTPUT_FIXTURE_MARKER_ENV, &marker);
+        let error = output_with_timeout(command, Duration::from_secs(30)).unwrap_err();
+
+        assert!(error.contains("output exceeded"), "{error}");
+        assert_descendant_fixture_died(&marker);
+    }
+
+    /// Asserts the overflow_tree fixture's descendant actually died. The
+    /// descendant records its pid before raising the running marker, so the
+    /// pid file is stable once the fixture started. The window must stay
+    /// below the descendant's 5s natural lifetime, so a surviving
+    /// descendant cannot pass the assertion by exiting on its own. Unix-only
+    /// because std has no portable liveness probe; on Windows the in-flight
+    /// tree kill rides on `taskkill /T` and its outcome is reported through
+    /// the error message (real descendant-death pinning lands with the
+    /// Job-Object follow-up).
+    #[cfg(unix)]
+    fn assert_descendant_fixture_died(marker: &std::path::Path) {
+        let pid: u32 = std::fs::read_to_string(marker.with_extension("pid"))
+            .expect("descendant pid marker")
+            .trim()
+            .parse()
+            .expect("descendant pid");
+        // SAFETY: libc::kill with sig=0 only probes liveness; no memory is touched.
+        let alive = |pid: u32| unsafe { libc::kill(pid as i32, 0) == 0 };
+        let started = Instant::now();
+        while alive(pid) && started.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !alive(pid),
+            "descendant {pid} survived the overflow tree kill"
+        );
+    }
+
+    /// Windows counterpart: the overflow error above is the pin here; see
+    /// the unix variant for why descendant death is not assertable.
+    #[cfg(not(unix))]
+    fn assert_descendant_fixture_died(_marker: &std::path::Path) {}
+
+    /// A writer that crosses the limit and exits cleanly must still be
+    /// errored, never given a silently truncated success. The in-flight
+    /// check catches a crossing seen before the exit poll; the post-exit
+    /// re-check covers a write landing inside the final iteration, after
+    /// the size check but before `try_wait` reports the exit. This test
+    /// pins the caller-visible contract, not which check fires.
     #[test]
     fn completed_process_cannot_bypass_output_capture_limit() {
         let _fixture_lock = lock_process_fixture();
         let error = output_with_timeout_and_kill_tree(
             output_fixture_command("overflow_exit"),
-            Duration::from_secs(5),
+            Duration::from_secs(30),
         )
         .unwrap_err();
 
@@ -1236,8 +1361,13 @@ mod tests {
         // for the inherited capture handles to close.
         let (marker_sender, marker_receiver) = std::sync::mpsc::sync_channel(1);
         let marker_waiter = std::thread::spawn(move || {
+            // The launcher's own handshake starts after ITS startup, so this
+            // waiter's deadline must be strictly larger or a slow start
+            // lands in the gap: the launcher succeeds, but the channel
+            // already holds a miss and the expect below fails spuriously.
+            let deadline = DESCENDANT_STARTUP_HANDSHAKE + Duration::from_secs(15);
             let started = Instant::now();
-            while !running.exists() && started.elapsed() < DESCENDANT_STARTUP_HANDSHAKE {
+            while !running.exists() && started.elapsed() < deadline {
                 std::thread::sleep(Duration::from_millis(25));
             }
             let _ = marker_sender.send(running.exists().then(Instant::now));
@@ -1247,8 +1377,11 @@ mod tests {
         // room, while the assertion below still measures the real contract
         // strictly from the descendant's running marker.
         let output = output_with_timeout_and_kill_tree(command, Duration::from_secs(30)).unwrap();
+        // Upper-bounds the waiter thread's remaining wait (its deadline is
+        // launcher handshake + 15s, and the call itself gives the launcher
+        // 30s), so the recv cannot expire before the thread reports.
         let marker_seen_at = marker_receiver
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(20))
             .unwrap()
             .expect("descendant did not start before launcher exit");
         marker_waiter.join().unwrap();
@@ -1289,6 +1422,67 @@ mod tests {
         assert!(
             note.contains("taskkill budget overrun"),
             "the note must carry the underlying error, got: {note}"
+        );
+    }
+
+    /// reap_note_suffix is the counterpart of kill_note_suffix: empty when
+    /// the child was reaped cleanly, an explicit lingering note on
+    /// abandon, and a named failure clause otherwise. Pure function, so
+    /// every branch runs on every platform.
+    #[test]
+    fn reap_note_suffix_covers_every_reap_outcome() {
+        assert_eq!(reap_note_suffix(Reap::Reaped), "");
+        let abandoned = reap_note_suffix(Reap::Abandoned);
+        assert!(
+            abandoned.starts_with("; termination requested"),
+            "the note must read as an appended clause, got: {abandoned}"
+        );
+        assert!(
+            abandoned.contains("may linger"),
+            "the note must disclose the lingering child, got: {abandoned}"
+        );
+        let failed = reap_note_suffix(Reap::Failed(std::io::Error::other("wait interrupted")));
+        assert!(
+            failed.starts_with("; reaping the child failed: "),
+            "the note must read as an appended failure clause, got: {failed}"
+        );
+        assert!(
+            failed.contains("wait interrupted"),
+            "the note must carry the underlying error, got: {failed}"
+        );
+    }
+
+    /// read_capture must clip at the limit with the truncation marker, and
+    /// treat exactly-at-limit as complete — the boundary the overflow
+    /// checks and the "never mistaken for complete output" contract lean
+    /// on.
+    #[test]
+    fn read_capture_clips_at_the_limit_and_marks_truncation() {
+        let mut file = tempfile::tempfile().unwrap();
+        let payload = vec![b'a'; (MAX_CAPTURE_BYTES as usize) + 128];
+        file.write_all(&payload).unwrap();
+        let clipped = read_capture(&mut file);
+        assert_eq!(
+            clipped.len(),
+            MAX_CAPTURE_BYTES as usize + CAPTURE_TRUNCATED_MARKER.len()
+        );
+        assert!(
+            clipped.ends_with(CAPTURE_TRUNCATED_MARKER),
+            "a clipped capture must carry the truncation marker"
+        );
+        assert!(
+            clipped.starts_with(&payload[..MAX_CAPTURE_BYTES as usize]),
+            "the clipped capture must keep the first MAX_CAPTURE_BYTES bytes"
+        );
+
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&vec![b'b'; MAX_CAPTURE_BYTES as usize])
+            .unwrap();
+        let exact = read_capture(&mut file);
+        assert_eq!(exact.len(), MAX_CAPTURE_BYTES as usize);
+        assert!(
+            !exact.ends_with(CAPTURE_TRUNCATED_MARKER),
+            "exactly-at-limit output is complete and must not be marked"
         );
     }
 }
