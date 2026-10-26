@@ -1691,6 +1691,87 @@ mod tests {
         );
     }
 
+    /// The 16 MiB read bound must refuse an oversize /metrics body before
+    /// buffering, even when the body would have parsed: the gauges stay None
+    /// and the lane flags itself. A raw listener because the shared
+    /// models_mock cannot declare a Content-Length — and the body is
+    /// actually streamed past the bound so a cap regression parses it and
+    /// turns this test red (a truncated body would fold into the same
+    /// all-None diagnostic either way).
+    #[tokio::test]
+    async fn snapshot_refuses_an_oversize_metrics_body_before_parsing() {
+        use std::io::{Read, Write};
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("mock listener addr");
+        let oversize = "vllm:num_requests_running{\"engine\":\"0\"} 3\n".to_string()
+            + &"# pad\n".repeat((17 * 1024 * 1024) / 6);
+        let server = std::thread::spawn(move || {
+            // The probes issue /models first, then /metrics, each on its own
+            // connection; serve both and ignore a client that hangs up early
+            // (the cap refusal drops the response mid-body by design).
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                let head = String::from_utf8_lossy(&head).to_string();
+                if head.starts_with("GET /models ") {
+                    let body = br#"{"data":[{"id":"m"}]}"#;
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(body);
+                } else {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: \
+                         {}\r\nConnection: close\r\n\r\n",
+                        oversize.len()
+                    );
+                    let _ = stream.write_all(oversize.as_bytes());
+                }
+            }
+        });
+        let base = format!("http://{addr}");
+        let snap = snapshot_for_model_config(
+            &base,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert!(
+            snap.num_requests_running.is_none(),
+            "the body was never read"
+        );
+        let codes: Vec<_> = snap
+            .metric_diagnostics
+            .iter()
+            .map(|d| d.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"metrics_unavailable"),
+            "an oversize body must flag itself, not read as no traffic: {codes:?}"
+        );
+        server.join().expect("mock server thread");
+    }
+
     #[tokio::test]
     async fn local_native_display_window_ps_then_show_then_stop() {
         use crate::core::model_endpoint::models_mock;
