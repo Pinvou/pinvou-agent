@@ -9,7 +9,7 @@
 | 现象 | 根因 | 解决办法 |
 |---|---|---|
 | `apt` 不允许安装 | 麒麟软件包保护机制 | 开启维护模式后重启 |
-| 提示缺少 `GLIBC_2.39` | 宿主机构建环境比麒麟新 | 在 Debian 12 Bookworm 容器中构建 |
+| 提示缺少 `GLIBC_2.39` | 宿主机构建环境比麒麟新 | 在 Ubuntu 22.04 容器中构建（glibc 2.35，与仓库发布地板一致） |
 | `pinvou3` 未找到 | 实际二进制名是 `pinvou3-tauri` | 统一命令名或提供启动脚本 |
 | WebKit EGL 初始化失败并崩溃 | QXL 图形栈不兼容 | 虚拟显卡改为 VirtIO |
 | 启动时寻找 `/dev/fgt340` | 麒麟同时加载多套厂商 EGL 驱动 | 虚拟机中只加载 Mesa EGL |
@@ -30,17 +30,38 @@ version `GLIBC_2.39' not found
 
 ### 处理
 
-在 Debian 12 Bookworm 容器中构建 amd64 DEB，不需要在麒麟中拉代码编译：
+在 Ubuntu 22.04 容器中构建 amd64 DEB，不需要在麒麟中拉代码编译。选 22.04 而不是
+更新的发行版：仓库的 Linux 发布地板就是 Ubuntu 22.04（glibc 2.35，见 `README.md` 与
+`scripts/check-linux-glibc-floor.sh`，CI 的 deb 腿同样钉在 22.04），其 glibc 同时
+低于麒麟的 2.38——一份包两端都满足。Debian 12（glibc 2.36）虽然也能在麒麟上运行，
+但可能编出引用 2.36 符号的二进制，悄悄破坏 Ubuntu 22.04 地板：
 
 ```bash
 docker run --rm -it \
   -v "$PWD:/workspace" \
-  -v "$HOME/.cache/pinvou-cargo:/home/node/.cargo" \
-  -v "$HOME/.cache/pinvou-bookworm-target:/build-target" \
-  node:22-bookworm bash
+  -v "$HOME/.cache/pinvou-jammy-cargo:/root/.cargo" \
+  -v "$HOME/.cache/pinvou-jammy-target:/build-target" \
+  -e CARGO_HOME=/root/.cargo \
+  ubuntu:22.04 bash
 ```
 
-容器中安装 Tauri Linux 构建依赖，然后执行：
+容器内默认是 root，Cargo 主目录为 `/root/.cargo`。先装基础工具与 Tauri Linux 构建
+依赖（与 CI 的 ubuntu-22.04 腿同列表），再装 Rust 与 Node——22.04 系统源的 rustc
+过旧（仓库 MSRV 为 1.90，见 `src-tauri/Cargo.toml`），必须走 rustup：
+
+```bash
+apt-get update
+apt-get install -y --no-install-recommends curl ca-certificates \
+  libwebkit2gtk-4.1-dev libssl-dev libayatana-appindicator3-dev \
+  libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
+  build-essential pkg-config cmake
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs
+```
+
+然后执行：
 
 ```bash
 export CARGO_TARGET_DIR=/build-target
@@ -49,7 +70,11 @@ npm ci
 npm run build
 ```
 
-不要复用宿主机已有的 Cargo `target`，否则可能混入由宿主机 glibc 编译的产物。
+不要复用宿主机已有的 Cargo `target`，否则可能混入由宿主机 glibc 编译的产物。若
+构建在 computer_use/Wayland 捕获相关 crate 上报 `spa_meta_region_is_valid` 之类的
+`spa_sys` 符号错误：pipewire-rs 0.10 需要比 22.04 系统源（0.3.48）新的 SPA 头，
+按 `scripts/ci-libpipewire-build.sh` 自建 PipeWire 到 `/usr/local`（CI 的 Linux 腿
+就是这么做的）。
 
 构建后必须检查最终二进制：
 
@@ -58,13 +83,12 @@ readelf --version-info /build-target/release/pinvou3-tauri \
   | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1
 ```
 
-本次兼容包最高要求：
+通过标准：不高于麒麟的 2.38，也不高于仓库发布地板的 2.35（Ubuntu 22.04），两端都
+满足。本次兼容包实测最高要求：
 
 ```text
 GLIBC_2.34
 ```
-
-低于麒麟的 2.38，可以运行。
 
 ## 2. 麒麟安装需要维护模式
 
@@ -153,8 +177,8 @@ exec /usr/bin/pinvou3-tauri "$@"
   ```
 
   （时点记录：该记录针对 0.5.9 时代的包；当前开源主干的 bundle 已不再携带
-  `web-template` 资源，仅保留对用户目录 `~/.pinvou3/web-template` 的兼容清理，
-  自建包如仍内嵌该资源才需处理本项。）
+  `web-template` 资源，用户目录 `~/.pinvou3/web-template` 与用户生成内容按退役策略
+  保留不删（见 `features/retirement.rs`），自建包如仍内嵌该资源才需处理本项。）
 
 - 正式 DEB 应直接提供 `pinvou3` 命令。
 
@@ -172,8 +196,8 @@ exec /usr/bin/pinvou3-tauri "$@"
 
 ## 6. 发布前检查
 
-- [ ] 使用 Debian 12 兼容环境构建。
-- [ ] 最终主程序要求的 glibc 不高于麒麟版本。
+- [ ] 使用 Ubuntu 22.04（glibc 2.35）兼容环境构建，同时满足麒麟 V11 与仓库发布地板。
+- [ ] 最终主程序要求的 glibc 不高于麒麟版本，且不高于仓库发布地板的 2.35。
 - [ ] DEB 内所有 ELF 文件均为 x86_64。
 - [ ] `pinvou3` 命令与桌面入口一致。
 - [ ] 物理机和 VirtIO 虚拟机分别验证。

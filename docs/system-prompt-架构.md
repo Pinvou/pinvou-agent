@@ -13,8 +13,11 @@
 > 占位符已移除，workspace 改走 per-turn `<turn_meta>` 注入；用户自定义 instructions 现路径为
 > `~/.pinvou3/user/instructions.md`（旧 `.deepseek`/`pinvou3` 盘上 instructions 残留会在 boot
 > 时被清理，见 `features/assistant/platform/bridge.rs`
-> `cleanup_legacy_pinvou3_disk_files()`）。底座 13 层拼装与第 6a 层
-> `<instructions>` 注入点的结论不受影响；下文相关段落保留作 2026-05-28 时点记录。
+> `cleanup_legacy_pinvou3_disk_files()`）。第 6a 层
+> `<instructions>` 注入点的结论不受影响；但**13 层拼装结构本身的结论已过期**：上游
+> 2026-08-09 移除 mode 教义（mode 真相移至 per-turn reminder），2026-09-07 起 host 经
+> 静态层 composer 接管全部编译期静态文案——两者均晚于本复核时点。§0–§5 保留作
+> 2026-05-28 时点记录，**当前树的实际结构见 §0b**。
 > 另：各 `file.rs:NNN` 行号随版本漂移，定位以符号名为准；文中
 > `src-tauri/src/bridge/mod.rs`、`src-tauri/src/engine.rs` 等旧路径已随
 > `features/` 重组迁移到 `features/assistant/` 下，`bundle/instructions.md`
@@ -25,6 +28,9 @@
 
 ## 0. TL;DR
 
+> （2026-05-28 时点记录。composer 接管后，本节"pinvou3 只动两个地方"与"其它 12 层
+> 不直接改文案"的说法均不再成立——当前树的实际结构见 §0b。）
+
 - 底座 CodeWhale 在 `Engine::new` 里**自动跑 13 层 prompt 拼装**，pinvou3 没有绕过这个流程。
 - pinvou3 只动两个地方：
   - **第 6a 层 `<instructions>`**：通过 `EngineConfig.instructions` 把 `bundle/` 分模式
@@ -34,6 +40,66 @@
 - 其它 12 层（BASE_PROMPT / mode_prompt / project_context / environment / skills / handoff / authority / locale 等）全是底座管，pinvou3 通过 `EngineConfig` 字段（`workspace` / `skills_dir` / `locale_tag` / `mode`）影响渲染参数，不直接改文案。
 - 多 session 并发隔离的关键：每个 session 的 instructions 以带 session id 的
   `InstructionSource::Inline` 注入，互不串台（参考 [`多session并发-设计实现.md`](./多session并发-设计实现.md)）。
+
+---
+
+## 0b. 当前树实际结构（2026-10 复核）
+
+定位以符号名为准；以下每一条都可在当前树按符号 grep 验证。
+
+**入口不变**：`Engine::new` 仍强制调用拼装函数（现名
+`system_prompt_for_mode_with_context_skills_session_and_approval_for_host`，
+`CodeWhale/crates/tui/src/prompts.rs`），pinvou3 没有也无法绕过。变化的是拼装的
+**内容来源**：
+
+1. **静态层被 host composer 全量接管**。Bridge boot 调用
+   `install_prompt_overrides()`（`features/runtime_bundle/platform/mod.rs`，由
+   `features/assistant/platform/bridge.rs` 的 boot 路径触发；`OnceLock` 首设生效、
+   幂等，必须早于任何 engine spawn）：
+   - `set_base_prompt_override`：base 槽被 `BASE_PROMPT_MD` 占位——纯注释空壳，正文
+     永不进 prompt，仅用于压制 bundled-headless 的 compact 宪法分支；
+   - locale 前奏/收尾换成 pinvou3 瘦身版（zh-Hans/ja；产品决策不教"用某语言思考"）；
+   - **`set_static_prompt_composer_override(compose_static_layers)`**：底座
+     Personality/Mode/Approval/ContextMgmt/COMPACT_TEMPLATE/taxonomy 常量全部不再进
+     prompt。composer 只输出 `MODE_EXECUTE_MD`（"## Mode: Execute"），不按
+     `ctx.mode` 选块——底座 v0.8.57 起 mode/approval 移到 per-turn，Plan/Agent 的
+     真相全在 per-turn reminder，静态层恒为 Execute 块。
+2. **静态（可缓存）前缀的实际内容** = 瘦身 locale 前奏 + `## Mode: Execute` +
+   skills 块（只列名字+一句描述+SKILL.md 路径，仍属稳定前缀）。project context 块
+   在 composer 生效时**不再追加**（`load_project_context_with_parents` 的结果只用
+   于无 composer 分支）；底座 `## Core Execution`（`CORE_EXECUTION_PROFILE_PROMPT`）
+   在 composer 生效时跳过；`COMPACT_TEMPLATE` 不进任何新会话（自动压缩走
+   `canonical_prompt()` 代码拼装，手动压缩走 `create_summary()` 独立 LLM 调用）。
+3. **Volatile 半 = WorldState fragments**（`WorldStateSnapshot` →
+   `to_system_blocks`）：
+   - Workspace fragment：**environment 块挪到了 volatile 半**（外加 memory 块与
+     `MEMORY_GUIDANCE`、goal，均按需出现）；
+   - Permissions fragment：pinvou3 instructions（`render_instructions_block`，
+     `<instructions source="pinvou3:instructions">`——label 固定，不再带 session
+     id，以免破坏跨会话 prefix cache）；
+   - Route fragment：verbosity/translation 姿态；AgentTopology/SkillsTools 留空
+     （skills 留在稳定前缀，AgentTopology 由运行时调用方更新）；
+   - TokenBudget fragment：handoff——pinvou3 无 `.codewhale/handoff.md` 写入通路，
+     恒为 None；
+   - ProjectInstructions fragment（`.cursorrules` 等）：composer 生效时不加载。
+4. **Trailer**：`AUTHORITY_RECAP` 在 composer 生效时跳过（其指向的宪法小节不再保证
+   存在，追加会留悬空交叉引用）；locale 收尾用 pinvou3 瘦身 override。
+5. **Per-turn `<system-reminder>`**：PlanPhase 删除后只剩 mode 维度——Plan 的提醒由
+   session policy 生成，Yolo 的大产物分块提醒已裁撤（只余动态 sudo 状态），Agent
+   未对 pinvou3 暴露；选取逻辑在 `build_send_message_op` 发送链内
+   （`features/assistant/platform/bridge.rs`）。
+6. **instructions 内容来源不变**：`session_instructions()` 把 `bundle/` 分模式文件
+   渲染成 `InstructionSource::Inline` 注入 `EngineConfig.instructions`（按会话隔
+   离；`sync_session` 传 `system_prompt: None`，rehydrate 重新拼装）。
+7. **Skills**：bundle 启动解包到 `~/.pinvou3/bundle/skills`
+   （`paths::bundle_skills_dir()`），EnginePool 每会话把启用技能物化到
+   `~/.pinvou3/sessions/<sid>/skills`（`features/assistant/skill_materialization`），
+   引擎的发现根是物化目录（`explicit_skills_root_only`），不是 bundle 目录本身。
+
+**对"想动 prompt 文案"的含义**：静态英文文案改 `compose_static_layers` /
+`MODE_EXECUTE_MD`（改 `bundle/base.md` 无效果——空壳；改底座常量也进不了 prompt）；
+中文/业务文案改 `bundle/` 分模式 instructions（第 6a 层注入点未变）；per-turn 文案
+改 `build_send_message_op` 链。
 
 ---
 
@@ -53,7 +119,7 @@ pinvou3-app/src-tauri/src/features/assistant/engine.rs 的 spawn_for_session()
   ├─ bridge.build_engine_config_for_session(sid)             # features/assistant/platform/bridge.rs
   │    workspace    = ~/.pinvou3/sessions/<sid>/workspace
   │    instructions = [上面那个文件, ~/.deepseek/instructions.md(可选)]
-  │    skills_dir   = ~/.pinvou3/bundle/skills
+  │    skills_dir   = ~/.pinvou3/bundle/skills                # 时点记录；现发现根为每会话物化目录，见 §0b
   │    locale_tag   = "zh-Hans"
   │
   └─ spawn_engine(engine_config, dt_config)
@@ -75,6 +141,9 @@ pinvou3-app/src-tauri/src/features/assistant/engine.rs 的 spawn_for_session()
 ---
 
 ## 2. 13 层拼装顺序
+
+> （2026-05-28 时点记录：层结构与行号均已过期——上游 2026-08-09 移除 mode 子段、
+> 2026-09-07 起 host composer 接管静态层；当前结构见 §0b。）
 
 入口：`CodeWhale/crates/tui/src/prompts.rs:673` 的 `system_prompt_for_mode_with_context_skills_session_and_approval()`。
 
@@ -190,7 +259,7 @@ Op::SyncSession {
 
 ### 4.3 多 session 并发隔离
 
-每个 session 的 `EngineConfig.instructions` 都包含独立的 `InstructionSource::Inline`，其 `name` 带 session id；workspace 也按 session 分目录。engine rehydrate 复用各自内存中的配置，不依赖 session 目录里的 instructions 文件。
+每个 session 的 `EngineConfig.instructions` 都包含独立的 `InstructionSource::Inline`；workspace 也按 session 分目录。Inline 的 `name` 是固定的 `pinvou3:instructions`——session id 曾用于 label、现已移除，以免破坏跨会话 prefix cache（见 `session_instructions()` 的注释）；隔离靠每会话独立的 `EngineConfig.instructions`，不靠 label。engine rehydrate 复用各自内存中的配置，不依赖 session 目录里的 instructions 文件。
 
 测试覆盖：`features/assistant/platform/bridge.rs` 的 `session_instructions_*` 系列测试（inline 注入与按会话隔离）。
 
@@ -201,11 +270,11 @@ Op::SyncSession {
 | 想动什么 | 改哪儿 |
 |---|---|
 | pinvou3 业务提示词（SKILL 路由、阶段规则、sudo、执行纪律） | `pinvou3-app/src-tauri/resources/common/bundle/` 分模式 instructions（`instructions-shared.md` / `instructions-work.md` 及 `instructions-work-bound.md` / `instructions-code.md`） |
-| Plan/Yolo per-turn 提醒文案 | `pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs` `build_send_message_op()`（发送链内的提醒选取） |
-| Skill 列表（要 AI 看见的） | 往 `~/.pinvou3/bundle/skills/` 加目录，每个带 `SKILL.md` |
-| 底座 BASE_PROMPT 本身 | 底座常量已合并进 `CodeWhale/crates/tui/src/prompts/text.rs`（原 `prompts/constitution.md`，v0.9 前为 base.md）；pinvou3 文案经 override 注入，内容在 `pinvou3-app/src-tauri/resources/common/bundle/base.md`（override 机制见底座 `prompts.rs` 的 `BASE_PROMPT_OVERRIDE`） |
-| 模式 prompt 子段（plan.md/yolo.md/agent.md） | 同上，已合并进 `CodeWhale/crates/tui/src/prompts/text.rs`（原 `prompts/modes/*.md`） |
-| 13 层拼装逻辑 | `CodeWhale/crates/tui/src/prompts.rs` `system_prompt_for_mode_with_context_skills_session_and_approval()` |
+| Plan per-turn 提醒文案 | `pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs` `build_send_message_op()`（发送链内的提醒选取；仅剩 mode 维度，Plan 由 session policy 生成） |
+| Skill 列表（要 AI 看见的） | 内置技能改 `pinvou3-app/src-tauri/resources/common/bundle/`（启动解包到 `~/.pinvou3/bundle/skills/`，EnginePool 每会话物化到 `~/.pinvou3/sessions/<sid>/skills/` 供引擎发现，见 `features/assistant/skill_materialization`），每个带 `SKILL.md` |
+| 底座静态文案（constitution/BASE_PROMPT/mode/approval/taxonomy 等） | pinvou3 下全部经 `features/runtime_bundle/platform/mod.rs` `compose_static_layers()` 接管（当前只输出 `MODE_EXECUTE_MD` "## Mode: Execute"）；改底座常量（`CodeWhale/crates/tui/src/prompts/text.rs`）或 `bundle/base.md`（纯注释空壳）都进不了 prompt |
+| 模式 prompt 子段（plan/yolo/agent） | 已不存在：上游 2026-08-09 移除 mode 教义，静态层恒为 Execute 块，mode 真相在 per-turn reminder（见 §0b） |
+| 拼装逻辑（原"13 层"） | `CodeWhale/crates/tui/src/prompts.rs` `system_prompt_for_mode_with_context_skills_session_and_approval_for_host()` |
 | 查看 pinvou3 实际最终 prompt | `cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml --bin dump_system_prompt`（需 `dev-tools` feature） |
 
 ---
@@ -239,7 +308,8 @@ Op::SyncSession {
 
 1. 运行 `cargo run --manifest-path pinvou3-app/src-tauri/Cargo.toml --bin dump_system_prompt > /tmp/pinvou3_system_prompt.txt`。
 2. 查看 `features/assistant/platform/bridge.rs` 的 `session_instructions()`，确认 pinvou3 指令以 `InstructionSource::Inline` 进入 `EngineConfig.instructions`。
-3. 查看底座 `prompts.rs` 的 `system_prompt_for_mode_with_context_skills_session_and_approval()` 与 `render_instructions_block()`，确认 inline/file instructions 都进入 `<instructions>` 块。
+3. 查看底座 `prompts.rs` 的 `system_prompt_for_mode_with_context_skills_session_and_approval_for_host()` 与 `render_instructions_block()`，确认 inline/file instructions 都进入 `<instructions>` 块。
 4. 在 dump 结果中搜索待验证文本；涉及 per-turn `<runtime_prompt>` / `<turn_meta>` 的内容不属于静态 system prompt，需在真实 turn 事件或对应测试中验证。
 
-不要相信"我以为 pinvou3 绕过了底座"这种二手描述，每次都沿实际构造链验证（参考 `[[reuse_verify_pinvou3_wiring]]`）。
+不要相信"我以为 pinvou3 绕过了底座"这种二手描述，每次都沿实际构造链验证。
+

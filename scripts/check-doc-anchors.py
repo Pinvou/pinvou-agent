@@ -13,10 +13,31 @@ code, and a rename is caught by this script immediately, while moving a symbol
 within the file is no longer a problem. Line references are treated as
 regressions — written back, they will drift.
 
+**Recognized anchor spellings.** Only file-then-symbol forms are checked:
+`` `foo.rs` 的 `bar` ``, `` `foo.rs` 的 `bar()` ``, and the same without
+backticks. The English prose order "bar() of foo.rs" is NOT an anchor for this
+checker — only the file-first form resolves a file to check against. A bare
+"foo.rs bar" (no particle, no call parentheses) is ordinary prose, not an
+anchor, and is skipped by check().
+
+**Extension coverage.** Pairs and line references recognize
+`.rs .js .jsx .mjs .json .ts .tsx .sh .py` (`.json` is in the alternation after
+`.js` so the trailing `\b` makes it a distinct match, never a half-match of
+`.js`). Extensions outside that set are not anchors.
+
+**Default scope.** With no arguments the DEFAULT_DOCS list is checked: the two
+recovery docs (no anchors yet, kept as the home of the anchor style) plus
+anchor-carrying docs that pass today, so the default run actually verifies
+references instead of trivially passing. Line-ref-style and time-point docs
+(tool-governance, the system-prompt history sections, …) are intentionally out
+of scope — adding them requires rewriting their references to the anchor style
+first.
+
 Usage: python scripts/check-doc-anchors.py [doc-path...]
-With no arguments the default list is checked. A non-zero exit code means some
-reference failed to resolve.
+Paths are repo-root-relative. A non-zero exit code means some reference failed
+to resolve.
 """
+import argparse
 import os
 import re
 import sys
@@ -25,19 +46,23 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DOCS = [
     "docs/chat-steer-recovery.md",
     "docs/workspace-rebind-recovery.md",
+    "docs/capability-governance.md",
+    "docs/记忆功能-架构设计.md",
+    "docs/底座升级验收清单.md",
 ]
 SKIP_DIRS = {".git", "node_modules", "target", "dist", ".venv", "__pycache__"}
 
-# `bar()` of `foo.rs` / bar() of foo.rs — both spellings are recognized.
-# A bare "foo.rs bar" (no particle, no call parentheses) is ordinary prose,
-# not an anchor, and is skipped by check(). The trailing \b keeps `.json`
-# from matching as `.js`.
+# `bar()` of `foo.rs` / bar() of foo.rs — only the file-then-symbol form is an
+# anchor (see the docstring); the bare "foo.rs bar" prose form is skipped by
+# check(). The trailing \b keeps `.json` from matching as `.js`.
 PAIR = re.compile(
-    r"`?([A-Za-z_][A-Za-z0-9_./-]*\.(?:rs|js|jsx|mjs|py))\b`?\s*(的?)\s*`?"
+    r"`?([A-Za-z_][A-Za-z0-9_./-]*\.(?:rs|js|jsx|mjs|json|ts|tsx|sh|py))\b`?\s*(的?)\s*`?"
     r"([A-Za-z_][A-Za-z0-9_:]*)\s*(\(\))?`?"
 )
 # Any line-number reference is treated as a regression and reported.
-LINEREF = re.compile(r"[A-Za-z_][A-Za-z0-9_./-]*\.(?:rs|js|jsx|mjs|sh|py):\d+")
+LINEREF = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_./-]*\.(?:rs|js|jsx|mjs|json|ts|tsx|sh|py):\d+"
+)
 
 _resolved = {}
 
@@ -74,7 +99,7 @@ def body(path):
 
 def check(doc):
     bad = []
-    with open(os.path.join(ROOT, doc), encoding="utf-8") as f:
+    with open(os.path.join(ROOT, doc), encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
     for i, line in enumerate(lines, 1):
         for m in LINEREF.finditer(line):
@@ -99,7 +124,18 @@ def check(doc):
 
 
 def main():
-    docs = sys.argv[1:] or DEFAULT_DOCS
+    parser = argparse.ArgumentParser(
+        description="Check that doc anchors (file + symbol references) "
+        "resolve in this repository."
+    )
+    parser.add_argument(
+        "docs",
+        nargs="*",
+        help="doc paths to check, repo-root-relative "
+        "(default: the DEFAULT_DOCS list in this script)",
+    )
+    args = parser.parse_args()
+    docs = args.docs or DEFAULT_DOCS
     bad = []
     for d in docs:
         if not os.path.isfile(os.path.join(ROOT, d)):
