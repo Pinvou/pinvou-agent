@@ -21,10 +21,18 @@ test('role=button rows with nested buttons guard Enter/Space against bubbled key
     count(toolRenderers, /if \(event\.target !== event\.currentTarget\) return;/g) >= 3,
     'all three tool-card collapse headers (timeline/quiet/output) must ignore keys from nested buttons',
   );
+  // displayExpanded (not the raw `expanded` state) is what gates the rendered
+  // detail — live shell output forces it open — so both the aria state and the
+  // chevron must follow it or they under-report while content is visible.
   assert.equal(
-    count(toolRenderers, /aria-expanded=\{(?:displayExpanded|expanded)\}/g),
+    count(toolRenderers, /aria-expanded=\{displayExpanded\}/g),
     3,
-    'every collapse header must expose its expanded state to assistive tech',
+    'every collapse header must expose the visible expanded state to assistive tech',
+  );
+  assert.equal(
+    count(toolRenderers, /\$\{displayExpanded \? 'rotate-180' : ''\}/g),
+    3,
+    'every collapse header chevron must reflect the visible expanded state',
   );
 
   const artifactsPanel = read('src/features/artifacts/ArtifactsPanel.jsx');

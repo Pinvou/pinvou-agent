@@ -468,7 +468,7 @@ const ToolOutput = ({ item, t }) => {
             <div
               role="button"
               tabIndex={0}
-              aria-expanded={expanded}
+              aria-expanded={displayExpanded}
               className={`flex items-center gap-2 px-2 py-1 rounded-[8px] cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
               onClick={() => setExpanded(!expanded)}
               onKeyDown={(event) => {
@@ -487,7 +487,7 @@ const ToolOutput = ({ item, t }) => {
               {isRunning && <span className={`text-[11px] ${statusColor}`}>{t.toolRunning}</span>}
               {isFailed && <span className={`text-[11px] ${statusColor}`}>{t.toolFailed}</span>}
               {cancelButton}
-              <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''} ${mutedColor}`} />
+              <ChevronDown size={12} className={`transition-transform ${displayExpanded ? 'rotate-180' : ''} ${mutedColor}`} />
             </div>
             {detail}
           </div>
@@ -501,7 +501,7 @@ const ToolOutput = ({ item, t }) => {
           <div
             role="button"
             tabIndex={0}
-            aria-expanded={expanded}
+            aria-expanded={displayExpanded}
             className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
             onClick={() => setExpanded(!expanded)}
             onKeyDown={(event) => {
@@ -521,7 +521,7 @@ const ToolOutput = ({ item, t }) => {
               : <span className="flex-1" />}
             <span className={`text-[12px] ${statusColor}`}>{statusText}</span>
             {cancelButton}
-            <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''} text-[#444746] dark:text-[#C4C7C5]`} />
+            <ChevronDown size={14} className={`transition-transform ${displayExpanded ? 'rotate-180' : ''} text-[#444746] dark:text-[#C4C7C5]`} />
           </div>
           {shellCancelError && (
             <div className={`px-4 pb-2 text-[11px] text-[#C5221F] dark:text-[#F28B82]`}>
