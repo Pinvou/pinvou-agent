@@ -9,6 +9,10 @@ All protocol messages are UTF-8 JSON objects and must contain the exact numeric
 field `v: 2`. This applies both before and after authentication, including revoke
 messages. The Relay rejects and closes a socket when the field is missing or has
 any other value; it never upgrades an older message by rewriting its version.
+Because JSON parsing collapses repeated keys to the last occurrence, a frame
+whose text repeats the `v` key in any object (including escaped spellings such
+as `"\u0076"`) is rejected as `bad_json` before parsing instead of being
+upgraded to whatever the last occurrence says.
 Credentials belong only in the authentication messages. The browser link keeps
 its credentials in the URL fragment, which is never included in an HTTP request.
 On the wire, `access_token` is the only accepted access-token field; legacy
@@ -186,7 +190,7 @@ connection open.
 
 | Code | Trigger |
 | --- | --- |
-| `bad_json` | A text frame is not valid JSON. |
+| `bad_json` | A text frame is not valid JSON, repeats the `v` key in any object, or nests more than 128 levels. |
 | `bad_message` | The parsed frame is not a JSON object. |
 | `binary_unsupported` | A binary WebSocket frame arrived. |
 | `unsupported_protocol_version` | `v` is missing or is not `2`. |
@@ -222,6 +226,17 @@ connection open.
   socket capacity, endpoint capacity and creation rate, per-IP connection rate,
   per-connection ingress message and byte rates, maximum message size, proxy
   allowlists, and ping/pong liveness.
+- Proxy allowlist entries must be literal IP addresses. Any other value in
+  `PINVOU_REMOTE_ALLOWED_PROXY_IPS` or `PINVOU_REMOTE_TRUSTED_PROXY_IPS` aborts
+  startup with `proxy_ip_configuration_invalid` instead of being ignored; a
+  value with content that contains no address (for example `,,,`) is also
+  rejected, and only a blank value means an empty set. For rate limiting and
+  logging, the client address is the rightmost `X-Forwarded-For` item when the
+  direct peer is a trusted proxy; `X-Real-IP` is consulted only when
+  `X-Forwarded-For` is entirely absent, and malformed, non-IP, or oversized
+  (>4096 chars) forwarded headers fall back to the direct peer address.
+- `SIGINT` and `SIGTERM` terminate all websocket clients, close the HTTP
+  server, and exit the process with code 0.
 - Protocol v2 requires `MAX_PAYLOAD_BYTES` to be at least 4 MiB. Desktop-originated
   frames are bounded by the complete serialized WebSocket message, not just the
   event payload, and stay at or below `4 MiB - 64 KiB`.

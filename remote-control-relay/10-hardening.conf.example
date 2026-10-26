@@ -1,5 +1,7 @@
 [Service]
 # Replace these loopback defaults with your reverse proxy addresses.
+# Entries must be literal IPs; anything else aborts startup
+# (proxy_ip_configuration_invalid). A blank value means an empty list.
 Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
 Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000
