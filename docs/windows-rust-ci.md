@@ -31,11 +31,15 @@ trigger it, except the documented low-risk leaf features `feedback`,
 `personas`, and `pet` (their registration or app command surface still
 matches). `cli_rust` covers `pinvou-cli` Rust paths plus the compile inputs
 the CLI embeds (`pinvou-cli/.cargo/**`, `pinvou-cli/**/*.manifest`,
-`pinvou3-app/src-tauri/tauri.conf.json`,
-`scripts/ci-libpipewire-build.sh`, `CodeWhale`), and keeps all three leaf
-features (`feedback`, `personas`, `pet`) gated through the CLI suite because
-the CLI path-depends on the app crate — they are exempt only from the full
-app suite, never from pre-merge Windows coverage.
+`pinvou3-app/src-tauri/tauri.conf.json`, the `CodeWhale` submodule, the
+connector lock tables `pinvou3-app/src-tauri/resources/platforms/**`, the
+bundle resources `pinvou3-app/src-tauri/resources/common/bundle/**` and
+`pinvou3-app/resources/mcp-servers/**`, and the embedded docs
+`docs/plugin-package-spec.md` / `docs/gaia-benchmark.md`), the pipewire
+setup script its legs run (`scripts/ci-libpipewire-build.sh`), and keeps all
+three leaf features (`feedback`, `personas`, `pet`) gated through the CLI
+suite because the CLI path-depends on the app crate — they are exempt only
+from the full app suite, never from pre-merge Windows coverage.
 
 ## What the job runs
 
