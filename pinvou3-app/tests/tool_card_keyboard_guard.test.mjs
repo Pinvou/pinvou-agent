@@ -5,6 +5,7 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+const count = (source, pattern) => (source.match(pattern) || []).length;
 
 // Negative lock: role="button" collapse headers host real nested <button>s
 // (shell-task cancel, artifact locate). If the row-level onKeyDown calls
@@ -16,13 +17,12 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 // target !== currentTarget, then handle the row's own Enter/Space.
 test('role=button rows with nested buttons guard Enter/Space against bubbled key events', () => {
   const toolRenderers = read('src/features/tools/tool-renderers.jsx');
-  const guardedInToolRenderers = toolRenderers.match(/if \(event\.target !== event\.currentTarget\) return;/g) || [];
   assert.ok(
-    guardedInToolRenderers.length >= 3,
+    count(toolRenderers, /if \(event\.target !== event\.currentTarget\) return;/g) >= 3,
     'all three tool-card collapse headers (timeline/quiet/output) must ignore keys from nested buttons',
   );
   assert.equal(
-    (toolRenderers.match(/aria-expanded=\{(?:displayExpanded|expanded)\}/g) || []).length,
+    count(toolRenderers, /aria-expanded=\{(?:displayExpanded|expanded)\}/g),
     3,
     'every collapse header must expose its expanded state to assistive tech',
   );
@@ -33,9 +33,9 @@ test('role=button rows with nested buttons guard Enter/Space against bubbled key
     /onKeyDown=\{\(e\) => \{\s+if \(e\.target !== e\.currentTarget\) return;/,
     'the artifacts row hosts the locate <button>; its key handler must ignore bubbled keys',
   );
-  assert.match(
-    artifactsPanel,
-    /group-hover:opacity-100 group-focus-within:opacity-100/,
-    'the hover-only locate button must also reveal on keyboard focus',
+  assert.equal(
+    count(artifactsPanel, /group-hover:opacity-100 group-focus-within:opacity-100/g),
+    2,
+    'both hover-only locate buttons (list row and switcher menu) must also reveal on keyboard focus',
   );
 });
