@@ -203,3 +203,33 @@ impl Client {
         Ok(format!("{}-{}", self.server_nonce, &nonce()?[..32]))
     }
 }
+
+/// This path always uses the real registered App client and its authenticated
+/// pipe/session sequence. Old helpers stay unsupported; no old-status fallback.
+pub(crate) fn inspect_trusted_time() -> Result<crate::TrustedTimeStatus> {
+    let result = (|| {
+        let mut client = Client::connect(Role::App)?;
+        let reply: crate::TrustedTimeStatus = client.request("time-status", &ipc::Empty {})?;
+        reply.validate()?;
+        Ok(reply)
+    })();
+    match result {
+        Err(Error::Unsupported | Error::OperationUnsupported | Error::ProfileDisabled) => Ok(
+            crate::TrustedTimeStatus::new(crate::TrustedTimeState::Unsupported, false),
+        ),
+        Err(Error::SetupIncomplete | Error::InitialTrustUnavailable) => Ok(
+            crate::TrustedTimeStatus::new(crate::TrustedTimeState::SetupRequired, false),
+        ),
+        other => other,
+    }
+}
+pub(crate) fn request_trusted_time_refresh() -> Result<crate::TrustedTimeRefreshReply> {
+    let mut client = Client::connect(Role::App)?;
+    let reply: crate::TrustedTimeRefreshReply =
+        match client.request("request-time-refresh", &ipc::Empty {}) {
+            Err(Error::OperationUnsupported) => return Err(Error::Unsupported),
+            other => other?,
+        };
+    reply.validate()?;
+    Ok(reply)
+}

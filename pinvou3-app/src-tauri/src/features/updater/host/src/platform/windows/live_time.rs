@@ -22,6 +22,9 @@ pub(super) struct LiveTimeInterval<'read, 'tx> {
     bounds: UtcInterval,
 }
 impl<'read, 'tx> LiveTimeInterval<'read, 'tx> {
+    pub(super) fn belongs_to(&self, source: &LiveTimeReadSet<'_>) -> bool {
+        std::ptr::eq(self.source, source)
+    }
     pub(super) fn bounds(&self) -> UtcInterval {
         self.bounds
     }

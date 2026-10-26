@@ -350,7 +350,7 @@ const expectedProtocolHashes = {
   // frontend progress consumer; completion still flips updateProgress to 100
   // in downloadAndInstallUpdate). tests/updater_progress_state.test.mjs was
   // removed along with the machinery it pinned.
-  updater: 'e5d3ffaed0548bca3a40ee4c8138a59f9a2add9474477d924d4ecd7b8efd73e6',
+  updater: 'a59e86e937e5affd2ec0c36e2923c023713831197ef8a16f7a5104fbd6f460bf',
   // Recomputed for the comment-only English translation of the voice bridge
   // (PR-added Chinese comments inside the postprocess_voice_text invoke
   // span are part of the hashed source; no invoke/listen surface changed).

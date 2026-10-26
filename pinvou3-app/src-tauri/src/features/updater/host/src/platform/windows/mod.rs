@@ -38,6 +38,7 @@ mod time_transport;
 pub(crate) use installed_images::{InstalledImages, inspect_images};
 
 mod client;
+pub(crate) use client::{inspect_trusted_time, request_trusted_time_refresh};
 
 mod launch;
 

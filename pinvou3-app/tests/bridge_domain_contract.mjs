@@ -30,7 +30,7 @@ export const desktopBridgeApi = {
   ],
   personas: ['createPersona', 'deletePersona', 'equipPersona', 'getPersonas', 'loadPersonas', 'postCardCreatorIntro', 'readPersonaBody', 'unequipPersona', 'updatePersona'],
   memory: ['confirmMemoryCandidate', 'deleteMemoryItem', 'ignoreMemoryCandidate', 'loadMemoryOverview', 'loadOrganizeHistory', 'neverMemoryCandidate', 'organizeMemory', 'saveMemoryProfilePatch', 'updateMemoryItem'],
-  updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],
+  updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'inspectTrustedTime', 'requestTrustedTimeRefresh', 'restartApp'],
   dependencies: ['checkDependencies', 'installDependencies'],
   projects: ['alignSessionToProject', 'createProject', 'deleteProject', 'ensureFolderProjects', 'loadProjects', 'moveSessionToProject', 'rebindWorkspaceRoot', 'renameProject', 'setNeverMaterialize', 'setPrimaryRoot', 'updateProjectRoots'],
   // Computer use drives the local machine: the desktop backend exposes it, the
@@ -87,7 +87,7 @@ export const desktopOnlyBridgeApi = {
   vllm: ['discoverLocalVllm'],
   // In-app upgrade: check/download/install/restart all depend on the local package manager; on the web
   // only the version-number read is available (the appUpdate capability bit is always false).
-  updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'restartApp'],
+  updater: ['cancelUpdate', 'checkForUpdate', 'downloadAndInstallUpdate', 'inspectTrustedTime', 'requestTrustedTimeRefresh', 'restartApp'],
   // Remote control (desktop web-proxy management) depends on the web_access_* admin commands and is unavailable
   // on the web (the webAccessAdmin capability bit is always false).
   remoteControl: ['refreshRemoteControlQr', 'startRemoteControl', 'stopRemoteControl'],

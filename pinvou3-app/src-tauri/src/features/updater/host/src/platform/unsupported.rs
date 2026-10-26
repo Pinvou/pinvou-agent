@@ -64,3 +64,14 @@ pub(crate) fn install_local() -> Result<u32> {
 pub(crate) fn read_monotonic_counters() -> Result<crate::monotonic::CounterObservation> {
     Err(Error::Unsupported)
 }
+
+/// Explicit diagnostic DATA; unavailable platforms cannot request a refresh.
+pub(crate) fn inspect_trusted_time() -> Result<crate::TrustedTimeStatus> {
+    Ok(crate::TrustedTimeStatus::new(
+        crate::TrustedTimeState::Unsupported,
+        false,
+    ))
+}
+pub(crate) fn request_trusted_time_refresh() -> Result<crate::TrustedTimeRefreshReply> {
+    Err(Error::Unsupported)
+}

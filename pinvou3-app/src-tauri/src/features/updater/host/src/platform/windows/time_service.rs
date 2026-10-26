@@ -1,61 +1,199 @@
-//! One SCM-owned startup refresh. No detached tasks, implicit retry or policy
-//! defaults. Failure leaves time unavailable without removing setup-only IPC.
+//! One owned worker: startup once, then only explicit authenticated App requests.
+//! A single pending/running latch rejects overlap; no delayed retry queue.
 use super::{dispatch::Core, pipe::Event, time_owner::TimeOwner, time_transport::TimeTransport};
-use crate::error::{Error, Result};
+use crate::{
+    TrustedTimeState, TrustedTimeStatus,
+    error::{Error, Result},
+};
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
     time::Duration,
 };
 
-/// Owned by server::serve for its complete lifetime, including every early
-/// pipe/listener/thread failure. The actual Core retains its real SCM context.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Pending,
+    Running,
+    Idle,
+    Stopped,
+}
+struct Activity {
+    started: bool,
+    phase: Phase,
+    last_failure: Option<Error>,
+}
+/// Activity only. This never stores or authenticates a time result.
+pub(super) struct RefreshControl {
+    state: Mutex<Activity>,
+}
+impl RefreshControl {
+    pub(super) fn new() -> Self {
+        Self {
+            state: Mutex::new(Activity {
+                started: false,
+                phase: Phase::Pending,
+                last_failure: None,
+            }),
+        }
+    }
+    fn start(&self) -> Result<()> {
+        let mut s = self.state.lock().map_err(|_| Error::Unavailable)?;
+        if s.phase == Phase::Stopped {
+            return Err(Error::Unavailable);
+        }
+        if s.started {
+            return Err(Error::Busy);
+        }
+        s.started = true;
+        Ok(())
+    }
+    pub(super) fn request(&self) -> Result<()> {
+        let mut s = self.state.lock().map_err(|_| Error::Unavailable)?;
+        if !s.started || s.phase == Phase::Stopped {
+            return Err(Error::Unavailable);
+        }
+        if s.phase != Phase::Idle {
+            return Err(Error::Busy);
+        }
+        s.phase = Phase::Pending;
+        Ok(())
+    }
+    fn claim(&self) -> Result<bool> {
+        let mut s = self.state.lock().map_err(|_| Error::Unavailable)?;
+        if !s.started || s.phase == Phase::Stopped {
+            return Err(Error::Unavailable);
+        }
+        match s.phase {
+            Phase::Pending => {
+                s.phase = Phase::Running;
+                Ok(true)
+            }
+            Phase::Idle => Ok(false),
+            _ => Err(Error::Unavailable),
+        }
+    }
+    fn finish(&self, result: Result<()>) -> Result<()> {
+        let mut s = self.state.lock().map_err(|_| Error::Unavailable)?;
+        // A late completion cannot resurrect a worker that was already stopped.
+        if s.phase == Phase::Stopped {
+            return Ok(());
+        }
+        if s.phase != Phase::Running {
+            return Err(Error::Unavailable);
+        }
+        s.last_failure = result.err();
+        s.phase = Phase::Idle;
+        Ok(())
+    }
+    fn stop(&self) {
+        if let Ok(mut s) = self.state.lock() {
+            s.phase = Phase::Stopped;
+        }
+        // Poisoning is unavailable in every reader/requester, never Idle.
+    }
+    pub(super) fn diagnostic(&self, native: TrustedTimeState) -> Result<TrustedTimeStatus> {
+        let s = self.state.lock().map_err(|_| Error::Unavailable)?;
+        let refreshing = s.started && matches!(s.phase, Phase::Pending | Phase::Running);
+        // Native storage is always read first by Core. Only fixed activity or
+        // the last actual failure can refine Unknown/unavailability; successful
+        // HTTP alone cannot create CleanupPending or an integrity diagnosis.
+        let state = if matches!(
+            native,
+            TrustedTimeState::Unsupported
+                | TrustedTimeState::SetupRequired
+                | TrustedTimeState::MissingPolicy
+                | TrustedTimeState::IntegrityFault
+        ) {
+            native
+        } else if !s.started || s.phase == Phase::Stopped {
+            TrustedTimeState::SourceUnavailable
+        } else if native == TrustedTimeState::Unknown
+            && matches!(
+                s.last_failure,
+                Some(Error::SourceUnavailable | Error::Unavailable)
+            )
+        {
+            TrustedTimeState::SourceUnavailable
+        } else {
+            native
+        };
+        Ok(TrustedTimeStatus::new(state, refreshing))
+    }
+}
+struct WorkerExit(Arc<RefreshControl>);
+impl Drop for WorkerExit {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// Owned by server::serve including every early listener/thread failure.
 pub(super) struct TimeWorker {
     stop: Arc<Event>,
     cancel: Arc<AtomicBool>,
+    control: Arc<RefreshControl>,
     thread: Option<JoinHandle<Result<()>>>,
 }
-
 impl TimeWorker {
     pub(super) fn start(core: Arc<Core>, stop: Arc<Event>) -> Result<Self> {
+        let control = core.time.clone();
+        if stop.is_set()? {
+            control.stop();
+            return Err(Error::Unavailable);
+        }
+        control.start()?;
         let thread_stop = stop.clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let thread_cancel = cancel.clone();
         let thread = std::thread::Builder::new()
             .name("upgrade-trusted-time".into())
             .spawn(move || {
+                // Construct before runtime creation. Build errors, early returns and
+                // unwinding all permanently close this worker's request entrance.
+                let _exit = WorkerExit(core.time.clone());
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .map_err(|_| Error::Unavailable)?;
+                // Declared AFTER runtime so its Drop closes requests BEFORE runtime
+                // teardown, including unwind while the worker happened to be Idle.
+                // The outer guard separately covers runtime construction failure.
+                let _runtime_exit = WorkerExit(core.time.clone());
                 runtime.block_on(async move {
-                    // Stop is selected first if both branches become ready.
-                    // Dropping refresh drops actual reqwest I/O, then the
-                    // current-thread runtime is dropped on this owned thread.
-                    tokio::select! {
-                        biased;
-                        stopped = observe_stop(&thread_stop, &thread_cancel) => stopped,
-                        () = refresh_once(&core) => observe_stop(&thread_stop, &thread_cancel).await,
+                    loop {
+                        tokio::select! {
+                            biased;
+                            stopped=observe_stop(&thread_stop,&thread_cancel)=>return stopped,
+                            claimed=await_request(&core.time)=>claimed?,
+                        }
+                        let result = tokio::select! {
+                            biased;
+                            stopped=observe_stop(&thread_stop,&thread_cancel)=>return stopped,
+                            result=refresh_once(&core)=>result,
+                        };
+                        core.time.finish(result)?;
                     }
                 })
             })
-            .map_err(|_| Error::Unavailable)?;
+            .map_err(|_| {
+                control.stop();
+                Error::Unavailable
+            })?;
         Ok(Self {
             stop,
             cancel,
+            control,
             thread: Some(thread),
         })
     }
-
     pub(super) fn stop_and_join(&mut self) -> Result<()> {
         self.cancel.store(true, Ordering::Release);
+        self.control.stop(); // Reject App requests before attempting signalling.
         let stopped = self.stop.set();
-        // Always join, even if native signalling itself failed. The local
-        // cancellation latch prevents a valid but unsignalled handle from
-        // stranding this worker. It cannot create a time result or permission.
         let joined = match self.thread.take() {
             Some(thread) => thread
                 .join()
@@ -63,37 +201,36 @@ impl TimeWorker {
                 .and_then(|r| r),
             None => Ok(()),
         };
+        // Signalling failure does not skip join; local cancellation is separate.
         stopped.and(joined)
     }
 }
-
 impl Drop for TimeWorker {
     fn drop(&mut self) {
         let _ = self.stop_and_join();
     }
 }
-
-async fn refresh_once(core: &Core) {
-    // open authenticates existing protected state and never heals absence.
-    // Its protected policy is the only source of limits/admission. No ordinary
-    // environment value, request DTO or old HTTP result can supply authority.
-    if let Ok(mut owner) = TimeOwner::open(&core.host) {
-        let transport = TimeTransport::new();
-        let _ = owner.refresh(&core.host, &transport).await;
-    }
-    // Missing policy/state, transient HTTP failure, integrity refusal and an
-    // uncertain commit never grant Known or clear the cleanup barrier here.
-    // Keep the original setup service usable. There is deliberately no retry
-    // loop: the internal owner refresh entrance remains the explicit caller.
+async fn refresh_once(core: &Core) -> Result<()> {
+    // Actual stored state is re-opened for each controlled attempt. It preserves
+    // floor/known deny/budgets/barrier; absence is never initialized or healed.
+    let mut owner = TimeOwner::open(&core.host)?;
+    owner.refresh(&core.host, &TimeTransport::new()).await
 }
-
+async fn await_request(control: &RefreshControl) -> Result<()> {
+    loop {
+        if control.claim()? {
+            return Ok(());
+        }
+        // Reuse the native-stop scheduling interval only. No timer creates an
+        // HTTP request: a startup reservation or explicit App latch is required.
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
 async fn observe_stop(stop: &Event, cancel: &AtomicBool) -> Result<()> {
     loop {
         if cancel.load(Ordering::Acquire) || stop.is_set()? {
             return Ok(());
         }
-        // Scheduling for native cancellation only; neither an anchor freshness
-        // policy nor an end-to-end network/deadline limit.
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
@@ -142,11 +279,114 @@ mod tests {
         let mut worker = TimeWorker {
             stop: stop.clone(),
             cancel,
+            control: Arc::new(RefreshControl::new()),
             thread: Some(thread),
         };
         worker.stop_and_join().unwrap();
         assert!(exited.load(Ordering::Acquire));
         assert!(stop.is_set().unwrap());
         worker.stop_and_join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    #[test]
+    fn startup_and_concurrent_clicks_share_one_pending_running_slot() {
+        let c = Arc::new(RefreshControl::new());
+        c.start().unwrap();
+        assert_eq!(c.request(), Err(Error::Busy));
+        assert!(c.claim().unwrap());
+        assert_eq!(c.request(), Err(Error::Busy));
+        c.finish(Err(Error::SourceUnavailable)).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(17));
+        let mut threads = Vec::new();
+        for _ in 0..16 {
+            let c = c.clone();
+            let b = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                b.wait();
+                c.request()
+            }));
+        }
+        barrier.wait();
+        let mut accepted = 0;
+        for t in threads {
+            match t.join().unwrap() {
+                Ok(()) => accepted += 1,
+                Err(Error::Busy) => {}
+                other => panic!("unexpected fixed result: {other:?}"),
+            }
+        }
+        assert_eq!(accepted, 1);
+        assert!(c.claim().unwrap());
+        assert_eq!(c.request(), Err(Error::Busy));
+        c.finish(Ok(())).unwrap();
+        assert!(!c.claim().unwrap());
+        // Successful activity does not manufacture successful protected time.
+        assert_eq!(
+            c.diagnostic(TrustedTimeState::Unknown).unwrap().state,
+            TrustedTimeState::Unknown
+        );
+    }
+    #[test]
+    fn stop_and_worker_exit_never_resurrect_idle_or_accept_into_a_dead_worker() {
+        let before = RefreshControl::new();
+        before.stop();
+        assert_eq!(before.start(), Err(Error::Unavailable));
+        let c = Arc::new(RefreshControl::new());
+        c.start().unwrap();
+        assert!(c.claim().unwrap());
+        let worker = c.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _exit = WorkerExit(worker);
+            panic!("fixed lifecycle control");
+        });
+        assert_eq!(c.request(), Err(Error::Unavailable));
+        c.finish(Ok(())).unwrap();
+        assert_eq!(c.request(), Err(Error::Unavailable));
+        assert!(!c.diagnostic(TrustedTimeState::Unknown).unwrap().refreshing);
+        assert_eq!(
+            c.diagnostic(TrustedTimeState::Unknown).unwrap().state,
+            TrustedTimeState::SourceUnavailable
+        );
+        assert_eq!(
+            c.diagnostic(TrustedTimeState::IntegrityFault)
+                .unwrap()
+                .state,
+            TrustedTimeState::IntegrityFault
+        );
+    }
+    #[test]
+    fn early_worker_error_closes_admission_without_turning_offline_into_integrity_fault() {
+        fn failed_runtime(control: Arc<RefreshControl>) -> Result<()> {
+            let _exit = WorkerExit(control);
+            Err(Error::Unavailable)
+        }
+        let c = Arc::new(RefreshControl::new());
+        c.start().unwrap();
+        assert_eq!(failed_runtime(c.clone()), Err(Error::Unavailable));
+        assert_eq!(c.request(), Err(Error::Unavailable));
+        let live = RefreshControl::new();
+        live.start().unwrap();
+        assert!(live.claim().unwrap());
+        live.finish(Err(Error::SourceUnavailable)).unwrap();
+        assert_eq!(
+            live.diagnostic(TrustedTimeState::Unknown).unwrap().state,
+            TrustedTimeState::SourceUnavailable
+        );
+        assert_eq!(
+            live.diagnostic(TrustedTimeState::MissingPolicy)
+                .unwrap()
+                .state,
+            TrustedTimeState::MissingPolicy
+        );
+        assert_eq!(
+            live.diagnostic(TrustedTimeState::CleanupPending)
+                .unwrap()
+                .state,
+            TrustedTimeState::CleanupPending
+        );
     }
 }

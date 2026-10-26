@@ -20,6 +20,34 @@ function pinvouSharedtauriUpdater() {
   // ── 应用内升级 ───────────────────────────────────────────────────
   // Chain: check_for_update (compares the server's latest.json) → download_update (streamed download + sha256)
   // → install_update (pkexec apt) → restart_app. Download progress emits no separate frontend event.
+  // Local diagnostics are independent of check/download/install. In-flight
+  // invokes are shared across mounts; no automatic refresh or network retry.
+  let timeStatusPending = null;
+  let timeRefreshPending = null;
+  function inspectTrustedTime() {
+    if (!timeStatusPending) {
+      const request = Promise.resolve().then(() => invoke("get_upgrade_trusted_time_status"))
+        .finally(() => {
+          if (timeStatusPending === request) timeStatusPending = null;
+        });
+      timeStatusPending = request;
+    }
+    return timeStatusPending;
+  }
+  function requestTrustedTimeRefresh() {
+    if (!timeRefreshPending) {
+      timeRefreshPending = Promise.resolve().then(() => invoke("request_upgrade_trusted_time_refresh"))
+        .then(reply => {
+          // A post-ACK read must not reuse an observation begun before refresh.
+          // Existing callers retain their promise; its finalizer cannot evict a
+          // newer observation.
+          timeStatusPending = null;
+          return reply;
+        })
+        .finally(() => { timeRefreshPending = null; });
+    }
+    return timeRefreshPending;
+  }
   async function loadAppVersion() {
     try {
       state.appVersion = await invoke("get_app_version");
@@ -85,6 +113,8 @@ async function checkForUpdate() { return pinvouSharedtauriUpdater().checkForUpda
 
     return {
       loadAppVersion,
+      inspectTrustedTime,
+      requestTrustedTimeRefresh,
       checkForUpdateSilently,
       checkForUpdate,
       downloadAndInstallUpdate,

@@ -5,7 +5,7 @@
 
   const WEB_CAPABILITIES = {
     desktopChrome: false, detachWindows: false, pet: false, oauth: false,
-    externalAuth: false, superPermission: false, appUpdate: false,
+    externalAuth: false, superPermission: false, appUpdate: false, trustedTimeDiagnostics: false,
     dependencyInstall: false, localModelSetup: false, externalSystemOpen: false,
     webAccessAdmin: false, desktopNotifications: false, hostFilePicker: true, artifactDownload: true,
     sessionModelSwitch: true,

@@ -25,16 +25,24 @@ pub(super) struct ActionLease {
 pub(super) struct Core {
     pub(super) host: StartedServiceContext,
     actions: Mutex<Actions<ActionLease>>,
+    pub(super) time: Arc<super::time_service::RefreshControl>,
 }
 impl Core {
     pub(super) fn new(host: StartedServiceContext) -> Self {
         Self {
             host,
             actions: Mutex::new(Actions::new()),
+            time: Arc::new(super::time_service::RefreshControl::new()),
         }
     }
     fn actions(&self) -> Result<MutexGuard<'_, Actions<ActionLease>>> {
         self.actions.lock().map_err(|_| Error::Unavailable)
+    }
+    fn time_status(&self) -> Result<crate::TrustedTimeStatus> {
+        // The native diagnostic always runs, including after worker failure;
+        // cached activity/success never substitutes for actual protected state.
+        let native = Store::new(&self.host.context.seed).diagnostic_time(&self.host);
+        self.time.diagnostic(native)
     }
     pub(super) fn record(&self) -> Result<HostRegistration> {
         let record = Store::new(&self.host.context.seed)
@@ -167,6 +175,18 @@ impl Connection {
                     probe_state: "checked".into(),
                 },
             );
+        }
+        if matches!(
+            request.kind.as_str(),
+            "time-status" | "request-time-refresh"
+        ) {
+            require_time_app(self.peer.role)?;
+            let _: ipc::Empty = request.body()?;
+            if request.kind == "time-status" {
+                return self.reply(request, self.core.time_status()?);
+            }
+            self.core.time.request()?;
+            return self.reply(request, crate::TrustedTimeRefreshReply::accepted());
         }
         if request.kind == "status" {
             let _: ipc::Empty = request.body()?;
@@ -520,6 +540,17 @@ impl Connection {
             return Ok(cached.to_vec());
         }
         match request.kind.as_str() {
+            "time-status" => {
+                require_time_app(self.peer.role)?;
+                let _: ipc::Empty = request.body()?;
+                Ok(self.reply(request, self.core.time_status()?)?.0)
+            }
+            "request-time-refresh" => {
+                require_time_app(self.peer.role)?;
+                let _: ipc::Empty = request.body()?;
+                // The same original response only; never re-enter the latch.
+                Ok(cached.to_vec())
+            }
             "begin-restart" => {
                 let (_, original) = ipc::response::<ipc::BeginReply>(
                     cached,
@@ -630,6 +661,30 @@ fn require_live_launcher(
         return Err(error);
     }
     Ok(())
+}
+
+fn require_time_app(role: Role) -> Result<()> {
+    if role != Role::App {
+        return Err(Error::OperationUnsupported);
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod time_role_tests {
+    use super::*;
+    #[test]
+    fn time_route_rule_rejects_launcher_and_source_installer() {
+        // Authorization-rule control only. No process/pipe identity is minted.
+        require_time_app(Role::App).unwrap();
+        assert_eq!(
+            require_time_app(Role::Launcher),
+            Err(Error::OperationUnsupported)
+        );
+        assert_eq!(
+            require_time_app(Role::SourceInstaller),
+            Err(Error::OperationUnsupported)
+        );
+    }
 }
 
 #[cfg(test)]

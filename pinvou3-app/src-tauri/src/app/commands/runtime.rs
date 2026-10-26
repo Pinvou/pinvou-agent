@@ -58,6 +58,7 @@ pub struct PlatformCapabilities {
     pub paste_image_clipboard_read: bool,
     pub local_embed_supported: bool,
     pub global_shortcuts_available: bool,
+    pub trusted_time_diagnostics: bool,
 }
 
 impl PlatformCapabilities {
@@ -90,6 +91,7 @@ impl PlatformCapabilities {
             paste_image_clipboard_read: capabilities.paste_image_clipboard_read,
             local_embed_supported: capabilities.local_embed_supported,
             global_shortcuts_available: capabilities.global_shortcuts_available,
+            trusted_time_diagnostics: crate::features::updater::trusted_time::supported(),
         }
     }
 }

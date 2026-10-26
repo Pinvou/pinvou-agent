@@ -99,7 +99,10 @@ impl Head {
                 changes += 1;
             }
         }
-        if changes != 1 {
+        // A fixed cleanup publisher may preserve successful native samples
+        // without changing any budget intention. Such a revision must strictly
+        // advance the actual lower watermark; it cannot erase or rewrite a window.
+        if changes != 1 && !(changes == 0 && next.live_floor > self.live_floor) {
             return Err(Error::StateCorrupt);
         }
         Ok(())
@@ -297,6 +300,52 @@ pub(super) fn floor_in(
     Ok(read_head(&key, &Binding::from_host(actual), tx)?
         .0
         .live_floor)
+}
+/// Called only with actual borrowed same-transaction sample capabilities.
+/// This preserves knowledge on a late unavailable sample without inventing a
+/// budget window, stage or permission. It does not accept a numeric floor DTO.
+pub(super) fn retain_samples_floor_in(
+    private: &Key,
+    host: &HostRegistration,
+    tx: &Handle,
+    source: &time::LiveTimeReadSet<'_>,
+    initial: &live_time::LiveTimeInterval<'_, '_>,
+    final_sample: Option<&live_time::LiveTimeInterval<'_, '_>>,
+) -> Result<()> {
+    if !initial.belongs_to(source)
+        || final_sample.is_some_and(|v| !v.belongs_to(source))
+        || source.state().binding != Binding::from_host(host)
+    {
+        return Err(Error::ScopeConflict);
+    }
+    let key = open(private.0, NAMESPACE, true, Some(tx))?.ok_or(Error::SetupIncomplete)?;
+    let (head, before) = read_head(&key, &Binding::from_host(host), Some(tx))?;
+    let lower = final_sample.map_or(initial.bounds().earliest_millis(), |v| {
+        v.bounds()
+            .earliest_millis()
+            .max(initial.bounds().earliest_millis())
+    });
+    if head.live_floor.is_some_and(|old| old >= lower) {
+        return Ok(());
+    }
+    let mut next = head.clone();
+    next.revision = next
+        .revision
+        .checked_add(1)
+        .filter(|v| *v <= json::SAFE_MAX)
+        .ok_or(Error::Unavailable)?;
+    next.previous_sha256 = Some(json::sha256(&before));
+    next.live_floor = Some(lower);
+    head.successor(&next, &before)?;
+    let raw = json::encode(&next, false)?;
+    let history = open(key.0, "history", true, Some(tx))?.ok_or(Error::StateCorrupt)?;
+    let revision = create(history.0, &revision_name(next.revision), tx, false, true)?;
+    write(&revision, "Record", &raw)?;
+    write(&key, "Head", &raw)?;
+    if read_head(&key, &next.binding, Some(tx))?.1 != raw {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(())
 }
 impl Store {
     pub(in crate::platform::windows) fn budget_time_floor(
@@ -958,5 +1007,31 @@ mod tests {
         assert_eq!(both.len(), 2);
         assert_eq!(observed_floor(None, &both), Some(120));
         assert!(retain_samples(None, None).is_empty());
+    }
+    #[test]
+    fn floor_only_successor_is_strict_and_cannot_rewrite_a_window() {
+        let before = Head::genesis(binding());
+        let raw = json::encode(&before, false).unwrap();
+        let mut next = before.clone();
+        next.revision += 1;
+        next.previous_sha256 = Some(json::sha256(&raw));
+        assert!(before.successor(&next, &raw).is_err());
+        next.live_floor = Some(10);
+        before.successor(&next, &raw).unwrap();
+        let current = next.clone();
+        let current_raw = json::encode(&current, false).unwrap();
+        next.revision += 1;
+        next.previous_sha256 = Some(json::sha256(&current_raw));
+        assert!(current.successor(&next, &current_raw).is_err());
+        next.live_floor = Some(9);
+        assert!(current.successor(&next, &current_raw).is_err());
+        next.live_floor = Some(11);
+        current.successor(&next, &current_raw).unwrap();
+        next.windows.push(Entry {
+            key: "a".repeat(64),
+            revision: 2,
+            sha256: "b".repeat(64),
+        });
+        assert!(current.successor(&next, &current_raw).is_err());
     }
 }

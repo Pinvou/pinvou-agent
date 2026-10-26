@@ -43,6 +43,7 @@ import {
 import { VoiceShortcutIntroModal } from '../voice-composer/VoiceShortcutIntroModal.jsx';
 import { ReasoningTierPicker, useModelReasoningTierState } from './local-server-tiers.jsx';
 import { StatusChip } from './StatusChip.jsx';
+import TrustedTimeDiagnostics from '../updater/TrustedTimeDiagnostics.jsx';
 
 function isReadonlyModel(model) {
   return !!(model && (model.readonly || model.system));
@@ -1927,6 +1928,7 @@ function hasStoredCredential(record) {
       const canUseSuperPermission = can('superPermission');
       const canUseComputerUse = can('computerUse');
       const canUpdateApp = can('appUpdate');
+      const canDiagnoseTime = can('trustedTimeDiagnostics', platformCapabilities);
       const canInstallDependencies = can('dependencyInstall');
       const canConfigureDesktopNotifications = can('desktopNotifications');
       const canManageModels = can('modelManagement');
@@ -1968,11 +1970,11 @@ function hasStoredCredential(record) {
         return idx >= 0 ? name.slice(idx + 1).toLowerCase() : '';
       };
       useEffect(() => {
-        if (!canUpdateApp || !updateFocusTick || !versionUpdateRef.current) return;
+        if (!(canUpdateApp || canDiagnoseTime) || !updateFocusTick || !versionUpdateRef.current) return;
         requestAnimationFrame(() => {
           versionUpdateRef.current && versionUpdateRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
-      }, [canUpdateApp, updateFocusTick]);
+      }, [canUpdateApp, canDiagnoseTime, updateFocusTick]);
       useEffect(() => {
         if (initialSection === 'providers') {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors the backend snapshot into local state once it lands, avoiding first-frame flicker
@@ -2710,19 +2712,25 @@ function hasStoredCredential(record) {
         };
         return (
           <div ref={versionUpdateRef} id="settings-version-update">
-            <IOSSection title={t.uiSettings.version}>
-              <IOSRow label={t.uiSettings.currentVersion} desc={t.uiSettings.beta} value={`v${currentVersion}`} />
-              <IOSRow label={upd && upd.available ? t.newVersionFound : t.checkUpdate} desc={updateStatusDesc}>
-              <button type="button" data-settings-update-action="true" onClick={handleUpdateAction} disabled={updateButtonDisabled} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">{updateButtonLabel}</button>
-            </IOSRow>
-            </IOSSection>
-            {updateError && (
-              <div className="px-3 -mt-3 mb-4 text-[12px] leading-5 text-[#EA4335] break-words">{String(updateError)}</div>
+            {canUpdateApp && (
+              <>
+                <IOSSection title={t.uiSettings.version}>
+                  <IOSRow label={t.uiSettings.currentVersion} desc={t.uiSettings.beta} value={`v${currentVersion}`} />
+                  <IOSRow label={upd && upd.available ? t.newVersionFound : t.checkUpdate} desc={updateStatusDesc}>
+                    <button type="button" data-settings-update-action="true" onClick={handleUpdateAction} disabled={updateButtonDisabled} className="h-9 px-4 rounded-full bg-[#007AFF] text-white text-[14px] font-semibold whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed">{updateButtonLabel}</button>
+                  </IOSRow>
+                </IOSSection>
+                {updateError && (
+                  <div className="px-3 -mt-3 mb-4 text-[12px] leading-5 text-[#EA4335] break-words">{String(updateError)}</div>
+                )}
+                <section className="mb-6">
+                  <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.releaseNotes}</div>
+                  <div className={`rounded-[18px] px-4 py-3.5 text-[14px] leading-6 whitespace-pre-line bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>{notes}</div>
+                </section>
+              </>
             )}
-            <section className="mb-6">
-              <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.releaseNotes}</div>
-              <div className={`rounded-[18px] px-4 py-3.5 text-[14px] leading-6 whitespace-pre-line bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>{notes}</div>
-            </section>
+            <TrustedTimeDiagnostics key={canDiagnoseTime ? 'supported' : 'unsupported'} copy={t.trustedTime}
+              updater={bridge.updater} supported={bridge.available && canDiagnoseTime} />
           </div>
         );
       };
@@ -2859,7 +2867,7 @@ function hasStoredCredential(record) {
               <div className={`mt-7 mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.system}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
                 {canUseSuperPermission && <SectionButton id="permissions" icon={<Wrench size={17} />} label={t.uiSettings.permissions} active={activeSection === 'permissions'} onSelect={setActiveSection} />}
-                {canUpdateApp && <SectionButton id="update" icon={<RefreshCw size={17} />} label={t.uiSettings.update} dot={hasUpdate} active={activeSection === 'update'} onSelect={setActiveSection} />}
+                {(canUpdateApp || canDiagnoseTime) && <SectionButton id="update" icon={<RefreshCw size={17} />} label={canUpdateApp ? t.uiSettings.update : t.trustedTime.title} dot={hasUpdate} active={activeSection === 'update'} onSelect={setActiveSection} />}
                 <SectionButton id="help" icon={<MessageSquare size={17} />} label={t.uiSettings.help} active={activeSection === 'help'} onSelect={setActiveSection} />
                 <SectionButton id="community" icon={<Users size={17} />} label={t.uiSettings.community} active={activeSection === 'community'} onSelect={setActiveSection} />
               </div>

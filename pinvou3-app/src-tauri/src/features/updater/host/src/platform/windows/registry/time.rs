@@ -65,6 +65,8 @@ struct Header {
     incarnation: Option<Incarnation>,
     status: Status,
     cleanup_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    zero_retention: Option<crate::retention_custody::ZeroRetentionReference>,
     floor: Option<u64>,
     roots: Vec<Blob>,
     denied_key_ids: Vec<String>,
@@ -79,6 +81,7 @@ fn header(state: &State) -> Header {
         incarnation: state.incarnation.clone(),
         status: state.status,
         cleanup_pending: state.cleanup_pending,
+        zero_retention: state.zero_retention.clone(),
         floor: state.floor,
         roots: state.roots.iter().map(|s| Blob::of(s.as_bytes())).collect(),
         denied_key_ids: state.denied_key_ids.clone(),
@@ -155,6 +158,7 @@ fn read_record(key: &Key, raw: &[u8], original: &[u8]) -> Result<State> {
         incarnation: h.incarnation,
         status: h.status,
         cleanup_pending: h.cleanup_pending,
+        zero_retention: h.zero_retention,
         floor: h.floor,
         roots,
         denied_key_ids: h.denied_key_ids,
@@ -230,6 +234,14 @@ fn state_in(
         let prior = read_record(&previous, &prior_raw, &original_root)?;
         prior.transition(&state, &prior_raw, &original_root)?;
     }
+    if state.status == Status::CleanupVerifiedZero {
+        retention::validate_completed_in(private, host, &state, transaction)?;
+    } else if open(private.0, retention::NAMESPACE, false, transaction)?.is_some() {
+        // Existing fresh custody must keep every historical completion linked,
+        // even after the current state becomes Unknown or a new anchor arrives.
+        // Missing legacy custody is deliberately neither initialized nor healed.
+        retention::read_in(private, host, transaction)?;
+    }
     // This is not an obligation census. Even the genuine genesis is Unknown
     // with a barrier; no absence of backups/secrets/budgets is inferred.
     let _ = genesis;
@@ -262,6 +274,203 @@ fn policy_in(key: &Key, binding: &Binding) -> Result<PolicySnapshot> {
     let raw = read(key, "Policy")?;
     let policy = Policy::parse(&raw, binding)?;
     Ok(PolicySnapshot { raw, policy })
+}
+// Bounded native adapter census capacity, not a retention or download policy.
+// Overflow refuses the census; it never truncates or removes history.
+const MAX_CENSUS_TIME_HEADERS: u32 = 16_384;
+
+/// Streaming ledger structure DATA. Native callers supply all actual retained
+/// rows; this does not validate signatures or construct a clock/cleanup permit.
+struct RetainedCompletionCensus {
+    binding: Binding,
+    genesis_raw: Vec<u8>,
+    head_revision: u64,
+    head_sha256: String,
+    next_revision: u64,
+    previous_sha256: Option<String>,
+    references: Vec<crate::retention_custody::ZeroRetentionReference>,
+}
+impl RetainedCompletionCensus {
+    fn new(head_raw: &[u8], genesis_raw: &[u8], binding: &Binding) -> Result<Self> {
+        let head: Header = json::decode(head_raw, false)?;
+        if json::encode(&head, false)? != head_raw || head.binding != *binding || head.revision == 0
+        {
+            return Err(Error::StateCorrupt);
+        }
+        if head.revision > u64::from(MAX_CENSUS_TIME_HEADERS) {
+            return Err(Error::Unavailable);
+        }
+        Ok(Self {
+            binding: binding.clone(),
+            genesis_raw: genesis_raw.to_vec(),
+            head_revision: head.revision,
+            head_sha256: json::sha256(head_raw),
+            next_revision: 1,
+            previous_sha256: None,
+            references: Vec::new(),
+        })
+    }
+    fn observe(&mut self, name: &str, raw: &[u8]) -> Result<()> {
+        let row: Header = json::decode(raw, false)?;
+        if name != revision_name(self.next_revision)
+            || row.revision != self.next_revision
+            || row.revision > self.head_revision
+            || row.binding != self.binding
+            || row.previous_sha256 != self.previous_sha256
+            || json::encode(&row, false)? != raw
+            || self.next_revision == 1 && raw != self.genesis_raw
+        {
+            return Err(Error::StateCorrupt);
+        }
+        match (row.status, row.cleanup_pending, row.zero_retention) {
+            (Status::CleanupVerifiedZero, false, Some(reference)) => {
+                reference.validate()?;
+                if reference.completion_revision != row.revision {
+                    return Err(Error::StateCorrupt);
+                }
+                if self.references.len() >= retention::MAX_COMPLETIONS as usize {
+                    return Err(Error::Unavailable);
+                }
+                self.references.push(reference);
+            }
+            (Status::Unknown | Status::CleanupPending, true, None) => {}
+            _ => return Err(Error::StateCorrupt),
+        }
+        self.previous_sha256 = Some(json::sha256(raw));
+        self.next_revision = self
+            .next_revision
+            .checked_add(1)
+            .ok_or(Error::Unavailable)?;
+        Ok(())
+    }
+    fn finish(self) -> Result<Vec<crate::retention_custody::ZeroRetentionReference>> {
+        if self.next_revision != self.head_revision + 1
+            || self.previous_sha256.as_ref() != Some(&self.head_sha256)
+        {
+            return Err(Error::StateCorrupt);
+        }
+        Ok(self.references)
+    }
+}
+/// Read the whole fixed history through actual protected native handles. Only
+/// one bounded record body is resident at a time. No recursion into state_in.
+pub(super) fn retained_completion_references_in(
+    private: &Key,
+    host: &HostRegistration,
+    tx: Option<&Handle>,
+) -> Result<Vec<crate::retention_custody::ZeroRetentionReference>> {
+    let key = open(private.0, NAMESPACE, false, tx)?.ok_or(Error::StateCorrupt)?;
+    let original_root = read(private, METADATA_BOOTSTRAP_ROOT)?;
+    let binding = Binding::from_host(host);
+    let expected_genesis = json::encode(
+        &header(&State::genesis(binding.clone(), &original_root)?),
+        false,
+    )?;
+    if read(&key, "Genesis")? != expected_genesis {
+        return Err(Error::StateCorrupt);
+    }
+    let mut census =
+        RetainedCompletionCensus::new(&read(&key, "Head")?, &expected_genesis, &binding)?;
+    let history = open(key.0, "history", false, tx)?.ok_or(Error::StateCorrupt)?;
+    if !names(&history, true, 0)?.is_empty() {
+        return Err(Error::StateCorrupt);
+    }
+    let mut revisions = names(&history, false, MAX_CENSUS_TIME_HEADERS)?;
+    revisions.sort_unstable();
+    for name in revisions {
+        let row = open(history.0, &name, false, tx)?.ok_or(Error::StateCorrupt)?;
+        census.observe(&name, &read(&row, "Record")?)?;
+    }
+    census.finish()
+}
+/// Verify the actual two-way retained link without recursively reading current
+/// Time state. Historical completions are not live UTC or a current clean gate.
+pub(super) fn check_retained_completion_in(
+    private: &Key,
+    c: &crate::retention_custody::Completion,
+    body: &[u8],
+    tx: Option<&Handle>,
+) -> Result<()> {
+    let key = open(private.0, NAMESPACE, false, tx)?.ok_or(Error::StateCorrupt)?;
+    let base = open(
+        key.0,
+        &format!("history\\{}", revision_name(c.anchor_time_revision)),
+        false,
+        tx,
+    )?
+    .ok_or(Error::StateCorrupt)?;
+    let base_raw = read(&base, "Record")?;
+    let anchor: Header = json::decode(&base_raw, false)?;
+    if json::sha256(&base_raw) != c.anchor_time_sha256
+        || json::encode(&anchor, false)? != base_raw
+        || anchor.binding != c.binding
+        || anchor.revision != c.anchor_time_revision
+        || anchor.status != Status::CleanupPending
+        || !anchor.cleanup_pending
+        || anchor.zero_retention.is_some()
+        || anchor.incarnation.as_ref() != Some(&c.incarnation)
+    {
+        return Err(Error::StateCorrupt);
+    }
+    crate::retention_custody::check_first_scan(
+        &anchor
+            .evidence
+            .as_ref()
+            .ok_or(Error::StateCorrupt)?
+            .received,
+        &c.final_counter,
+    )
+    .map_err(|_| Error::StateCorrupt)?;
+    let completed = open(
+        key.0,
+        &format!("history\\{}", revision_name(c.completed_time_revision)),
+        false,
+        tx,
+    )?
+    .ok_or(Error::StateCorrupt)?;
+    let completed_raw = read(&completed, "Record")?;
+    let mut next: Header = json::decode(&completed_raw, false)?;
+    if json::encode(&next, false)? != completed_raw
+        || next.status != Status::CleanupVerifiedZero
+        || next.cleanup_pending
+        || next.zero_retention.as_ref() != Some(&c.reference()?)
+        || next.previous_sha256.as_ref() != Some(&c.anchor_time_sha256)
+        || next.revision != c.completed_time_revision
+        || json::sha256(body) != c.reference()?.completion_sha256
+    {
+        return Err(Error::StateCorrupt);
+    }
+    // Completion changes no original anchor evidence, roots, floor, deny or
+    // incarnation. Reverse the finite administrative transition and compare.
+    next.revision = anchor.revision;
+    next.previous_sha256 = anchor.previous_sha256.clone();
+    next.status = Status::CleanupPending;
+    next.cleanup_pending = true;
+    next.zero_retention = None;
+    if json::encode(&next, false)? != base_raw {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(())
+}
+fn stage_state_in(
+    private: &Key,
+    actual: &HostRegistration,
+    current: &TimeSnapshot,
+    next: &State,
+    tx: &Handle,
+) -> Result<Vec<u8>> {
+    current
+        .state
+        .transition(next, &current.raw, &current.original_root)?;
+    let key = open(private.0, NAMESPACE, true, Some(tx))?.ok_or(Error::SetupIncomplete)?;
+    let history = open(key.0, "history", true, Some(tx))?.ok_or(Error::StateCorrupt)?;
+    let revision = create(history.0, &revision_name(next.revision), tx, false, true)?;
+    let raw = write_record(&revision, next)?;
+    write(&key, "Head", &raw)?;
+    if state_in(private, actual, Some(tx))?.raw != raw {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(raw)
 }
 /// A native transaction-bound read set, minted only below from fixed protected
 /// keys. Detached State/Policy values cannot construct this capability.
@@ -373,6 +582,237 @@ pub(super) fn initialize_in(
     Ok(())
 }
 impl Store {
+    /// Complete ONLY fresh authenticated zero-obligation custody. There is no
+    /// caller-provided source, numeric time, permission bool or owner callback.
+    /// Existing legacy/missing custody remains paused and is never initialized.
+    #[allow(unsafe_code)]
+    pub(in crate::platform::windows) fn complete_zero_retention(
+        &self,
+        host: &StartedServiceContext,
+    ) -> Result<()> {
+        let seed = &host.context.seed;
+        let _guard = BootstrapGuard::acquire(seed, false)?;
+        let tx = Handle::owned(unsafe {
+            CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+        })?;
+        let actual = self
+            .read_in(seed, Some(&tx))?
+            .ok_or(Error::SetupIncomplete)?;
+        host.authenticate_running(&actual)?;
+        let private = self.key(true, Some(&tx))?.ok_or(Error::SetupIncomplete)?;
+        let inventory = retention::read_in(&private, &actual, Some(&tx))?;
+        let current = state_in(&private, &actual, Some(&tx))?;
+        if current.state.status != Status::CleanupPending {
+            return Err(Error::ScopeConflict);
+        }
+        let source = current_in(&private, &actual, &tx)?;
+        let initial = super::super::live_time::sample_live_time(host, &source)?;
+        // The full real census is repeated after initial sampling. There is no
+        // nonzero cleanup fallback. Any registered producer forbids this profile.
+        if retention::read_in(&private, &actual, Some(&tx))? != inventory {
+            return Err(Error::ScopeConflict);
+        }
+        let final_result = initial.recheck(host);
+        let (raw, next_revision, late_failure, saved_floor) = match final_result {
+            Ok(final_sample) => {
+                source.recheck(host)?;
+                if retention::read_in(&private, &actual, Some(&tx))? != inventory {
+                    return Err(Error::ScopeConflict);
+                }
+                budgets::retain_samples_floor_in(
+                    &private,
+                    &actual,
+                    &tx,
+                    &source,
+                    &initial,
+                    Some(&final_sample),
+                )?;
+                let within_scan = crate::retention_custody::check_first_scan(
+                    &current
+                        .state
+                        .evidence
+                        .as_ref()
+                        .ok_or(Error::StateCorrupt)?
+                        .received,
+                    &final_sample.counter_evidence(),
+                );
+                if let Err(error) = within_scan {
+                    // Late invocation/lock wait is not evidence that the first
+                    // scan met its ceiling. Preserve BOTH successful samples,
+                    // keep Unknown, and return the fixed failure after commit.
+                    let next = current
+                        .state
+                        .next_unknown(Incarnation::from_host(&actual)?, &current.raw)?;
+                    let raw = stage_state_in(&private, &actual, &current, &next, &tx)?;
+                    (
+                        raw,
+                        next.revision,
+                        Some(error),
+                        final_sample.bounds().earliest_millis(),
+                    )
+                } else {
+                    let next_revision = current
+                        .state
+                        .revision
+                        .checked_add(1)
+                        .filter(|n| *n <= json::SAFE_MAX)
+                        .ok_or(Error::Unavailable)?;
+                    let completion = crate::retention_custody::Completion {
+                        protocol_version: 1,
+                        binding: current.state.binding.clone(),
+                        inventory_revision: 1,
+                        inventory_sha256: json::sha256(&inventory),
+                        anchor_time_revision: current.state.revision,
+                        anchor_time_sha256: json::sha256(&current.raw),
+                        completed_time_revision: next_revision,
+                        policy_sha256: json::sha256(&source.policy().raw),
+                        incarnation: Incarnation::from_host(&actual)?,
+                        initial_counter: initial.counter_evidence(),
+                        final_counter: final_sample.counter_evidence(),
+                        earliest: final_sample.bounds().earliest_millis(),
+                        latest: final_sample.bounds().latest_millis(),
+                    };
+                    completion.validate(&current.state.binding, &inventory)?;
+                    let mut next = current.state.clone();
+                    next.revision = next_revision;
+                    next.previous_sha256 = Some(json::sha256(&current.raw));
+                    next.status = Status::CleanupVerifiedZero;
+                    next.cleanup_pending = false;
+                    next.zero_retention = Some(completion.reference()?);
+                    // Final fixed source/SCM/readset check precedes the two writes;
+                    // both completion and Time Head publish under this one TxR.
+                    source.recheck(host)?;
+                    retention::stage_completion_in(&private, &tx, &completion, &inventory)?;
+                    let raw = stage_state_in(&private, &actual, &current, &next, &tx)?;
+                    (
+                        raw,
+                        next_revision,
+                        None,
+                        final_sample.bounds().earliest_millis(),
+                    )
+                }
+            }
+            Err(error @ (Error::SourceUnavailable | Error::Unavailable)) => {
+                // A valid initial native sample remains knowledge even when a
+                // later counter/root interval is unavailable. Authenticate the
+                // original source/SCM and census, retain its lower watermark,
+                // then publish Unknown with all original evidence intact.
+                source.recheck(host)?;
+                if retention::read_in(&private, &actual, Some(&tx))? != inventory {
+                    return Err(Error::ScopeConflict);
+                }
+                budgets::retain_samples_floor_in(&private, &actual, &tx, &source, &initial, None)?;
+                let next = current
+                    .state
+                    .next_unknown(Incarnation::from_host(&actual)?, &current.raw)?;
+                let raw = stage_state_in(&private, &actual, &current, &next, &tx)?;
+                (
+                    raw,
+                    next.revision,
+                    Some(error),
+                    initial.bounds().earliest_millis(),
+                )
+            }
+            Err(error) => return Err(error),
+        };
+        drop(initial);
+        drop(source);
+        drop(private);
+        if unsafe { CommitTransaction(tx.raw()) } == 0 {
+            return Err(Error::StateCommitUnknown);
+        }
+        drop(tx);
+        let verify = || -> Result<()> {
+            let actual_after = self.read(seed)?.ok_or(Error::StateCommitUnknown)?;
+            host.authenticate_running(&actual_after)?;
+            if actual_after.digest()? != actual.digest()? {
+                return Err(Error::StateCommitUnknown);
+            }
+            let private = self.key(false, None)?.ok_or(Error::StateCommitUnknown)?;
+            let key = open(private.0, NAMESPACE, false, None)?.ok_or(Error::StateCommitUnknown)?;
+            let history = open(
+                key.0,
+                &format!("history\\{}", revision_name(next_revision)),
+                false,
+                None,
+            )?
+            .ok_or(Error::StateCommitUnknown)?;
+            let custody = open(private.0, retention::NAMESPACE, false, None)?
+                .ok_or(Error::StateCommitUnknown)?;
+            let budget = open(private.0, budgets::NAMESPACE, false, None)?
+                .ok_or(Error::StateCommitUnknown)?;
+            if unsafe { RegFlushKey(key.0) } != 0
+                || unsafe { RegFlushKey(history.0) } != 0
+                || unsafe { RegFlushKey(custody.0) } != 0
+                || unsafe { RegFlushKey(budget.0) } != 0
+            {
+                return Err(Error::StateCommitUnknown);
+            }
+            if state_in(&private, &actual_after, None)?.raw != raw
+                || retention::read_in(&private, &actual_after, None)? != inventory
+            {
+                return Err(Error::StateCommitUnknown);
+            }
+            if budgets::floor_in(&private, &actual_after, None)?.map_or(true, |v| v < saved_floor) {
+                return Err(Error::StateCommitUnknown);
+            }
+            Ok(())
+        };
+        verify().map_err(|_| Error::StateCommitUnknown)?;
+        match late_failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+    /// Read-only diagnostic under the same short native mutex/transaction as
+    /// budget/time reads. No COMMIT, initialization, network or state repair.
+    pub(in crate::platform::windows) fn diagnostic_time(
+        &self,
+        host: &StartedServiceContext,
+    ) -> crate::TrustedTimeState {
+        match self.diagnostic_time_checked(host) {
+            Ok(state) => state,
+            Err(error) => protected_diagnostic_error(error),
+        }
+    }
+    #[allow(unsafe_code)]
+    fn diagnostic_time_checked(
+        &self,
+        host: &StartedServiceContext,
+    ) -> Result<crate::TrustedTimeState> {
+        let seed = &host.context.seed;
+        let _guard = BootstrapGuard::acquire(seed, false)?;
+        let transaction = Handle::owned(unsafe {
+            CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+        })?;
+        let actual = self
+            .read_in(seed, Some(&transaction))?
+            .ok_or(Error::SetupIncomplete)?;
+        host.authenticate_running(&actual)?;
+        let private = self
+            .key(false, Some(&transaction))?
+            .ok_or(Error::SetupIncomplete)?;
+        // Authenticate all protected sources even when no live interval can be
+        // offered. A valid empty budget floor is not a missing budget namespace.
+        let _snapshot = state_in(&private, &actual, Some(&transaction))?;
+        let _floor = budgets::floor_in(&private, &actual, Some(&transaction))?;
+        let source = current_in(&private, &actual, &transaction)?;
+        let state = source.state();
+        let incarnation = Incarnation::from_host(&actual)?;
+        if state.status == Status::Unknown || state.incarnation.as_ref() != Some(&incarnation) {
+            source.recheck(host)?;
+            return Ok(crate::TrustedTimeState::Unknown);
+        }
+        // Uses actual stored Root/policy/incarnation plus a fresh native sample;
+        // the copied old anchor alone cannot produce this diagnostic state.
+        let _current = super::super::live_time::sample_live_time(host, &source)?;
+        source.recheck(host)?;
+        Ok(if state.status == Status::CleanupVerifiedZero {
+            crate::TrustedTimeState::CleanupComplete
+        } else {
+            crate::TrustedTimeState::CleanupPending
+        })
+    }
     pub(crate) fn time_load(
         &self,
         seed: &Seed,
@@ -424,6 +864,9 @@ impl Store {
         next: &State,
         policy: Option<&PolicySnapshot>,
     ) -> Result<TimeSnapshot> {
+        if next.status == Status::CleanupVerifiedZero {
+            return Err(Error::StateCorrupt);
+        }
         let seed = &host.context.seed;
         let before = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
         host.authenticate_running(&before)?;
@@ -552,6 +995,69 @@ impl Store {
     }
 }
 
+fn protected_diagnostic_error(error: Error) -> crate::TrustedTimeState {
+    use crate::TrustedTimeState as State;
+    match error {
+        Error::Unsupported | Error::ProfileDisabled | Error::OperationUnsupported => {
+            State::Unsupported
+        }
+        Error::SetupIncomplete | Error::InitialTrustUnavailable => State::SetupRequired,
+        Error::PrerequisiteUnavailable => State::MissingPolicy,
+        // Only this actual native protected-store/ACL path may confirm damage.
+        Error::StateCorrupt => State::IntegrityFault,
+        // Existing native security probes also use SecurityRefused when an OS
+        // query fails; source refusal alone does not confirm component damage.
+        Error::SecurityRefused => State::SourceUnavailable,
+        // A new incarnation or legal read race is not component damage.
+        Error::ServiceIdentityRefused | Error::ScopeConflict => State::Unknown,
+        _ => State::SourceUnavailable,
+    }
+}
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    #[test]
+    fn ordinary_offline_crossboot_and_missing_policy_do_not_become_integrity_fault() {
+        use crate::TrustedTimeState as State;
+        assert_eq!(
+            protected_diagnostic_error(Error::SourceUnavailable),
+            State::SourceUnavailable
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::Unavailable),
+            State::SourceUnavailable
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::StateCommitUnknown),
+            State::SourceUnavailable
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::ServiceIdentityRefused),
+            State::Unknown
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::ScopeConflict),
+            State::Unknown
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::PrerequisiteUnavailable),
+            State::MissingPolicy
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::SetupIncomplete),
+            State::SetupRequired
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::StateCorrupt),
+            State::IntegrityFault
+        );
+        assert_eq!(
+            protected_diagnostic_error(Error::SecurityRefused),
+            State::SourceUnavailable
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,11 +1106,131 @@ mod tests {
         let raw = json::encode(&header(&state), false).unwrap();
         let h: Header = json::decode(&raw, false).unwrap();
         assert!(h.cleanup_pending && h.floor.is_none());
+        assert!(
+            !serde_json::from_slice::<serde_json::Value>(&raw)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("zeroRetention")
+        );
         let mut value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         value["cleanupComplete"] = serde_json::Value::Bool(true);
         assert!(json::decode::<Header>(&json::encode(&value, false).unwrap(), false).is_err());
         value.as_object_mut().unwrap().remove("cleanupComplete");
         value.as_object_mut().unwrap().remove("roots");
         assert!(json::decode::<Header>(&json::encode(&value, false).unwrap(), false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod retained_completion_census_tests {
+    use super::*;
+    fn fixture() -> (Binding, Vec<Vec<u8>>) {
+        // Closed Header/linked-byte DATA controls only. These deliberately do
+        // not construct a valid native SCM source, time result or clean permit.
+        let vectors: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../../../specs/upgrade/v1/vectors/time/anchor.json"
+        )))
+        .unwrap();
+        let root = vectors["cases"][0]["trustedRootBytes"]
+            .as_str()
+            .unwrap()
+            .as_bytes();
+        let binding = Binding {
+            installation_scope_id: "scope".into(),
+            product: "pinvou".into(),
+            component: "app".into(),
+            target_key: "windows-x86_64-nsis-perMachine".into(),
+            profile_kind: "production".into(),
+            profile_id: "host".into(),
+            genesis_seed_sha256: "a".repeat(64),
+            genesis_manifest_sha256: "b".repeat(64),
+            original_install_operation_id: "original".into(),
+        };
+        let mut rows: Vec<Vec<u8>> = Vec::new();
+        for revision in 1..=8 {
+            let mut row = header(&State::genesis(binding.clone(), root).unwrap());
+            row.revision = revision;
+            row.previous_sha256 = rows.last().map(|raw| json::sha256(raw));
+            if revision == 3 || revision == 6 {
+                row.status = Status::CleanupVerifiedZero;
+                row.cleanup_pending = false;
+                row.zero_retention = Some(crate::retention_custody::ZeroRetentionReference {
+                    completion_revision: revision,
+                    completion_sha256: format!("{revision:x}").repeat(64),
+                });
+            } else if revision == 2 || revision == 5 || revision == 8 {
+                row.status = Status::CleanupPending;
+            }
+            rows.push(json::encode(&row, false).unwrap());
+        }
+        (binding, rows)
+    }
+    #[test]
+    fn older_completion_loss_is_detected_after_unknown_and_a_new_anchor() {
+        let (binding, rows) = fixture();
+        let mut census = RetainedCompletionCensus::new(&rows[7], &rows[0], &binding).unwrap();
+        for (index, raw) in rows.iter().enumerate() {
+            census
+                .observe(&revision_name(index as u64 + 1), raw)
+                .unwrap();
+        }
+        let all = census.finish().unwrap();
+        assert_eq!(
+            all.iter()
+                .map(|r| r.completion_revision)
+                .collect::<Vec<_>>(),
+            [3, 6]
+        );
+        retention::exact_completion_references(&all, &all).unwrap();
+        // Both references are older than current/previous. Losing revision 3
+        // must fail even though revision 6 and the current anchor remain.
+        assert!(retention::exact_completion_references(&all, &all[1..]).is_err());
+        let mut wrong = all.clone();
+        wrong[0].completion_sha256 = "f".repeat(64);
+        assert!(retention::exact_completion_references(&all, &wrong).is_err());
+        assert!(
+            retention::exact_completion_references(&all, &[all[0].clone(), all[0].clone()])
+                .is_err()
+        );
+        let mut hole = RetainedCompletionCensus::new(&rows[7], &rows[0], &binding).unwrap();
+        hole.observe(&revision_name(1), &rows[0]).unwrap();
+        assert!(hole.observe(&revision_name(3), &rows[2]).is_err());
+        let mut short = RetainedCompletionCensus::new(&rows[7], &rows[0], &binding).unwrap();
+        short.observe(&revision_name(1), &rows[0]).unwrap();
+        assert!(short.finish().is_err());
+        let mut tampered = RetainedCompletionCensus::new(&rows[7], &rows[0], &binding).unwrap();
+        let mut bad: Header = json::decode(&rows[0], false).unwrap();
+        bad.binding.original_install_operation_id = "another".into();
+        assert!(
+            tampered
+                .observe(&revision_name(1), &json::encode(&bad, false).unwrap())
+                .is_err()
+        );
+    }
+    #[test]
+    fn a_census_capacity_overflow_or_mismatched_head_never_becomes_an_empty_result() {
+        let (binding, rows) = fixture();
+        let mut huge: Header = json::decode(&rows[7], false).unwrap();
+        huge.revision = u64::from(MAX_CENSUS_TIME_HEADERS) + 1;
+        assert!(matches!(
+            RetainedCompletionCensus::new(&json::encode(&huge, false).unwrap(), &rows[0], &binding),
+            Err(Error::Unavailable)
+        ));
+        let mut wrong_head: Header = json::decode(&rows[7], false).unwrap();
+        wrong_head.floor = Some(1);
+        let mut census = RetainedCompletionCensus::new(
+            &json::encode(&wrong_head, false).unwrap(),
+            &rows[0],
+            &binding,
+        )
+        .unwrap();
+        for (index, raw) in rows.iter().enumerate() {
+            census
+                .observe(&revision_name(index as u64 + 1), raw)
+                .unwrap();
+        }
+        assert!(census.finish().is_err());
     }
 }

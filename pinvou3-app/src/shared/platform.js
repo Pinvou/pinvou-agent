@@ -6,6 +6,7 @@ const DEFAULT_DESKTOP_CAPABILITIES = Object.freeze({
   externalAuth: true,
   superPermission: true,
   appUpdate: true,
+  trustedTimeDiagnostics: false,
   dependencyInstall: true,
   localModelSetup: true,
   externalSystemOpen: true,
@@ -39,7 +40,18 @@ const fallbackPlatform = Object.freeze({
 export const platform = (typeof window !== 'undefined' && window.PinvouPlatform) || fallbackPlatform;
 export const isWeb = platform.kind === 'web' || platform.isWeb === true;
 
-export function can(capability) {
+// nativeSnapshot is the loaded get_platform_capabilities slice. Only the new
+// diagnostic gate uses it; existing capability defaults remain unchanged.
+/**
+ * @param {string} capability - Existing semantic capability key.
+ * @param {{loaded?: boolean, trustedTimeDiagnostics?: boolean}} [nativeSnapshot] - Loaded native UI capability DATA.
+ * @returns {boolean} UI support only, never native authorization.
+ */
+export function can(capability, nativeSnapshot) {
+  if (capability === 'trustedTimeDiagnostics') {
+    return !isWeb && nativeSnapshot?.loaded === true
+      && nativeSnapshot.trustedTimeDiagnostics === true;
+  }
   const capabilities = platform.capabilities || DEFAULT_DESKTOP_CAPABILITIES;
   // Browser capabilities are an allowlist: newly introduced desktop-only
   // features must stay hidden until the Web adapter opts in explicitly.

@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-26, T26 native time and original-budget kernel in progress**.
+Checkpoint: **2026-10-26, scoped T26 diagnostics and fresh zero-custody; production library checked, default application unverified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -14,7 +14,9 @@ measured hours or release readiness.
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
 T25 network privacy is parked at **85%** after its complete public read/export
 increment. The current main task is **T26 trusted time and recovery**, with T03 as
-its sole direct prerequisite. The previously verified
+the only prerequisite currently being worked. The task graph also retains the
+T33/T34/T35 platform-adapter dependencies; they are not completed by this Windows
+increment. The previously verified
 quality-purpose source, restricted Stage reader and three-language disclosure
 batch is service `5d76` / client `aaf5cec7`; its historical verification remains
 below. This increment adds the complete platform network-week public read
@@ -56,6 +58,7 @@ The delivered foundations are:
 | Actual Windows counters bound to the committed SCM incarnation | Client `de0fa18d2` | Host 103 PASS/one existing ignored, including four new math/raw-API tests; role builds and guards |
 | Protected exact original Root custody and consumption recheck | Client `49e266a3e` | Host 103 PASS/one existing ignored; metadata-owner 7 PASS including one new binding-refusal test; role builds and guards |
 | Startup acquisition and atomic protected anchor/deny/barrier | Client `434484d2` | Host 115 PASS/one existing ignored; role builds, non-static-CRT library and guards |
+| Native interval and original-budget kernel | Client `f640ea03` | Host 132 PASS/one existing ignored, role builds, non-static-CRT library and guards |
 
 These are separate historical runs with overlapping tests, not additive totals.
 The Root reader returns exact original canonical DATA, including expired/time-less
@@ -133,9 +136,11 @@ These are budget intentions and as-of assessments. They are not proof that a
 T28/T32/T36 stage started, stopped or succeeded. Those actual owners must
 authenticate their original operation/session and compose first actions with
 the budget port; no public IPC command, installer action or execution permission
-is added. The recovery barrier stays set. No backup/secret census is inferred.
+is added. This kernel itself never releases the recovery barrier or infers a
+backup/secret census. The separately verified fresh-install zero-custody path
+below has its own actual native census and completion transaction.
 
-Current increment verification: 132 host tests passed, with one existing test ignored. The 17 new tests are included in 132: five live-interval/Root-window DATA controls, seven budget-model tests, three native index/policy DATA controls and two observation/health-family regressions. Helper/launcher builds, the non-static-CRT library check, formatting, architecture and whitespace passed. The unchanged service, public
+Original-budget increment verification: 132 host tests passed, with one existing test ignored. The 17 new tests are included in 132: five live-interval/Root-window DATA controls, seven budget-model tests, three native index/policy DATA controls and two observation/health-family regressions. Helper/launcher builds, the non-static-CRT library check, formatting, architecture and whitespace passed. The unchanged service, public
 contract, Node and dedicated-verifier suites were not repeated. The library
 check remains distinct from a full desktop application build.
 
@@ -144,14 +149,149 @@ provisioning E2E remain unexecuted in the available environment. These gaps are
 non-blocking under the owner rule and are not passes. Production UTC accuracy,
 a complete recovery cleanup and whole-platform qualification are not established.
 
+### Trusted-time diagnostics and explicit refresh (2026-10-26)
+
+The current increment adds a complete local diagnostic and explicit refresh
+workflow. A separate native semantic capability exposes the Settings entry even
+when the legacy application updater is disabled. The App command adapter uses
+the real registered App-role client, authenticated pipe/session sequence and
+protected native store. Web and unsupported builds remain disabled. Reading
+status does not send a time HTTP request. Explicit refresh reserves one slot in
+the existing owned worker; startup and concurrent clicks cannot create a retry
+queue. Accepted is an activity acknowledgement, not Known time, cleanup success
+or installation permission. The old application-update and trusted-deadline
+capabilities remain disabled.
+
+The protected read distinguishes ordinary source/read failure, a changed
+incarnation, missing setup/policy and positively confirmed invalid records.
+Transient Win32 query failures and legal size races cannot label component
+damage. Each status read reopens actual protected sources; cached worker success
+cannot manufacture a time result. Chinese, English and Japanese explain all
+eight closed states (including the native zero-custody completion below),
+explicit network access, accepted-only results and stable
+Busy/unavailable errors. No raw private error details enter the view.
+
+Independent review found and closed pre-ACK shared-read reuse, an older promise
+clearing a newer request, synchronous effect state reset, and adapter A-B-A
+observation reuse. The repaired bridge starts an actual post-ACK observation;
+the component owns a separate source lifetime and rejects late unmounted results.
+The exact changes and subsequent test-only DOM-scheduling corrections passed
+non-author review.
+
+Historical combined diagnostics and fresh-zero verification: host **149 PASS, one existing
+ignored**. This includes the earlier 140 tests and nine new retention/history
+tests, rather than adding overlapping run totals. Helper/launcher builds, the
+compatible non-static-CRT host library and formatting passed. The affected Node
+suite passed 12 tests: ten diagnostic tests, the bridge protocol test and language
+coverage. Six real React/browser groups passed, covering all eight states in
+three languages, explicit refresh/invalid ACK, adapter A-B-A/unmount races and
+unsupported zero-call behavior. These use synthetic semantic adapters; they do
+not certify the installed SCM service or actual control-plane time. Owned browser,
+Vite server and temporary profile were closed and cleaned.
+
+The scoped source/test lint, UI production build, architecture and tracked/new-file
+whitespace checks passed. The fixture JSX has no matching ESLint configuration;
+its actual Vite/React compilation and browser execution passed instead. Earlier
+full UI lint found a new conditional-style error which was repaired; existing
+unrelated chat JSDoc warnings remain outside this batch. No full-repository UI
+lint pass is claimed.
+
+The owner approved an application-compilation-only runtime reserve of **4 GiB**,
+with the **7 GiB** start threshold unchanged; other guarded checks retain their
+existing reserve. Earlier 6 GiB interruptions are historical failures, not passes.
+A subsequent production-host application library check passed in 316.75 seconds;
+the corresponding default check stopped at the guard after 181.8 seconds.
+
+This review also checked a fixed Git source snapshot with exact submodule commits.
+The production-host application library check passed naturally in 14.91 seconds.
+Its preceding exit-zero attempt needed forced cleanup of a residual compiler
+auxiliary and is not accepted evidence. The default application library check
+again stopped at the approved 4 GiB guard after 221.02 seconds. A separate stable
+Cargo profile experiment disabling codewhale-tui optimization/debug data also
+stopped at that guard after 123.53 seconds. Both default checks remain
+**unverified**, with no reported compiler error and all owned processes joined.
+Static review of the default unsupported adapter supports the scoped code
+judgment; it does not establish default application compilation or merge/release
+qualification. No dependency or lockfile changed. The unchanged service and
+public time-contract suites were not repeated.
+
+The owner explicitly accepted this default-configuration validation gap for this
+increment's commit and push after final independent review; applicable CI must
+still verify that configuration. This acceptance does not label the check passed.
+
+The V3 review fixed five independent first reports before sharing findings, then
+used a non-author adjudicator to check findings, omissions and full-chain seams.
+Its confirmed native-read issue is repaired: failed or bounded registry queries
+remain unavailable, while positively observed invalid state remains corrupt.
+The original finder and the state/reliability role rechecked the repair. Added
+controls call the real native adapters, including invalid-handle failures and an
+owned HKCU census with checked cleanup; no installed service is involved.
+
+The final repaired fixed snapshot passed **152 host tests, zero failures, one
+existing ignored test**, helper/launcher builds and the non-static-CRT host library
+check. Exit-zero attempts requiring forced auxiliary-process cleanup are excluded;
+only subsequent natural completions qualify. An earlier fixed-export run had nine
+signing-fixture startup failures because its locked Node dependencies were absent;
+after locked installation, the full suite passed. This is not a business-assertion
+waiver. The current affected Node suite passed **12 tests**.
+The final repaired production-host application library check also passed naturally
+in **11.13 seconds**; its preceding forced-auxiliary-cleanup attempt is excluded.
+Unchanged UI build, lint and browser results above are inherited historical
+evidence, not new runs.
+No additional E2E ran under the latest instruction. Actual changed-hunk and
+complete-chain evidence is recorded separately from defects and remaining review.
+These conclusions cover this diagnostic/fresh-zero increment, not the cumulative
+branch, all of T26, CI, merge or release qualification.
+
+### Fresh-original zero-retention custody and recovery (2026-10-26)
+
+A genuinely new original-install transaction now also establishes fixed protected
+retention custody. Its three producer families are explicitly NeverEnabled.
+There is no producer activation, nonzero-object insertion or generic empty-census
+callback. Existing/legacy/partial custody is never initialized or healed on read.
+
+After persisting a fresh signed anchor with the barrier set, the actual native
+publisher checks the fixed secret/copy, backup, timed-backup-staging and
+decryption-key namespaces. It authenticates the real SCM incarnation, protected
+policy, original anchor/history and live counter samples under the existing
+guard and transaction. Only a genuine never-enabled zero-obligation inventory
+can produce an atomic completion record and time-state successor. Ordinary
+downloaded packages and download cache/staging are excluded; no download deadline
+is introduced.
+
+The completion binds inventory, policy, incarnation, both counters and the exact
+preceding anchor revision/hash. Actual retained Time references and completion
+records must match in both directions, including older completions after Unknown
+or a new anchor. Older history is checked for canonical headers, hash-chain and
+completion-reference integrity; this does not certify every old detached signed
+payload. Current and immediately previous states load and validate their full
+signed evidence. An old completion grants no current UTC or cleanup authority.
+The bounded adapter refuses overflow without truncating or
+deleting evidence. Independent review found and repaired the missing historical
+reverse check; cross-version missing-record/hash/duplicate/chain controls passed.
+Successful counter observations retain the global watermark even if a later
+sample fails or the first scan exceeds its original-response-based ten-minute
+ceiling. This does not qualify nonzero backup/secret cleanup.
+
+A verified zero completion can clear this inventory's barrier and expose
+cleanup_complete diagnostic DATA. Unknown or a new anchor restores the barrier.
+The result is neither durable Known UTC nor preparation/installation permission.
+Ambiguous post-commit reads remain outcome-unknown until a genuine reopen.
+The host build first exposed a missing local Seed binding, and a new DATA test
+selected the wrong member of its existing Root tuple; both were repaired without
+weakening assertions. The independent review also closed the post-commit error
+classification repair. These actual compile/test failures remain recorded.
+
 Still required for T26 are integration with actual stage/record owners, approved
-target budgets, real backup/secret obligation census and cleanup owners,
-successful cleanup before releasing the barrier, three-language recovery reasons
-and entry points, and remaining platform adapters.
-No empty-census callback, default budget or cleanup-complete claim replaces them.
+target budgets, actual nonzero backup/secret producers and cleanup, backup-specific
+three-language retention/recovery notifications, remaining platform adapters and
+the unverified default application check. Real installed-SCM/TxR crash/reboot/
+protected-policy E2E remains unexecuted; the owner's latest rule stops further E2E
+execution, without turning it into a pass. The zero-only workflow does not replace
+these remaining owners.
 T26 stays **20%**, the engineering estimate **1810/47 = 38.5%**, and strict
-completion **8/47 (17.0%)**. T03 remains its sole direct prerequisite; other main
-tasks stay parked. No deployment or whole-T26 completion is claimed.
+completion **8/47 (17.0%)**. T03 remains the only prerequisite currently being worked; the original
+T33/T34/T35 platform dependencies remain pending, and other main tasks stay parked. No deployment or whole-T26 completion is claimed.
 
 T09's approved controlled macOS measurement component remains
 delivered; genuine downstream T46 production/consumption is still its parked gap.
@@ -189,9 +329,16 @@ implement, independently review, test and integrate this same task. Reuse review
 foundations and test tools; review changed behavior and its impact after repairs.
 Do not start a fresh runner or historical evidence-review chain for a small patch.
 
-Environment-only E2E failures or unavailable environments do not block task
-completion, commits or pushes. Record the cause, unexecuted scenarios and follow-up;
-never label them passed. Functional failures must be repaired and verified.
+The owner's latest instruction (2026-10-26) stops all further E2E execution.
+Do not launch browser journeys, installed-service or VM E2E for later development.
+Retain earlier E2E results as historical evidence only, stating their version and
+limits; unexecuted scenarios are not passes. Continue applicable module tests,
+compilation and static checks. Functional failures must be repaired and verified.
+Apply the supplied V3 review method: five independent first reports, fixed before
+sharing findings, followed by a non-author independent adjudicator. Maintain
+actual hunk and complete-chain coverage plus separate defect and remaining-review
+ledgers. Scope code, functional evidence, merge and release conclusions separately;
+this instruction does not bypass applicable CI, external review or branch rules.
 Clean task-owned environments promptly after successful tests only when they are
 no longer needed, all owned processes/handles have closed, and exact paths have
 been verified. Preserve essential results and shared or unrelated resources.
@@ -1383,7 +1530,7 @@ completion blocker; outstanding business implementation is.
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | 85% | In progress | Delivered full-platform network-week read/export requires current all-product/component/channel/target operations.read and returns the same authenticated canonical body. Scoped51 plus native1 and the final required Go/build/contract checks passed as recorded above. Source-v2, protected internal freeze/CLI/host, independent Stage/Release capture, restricted Stage reader and callable three-language disclosure remain delivered with their historical verification above. The Release-purpose restricted owner still needs genuine T18 selector/issuance source-class production; self-reported facts/default primary/fake authority cannot replace it. T21 atomic projection/cursor consumption and T24 report ownership remain separate tasks, not T25 prerequisites. |
-| T26 | 20% | In progress | Nonce-bound issuer/verifier, fixed Root transport, Windows incarnation/Root custody and protected anchor/deny/barrier are delivered. The current native interval/original-budget kernel preserves scope/operation/kind, original cutoffs, spending and global time watermark; its timing intentions do not prove actual stage execution. Verification is recorded above. Actual stage composition, approved target budgets, backup/secret census and cleanup, three-language recovery and other platform adapters remain incomplete. No durable Known clock or installation permission is claimed. |
+| T26 | 20% | In progress | Nonce-bound issuer/verifier, fixed Root transport, Windows incarnation/Root custody and protected anchor/deny/barrier are delivered. The current native interval/original-budget kernel preserves scope/operation/kind, original cutoffs, spending and global time watermark; its timing intentions do not prove actual stage execution. Local diagnostics, explicit refresh and actual fresh-install never-enabled zero-custody completion have current host/Node module verification and inherited synthetic React/browser evidence; the production-host application library check passed, while default application compilation remains unverified after resource-guard interruptions, explicitly accepted for this commit/push with CI follow-up. Actual stage composition, approved target budgets, nonzero backup/secret producers and cleanup, backup-specific recovery and other platform adapters remain incomplete. No durable Known clock or installation permission is claimed. |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
 | T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; the service pins the committed contract and passes cross-language/real-Transit verification; protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |

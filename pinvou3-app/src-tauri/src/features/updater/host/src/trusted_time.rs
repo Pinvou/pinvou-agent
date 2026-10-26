@@ -277,6 +277,7 @@ impl Evidence {
 pub(crate) enum Status {
     Unknown,
     CleanupPending,
+    CleanupVerifiedZero,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -288,6 +289,8 @@ pub(crate) struct State {
     pub(crate) incarnation: Option<Incarnation>,
     pub(crate) status: Status,
     pub(crate) cleanup_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) zero_retention: Option<crate::retention_custody::ZeroRetentionReference>,
     pub(crate) floor: Option<u64>,
     /// Exact canonical successors, starting at immutable original Root + 1.
     pub(crate) roots: Vec<String>,
@@ -305,6 +308,7 @@ impl State {
             incarnation: None,
             status: Status::Unknown,
             cleanup_pending: true,
+            zero_retention: None,
             floor: None,
             roots: Vec::new(),
             denied_key_ids: Vec::new(),
@@ -320,8 +324,13 @@ impl State {
         actual_policy: &[u8],
         incarnation: &Incarnation,
     ) -> Result<&Evidence> {
-        if self.status != Status::CleanupPending || !self.cleanup_pending {
-            return Err(Error::SourceUnavailable);
+        match (
+            self.status,
+            self.cleanup_pending,
+            self.zero_retention.is_some(),
+        ) {
+            (Status::CleanupPending, true, false) | (Status::CleanupVerifiedZero, false, true) => {}
+            _ => return Err(Error::SourceUnavailable),
         }
         let evidence = self.evidence.as_ref().ok_or(Error::SourceUnavailable)?;
         if self.incarnation.as_ref() != Some(incarnation) || evidence.incarnation != *incarnation {
@@ -355,7 +364,6 @@ impl State {
         self.binding.validate()?;
         check_denied(&self.denied_key_ids)?;
         if self.protocol_version != 1
-            || !self.cleanup_pending
             || self.revision == 0
             || self.revision > json::SAFE_MAX
             || self.roots.len() > 4096
@@ -367,6 +375,16 @@ impl State {
                 .is_some_and(|s| !json::digest(s))
         {
             return Err(Error::StateCorrupt);
+        }
+        match (self.status, self.cleanup_pending, &self.zero_retention) {
+            (Status::Unknown | Status::CleanupPending, true, None) => {}
+            (Status::CleanupVerifiedZero, false, Some(reference)) => {
+                reference.validate()?;
+                if reference.completion_revision != self.revision {
+                    return Err(Error::StateCorrupt);
+                }
+            }
+            _ => return Err(Error::StateCorrupt),
         }
         if let Some(i) = &self.incarnation {
             i.validate()?;
@@ -407,6 +425,8 @@ impl State {
         next.previous_sha256 = Some(json::sha256(previous));
         next.incarnation = Some(incarnation);
         next.status = Status::Unknown;
+        next.cleanup_pending = true;
+        next.zero_retention = None;
         Ok(next)
     }
     pub(crate) fn transition(&self, next: &Self, previous: &[u8], original: &[u8]) -> Result<()> {
@@ -431,6 +451,19 @@ impl State {
                 {
                     return Err(Error::StateCorrupt);
                 }
+            }
+            Status::CleanupVerifiedZero => {
+                if self.status != Status::CleanupPending
+                    || next.floor != self.floor
+                    || next.roots != self.roots
+                    || next.evidence != self.evidence
+                    || next.denied_key_ids != self.denied_key_ids
+                    || next.incarnation != self.incarnation
+                {
+                    return Err(Error::StateCorrupt);
+                }
+                // This proves a transition shape only. The native fixed publisher
+                // authenticates the inventory/completion in the SAME transaction.
             }
             Status::CleanupPending => {
                 let e = next.evidence.as_ref().ok_or(Error::StateCorrupt)?;
@@ -879,5 +912,50 @@ mod tests {
         );
         c.interrupt_before = "09999".into();
         assert!(c.data().is_err());
+    }
+    #[test]
+    fn zero_completion_changes_no_anchor_and_unknown_cannot_retain_it() {
+        // Administrative transition DATA only. The native publisher alone must
+        // authenticate the referenced custody/completion and actual read set.
+        let (pending, _, original) = anchored();
+        let before = json::encode(&pending, false).unwrap();
+        assert!(
+            !serde_json::from_slice::<serde_json::Value>(&before)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("zeroRetention")
+        );
+        let mut complete = pending.clone();
+        complete.revision += 1;
+        complete.previous_sha256 = Some(json::sha256(&before));
+        complete.status = Status::CleanupVerifiedZero;
+        complete.cleanup_pending = false;
+        complete.zero_retention = Some(crate::retention_custody::ZeroRetentionReference {
+            completion_revision: complete.revision,
+            completion_sha256: "a".repeat(64),
+        });
+        pending.transition(&complete, &before, &original).unwrap();
+        for field in ["floor", "cleanupPending", "zeroRetention"] {
+            let mut value = serde_json::to_value(&complete).unwrap();
+            value[field] = match field {
+                "floor" => serde_json::json!(0),
+                "cleanupPending" => serde_json::json!(true),
+                _ => serde_json::Value::Null,
+            };
+            assert!(State::parse(&json::encode(&value, false).unwrap(), &original).is_err());
+        }
+        let raw = json::encode(&complete, false).unwrap();
+        let unknown = complete.next_unknown(incarnation(2), &raw).unwrap();
+        complete.transition(&unknown, &raw, &original).unwrap();
+        assert!(unknown.cleanup_pending && unknown.zero_retention.is_none());
+        assert!(
+            unknown.floor == complete.floor
+                && unknown.evidence == complete.evidence
+                && unknown.roots == complete.roots
+        );
+        let mut forged = complete.clone();
+        forged.denied_key_ids.push("f".repeat(64));
+        assert!(pending.transition(&forged, &before, &original).is_err());
     }
 }

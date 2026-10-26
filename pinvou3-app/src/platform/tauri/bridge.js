@@ -213,6 +213,7 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // Linux. Fail-closed so the settings toggle stays disabled until
       // load_platform_capabilities corrects the slice.
       globalShortcutsAvailable: false,
+      trustedTimeDiagnostics: false,
     },
     settings: null,
     selectedPet: "lingling",
@@ -1976,6 +1977,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const syncMountedCollection = personasFeature.syncMountedCollection;
   const updaterFeature = installBridgeFeature("updater", { state, notify, invoke });
   const loadAppVersion = updaterFeature.loadAppVersion;
+  const inspectTrustedTime = updaterFeature.inspectTrustedTime;
+  const requestTrustedTimeRefresh = updaterFeature.requestTrustedTimeRefresh;
   const checkForUpdateSilently = updaterFeature.checkForUpdateSilently;
   const checkForUpdate = updaterFeature.checkForUpdate;
   const downloadAndInstallUpdate = updaterFeature.downloadAndInstallUpdate;
@@ -2431,6 +2434,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       loadOrganizeHistory,
     },
     updater: {
+      inspectTrustedTime,
+      requestTrustedTimeRefresh,
       checkForUpdate,
       downloadAndInstallUpdate,
       cancelUpdate,

@@ -1,6 +1,7 @@
 //! Protected native64 registry transaction owner; no ordinary-file fallback.
 //! Files/SCM are outside this transaction and are recovered from original intent.
 pub(super) mod budgets;
+pub(super) mod retention;
 pub(super) mod time;
 
 use super::{
@@ -18,8 +19,8 @@ use crate::{
 use std::{marker::PhantomData, ptr, rc::Rc};
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND, WAIT_ABANDONED, WAIT_OBJECT_0,
-        WAIT_TIMEOUT,
+        ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, WAIT_ABANDONED,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Storage::FileSystem::{CommitTransaction, CreateTransaction, SYNCHRONIZE},
     System::{
@@ -38,6 +39,54 @@ impl Drop for Key {
             RegCloseKey(self.0);
         }
     }
+}
+/// Enumerate actual registry names without reading payloads. The finite fixed
+/// name/record capacities are checked before allocating names or body buffers.
+#[allow(unsafe_code)]
+fn names(key: &Key, values: bool, maximum: u32) -> Result<Vec<String>> {
+    let mut result = Vec::new();
+    for index in 0..=maximum {
+        let mut name = [0u16; 129];
+        let mut length = name.len() as u32;
+        let status = if values {
+            unsafe {
+                RegEnumValueW(
+                    key.0,
+                    index,
+                    name.as_mut_ptr(),
+                    &mut length,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            }
+        } else {
+            unsafe {
+                RegEnumKeyExW(
+                    key.0,
+                    index,
+                    name.as_mut_ptr(),
+                    &mut length,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            }
+        };
+        if status == ERROR_NO_MORE_ITEMS {
+            return Ok(result);
+        }
+        if status != 0 {
+            return Err(Error::Unavailable);
+        }
+        if index == maximum || length == 0 || length as usize >= name.len() {
+            return Err(Error::Unavailable);
+        }
+        result.push(String::from_utf16(&name[..length as usize]).map_err(|_| Error::StateCorrupt)?);
+    }
+    Err(Error::Unavailable)
 }
 /// Every component is opened with OPEN_LINK before inspecting the actual
 /// object. Private parent READ_CONTROL permits ordinary client SD inspection,
@@ -203,6 +252,25 @@ fn create(
     }
     Ok(key)
 }
+/// A required value proven absent is damaged state. Other unsuccessful
+/// native reads, including allocation/I/O failure or a changing buffer size,
+/// prove no stored bytes and cannot confirm retention-component corruption.
+fn read_query_status(status: u32) -> Result<()> {
+    match status {
+        0 => Ok(()),
+        ERROR_FILE_NOT_FOUND => Err(Error::StateCorrupt),
+        _ => Err(Error::Unavailable),
+    }
+}
+/// A successful short second read can be a legal value replacement between
+/// the sizing query and payload query. The partial/mixed read is unavailable,
+/// not proof that either complete stored value is corrupted.
+fn read_payload_size(returned: usize, allocated: usize) -> Result<()> {
+    if returned != allocated {
+        return Err(Error::Unavailable);
+    }
+    Ok(())
+}
 #[allow(unsafe_code)]
 fn read(key: &Key, name: &str) -> Result<Vec<u8>> {
     let name = wide(name);
@@ -218,7 +286,8 @@ fn read(key: &Key, name: &str) -> Result<Vec<u8>> {
             &mut size,
         )
     };
-    if status != 0 || kind != REG_BINARY || size == 0 || size as usize > json::RECORD_MAX {
+    read_query_status(status)?;
+    if kind != REG_BINARY || size == 0 || size as usize > json::RECORD_MAX {
         return Err(Error::StateCorrupt);
     }
     let mut bytes = vec![0u8; size as usize];
@@ -232,13 +301,11 @@ fn read(key: &Key, name: &str) -> Result<Vec<u8>> {
             &mut size,
         )
     };
-    if status == ERROR_MORE_DATA
-        || status != 0
-        || kind != REG_BINARY
-        || size as usize != bytes.len()
-    {
+    read_query_status(status)?;
+    if kind != REG_BINARY {
         return Err(Error::StateCorrupt);
     }
+    read_payload_size(size as usize, bytes.len())?;
     Ok(bytes)
 }
 #[allow(unsafe_code)]
@@ -282,10 +349,15 @@ fn require_absent_value(key: &Key, name: &str) -> Result<()> {
             &mut size,
         )
     };
-    if status != ERROR_FILE_NOT_FOUND {
-        return Err(Error::StateCorrupt);
+    absence_query_status(status)
+}
+
+fn absence_query_status(status: u32) -> Result<()> {
+    match status {
+        ERROR_FILE_NOT_FOUND => Ok(()),
+        0 => Err(Error::StateCorrupt),
+        _ => Err(Error::Unavailable),
     }
-    Ok(())
 }
 
 fn owner_bootstrap_in(key: &Key, seed: &Seed, record: &HostRegistration) -> Result<()> {
@@ -369,9 +441,7 @@ fn reserved_inventory_values(key: &Key, used: usize) -> Result<()> {
             }
             return Err(Error::StateCorrupt);
         }
-        if status != 0 || index == 4096 || length as usize >= name.len() {
-            return Err(Error::StateCorrupt);
-        }
+        inventory_entry_available(status, index, length as usize, name.len())?;
         let name = String::from_utf16(&name[..length as usize]).map_err(|_| Error::StateCorrupt)?;
         if let Some(found) = inventory_slot(&name, used)? {
             if seen[found] {
@@ -380,7 +450,21 @@ fn reserved_inventory_values(key: &Key, used: usize) -> Result<()> {
             seen[found] = true;
         }
     }
-    Err(Error::StateCorrupt)
+    Err(Error::Unavailable)
+}
+
+/// A failed or bounded enumeration cannot establish that persisted bytes are
+/// invalid. Only successfully observed names and a complete census can do so.
+fn inventory_entry_available(
+    status: u32,
+    index: u32,
+    length: usize,
+    capacity: usize,
+) -> Result<()> {
+    if status != 0 || index == 4096 || length >= capacity {
+        return Err(Error::Unavailable);
+    }
+    Ok(())
 }
 
 /// Actual bounded registry payloads, not a service/source capability. The sealed
@@ -703,6 +787,7 @@ impl Store {
             owner_bootstrap_in(&private, seed, next)?;
             time::initialize_in(&private, &transaction, next)?;
             budgets::initialize_in(&private, &transaction, next)?;
+            retention::initialize_in(&private, &transaction, next)?;
         }
         if let Some(manifest) = initial_manifest {
             if expected.is_some() || json::sha256(&manifest.root) != next.genesis_manifest_sha256 {
@@ -752,6 +837,7 @@ impl Store {
                 // Fresh time genesis is part of the original definitive commit,
                 // not a later best-effort initializer or an adopted empty scope.
                 budgets::verify_fresh_in(&key, &actual)?;
+                retention::verify_fresh_in(&key, &actual)?;
                 let time = self.time_load(seed, &actual)?;
                 if time.state.revision != 1
                     || time.state.floor.is_some()
@@ -835,5 +921,146 @@ mod inventory_namespace_tests {
             assert!(inventory_slot(alias, 3).is_err());
         }
         assert!(inventory_slot("ManifestInventory-0", 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod read_availability_tests {
+    use super::*;
+    #[test]
+    fn failed_os_reads_do_not_claim_confirmed_corruption() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_MORE_DATA, ERROR_NOT_ENOUGH_MEMORY,
+        };
+        assert_eq!(read_query_status(0), Ok(()));
+        assert_eq!(
+            read_query_status(ERROR_FILE_NOT_FOUND),
+            Err(Error::StateCorrupt)
+        );
+        assert_eq!(read_payload_size(10, 10), Ok(()));
+        assert_eq!(read_payload_size(9, 10), Err(Error::Unavailable));
+        assert_eq!(read_payload_size(11, 10), Err(Error::Unavailable));
+        for status in [
+            ERROR_NOT_ENOUGH_MEMORY,
+            ERROR_MORE_DATA,
+            ERROR_ACCESS_DENIED,
+        ] {
+            assert_eq!(read_query_status(status), Err(Error::Unavailable));
+        }
+    }
+
+    #[test]
+    fn failed_absence_queries_and_incomplete_enumeration_remain_unavailable() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_MORE_DATA, ERROR_NOT_ENOUGH_MEMORY,
+        };
+        assert_eq!(absence_query_status(ERROR_FILE_NOT_FOUND), Ok(()));
+        assert_eq!(absence_query_status(0), Err(Error::StateCorrupt));
+        assert_eq!(inventory_entry_available(0, 4095, 1023, 1024), Ok(()));
+        assert_eq!(
+            inventory_entry_available(0, 4096, 10, 1024),
+            Err(Error::Unavailable)
+        );
+        assert_eq!(
+            inventory_entry_available(0, 0, 1024, 1024),
+            Err(Error::Unavailable)
+        );
+        for status in [
+            ERROR_ACCESS_DENIED,
+            ERROR_MORE_DATA,
+            ERROR_NOT_ENOUGH_MEMORY,
+        ] {
+            assert_eq!(absence_query_status(status), Err(Error::Unavailable));
+            assert_eq!(
+                inventory_entry_available(status, 0, 10, 1024),
+                Err(Error::Unavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn actual_native_query_failures_are_unavailable() {
+        // A null registry handle cannot produce a complete observation. These
+        // call the real adapters without creating or modifying registry state.
+        let key = Key(ptr::null_mut());
+        assert_eq!(
+            require_absent_value(&key, METADATA_BOOTSTRAP),
+            Err(Error::Unavailable)
+        );
+        assert_eq!(reserved_inventory_values(&key, 1), Err(Error::Unavailable));
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn actual_complete_inventory_and_positive_corruption_remain_distinct() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        struct OwnedTestKey {
+            key: Option<Key>,
+            path: Vec<u16>,
+        }
+        impl Drop for OwnedTestKey {
+            fn drop(&mut self) {
+                drop(self.key.take());
+                if !self.path.is_empty() {
+                    unsafe {
+                        RegDeleteTreeW(HKEY_CURRENT_USER, self.path.as_ptr());
+                    }
+                }
+            }
+        }
+        impl OwnedTestKey {
+            fn finish(mut self) {
+                drop(self.key.take());
+                assert_eq!(
+                    unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, self.path.as_ptr()) },
+                    0
+                );
+                self.path.clear();
+            }
+        }
+        let path = wide(&format!(
+            "Software\\PinvouInventoryTest-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut handle = ptr::null_mut();
+        let mut disposition = 0;
+        assert_eq!(
+            unsafe {
+                RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    path.as_ptr(),
+                    0,
+                    ptr::null(),
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_READ | KEY_WRITE,
+                    ptr::null(),
+                    &mut handle,
+                    &mut disposition,
+                )
+            },
+            0
+        );
+        let key = Key(handle);
+        // Never delete or modify a key that this test did not create.
+        assert_eq!(disposition, REG_CREATED_NEW_KEY);
+        let owned = OwnedTestKey {
+            key: Some(key),
+            path,
+        };
+        let key = owned.key.as_ref().unwrap();
+        write(key, "ManifestInventory-0", &[1]).unwrap();
+        assert_eq!(reserved_inventory_values(key, 1), Ok(()));
+        assert_eq!(reserved_inventory_values(key, 2), Err(Error::StateCorrupt));
+        assert_eq!(require_absent_value(key, METADATA_BOOTSTRAP), Ok(()));
+        write(key, METADATA_BOOTSTRAP, &[1]).unwrap();
+        assert_eq!(
+            require_absent_value(key, METADATA_BOOTSTRAP),
+            Err(Error::StateCorrupt)
+        );
+        write(key, "ManifestInventory-00", &[1]).unwrap();
+        assert_eq!(reserved_inventory_values(key, 1), Err(Error::StateCorrupt));
+        owned.finish();
     }
 }

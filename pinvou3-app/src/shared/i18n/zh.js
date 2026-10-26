@@ -457,6 +457,31 @@ export const dictZh = {
         uiWorkspacePicker: { title:'选择工作区', searchPlaceholder:'搜索项目或路径', empty:'暂无项目，可浏览文件夹或开始临时会话', noMatch:'没有匹配的项目', multiRootSummary:(n, primary)=>`${n} 个文件夹 · 主：${primary}`, primaryRootBadge:'主', noticeRestricted:n=>`将可访问这 ${n} 个文件夹`, noticeVisibility:n=>`模型将知道这 ${n} 个文件夹与本对话相关`, noticeRestrictedRecorded:n=>`将记录这 ${n} 个文件夹（当前仅主文件夹生效）`, noticeVisibilityRecorded:n=>`这 ${n} 个文件夹将随会话记录（当前仅主文件夹对智能体生效）`, temporary:'临时会话', temporaryDesc:'不绑定目录', browse:'浏览其他文件夹…', browseDesc:'以所选文件夹开始新对话', excludedTitle:'此文件夹已设为不自动建项目', excludedBody:name=>`「${name}」在排除列表中，不再自动物化为项目；更宽的项目仍可能按目录把其下的会话自动归组。仍可以它为目录开始纯文件夹对话。`, excludedProceed:'仍以此文件夹开始', unknownDirectory:'未知目录', assignmentDegradedNotice:'文件夹已记录，但显式的项目归属未能保存——本对话暂按目录自动归组' },
         uiCodexWorkspace: { changes:{added:'新增',modified:'修改',deleted:'删除',renamed:'重命名',copied:'复制',conflict:'冲突',untracked:'未跟踪',unknown:'文件'}, origins:{session:'本会话',preexisting:'会话前已有',preexisting_modified:'会话前已有 · 本会话继续修改',unknown:'来源未记录'}, addedPath:path=>`已添加 ${path}`, addPath:path=>`添加 ${path} 到对话`, added:'已添加到对话', add:'添加到对话',  copyPath:'复制相对路径', reveal:'在文件管理器中显示', open:'用系统应用打开', reading:'正在读取…', noDiff:'没有可显示的文本差异', unsupported:'该文件不支持内置预览。', openHint:'可以用系统应用打开。', truncated:'内容过大，当前只显示前一部分。', title:'工作区', temporary:'临时工作区', refresh:'刷新工作区', close:'关闭工作区', files:'文件', changed:'更改', search:'搜索文件', noFiles:'没有匹配文件', noBaseline:'该旧会话没有创建时基线，因此无法判断更改是否由本会话产生。', branch:'分支', staged:'已暂存', noChanges:'工作区没有更改', copyContent:'复制内容', copied:'已复制', closeViewer:'关闭预览', loadFailed:'文件读取失败', resizeWidth:'调整弹窗宽度', resizeHeight:'调整弹窗高度', resizeCorner:'调整弹窗大小，双击恢复默认', fontDecrease:'减小字号', fontIncrease:'增大字号', openInNewWindow:'使用代码阅读器打开', diffSuffix:'(差异)', readerTitle:'代码阅读器', readerEmpty:'从工作区文件弹窗选择「使用代码阅读器打开」，文件会在此以标签页累积。', closeTab:'关闭标签页', noSessionChanges:'创建会话后，这里会列出本会话对项目的更改。' },
 
+        trustedTime: {
+          "title": "可信时间诊断",
+          "reading": "正在读取时间状态…",
+          "notRead": "尚未读取时间状态。",
+          "readStatus": "读取状态",
+          "refresh": "重新授时",
+          "refreshing": "授时正在进行。",
+          "accepted": "授时请求已接受；这不表示时间已可信或清理核对已完成。",
+          "networkNotice": "重新授时会连接配置的升级控制服务。清理核对未完成时，依赖时间的操作仍暂停。",
+          "states": {
+            "unsupported": "此构建不支持可信时间诊断。",
+            "setup_required": "可信升级助手尚未就绪，依赖时间的操作仍暂停。",
+            "missing_policy": "可信时间策略尚未配置，依赖时间的操作仍暂停。",
+            "unknown": "当前可信时间不可用，依赖时间的操作仍暂停。",
+            "source_unavailable": "授时服务暂不可用，依赖时间的操作仍暂停。",
+            "cleanup_pending": "已保存时间锚点，清理核对尚未完成，依赖时间的操作仍暂停。",
+            "cleanup_complete": "当前清理核对已完成；升级仍需满足其他条件。",
+            "integrity_fault": "无法验证受保护的时间状态，依赖时间的操作仍暂停。"
+          },
+          "errors": {
+            "busy": "已有授时请求正在处理，请读取状态查看进展。",
+            "invalidResponse": "助手返回了无法识别的时间状态，请重新读取状态。",
+            "unavailable": "无法读取时间状态或提交授时请求，请重新读取状态。"
+          }
+        },
         checkUpdate: '检查更新', checking: '检查中…', upToDate: '已是最新版本', updateCheckFailed: '检查失败', updateInstallFailed: '更新失败',
         newVersionFound: '发现新版本', updateNotes: '更新说明',
         downloadInstall: '下载并安装', downloading: '下载中…', installing: '安装中…',

@@ -11,8 +11,26 @@ mod platform;
 mod profile;
 mod registration;
 mod restart;
+mod retention_custody;
 mod time_budget;
+mod time_status;
 mod trusted_time;
+pub use time_status::{
+    TrustedTimeRefreshReply, TrustedTimeRefreshState, TrustedTimeState, TrustedTimeStatus,
+};
+/// Entry availability only: not installation, a usable clock or upgrade rights.
+/// No SCM, ordinary environment policy or network source is inspected here.
+pub fn trusted_time_diagnostics_supported() -> bool {
+    platform::native_supported().is_ok() && profile::Seed::embedded().is_ok()
+}
+/// Read the actual authenticated host diagnostic; this never performs HTTP.
+pub fn inspect_trusted_time() -> std::result::Result<TrustedTimeStatus, Error> {
+    platform::inspect_trusted_time()
+}
+/// One explicit local request. Accepted means activity only; re-read status.
+pub fn request_trusted_time_refresh() -> std::result::Result<TrustedTimeRefreshReply, Error> {
+    platform::request_trusted_time_refresh()
+}
 
 pub use error::Error;
 pub use restart::{CommittedRestart, PreparedRestart};

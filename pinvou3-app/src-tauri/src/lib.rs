@@ -1927,6 +1927,8 @@ pub fn run() {
             commands::personas::save_session_persona_events,
             commands::personas::get_session_persona_events,
             commands::updater::get_app_version,
+            commands::updater::get_upgrade_trusted_time_status,
+            commands::updater::request_upgrade_trusted_time_refresh,
             commands::updater::check_for_update,
             commands::updater::download_update,
             commands::updater::install_update,

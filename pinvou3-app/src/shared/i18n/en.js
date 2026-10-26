@@ -455,6 +455,31 @@ export const dictEn = {
         uiWorkspacePicker: { title:'Choose workspace', searchPlaceholder:'Search projects or paths', empty:'No projects yet — browse a folder or start a temporary chat', noMatch:'No matching projects', multiRootSummary:(n, primary)=>`${n} folders · primary: ${primary}`, primaryRootBadge:'Primary', noticeRestricted:n=>`This conversation will be able to access ${n} folder${n === 1 ? '' : 's'}`, noticeVisibility:n=>n === 1 ? 'The model will know this folder belongs to this conversation' : `The model will know these ${n} folders belong to this conversation`, noticeRestrictedRecorded:n=>`${n} folder${n === 1 ? '' : 's'} will be recorded (only the primary takes effect for now)`, noticeVisibilityRecorded:n=>n === 1 ? 'This folder will be recorded with the conversation (only the primary takes effect for now)' : `These ${n} folders will be recorded with the conversation (only the primary takes effect for now)`, temporary:'Temporary chat', temporaryDesc:'No directory binding', browse:'Browse for another folder…', browseDesc:'Start a new conversation anchored at the picked folder', excludedTitle:'Auto-project is off for this folder', excludedBody:name=>`"${name}" is on the exclusion list: no project is auto-materialized for it. A wider project may still auto-file sessions started under it by root match. You can still start a plain folder conversation with it.`, excludedProceed:'Start with this folder anyway', unknownDirectory:'Unknown directory', assignmentDegradedNotice:'The folder was recorded, but the explicit project assignment could not be saved — the conversation will be grouped automatically for now' },
         uiCodexWorkspace: { changes:{added:'Added',modified:'Modified',deleted:'Deleted',renamed:'Renamed',copied:'Copied',conflict:'Conflict',untracked:'Untracked',unknown:'File'}, origins:{session:'This session',preexisting:'Existed before session',preexisting_modified:'Existed before session · modified in this session',unknown:'Source not recorded'}, addedPath:path=>`Added ${path}`, addPath:path=>`Add ${path} to conversation`, added:'Added to conversation', add:'Add to conversation',  copyPath:'Copy relative path', reveal:'Show in file manager', open:'Open with system application', reading:'Reading…', noDiff:'No text diff to display', unsupported:'This file does not support embedded preview.', openHint:'You can open it with a system application.', truncated:'Content is too large; only the beginning is shown.', title:'Workspace', temporary:'Temporary workspace', refresh:'Refresh workspace', close:'Close workspace', files:'Files', changed:'Changes', search:'Search files', noFiles:'No matching files', noBaseline:'This older session has no creation baseline, so changes made by this session cannot be determined.', branch:'Branch', staged:'Staged', noChanges:'No workspace changes', copyContent:'Copy content', copied:'Copied', closeViewer:'Close preview', loadFailed:'Failed to load file', resizeWidth:'Resize viewer width', resizeHeight:'Resize viewer height', resizeCorner:'Resize viewer; double-click to restore default', fontDecrease:'Decrease font size', fontIncrease:'Increase font size', openInNewWindow:'Open in code reader', diffSuffix:'(diff)', readerTitle:'Code Reader', readerEmpty:'Choose "Open in code reader" from a workspace file preview; files accumulate here as tabs.', closeTab:'Close tab', noSessionChanges:'Once a session is created, changes made by the session will be listed here.' },
 
+        trustedTime: {
+          "title": "Trusted time diagnostics",
+          "reading": "Reading time status…",
+          "notRead": "Time status has not been read.",
+          "readStatus": "Read status",
+          "refresh": "Refresh trusted time",
+          "refreshing": "A time refresh is in progress.",
+          "accepted": "The refresh request was accepted. This does not confirm trusted time or completed cleanup checks.",
+          "networkNotice": "Refreshing connects to the configured upgrade control service. Time-dependent actions remain paused until cleanup checks complete.",
+          "states": {
+            "unsupported": "Trusted time diagnostics are not supported by this build.",
+            "setup_required": "The trusted upgrade helper is not ready. Time-dependent actions remain paused.",
+            "missing_policy": "The trusted time policy is not configured. Time-dependent actions remain paused.",
+            "unknown": "Current trusted time is unavailable. Time-dependent actions remain paused.",
+            "source_unavailable": "The time service is currently unavailable. Time-dependent actions remain paused.",
+            "cleanup_pending": "A time anchor is saved. Cleanup checks are still pending; time-dependent actions remain paused.",
+            "cleanup_complete": "Current cleanup checks are complete. Upgrading still requires other conditions to be met.",
+            "integrity_fault": "Protected time state could not be verified. Time-dependent actions remain paused."
+          },
+          "errors": {
+            "busy": "Another refresh is already running. Read status to check progress.",
+            "invalidResponse": "The helper returned an unrecognized time status. Read status again.",
+            "unavailable": "The time status could not be read or the refresh could not be requested. Read status again."
+          }
+        },
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date', updateCheckFailed: 'Check failed', updateInstallFailed: 'Update failed',
         newVersionFound: 'New version available', updateNotes: 'Release Notes',
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',

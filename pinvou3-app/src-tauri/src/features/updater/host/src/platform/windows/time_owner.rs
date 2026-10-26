@@ -264,6 +264,8 @@ impl TimeOwner {
             .state
             .next_unknown(self.incarnation.clone(), &self.snapshot.raw)?;
         next.status = Status::CleanupPending;
+        next.cleanup_pending = true;
+        next.zero_retention = None;
         next.floor = Some(evidence.earliest);
         next.roots = roots;
         next.denied_key_ids = denied;
@@ -274,10 +276,26 @@ impl TimeOwner {
         self.commit_uncertain = true;
         self.snapshot = store.time_commit(host, &self.snapshot, &next, Some(&policy))?;
         self.commit_uncertain = false;
-        // No Known/cleanup-complete state or permit is returned. The evidence's
+        // The fixed cleanup-only native operation may finish a genuine fresh
+        // zero-obligation census. Legacy/nonzero custody cannot be guessed empty.
+        self.commit_uncertain = true;
+        store.complete_zero_retention(host)?;
+        let seed = &host.context.seed;
+        let actual = store
+            .read(seed)
+            .map_err(|_| Error::StateCommitUnknown)?
+            .ok_or(Error::StateCommitUnknown)?;
+        host.authenticate_running(&actual)
+            .map_err(|_| Error::StateCommitUnknown)?;
+        self.snapshot = store
+            .time_load(seed, &actual)
+            .map_err(|_| Error::StateCommitUnknown)?;
+        self.commit_uncertain = false;
+        // No Known clock, preparation, installation or execution permit is returned. The evidence's
         // interval is historical at its recorded counter, not commit-time UTC.
-        // A future consumer needs its own real counter/continuity/drift and a
-        // complete backup/secret/original-budget census before any release.
+        // Any later consumer still needs a new native counter/readset check;
+        // this zero-custody completion is neither a retained UTC ticket nor a
+        // real T28/T32/T36 producer, nonzero cleanup or execution permission.
         Ok(())
     }
 }

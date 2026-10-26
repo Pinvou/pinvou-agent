@@ -26,6 +26,7 @@ pub(crate) mod download;
 mod platform;
 pub(crate) mod protocol;
 pub(crate) mod timing;
+pub(crate) mod trusted_time;
 
 pub(crate) fn cleanup_stale_backup() {
     platform::cleanup_stale_backup();

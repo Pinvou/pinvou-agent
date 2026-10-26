@@ -455,6 +455,31 @@ const jaBase = {
         uiWorkspacePicker: { title:'ワークスペースを選択', searchPlaceholder:'プロジェクトやパスを検索', empty:'プロジェクトはまだありません。フォルダーを参照するか、一時チャットを開始できます', noMatch:'一致するプロジェクトがありません', multiRootSummary:(n, primary)=>`${n} 個のフォルダー · 主：${primary}`, primaryRootBadge:'主', noticeRestricted:n=>`この会話は ${n} 個のフォルダーにアクセスできます`, noticeVisibility:n=>`この ${n} 個のフォルダーがこの会話に関連していることがモデルに伝わります`, noticeRestrictedRecorded:n=>`${n} 個のフォルダーを記録します（現在有効なのは主フォルダーのみ）`, noticeVisibilityRecorded:n=>`この ${n} 個のフォルダーを会話に記録します（現在有効なのは主フォルダーのみ）`, temporary:'一時チャット', temporaryDesc:'ディレクトリに紐付けません', browse:'他のフォルダーを参照…', browseDesc:'選択したフォルダーを起点に新しい会話を開始', excludedTitle:'このフォルダーの自動プロジェクト化はオフです', excludedBody:name=>`「${name}」は除外リストに入っているため、自動でプロジェクト化されません。より広いプロジェクトがルート一致で会話を自動整理する可能性はあります。このフォルダーで通常の会話を始めることはできます。`, excludedProceed:'それでもこのフォルダーで開始', unknownDirectory:'不明なディレクトリ', assignmentDegradedNotice:'フォルダーは記録されましたが、明示的なプロジェクト割り当てを保存できませんでした——この会話は当面ディレクトリ別に自動グループ化されます' },
         uiCodexWorkspace: { changes:{added:'追加',modified:'変更',deleted:'削除',renamed:'名前変更',copied:'コピー',conflict:'競合',untracked:'未追跡',unknown:'ファイル'}, origins:{session:'このセッション',preexisting:'セッション前から存在',preexisting_modified:'セッション前から存在 · このセッションで変更',unknown:'出所未記録'}, addedPath:path=>`${path} を追加済み`, addPath:path=>`${path} を会話に追加`, added:'会話に追加済み', add:'会話に追加',  copyPath:'相対パスをコピー', reveal:'ファイルマネージャーで表示', open:'システムアプリで開く', reading:'読み込み中…', noDiff:'表示できるテキスト差分はありません', unsupported:'このファイルは内蔵プレビューに対応していません。', openHint:'システムアプリで開くことができます。', truncated:'内容が大きいため、先頭部分のみ表示しています。', title:'ワークスペース', temporary:'一時ワークスペース', refresh:'ワークスペースを更新', close:'ワークスペースを閉じる', files:'ファイル', changed:'変更', search:'ファイルを検索', noFiles:'一致するファイルはありません', noBaseline:'この古いセッションには作成時の基準がないため、このセッションによる変更かどうか判定できません。', branch:'ブランチ', staged:'ステージ済み', noChanges:'ワークスペースに変更はありません', copyContent:'内容をコピー', copied:'コピーしました', closeViewer:'プレビューを閉じる', loadFailed:'ファイルの読み込みに失敗しました', resizeWidth:'ビューアの幅を調整', resizeHeight:'ビューアの高さを調整', resizeCorner:'ビューアのサイズを調整、ダブルクリックで初期値に戻す', fontDecrease:'文字サイズを小さく', fontIncrease:'文字サイズを大きく', openInNewWindow:'コードリーダーで開く', diffSuffix:'(差分)', readerTitle:'コードリーダー', readerEmpty:'ワークスペースのファイルプレビューから「コードリーダーで開く」を選ぶと、ファイルがここにタブとして追加されます。', closeTab:'タブを閉じる', noSessionChanges:'セッションを作成すると、そのセッションによるプロジェクトの変更がここに表示されます。' },
 
+        trustedTime: {
+          "title": "信頼できる時刻の診断",
+          "reading": "時刻の状態を読み取り中…",
+          "notRead": "時刻の状態はまだ読み取られていません。",
+          "readStatus": "状態を読み取る",
+          "refresh": "時刻を再取得",
+          "refreshing": "時刻を取得しています。",
+          "accepted": "時刻取得の要求を受け付けました。時刻の信頼性やクリーンアップ確認の完了を意味するものではありません。",
+          "networkNotice": "時刻の再取得では、設定済みの更新制御サービスに接続します。クリーンアップ確認が完了するまで、時刻に依存する操作は停止したままです。",
+          "states": {
+            "unsupported": "このビルドは信頼できる時刻の診断に対応していません。",
+            "setup_required": "信頼された更新ヘルパーの準備ができていません。時刻に依存する操作は停止したままです。",
+            "missing_policy": "信頼できる時刻のポリシーが設定されていません。時刻に依存する操作は停止したままです。",
+            "unknown": "現在、信頼できる時刻を利用できません。時刻に依存する操作は停止したままです。",
+            "source_unavailable": "現在、時刻サービスを利用できません。時刻に依存する操作は停止したままです。",
+            "cleanup_pending": "時刻アンカーは保存されています。クリーンアップ確認が未完了のため、時刻に依存する操作は停止したままです。",
+            "cleanup_complete": "現在のクリーンアップ確認は完了しています。更新には、ほかの条件も満たす必要があります。",
+            "integrity_fault": "保護された時刻の状態を検証できません。時刻に依存する操作は停止したままです。"
+          },
+          "errors": {
+            "busy": "別の時刻取得要求を処理中です。状態を読み取って進行状況を確認してください。",
+            "invalidResponse": "ヘルパーが認識できない時刻の状態を返しました。状態を再度読み取ってください。",
+            "unavailable": "時刻の状態の読み取り、または取得要求の送信ができませんでした。状態を再度読み取ってください。"
+          }
+        },
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです', updateCheckFailed: '確認に失敗しました', updateInstallFailed: '更新に失敗しました',
         newVersionFound: '新しいバージョンがあります', updateNotes: '更新内容',
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
