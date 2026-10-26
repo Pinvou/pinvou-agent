@@ -46,11 +46,13 @@ pub struct VllmSnapshot {
     /// 结论,恒为 `None`。条目只携带机器可判定的稳定字段、不含人读 prose
     /// (UI 文案按 `code` 走 `shared/i18n.js` 映射,见 `MonitorDiagnostic`)。
     pub diagnostic: Option<MonitorDiagnostic>,
-    /// 稳定 `code` 的非致命通知,与健康判定相互独立:`metrics_unavailable`
-    /// (本地 /metrics 完全读不到——传输错误/非 2xx/正文读失败;200 但正文
-    /// 为空或非 Prometheus 时不触发)、`context_window_inferred`(展示窗口
-    /// 来自模型名/预设推断;`metrics_applicable == false` 的远端目标同样
-    /// 触发——不要按 metrics 适用性门控本 vec 的渲染)。
+    /// Non-fatal notices with stable codes, independent of the health verdict:
+    /// `metrics_unavailable` when a local `/metrics` is unreachable or its
+    /// body parses to no vLLM series (an all-`None` metric set is never left
+    /// silently readable as "no traffic"); `context_window_inferred` when the
+    /// display window came from model-name / preset inference — this one
+    /// fires for remote targets too (`metrics_applicable == false`), so never
+    /// gate rendering of this vec on metrics applicability.
     pub notices: Vec<MonitorDiagnostic>,
     pub max_model_len: Option<u32>,
     /// vLLM queue-depth gauges (the Busy source for `status`; the CLI human
@@ -381,20 +383,43 @@ async fn snapshot_for_model_config(
         },
         _ => None,
     };
-    // `metrics_unavailable` fires only when the local /metrics could not be
-    // read at all (transport error, non-success status, body read failure);
-    // a 200 with an empty or non-Prometheus body parses to all-`None` fields
-    // without a notice.
-    let mut notices = if metrics_applicable && metrics_text.is_none() {
-        vec![MonitorDiagnostic {
+    let running = metrics_text
+        .as_deref()
+        .and_then(|t| parse_prom_metric(t, "vllm:num_requests_running"));
+    let waiting = metrics_text
+        .as_deref()
+        .and_then(|t| parse_prom_metric(t, "vllm:num_requests_waiting"));
+    // prefix cache 原始计数器: hits/queries 都是 vLLM Prometheus counter (单调递增,
+    // vLLM 进程生命周期内累积)。前端用基准点做减法重算区间命中率。
+    let prefix_cache_hits = metrics_text
+        .as_deref()
+        .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_hits_total"));
+    let prefix_cache_queries = metrics_text
+        .as_deref()
+        .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_queries_total"));
+    let perf = metrics_text
+        .as_deref()
+        .map(parse_perf_metrics)
+        .unwrap_or_default();
+
+    // An unreachable /metrics and a /metrics that answers 200 with a body no
+    // vLLM series parses leave every metric field None alike; flag both so an
+    // all-None snapshot is never silently read as "no traffic".
+    let mut notices = Vec::new();
+    if metrics_applicable
+        && running.is_none()
+        && waiting.is_none()
+        && prefix_cache_hits.is_none()
+        && prefix_cache_queries.is_none()
+        && perf == PerfMetrics::default()
+    {
+        notices.push(MonitorDiagnostic {
             code: "metrics_unavailable".to_string(),
             http_status: None,
             transport: None,
             endpoint: None,
-        }]
-    } else {
-        Vec::new()
-    };
+        });
+    }
     // The display window goes through the unified precedence (see
     // display_context_window): an explicit user declaration wins first, a local
     // deployment's probe value min-clamps; a cloud probe value (usually a list
@@ -416,26 +441,6 @@ async fn snapshot_for_model_config(
             endpoint: None,
         });
     }
-
-    let running = metrics_text
-        .as_deref()
-        .and_then(|t| parse_prom_metric(t, "vllm:num_requests_running"));
-    let waiting = metrics_text
-        .as_deref()
-        .and_then(|t| parse_prom_metric(t, "vllm:num_requests_waiting"));
-    // prefix cache 原始计数器: hits/queries 都是 vLLM Prometheus counter (单调递增,
-    // vLLM 进程生命周期内累积)。前端用基准点做减法重算区间命中率。
-    let prefix_cache_hits = metrics_text
-        .as_deref()
-        .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_hits_total"));
-    let prefix_cache_queries = metrics_text
-        .as_deref()
-        .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_queries_total"));
-
-    let perf = metrics_text
-        .as_deref()
-        .map(parse_perf_metrics)
-        .unwrap_or_default();
 
     let mut status = match (running, waiting) {
         (Some(r), _) if r > 0.0 => VllmStatus::Busy,
@@ -753,7 +758,7 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
 }
 
 /// 推理性能相关的累计指标（TTFT 直方图），统一解析、统一缺省 None。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 struct PerfMetrics {
     ttft_sum_s: Option<f64>,
     ttft_count: Option<f64>,
@@ -1269,6 +1274,38 @@ mod tests {
         assert_eq!(snap.prefix_cache_queries, Some(100.0));
     }
 
+    /// A /metrics that answers HTTP 200 with a body no vLLM series parses
+    /// must flag itself: the resulting all-None snapshot must not be silently
+    /// readable as "no traffic". (Transport failure and non-200 are pinned by
+    /// the per-branch test below.)
+    #[tokio::test]
+    async fn snapshot_flags_a_metrics_body_with_no_parseable_series() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"m"}]}"#.into()),
+            ("/metrics", 200, "<html>not prometheus</html>".into()),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(snap.status, VllmStatus::Ready);
+        assert!(snap.num_requests_running.is_none());
+        let codes: Vec<_> = snap.notices.iter().map(|d| d.code.as_str()).collect();
+        assert!(
+            codes.contains(&"metrics_unavailable"),
+            "an HTTP 200 body with no parseable series must flag itself: {codes:?}"
+        );
+    }
+
     /// Every branch carries the right structured diagnostic. The offline
     /// refinement is built from parsed fields, never from reqwest's
     /// `Display` (which embeds the full request URL): a token-shaped query
@@ -1440,9 +1477,13 @@ mod tests {
             Some(1_000_000),
             "the inferred v4 window must reach the display scale"
         );
+        // The mock's empty 200 /metrics body parses to no series, so the
+        // metrics notice rides alongside; the inferred-window notice is the
+        // second entry (index pinned — a copy of the first notice's code would
+        // pass a `contains` check).
         let codes: Vec<_> = snap.notices.iter().map(|d| d.code.as_str()).collect();
-        assert_eq!(codes, ["context_window_inferred"]);
-        let inferred = &snap.notices[0];
+        assert_eq!(codes, ["metrics_unavailable", "context_window_inferred"]);
+        let inferred = &snap.notices[1];
         assert!(
             inferred.http_status.is_none() && inferred.transport.is_none(),
             "an inferred-window notice is a plain code, no transport/http detail: {inferred:?}"
