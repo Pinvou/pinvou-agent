@@ -510,7 +510,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               <ArtifactTileIcon name={sel.basename} tileCls="w-6 h-6 rounded-[8px]" glyphCls="w-3.5 h-3.5" />
               <span className="min-w-0 truncate">{sel.basename}</span>
               {artifacts.length > 1 && <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] bg-[#F2F2F7] text-[#6E6E73] dark:bg-white/10 dark:text-[#D1D1D6]`}>{artifacts.length}</span>}
-              <span className={`shrink-0 text-[10px] text-[#8E8E93] dark:text-[#A1A1AA]`}>▼</span>
+              <span className={`shrink-0 text-[10px] text-[#85858B] dark:text-[#A1A1AA]`}>▼</span>
             </button>
             {artifactMenuOpen && (
               <div
@@ -518,7 +518,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                 role="menu"
                 className={`absolute left-0 top-11 z-40 w-[320px] max-w-[calc(100vw-48px)] rounded-[18px] border p-1.5 shadow-2xl backdrop-blur-2xl border-black/10 bg-white/95 text-[#1D1D1F] dark:border-white/10 dark:bg-[#2C2C2E]/95 dark:text-[#F5F5F7]`}
               >
-                <div className={`px-3 pb-1 pt-1 text-[11px] font-medium text-[#8E8E93] dark:text-[#A1A1AA]`}>
+                <div className={`px-3 pb-1 pt-1 text-[11px] font-medium text-[#636366] dark:text-[#A1A1AA]`}>
                   {uiA.switchArtifact}
                 </div>
                 {artifacts.map((a) => {
@@ -531,7 +531,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       role="menuitem"
                       className={`group flex w-full items-center gap-1 rounded-[12px] transition-colors ${
                         active
-                          ? 'bg-[#E5F0FF] dark:bg-[#0A84FF]/24'
+                          ? 'bg-[#E5F0FF] dark:bg-[#0A84FF]/[0.24]'
                           : 'hover:bg-black/[0.05] dark:hover:bg-white/10'
                       }`}
                       title={a.path}
@@ -545,11 +545,11 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                         <ArtifactTileIcon name={a.basename} tileCls="w-8 h-8 rounded-[10px]" glyphCls="w-4 h-4" />
                         <span className="min-w-0 flex-1">
                           <span className={`block truncate text-[13px] font-medium text-[#1D1D1F] dark:text-[#F5F5F7]`}>{a.basename}</span>
-                          <span className={`block truncate text-[11px] text-[#8E8E93] dark:text-[#A1A1AA]`}>
+                          <span className={`block truncate text-[11px] text-[#636366] ${active ? 'dark:text-[#D1D1D6]' : 'dark:text-[#A1A1AA] dark:group-hover:text-[#D1D1D6]'}`}>
                             {itemInfo ? formatLocalDateTime(itemInfo.modified * 1000, '') : '—'}
                           </span>
                         </span>
-                        {active && <span className="shrink-0 text-[12px] text-[#007AFF]">✓</span>}
+                        {active && <span className="shrink-0 text-[12px] text-[#007AFF] dark:text-[#64B5F6]">✓</span>}
                       </button>
                       {canOpenContainingFolder && (
                         <button
@@ -565,7 +565,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                   );
                 })}
                 {info && (
-                  <div className={`mt-1 border-t px-3 pt-2 text-[11px] border-black/10 text-[#8E8E93] dark:border-white/10 dark:text-[#A1A1AA]`}>
+                  <div className={`mt-1 border-t px-3 pt-2 text-[11px] border-black/10 text-[#636366] dark:border-white/10 dark:text-[#A1A1AA]`}>
                     {uiA.currentMtime(formatLocalDateTime(info.modified * 1000, ''))}
                   </div>
                 )}
@@ -813,7 +813,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       {showDesignWorkbench && (
                         <div
                           aria-hidden="true"
-                          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32 bg-gradient-to-t from-black/45 via-black/16 to-transparent"
+                          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32 bg-gradient-to-t from-black/45 via-black/[0.16] to-transparent"
                         />
                       )}
                       {showDesignWorkbench && (
@@ -839,7 +839,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 className={`h-8 rounded-full px-3 text-[12px] font-semibold transition-colors ${
                                   designAiText.trim()
                                     ? 'bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6]'
-                                    : 'bg-[#E5E5EA] text-[#8E8E93] dark:bg-white/14 dark:text-[#C7C7CC]'
+                                    : 'bg-[#E5E5EA] text-[#8E8E93] dark:bg-white/[0.14] dark:text-[#C7C7CC]'
                                 }`}
                               >
                                 {uiA.send}

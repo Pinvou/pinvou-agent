@@ -1,6 +1,6 @@
 [package]
 name = "pinvou-knowledge"
-version = "0.10.15"
+version = "0.10.16"
 description = "Pinvou 可复用知识库核心与自包含服务器"
 authors = ["pinvou"]
 license = "MIT"
@@ -85,7 +85,7 @@ wait-timeout = { version = "0.2", optional = true }
 # explicit "unsupported on this platform" Embedder stub instead. Windows keeps
 # its dynamic-load wiring unchanged.
 # fastembed applies to BOTH target tables below (same version hold; only the
-# feature set differs per platform). fastembed 5+ (7.3.0 as of 2026-10) pins
+# feature set differs per platform). fastembed 5+ (7.5.0 as of 2026-10) pins
 # ort 2.0.0-rc.10..rc.15 prebuilt ONNX Runtime: rc.10 macOS minos 13.3, rc.11+
 # drops the x86_64-apple-darwin prebuilt, rc.13 needs glibc 2.38, and rc.14/15
 # additionally declare rust-version 1.92 > MSRV 1.90 — all violate the macOS 11

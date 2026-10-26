@@ -1658,7 +1658,7 @@
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
     // 代码会话（品悟原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
-    // 消息由后端 persist_chat_engine_state 持久化、标题由后端自动命名管理。
+    // 消息由后端 persist_chat_engine_state_with_commit 持久化、标题由后端自动命名管理。
     // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
     // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经
     // ensureSession 创建后即 refreshHistoryList 入列，!meta 只会命中非桥接会话。
@@ -3112,6 +3112,7 @@
     for (let itemIndex = state.chatItems.length - 1; itemIndex >= 0; itemIndex--) {
       const item = state.chatItems[itemIndex];
       if (!item || item.type !== "reasoning" || !item.streaming) continue;
+      // eslint-disable-next-line unicorn/prefer-includes-over-repeated-comparisons -- strict undefined/null guard, not a membership test; an array literal would allocate per item in this streaming loop
       if (index !== undefined && index !== null && item.reasoningIndex !== index) continue;
       item.streaming = false;
       item.completedAt = completedAt;
@@ -5138,6 +5139,7 @@
       const rc = state.messages[ri].content;
       if (!Array.isArray(rc)) continue;
       for (let rj = 0; rj < rc.length; rj++) {
+        if (!rc[rj]) continue;
         if (rc[rj].type === "tool_result") {
           resultById[rc[rj].tool_use_id] = { content: rc[rj].content, is_error: !!rc[rj].is_error };
         }
@@ -5154,6 +5156,7 @@
       if (!Array.isArray(dc)) continue;
       for (let dj = 0; dj < dc.length; dj++) {
         const db = dc[dj];
+        if (!db) continue;
         const dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
         if (dbMutation) {
           extractArtifactPaths(db.input).forEach(function (dap) {
@@ -5205,6 +5208,7 @@
         // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
         for (let ci = 0; ci < blocks.length; ci++) {
           const c = blocks[ci];
+          if (!c) continue;
           if (c.type !== "tool_result") continue;
           const tm = lane.toolMeta.value[c.tool_use_id];
           if (tm) {
@@ -5230,8 +5234,13 @@
       let planSnap = null, todosSnap = null, sawPlanTool = false;
       for (let bi = 0; bi < blocks.length; bi++) {
         const b = blocks[bi];
+        if (!b) continue;
         if (b.type === "text") {
-          textBuf += b.text;
+          // Adjacent text blocks are separate markdown blocks (same convention as
+          // the scheduled-draft flattener in flushAssistantMessageToHistory, which
+          // joins them with a blank line); raw concatenation glues a following
+          // table onto the previous line and it never parses.
+          textBuf = textBuf ? textBuf + "\n\n" + (b.text || "") : (b.text || "");
         } else if (b.type === "thinking") {
           if (textBuf) {
             addChatItem({ type: "assistant", text: textBuf, html: lane.renderMarkdown(textBuf), time: "", streaming: false });

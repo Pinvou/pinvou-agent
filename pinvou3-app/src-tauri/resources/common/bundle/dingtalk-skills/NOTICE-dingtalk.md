@@ -1,16 +1,17 @@
 钉钉内置技能来自钉钉官方 dingtalk-workspace-cli 的 dws-skills.zip mono 形态。
 
 - npm package: dingtalk-workspace-cli
-- skill/CLI version: 1.0.64
+- skill baseline: 1.0.64（本目录技能内容基线，2026-10-18 同步；CLI pin 已升 1.0.65，v1.0.65 dws-skills.zip 的技能同步另行进行）
+- CLI version: 1.0.65（connectors.lock.json 钉扎）
 - 各平台 dws 二进制 SHA-256 见 `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`（仓库相对路径；`<os>/<arch>` 取 macos/aarch64、macos/x86_64、linux/aarch64、linux/x86_64、windows/x86_64 五份，版本一致）
-- Linux ARM64 dws SHA-256: 341af37528c5f13b256006e0696dedf2629a1a01f7b081fb759ba5f59bfdf391
+- Linux ARM64 dws SHA-256: a03d996368cfa5ed99d9e1d96394879db1d90d384b2983e59a23bdc3cf3b0126
 - license: Apache-2.0
 
 来源与更新方式（新手操作手册）：
 
-1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.64）。
+1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.65）。
 2. 拉技能源：GitHub Releases 资产，URL 模式
-   `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（当前 v1.0.64；版本号带 `v` 前缀）。
+   `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（技能基线当前 v1.0.64，v1.0.65 同步另行进行；版本号带 `v` 前缀）。
 3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——品悟收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 16 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
 4. 以该 zip 的 `mono/` 为三方合并基线，按下文登记逐条重放本地修改后，保留本声明。
 

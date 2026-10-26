@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>代码阅读器</title>
   <script src="/shared/legacy-polyfills.js"></script>
+  <!-- Pre-paint theme class + canvas (see src/shared/theme-boot.js); the dark
+       canvas matches ReaderApp's dark root background so the first frame and
+       the mounted frame share one shade. -->
+  <script src="/shared/theme-boot.js" data-dark-bg="#1E1E20"></script>
 </head>
 <body class="m-0 p-0">
   <div id="root"></div>

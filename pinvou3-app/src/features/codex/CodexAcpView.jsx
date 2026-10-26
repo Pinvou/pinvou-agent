@@ -3715,7 +3715,7 @@ export function CodexAcpView({
             {workspaceUnavailable ? (
               <div
                 data-testid="codex-workspace-unavailable"
-                className="rounded-xl bg-red-500/8 px-3 py-2 text-[12px] text-red-600 dark:text-red-300"
+                className="rounded-xl bg-red-500/[0.08] px-3 py-2 text-[12px] text-red-700 dark:text-red-300"
               >
                 {fixedSession ? codexCopy.projectMissing : (
                   <>
@@ -3984,7 +3984,7 @@ export function CodexAcpView({
                     <span
                       key={path}
                       title={path}
-                      className="max-w-[260px] h-7 pl-2.5 pr-1 rounded-lg inline-flex items-center gap-1.5 bg-blue-500/8 text-blue-700 dark:text-blue-300 text-[10px]"
+                      className="max-w-[260px] h-7 pl-2.5 pr-1 rounded-lg inline-flex items-center gap-1.5 bg-blue-500/[0.08] text-blue-700 dark:text-blue-300 text-[10px]"
                     >
                       <FileText size={12} className="shrink-0" />
                       <span className="truncate">@{path}</span>

@@ -31,7 +31,7 @@ class ForkGuardFloorTest(unittest.TestCase):
             f"-ge 条件的下限({floor})必须等于登记下限({REGISTERED_FLOOR});"
             "只改消息不改条件的回归曾让删除行为名仍然绿灯",
         )
-        messages = re.findall(r"retains at least (\d+) distinct forkguard", text)
+        messages = re.findall(r"至少保留 (\d+) 条独立 forkguard", text)
         self.assertTrue(messages, "缺少下限成功消息")
         for number in messages:
             self.assertEqual(
@@ -39,7 +39,7 @@ class ForkGuardFloorTest(unittest.TestCase):
                 floor,
                 f"消息中的下限({number})与 -ge 条件({floor})不一致",
             )
-        failure = re.search(r"registered floor is (\d+)", text)
+        failure = re.search(r"登记下限为 (\d+)", text)
         self.assertIsNotNone(failure, "缺少下限失败消息")
         self.assertEqual(int(failure.group(1)), floor, "失败消息的下限与条件不一致")
 

@@ -1299,6 +1299,19 @@ fn chat_engine_state(messages: Vec<Message>) -> ChatEngineState {
     }
 }
 
+/// Persist an engine snapshot the way an always-admitted forwarder would,
+/// without a commit hook.
+fn persist_engine_state(
+    store: &SessionStore,
+    id: &str,
+    state: &ChatEngineState,
+) -> deepseek_tui::session_manager::SavedSession {
+    store
+        .persist_chat_engine_state_with_commit(id, state, || true, |_| {})
+        .expect("persist engine snapshot")
+        .expect("an always-true admit gate admits")
+}
+
 #[test]
 fn ordinary_session_updated_snapshot_is_persisted_authoritatively() {
     let (store, _g) = isolated_store();
@@ -1316,12 +1329,11 @@ fn ordinary_session_updated_snapshot_is_persisted_authoritatively() {
         user_text("visible user prompt"),
         assistant_text("authoritative answer"),
     ];
-    let saved = store
-        .persist_chat_engine_state(
-            &session.metadata.id,
-            &chat_engine_state(authoritative.clone()),
-        )
-        .expect("persist ordinary SessionUpdated");
+    let saved = persist_engine_state(
+        &store,
+        &session.metadata.id,
+        &chat_engine_state(authoritative.clone()),
+    );
 
     assert_eq!(saved.messages, authoritative);
     assert_eq!(saved.metadata.message_count, 2);
@@ -1515,6 +1527,71 @@ fn chat_session_has_messages_reflects_the_durable_transcript() {
             .chat_session_has_messages(&session.metadata.id)
             .expect("classify the reopened transcript"),
         "a session with admitted messages is still started after a reopen"
+    );
+}
+
+#[test]
+fn queued_engine_snapshot_checks_retirement_under_the_mutation_gate() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _restore = paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+    let tmp = tempfile::tempdir().unwrap();
+    // SAFETY: ENV_LOCK serializes test environment changes.
+    unsafe { std::env::set_var("PINVOU3_HOME", tmp.path()) };
+    let store = SessionStore::boot_with_scheduled_root(tmp.path().join("scheduled")).unwrap();
+    let session = store
+        .create_new("/model".into(), None, tmp.path().into())
+        .unwrap();
+    let messages = vec![
+        user_text("first task"),
+        assistant_text("answer"),
+        user_text("next task"),
+    ];
+    store
+        .update_messages(&session.metadata.id, messages.clone())
+        .unwrap();
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mutation = store.scheduled_mutation.lock();
+    let worker_store = store.clone();
+    let worker_active = active.clone();
+    let id = session.metadata.id.clone();
+    let state = ChatEngineState {
+        messages: messages[..2].to_vec(),
+        system_prompt: None,
+        model: "/model".into(),
+        workspace: tmp.path().into(),
+    };
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (admit_tx, admit_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        worker_store.persist_chat_engine_state_with_commit(
+            &id,
+            &state,
+            || {
+                admit_tx.send(()).unwrap();
+                worker_active.load(std::sync::atomic::Ordering::Acquire)
+            },
+            |_| panic!("retired writer notified"),
+        )
+    });
+    started_rx.recv().unwrap();
+    assert!(
+        matches!(
+            admit_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "writer admission must wait for the mutation gate"
+    );
+    active.store(false, std::sync::atomic::Ordering::Release);
+    drop(mutation);
+    admit_rx.recv().unwrap();
+    assert!(worker.join().unwrap().unwrap().is_none());
+    assert_eq!(
+        store
+            .load_for_engine_spawn(&session.metadata.id)
+            .unwrap()
+            .messages,
+        messages
     );
 }
 
@@ -3303,8 +3380,8 @@ fn stamp_resolved_provider_records_vendor_route_over_engine_default() {
 /// the next resume (review #713 round 2: ("moonshot", Some("openai")) —
 /// "declares built-in kind 'moonshot' but exact provider id 'openai' names
 /// a different route") even with both providers configured, and
-/// persist_chat_engine_state preserves the metadata fields verbatim, so
-/// nothing downstream heals it.
+/// persist_chat_engine_state_with_commit preserves the metadata fields
+/// verbatim, so nothing downstream heals it.
 #[test]
 fn stamp_resolved_provider_rewrites_stale_exact_id_on_route_switch() {
     let (store, _g) = isolated_store();
@@ -5429,9 +5506,7 @@ fn truncate_reports_compaction_summary_residue_in_system_prompt() {
     state.system_prompt = Some(SystemPrompt::Text(
         "前文摘要：Conversation Summary (Auto-Generated)\n……".to_string(),
     ));
-    store
-        .persist_chat_engine_state(&with_marker.metadata.id, &state)
-        .expect("persist with marker");
+    persist_engine_state(&store, &with_marker.metadata.id, &state);
     store
         .update_messages(&without_marker.metadata.id, messages())
         .expect("seed plain");
