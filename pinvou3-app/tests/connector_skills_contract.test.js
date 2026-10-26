@@ -535,4 +535,45 @@ for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
   }
 }
 
+// 12) 上游宿主称谓与版本差异措辞不得作为宿主断言回潮。dws NOTICE 的重放登记在
+// 2026-10-25 hygiene 轮压缩为修改摘要后，此前只靠登记记住的两类改写改由本规则钉住：
+//  - 「悟空/Wukong」只允许作为听记热词、示例产品名、CLI 默认值等客观引用出现，
+//    不得作为运行宿主/平台/脚本归属（上游「悟空运行环境可能是…」已改写为品悟）；
+//  - 「开源版未引入/不支持/不提供」是上游面向其内部版本差异的措辞，对应能力在
+//    品悟包内随包存在，不得回潮（event.md 的「开源版默认 normal 模式」说的是 CLI
+//    自身的发行版本，不在此列）。
+// 同样剥 URL/行内代码后判定；.py 脚本一并扫（attendance 脚本 docstring 曾写
+// 「Wukong Agent」宿主断言）。
+const hostAliasForms =
+  /悟空(?:运行|环境|平台|脚本|应用|宿主|智能体|\s*Agent)|(?:与|由|在)悟空(?!相关)|Wukong\s*Agent|悟空内部产品|开源版(?:未引入|不支持|不提供)/i;
+const scripts = files.filter((f) => f.endsWith(".py"));
+for (const f of [...docs, ...scripts]) {
+  for (const line of read(f).split("\n")) {
+    const hit = hostAliasForms.exec(stripAnchors(line));
+    assert.ok(!hit, `${rel(f)}: 上游宿主称谓/版本差异措辞回潮（${hit?.[0]}）: ${line.trim()}`);
+  }
+}
+// 规则 12 盲点自检：历史原文必须判违例，现行客观引用必须通过。
+{
+  for (const text of [
+    "悟空运行环境可能是 Windows cmd / PowerShell / macOS bash",
+    "与悟空脚本路径并存",
+    "Wukong Agent attendance report helper",
+    "`aisearch`（开源版未引入，悟空内部产品）",
+    '不要以"开源版不支持"为由拒答',
+  ]) {
+    assert.ok(hostAliasForms.test(stripAnchors(text)), `规则 12 必须判违例: ${text}`);
+  }
+  for (const text of [
+    '示例："查一下和悟空相关的听记"',
+    '把"付工"改成"悟空"',
+    "--agentCode string       Agent 标识，默认 wukong",
+    "开源版默认 `normal` 模式只需要用户 token 和 AppKey",
+    "品悟应用运行在 Windows cmd / PowerShell / macOS bash 等不同 shell 环境",
+    "`dws minutes hot-word add --words \"悟空\"`",
+  ]) {
+    assert.equal(hostAliasForms.test(stripAnchors(text)), false, `规则 12 合法形态不得误伤: ${text}`);
+  }
+}
+
 console.log("✓ connector skills pinvou-contract lint passed");
