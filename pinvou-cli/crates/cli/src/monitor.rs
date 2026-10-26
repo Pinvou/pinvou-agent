@@ -691,6 +691,12 @@ mod tests {
             ..MonitorSnapshot::default()
         };
         let (_, value) = snapshot_payload(&sample, Some(1)).expect("renders");
+        // Values, not just keys: a field must survive serialization with
+        // the fixture's content (the app-side e2e pins the producer; this
+        // pins the lane's own to_value step).
+        assert_eq!(value["vllm"]["provider"], "local_vllm");
+        assert_eq!(value["vllm"]["prefix_cache_hit_pct"], 50.0);
+        assert_eq!(value["vllm"]["max_model_len"], 8192);
         assert_eq!(
             keys(&value["vllm"]),
             [
