@@ -1382,9 +1382,11 @@ mod tests {
     /// detail goes through the same redaction composition as the settings
     /// probe codes — reqwest's Display embeds the full request URL, and a
     /// user base_url can carry userinfo or a token-shaped query). The remote
-    /// arms (missing_api_key / remote_unverified) are pinned by the
-    /// `health_diagnostic` unit test below; a loopback mock cannot classify
-    /// as `remote`.
+    /// arms (missing_api_key / remote_unverified) are pinned for their copy
+    /// by the `health_diagnostic` unit test below and for their routing by
+    /// the remote e2e tests after `snapshot_reports_context_window_inferred_
+    /// on_local_targets` (a loopback mock classifies as `local`, so they
+    /// ride an RFC 5737 documentation address).
     #[tokio::test]
     async fn snapshot_carries_diagnostic_codes_per_health_branch() {
         use crate::core::model_endpoint::models_mock;
@@ -1633,6 +1635,62 @@ mod tests {
     /// the hit-count pins across two calls run under the crate ENV_LOCK so
     /// a concurrent cache-clearing core test (same lock) can never wipe an
     /// entry in between.
+    /// Remote-target routing is unreachable from a loopback mock (loopback
+    /// classifies as `local`), so these two arms ride an RFC 5737
+    /// documentation address on a closed port: the keyless arm skips the
+    /// probe entirely (no network touched), the keyed arm fails transport
+    /// inside the 3 s request budget. Each must land on its health_status +
+    /// diagnostic rather than the local offline arms.
+    #[tokio::test]
+    async fn snapshot_routes_a_remote_keyless_target_to_missing_api_key() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let snap = snapshot_for_model_config(
+            "http://198.51.100.1:1/v1",
+            Some("cfg".to_string()),
+            ModelPreset::OpenaiCompatible,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(snap.target_kind, "remote");
+        // The probe is skipped for a keyless remote target, so the status
+        // is the plain gauges-derived Ready, not the local offline arm.
+        assert_eq!(snap.status, VllmStatus::Ready);
+        assert_eq!(snap.health_status, "missing_api_key");
+        let d = snap.diagnostic.expect("missing key diagnoses");
+        assert_eq!(d.code, "missing_api_key");
+    }
+
+    #[tokio::test]
+    async fn snapshot_routes_a_remote_transport_failure_to_unverified() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let snap = snapshot_for_model_config(
+            "http://198.51.100.1:1/v1",
+            Some("cfg".to_string()),
+            ModelPreset::OpenaiCompatible,
+            None,
+            Some("k"),
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(snap.target_kind, "remote");
+        assert_eq!(snap.health_status, "unverified");
+        assert_eq!(snap.model, Some("cfg".to_string()));
+        let d = snap.diagnostic.expect("unverified diagnoses");
+        assert_eq!(d.code, "remote_unverified");
+        assert!(
+            d.message.contains("unreachable"),
+            "the copy is cause-neutral, not roster-only: {d:?}"
+        );
+    }
+
     #[tokio::test]
     async fn local_native_display_window_ps_then_show_then_stop() {
         use crate::core::model_endpoint::models_mock;
