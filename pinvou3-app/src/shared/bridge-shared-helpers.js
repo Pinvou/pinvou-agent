@@ -5123,7 +5123,7 @@
   // tool_result_message_content：`<image path="…">` 开、`</image>` 闭，夹
   // ImageUrl 块）。它们是载体的组成部分而非用户话语；混合消息里剥掉它们
   // 之后剩下的才算用户文本（r22 集成修复，见下方 toolResultCarrier 处）。
-  const IMAGE_MARKER_TEXT_RE = /^<\/?image(?:\s+path="[^"]*")?>$/;
+  const IMAGE_MARKER_TEXT_RE = /^<\/?image(?:\s+path="[^"]*")?>$/; // path 内引号未转义形态由 CodeWhale 侧保证不产生（r33 minor 7 披露）
   function isImageMarkerTextBlock(b) {
     return !!b && b.type === "text" && IMAGE_MARKER_TEXT_RE.test(String(b.text || "").trim());
   }
