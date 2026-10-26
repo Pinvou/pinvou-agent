@@ -110,4 +110,28 @@ assert.equal(
   "WECOM_MIN_VERSION must equal the wecom-cli version pinned in the platform locks",
 );
 
+// Same lockstep for the dws manual smoke. The host has no DWS_MIN_VERSION gate
+// (it installs the exact lock version by hash), so the smoke floor follows the
+// cli_version floor declared in the bundled dws SKILL.md frontmatter, and that
+// floor must not exceed the lock pin — otherwise the smoke would reject the
+// very binary the host installs.
+const dwsSkill = read(
+  "src-tauri", "resources", "common", "bundle", "dingtalk-skills", "dws", "SKILL.md",
+);
+const dingtalkSmoke = read("scripts", "dingtalk-smoke.sh");
+const dwsFloor = dwsSkill.match(/^cli_version:\s*"?>=\s*(\d+)\.(\d+)\.(\d+)"?\s*$/m);
+assert.ok(dwsFloor, 'dws SKILL.md must declare cli_version as ">=X.Y.Z"');
+const dwsFloorNumeric =
+  Number(dwsFloor[1]) * 10000 + Number(dwsFloor[2]) * 100 + Number(dwsFloor[3]);
+assert.match(
+  dingtalkSmoke,
+  new RegExp(`>= ${dwsFloorNumeric}\\)`),
+  "dingtalk-smoke.sh version floor must stay in lockstep with the dws SKILL.md cli_version",
+);
+const [dwsLockMajor, dwsLockMinor, dwsLockPatch] = lockVersions["dws"].split(".").map(Number);
+assert.ok(
+  dwsFloorNumeric <= dwsLockMajor * 10000 + dwsLockMinor * 100 + dwsLockPatch,
+  "dws SKILL.md cli_version floor must not exceed the dws version pinned in the platform locks",
+);
+
 console.log("✓ connector first-use online install contract passed");
