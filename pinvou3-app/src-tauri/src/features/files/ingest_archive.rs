@@ -178,7 +178,17 @@ fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
         command,
         std::time::Duration::from_secs(60),
     )
-    .map_err(|e| format!("7z 调用失败: {e}"))?;
+    .map_err(|e| {
+        // 列表输出本身越过 4 MiB 捕获上限 ≈ 条目数多到无法枚举（每条目
+        // ~400-500 字节）：按「条目过多」报因，而不是把平台层溢出文案（含
+        // 内嵌输出）透传给用户。条目数上限本来就是 50，这里只是让拒绝原
+        // 因可读。
+        if e.contains("output exceeded") {
+            String::from("7z 列表输出超出捕获上限：条目过多，已终止列举进程")
+        } else {
+            format!("7z 调用失败: {e}")
+        }
+    })?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }

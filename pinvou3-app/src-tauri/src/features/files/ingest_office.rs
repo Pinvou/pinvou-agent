@@ -12,7 +12,7 @@ use std::path::Path;
 
 use super::IngestResult;
 use super::estimate_tokens;
-use super::ingest_deps::{pandoc_tool_command, pdftotext_extract, system_tools};
+use super::ingest_deps::{pandoc_tool_command, pdftotext_extract, read_capped_text, system_tools};
 
 const MAX_FORMULAS_PER_SHEET: usize = 2_048;
 
@@ -33,18 +33,37 @@ pub(super) fn ingest_pandoc(
             crate::platform::os::pandoc_missing_message(),
         );
     }
+    // 产物落盘再限量读回(原走 stdout,整本输出受平台层 4 MiB 捕获上限约束,
+    // 大文档会被误杀);带超时兜底:挂死的转换进程不能让上传永远转圈。
+    let temporary = match tempfile::tempdir() {
+        Ok(temporary) => temporary,
+        Err(e) => {
+            return IngestResult::warning(
+                label,
+                &basename,
+                path,
+                byte_size,
+                format!("pandoc 调用失败: {e}"),
+            );
+        }
+    };
+    let output_path = temporary.path().join("converted.md");
     let mut command = pandoc_tool_command();
-    command.arg("-t").arg("markdown").arg(path);
-    // 带超时兜底:挂死的转换进程不能让上传永远转圈。
+    command
+        .arg("-t")
+        .arg("markdown")
+        .arg("-o")
+        .arg(&output_path)
+        .arg(path);
     let out = crate::platform::process::output_with_timeout_and_kill_tree(
         command,
         std::time::Duration::from_secs(60),
     );
     match out {
-        Ok(o) if o.status.success() => {
-            let content = String::from_utf8_lossy(&o.stdout).into_owned();
-            IngestResult::with_markdown(label, &basename, path, byte_size, content)
-        }
+        Ok(o) if o.status.success() => match read_capped_text(&output_path) {
+            Ok(content) => IngestResult::with_markdown(label, &basename, path, byte_size, content),
+            Err(e) => IngestResult::warning(label, &basename, path, byte_size, e),
+        },
         Ok(o) => IngestResult::warning(
             label,
             &basename,
