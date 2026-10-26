@@ -34,17 +34,19 @@ pub struct VllmSnapshot {
     pub target_kind: String,
     /// vLLM Prometheus 指标是否适用(= `target_kind == "local"`);云端 API 无 /metrics。
     pub metrics_applicable: bool,
-    /// 健康判定的权威通道。枚举经 serde 渲染成既有的 snake_case wire 字符串
-    /// (前端/CLI 已消费的取值逐字不变);用枚举而非 `String`,是让 producer
-    /// 与消费方在字面量上不可能漂移(round-2 审:一个拼写 typo 就能让诊断
-    /// 静默消失且零测试红)。
+    /// The authoritative health verdict. The enum renders through serde to
+    /// the established snake_case wire strings (the values the frontend and
+    /// CLI already consume, unchanged); an enum rather than a `String` so the
+    /// producer and its consumers cannot drift on a literal (round-2 review:
+    /// a one-letter typo silently dropped a diagnostic with zero red tests).
     pub health_status: HealthStatus,
-    /// `health_status` 的精化诊断,恒有不变式
+    /// Refinement of `health_status`, with the invariant
     /// `diagnostic.is_some() == (health_status == HealthStatus::Offline)`:
-    /// `offline` 精化为 `models_http_error`(带 `http_status`)或
-    /// `models_unreachable`(带 `transport`/`endpoint`);其余健康态自身即
-    /// 结论,恒为 `None`。条目只携带机器可判定的稳定字段、不含人读 prose
-    /// (UI 文案按 `code` 走 `shared/i18n.js` 映射,见 `MonitorDiagnostic`)。
+    /// `offline` refines to `models_http_error` (with `http_status`) or
+    /// `models_unreachable` (with `transport` / `endpoint`); every other
+    /// verdict is self-describing and carries `None`. Entries hold only
+    /// machine-decidable fields, never prose — UI copy maps `code` through
+    /// `shared/i18n.js` (see `MonitorDiagnostic`).
     pub diagnostic: Option<MonitorDiagnostic>,
     /// Non-fatal notices with stable codes, independent of the health verdict:
     /// `metrics_unavailable` when a local `/metrics` is unreachable or its
@@ -84,7 +86,8 @@ pub enum VllmStatus {
     Mismatch,
 }
 
-/// 健康判定。serde 渲染(`rename_all = "snake_case"`)与既有 wire 字符串逐字一致。
+/// Health verdict. The serde rendering (`rename_all = "snake_case"`) is
+/// byte-identical to the pre-existing wire strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
@@ -98,9 +101,11 @@ pub enum HealthStatus {
 }
 
 impl HealthStatus {
-    /// 与 serde 渲染逐字一致的人读标签(CLI 人读行用);由 CLI 的
-    /// `health_label_matches_the_serde_rendering_of_every_variant` 及显式
-    /// 字面量断言钉死,防 `rename_all` 变更静默改 wire。
+    /// Human label, byte-identical to the serde rendering (the CLI human line
+    /// uses it). Pinned by the CLI's
+    /// `health_label_matches_the_serde_rendering_of_every_variant` together
+    /// with explicit literal asserts, so a `rename_all` change cannot move the
+    /// wire silently.
     pub fn as_str(&self) -> &'static str {
         match self {
             HealthStatus::Verified => "verified",
@@ -113,22 +118,26 @@ impl HealthStatus {
     }
 }
 
-/// 结构化诊断条目:只有机器可判定的稳定事实。`code` 是稳定分类,人读文案
-/// 必须由 UI 按 `code` 走 `shared/i18n.js` 映射,快照不携带 prose——
-/// reqwest 的 `Display` 会内嵌完整请求 URL(用户 base_url 可能带 userinfo
-/// 或 token 形查询串),所以诊断一律从解析后的字段构造,不经错误文本。
+/// A structured diagnostic entry: machine-decidable facts only. `code` is the
+/// stable classification and UI copy must map it through `shared/i18n.js`;
+/// the snapshot carries no prose — reqwest's `Display` embeds the full
+/// request URL (a user base_url may carry userinfo, a token-shaped query, or
+/// a token path segment), so every entry is built from parsed fields and
+/// never from error text.
 #[derive(Debug, Clone, Serialize)]
 pub struct MonitorDiagnostic {
     pub code: String,
-    /// HTTP 错误时的状态码。
+    /// Status code when the failure is an HTTP error.
     pub http_status: Option<u16>,
-    /// 传输错误时的分类,词表与 `core::model_endpoint::model_probe_transport_code`
-    /// 一致(`timeout` / `dns_failed` / `connection_refused` / `network_error`),但改用
-    /// reqwest 的结构化 flag 判定(真实 reqwest 错误的 `Display` 不含
-    /// source 链,那边的字符串臂对它们是死代码)。
+    /// Transport class when the failure is a transport error. Same vocabulary
+    /// as `core::model_endpoint::model_probe_transport_code` (`timeout` /
+    /// `dns_failed` / `connection_refused` / `network_error`), but decided
+    /// from reqwest's structured flags: a real reqwest error's `Display`
+    /// omits the source chain, so that helper's string arms are dead for it.
     pub transport: Option<&'static str>,
-    /// 目标端点的 `scheme://host:port` 安全子集:userinfo 在 reqwest 构建
-    /// 请求时已被剥除,查询串在此按构造丢弃。
+    /// The `scheme://host:port` subset of the target — the credential-safe
+    /// part of the URL: userinfo is stripped by reqwest at request build, and
+    /// the path and query are dropped here by construction.
     pub endpoint: Option<String>,
 }
 
@@ -261,7 +270,7 @@ async fn snapshot_for_model_config(
             if r.status() == reqwest::StatusCode::UNAUTHORIZED
                 || r.status() == reqwest::StatusCode::FORBIDDEN =>
         {
-            // auth_failed 即结论本身,无需精化诊断。
+            // auth_failed is the verdict itself; no refinement diagnostic.
             return Some(VllmSnapshot {
                 status: VllmStatus::Offline,
                 model: configured_model.clone(),
@@ -294,12 +303,13 @@ async fn snapshot_for_model_config(
         }
         Some(Err(err)) => {
             if target_kind == "local" {
-                // 结构化 detail 取代 reqwest 的 `Display`:Display 内嵌完整
-                // 请求 URL(用户 base_url 可能带 userinfo 或 token 形查询串,
-                // 通用脱敏对无数字的查询值会漏),所以诊断只从解析后的字段
-                // 构造——`endpoint` 取 `err.url()` 的 scheme/host/port 子集
-                // (userinfo 在请求构建时已被剥除,查询串按构造丢弃),错误
-                // 文本一律不进快照。
+                // Structured detail instead of reqwest's `Display`: the Display
+                // embeds the full request URL (a user base_url may carry
+                // userinfo, a token-shaped query, or a token path segment, and
+                // the generic scrub misses digit-free values), so the
+                // diagnostic is built from parsed fields only — `endpoint` is
+                // the scheme/host/port subset of `err.url()`; no error text
+                // ever enters the snapshot.
                 return Some(VllmSnapshot {
                     status: VllmStatus::Offline,
                     model: configured_model.clone(),
@@ -474,8 +484,9 @@ async fn snapshot_for_model_config(
         _ => HealthStatus::Verified,
     };
 
-    // happy-path:全字段逐项构造(不用 `..default()`),结构体加字段时这里
-    // 与三个早退构造一起编译失败,强制有意识地补齐。
+    // Happy path: a full literal with no `..default()`, so adding a field to
+    // the struct fails to compile here (the early exits use struct-update and
+    // stay quiet; the CLI key-set pin catches the widening on that side).
     Some(VllmSnapshot {
         status,
         model: if target_kind == "remote" {
@@ -499,9 +510,10 @@ async fn snapshot_for_model_config(
     })
 }
 
-/// `scheme://host:port` 子集——URL 中可安全进入快照的部分:reqwest 在构建
-/// 请求时已剥除 userinfo,查询串在此按构造丢弃,所以 base_url 携带凭据
-/// (userinfo 或 token 形查询串)都不可能泄漏进诊断。
+/// The `scheme://host:port` subset of a URL — the part that may safely enter
+/// the snapshot: reqwest strips userinfo at request build, and the path and
+/// query are dropped here by construction, so a base_url carrying credentials
+/// in any of those positions cannot leak into a diagnostic.
 fn endpoint_root(url: Option<&reqwest::Url>) -> Option<String> {
     let url = url?;
     let host = url.host_str()?;
@@ -511,9 +523,10 @@ fn endpoint_root(url: Option<&reqwest::Url>) -> Option<String> {
     })
 }
 
-/// 传输错误分类,取自 reqwest 的结构化 flag(而非 `Display` 文本——真实
-/// reqwest 错误的 Display 不含 source 链,`model_probe_transport_code` 的
-/// 字符串臂对它们是死代码)。词表与该 helper 保持一致。
+/// Transport class of a failed request, from reqwest's structured flags
+/// rather than its `Display` text (a real reqwest error's Display omits the
+/// source chain, so `model_probe_transport_code`'s string arms are dead for
+/// it). Vocabulary kept in step with that helper.
 fn transport_class(err: &reqwest::Error) -> &'static str {
     if err.is_timeout() {
         "timeout"
@@ -2283,11 +2296,13 @@ mod tests {
         );
     }
 
-    /// 名称边界:同前缀的更长指标绝不能冒充本指标的读数。vLLM 真实导出里
-    /// 存在 `vllm:num_requests_waiting_by_reason`(gauge,≥v0.20)与每个
-    /// counter 的 `<name>_created` 时间戳 series;带标签与不带标签两种形状
-    /// 都钉。删掉边界检查、或把取值从首个 token 换成末个 token,这里都必须
-    /// 变红(时间戳 token 会被当成计数器值)。
+    /// Name boundary: a longer metric sharing the prefix must never pass as
+    /// this metric's reading. Real vLLM exports carry
+    /// `vllm:num_requests_waiting_by_reason` (gauge, >= v0.20) and a
+    /// `<name>_created` timestamp series for every counter; both labeled and
+    /// labelless shapes are pinned. Removing the boundary check together with
+    /// taking the last token instead of the first must go red here (the
+    /// timestamp token would be summed as a counter value).
     #[test]
     fn prom_metric_name_boundary_rejects_prefix_extensions() {
         let text = "vllm:num_requests_waiting_by_reason{engine=\"0\",reason=\"capacity\"} 7.0\n\
