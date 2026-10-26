@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-26, durable policy-fault recovery pushed; initial engineering preparation policy implemented and locally verified**.
+Checkpoint: **2026-10-26, initial engineering preparation policy pushed; T03 observation contracts and independent consumer implemented and locally verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -10,6 +10,42 @@ other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
 ## Delivery rules and active work
+
+The scoped T03 increment adds the versioned
+[platform/backup observation contracts](../specs/upgrade/v1/platforms/README.md)
+and [independent conformance program](../tools/upgrade-platform-conformance/README.md).
+It defines **32** callable observation-audit operations and fixed acceptance /
+counterexample pairs. The consumer invokes existing small synthetic SQLite,
+writer-freeze and AEAD primitives while all production ports explicitly return
+`unsupported`; a real synthetic freeze without an OS-wide admission fence is
+rejected. A passing DATA audit cannot create native rights or prove its supplied
+facts. No production Rust ABI, backup byte format, stage caller, real protected
+backup/key owner or platform qualification is supplied.
+
+Fixed-source Windows/Node26 validation passed **13 focused contract-module tests**,
+the model report/CLI, architecture and whitespace checks. Two conformance-module
+tests included real64KiB synthetic primitives with natural child close. Repairs
+separate original/effective budget limits, allow only
+tighter current Session cutoffs and preserve truthful overspent high-water;
+health observations cover every attempt and required migrations. Three inherited
+negative controls remove each-attempt, Session-no-extension and original-health-
+start guards separately; one fresh control removes the canonical colon alphabet.
+Each weakened copy fails its assertion and the restored copy passes. These are
+four distinct controls, not additional end-to-end scenarios. The corrected
+health-start negative keeps elapsed time valid.
+Final cross-contract checks align canonical identifier punctuation with T01. A
+direct committed-Schema regression covers this seam and rejection of invalid
+ID/hash/version input, including trailing line terminators. The original
+non-multiline patterns already reject these terminators; this is additional
+regression coverage, not a separate lexical-defect repair or native trust proof.
+
+Five independent V3 first reports were frozen before exchange. Original-finder
+repair review and separate non-author adjudication govern the scoped delivery;
+local verification is distinct from CI, merge and release qualification. Node22,
+Linux/macOS runtime, full reference suite and current CI were not run locally.
+No E2E, App/Rust build or dependency/lock change was added. T03 remains **35%**,
+T26 **20%**, strict completion **8/47** and engineering **38.5%**; this audit
+component does not complete either task or its production/platform milestones.
 
 **T31 Windows helper/launcher host is implemented and pushed** in `18a241e1a`.
 T25 network privacy is parked at **85%** after its complete public read/export

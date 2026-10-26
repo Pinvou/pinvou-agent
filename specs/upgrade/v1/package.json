@@ -5,7 +5,9 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
-    "test": "node --test reference/tests/*.test.mjs",
+    "test": "node --test reference/tests/*.test.mjs platforms/test/*.test.mjs",
+    "test:platforms": "node --test platforms/test/*.test.mjs",
+    "conformance:platforms": "node ../../../tools/upgrade-platform-conformance/conformance.mjs model",
     "generate:schemas": "node reference/build-schemas.mjs",
     "generate:api": "node reference/build-api.mjs",
     "validate": "node reference/cli.mjs"

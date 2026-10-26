@@ -10,8 +10,10 @@ The input requirements remain the three V1.0 project documents and the four
 invariant specifications in this directory. The archived comprehensive design is
 not normative. The [contract profile](contract-profile.md) freezes the concrete
 encoding choices made here. The [model contract](model-contracts.md) defines T02's
-atomic boundaries and read-only owner ports. T03 defines actual platform,
-protected storage and backup interfaces; it is not implemented by these models.
+atomic boundaries and read-only owner ports. T03's separately runnable
+[platform/backup observation contracts](platforms/README.md) audit reported
+semantic facts and model counterexamples. They do not implement actual protected
+storage, live preparation, backup or execution authority.
 
 The owner-approved 2026-10-25 time policy is in R section17.1 and D section13:
 cross-boot time uncertainty pauses dependent actions, preserves original
