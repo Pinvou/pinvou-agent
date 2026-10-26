@@ -838,6 +838,7 @@ impl Store {
                 // not a later best-effort initializer or an adopted empty scope.
                 budgets::verify_fresh_in(&key, &actual)?;
                 retention::verify_fresh_in(&key, &actual)?;
+                time::verify_fresh_policy_in(&key, &actual)?;
                 let time = self.time_load(seed, &actual)?;
                 if time.state.revision != 1
                     || time.state.floor.is_some()

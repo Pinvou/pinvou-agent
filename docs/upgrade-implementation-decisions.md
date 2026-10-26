@@ -414,6 +414,23 @@ keys, a deployed issuer, protected host continuity, durable budgets or recovery
 cleanup. Concrete T03 preparation budgets remain unapproved. Clock restoration
 never renews credentials, resets original budgets or grants installation rights.
 
+### Approved initial client time limits (2026-10-26)
+
+The owner selected a maximum **30,000 ms round trip** and **1,000 ms server
+uncertainty** for the initial protected client policy. These limits apply to time
+verification, not package-download duration or concrete T03 preparation budgets.
+An over-limit response leaves time unavailable; a new attempt needs a new nonce
+and cannot renew original credentials or refund spent budgets.
+
+Only a genuinely new original-install transaction provisions that policy, bound
+to its exact installation scope, profile and original genesis. Policy, time
+genesis and original registration share the native transaction. Definitive
+readback also checks the exact initial policy. Existing or partial installations
+never obtain this value from a load, refresh, missing-value fallback or implicit
+migration. A missing policy remains missing; an existing administrative policy
+is preserved. These limits do not establish live continuity, complete retention
+cleanup or installation permission.
+
 ## Native package certificate decision (2026-10-21)
 
 The owner removed mandatory native code-signing certificates for update packages,

@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-26, scoped T26 diagnostics and fresh zero-custody; production library checked, default application unverified**.
+Checkpoint: **2026-10-26, diagnostics/fresh zero-custody pushed; initial protected time policy implemented and locally verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -59,8 +59,28 @@ The delivered foundations are:
 | Protected exact original Root custody and consumption recheck | Client `49e266a3e` | Host 103 PASS/one existing ignored; metadata-owner 7 PASS including one new binding-refusal test; role builds and guards |
 | Startup acquisition and atomic protected anchor/deny/barrier | Client `434484d2` | Host 115 PASS/one existing ignored; role builds, non-static-CRT library and guards |
 | Native interval and original-budget kernel | Client `f640ea03` | Host 132 PASS/one existing ignored, role builds, non-static-CRT library and guards |
+| Scoped diagnostics, explicit refresh and fresh zero-retention custody | Client `dac926c46` | Five independent first reviews plus non-author adjudication; host 152 PASS/one existing ignored, Node 12, production-host application library and guards; default application check unverified with owner-approved CI follow-up |
 
 These are separate historical runs with overlapping tests, not additive totals.
+
+The current scoped increment provisions the approved initial **30,000 ms RTT /
+1,000 ms uncertainty** policy only inside the genuine original-install
+transaction, with exact protected readback. Loads and refreshes retain mandatory
+actual-policy reads and cannot initialize or heal existing/legacy scopes. Current
+code has five independent V3 first reports and a separate static adjudication;
+final delivery qualification additionally checks the closed execution receipts
+and this documentation delta. The fixed-source host run passed **155 tests,
+zero failed, one existing ignored**; normal helper/launcher builds and the
+non-static-CRT host library check also passed. Architecture, formatting and
+whitespace checks passed. These results supersede two resource-refused or
+interrupted attempts, which remain failures. Initial exit-zero attempts that
+required auxiliary-process termination are excluded; their natural-exit retries
+provide the accepted test/build evidence. No new E2E was run. This private host
+increment changes no application wiring, dependency or public API, so it does
+not require another complete application build; the preceding increment's
+default-application CI follow-up remains outstanding. This is scoped local
+validation, not CI, merge, release or whole-task acceptance; T26 remains **20%**.
+
 The Root reader returns exact original canonical DATA, including expired/time-less
 history; Missing is not chain-tail evidence. The fixed control origin, TLS,
 no-proxy/no-redirect, canonical framing and per-object limits remain. There is no

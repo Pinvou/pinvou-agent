@@ -275,6 +275,30 @@ fn policy_in(key: &Key, binding: &Binding) -> Result<PolicySnapshot> {
     let policy = Policy::parse(&raw, binding)?;
     Ok(PolicySnapshot { raw, policy })
 }
+
+fn initial_policy_bytes(binding: &Binding) -> Result<Vec<u8>> {
+    json::encode(&Policy::initial(binding.clone())?, false)
+}
+
+fn verify_initial_policy_in(key: &Key, binding: &Binding) -> Result<()> {
+    if policy_in(key, binding)?.raw != initial_policy_bytes(binding)? {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(())
+}
+
+fn initialize_policy_in(key: &Key, binding: &Binding) -> Result<()> {
+    require_absent_value(key, "Policy")?;
+    write(key, "Policy", &initial_policy_bytes(binding)?)?;
+    verify_initial_policy_in(key, binding)
+}
+
+/// Definitive original-commit readback only; this never creates or replaces
+/// policy. Existing loads and refreshes keep their mandatory actual-policy read.
+pub(super) fn verify_fresh_policy_in(private: &Key, host: &HostRegistration) -> Result<()> {
+    let key = open(private.0, NAMESPACE, false, None)?.ok_or(Error::StateCorrupt)?;
+    verify_initial_policy_in(&key, &Binding::from_host(host))
+}
 // Bounded native adapter census capacity, not a retention or download policy.
 // Overflow refuses the census; it never truncates or removes history.
 const MAX_CENSUS_TIME_HEADERS: u32 = 16_384;
@@ -575,9 +599,9 @@ pub(super) fn initialize_in(
     write(&key, "Genesis", &raw)?;
     write(&key, "Head", &raw)?;
     write_record(&first, &state)?;
-    // Policy is intentionally absent: local administrators must explicitly
-    // supply the protected, scope/genesis-bound value. No defaults are written.
-    require_absent_value(&key, "Policy")?;
+    // Only this original-absence transaction provisions the approved limits.
+    // Existing/legacy loads never enroll or heal a missing Policy value.
+    initialize_policy_in(&key, &state.binding)?;
     state_in(private, host, Some(transaction))?;
     Ok(())
 }
@@ -1061,6 +1085,117 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[allow(unsafe_code)]
+    fn actual_initial_policy_is_written_once_and_missing_reads_never_heal() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        struct OwnedTestKey {
+            key: Option<Key>,
+            path: Vec<u16>,
+        }
+        impl Drop for OwnedTestKey {
+            fn drop(&mut self) {
+                drop(self.key.take());
+                if !self.path.is_empty() {
+                    unsafe {
+                        RegDeleteTreeW(HKEY_CURRENT_USER, self.path.as_ptr());
+                    }
+                }
+            }
+        }
+        impl OwnedTestKey {
+            fn finish(mut self) {
+                drop(self.key.take());
+                assert_eq!(
+                    unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, self.path.as_ptr()) },
+                    0
+                );
+                self.path.clear();
+            }
+        }
+        let path = wide(&format!(
+            "Software\\PinvouInitialTimePolicyTest-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut handle = ptr::null_mut();
+        let mut disposition = 0;
+        assert_eq!(
+            unsafe {
+                RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    path.as_ptr(),
+                    0,
+                    ptr::null(),
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_READ | KEY_WRITE,
+                    ptr::null(),
+                    &mut handle,
+                    &mut disposition,
+                )
+            },
+            0
+        );
+        let key = Key(handle);
+        assert_eq!(disposition, REG_CREATED_NEW_KEY);
+        let owned = OwnedTestKey {
+            key: Some(key),
+            path,
+        };
+        let key = owned.key.as_ref().unwrap();
+        let binding = Binding {
+            installation_scope_id: "scope".into(),
+            product: "pinvou".into(),
+            component: "app".into(),
+            target_key: "windows-x86_64-nsis-perMachine".into(),
+            profile_kind: "production".into(),
+            profile_id: "host".into(),
+            genesis_seed_sha256: "a".repeat(64),
+            genesis_manifest_sha256: "b".repeat(64),
+            original_install_operation_id: "original".into(),
+        };
+        assert!(matches!(
+            policy_in(key, &binding),
+            Err(Error::PrerequisiteUnavailable)
+        ));
+        initialize_policy_in(key, &binding).unwrap();
+        let first = policy_in(key, &binding).unwrap();
+        assert_eq!(first.policy.max_round_trip_ms, 30_000);
+        assert_eq!(first.policy.max_uncertainty_ms, 1_000);
+        assert_eq!(
+            initialize_policy_in(key, &binding),
+            Err(Error::StateCorrupt)
+        );
+        assert_eq!(policy_in(key, &binding).unwrap().raw, first.raw);
+        let mut other = binding.clone();
+        other.original_install_operation_id = "other".into();
+        assert!(matches!(policy_in(key, &other), Err(Error::StateCorrupt)));
+        let mut administrative = first.policy;
+        administrative.max_round_trip_ms = 15_000;
+        let changed = json::encode(&administrative, false).unwrap();
+        write(key, "Policy", &changed).unwrap();
+        assert_eq!(
+            initialize_policy_in(key, &binding),
+            Err(Error::StateCorrupt)
+        );
+        assert_eq!(policy_in(key, &binding).unwrap().raw, changed);
+        assert_eq!(
+            verify_initial_policy_in(key, &binding),
+            Err(Error::StateCorrupt)
+        );
+        assert_eq!(
+            unsafe { RegDeleteValueW(key.0, wide("Policy").as_ptr()) },
+            0
+        );
+        assert!(matches!(
+            policy_in(key, &binding),
+            Err(Error::PrerequisiteUnavailable)
+        ));
+        require_absent_value(key, "Policy").unwrap();
+        owned.finish();
+    }
+
     #[test]
     fn detached_root_descriptors_do_not_json_expand_a_maximum_metadata_original() {
         // Byte-capacity/descriptor DATA control only, not a valid Root or SCM source.

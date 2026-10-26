@@ -96,8 +96,9 @@ impl Incarnation {
         self.process.validate().map_err(|_| Error::StateCorrupt)
     }
 }
-/// Fixed protected registry Policy DATA, explicitly configured by an administrator.
-/// No defaults or ordinary environment/file source. Changes cannot reset state.
+/// Protected per-original Policy DATA. Only fresh original enrollment writes the
+/// approved initial limits; reads never supply a fallback for missing policy.
+/// Later administrative changes cannot reset persisted time or budget state.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Policy {
@@ -108,6 +109,16 @@ pub(crate) struct Policy {
     pub(crate) denied_key_ids: Vec<String>,
 }
 impl Policy {
+    pub(crate) fn initial(binding: Binding) -> Result<Self> {
+        binding.validate()?;
+        Ok(Self {
+            protocol_version: 1,
+            binding,
+            max_round_trip_ms: 30_000,
+            max_uncertainty_ms: 1_000,
+            denied_key_ids: Vec::new(),
+        })
+    }
     pub(crate) fn parse(bytes: &[u8], binding: &Binding) -> Result<Self> {
         let p: Self = json::decode(bytes, false)?;
         if p.protocol_version != 1
@@ -683,6 +694,46 @@ mod live_interval_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn initial_policy_is_canonical_and_bound_to_the_original_installation() {
+        let b = binding();
+        let policy = Policy::initial(b.clone()).unwrap();
+        assert_eq!(policy.max_round_trip_ms, 30_000);
+        assert_eq!(policy.max_uncertainty_ms, 1_000);
+        assert!(policy.denied_key_ids.is_empty());
+        let raw = json::encode(&policy, false).unwrap();
+        Policy::parse(&raw, &b).unwrap();
+        let mut other = b.clone();
+        other.original_install_operation_id = "another-original".into();
+        assert!(Policy::parse(&raw, &other).is_err());
+        other = b.clone();
+        other.genesis_manifest_sha256 = "c".repeat(64);
+        assert!(Policy::parse(&raw, &other).is_err());
+        other = b;
+        other.installation_scope_id.clear();
+        assert!(Policy::initial(other).is_err());
+        assert!(Policy::parse(b"{}", &binding()).is_err());
+    }
+
+    #[test]
+    fn initial_policy_verifies_real_signed_evidence_without_granting_fresh_time() {
+        let (mut state, _, original) = anchored();
+        let raw = json::encode(&Policy::initial(state.binding.clone()).unwrap(), false).unwrap();
+        state.evidence.as_mut().unwrap().policy = String::from_utf8(raw.clone()).unwrap();
+        state.validate(&original).unwrap();
+        state
+            .anchor_for_live(&raw, state.incarnation.as_ref().unwrap())
+            .unwrap();
+        let initial = State::genesis(state.binding.clone(), &original).unwrap();
+        assert!(initial.status == Status::Unknown);
+        assert!(initial.cleanup_pending && initial.floor.is_none() && initial.evidence.is_none());
+        assert!(
+            initial
+                .anchor_for_live(&raw, state.incarnation.as_ref().unwrap())
+                .is_err()
+        );
+    }
+
     fn vector() -> serde_json::Value {
         serde_json::from_slice(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
