@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createServer, connect } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -202,6 +202,40 @@ async function spawnRelay(env = {}) {
     httpUrl: `http://127.0.0.1:${isolatedPort}`,
     wsUrl: `ws://127.0.0.1:${isolatedPort}/pinvou3/remote/ws`,
     statePath,
+  };
+}
+
+// Like spawnRelay but keeps capturing stdout/stderr for assertions, and can
+// spawn children that are expected NOT to come up (configuration failures).
+async function spawnRelayCapture(env = {}, { awaitListening = true } = {}) {
+  const isolatedPort = await getFreePort();
+  const statePath = join(testRoot, `relay-capture-${isolatedPort}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+  const child = spawn(process.execPath, [join(relayDir, "server.js")], {
+    cwd: relayDir,
+    env: {
+      ...process.env,
+      PORT: String(isolatedPort),
+      PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
+      PINVOU_REMOTE_WEB_DIR: webDir,
+      HEARTBEAT_INTERVAL_MS: "5000",
+      PINVOU_REMOTE_STATE_PATH: statePath,
+      ...env,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  let errors = "";
+  child.stdout.on("data", (chunk) => { output += String(chunk); });
+  child.stderr.on("data", (chunk) => { errors += String(chunk); });
+  if (awaitListening) await waitForOutput(child, /pinvou remote relay listening/);
+  return {
+    child,
+    port: isolatedPort,
+    httpUrl: `http://127.0.0.1:${isolatedPort}`,
+    wsUrl: `ws://127.0.0.1:${isolatedPort}/pinvou3/remote/ws`,
+    statePath,
+    output: () => output,
+    errors: () => errors,
   };
 }
 
@@ -1062,5 +1096,62 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
         await stopRelay(child);
       }
     }
+  }
+});
+
+test("survives a websocket protocol violation that emits an error event", async () => {
+  const isolated = await spawnRelayCapture({});
+  let ws;
+  try {
+    ws = await openSocket(isolated.wsUrl);
+    // A frame over maxPayload makes ws emit "error" on the socket; without a
+    // listener the unhandled event crashed the whole relay process.
+    ws.send("x".repeat(4 * 1024 * 1024 + 8));
+    await waitForClose(ws);
+    const follower = await openSocket(isolated.wsUrl);
+    closeSocket(follower);
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    closeSocket(ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+function rawRequest(hostPort, requestText) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(hostPort, "127.0.0.1", () => {
+      socket.end(requestText);
+    });
+    let text = "";
+    socket.on("data", (chunk) => { text += String(chunk); });
+    socket.once("error", reject);
+    socket.once("close", () => resolve(text));
+  });
+}
+
+test("rejects malformed Host headers instead of crashing", async () => {
+  const isolated = await spawnRelayCapture({});
+  try {
+    const httpBanner = await rawRequest(
+      isolated.port,
+      "GET /pinvou3/remote/healthz HTTP/1.1\r\n"
+      + "Host: ::1:99999\r\n"
+      + "Connection: close\r\n\r\n",
+    );
+    assert.match(httpBanner, /400 Bad Request/u);
+    const upgradeBanner = await rawRequest(
+      isolated.port,
+      "GET /pinvou3/remote/ws HTTP/1.1\r\n"
+      + "Host: ::1:99999\r\n"
+      + "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+      + "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==\r\n"
+      + "Sec-WebSocket-Version: 13\r\n\r\n",
+    );
+    assert.match(upgradeBanner, /400 Bad Request/u);
+    const follower = await openSocket(isolated.wsUrl);
+    closeSocket(follower);
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await stopRelay(isolated.child);
   }
 });

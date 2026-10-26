@@ -743,7 +743,14 @@ const server = http.createServer(async (req, res) => {
     res.end("forbidden");
     return;
   }
-  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  } catch {
+    res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+    res.end("bad request");
+    return;
+  }
   const routePath = stripPublicBasePath(url.pathname);
   if (isWithinPublicBasePath(url.pathname) && routePath === "/healthz") {
     res.writeHead(200, {
@@ -769,7 +776,13 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  } catch {
+    rejectUpgrade(socket, "400 Bad Request", "malformed host header");
+    return;
+  }
   if (!isWithinPublicBasePath(url.pathname) || stripPublicBasePath(url.pathname) !== "/ws") {
     socket.destroy();
     return;
@@ -1040,6 +1053,12 @@ wss.on("connection", (ws, req) => {
   }, WS_AUTH_TIMEOUT_MS);
   ws.authTimer.unref?.();
   ws.on("pong", () => { ws.isAlive = true; });
+  // ws emits "error" on the socket for protocol violations (e.g. a frame over
+  // maxPayload). Without a listener, one unauthenticated frame would crash the
+  // whole relay process.
+  ws.on("error", () => {
+    try { ws.terminate(); } catch {}
+  });
 
   ws.on("message", (raw, isBinary) => {
     if (ws.policyClosing || ws.revokePending) return;
