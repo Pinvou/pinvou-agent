@@ -1117,6 +1117,9 @@ wss.on("connection", (ws, req) => {
     }
     if (msg.type === "desktop_endpoint_revoke") {
       void revokeFromSocket(ws, msg).catch(() => {
+        // Defensive: revokeFromSocket resets ws.revokePending and
+        // endpoint.revoking on every reachable failure path; this outer catch
+        // only keeps an unexpected throw from surfacing as a crash.
         console.error("[relay-error] revocation_unexpected_failure");
         rejectSocket(ws, "revoke_failed", "endpoint revocation failed");
       });
@@ -1191,7 +1194,7 @@ server.listen(PORT, HOST, () => {
 });
 
 let shuttingDown = false;
-async function shutdown() {
+function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(heartbeatTimer);
