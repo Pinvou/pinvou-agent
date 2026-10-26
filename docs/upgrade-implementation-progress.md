@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-26, diagnostics/fresh zero-custody pushed; initial protected time policy implemented and locally verified**.
+Checkpoint: **2026-10-26, initial protected time policy pushed; durable policy-fault recovery implemented and locally verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -63,21 +63,58 @@ The delivered foundations are:
 
 These are separate historical runs with overlapping tests, not additive totals.
 
-The current scoped increment provisions the approved initial **30,000 ms RTT /
+Initial protected time policy was delivered in client `d4dbb1f3` after the final
+independent V3 adjudication and exact reviewed-tree/remote/DCO checks. The current
+scope records positive corruption of bounded native binary Time Policy bytes
+while the original Time ledger, budget floor and never-enabled retention custody
+remain valid. Its incident and Unknown/barrier successor share one native
+transaction. Reopening, restoring Policy bytes and changing the SCM incarnation
+do not erase an active incident. Only a fresh signed request-bound anchor and
+the actual zero-custody completion transaction mark it recovered; the incident
+remains in protected Time history. Ordinary reads remain side-effect-free.
+
+This policy-fault increment has five independent V3 first reports. C found a
+late-observation gap: policy damage during network/publication/cleanup could
+escape the initial-only incident path. The repair surrounds the complete
+attempt with the same authenticated positive-byte re-observer, after failed
+native transactions unwind, and uses the latest verified owner snapshot.
+Commit-unknown errors remain separate. C and B statically rechecked this fix;
+the separate non-author final adjudication checks the exact final object and
+closed receipts rather than counting reviewer votes.
+
+The repaired fixed-source host suite passed **159 tests, zero failed, one
+existing ignored**, with normal helper/launcher builds, non-static-CRT host
+library, architecture, formatting and tracked/new-file whitespace checks.
+The earlier version's **12 Node module tests**, project UI lint and UI build
+remain applicable: UI product sources, dependencies, configuration and callers
+did not change in the repair. They are inherited execution, not new runs or
+additional test totals. The affected browser smoke assertion was corrected for
+the recovery action and only syntax/lint checked; no browser/E2E ran. Initial
+forced-auxiliary exit-zero host attempts remain excluded in favor of natural
+retries. Native installed-SCM/TxR/crash/reboot recovery remains static-only.
+
+Missing/wrong-type/unreadable policy, OS query failures and damaged
+Time/history/retention/budget records do not masquerade as this positive-byte
+fault observation. Other integrity failures remain diagnosed/refused; their
+complete repair, nonzero secret/backup actions and other OS adapters are outside
+this slice. The existing three-language action explicitly requests time after
+repair; its ACK never proves recovery. No new E2E was run. No CI, merge, release,
+whole-task acceptance or delivery commit is inferred here; T26 stays **20%**.
+
+The preceding initial-policy increment provisioned the approved **30,000 ms RTT /
 1,000 ms uncertainty** policy only inside the genuine original-install
 transaction, with exact protected readback. Loads and refreshes retain mandatory
-actual-policy reads and cannot initialize or heal existing/legacy scopes. Current
-code has five independent V3 first reports and a separate static adjudication;
-final delivery qualification additionally checks the closed execution receipts
-and this documentation delta. The fixed-source host run passed **155 tests,
+actual-policy reads and cannot initialize or heal existing/legacy scopes. Its
+five independent V3 first reports, final non-author adjudication and closed
+execution receipts qualified that exact delivery. Its host run passed **155 tests,
 zero failed, one existing ignored**; normal helper/launcher builds and the
 non-static-CRT host library check also passed. Architecture, formatting and
 whitespace checks passed. These results supersede two resource-refused or
 interrupted attempts, which remain failures. Initial exit-zero attempts that
 required auxiliary-process termination are excluded; their natural-exit retries
 provide the accepted test/build evidence. No new E2E was run. This private host
-increment changes no application wiring, dependency or public API, so it does
-not require another complete application build; the preceding increment's
+increment changed no application wiring, dependency or public API, so it did
+not require another complete application build; the earlier diagnostic increment's
 default-application CI follow-up remains outstanding. This is scoped local
 validation, not CI, merge, release or whole-task acceptance; T26 remains **20%**.
 

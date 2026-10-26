@@ -27,7 +27,9 @@ test('only exact host status DATA is displayed; accepted and Known are not statu
   assert.equal(canRefreshTrustedTime(status('cleanup_complete')), true);
   assert.equal(canRefreshTrustedTime(status('cleanup_complete', true)), false);
   assert.equal(canRefreshTrustedTime(status('unknown', true)), false);
-  for (const state of ['unsupported', 'setup_required', 'missing_policy', 'integrity_fault']) {
+  assert.equal(canRefreshTrustedTime(status('integrity_fault')), true);
+  assert.equal(canRefreshTrustedTime(status('integrity_fault', true)), false);
+  for (const state of ['unsupported', 'setup_required', 'missing_policy']) {
     assert.equal(canRefreshTrustedTime(status(state)), false);
   }
 });
@@ -51,6 +53,26 @@ test('first read is local only, and concurrent requests share one lane', async (
   await first;
   assert.equal(views.at(-1).status.state, 'unknown');
   assert.equal(views.at(-1).busy, false);
+  ui.dispose();
+});
+
+test('integrity fault recovery requires an explicit refresh and a new native observation', async () => {
+  let state = 'integrity_fault';
+  const calls = [];
+  const views = [];
+  const ui = createTrustedTimeDiagnostics({
+    async inspectTrustedTime() { calls.push('read'); return status(state); },
+    async requestTrustedTimeRefresh() { calls.push('refresh'); return { protocolVersion: 1, state: 'accepted' }; },
+  }, view => views.push(view));
+  await ui.read();
+  assert.deepEqual(calls, ['read']);
+  assert.equal(canRefreshTrustedTime(views.at(-1).status), true);
+  await ui.refresh();
+  assert.deepEqual(calls, ['read', 'refresh', 'read']);
+  assert.equal(views.at(-1).status.state, 'integrity_fault', 'ACK never clears an incident');
+  state = 'cleanup_complete';
+  await ui.read();
+  assert.equal(views.at(-1).status.state, 'cleanup_complete');
   ui.dispose();
 });
 

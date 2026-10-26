@@ -68,6 +68,22 @@ impl TimeOwner {
         host: &StartedServiceContext,
         transport: &TimeTransport,
     ) -> Result<()> {
+        let result = self.acquire(host, transport).await;
+        if let Err(Error::StateCorrupt) = &result {
+            // This covers the whole attempt, including final policy recapture
+            // after HTTP and cleanup rechecks. Generic corruption alone is not
+            // evidence: the fixed native publisher must still reobserve actual
+            // invalid Policy bytes and the unchanged intact original snapshot.
+            self.commit_uncertain = true;
+            Store::new(&host.context.seed).latch_time_policy_fault(host, &self.snapshot)?;
+        }
+        result
+    }
+    async fn acquire(
+        &mut self,
+        host: &StartedServiceContext,
+        transport: &TimeTransport,
+    ) -> Result<()> {
         if self.commit_uncertain {
             return Err(Error::StateCommitUnknown);
         }

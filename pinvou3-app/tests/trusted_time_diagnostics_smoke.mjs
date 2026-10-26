@@ -107,7 +107,7 @@ try {
       assert(view.text.includes(copy.title));
       assert(view.text.includes(copy.networkNotice));
       assert.deepEqual(view.buttons.map(button => button.text), [copy.readStatus, copy.refresh]);
-      assert.equal(view.buttons[1].disabled, !['unknown', 'source_unavailable', 'cleanup_pending', 'cleanup_complete'].includes(states[index]));
+      assert.equal(view.buttons[1].disabled, !['unknown', 'source_unavailable', 'cleanup_pending', 'cleanup_complete', 'integrity_fault'].includes(states[index]));
       assert.equal((await calls()).filter(call => call.kind === 'refresh').length, 0, 'Local reads must never request refresh');
     }
     let nextRead = states.length;

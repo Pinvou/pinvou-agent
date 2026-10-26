@@ -472,7 +472,7 @@ export const dictEn = {
             "source_unavailable": "The time service is currently unavailable. Time-dependent actions remain paused.",
             "cleanup_pending": "A time anchor is saved. Cleanup checks are still pending; time-dependent actions remain paused.",
             "cleanup_complete": "Current cleanup checks are complete. Upgrading still requires other conditions to be met.",
-            "integrity_fault": "Protected time state could not be verified. Time-dependent actions remain paused."
+            "integrity_fault": "Protected time state has an integrity fault. Time-dependent actions remain paused. After repairing the component or policy, request time again; a recorded policy fault closes only after authenticated time and cleanup verification succeed."
           },
           "errors": {
             "busy": "Another refresh is already running. Read status to check progress.",

@@ -1,5 +1,6 @@
 //! Protected time-owner DATA and retained cryptographic evidence. No parsed
 //! record grants UTC continuity, cleanup completion or execution permission.
+mod policy_fault;
 use crate::{
     error::{Error, Result},
     identity::ProcessSelector,
@@ -11,6 +12,7 @@ use pinvou_upgrade_codec::{Document, InputKind, decode_canonical_envelope};
 use pinvou_upgrade_verifier::{
     SuppliedTimeObservation, TimeVerificationInputs, verify_time_response,
 };
+pub(crate) use policy_fault::PolicyFault;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,6 +303,8 @@ pub(crate) struct State {
     pub(crate) status: Status,
     pub(crate) cleanup_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) policy_fault: Option<PolicyFault>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) zero_retention: Option<crate::retention_custody::ZeroRetentionReference>,
     pub(crate) floor: Option<u64>,
     /// Exact canonical successors, starting at immutable original Root + 1.
@@ -319,6 +323,7 @@ impl State {
             incarnation: None,
             status: Status::Unknown,
             cleanup_pending: true,
+            policy_fault: None,
             zero_retention: None,
             floor: None,
             roots: Vec::new(),
@@ -400,6 +405,14 @@ impl State {
         if let Some(i) = &self.incarnation {
             i.validate()?;
         }
+        if let Some(fault) = &self.policy_fault {
+            fault.validate(
+                self.revision,
+                self.previous_sha256.as_deref(),
+                self.status,
+                self.incarnation.as_ref(),
+            )?;
+        }
         let mut version = root_version(original, &self.binding.product)?;
         for root in &self.roots {
             let next = root_version(root.as_bytes(), &self.binding.product)?;
@@ -442,6 +455,13 @@ impl State {
     }
     pub(crate) fn transition(&self, next: &Self, previous: &[u8], original: &[u8]) -> Result<()> {
         next.validate(original)?;
+        PolicyFault::transition(
+            self.policy_fault.as_ref(),
+            next.policy_fault.as_ref(),
+            next.status,
+            next.revision,
+            previous,
+        )?;
         if next.binding != self.binding
             || next.revision != self.revision.checked_add(1).ok_or(Error::Unavailable)?
             || next.previous_sha256 != Some(json::sha256(previous))
@@ -485,12 +505,39 @@ impl State {
                     // with max(actual time floor, protected budget live floor).
                     || e.floor_before < self.floor.unwrap_or(0)
                     || e.base_root_count != self.roots.len()
+                    || self.policy_fault.as_ref().is_some_and(PolicyFault::is_active)
+                        && self.evidence.as_ref().is_some_and(|old| old.request == e.request)
                 {
                     return Err(Error::StateCorrupt);
                 }
             }
         }
         Ok(())
+    }
+    /// Transition DATA only. Native production callers must positively observe
+    /// invalid protected Policy bytes and authenticate the intact original state.
+    pub(crate) fn next_policy_fault(
+        &self,
+        incarnation: Incarnation,
+        previous: &[u8],
+        policy_sha256: String,
+    ) -> Result<Self> {
+        if !json::digest(&policy_sha256)
+            || self
+                .policy_fault
+                .as_ref()
+                .is_some_and(PolicyFault::is_active)
+        {
+            return Err(Error::ScopeConflict);
+        }
+        let mut next = self.next_unknown(incarnation.clone(), previous)?;
+        next.policy_fault = Some(PolicyFault::observed(
+            next.revision,
+            previous,
+            policy_sha256,
+            incarnation,
+        ));
+        Ok(next)
     }
 }
 pub(crate) fn root_version(raw: &[u8], product: &str) -> Result<u64> {
@@ -813,6 +860,130 @@ mod tests {
         });
         unknown.transition(&s, &raw, &original).unwrap();
         (s, raw, original)
+    }
+    #[test]
+    fn policy_fault_preserves_original_state_and_survives_reopen_and_incarnation_change() {
+        let (mut state, _, original) = anchored();
+        state.denied_key_ids.push("f".repeat(64));
+        state.validate(&original).unwrap();
+        let before = json::encode(&state, false).unwrap();
+        let fault = state
+            .next_policy_fault(incarnation(1), &before, "a".repeat(64))
+            .unwrap();
+        state.transition(&fault, &before, &original).unwrap();
+        assert!(
+            fault.status == Status::Unknown
+                && fault.cleanup_pending
+                && fault.zero_retention.is_none()
+        );
+        assert!(
+            fault.floor == state.floor
+                && fault.roots == state.roots
+                && fault.evidence == state.evidence
+                && fault.denied_key_ids == state.denied_key_ids
+        );
+        let raw = json::encode(&fault, false).unwrap();
+        let reopened = State::parse(&raw, &original).unwrap();
+        let next = reopened.next_unknown(incarnation(2), &raw).unwrap();
+        reopened.transition(&next, &raw, &original).unwrap();
+        assert!(next.policy_fault == fault.policy_fault);
+        assert!(
+            next.next_policy_fault(
+                incarnation(2),
+                &json::encode(&next, false).unwrap(),
+                "b".repeat(64)
+            )
+            .is_err()
+        );
+        // Restored valid policy bytes and an old signed anchor are not recovery.
+        assert!(
+            fault
+                .anchor_for_live(
+                    state.evidence.as_ref().unwrap().policy.as_bytes(),
+                    &incarnation(1)
+                )
+                .is_err()
+        );
+        let mut erased = next;
+        erased.policy_fault = None;
+        assert!(fault.transition(&erased, &raw, &original).is_err());
+    }
+    #[test]
+    fn policy_fault_closes_only_with_a_new_anchor_and_zero_completion_shape() {
+        // Real public signed vector DATA, not an installed SCM or live source.
+        let (signed, _, original) = anchored();
+        let initial = State::genesis(binding(), &original).unwrap();
+        let before = json::encode(&initial, false).unwrap();
+        let fault = initial
+            .next_policy_fault(incarnation(1), &before, "a".repeat(64))
+            .unwrap();
+        initial.transition(&fault, &before, &original).unwrap();
+        let fault_raw = json::encode(&fault, false).unwrap();
+        let mut pending = signed;
+        pending.revision = fault.revision + 1;
+        pending.previous_sha256 = Some(json::sha256(&fault_raw));
+        pending.policy_fault = fault.policy_fault.clone();
+        fault.transition(&pending, &fault_raw, &original).unwrap();
+        let pending_raw = json::encode(&pending, false).unwrap();
+        let mut completed = pending.clone();
+        completed.revision += 1;
+        completed.previous_sha256 = Some(json::sha256(&pending_raw));
+        completed.status = Status::CleanupVerifiedZero;
+        completed.cleanup_pending = false;
+        completed.zero_retention = Some(crate::retention_custody::ZeroRetentionReference {
+            completion_revision: completed.revision,
+            completion_sha256: "b".repeat(64),
+        });
+        // Active incidents cannot be ignored by an otherwise complete shape.
+        assert!(
+            pending
+                .transition(&completed, &pending_raw, &original)
+                .is_err()
+        );
+        completed.policy_fault = pending
+            .policy_fault
+            .as_ref()
+            .map(|f| f.recovered(completed.revision));
+        pending
+            .transition(&completed, &pending_raw, &original)
+            .unwrap();
+        assert!(!completed.policy_fault.as_ref().unwrap().is_active());
+        let raw = json::encode(&completed, false).unwrap();
+        let future = completed.next_unknown(incarnation(2), &raw).unwrap();
+        completed.transition(&future, &raw, &original).unwrap();
+        assert!(future.policy_fault == completed.policy_fault); // History not erased.
+        let future_raw = json::encode(&future, false).unwrap();
+        let again = future
+            .next_policy_fault(incarnation(2), &future_raw, "c".repeat(64))
+            .unwrap();
+        future.transition(&again, &future_raw, &original).unwrap();
+        assert!(again.policy_fault.as_ref().unwrap().is_active());
+        assert!(completed.policy_fault != again.policy_fault);
+    }
+    #[test]
+    fn active_policy_fault_rejects_replayed_anchor_and_mutated_incident() {
+        let (state, _, original) = anchored();
+        let raw = json::encode(&state, false).unwrap();
+        let fault = state
+            .next_policy_fault(incarnation(1), &raw, "a".repeat(64))
+            .unwrap();
+        let fault_raw = json::encode(&fault, false).unwrap();
+        let mut replayed = state.clone();
+        replayed.revision = fault.revision + 1;
+        replayed.previous_sha256 = Some(json::sha256(&fault_raw));
+        replayed.policy_fault = fault.policy_fault.clone();
+        assert!(fault.transition(&replayed, &fault_raw, &original).is_err());
+        for (field, value) in [
+            ("detectedRevision", serde_json::json!(0)),
+            ("previousTimeSha256", serde_json::json!("b".repeat(64))),
+            ("policySha256", serde_json::json!("invalid")),
+            ("recoveredRevision", serde_json::json!(fault.revision)),
+            ("kind", serde_json::json!("offline")),
+        ] {
+            let mut bad = serde_json::to_value(&fault).unwrap();
+            bad["policyFault"][field] = value;
+            assert!(State::parse(&json::encode(&bad, false).unwrap(), &original).is_err());
+        }
     }
     #[test]
     fn live_anchor_data_rejects_unknown_policy_deny_and_cross_incarnation() {

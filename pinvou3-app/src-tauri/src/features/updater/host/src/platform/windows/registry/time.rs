@@ -1,8 +1,11 @@
 //! Fixed native64 protected time sibling. Missing is never a fresh owner.
 //! Its genesis is created exclusively inside original Store::commit(None).
+mod policy_fault;
 use super::super::installed::StartedServiceContext;
 use super::*;
-use crate::trusted_time::{Binding, CounterEvidence, Evidence, Incarnation, Policy, State, Status};
+use crate::trusted_time::{
+    Binding, CounterEvidence, Evidence, Incarnation, Policy, PolicyFault, State, Status,
+};
 use serde::{Deserialize, Serialize};
 
 const NAMESPACE: &str = "trusted-time-v1";
@@ -66,6 +69,8 @@ struct Header {
     status: Status,
     cleanup_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy_fault: Option<PolicyFault>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     zero_retention: Option<crate::retention_custody::ZeroRetentionReference>,
     floor: Option<u64>,
     roots: Vec<Blob>,
@@ -81,6 +86,7 @@ fn header(state: &State) -> Header {
         incarnation: state.incarnation.clone(),
         status: state.status,
         cleanup_pending: state.cleanup_pending,
+        policy_fault: state.policy_fault.clone(),
         zero_retention: state.zero_retention.clone(),
         floor: state.floor,
         roots: state.roots.iter().map(|s| Blob::of(s.as_bytes())).collect(),
@@ -158,6 +164,7 @@ fn read_record(key: &Key, raw: &[u8], original: &[u8]) -> Result<State> {
         incarnation: h.incarnation,
         status: h.status,
         cleanup_pending: h.cleanup_pending,
+        policy_fault: h.policy_fault,
         zero_retention: h.zero_retention,
         floor: h.floor,
         roots,
@@ -336,6 +343,14 @@ impl RetainedCompletionCensus {
     }
     fn observe(&mut self, name: &str, raw: &[u8]) -> Result<()> {
         let row: Header = json::decode(raw, false)?;
+        if let Some(fault) = &row.policy_fault {
+            fault.validate(
+                row.revision,
+                row.previous_sha256.as_deref(),
+                row.status,
+                row.incarnation.as_ref(),
+            )?;
+        }
         if name != revision_name(self.next_revision)
             || row.revision != self.next_revision
             || row.revision > self.head_revision
@@ -466,11 +481,19 @@ pub(super) fn check_retained_completion_in(
     }
     // Completion changes no original anchor evidence, roots, floor, deny or
     // incarnation. Reverse the finite administrative transition and compare.
+    PolicyFault::transition(
+        anchor.policy_fault.as_ref(),
+        next.policy_fault.as_ref(),
+        Status::CleanupVerifiedZero,
+        next.revision,
+        &base_raw,
+    )?;
     next.revision = anchor.revision;
     next.previous_sha256 = anchor.previous_sha256.clone();
     next.status = Status::CleanupPending;
     next.cleanup_pending = true;
     next.zero_retention = None;
+    next.policy_fault = anchor.policy_fault.clone();
     if json::encode(&next, false)? != base_raw {
         return Err(Error::StateCorrupt);
     }
@@ -703,6 +726,10 @@ impl Store {
                     next.status = Status::CleanupVerifiedZero;
                     next.cleanup_pending = false;
                     next.zero_retention = Some(completion.reference()?);
+                    next.policy_fault = next
+                        .policy_fault
+                        .as_ref()
+                        .map(|f| f.recovered(next_revision));
                     // Final fixed source/SCM/readset check precedes the two writes;
                     // both completion and Time Head publish under this one TxR.
                     source.recheck(host)?;
@@ -819,6 +846,14 @@ impl Store {
         // Authenticate all protected sources even when no live interval can be
         // offered. A valid empty budget floor is not a missing budget namespace.
         let _snapshot = state_in(&private, &actual, Some(&transaction))?;
+        if _snapshot
+            .state
+            .policy_fault
+            .as_ref()
+            .is_some_and(PolicyFault::is_active)
+        {
+            return Ok(crate::TrustedTimeState::IntegrityFault);
+        }
         let _floor = budgets::floor_in(&private, &actual, Some(&transaction))?;
         let source = current_in(&private, &actual, &transaction)?;
         let state = source.state();
@@ -914,6 +949,11 @@ impl Store {
         let current = state_in(&private, &actual, Some(&transaction))?;
         if current.raw != expected.raw || current.original_root != expected.original_root {
             return Err(Error::ScopeConflict);
+        }
+        // Only the positively-observed native fault publisher and the fixed
+        // zero-custody completion path can change incident state.
+        if next.policy_fault != current.state.policy_fault {
+            return Err(Error::StateCorrupt);
         }
         current
             .state

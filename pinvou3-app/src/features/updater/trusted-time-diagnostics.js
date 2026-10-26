@@ -61,7 +61,7 @@ export function trustedTimeErrorCode(error) {
  */
 export function canRefreshTrustedTime(status) {
   return !!status && !status.refreshing
-    && ['unknown', 'source_unavailable', 'cleanup_pending', 'cleanup_complete'].includes(status.state);
+    && ['unknown', 'source_unavailable', 'cleanup_pending', 'cleanup_complete', 'integrity_fault'].includes(status.state);
 }
 
 /**
