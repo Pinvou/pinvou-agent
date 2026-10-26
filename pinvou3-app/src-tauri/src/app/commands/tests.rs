@@ -1537,15 +1537,16 @@ fn merge_covers_recommendations_field() {
 #[tokio::test]
 async fn open_external_url_rejects_off_allowlist_targets() {
     let rejected = [
-        "http://metaso.cn/",                                      // 非 https
-        "https://evil.example.com/",                              // host 不在白名单
-        "https://metaso.cn.evil.com/",                            // 子域钓鱼
-        "https://console.bce.baidu.com.evil.com/",                // 百度子域钓鱼
-        "https://app.tavily.com.evil.com/",                       // tavily 子域钓鱼
-        "https://www.canva.cn.evil.com/api/action",               // Canva 子域钓鱼
-        "https://export-download.canva.cn.evil.com/x.png",        // Canva 资源域钓鱼
-        "https://meeting.tencent.com.evil.com/qrcode-login.html", // 腾讯会议授权域钓鱼
-        "http://work.weixin.qq.com/ai/qc/gen",                    // WeCom auth page over non-https
+        "http://metaso.cn/",                                       // 非 https
+        "https://evil.example.com/",                               // host 不在白名单
+        "https://metaso.cn.evil.com/",                             // 子域钓鱼
+        "https://console.bce.baidu.com.evil.com/",                 // 百度子域钓鱼
+        "https://app.tavily.com.evil.com/",                        // tavily 子域钓鱼
+        "https://www.canva.cn.evil.com/api/action",                // Canva 子域钓鱼
+        "https://export-download.canva.cn.evil.com/x.png",         // Canva 资源域钓鱼
+        "https://meeting.tencent.com.evil.com/qrcode-login.html",  // 腾讯会议授权域钓鱼
+        "http://work.weixin.qq.com/ai/qc/gen",                     // WeCom auth page over non-https
+        "http://developer.work.weixin.qq.com/document/path/91770", // WeCom docs over non-https
         "http://login.dingtalk.com/device", // DingTalk auth page over non-https
         "https://bce.baidu.com/",           // 非 console 子域,不放行
         "javascript:alert(1)",              // js scheme
