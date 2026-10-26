@@ -766,8 +766,15 @@ fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
         if !line.starts_with(name) {
             continue;
         }
-        // 跳过指标名称 + 可选 `{labels}`，找最后一个空格后的数字
+        // 名称边界:紧跟指标名的必须是 `{`、空白或行尾。否则这是同前缀的
+        // 更长指标(真实 vLLM 导出里有 `vllm:num_requests_waiting_by_reason`
+        // 与每个 counter 的 `<name>_created` 时间戳 series),其值绝不能
+        // 冒充本指标的读数——正确性不依赖"多余后缀恰好解析不成 f64"。
         let after_name = &line[name.len()..];
+        match after_name.chars().next() {
+            None | Some('{') | Some(' ') | Some('\t') => {}
+            _ => continue,
+        }
         let value_part = if after_name.starts_with('{') {
             let close = after_name.find('}')?;
             after_name[close + 1..].trim()
@@ -2055,6 +2062,33 @@ mod tests {
         assert_eq!(
             parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
             None
+        );
+    }
+
+    /// 名称边界:同前缀的更长指标绝不能冒充本指标的读数。vLLM 真实导出里
+    /// 存在 `vllm:num_requests_waiting_by_reason`(gauge,≥v0.20)与每个
+    /// counter 的 `<name>_created` 时间戳 series;带标签与不带标签两种形状
+    /// 都钉。删掉边界检查、或把取值从首个 token 换成末个 token,这里都必须
+    /// 变红(时间戳 token 会被当成计数器值)。
+    #[test]
+    fn prom_metric_name_boundary_rejects_prefix_extensions() {
+        let text = "vllm:num_requests_waiting_by_reason{engine=\"0\",reason=\"capacity\"} 7.0\n\
+                    vllm:num_requests_waiting{engine=\"0\"} 3.0\n\
+                    vllm:prefix_cache_hits_total_created{engine=\"0\"} 1.7654321e+09\n\
+                    vllm:prefix_cache_hits_total{engine=\"0\"} 30.0\n\
+                    vllm:prefix_cache_queries_total_created 1.7654321e+09\n\
+                    vllm:prefix_cache_queries_total 40.0\n";
+        assert_eq!(
+            parse_prom_metric(text, "vllm:num_requests_waiting"),
+            Some(3.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
+            Some(30.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_queries_total"),
+            Some(40.0)
         );
     }
 
