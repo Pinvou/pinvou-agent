@@ -211,3 +211,25 @@ cargo test --manifest-path pinvou3-app/src-tauri/src/features/updater/host/Cargo
 ```
 
 Passing these tests or compiling the standalone roles does not qualify SCM installation, authenticated IPC, multiple users or crash recovery. Those scenarios require the isolated Windows guest; do not install or exercise the service on the development host.
+
+## Initial engineering preparation limits
+
+Fresh original registration atomically writes the protected, scope-bound budget
+policy with coordination/freeze120seconds and backup preparation30minutes.
+The optional public **build-time** inputs `PINVOU_HOST_PREP_FREEZE_MS` and
+`PINVOU_HOST_BACKUP_PREPARATION_MS` override these values in integer milliseconds.
+Each explicit value must be positive, canonical decimal and at most the JSON safe
+integer maximum; an invalid value fails the build instead of selecting a default.
+Both role and GUI host builds should use the intended public build configuration.
+Changing a runtime environment variable has no effect. This is not a command for
+installing a service or changing an existing protected policy.
+
+The original transaction and committed readback authenticate the exact initial
+policy. Ordinary reopen, update or missing-policy reads never provision defaults.
+Existing windows keep their original first start, spent high-water and deadline;
+configuration is not a renewal. Preparation still uses the earlier original
+Session cutoff, and timeout/unknown remains safe stop/reconciliation. These values
+are engineering policy, not workload/platform certification or execution rights.
+The policy deliberately omits validation/preinstall/install/activate durations;
+those stages refuse a new window until their qualified duration exists. Their
+30minute/2hour maxima are not substituted. Download has no total deadline.

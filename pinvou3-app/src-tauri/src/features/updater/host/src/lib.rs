@@ -8,6 +8,7 @@ mod ipc;
 mod json;
 mod monotonic;
 mod platform;
+mod preparation_policy;
 mod profile;
 mod registration;
 mod restart;

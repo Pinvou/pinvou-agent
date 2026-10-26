@@ -265,7 +265,7 @@ pub(super) fn initialize_in(private: &Key, tx: &Handle, host: &HostRegistration)
     write(&key, "Genesis", &raw)?;
     write(&key, "Head", &raw)?;
     write(&first, "Record", &raw)?;
-    require_absent_value(&key, "Policy")?;
+    initialize_policy_in(&key, &head.binding)?;
     let (_, observed) = read_head(&key, &head.binding, Some(tx))?;
     if observed != raw {
         return Err(Error::StateCorrupt);
@@ -275,7 +275,10 @@ pub(super) fn initialize_in(private: &Key, tx: &Handle, host: &HostRegistration)
 pub(super) fn verify_fresh_in(private: &Key, host: &HostRegistration) -> Result<()> {
     let key = open(private.0, NAMESPACE, false, None)?.ok_or(Error::StateCommitUnknown)?;
     let (head, _) = read_head(&key, &Binding::from_host(host), None)?;
-    if head.revision != 1 || !head.windows.is_empty() {
+    if head.revision != 1
+        || !head.windows.is_empty()
+        || policy(&key, &head.binding)?.1 != initial_policy_bytes(&head.binding)?
+    {
         return Err(Error::StateCommitUnknown);
     }
     Ok(())
@@ -372,10 +375,16 @@ impl Store {
 struct Durations {
     prep_freeze_ms: u64,
     backup_ms: u64,
-    validation_ms: u64,
-    preinstall_ms: u64,
-    install_ms: u64,
-    activate_ms: u64,
+    // These stages still require their actual qualified duration. Their
+    // published maxima are not preparation defaults or certification values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validation_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preinstall_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    install_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activate_ms: Option<u64>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -394,20 +403,14 @@ impl BudgetPolicy {
             || p.revision == 0
             || p.revision > json::SAFE_MAX
             || json::encode(&p, false)? != raw
-            || [
-                d.prep_freeze_ms,
-                d.backup_ms,
-                d.validation_ms,
-                d.preinstall_ms,
-                d.install_ms,
-                d.activate_ms,
-            ]
-            .iter()
-            .any(|v| *v == 0 || *v > json::SAFE_MAX)
-            || d.validation_ms > 30 * 60 * 1000
+            || [d.prep_freeze_ms, d.backup_ms]
+                .iter()
+                .any(|v| *v == 0 || *v > json::SAFE_MAX)
+            || d.validation_ms
+                .is_some_and(|v| v == 0 || v > 30 * 60 * 1000)
             || [d.preinstall_ms, d.install_ms, d.activate_ms]
                 .iter()
-                .any(|v| *v > 2 * 60 * 60 * 1000)
+                .any(|v| v.is_some_and(|v| v == 0 || v > 2 * 60 * 60 * 1000))
         {
             return Err(Error::StateCorrupt);
         }
@@ -418,13 +421,59 @@ impl BudgetPolicy {
         Ok(match kind {
             WindowKind::PrepFreeze => self.durations.prep_freeze_ms,
             WindowKind::Backup => self.durations.backup_ms,
-            WindowKind::Validation => self.durations.validation_ms,
-            WindowKind::Preinstall => self.durations.preinstall_ms,
-            WindowKind::Install => self.durations.install_ms,
-            WindowKind::Activate => self.durations.activate_ms,
+            WindowKind::Validation => self
+                .durations
+                .validation_ms
+                .ok_or(Error::PrerequisiteUnavailable)?,
+            WindowKind::Preinstall => self
+                .durations
+                .preinstall_ms
+                .ok_or(Error::PrerequisiteUnavailable)?,
+            WindowKind::Install => self
+                .durations
+                .install_ms
+                .ok_or(Error::PrerequisiteUnavailable)?,
+            WindowKind::Activate => self
+                .durations
+                .activate_ms
+                .ok_or(Error::PrerequisiteUnavailable)?,
             _ => return Err(Error::StateCorrupt),
         })
     }
+}
+fn initial_policy_bytes(binding: &Binding) -> Result<Vec<u8>> {
+    let limits = crate::preparation_policy::PreparationLimits::configured(
+        Some(env!("PINVOU_HOST_PREP_FREEZE_MS")),
+        Some(env!("PINVOU_HOST_BACKUP_PREPARATION_MS")),
+    )
+    .map_err(|_| Error::StateCorrupt)?;
+    let policy = BudgetPolicy {
+        protocol_version: 1,
+        binding: binding.clone(),
+        revision: 1,
+        durations: Durations {
+            prep_freeze_ms: limits.freeze_ms,
+            backup_ms: limits.backup_ms,
+            validation_ms: None,
+            preinstall_ms: None,
+            install_ms: None,
+            activate_ms: None,
+        },
+    };
+    let raw = json::encode(&policy, false)?;
+    BudgetPolicy::parse(&raw, binding)?;
+    Ok(raw)
+}
+// Only initialize_in, inside the genuinely new original transaction, calls
+// this writer. Ordinary reads never repair a missing or changed Policy.
+fn initialize_policy_in(key: &Key, binding: &Binding) -> Result<()> {
+    require_absent_value(key, "Policy")?;
+    let raw = initial_policy_bytes(binding)?;
+    write(key, "Policy", &raw)?;
+    if policy(key, binding)?.1 != raw {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(())
 }
 fn policy(key: &Key, binding: &Binding) -> Result<(BudgetPolicy, Vec<u8>)> {
     // The existing native helper distinguishes absence before the strict read.
@@ -922,10 +971,10 @@ mod tests {
             durations: Durations {
                 prep_freeze_ms: 100,
                 backup_ms: 100,
-                validation_ms: 30 * 60 * 1000,
-                preinstall_ms: 2 * 60 * 60 * 1000,
-                install_ms: 2 * 60 * 60 * 1000,
-                activate_ms: 2 * 60 * 60 * 1000,
+                validation_ms: Some(30 * 60 * 1000),
+                preinstall_ms: Some(2 * 60 * 60 * 1000),
+                install_ms: Some(2 * 60 * 60 * 1000),
+                activate_ms: Some(2 * 60 * 60 * 1000),
             },
         };
         let raw = json::encode(&p, false).unwrap();
@@ -942,6 +991,158 @@ mod tests {
         let mut v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         v["durations"]["backupMs"] = serde_json::json!(0);
         assert!(BudgetPolicy::parse(&json::encode(&v, false).unwrap(), &binding()).is_err());
+    }
+    #[test]
+    #[allow(unsafe_code)]
+    fn actual_initial_budget_policy_is_written_once_and_reads_never_heal() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        struct OwnedTestKey {
+            key: Option<Key>,
+            path: Vec<u16>,
+        }
+        impl Drop for OwnedTestKey {
+            fn drop(&mut self) {
+                drop(self.key.take());
+                if !self.path.is_empty() {
+                    unsafe {
+                        RegDeleteTreeW(HKEY_CURRENT_USER, self.path.as_ptr());
+                    }
+                }
+            }
+        }
+        impl OwnedTestKey {
+            fn finish(mut self) {
+                drop(self.key.take());
+                assert_eq!(
+                    unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, self.path.as_ptr()) },
+                    0
+                );
+                self.path.clear();
+            }
+        }
+        let path = wide(&format!(
+            "Software\\PinvouInitialBudgetPolicyTest-{}-{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut handle = ptr::null_mut();
+        let mut disposition = 0;
+        assert_eq!(
+            unsafe {
+                RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    path.as_ptr(),
+                    0,
+                    ptr::null(),
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_READ | KEY_WRITE,
+                    ptr::null(),
+                    &mut handle,
+                    &mut disposition,
+                )
+            },
+            0
+        );
+        let key = Key(handle);
+        assert_eq!(disposition, REG_CREATED_NEW_KEY);
+        let owned = OwnedTestKey {
+            key: Some(key),
+            path,
+        };
+        let key = owned.key.as_ref().unwrap();
+        let binding = Binding {
+            installation_scope_id: "scope".into(),
+            product: "pinvou".into(),
+            component: "app".into(),
+            target_key: "windows-x86_64-nsis-perMachine".into(),
+            profile_kind: "production".into(),
+            profile_id: "host".into(),
+            genesis_seed_sha256: "a".repeat(64),
+            genesis_manifest_sha256: "b".repeat(64),
+            original_install_operation_id: "original".into(),
+        };
+        assert!(matches!(
+            policy(key, &binding),
+            Err(Error::PrerequisiteUnavailable)
+        ));
+        initialize_policy_in(key, &binding).unwrap();
+        let first = policy(key, &binding).unwrap();
+        assert_eq!(
+            first.0.duration(WindowKind::PrepFreeze).unwrap(),
+            env!("PINVOU_HOST_PREP_FREEZE_MS").parse::<u64>().unwrap()
+        );
+        assert_eq!(
+            first.0.duration(WindowKind::Backup).unwrap(),
+            env!("PINVOU_HOST_BACKUP_PREPARATION_MS")
+                .parse::<u64>()
+                .unwrap()
+        );
+        assert_eq!(
+            initialize_policy_in(key, &binding),
+            Err(Error::StateCorrupt)
+        );
+        assert_eq!(policy(key, &binding).unwrap().1, first.1);
+        let mut other = binding.clone();
+        other.original_install_operation_id = "other".into();
+        assert!(matches!(policy(key, &other), Err(Error::StateCorrupt)));
+        let mut administrative = first.0;
+        administrative.durations.prep_freeze_ms = if administrative.durations.prep_freeze_ms == 1 {
+            2
+        } else {
+            1
+        };
+        let changed = json::encode(&administrative, false).unwrap();
+        write(key, "Policy", &changed).unwrap();
+        assert_eq!(
+            initialize_policy_in(key, &binding),
+            Err(Error::StateCorrupt)
+        );
+        assert_eq!(policy(key, &binding).unwrap().1, changed);
+        assert_eq!(
+            policy(key, &binding).map(|(_, raw)| raw == initial_policy_bytes(&binding).unwrap()),
+            Ok(false)
+        );
+        assert_eq!(
+            unsafe { RegDeleteValueW(key.0, wide("Policy").as_ptr()) },
+            0
+        );
+        assert!(matches!(
+            policy(key, &binding),
+            Err(Error::PrerequisiteUnavailable)
+        ));
+        require_absent_value(key, "Policy").unwrap();
+        owned.finish();
+    }
+
+    #[test]
+    fn initial_engineering_policy_does_not_invent_execution_qualification() {
+        let raw = initial_policy_bytes(&binding()).unwrap();
+        let p = BudgetPolicy::parse(&raw, &binding()).unwrap();
+        assert_eq!(
+            p.duration(WindowKind::PrepFreeze).unwrap(),
+            env!("PINVOU_HOST_PREP_FREEZE_MS").parse::<u64>().unwrap()
+        );
+        assert_eq!(
+            p.duration(WindowKind::Backup).unwrap(),
+            env!("PINVOU_HOST_BACKUP_PREPARATION_MS")
+                .parse::<u64>()
+                .unwrap()
+        );
+        for kind in [
+            WindowKind::Validation,
+            WindowKind::Preinstall,
+            WindowKind::Install,
+            WindowKind::Activate,
+        ] {
+            assert_eq!(p.duration(kind), Err(Error::PrerequisiteUnavailable));
+        }
+        let mut other = binding();
+        other.genesis_manifest_sha256 = "f".repeat(64);
+        assert!(BudgetPolicy::parse(&raw, &other).is_err());
+        let mut null: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        null["durations"]["installMs"] = serde_json::Value::Null;
+        assert!(BudgetPolicy::parse(&json::encode(&null, false).unwrap(), &binding()).is_err());
     }
     fn observation(lower: u64, upper: u64) -> (TimeInterval, Observation) {
         use crate::{

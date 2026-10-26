@@ -1,7 +1,7 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-26, initial protected time policy pushed; durable policy-fault recovery implemented and locally verified**.
+Checkpoint: **2026-10-26, durable policy-fault recovery pushed; initial engineering preparation policy implemented and locally verified**.
 
 There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
@@ -39,6 +39,45 @@ behind T18; that path first needs T17 current qualification and T14 formal
 baseline activation. T11/T12/T13 still lack their approved active sources, and
 T11 needs genuine T46 local qualification. T26 remains the main task.
 
+### Initial engineering preparation policy (2026-10-26)
+
+The owner approved configurable coordination/freeze **120 seconds** and backup
+preparation **30 minutes** as initial engineering values for all targets, replacing
+the measurement-before-initial-values development prerequisite. This is not
+platform performance certification. The Windows host embeds the public build
+inputs `PINVOU_HOST_PREP_FREEZE_MS` and `PINVOU_HOST_BACKUP_PREPARATION_MS`;
+missing build inputs select these approved initial values, while invalid explicit
+inputs fail the build. Runtime environment does not change protected policy.
+
+The genuine original-install transaction writes the exact scope-bound preparation
+policy and authenticates its precommit and committed readback. Existing/legacy
+missing policy is never healed by load, update or a retry. New preparation windows
+read actual protected values; existing windows retain their original first start,
+spent high-water and the earlier Session cutoff. Four validation/execution
+qualified durations remain absent; their maxima are not substituted. No actual
+stage owner, backup producer or other-OS adapter is supplied by this increment.
+Download has no total deadline.
+
+Current fixed-source verification passed **163 host tests, zero failed, one
+existing ignored**, including four new tests for default/override validation,
+invalid inputs, actual owned-HKCU policy write/read/no-heal and missing execution
+qualification. Natural helper/launcher builds, the non-static-CRT host library,
+architecture, formatting and tracked/new-file whitespace passed. Exit-zero first
+attempts requiring auxiliary-process termination remain excluded; only natural
+retries are accepted. No UI or full application build was newly run: public host
+API, App wiring, dependencies and UI are unchanged. E independently assessed the
+scoped build evidence as proportionate; the previous default-App CI follow-up
+remains outstanding. Actual Cargo override/invalid/non-Unicode/rerun invocations
+are unrun; those branches have direct static wiring plus parser/default-build
+evidence. The original protected SCM/TxR/stage journey remains static-only.
+
+Five independent V3 first reports are frozen. A found stale current prose claiming
+all six durations were mandatory; that paragraph is corrected below. Original
+finder/delivery delta review and separate non-author final adjudication qualify
+the final object and actual evidence. No E2E was run; no final commit, CI, merge,
+release, platform certification or whole-task completion is inferred here.
+T03 stays **35%**, T26 **20%**, strict completion **8/47** and engineering **38.5%**.
+
 ### Current T26 protected anchor workflow (2026-10-26)
 
 The approved cross-boot policy pauses time-dependent actions when continuity
@@ -46,7 +85,10 @@ cannot be proved, preserves original deadlines/spent budgets, conservatively
 clears recovery-query secrets and requires authenticated fresh server time plus
 successful original-deadline cleanup before resuming. The dedicated Root time
 role and coordinated unreleased V1 update are approved; no legacy clock fallback
-is provided. Concrete T03 preparation budgets remain unapproved.
+is provided. The owner approved configurable initial engineering preparation
+budgets on2026-10-26:120seconds coordination/freeze and30minutes backup preparation
+for all four targetKeys. Full platform measurements no longer precede initial
+value development; platform qualification remains separate.
 
 The delivered foundations are:
 
@@ -63,6 +105,7 @@ The delivered foundations are:
 
 These are separate historical runs with overlapping tests, not additive totals.
 
+Durable policy-fault recovery was delivered in client `87698938f`.
 Initial protected time policy was delivered in client `d4dbb1f3` after the final
 independent V3 adjudication and exact reviewed-tree/remote/DCO checks. The current
 scope records positive corruption of bounded native binary Time Policy bytes
@@ -173,12 +216,18 @@ to be below the cutoff; spanning is Unknown and confirmed exhaustion is sticky.
 There is no download budget.
 
 Only actual protected same-transaction records supply health parents/siblings.
-A separate protected, scope/genesis-bound policy must explicitly configure the
-six qualified durations. It has no defaults and is not T03 certification. The
-budget namespace is created in the original fresh registration transaction;
-missing existing/partial namespaces are refused. Exact policy, native host,
-previous Head and retained history are checked before atomic publication;
-post-COMMIT ambiguity remains outcome-unknown.
+A separate protected, scope/genesis-bound policy supplies the two approved
+engineering preparation values from genuine original registration. The four
+validation/execution durations remain optional and unavailable until separately
+qualified; their maxima are not defaults. Ordinary reads have no fallback and
+this policy is not T03 certification. The budget namespace and initial policy are
+created in the original fresh registration transaction. Missing existing/partial
+namespaces are refused. Starting a new configured-duration window or tightening
+one of those kinds requires the actual Budget Policy; absence cannot select a
+default, and captured bytes are rechecked before publication. Existing Begin/Assess
+instead retains the authenticated original recorded duration without reading that
+Budget Policy. Native host, previous Head and retained history are checked for
+atomic publication; post-COMMIT ambiguity remains outcome-unknown.
 
 Every successful native sample is retained, including an initial sample when
 the final sample becomes unavailable. Its lower bound advances the protected
@@ -1564,7 +1613,7 @@ completion blocker; outstanding business implementation is.
 |---|---|---|---|
 | T01 | 100% | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | 100% | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples, two individual 10 GiB many-file development samples and three earlier payload smokes; the full four-target matrix, final contracts, exact production inventory, approved finite budgets and real time-source/unknown/recovery qualification remain pending. |
+| T03 | 35% | In progress | Reviewed synthetic freeze/encrypted backup lab, thirty retained 1 GiB development samples, two individual 10 GiB many-file development samples and three earlier payload smokes; initial engineering budgets are approved. Final contracts, exact production inventory, actual platform measurements across the four targets and real time-source/unknown/recovery qualification remain pending. |
 | T04 | 65% | In progress | Offline tools, Windows post-build npm adapter and role-specific NSIS inspection are delivered; the integrated source passed default regression and current-CLI normal/wrong-Root cases. Complete provenance, product build integration and exact platform qualification remain pending. Native code-signing certificates are optional. |
 | T05 | 100% | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | 100% | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
@@ -1587,7 +1636,7 @@ completion blocker; outstanding business implementation is.
 | T23 | 0% | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | 0% | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | 85% | In progress | Delivered full-platform network-week read/export requires current all-product/component/channel/target operations.read and returns the same authenticated canonical body. Scoped51 plus native1 and the final required Go/build/contract checks passed as recorded above. Source-v2, protected internal freeze/CLI/host, independent Stage/Release capture, restricted Stage reader and callable three-language disclosure remain delivered with their historical verification above. The Release-purpose restricted owner still needs genuine T18 selector/issuance source-class production; self-reported facts/default primary/fake authority cannot replace it. T21 atomic projection/cursor consumption and T24 report ownership remain separate tasks, not T25 prerequisites. |
-| T26 | 20% | In progress | Nonce-bound issuer/verifier, fixed Root transport, Windows incarnation/Root custody and protected anchor/deny/barrier are delivered. The current native interval/original-budget kernel preserves scope/operation/kind, original cutoffs, spending and global time watermark; its timing intentions do not prove actual stage execution. Local diagnostics, explicit refresh and actual fresh-install never-enabled zero-custody completion have current host/Node module verification and inherited synthetic React/browser evidence; the production-host application library check passed, while default application compilation remains unverified after resource-guard interruptions, explicitly accepted for this commit/push with CI follow-up. Actual stage composition, approved target budgets, nonzero backup/secret producers and cleanup, backup-specific recovery and other platform adapters remain incomplete. No durable Known clock or installation permission is claimed. |
+| T26 | 20% | In progress | Nonce-bound issuer/verifier, fixed Root transport, Windows incarnation/Root custody and protected anchor/deny/barrier are delivered. The current native interval/original-budget kernel preserves scope/operation/kind, original cutoffs, spending and global time watermark; its timing intentions do not prove actual stage execution. Local diagnostics, explicit refresh and actual fresh-install never-enabled zero-custody completion have current host/Node module verification and inherited synthetic React/browser evidence; the production-host application library check passed, while default application compilation remains unverified after resource-guard interruptions, explicitly accepted for this commit/push with CI follow-up. The approved initial engineering preparation policy is provisioned only in genuine Windows original registration; this is not certified platform performance. Actual stage composition, nonzero backup/secret producers and cleanup, backup-specific recovery and other platform adapters remain incomplete. No durable Known clock or installation permission is claimed. |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
 | T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
 | T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; the service pins the committed contract and passes cross-language/real-Transit verification; protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |

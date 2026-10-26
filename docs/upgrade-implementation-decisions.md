@@ -2,7 +2,8 @@
 
 Date: 2026-10-25. Status: health, cross-boot unknown-time policy and backend stack approved;
 candidate platform/data coverage and the measurement proposal approved for
-isolated experiments; concrete budgets and physical qualification remain pending.
+isolated experiments. Initial engineering preparation budgets were approved on
+2026-10-26; physical platform qualification remains pending.
 
 This supplements the [V1.0 task decision register](pinvou-upgrade-platform-development-tasks.zh-CN.md#10-实施前需要确认的决策).
 This revision synchronizes the owner-approved time-policy change in R/D/S/C/F/M/K.
@@ -13,8 +14,9 @@ credentials, browser contents or production data. Paths are symbolic local examp
 ## Confirmed decisions
 
 The product owner requested a platform/data inventory and proposals; preparation
-budgets must follow a test proposal, actual measurements and approval of concrete
-values. The suggested local health criteria are approved. On 2026-10-25 the owner
+the original budget sequence required a test proposal, actual measurements and
+approval of concrete values. The 2026-10-26 engineering-budget decision below
+supersedes the requirement to finish every platform measurement before coding. The suggested local health criteria are approved. On 2026-10-25 the owner
 superseded strict time option A with the cross-boot unknown-time policy below.
 Normal offline operation and shutdown are still not component-damage faults.
 The backend stack is approved: Go, Gin, pgx and PostgreSQL 17; React, TypeScript
@@ -71,6 +73,37 @@ independent bootstrap artifact/anchor inputs. T42 production server deployment
 remains deferred. Registry approval is not a prerequisite for building the
 initial helper/launcher and its controlled first-install integration. Preparation-budget and complete writer-scope requirements remain unchanged;
 time follows the superseding 2026-10-25 decision below.
+
+## Approved initial engineering preparation budgets (2026-10-26)
+
+The owner approved configurable initial coordination/freeze **120,000 ms** and
+backup preparation **1,800,000 ms** for all four targetKeys. This expressly
+supersedes the development prerequisite to complete each platform's measurements
+before selecting initial values. It does not certify a platform, package, writer
+inventory or supported workload. Production qualification must still bind the
+actual configuration and prove safe timeout behavior; no synthetic result is
+converted into certification. Earlier statements below about unapproved concrete
+preparation values describe the prior decision state and are superseded here.
+
+The retained Windows synthetic evidence is thirty 1 GiB/12-file runs (backup p95
+21.461 seconds, maximum21.960 seconds) and two separate10 GiB/100,000-file runs
+(291.354 and287.397 seconds). These are not real-user freeze or other-platform
+measurements. They motivate an engineering starting point only.
+
+Preparation keeps the earlier of its original budget and the current Session's
+remaining deadline. Timeout or unprovable remaining budget requires safe stop and
+reconciliation. Configuration changes, retries, new Sessions and reboot cannot
+extend an already started window. Downloads have no total deadline.
+
+The Windows host embeds public build inputs `PINVOU_HOST_PREP_FREEZE_MS` and
+`PINVOU_HOST_BACKUP_PREPARATION_MS`, in integer milliseconds; absent build inputs
+select the approved initial values. Explicit invalid values fail the build.
+Only a genuine fresh original-install transaction writes its protected, original
+scope-bound policy. Runtime environment and ordinary loads cannot change it or
+heal absent legacy state. Other adapters use the same engineering initial values
+when implemented; this document does not claim those adapters exist. Validation
+and execution still require their separate qualified durations; their maximum
+limits are not silently provisioned as qualification.
 
 ## Platform certification candidates
 
@@ -186,7 +219,8 @@ Source anchors: [paths](../pinvou3-app/src-tauri/src/platform/paths.rs),
 
 ## Preparation-budget measurement proposal
 
-No certified millisecond value is proposed yet. The experimental plan is approved;
+The 2026-10-26 initial engineering values above are approved. They are not
+certified platform measurements. The experimental plan is approved;
 run the T03 experimental adapters on representative physical systems, then submit a
 per-target table of measured distributions, worst observed time, safety margin,
 supported workload envelope, user wait cap, chosen budget and failure behavior.
@@ -206,9 +240,10 @@ The bootstrap sequence avoids depending on later production tasks for T03's inpu
    limitations. Submit concrete initial contract budgets and capability boundaries
    for owner approval; synthetic-writer results do not prove the real app's writers
    already implement cooperation or that a production package is certified.
-3. Freeze the T03 v1 interfaces, bounded preparation policy and consistency tests
-   only when those initial values are approved and the selected authenticated-time,
-   unknown/refusal and recovery path has real evidence. An unproven provider remains
+3. Use the approved initial engineering values to freeze the T03 semantic interfaces,
+   bounded preparation policy and consistency tests without waiting for the full
+   platform measurement matrix. The selected authenticated-time, unknown/refusal
+   and recovery path still needs real evidence for platform certification. An unproven provider remains
    unproven, not an assumed capability.
 4. T28/T30/T33–T35 and related tasks implement the production workflows/adapters
    against v1, then repeat measurements with the real app, users and services.

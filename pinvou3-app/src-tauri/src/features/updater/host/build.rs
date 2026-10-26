@@ -4,8 +4,33 @@ use std::{env, fs, path::PathBuf};
 mod build_input;
 #[path = "src/build_toolchain.rs"]
 mod build_toolchain;
+#[path = "src/preparation_policy.rs"]
+mod preparation_policy;
 
 fn main() {
+    // Public build configuration only. Runtime environment cannot change the
+    // original protected policy or extend an already started budget window.
+    let preparation_input = |name: &str| {
+        println!("cargo:rerun-if-env-changed={name}");
+        match env::var(name) {
+            Ok(value) => Some(value),
+            Err(env::VarError::NotPresent) => None,
+            Err(_) => panic!("HOST_PREPARATION_BUDGET_INVALID"),
+        }
+    };
+    let freeze = preparation_input("PINVOU_HOST_PREP_FREEZE_MS");
+    let backup = preparation_input("PINVOU_HOST_BACKUP_PREPARATION_MS");
+    let preparation =
+        preparation_policy::PreparationLimits::configured(freeze.as_deref(), backup.as_deref())
+            .unwrap_or_else(|code| panic!("{code}"));
+    println!(
+        "cargo:rustc-env=PINVOU_HOST_PREP_FREEZE_MS={}",
+        preparation.freeze_ms
+    );
+    println!(
+        "cargo:rustc-env=PINVOU_HOST_BACKUP_PREPARATION_MS={}",
+        preparation.backup_ms
+    );
     // These standalone MSVC roles must restrict static imports before Rust main runs.
     // Runtime SetDefaultDllDirectories separately protects later dynamic loads.
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
