@@ -1415,8 +1415,10 @@ mod tests {
         );
         assert!(
             unreachable.message.contains("[REDACTED]"),
-            "the redaction composition must replace the embedded URL — not rely on reqwest's \
-             own userinfo stripping: {unreachable:?}"
+            "removing the scrub composition must go red: in practice reqwest strips URL \
+             userinfo at builder construction, so the marker here comes from the secret- \
+             shape pass, while the synthetic composition pin in core covers the userinfo \
+             pass itself: {unreachable:?}"
         );
         assert!(
             unreachable.message.starts_with("/models unreachable: "),
@@ -1618,7 +1620,11 @@ mod tests {
             ["metrics_unavailable", "context_window_inferred"],
             "an unparseable /metrics body flags itself and does not crowd out the window notice"
         );
-        let inferred = &snap.metric_diagnostics[0];
+        let inferred = snap
+            .metric_diagnostics
+            .iter()
+            .find(|d| d.code == "context_window_inferred")
+            .expect("the window notice is pinned by the assert above");
         assert!(
             !inferred.message.contains("remote"),
             "the notice fires locally too; the copy must be endpoint-neutral: {inferred:?}"
