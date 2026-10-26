@@ -58,9 +58,10 @@ pub struct VllmSnapshot {
     /// 换模型 = 重启进程 = 自动归零，因此天然按模型分段。
     pub ttft_sum_s: Option<f64>,
     pub ttft_count: Option<f64>,
-    /// TPOT histogram cumulative values. Warning: the real metric names carry
-    /// a `request_` prefix (vllm:request_time_per_output_token_seconds_*),
-    /// locked against a real /metrics capture on 2026-06-10.
+    /// TPOT histogram cumulative values. The names carry a `request_` prefix
+    /// (vllm:request_time_per_output_token_seconds_*) on the 2026-06-10
+    /// nightly capture; other builds spell the histogram without the prefix,
+    /// and `parse_perf_metrics` accepts both spellings.
     pub tpot_sum_s: Option<f64>,
     pub tpot_count: Option<f64>,
     pub generation_tokens_total: Option<f64>,
@@ -831,11 +832,20 @@ struct PerfMetrics {
 }
 
 fn parse_perf_metrics(text: &str) -> PerfMetrics {
+    // vLLM renamed the TPOT histogram between builds: the 2026-06-10
+    // nightly capture carries `request_time_per_output_token_seconds`,
+    // while other builds spell it `time_per_output_token_seconds` without
+    // the `request_` prefix. Both are exact-name matches, so a body
+    // contributes through at most one spelling (the captured one wins).
+    let tpot_sum_s = parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_sum")
+        .or_else(|| parse_prom_metric(text, "vllm:time_per_output_token_seconds_sum"));
+    let tpot_count = parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_count")
+        .or_else(|| parse_prom_metric(text, "vllm:time_per_output_token_seconds_count"));
     PerfMetrics {
         ttft_sum_s: parse_prom_metric(text, "vllm:time_to_first_token_seconds_sum"),
         ttft_count: parse_prom_metric(text, "vllm:time_to_first_token_seconds_count"),
-        tpot_sum_s: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_sum"),
-        tpot_count: parse_prom_metric(text, "vllm:request_time_per_output_token_seconds_count"),
+        tpot_sum_s,
+        tpot_count,
         generation_tokens_total: parse_prom_metric(text, "vllm:generation_tokens_total"),
         prompt_tokens_total: parse_prom_metric(text, "vllm:prompt_tokens_total"),
     }
@@ -854,6 +864,10 @@ fn parse_perf_metrics(text: &str) -> PerfMetrics {
 /// truncated labels block or a non-numeric sample skips only that line; and
 /// `NaN` / `+Inf` degenerate samples (which Rust's `f64 FromStr` accepts)
 /// are skipped rather than summed.
+///
+/// Stateless across polls: a partial export (one engine's series missing
+/// this poll) silently publishes the sum of the series that are present —
+/// a crashed engine reads the same as a drained queue.
 fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
     let mut total: Option<f64> = None;
     for line in text.lines() {
@@ -2312,6 +2326,25 @@ mod tests {
             parse_prom_metric(text, "vllm:generation_tokens_total"),
             None
         );
+    }
+
+    /// Stable vLLM builds spell the TPOT histogram without the `request_`
+    /// prefix; the alias must cover that spelling or tpot_* would be
+    /// permanently None there. When a body carries both spellings, the
+    /// captured (prefixed) one wins — never a sum across names.
+    #[test]
+    fn perf_metrics_alias_covers_the_unprefixed_tpot_names() {
+        let m = parse_perf_metrics(
+            "vllm:time_per_output_token_seconds_count 12.0\n\
+             vllm:time_per_output_token_seconds_sum 4.0\n",
+        );
+        assert_eq!(m.tpot_sum_s, Some(4.0));
+        assert_eq!(m.tpot_count, Some(12.0));
+        let both = parse_perf_metrics(
+            "vllm:request_time_per_output_token_seconds_sum 1.0\n\
+             vllm:time_per_output_token_seconds_sum 9.0\n",
+        );
+        assert_eq!(both.tpot_sum_s, Some(1.0), "the captured nightly name wins");
     }
 
     /// With `data_parallel_size > 1` vLLM exports one series per `engine`
