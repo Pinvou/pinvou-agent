@@ -332,10 +332,23 @@ fn privileged_helper<const N: usize>(
 }
 
 fn privileged_helper_execution_error(operation: &str, error: &str) -> String {
-    if error.contains(" timed out after ") {
-        format!(
-            "{operation}等待超时，已停止等待；系统操作可能仍在收尾，请刷新状态后再重试：{error}"
-        )
+    // 注意与 platform::process 的消息格式耦合（锚点子句在固定前缀里，先于
+    // 可能内嵌的捕获输出），格式由 platform 侧测试与本文件 fixture 钉住。
+    // 分型按锚点首次出现位置取先者（同 connector 的 ProbeError::classify），
+    // 助手输出里含另一条锚点文本时不得翻转分型；超时与溢出错误都可能内嵌
+    // 助手原始输出，两者都不把 raw 错误串放进用户文案（spawn/wait 错误无
+    // 捕获输出，raw 文案只留给它们）。
+    let timeout_anchor = error.find(" timed out after ");
+    let overflow_anchor = error.find("output exceeded");
+    let prefer_timeout = match (timeout_anchor, overflow_anchor) {
+        (Some(t), Some(o)) => t < o,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if prefer_timeout {
+        format!("{operation}等待超时，已停止等待；系统操作可能仍在收尾，请刷新状态后再重试")
+    } else if overflow_anchor.is_some() {
+        format!("{operation}输出超出捕获上限，已终止该操作；请刷新状态后再重试")
     } else {
         format!("无法打开系统管理员确认：{error}")
     }
@@ -436,5 +449,37 @@ mod tests {
             )
             .contains("等待超时")
         );
+        assert!(
+            privileged_helper_execution_error(
+                "恢复共享知识库",
+                // Overflow fixture: raw helper output is embedded after the
+                // fixed claim clause and must not reach the user message.
+                "pkexec output exceeded 4194304 bytes; subprocess tree termination requested: stdout:\nsudo: policy plugindata"
+            )
+            .contains("输出超出捕获上限")
+        );
+
+        // 超时错误同样内嵌捕获输出：固定前缀照旧，detail 不得进用户文案。
+        let timeout_with_capture = privileged_helper_execution_error(
+            "恢复共享知识库",
+            "pkexec timed out after 3600s: stdout:\nsudo: a very long helper transcript",
+        );
+        assert!(timeout_with_capture.contains("等待超时"));
+        assert!(
+            !timeout_with_capture.contains("helper transcript"),
+            "{timeout_with_capture}"
+        );
+
+        // 溢出错误的 detail 里即便含「 timed out after 」文本，也必须按
+        // 溢出分型（锚点首次出现位置取先者），不得误报超时。
+        let overflow_with_anchor = privileged_helper_execution_error(
+            "恢复共享知识库",
+            "pkexec output exceeded 4194304 bytes; subprocess tree termination requested: stdout:\nconnection timed out after 1s",
+        );
+        assert!(
+            overflow_with_anchor.contains("输出超出捕获上限"),
+            "{overflow_with_anchor}"
+        );
+        assert!(!overflow_with_anchor.contains("等待超时"));
     }
 }

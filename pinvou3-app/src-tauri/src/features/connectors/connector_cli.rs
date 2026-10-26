@@ -130,16 +130,33 @@ pub(crate) enum ProbeError {
 impl ProbeError {
     /// 在**包装人类可读文案之前**对 platform::process 的原始错误分型。
     /// 分型依据是本仓库自家模块的报错格式(`spawn {program} failed: ` 出自
-    /// platform/process.rs 的 spawn 失败路径,` timed out after ` 出自超时
-    /// 路径),由下方测试钉住。分型必须吃原始错误——先包装后分型会让前缀
-    /// 匹配永远落空,降级分支随之失效(本轮修掉的回归)。
+    /// platform/process.rs 的 spawn 失败路径,` timed out after ` / `output
+    /// exceeded` 出自超时/溢出路径),由下方测试钉住。分型必须吃原始错误
+    /// ——先包装后分型会让前缀匹配永远落空,降级分支随之失效(本轮修掉的
+    /// 回归)。两个锚点都在 platform 的**固定前缀**里、必然先于内嵌的捕获
+    /// 输出出现,故按首次出现位置取先者——即便子进程自己的输出里也含另一
+    /// 条锚点文本,也不会误报超时。
     fn classify(raw: String) -> Self {
         if raw.starts_with("spawn ") {
+            // spawn 失败没有子进程,错误串不含捕获输出,原样保留。
             Self::Spawn(raw)
-        } else if raw.contains(" timed out after ") {
-            Self::Timeout(raw)
         } else {
-            Self::Other(raw)
+            let timeout = raw.find(" timed out after ");
+            let overflow = raw.find("output exceeded");
+            let prefer_timeout = match (timeout, overflow) {
+                (Some(t), Some(o)) => t < o,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if prefer_timeout {
+                Self::Timeout(withhold_captured_output(&raw, timeout))
+            } else if overflow.is_some() {
+                Self::Other(withhold_captured_output(&raw, None))
+            } else {
+                // wait error 等无捕获输出的错误:原样保留(kill/reap 附加
+                // 子句是平台侧固定文本,不含子进程输出)。
+                Self::Other(raw)
+            }
         }
     }
 
@@ -157,6 +174,31 @@ impl ProbeError {
             }
         }
     }
+}
+
+/// 把 platform::process 错误里内嵌的子进程捕获输出剪掉,只保留固定前缀
+/// (命令名 + 超时/溢出锚点子句)。捕获输出可能含身份/凭证信息,而
+/// ProbeError 的文案会进 webview(bundle_readiness 卡片、断开登录确认)与
+/// 应用日志;feishu/wecom/dingtalk/tmeet 状态命令的既有约定是 raw 输出
+/// 不得越出本层(feishu_status「只回布尔」注释)。剪切点取 detail 之前的
+/// 最后一个固定子句,对任意子进程输出稳健;kill/reap 附加子句随 detail
+/// 一并剪去——那是平台层诊断,探测分型文案不需要。格式漂移时(找不到
+/// 剪切锚点)保守保留原文:格式由 platform/process.rs 与本文件 fixture
+/// 测试两端钉住,漂移会先在测试里炸出来。
+fn withhold_captured_output(raw: &str, timeout_anchor: Option<usize>) -> String {
+    if let Some(anchor) = timeout_anchor {
+        // 剪切点 = 超时子句后第一个 ": ",即 detail 的起点
+        // ("{program} timed out after {n}s: {detail}")。
+        if let Some(colon) = raw[anchor..].find(": ") {
+            return raw[..anchor + colon].trim_end().to_string();
+        }
+        return raw.to_string();
+    }
+    const OVERFLOW_CLAIM: &str = "; subprocess tree termination requested";
+    if let Some(pos) = raw.find(OVERFLOW_CLAIM) {
+        return raw[..pos + OVERFLOW_CLAIM.len()].to_string();
+    }
+    raw.to_string()
 }
 
 /// 跑探测命令并保留**分型后的错误**,供断开登录路径按类降级。
@@ -1049,6 +1091,52 @@ mod tests {
         assert_eq!(
             auth_failure_reason(&lines, "fallback"),
             "fallback：Error: login endpoint unreachable"
+        );
+    }
+
+    /// platform 错误里内嵌的捕获输出不得越出 connector 层:分型文案只保留
+    /// 固定前缀。raw 输出可能含身份/凭证信息(见 feishu_status「只回布尔」
+    /// 的既有约定),既不能进 webview 也不能进应用日志。分型发生在 RAW
+    /// platform 错误上,且按两条锚点子句首次出现的位置取先者。
+    #[test]
+    fn probe_error_messages_withhold_captured_output() {
+        let timeout = ProbeError::classify(String::from(
+            "lark-cli timed out after 30s: stderr:\n{\"access_token\":\"secret-token-1\"}\nstdout:\npartial status",
+        ));
+        assert!(matches!(timeout, ProbeError::Timeout(_)));
+        let message = timeout.message();
+        assert!(
+            message.contains("lark-cli timed out after 30s"),
+            "{message}"
+        );
+        assert!(message.contains("探测超时"));
+        assert!(!message.contains("access_token"), "{message}");
+        assert!(!message.contains("secret-token-1"), "{message}");
+
+        // 溢出锚点在固定前缀中先于 detail 出现:即便 detail 里也含
+        // " timed out after " 文本,也必须按 Other 分型(不得误报超时)。
+        let overflow = ProbeError::classify(String::from(
+            "lark-cli output exceeded 4194304 bytes; subprocess tree termination requested: stderr:\nrequest timed out after 1s\nrefresh_token=secret-token-2",
+        ));
+        assert!(matches!(overflow, ProbeError::Other(_)));
+        let message = overflow.message();
+        assert!(
+            message
+                .contains("output exceeded 4194304 bytes; subprocess tree termination requested"),
+            "{message}"
+        );
+        assert!(!message.contains("timed out after 1s"), "{message}");
+        assert!(!message.contains("refresh_token"), "{message}");
+        assert!(!message.contains("secret-token-2"), "{message}");
+
+        // 无捕获输出的错误(wait error + 附加子句)原样保留。
+        let wait_error = ProbeError::classify(String::from(
+            "lark-cli wait error: no such process; kill tree request failed: budget",
+        ));
+        assert!(matches!(wait_error, ProbeError::Other(_)));
+        assert_eq!(
+            wait_error.message(),
+            "lark-cli wait error: no such process; kill tree request failed: budget(CLI 探测执行异常;进程已启动但通信失败,请重试)"
         );
     }
 
