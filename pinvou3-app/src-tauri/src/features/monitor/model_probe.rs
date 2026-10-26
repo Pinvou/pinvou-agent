@@ -539,12 +539,17 @@ fn health_diagnostic(health_status: &str) -> Option<MonitorDiagnostic> {
 
 /// Lifetime prefix-cache hit rate: hits / queries × 100. Both are vLLM
 /// Prometheus counters (monotonic over the vLLM process lifetime). `None`
-/// unless both counters are present, finite, and queries is positive, so the
-/// UI shows "—" instead of NaN/∞ when the server reports nothing yet or a
-/// degenerate export slipped through.
+/// unless both counters are present, finite, and consistent — 0 ≤ hits ≤
+/// queries, queries positive — so the UI shows "—" instead of NaN/∞ when
+/// the server reports nothing yet, and never publishes a negative or >100%
+/// rate from a counter-inconsistent export.
 fn prefix_cache_hit_pct(hits: Option<f64>, queries: Option<f64>) -> Option<f64> {
     match (hits, queries) {
-        (Some(h), Some(q)) if q > 0.0 && h.is_finite() && q.is_finite() => Some(h / q * 100.0),
+        (Some(h), Some(q))
+            if q > 0.0 && q.is_finite() && h.is_finite() && (0.0..=q).contains(&h) =>
+        {
+            Some(h / q * 100.0)
+        }
         _ => None,
     }
 }
@@ -2293,6 +2298,13 @@ mod tests {
         assert_eq!(prefix_cache_hit_pct(None, Some(2.0)), None);
         assert_eq!(prefix_cache_hit_pct(Some(1.0), None), None);
         assert_eq!(prefix_cache_hit_pct(None, None), None);
+        // Counter consistency: hits below zero or above queries mean a
+        // corrupt export, not a real rate; a (+Inf) query total is skipped
+        // like any other non-finite sample.
+        assert_eq!(prefix_cache_hit_pct(Some(-1.0), Some(10.0)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(11.0), Some(10.0)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(5.0), Some(f64::INFINITY)), None);
+        assert_eq!(prefix_cache_hit_pct(Some(10.0), Some(10.0)), Some(100.0));
     }
 
     /// All four arms of the happy-path diagnostic map. The remote arms are
