@@ -208,8 +208,9 @@ function normalizeIp(value) {
 }
 
 function parseIpSet(value) {
+  const raw = String(value || "");
   const result = new Set();
-  for (const item of String(value || "").split(",")) {
+  for (const item of raw.split(",")) {
     if (!item.trim()) continue;
     const ip = normalizeIp(item);
     // Fail closed: a typo must shrink the trust set to nothing at startup,
@@ -217,6 +218,10 @@ function parseIpSet(value) {
     if (!ip) throw new Error("proxy_ip_configuration_invalid");
     result.add(ip);
   }
+  // A value with visible content that yields no entries (e.g. ",,,") is a
+  // broken edit, not an intentional empty allowlist; only a blank value means
+  // "empty set".
+  if (result.size === 0 && raw.trim()) throw new Error("proxy_ip_configuration_invalid");
   return result;
 }
 

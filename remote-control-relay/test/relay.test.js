@@ -1067,7 +1067,7 @@ test("rejects a duplicate version key before JSON.parse collapses it", async (t)
 
 test("invalid or partially invalid proxy IP configuration fails startup instead of opening the allowlist", async () => {
   for (const variable of ["PINVOU_REMOTE_ALLOWED_PROXY_IPS", "PINVOU_REMOTE_TRUSTED_PROXY_IPS"]) {
-    for (const value of ["not-an-ip", "127.0.0.1,not-an-ip"]) {
+    for (const value of ["not-an-ip", "127.0.0.1,not-an-ip", ",,,"]) {
       const child = spawn(process.execPath, [join(relayDir, "server.js")], {
         cwd: relayDir,
         env: {
