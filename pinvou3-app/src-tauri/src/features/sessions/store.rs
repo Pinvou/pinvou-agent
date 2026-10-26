@@ -455,6 +455,13 @@ impl SessionStore {
         Ok(session)
     }
 
+    /// Engine replacement must observe every already-admitted writer from
+    /// the retired incarnation, including its commit notification.
+    pub(crate) fn load_for_engine_spawn(&self, id: &str) -> Result<SavedSession> {
+        let _mutation = self.scheduled_mutation.lock();
+        self.load(id)
+    }
+
     /// Pack one session into a full-fidelity `.tar.xz` archive, reusing the
     /// base `deepseek_tui::session_export`. The archive contains the full
     /// context (system prompt, all turn messages, tool calls and results)
@@ -1189,6 +1196,49 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Revision-guarded transcript replacement: the write lands only when
+    /// `expected_revision` still matches the durable content, and a
+    /// truncating overwrite is refused outright. Keeps a stale writer from
+    /// clobbering a newer transcript between its read and its write.
+    ///
+    /// Test-only on this repo: the engine-recycle regression tests use it to
+    /// play the replacement engine's turn. Its production callers live in the
+    /// official fork's controller lane, which was intentionally not ported.
+    #[cfg(test)]
+    pub(crate) fn compare_and_swap_messages(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        messages: Vec<Message>,
+    ) -> Result<String> {
+        let _mutation = self.scheduled_mutation.lock();
+        if self.is_scheduled_session(id)? {
+            bail!("Cannot replace messages for scheduled-run session '{id}'");
+        }
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for transcript CAS"))?;
+        let current_revision = transcript_revision(&session.messages)?;
+        if current_revision != expected_revision {
+            bail!("session_revision_conflict: session content changed since the expected revision");
+        }
+        if looks_like_truncating_overwrite(&session.messages, &messages) {
+            bail!(
+                "refusing to overwrite {} existing messages with {} unrelated messages",
+                session.messages.len(),
+                messages.len()
+            );
+        }
+
+        let next_revision = transcript_revision(&messages)?;
+        session.metadata.message_count = messages.len();
+        session.metadata.updated_at = Utc::now();
+        session.messages = messages;
+        self.persist_then_reconcile(&session, "transcript CAS")?;
+        Ok(next_revision)
+    }
+
     pub fn update_artifacts(&self, id: &str, paths: Vec<String>) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {
@@ -1225,12 +1275,23 @@ impl SessionStore {
     /// snapshot alive in an `Arc` for the terminal path without a second deep
     /// copy; the transcript clone into the durable record happens here, once
     /// per persist.
-    pub fn persist_chat_engine_state(
+    ///
+    /// The notification runs in the same blocking transaction as the write.
+    /// Aborting its async waiter cannot abandon a durable commit's marker.
+    /// `admit` is checked under the mutation gate: queued writers from a
+    /// retired engine cannot run after its replacement reads its baseline.
+    /// Neither callback may re-enter a mutating SessionStore method.
+    pub(crate) fn persist_chat_engine_state_with_commit(
         &self,
         id: &str,
         state: &ChatEngineState,
-    ) -> Result<SavedSession> {
+        admit: impl FnOnce() -> bool,
+        committed: impl FnOnce(&SavedSession),
+    ) -> Result<Option<SavedSession>> {
         let _mutation = self.scheduled_mutation.lock();
+        if !admit() {
+            return Ok(None);
+        }
         if self.scheduled_profiles.read().contains_key(id) {
             bail!("Session '{id}' is a scheduled-run session");
         }
@@ -1252,7 +1313,8 @@ impl SessionStore {
             || format!("persist chat engine state for {id}"),
             "committed engine state save",
         )?;
-        Ok(session)
+        committed(&session);
+        Ok(Some(session))
     }
 
     /// Whether a durable chat record already exists for `id`. The headless
@@ -1375,12 +1437,61 @@ impl SessionStore {
         edit_last: bool,
     ) -> Result<SavedSession> {
         let _mutation = self.scheduled_mutation.lock();
+        self.persist_admitted_chat_display_locked(
+            id,
+            expected_revision,
+            display_message,
+            edit_last,
+            |_| {},
+        )
+    }
+
+    /// Same transaction contract as [`Self::persist_chat_engine_state_with_commit`]
+    /// for the optimistic admission fallback. `committed` receives the durable
+    /// state on every successful return — including the revision-mismatch
+    /// no-op, which leaves the newer transcript untouched — so the caller
+    /// always publishes the exact durable revision. Neither callback may
+    /// re-enter a mutating SessionStore method.
+    pub(crate) fn persist_admitted_chat_display_with_commit(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        display_message: Message,
+        edit_last: bool,
+        admit: impl FnOnce() -> bool,
+        committed: impl FnOnce(&SavedSession),
+    ) -> Result<Option<SavedSession>> {
+        let _mutation = self.scheduled_mutation.lock();
+        if !admit() {
+            return Ok(None);
+        }
+        self.persist_admitted_chat_display_locked(
+            id,
+            expected_revision,
+            display_message,
+            edit_last,
+            committed,
+        )
+        .map(Some)
+    }
+
+    /// Body of the admitted display fallback; the caller holds
+    /// `scheduled_mutation` for the whole call, including `committed`.
+    fn persist_admitted_chat_display_locked(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        display_message: Message,
+        edit_last: bool,
+        committed: impl FnOnce(&SavedSession),
+    ) -> Result<SavedSession> {
         validate_session_id(id)?;
         let mut session = self
             .manager
             .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for admitted display fallback"))?;
         if transcript_revision(&session.messages)? != expected_revision {
+            committed(&session);
             return Ok(session);
         }
         if edit_last {
@@ -1411,6 +1522,7 @@ impl SessionStore {
             || format!("persist admitted chat display for {id}"),
             "admitted display save",
         )?;
+        committed(&session);
         Ok(session)
     }
 }

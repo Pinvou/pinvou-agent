@@ -8,6 +8,64 @@
 use super::*;
 
 use crate::features::assistant::engine_pool::{EnginePool, stamp_steer_generation};
+use deepseek_tui::session_manager::SavedSession;
+
+/// Own persistence and notification on the blocking worker, rather than on
+/// the cancellable forwarder awaiting it. Reclaim can retire queued saves;
+/// once admitted, a save always publishes its exact durable revision before
+/// the replacement engine can read its baseline.
+fn persist_chat_snapshot(
+    store: &SessionStore,
+    session_id: &str,
+    state: &ChatEngineState,
+    writer_active: &AtomicBool,
+    committed: impl FnOnce(&str, usize),
+) -> Result<Option<(SavedSession, Option<String>)>> {
+    let mut revision = None;
+    let saved = store.persist_chat_engine_state_with_commit(
+        session_id,
+        state,
+        || writer_active.load(Ordering::Acquire),
+        |saved| {
+            revision = transcript_revision(&saved.messages).ok();
+            if let Some(revision) = revision.as_deref() {
+                committed(revision, saved.messages.len());
+            }
+        },
+    )?;
+    Ok(saved.map(|saved| (saved, revision)))
+}
+
+/// [`persist_chat_snapshot`] for the optimistic admission fallback, which
+/// has no engine snapshot: the revision-guarded display write and its
+/// notification share one blocking transaction, and a writer retired before
+/// admission is skipped — the reclaiming owner re-persists and publishes the
+/// fallback itself.
+fn persist_admitted_display_snapshot(
+    store: &SessionStore,
+    session_id: &str,
+    baseline_revision: &str,
+    display_message: Message,
+    edit_last: bool,
+    writer_active: &AtomicBool,
+    committed: impl FnOnce(&str, usize),
+) -> Result<Option<(SavedSession, Option<String>)>> {
+    let mut revision = None;
+    let saved = store.persist_admitted_chat_display_with_commit(
+        session_id,
+        baseline_revision,
+        display_message,
+        edit_last,
+        || writer_active.load(Ordering::Acquire),
+        |saved| {
+            revision = transcript_revision(&saved.messages).ok();
+            if let Some(revision) = revision.as_deref() {
+                committed(revision, saved.messages.len());
+            }
+        },
+    )?;
+    Ok(saved.map(|saved| (saved, revision)))
+}
 
 /// Summary detail line for the persistent startup timeline describing a
 /// terminal MCP session-boot receipt. `enabled_servers` counts only enabled
@@ -243,6 +301,7 @@ pub(crate) fn spawn_event_forwarder(
     shell_manager: SharedShellManager,
     turn_shell_tasks: TurnShellTaskRegistry,
     steer_id_generation: u64,
+    transcript_writer_active: Arc<AtomicBool>,
 ) -> tauri::async_runtime::JoinHandle<()> {
     let approve_handle = handle.clone();
     let plan_tracker: Arc<Mutex<TurnPlanTracker>> =
@@ -731,12 +790,28 @@ pub(crate) fn spawn_event_forwarder(
                         latest_chat_engine_state = Some(Arc::clone(&state));
                         let store_for_save = store.clone();
                         let session_for_save = session_id.clone();
+                        let app_for_save = app.clone();
+                        let writer_for_save = transcript_writer_active.clone();
                         match tokio::task::spawn_blocking(move || {
-                            store_for_save.persist_chat_engine_state(&session_for_save, &state)
+                            persist_chat_snapshot(
+                                &store_for_save,
+                                &session_for_save,
+                                &state,
+                                &writer_for_save,
+                                |revision, message_count| {
+                                    emit_transcript_committed(
+                                        &app_for_save,
+                                        &session_for_save,
+                                        revision.to_owned(),
+                                        "engine_state_update",
+                                        message_count,
+                                    );
+                                },
+                            )
                         })
                         .await
                         {
-                            Ok(Ok(saved)) => {
+                            Ok(Ok(Some((_, revision)))) => {
                                 chat_persistence_error = None;
                                 // The revision is computed once for this
                                 // persist and cached for the terminal arm to
@@ -744,18 +819,12 @@ pub(crate) fn spawn_event_forwarder(
                                 // terminal arm falls back to the original
                                 // persist path), so identical content is not
                                 // hashed a second time.
-                                let revision = transcript_revision(&saved.messages).ok();
-                                last_persisted_chat_revision = revision.clone();
-                                if let Some(revision) = revision {
-                                    emit_transcript_committed(
-                                        &app,
-                                        &session_id,
-                                        revision,
-                                        "engine_state_update",
-                                        saved.messages.len(),
-                                    );
-                                }
+                                last_persisted_chat_revision = revision;
                             }
+                            // A retired writer must neither persist nor
+                            // notify: the session is being reclaimed and its
+                            // replacement owns the transcript now.
+                            Ok(Ok(None)) => continue,
                             Ok(Err(error)) => {
                                 chat_persistence_error = Some(format!("{error:#}"));
                             }
@@ -1111,9 +1180,24 @@ pub(crate) fn spawn_event_forwarder(
                                 None => latest_chat_engine_state.clone().map(|state| {
                                     let store_for_save = store.clone();
                                     let session_for_save = session_id.clone();
+                                    let app_for_save = app.clone();
+                                    let writer_for_save = transcript_writer_active.clone();
                                     tokio::task::spawn_blocking(move || {
-                                        store_for_save
-                                            .persist_chat_engine_state(&session_for_save, &state)
+                                        persist_chat_snapshot(
+                                            &store_for_save,
+                                            &session_for_save,
+                                            &state,
+                                            &writer_for_save,
+                                            |revision, message_count| {
+                                                emit_transcript_committed(
+                                                    &app_for_save,
+                                                    &session_for_save,
+                                                    revision.to_owned(),
+                                                    "terminal_fallback",
+                                                    message_count,
+                                                );
+                                            },
+                                        )
                                     })
                                 }),
                             }
@@ -1121,30 +1205,39 @@ pub(crate) fn spawn_event_forwarder(
                             turn_lifecycle.active_transcript_fallback().map(|fallback| {
                                 let store_for_save = store.clone();
                                 let session_for_save = session_id.clone();
+                                let app_for_save = app.clone();
+                                let writer_for_save = transcript_writer_active.clone();
                                 tokio::task::spawn_blocking(move || {
-                                    store_for_save.persist_admitted_chat_display(
+                                    persist_admitted_display_snapshot(
+                                        &store_for_save,
                                         &session_for_save,
                                         &fallback.baseline_revision,
                                         fallback.display_message,
                                         fallback.operation == TranscriptOperation::EditLast,
+                                        &writer_for_save,
+                                        |revision, message_count| {
+                                            emit_transcript_committed(
+                                                &app_for_save,
+                                                &session_for_save,
+                                                revision.to_owned(),
+                                                "terminal_fallback",
+                                                message_count,
+                                            );
+                                        },
                                     )
                                 })
                             })
                         };
                         if let Some(save_task) = terminal_save {
                             match save_task.await {
-                                Ok(Ok(saved)) => {
+                                // Both save arms published their durable
+                                // revision on the blocking worker.
+                                Ok(Ok(Some(_))) => {
                                     chat_persistence_error = None;
-                                    if let Ok(revision) = transcript_revision(&saved.messages) {
-                                        emit_transcript_committed(
-                                            &app,
-                                            &session_id,
-                                            revision,
-                                            "terminal_fallback",
-                                            saved.messages.len(),
-                                        );
-                                    }
                                 }
+                                // The retired writer published nothing: the
+                                // reclaiming owner emits the terminal now.
+                                Ok(Ok(None)) => continue,
                                 Ok(Err(save_error)) => {
                                     chat_persistence_error = Some(format!("{save_error:#}"));
                                 }
@@ -1854,6 +1947,331 @@ mod tests {
             "019f8e2a-7b1c-7d3e-8f4a-5b6c7d8e9f0a",
             false
         ));
+    }
+}
+
+#[cfg(test)]
+mod transcript_commit_tests {
+    use super::{persist_admitted_display_snapshot, persist_chat_snapshot};
+    use crate::features::sessions::{ChatEngineState, SessionStore, transcript_revision};
+    use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard};
+    use deepseek_tui::models::{ContentBlock, Message};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.into(),
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    // Keep the test home isolated until both the detached writer and baseline
+    // reader finish; neither worker tries to acquire ENV_LOCK.
+    #[allow(clippy::await_holding_lock)]
+    async fn aborted_forwarder_still_notifies_an_admitted_runtime_append() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: all test home mutations use ENV_LOCK.
+        unsafe { std::env::set_var("PINVOU3_HOME", tmp.path()) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.path().join("scheduled")).unwrap();
+        let session = store
+            .create_new("/model".into(), None, tmp.path().into())
+            .unwrap();
+        let id = session.metadata.id;
+        let mut messages = vec![
+            message("user", "synthetic task"),
+            message("assistant", "synthetic answer"),
+        ];
+        store.update_messages(&id, messages.clone()).unwrap();
+        let terminal_revision = transcript_revision(&messages).unwrap();
+        let mut runtime = message(
+            "user",
+            "<codewhale:runtime_event kind=\"mcp_boot_failed\" visibility=\"internal\">\nSynthetic startup receipt\n</codewhale:runtime_event>",
+        );
+        runtime.content.push(ContentBlock::Text {
+            text: "<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>".into(),
+            cache_control: None,
+        });
+        messages.push(runtime);
+        let state = ChatEngineState {
+            messages: messages.clone(),
+            system_prompt: None,
+            model: "/model".into(),
+            workspace: tmp.path().into(),
+        };
+        let active = Arc::new(AtomicBool::new(true));
+        let (written_tx, written_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (notified_tx, notified_rx) = tokio::sync::oneshot::channel();
+        let worker_store = store.clone();
+        let worker_id = id.clone();
+        let worker_active = active.clone();
+        let forwarder = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                persist_chat_snapshot(
+                    &worker_store,
+                    &worker_id,
+                    &state,
+                    &worker_active,
+                    |revision, count| {
+                        written_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        notified_tx.send((revision.to_owned(), count)).unwrap();
+                    },
+                )
+            })
+            .await
+        });
+        written_rx.await.unwrap();
+        // The worker already committed under the mutation gate. Reclaim
+        // aborts its async waiter but must not split write from notification.
+        active.store(false, Ordering::Release);
+        forwarder.abort();
+        assert!(forwarder.await.unwrap_err().is_cancelled());
+        let (baseline_tx, mut baseline_rx) = tokio::sync::oneshot::channel();
+        let baseline_store = store.clone();
+        let baseline_id = id.clone();
+        let reader = tokio::task::spawn_blocking(move || {
+            baseline_tx
+                .send(baseline_store.load_for_engine_spawn(&baseline_id).unwrap())
+                .unwrap();
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut baseline_rx)
+                .await
+                .is_err()
+        );
+        release_tx.send(()).unwrap();
+        let marker = notified_rx.await.unwrap();
+        let baseline = baseline_rx.await.unwrap();
+        reader.await.unwrap();
+        assert_eq!(
+            marker,
+            (transcript_revision(&messages).unwrap(), messages.len())
+        );
+        assert_ne!(marker.0, terminal_revision);
+        assert_eq!(baseline.messages, messages);
+        assert_eq!(store.load(&id).unwrap().messages, messages);
+        // The same strict equality the frontend uses now succeeds.
+        assert_eq!(marker.0, transcript_revision(&baseline.messages).unwrap());
+
+        // The replacement's later turn must survive a queued old snapshot.
+        let mut replacement_messages = messages.clone();
+        replacement_messages.push(message("user", "synthetic next task"));
+        let replacement_revision = store
+            .compare_and_swap_messages(&id, &marker.0, replacement_messages.clone())
+            .unwrap();
+        let stale = ChatEngineState {
+            messages,
+            system_prompt: None,
+            model: "/model".into(),
+            workspace: tmp.path().into(),
+        };
+        assert!(
+            persist_chat_snapshot(&store, &id, &stale, &active, |_, _| panic!(
+                "retired writer emitted"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(store.load(&id).unwrap().messages, replacement_messages);
+        // The revision check refuses a stale CAS before the overwrite guard
+        // runs; a CAS at the current revision that drops every message must
+        // be refused by the truncating-overwrite guard itself.
+        assert!(
+            store
+                .compare_and_swap_messages(&id, &marker.0, vec![])
+                .is_err()
+        );
+        assert!(
+            store
+                .compare_and_swap_messages(&id, &replacement_revision, vec![])
+                .is_err()
+        );
+        assert_eq!(
+            transcript_revision(&store.load(&id).unwrap().messages).unwrap(),
+            replacement_revision
+        );
+    }
+
+    #[test]
+    fn display_fallback_publishes_in_transaction_and_refuses_retired_writers() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var("PINVOU3_HOME", tmp.path()) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.path().join("scheduled")).unwrap();
+        let session = store
+            .create_new("/model".into(), None, tmp.path().into())
+            .unwrap();
+        let id = session.metadata.id;
+        let messages = vec![
+            message("user", "synthetic task"),
+            message("assistant", "synthetic answer"),
+        ];
+        store.update_messages(&id, messages.clone()).unwrap();
+        let baseline = transcript_revision(&messages).unwrap();
+
+        // Retired before admission: nothing persists, nothing notifies.
+        assert!(
+            persist_admitted_display_snapshot(
+                &store,
+                &id,
+                &baseline,
+                message("user", "synthetic next task"),
+                false,
+                &AtomicBool::new(false),
+                |_, _| panic!("retired fallback writer emitted"),
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(store.load(&id).unwrap().messages, messages);
+
+        // Admitted: the write and its marker land together.
+        let mut marker = None;
+        let (saved, revision) = persist_admitted_display_snapshot(
+            &store,
+            &id,
+            &baseline,
+            message("user", "synthetic next task"),
+            false,
+            &AtomicBool::new(true),
+            |revision, count| marker = Some((revision.to_owned(), count)),
+        )
+        .unwrap()
+        .unwrap();
+        let mut appended = messages.clone();
+        appended.push(message("user", "synthetic next task"));
+        let appended_revision = transcript_revision(&appended).unwrap();
+        assert_eq!(saved.messages, appended);
+        assert_eq!(revision.as_deref(), Some(appended_revision.as_str()));
+        assert_eq!(marker, Some((appended_revision.clone(), appended.len())));
+        assert_eq!(store.load(&id).unwrap().messages, appended);
+
+        // A stale baseline is a no-op that still publishes the durable
+        // revision, so the caller only ever learns the revision on disk.
+        let mut marker = None;
+        let (_, revision) = persist_admitted_display_snapshot(
+            &store,
+            &id,
+            &baseline,
+            message("user", "synthetic stale task"),
+            false,
+            &AtomicBool::new(true),
+            |revision, count| marker = Some((revision.to_owned(), count)),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(revision.as_deref(), Some(appended_revision.as_str()));
+        assert_eq!(marker, Some((appended_revision, appended.len())));
+        assert_eq!(store.load(&id).unwrap().messages, appended);
+    }
+
+    #[test]
+    fn failed_runtime_snapshot_does_not_publish_a_commit() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var("PINVOU3_HOME", tmp.path()) };
+        let store = SessionStore::boot_with_scheduled_root(tmp.path().join("scheduled")).unwrap();
+        let state = ChatEngineState {
+            messages: vec![],
+            system_prompt: None,
+            model: "/model".into(),
+            workspace: tmp.path().into(),
+        };
+        assert!(
+            persist_chat_snapshot(
+                &store,
+                "missing",
+                &state,
+                &AtomicBool::new(true),
+                |_, _| panic!("failed writer emitted")
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod transcript_persist_pins {
+    //! The forwarder is the only place the engine's writer flag reaches the
+    //! save arms, and `transcript_commit_tests` drives the persist helpers
+    //! directly with their own flags — a regression that hands an arm a
+    //! fresh always-true atomic would ship green. Pin the plumbing instead.
+
+    /// The production `spawn_event_forwarder` body with line comments
+    /// stripped, so prose that mentions a needle verbatim cannot satisfy a
+    /// pin.
+    fn forwarder_body() -> String {
+        let src = include_str!("forwarder.rs");
+        let signature = "pub(crate) fn spawn_event_forwarder(";
+        let start = src.find(signature).expect("the forwarder fn must exist");
+        let rest = &src[start + signature.len()..];
+        let end = ["\nfn ", "\npub(crate) fn ", "\npub fn ", "\n#[cfg(test)]"]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(src.len(), |offset| start + signature.len() + offset);
+        src[start..end]
+            .split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn every_save_arm_moves_a_clone_of_the_engine_writer_flag() {
+        let body = forwarder_body();
+        assert!(
+            body.contains("transcript_writer_active: Arc<AtomicBool>,"),
+            "the forwarder must take the engine's writer flag"
+        );
+        // Mid-turn engine snapshot, terminal engine snapshot, and the
+        // admission fallback each clone the parameter — never a fresh atomic.
+        assert_eq!(
+            body.matches("let writer_for_save = transcript_writer_active.clone();")
+                .count(),
+            3,
+            "every save arm must clone the engine's writer flag"
+        );
+        assert_eq!(
+            body.matches("&writer_for_save,").count(),
+            3,
+            "every save arm must hand its clone to the persist helper"
+        );
+        assert_eq!(
+            body.matches("persist_chat_snapshot(").count(),
+            2,
+            "both engine snapshot arms must persist through persist_chat_snapshot"
+        );
+        assert_eq!(
+            body.matches("persist_admitted_display_snapshot(").count(),
+            1,
+            "the admission fallback must persist through persist_admitted_display_snapshot"
+        );
+        assert!(
+            !body.contains("AtomicBool::new("),
+            "no save arm may mint its own writer flag"
+        );
+        assert!(
+            !body.contains(".persist_admitted_chat_display(")
+                && !body.contains(".persist_chat_engine_state"),
+            "the forwarder must not bypass the commit-callback helpers"
+        );
     }
 }
 
