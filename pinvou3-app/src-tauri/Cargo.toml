@@ -139,9 +139,11 @@ codewhale-execpolicy = { path = "../../CodeWhale/crates/execpolicy" }
 # Monitor 用：vLLM HTTP probe（/v1/models + Prometheus /metrics）
 # 0.13 与 CodeWhale 子模块对齐；feature `rustls`(0.13 改名,自带 aws-lc-rs)。
 # aws-lc-rs 构建需 cmake,CI 已加安装步骤。
-# 注意:oauth2(经 reqwest 0.12 传递)会把 rustls 0.23 的 `ring` feature 也拉进图,
+# 注意:hf-hub(经 reqwest 0.12 传递)会把 rustls 0.23 的 `ring` feature 拉进图,
 # 使 rustls 同时启用 aws-lc-rs + ring。tokio-tungstenite 的无参 ClientConfig::builder()
 # 在两 provider 共存时会 panic,故需在启动时显式 install_default(见 lib.rs)。
+# (CodeWhale#122 已把底座 oauth2 改为 default-features=false,不再经它引入 reqwest 0.12;
+# ring 的另一 requirer 仍在,本备注因此保持有效。)
 # system-proxy: reqwest 0.13 的 default feature,读 macOS SystemConfiguration /
 # Windows 系统代理设置(非环境变量)。此前 default-features=false 把它关掉,
 # 导致用「系统代理」模式(非 TUN)的用户模型请求直连而被代理工具的路由规则
@@ -220,7 +222,7 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 futures-util = "0.3"
 rand = "0.10"
 # Keep 0.22: age, codewhale-tui, reqwest 0.12, ureq 2.12, oauth2 5,
-# hf-hub, ort-sys and rmcp 2 all still require 0.22 (wry 0.57.1 and
+# hf-hub, ort-sys and rmcp 3 all still require 0.22 (wry 0.57.1 and
 # hyper-util have moved to 0.23); a solo 0.23 bump would only add a second
 # copy. Revisit once upstreams align.
 base64 = "0.22"

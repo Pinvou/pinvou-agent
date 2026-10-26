@@ -1658,7 +1658,7 @@
     if (!sid) return;
     if (isScheduledRunSession(sid)) return;
     // 代码会话（品悟原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
-    // 消息由后端 persist_chat_engine_state 持久化、标题由后端自动命名管理。
+    // 消息由后端 persist_chat_engine_state_with_commit 持久化、标题由后端自动命名管理。
     // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
     // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经
     // ensureSession 创建后即 refreshHistoryList 入列，!meta 只会命中非桥接会话。

@@ -1,0 +1,21 @@
+# Chat Transcript Commits and Engine Recycle
+
+> English mirror of [`chat-transcript-commit-lifecycle.md`](./chat-transcript-commit-lifecycle.md); the Chinese original is authoritative on any divergence. Added per `CONTRIBUTING.md`'s English requirement for new developer documentation.
+
+The app recycles engine instances on model hot-switch, idle reap, session delete/rebuild, and failed-spawn teardown. While idle, the foundation can still append internal runtime messages through `SessionUpdated` — an MCP boot-failure receipt, for example.
+
+Previously the event forwarder wrote the transcript with `spawn_blocking` and emitted `chat:transcript_committed` only after awaiting that write. Engine reclaim can abort the awaiting forwarder, but not a blocking write that has already started. The file therefore gained the runtime message while the UI still knew only the previous committed revision; strict revision reconciliation then failed on every attempt and surfaced a spurious "authority record not yet synced" notice.
+
+The fix puts the ordinary-chat engine snapshot write — and, at the terminal, the optimistic admission display fallback write — together with the revision computation and the commit notification into one blocking transaction. Once the write succeeds, the snapshot's revision is published even if the forwarder has been aborted (the message count reaches only backend diagnostics; the frontend payload carries the revision alone); a failed write publishes no commit marker. The terminal cache still avoids duplicate saves, later runtime commits supply newer revisions, and neither the UI's revision comparison nor the edit CAS is relaxed.
+
+Each engine instance also carries its own writer-liveness flag. Reclaim retires the flag before aborting the forwarder; the teardown of a never-published engine retires it before even sending the bounded Shutdown, because the forwarder stays live across that await. A write checks the flag inside the SessionStore mutation lock, so a queued write from the retired engine cannot overwrite the successor's turn; a refused admission fallback write is re-persisted and published by the reclaiming owner itself. An admitted write holds that same lock until its notification completes; the replacement engine takes the lock on a blocking worker before reading its startup baseline, so the baseline contains every one of those finished commits. UI queries keep using the ordinary read-only snapshot API.
+
+Two ordering notes. First, the reclaiming owner's own fallback save (`reclaimed_fallback`) still follows a bounded 5-second in-gate join; on timeout the detached save can land later without a marker, and the owner emits `chat:done` (Interrupted) before that late `chat:transcript_committed` — the frontend's late-commit reconciliation (`terminal_seen_before_event`) absorbs the inversion. That window predates this fix and is narrower than the forwarder windows this document describes as closed. Second, the baseline read waits on the process-wide mutation gate, so any session's persist — including the small in-gate diagnostics append and event emit — can briefly delay another session's cold spawn; that is the deliberate price of the ordering guarantee. Session-list reads do not take the gate and are unaffected.
+
+The regression tests use synthetic tasks and a synthetic MCP runtime message. They cover aborting the forwarder after the write landed but before the notification was published, the successor's baseline wait ordering, retired-writer refusal, successor-turn preservation, CAS refusal of both a stale revision and a truncating overwrite, in-transaction publication and retired refusal for the admission fallback, and no notification for a failed write. Source-order pins additionally fix that every save arm in the forwarder clones the engine's writer flag, that reclaim and failed-spawn teardown both retire the flag first, and that the spawn path fails a `sync_session` failure for every session kind. The tests need no model, no network, and no user session content:
+
+```sh
+cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib transcript_commit_tests -- --test-threads=1
+cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib transcript_persist_pins
+cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib scheduled_model_tests
+```

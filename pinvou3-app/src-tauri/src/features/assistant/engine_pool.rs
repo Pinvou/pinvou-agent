@@ -1206,6 +1206,12 @@ async fn teardown_failed_spawn_engine(
     engine: &AppEngine,
     forwarder: tauri::async_runtime::JoinHandle<()>,
 ) {
+    // Retire transcript writers first: the failed spawn never hydrated, so
+    // nothing it queues — before, during, or after the bounded shutdown
+    // send — may overwrite the durable transcript.
+    engine
+        .transcript_writer_active
+        .store(false, Ordering::Release);
     let handle = engine.handle.clone();
     bounded_teardown_shutdown(move |op| {
         let handle = handle.clone();
@@ -2647,7 +2653,6 @@ impl EnginePool {
         }
         let reclaim_ms = elapsed_ms(reclaim_started);
 
-        let is_scheduled = self.store.scheduled_profile(session_id).is_some();
         let finalize_bridge_started = Instant::now();
         let bridge =
             Self::finalize_runtime_bridge(bridge, &prepared.prepared, pins_scheduled_model).await;
@@ -2721,6 +2726,21 @@ impl EnginePool {
             .steer_incarnation_seq
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
+        // Load before spawning: no fallible disk read may strand a cold
+        // engine, and the baseline read takes the store's mutation gate so it
+        // is ordered after every already-admitted writer of a retired engine
+        // incarnation — the replacement observes their commits (and their
+        // transcript_committed notifications) from the start.
+        let load_session_started = Instant::now();
+        let store_for_load = self.store.clone();
+        let session_for_load = session_id.to_owned();
+        let saved = tokio::task::spawn_blocking(move || {
+            store_for_load.load_for_engine_spawn(&session_for_load)
+        })
+        .await
+        .context("engine baseline read task failed")?
+        .with_context(|| format!("load session {session_id} before spawning its engine"))?;
+        let load_session_ms = elapsed_ms(load_session_started);
         let spawn_engine_started = Instant::now();
         let (engine, forwarder) = AppEngine::spawn_for_session(
             self.app.clone(),
@@ -2745,40 +2765,27 @@ impl EnginePool {
         // get the first turn's SessionUpdated rejected on an id mismatch,
         // ending with only the user message durable and the assistant reply
         // lost.
-        let load_session_started = Instant::now();
-        let loaded_session = self.store.load(session_id);
-        let load_session_ms = elapsed_ms(load_session_started);
         let sync_session_started = Instant::now();
-        match loaded_session {
-            Ok(saved) => {
-                if let Err(error) = engine
-                    .sync_session(session_id.to_string(), saved.messages)
-                    .await
-                {
-                    if is_scheduled {
-                        teardown_failed_spawn_engine(&engine, forwarder).await;
-                        return Err(error).with_context(|| {
-                            format!("sync scheduled session {session_id} before its first turn")
-                        });
-                    }
-                    eprintln!("[engine_pool] sync history for {session_id} failed: {error:?}");
-                } else {
-                    // The hydrated history is forwarder-sanitized: old
-                    // transcript rules can no longer match the new engine's
-                    // snapshot, so prune them to stop rules accumulating per
-                    // turn. The interactive path installs rules around spawn
-                    // (reserve already marked active); the retain predicate
-                    // guarantees the in-flight reservation's rule survives.
-                    turn_lifecycle.prune_stale_transcript_rules();
-                }
-            }
-            Err(error) => {
-                teardown_failed_spawn_engine(&engine, forwarder).await;
-                return Err(error).with_context(|| {
-                    format!("load session {session_id} before spawning its engine")
-                });
-            }
+        if let Err(error) = engine
+            .sync_session(session_id.to_string(), saved.messages)
+            .await
+        {
+            // Fail the spawn instead of publishing the engine: sync_session
+            // fails only when the engine's ops channel is already closed, so
+            // the engine is dead, and entry_is_fresh checks no liveness — a
+            // cached dead engine would fail every later turn opaquely until
+            // an evict, a model switch, or a restart. Leaving nothing cached
+            // makes the next spawn a natural retry.
+            teardown_failed_spawn_engine(&engine, forwarder).await;
+            return Err(error)
+                .with_context(|| format!("sync session {session_id} before its first turn"));
         }
+        // The hydrated history is forwarder-sanitized: old transcript rules
+        // can no longer match the new engine's snapshot, so prune them to
+        // stop rules accumulating per turn. The interactive path installs
+        // rules around spawn (reserve already marked active); the retain
+        // predicate guarantees the in-flight reservation's rule survives.
+        turn_lifecycle.prune_stale_transcript_rules();
         let sync_session_ms = elapsed_ms(sync_session_started);
 
         self.entries.lock().await.insert(
@@ -3314,6 +3321,7 @@ impl EnginePool {
         let EngineEntry {
             engine, forwarder, ..
         } = entry;
+        let transcript_writer_active = engine.transcript_writer_active.clone();
         let shell_reclaim = self.turn_shell_tasks.begin_reclaim(session_id);
         let shell_reclaim_for_drain = shell_reclaim.clone();
         let shell_reclaim_for_terminal = shell_reclaim.clone();
@@ -3371,6 +3379,11 @@ impl EnginePool {
                 // detached straggler lingers like an undelivered Shutdown
                 // does (accepted #483 residue), and holds no gate, pool, or
                 // session-map state, so it cannot re-block evict/delete.
+                // Retire queued transcript writers before the abort: an
+                // already-admitted save still publishes its commit from the
+                // blocking worker, but a queued one must be refused instead
+                // of overwriting the replacement engine's transcript.
+                transcript_writer_active.store(false, Ordering::Release);
                 forwarder.abort();
                 bounded_while_holding_turn_gate("forwarder drain", async move {
                     let _ = forwarder.await;
@@ -9620,16 +9633,77 @@ mod scheduled_model_tests {
         assert_eq!(
             body.matches("teardown_failed_spawn_engine(&engine, forwarder)")
                 .count(),
-            2,
-            "both hydration-failure arms (sync failure on a scheduled session, store load failure) must use the bounded teardown"
+            1,
+            "the sync-failure arm must use the bounded teardown; a failed baseline load now precedes the spawn and leaves no engine to tear down"
         );
         assert!(
             !body.contains("engine.handle.send(Op::Shutdown)"),
             "no direct unbounded Shutdown send may remain in the spawn-failure teardown"
         );
+        // Engine-recycle ordering pin (parity with the official fork's
+        // transcript-commit lifecycle fix): the baseline read must precede
+        // the spawn and go through the mutation-gated loader, so the
+        // replacement engine cannot start ahead of an already-admitted
+        // retired writer's commit.
+        let load_at = body
+            .find("load_for_engine_spawn(&session_for_load)")
+            .expect("the baseline read must use load_for_engine_spawn");
+        let spawn_at = body
+            .find("AppEngine::spawn_for_session(")
+            .expect("load must precede spawn");
+        assert!(load_at < spawn_at, "load must precede spawn");
+        assert!(
+            !body.contains("self.store.load(session_id)"),
+            "no ungated baseline read may remain in the spawn path"
+        );
     }
 
-    fn production_body<'a>(src: &'a str, signature: &str) -> &'a str {
+    // Fail-closed pin: a sync_session failure must tear the engine down and
+    // fail the spawn for EVERY session kind. sync_session fails only on a
+    // closed ops channel — the engine is already dead — and the pre-fix
+    // lenient branch logged a non-scheduled failure and cached that dead
+    // engine anyway (entry_is_fresh checks no liveness), bricking every
+    // later turn behind an opaque send error; the teardown-count pin above
+    // cannot see that branch return, because it keeps the single teardown
+    // call.
+    #[test]
+    fn sync_failure_fails_the_spawn_for_every_session_kind() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let body = production_body(src, "async fn get_or_spawn_with_policy(");
+        let sync_at = body
+            .find(".sync_session(")
+            .expect("the spawn path must sync the loaded baseline");
+        let failure_arm = &body[sync_at..];
+        let teardown_at = failure_arm
+            .find("teardown_failed_spawn_engine(&engine, forwarder)")
+            .expect("a sync failure must tear the engine down");
+        let return_at = failure_arm
+            .find("return Err(error)")
+            .expect("a sync failure must fail the spawn");
+        assert!(
+            teardown_at < return_at,
+            "the engine must be torn down before the spawn error returns"
+        );
+        assert!(
+            !body.contains("sync history for"),
+            "the lenient log-and-publish branch must not return"
+        );
+        assert!(
+            !body.contains("scheduled_profile(session_id).is_some()"),
+            "the spawn path must not scope the sync failure to scheduled sessions"
+        );
+    }
+
+    /// The production body of the fn starting at `signature`, with line
+    /// comments stripped: prose routinely mentions code verbatim (the reclaim
+    /// closure says "once forwarder.abort() below"), and a naive
+    /// first-occurrence find then lands on the comment instead of the
+    /// statement and inverts an ordering read. Same mutation class the
+    /// round-36 reuse-gate pin strips for.
+    fn production_body(src: &str, signature: &str) -> String {
         let start = src.find(signature).expect("production fn must exist");
         let rest = &src[start + signature.len()..];
         // End at the next fn ITEM, not the next `pub ` token (review #463
@@ -9648,7 +9722,15 @@ mod scheduled_model_tests {
         .filter_map(|marker| rest.find(marker))
         .min()
         .map_or(src.len(), |offset| start + signature.len() + offset);
-        &src[start..end]
+        src[start..end]
+            .split('\n')
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -9721,6 +9803,57 @@ mod scheduled_model_tests {
         assert!(
             !body.contains("tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)"),
             "no direct unbounded forwarder join may remain in reclaim"
+        );
+        // Engine-recycle ordering pin: queued transcript writers must be
+        // retired BEFORE the forwarder abort, so a queued save from the
+        // retired engine can neither persist nor notify after the abort; an
+        // already-admitted save keeps publishing from its blocking worker.
+        // Anchor on the flag so an unrelated atomic store added earlier in
+        // the body cannot satisfy the pin; a rustfmt-split `.store(...)`
+        // argument list would fail the needle loudly, which is the desired
+        // sensitivity.
+        let retire_at =
+            retire_store_after_flag(&body).expect("reclaim must retire the transcript writer flag");
+        assert!(
+            retire_at < abort_at,
+            "reclaim must retire transcript writers before aborting the forwarder"
+        );
+    }
+
+    /// Offset of the `transcript_writer_active` retirement store in `body`:
+    /// the first `.store(false, Ordering::Release)` at or after the first
+    /// mention of the flag.
+    fn retire_store_after_flag(body: &str) -> Option<usize> {
+        let flag_at = body.find("transcript_writer_active")?;
+        body[flag_at..]
+            .find(".store(false, Ordering::Release)")
+            .map(|offset| flag_at + offset)
+    }
+
+    // Engine-recycle ordering pin for the failed-spawn teardown: the spawn
+    // failed hydration, so its forwarder must not flush any queued snapshot
+    // over the durable transcript — retire writers before the bounded
+    // shutdown send (the forwarder is still live across that await) and
+    // therefore before the abort.
+    #[test]
+    fn forkguard_failed_spawn_teardown_retires_writers_before_abort() {
+        let src = include_str!("engine_pool.rs");
+        let body = production_body(src, "async fn teardown_failed_spawn_engine(");
+        let retire_at = retire_store_after_flag(&body)
+            .expect("failed-spawn teardown must retire the transcript writer flag");
+        let shutdown_at = body
+            .find("bounded_teardown_shutdown(")
+            .expect("failed-spawn teardown sends the bounded shutdown");
+        let abort_at = body
+            .find("forwarder.abort()")
+            .expect("failed-spawn teardown aborts the forwarder");
+        assert!(
+            retire_at < shutdown_at,
+            "failed-spawn teardown must retire transcript writers before the shutdown send"
+        );
+        assert!(
+            shutdown_at < abort_at,
+            "failed-spawn teardown must send the shutdown before the abort"
         );
     }
 }
@@ -10877,7 +11010,11 @@ mod probed_facts_wiring_tests {
             .expect("next method boundary");
         let fn_body = source[fn_start..fn_end]
             .lines()
-            .map(|line| line.split("//").next().unwrap_or(line))
+            .map(|line| {
+                line.split("//")
+                    .next()
+                    .expect("split always yields one item")
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let compact: String = fn_body.chars().filter(|c| !c.is_whitespace()).collect();
@@ -10937,7 +11074,7 @@ mod tests {
             // revert of the clause must not self-satisfy the pin (the
             // same mutation class its three sibling pins defend against).
             .split('\n')
-            .map(|line| line.split("//").next().unwrap_or(line))
+            .map(|line| line.split("//").next().expect("split always yields one item"))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
