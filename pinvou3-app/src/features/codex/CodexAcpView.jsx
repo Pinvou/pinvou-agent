@@ -4069,7 +4069,7 @@ export function CodexAcpView({
                           type="button"
                           data-testid="native-usage-chip"
                           onClick={() => compactNativeSession().catch(showError)}
-                          disabled={busy || working || nativeCompacting}
+                          disabled={busy || working || nativeCompacting || rewinding}
                           title={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
                           aria-label={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
                           className="relative inline-flex h-8 items-center gap-1.5 overflow-hidden rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm disabled:cursor-default disabled:opacity-50 dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
