@@ -206,6 +206,14 @@ for (const [language, { marker, tail }] of Object.entries(LOCALE_MARKERS)) {
     assert.match(localized, new RegExp(marker));
     assert.match(localized, new RegExp(tail));
     assert.ok(localized.includes(STALE_ID));
+    // The unspaced form is the exact rejection shape produced by the web RPC
+    // client (pinned on the web lane above); it must localize through the
+    // desktop table too, and the raw code must never leak into the copy.
+    const unspaced = displayTurnError(new Error(`session_model_binding_stale:${STALE_ID}`));
+    assert.match(unspaced, new RegExp(marker));
+    assert.match(unspaced, new RegExp(tail));
+    assert.ok(unspaced.includes(STALE_ID));
+    assert.ok(!unspaced.includes('session_model_binding_stale'), `${language}: raw code must not leak`);
     const raw = 'gateway rejected Authorization: Bearer fixture-private-value';
     const redacted = displayTurnError(new Error(raw));
     assert.ok(!redacted.includes('fixture-private-value'), `${language}: real helper must redact credentials`);
@@ -219,7 +227,7 @@ for (const [language, { marker, tail }] of Object.entries(LOCALE_MARKERS)) {
     const pathRedacted = displayTurnError(new Error(withSecret));
     assert.ok(pathRedacted.includes('C:\\fixture-project\\private-notes.md'));
     assert.ok(!pathRedacted.includes('fixture sensitive text'));
-    for (const input of [`session_model_binding_stale: ${STALE_ID}`, raw, withSecret, 'disk full']) {
+    for (const input of [`session_model_binding_stale: ${STALE_ID}`, `session_model_binding_stale:${STALE_ID}`, raw, withSecret, 'disk full']) {
       assert.equal(desktopContext.displayDesktopError(new Error(input)), displayTurnError(new Error(input)),
         `${language}: actual desktop and web blocks agree with the real helper loaded`);
       assert.equal(desktopContext.displayDesktopError(input), displayTurnError(input));
