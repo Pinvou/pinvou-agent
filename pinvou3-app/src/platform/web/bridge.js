@@ -2012,7 +2012,7 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
         return navToken === sessionSwitchRequestToken
           && state.activeSessionId === meta.id ? meta.id : null;
       } catch (e) {
-        addSystemItem(bt("newChatFailed") + e);
+        addSystemItem(wireLaneError(e, "newChatFailed"));
         return null;
       }
     })();
@@ -2469,7 +2469,7 @@ function onSessionDeleted(listener) { return pinvouSharedweb().onSessionDeleted(
       // and preserve the result semantics needed by batch operations.
       return applyDeletedSession(id);
     } catch (e) {
-      addSystemItem(bt("deleteFailed") + e);
+      addSystemItem(wireLaneError(e, "deleteFailed"));
       return false;
     }
   }
@@ -2730,6 +2730,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // 脱敏兜底。码表与 Rust 侧 stable_web_error_codes_are_locked 同步演进。
   const WEB_TURN_ERROR_KEYS = {
     web_session_chat_failed: "webChatFailed",
+    web_session_create_session_failed: "newChatFailed",
     web_session_turn_in_progress: "turnAlreadyInProgress",
     session_revision_conflict: "editStaleRevision",
     session_revision_unavailable: "editRevisionUnavailable",
@@ -2768,6 +2769,16 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       return window.PinvouBridgeMessages.redactRawError(text, state);
     }
     return text;
+  }
+
+  // 侧车道(建聊/删除/打开产物与附件)的同一码表消费:折叠码替换为三语
+  // 文案而非拼接原始机器码;未识别文本保持「前缀 + 原文」的既有行为。
+  // 与 displayTurnError 的差别仅在兜底:侧车道保留各自的失败前缀文案。
+  function wireLaneError(err, prefixKey) {
+    const text = String(err && err.message ? err.message : err || "");
+    const copyKey = WEB_TURN_ERROR_KEYS[text];
+    if (copyKey) return bt(copyKey);
+    return bt(prefixKey) + text;
   }
 
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
@@ -5308,7 +5319,7 @@ function openScheduledTaskFolder(automationId) { return pinvouSharedweb().openSc
         const opened = window.open(parsed.href, "_blank", "noopener,noreferrer");
         return Promise.resolve(!!opened);
       }
-      return invoke("open_user_external_url", { url: parsed.href }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+      return invoke("open_user_external_url", { url: parsed.href }).catch(function (e) { addSystemItem(wireLaneError(e, "openFailed")); });
     } catch {
       return Promise.reject(new Error("invalid external link"));
     }
@@ -5324,7 +5335,7 @@ function openScheduledTaskFolder(automationId) { return pinvouSharedweb().openSc
     if (IS_WEB) return downloadArtifact(path, sessionId);
     const ext = (String(path).split(".").pop() || "").toLowerCase();
     const cmd = (ext === "html" || ext === "htm") ? "open_artifact_window" : "open_in_system";
-    return invoke(cmd, { path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(bt("openFailed") + e); });
+    return invoke(cmd, { path, sessionId: sessionId || null }).catch(function (e) { addSystemItem(wireLaneError(e, "openFailed")); });
   }
 
   const MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 * 1024 * 1024;
@@ -5476,7 +5487,7 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
     try {
       return await downloadConversationAttachment(reference);
     } catch (e) {
-      addSystemItem(bt("openFailed") + e);
+      addSystemItem(wireLaneError(e, "openFailed"));
       return false;
     }
   }
@@ -5486,7 +5497,7 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
       await invoke("reveal_conversation_attachment", conversationAttachmentArgs(reference));
       return true;
     } catch (e) {
-      addSystemItem(bt("openFailed") + e);
+      addSystemItem(wireLaneError(e, "openFailed"));
       return false;
     }
   }
