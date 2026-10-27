@@ -4681,6 +4681,15 @@ impl AcpPool {
             let mut sessions = self.sessions.lock().await;
             sessions.drain().map(|(_, runtime)| runtime).collect()
         };
+        // The drain empties the pool, so any crash budget or parked restart
+        // disclosure keyed by those sessions is stale. Clearing here (not
+        // only at process exit) matters because shutdown_all is also reached
+        // from prepare_app_restart — the settings restart command and the
+        // post-update relaunch — where a concurrent get_or_spawn that wins
+        // the lock after the drain would otherwise spawn a fresh generation
+        // inheriting the retired generation's throttle and disclosure.
+        self.runtime_crash_budgets.lock().clear();
+        self.runtime_restart_disclosures.lock().clear();
         for runtime in runtimes {
             runtime.shutdown().await;
         }
