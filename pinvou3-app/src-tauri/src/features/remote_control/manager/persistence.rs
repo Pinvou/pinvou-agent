@@ -346,7 +346,10 @@ fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevoc
 fn quarantine_pending_ledger(path: &Path) {
     match crate::platform::filesystem::quarantine_corrupt_file(path) {
         Ok(quarantined) => {
-            eprintln!("[web-access] quarantined corrupt pending-revocation ledger to {}", quarantined.display());
+            eprintln!(
+                "[web-access] quarantined corrupt pending-revocation ledger to {}",
+                quarantined.display()
+            );
         }
         Err(error) => {
             eprintln!(

@@ -2281,11 +2281,13 @@ mod tests {
     #[test]
     fn runtime_snapshot_payloads_carry_redacted_paths() {
         crate::platform::test_support::with_temp_home("pinvoy-runtime-redact", || {
-            let snapshot =
-                disabled_runtime_snapshot("sess-redact-1").expect("disabled snapshot");
+            let snapshot = disabled_runtime_snapshot("sess-redact-1").expect("disabled snapshot");
             assert!(
                 !snapshot.runtime_path.contains(
-                    crate::platform::paths::pinvou3_home().display().to_string().as_str()
+                    crate::platform::paths::pinvou3_home()
+                        .display()
+                        .to_string()
+                        .as_str()
                 ),
                 "runtime_path must not leak the absolute storage root: {}",
                 snapshot.runtime_path

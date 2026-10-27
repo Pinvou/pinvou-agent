@@ -196,12 +196,21 @@ mod tests {
         // The `.env.` component-prefix blocklist routes through the same
         // platform-aware compare as path_component_eq: folded where the
         // default volume folds case, byte-exact where it does not.
-        assert!(path_component_prefix(OsStr::new(".env.production"), ".env."));
+        assert!(path_component_prefix(
+            OsStr::new(".env.production"),
+            ".env."
+        ));
         assert!(!path_component_prefix(OsStr::new(".environment"), ".env."));
         if cfg!(target_os = "macos") || std::path::MAIN_SEPARATOR == '\\' {
-            assert!(path_component_prefix(OsStr::new(".ENV.PRODUCTION"), ".env."));
+            assert!(path_component_prefix(
+                OsStr::new(".ENV.PRODUCTION"),
+                ".env."
+            ));
         } else {
-            assert!(!path_component_prefix(OsStr::new(".ENV.PRODUCTION"), ".env."));
+            assert!(!path_component_prefix(
+                OsStr::new(".ENV.PRODUCTION"),
+                ".env."
+            ));
         }
     }
 

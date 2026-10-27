@@ -43,6 +43,7 @@ use pinvou3_lib::features::sessions::SessionStore;
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
+use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
 /// The credential-component blocklist, IMPORTED from
 /// `platform::path_policy::BLOCKED_COMPONENTS` (the module was widened from
 /// `pub(crate)` for exactly this consumer): the lists can no longer drift.
@@ -52,7 +53,6 @@ const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 /// `validate_browsable_path`) stayed closed; that failure class is gone now
 /// that both surfaces read one constant.
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COMPONENTS;
-use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
 
 /// The system-prefix blocklist, imported from
 /// `platform::path_policy::BLOCKED_PREFIXES` for the same reason.
@@ -86,11 +86,14 @@ fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
 /// credential variants), with the same platform-aware compare as the exact
 /// half via `pinvou3_lib::platform::path_component_prefix`.
 fn crosses_sensitive_component_prefix(canonical: &Path) -> Option<&'static str> {
-    SENSITIVE_PATH_COMPONENT_PREFIXES.iter().copied().find(|prefix| {
-        canonical.components().any(|component| {
-            pinvou3_lib::platform::path_component_prefix(component.as_os_str(), prefix)
+    SENSITIVE_PATH_COMPONENT_PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix| {
+            canonical.components().any(|component| {
+                pinvou3_lib::platform::path_component_prefix(component.as_os_str(), prefix)
+            })
         })
-    })
 }
 
 /// Mirror of the whole `path_policy::check_sensitive_components` predicate
@@ -791,11 +794,7 @@ mod tests {
         ] {
             let path = PathBuf::from(benign);
             assert_eq!(crosses_sensitive_component(&path), None, "{benign}");
-            assert_eq!(
-                crosses_sensitive_component_prefix(&path),
-                None,
-                "{benign}"
-            );
+            assert_eq!(crosses_sensitive_component_prefix(&path), None, "{benign}");
             assert!(check_sensitive_path(&path).is_ok(), "{benign}");
         }
     }

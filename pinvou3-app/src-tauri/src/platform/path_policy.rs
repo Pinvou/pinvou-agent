@@ -80,10 +80,9 @@ pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String>
     }
 
     for prefix in BLOCKED_COMPONENT_PREFIXES {
-        if canonical
-            .components()
-            .any(|component| crate::platform::os::path_component_prefix(component.as_os_str(), prefix))
-        {
+        if canonical.components().any(|component| {
+            crate::platform::os::path_component_prefix(component.as_os_str(), prefix)
+        }) {
             return Err(format!(
                 "path {} crosses sensitive component prefix {}",
                 canonical.display(),
@@ -241,10 +240,7 @@ mod tests {
         ];
         for raw in blocked {
             let path = std::env::temp_dir().join("app").join(raw);
-            assert!(
-                check_sensitive_components(&path).is_err(),
-                "{raw} 必须被拦"
-            );
+            assert!(check_sensitive_components(&path).is_err(), "{raw} 必须被拦");
         }
         // 前缀仅按组件边界生效:同名前缀的普通文件不受影响。
         for benign in ["environment.md", "envelope.txt", ".environment"] {
