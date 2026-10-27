@@ -755,13 +755,47 @@ pub async fn delete_timed_memory(
     finish_memory_write(&app, session_id, &store, changed, event, Vec::new())
 }
 
+/// `edit_last_turn` 的乐观并发护栏：`expected` 与当前已落盘 transcript 的
+/// revision 不一致时拒绝编辑（不动 transcript、不消费 turn）。稳定错误码与
+/// store 的 `compare_and_swap_messages`（`session_revision_conflict`）同族；
+/// load/compute 失败折叠为 `session_revision_unavailable`，原始错误链（可能
+/// 内嵌宿主路径）只进桌面日志——该护栏是 Web 编辑重发跨 Relay 的唯一入口。
+fn ensure_transcript_revision_current(
+    store: &SessionStore,
+    sid: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let saved = store.load(sid).map_err(|error| {
+        log::warn!("[edit_last_turn] load Session {sid} for revision guard: {error:#}");
+        "session_revision_unavailable".to_string()
+    })?;
+    let current =
+        crate::features::sessions::transcript_revision(&saved.messages).map_err(|error| {
+            log::warn!("[edit_last_turn] compute Session {sid} transcript revision: {error:#}");
+            "session_revision_unavailable".to_string()
+        })?;
+    if current != expected {
+        log::warn!(
+            "[edit_last_turn] Session {sid} transcript moved on: expected {expected}, current {current}"
+        );
+        return Err("session_revision_conflict".into());
+    }
+    Ok(())
+}
+
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
 /// 前端在调这个命令之前必须自己更新 state.messages（删最后一对，加新 user）。
+/// `expected_transcript_revision` 是可选的乐观并发护栏：Web 编辑重发传入其
+/// 所持快照的 revision，桌面端不传（None = 现行为不变）。护栏在 turn gate
+/// 内执行——占住 gate 后其他 turn 无法再提交，check-then-act 之间当前
+/// revision 不可能被推进——不匹配即拒绝，防止手机端基于过期视图砍掉桌面端
+/// 刚提交的更新一轮。
 #[tauri::command]
 pub async fn edit_last_turn(
     new_message: String,
     session_id: Option<String>,
+    expected_transcript_revision: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
@@ -772,6 +806,11 @@ pub async fn edit_last_turn(
     let reservation = pool
         .reserve_turn(&sid)
         .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
+    if let Some(expected) = expected_transcript_revision.as_deref() {
+        // 护栏拒绝时 reservation 在此 Drop：未提交预约自动失效，gate 立即
+        // 重开，transcript 保持原样。
+        ensure_transcript_revision_current(&store, &sid, expected)?;
+    }
     // 编辑重发只发编辑后的原文：`EditLastTurn` 不携带 route，由引擎按当前
     // 配置重推导 provider 路由（含专家 fleet 配置随配置重读）；底座重推导时
     // 会重申宿主已申报的路由限额，不因重推导退回目录猜测。蜂群契约在 spawn
@@ -798,6 +837,109 @@ pub async fn edit_last_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepseek_tui::models::{ContentBlock, Message};
+
+    fn revision_message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.into(),
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    /// FIX（remote-control audit）: web `edit_last_turn` 的乐观并发护栏。
+    /// 过期 revision 必须被拒绝且 transcript 保持原样；当前 revision 放行；
+    /// 不存在的会话折叠为稳定码。命令本体在护栏拒绝时 Drop 未提交预约
+    /// （gate 重开、transcript 不动），此处直接钉护栏的判定与不改写语义。
+    #[test]
+    fn edit_last_turn_revision_guard_blocks_stale_views_without_mutating() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-edit-revision-guard-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+            root.join("scheduled"),
+        )
+        .expect("session store");
+        let session = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create session");
+        let sid = session.metadata.id;
+
+        // 手机端视图：只有第一轮 user 消息。
+        store
+            .update_messages(&sid, vec![revision_message("user", "first")])
+            .expect("seed stale transcript");
+        let stale_revision = crate::features::sessions::transcript_revision(
+            &store.load(&sid).expect("load stale").messages,
+        )
+        .expect("stale revision");
+
+        // 桌面端随后提交了两轮（手机视图未感知）。
+        store
+            .update_messages(
+                &sid,
+                vec![
+                    revision_message("user", "first"),
+                    revision_message("assistant", "done"),
+                    revision_message("user", "second"),
+                ],
+            )
+            .expect("advance transcript");
+        let current_revision = crate::features::sessions::transcript_revision(
+            &store.load(&sid).expect("reload").messages,
+        )
+        .expect("current revision");
+        assert_ne!(stale_revision, current_revision);
+
+        // 过期视图必须被拒绝，且 transcript 不得被改动。
+        assert_eq!(
+            ensure_transcript_revision_current(&store, &sid, &stale_revision)
+                .expect_err("stale revision must be refused"),
+            "session_revision_conflict"
+        );
+        let after_conflict = store.load(&sid).expect("load after conflict");
+        assert_eq!(
+            after_conflict.messages.len(),
+            3,
+            "guard refusal must not mutate the transcript"
+        );
+        assert_eq!(
+            crate::features::sessions::transcript_revision(&after_conflict.messages)
+                .expect("revision after conflict"),
+            current_revision
+        );
+
+        // 持有当前 revision 的编辑放行（真正的改写仍由引擎在 gate 内执行）。
+        assert!(ensure_transcript_revision_current(&store, &sid, &current_revision).is_ok());
+
+        // 不存在的会话折叠为稳定码，宿主路径只进桌面日志。
+        assert_eq!(
+            ensure_transcript_revision_current(&store, "missing-session", &current_revision)
+                .expect_err("missing session must be refused"),
+            "session_revision_unavailable"
+        );
+
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn overview_source_status_distinguishes_empty_from_unavailable() {

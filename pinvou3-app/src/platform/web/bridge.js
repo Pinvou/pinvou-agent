@@ -516,6 +516,14 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       voiceNeedSession: "Select or start a session before using voice input.",
       voiceAudioStartBlocked: "The browser did not allow audio capture to start. Click the microphone again.",
       voiceRecording: "Recording… press again to stop",
+      webChatFailed: "The desktop could not admit this turn. Reopen the conversation and try again.",
+      editStaleRevision: "This conversation changed on the desktop since it was loaded. Reopen the conversation, then edit again.",
+      editRevisionUnavailable: "The conversation state could not be verified for this edit. Reopen the conversation and try again.",
+      artifactTooLarge: "This artifact is too large to preview over remote control. Download it instead.",
+      artifactPreviewTooLarge: "The rendered preview exceeds the remote-control response limit. Download the artifact instead.",
+      artifactEditTooLarge: "This markdown is too large to edit over remote control. Download it instead.",
+      artifactReadFailed: "The artifact could not be read on the desktop.",
+      attachReadFailed: "This attachment could not be read on the desktop.",
     },
     ja: {
       newChatFailed: "⚠️ 新規チャットの作成に失敗: ", loadChatFailed: "⚠️ チャットの読み込みに失敗: ", deleteFailed: "⚠️ 削除に失敗: ",
@@ -640,6 +648,14 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       voiceNeedSession: "音声入力を使う前に、セッションを選択または新規作成してください。",
       voiceAudioStartBlocked: "ブラウザーが音声キャプチャの開始を許可しませんでした。マイクをもう一度クリックしてください。",
       voiceRecording: "録音中です。もう一度押すと終了します",
+      webChatFailed: "デスクトップがこのターンを受理できませんでした。会話を開き直してから再試行してください。",
+      editStaleRevision: "この会話は読み込み後にデスクトップで更新されています。会話を開き直してから編集してください。",
+      editRevisionUnavailable: "この編集では会話の状態を検証できませんでした。会話を開き直してから再試行してください。",
+      artifactTooLarge: "この成果物はリモートコントロールのプレビュー上限を超えています。代わりにダウンロードしてください。",
+      artifactPreviewTooLarge: "レンダリングされたプレビューがリモートコントロールの応答上限を超えました。成果物をダウンロードしてください。",
+      artifactEditTooLarge: "この Markdown はリモートコントロールで編集できる上限を超えています。代わりにダウンロードしてください。",
+      artifactReadFailed: "デスクトップで成果物を読み取れませんでした。",
+      attachReadFailed: "この添付ファイルはデスクトップで読み取れませんでした。",
     },
     zh: {
       newChatFailed: "⚠️ 新建对话失败: ", loadChatFailed: "⚠️ 加载对话失败: ", deleteFailed: "⚠️ 删除失败: ",
@@ -764,6 +780,14 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       voiceNeedSession: "请先选择或新建一个会话，再使用语音输入。",
       voiceAudioStartBlocked: "浏览器未允许启动音频采集，请再次点击麦克风。",
       voiceRecording: "正在录音，再按一次结束",
+      webChatFailed: "桌面端未能受理这一轮消息，请重新打开会话后重试。",
+      editStaleRevision: "该会话在桌面端已有更新，当前视图已过期。请重新打开会话后再编辑重发。",
+      editRevisionUnavailable: "无法校验会话当前状态，编辑未执行。请重新打开会话后重试。",
+      artifactTooLarge: "产物过大，无法在远程控制中预览，请改为下载。",
+      artifactPreviewTooLarge: "产物预览超过远程控制响应上限，请改为下载。",
+      artifactEditTooLarge: "Markdown 过大，无法在远程控制中编辑，请改为下载。",
+      artifactReadFailed: "桌面端无法读取该产物。",
+      attachReadFailed: "桌面端无法读取该附件。",
     },
   };
 function bt(key) { return pinvouSharedweb().bt(key); }
@@ -2701,6 +2725,21 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // src-tauri chat.rs IMAGE_INPUT_*_ERROR 对应)按码替换为三语指引,而非剥前缀
   // 透传后端硬编码中文——英/日界面不该看到中文结论;文案与 ChatView 前置警告
   // (t.uiAttachments.*)同源语义。与 tauri bridge chat.js 同一口径。
+  // 远端折叠错误码(remote_control.rs 折叠族,原生错误链只留在桌面日志)与
+  // edit_last_turn 乐观并发护栏码在此映射为三语文案;未识别文本仍走下方
+  // 脱敏兜底。码表与 Rust 侧 stable_web_error_codes_are_locked 同步演进。
+  const WEB_TURN_ERROR_KEYS = {
+    web_session_chat_failed: "webChatFailed",
+    session_revision_conflict: "editStaleRevision",
+    session_revision_unavailable: "editRevisionUnavailable",
+    web_artifact_too_large: "artifactTooLarge",
+    web_artifact_preview_too_large: "artifactPreviewTooLarge",
+    web_artifact_edit_too_large: "artifactEditTooLarge",
+    web_artifact_read_failed: "artifactReadFailed",
+    web_session_read_artifact_chunk_failed: "artifactReadFailed",
+    web_session_artifact_access_failed: "artifactReadFailed",
+    web_session_read_conversation_attachment_chunk_failed: "attachReadFailed",
+  };
   function displayTurnError(err) {
     // RPC rejections arrive as Error objects (bootstrap.js wraps message.error
     // in new Error), Tauri invoke rejections as plain strings; prefer
@@ -2716,6 +2755,9 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       return bt("sessionModelStale")(
         text.slice("session_model_binding_stale:".length).trim(),
       );
+    }
+    if (Object.prototype.hasOwnProperty.call(WEB_TURN_ERROR_KEYS, text)) {
+      return bt(WEB_TURN_ERROR_KEYS[text]);
     }
     // Same policy as the tauri bridge: redact raw submit-failure bodies
     // before display (classification may miss, credentials must not). Pass
@@ -5180,8 +5222,17 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     notify();
     turnUsageDirty[sid] = false; // 编辑重跑=新一轮，同 doSendFor 重置口径保护
     emitPetEvent();
+    // Optimistic concurrency: submit the committed revision this view holds.
+    // A desktop turn that landed after this view was loaded makes the backend
+    // refuse with session_revision_conflict instead of truncating its newer
+    // transcript. Empty (older desktop without revisions) keeps old behavior.
+    const expectedRevision = editBuffer ? String(editBuffer.sessionRevision || "") : "";
     try {
-      await invoke("edit_last_turn", { newMessage: newText, sessionId: sid });
+      await invoke("edit_last_turn", {
+        newMessage: newText,
+        sessionId: sid,
+        expectedTranscriptRevision: expectedRevision || null,
+      });
       // 编辑重跑 = 后端受理新一轮：未提交的「打开」转正锁死（同 doSendFor）。
       try { window.PinvouToolStoreEvents.notifyChatRoundCommitted(); } catch { /* silently ignored */ }
       if (editBuffer) editBuffer.deferredRemoteUserEvent = null;
@@ -5205,7 +5256,7 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       if (concurrentTurn && editBuffer && !deferredApplied) {
         markRemoteTurn(sid, editBuffer, false, "edit_last_turn_concurrent_turn");
       }
-      runSyncOnSession(sid, function () { addSystemItem("⚠️ " + e); });
+      runSyncOnSession(sid, function () { addSystemItem("⚠️ " + displayTurnError(e)); });
       notify();
       flushQueued(sid);
     }
