@@ -638,7 +638,11 @@ struct ManagedInstallStage {
     diag_stage: &'static str,
     /// Command line shown in progress events.
     command_line: String,
-    /// Whether to make the child a process-group leader (npm and brew need it; the script process does not).
+    /// Whether to make the child a process-group leader at this layer (npm and
+    /// brew need it; the script channel instead gets its group from
+    /// `install_script_command`'s unix branch, which sets one itself). Every
+    /// installer channel ends up a group leader either way — the armed guard's
+    /// group kill relies on that invariant.
     process_group: bool,
     spawn_context: String,
     stdout_context: &'static str,
@@ -732,7 +736,11 @@ async fn run_managed_install(
             let status = result.context(stage.wait_context)?;
             // Reaped: settle before any further await or fallible step, so
             // a panic in between can never drop the guard armed on a pid
-            // the OS may already have handed to another process.
+            // the OS may already have handed to another process. The cost:
+            // an abort in the output-reader tail drops the guard disarmed
+            // and skips a unix group reclaim that would still be ESRCH-safe
+            // — accepted, because the alternative keeps a kill by a
+            // possibly recycled pid armed across that tail.
             child_guard.settle_reaped();
             status
         }
@@ -748,6 +756,12 @@ async fn run_managed_install(
             // the Drop never re-kills, then reclaim group survivors once for
             // descendants that outlived the leader. Like the cancel recheck,
             // the (Windows-bounded) tree kill runs on the blocking pool.
+            // The wait itself is unbounded by design: if a stalled taskkill
+            // left the direct child alive (Windows), this parks the install
+            // task — and the install mutex — until the installer exits on its
+            // own. That tolerance is accepted over killing by a possibly
+            // recycled pid, and user cancel still reaches the tree through
+            // the registry entry, which only the settle below removes.
             if let Some(pid) = child.id() {
                 let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
             }

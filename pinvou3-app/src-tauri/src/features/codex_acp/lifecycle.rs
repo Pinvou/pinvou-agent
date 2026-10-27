@@ -14,8 +14,9 @@
 //! respawns immediately; from the second crash a respawn waits 250 ms after
 //! the latest crash; from the third crash automatic rebuilds pause until the
 //! oldest crash leaves the window. A reuse of a generation that has been
-//! running for two minutes clears the budget, so a runtime that only fails
-//! every few minutes is never throttled — the budget targets tight loops.
+//! alive for two minutes — measured from spawn start, initialization
+//! included — clears the budget, so a runtime that only fails every few
+//! minutes is never throttled; the budget targets tight loops.
 //!
 //! Detection boundary: a dead generation is observed through the transport
 //! (`incoming_closed`), which resolves only once every writer of the runtime
