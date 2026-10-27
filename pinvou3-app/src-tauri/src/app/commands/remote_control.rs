@@ -116,9 +116,13 @@ pub(super) enum WebSessionOperation {
     ListSessions,
     ListArchivedSessions,
     CreateSession,
+    Chat,
     LoadSessionChunk,
     GetOrCreateAuxSession,
     ResetAuxSession,
+    ReadConversationAttachmentChunk,
+    ReadArtifactChunk,
+    ArtifactAccess,
 }
 
 impl WebSessionOperation {
@@ -127,9 +131,13 @@ impl WebSessionOperation {
             Self::ListSessions => "list_sessions",
             Self::ListArchivedSessions => "list_archived_sessions",
             Self::CreateSession => "create_session",
+            Self::Chat => "chat",
             Self::LoadSessionChunk => "load_session_chunk",
             Self::GetOrCreateAuxSession => "get_or_create_aux_session",
             Self::ResetAuxSession => "reset_aux_session",
+            Self::ReadConversationAttachmentChunk => "read_conversation_attachment_chunk",
+            Self::ReadArtifactChunk => "read_artifact_chunk",
+            Self::ArtifactAccess => "artifact_access",
         }
     }
 }
@@ -154,6 +162,21 @@ pub(super) fn web_session_result<T, E: std::fmt::Display>(
     result: Result<T, E>,
 ) -> Result<T, String> {
     web_operation_result("Web session", "web_session", operation.as_str(), result)
+}
+
+/// Fold an already-materialized native error into its stable
+/// `web_session_{operation}_failed` wire code. Companion to
+/// [`web_session_result`] for call sites that hold the error outside a
+/// `Result` (e.g. after combining a rollback failure): the raw chain is
+/// desktop-log-only, the browser receives the code. Mirrors
+/// [`web_operation_result`]'s log-and-format shape directly — the helper
+/// only ever receives `Err`, and `unwrap_err` is denied in production code.
+fn fold_web_session_error(operation: WebSessionOperation, error: String) -> String {
+    log::warn!(
+        "[remote_control] Web session {} failed: {error}",
+        operation.as_str()
+    );
+    format!("web_session_{}_failed", operation.as_str())
 }
 
 fn web_workspace_result<T, E: std::fmt::Display>(
@@ -782,6 +805,10 @@ pub fn web_access_discard_attachment(
 
 /// Read a bounded chunk from an attachment already referenced by a saved
 /// conversation message. The browser never receives or supplies a host path.
+/// Both the resolver (session-store chains embed host paths) and the chunk
+/// reader (open/stat errors embed the resolved absolute path) fold into the
+/// stable `web_session_read_conversation_attachment_chunk_failed` code; the
+/// raw chains are desktop-log-only.
 #[tauri::command]
 pub async fn web_access_read_conversation_attachment_chunk(
     session_id: String,
@@ -793,20 +820,29 @@ pub async fn web_access_read_conversation_attachment_chunk(
     limit: Option<usize>,
     store: State<'_, SessionStore>,
 ) -> Result<file_access::ArtifactChunk, String> {
-    let path = super::files::resolve_conversation_attachment_path(
-        &store,
-        &session_id,
-        message_index,
-        attachment_index,
-        &basename,
-        &display_text,
-    )?;
-    file_access::read_resolved_file_chunk(&path, offset, limit)
+    let chunk = async {
+        let path = super::files::resolve_conversation_attachment_path(
+            &store,
+            &session_id,
+            message_index,
+            attachment_index,
+            &basename,
+            &display_text,
+        )?;
+        file_access::read_resolved_file_chunk(&path, offset, limit)
+    }
+    .await;
+    web_session_result(WebSessionOperation::ReadConversationAttachmentChunk, chunk)
 }
 
 /// Materialize a draft Web conversation and admit its first turn as one
 /// idempotent RPC. The Relay request ledger guarantees that reconnecting with
 /// the same client_request_id cannot create or submit the turn twice.
+///
+/// Every failure path folds into the stable `web_session_create_session_failed`
+/// / `web_session_chat_failed` codes: the native chains (store errors embed
+/// host paths, attachment-handle refusals are raw manager text) go to the
+/// desktop log only.
 #[tauri::command]
 pub async fn web_access_create_session_and_chat(
     message: String,
@@ -817,9 +853,15 @@ pub async fn web_access_create_session_and_chat(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<WebSessionMetadata, String> {
-    let transcript_revision = crate::features::sessions::transcript_revision(&[])
-        .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
-    let metadata = super::sessions::create_session_record(false, &store, &pool, None)?;
+    let transcript_revision = web_session_result(
+        WebSessionOperation::CreateSession,
+        crate::features::sessions::transcript_revision(&[])
+            .map_err(|error| format!("create empty transcript revision: {error:#}")),
+    )?;
+    let metadata = web_session_result(
+        WebSessionOperation::CreateSession,
+        super::sessions::create_session_record(false, &store, &pool, None),
+    )?;
     let session_id = metadata.id.clone();
 
     if let Err(error) = web_access_chat_for_session(
@@ -846,10 +888,14 @@ pub async fn web_access_create_session_and_chat(
         // process-level residual keys such as the timing queue / pending
         // user input are cleaned uniformly by the SessionPurgedHook fired
         // from store.delete, matching the delete_session command.
-        return match rollback {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(format!("{error}; {rollback_error}")),
+        let chat_error = match rollback {
+            Ok(()) => error,
+            Err(rollback_error) => format!("{error}; {rollback_error}"),
         };
+        return Err(fold_web_session_error(
+            WebSessionOperation::Chat,
+            chat_error,
+        ));
     }
 
     super::sessions::emit_session_event(&app, "session:list_changed", &session_id, "created");
@@ -857,7 +903,11 @@ pub async fn web_access_create_session_and_chat(
 }
 
 /// Web-safe chat entry point: Session routing is mandatory and attachment
-/// contents never cross Relay in either direction.
+/// contents never cross Relay in either direction. Every failure path folds
+/// into the stable `web_session_chat_failed` code — store-load errors embed
+/// host paths, turn-reservation refusals carry raw chains, and the
+/// attachment-handle refusals are manager-side raw text — so the combined
+/// native chain is desktop-log-only.
 #[tauri::command]
 pub async fn web_access_chat(
     message: String,
@@ -869,7 +919,7 @@ pub async fn web_access_chat(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<(), String> {
-    web_access_chat_for_session(
+    let outcome = web_access_chat_for_session(
         message,
         attachment_handles,
         session_id,
@@ -879,7 +929,8 @@ pub async fn web_access_chat(
         &store,
         &app,
     )
-    .await
+    .await;
+    web_session_result(WebSessionOperation::Chat, outcome)
 }
 
 /// Create a Web code Session from either a private temporary workspace or a
@@ -1462,7 +1513,10 @@ fn stage_uploaded_attachments(
             &workspace,
         ) else {
             cleanup_staged_attachment_sources(&staged_sources);
-            return Err(format!("暂存远程上传附件失败：{}", attachment.basename));
+            return Err(format!(
+                "stage uploaded attachment failed: {}",
+                attachment.basename
+            ));
         };
         attachment.path = staged.to_string_lossy().into_owned();
         staged_sources.push(staged);
@@ -1502,12 +1556,17 @@ pub async fn web_access_transcribe_voice_audio(
             format!("invalid Session id: {error:#}"),
         )
     })?;
+    // The `code` field drives the browser's trilingual copy (the voice flow
+    // maps it by code and demotes `message` to diagnostics), but `message`
+    // still crosses Relay verbatim: keep store chains (which embed host
+    // paths) in the desktop log and carry a short path-free summary only.
     store.load(&session_id).map_err(|error| {
+        log::warn!("[remote_control] Web voice Session {session_id} load failed: {error:#}");
         super::voice::VoiceCommandError::new(
             "session_load_failed",
             "context_mismatch",
             "transcribing",
-            format!("load Session {session_id}: {error:#}"),
+            format!("load Session {session_id} failed"),
         )
     })?;
     let audio_bytes = base64::engine::general_purpose::STANDARD
@@ -1517,7 +1576,7 @@ pub async fn web_access_transcribe_voice_audio(
                 "audio_invalid",
                 "recording_failed",
                 "transcribing",
-                format!("解码远程控制语音音频失败：{error}"),
+                format!("decode remote-control voice audio: {error}"),
             )
         })?;
     if audio_bytes.len() > 1024 * 1024 {
@@ -1525,7 +1584,7 @@ pub async fn web_access_transcribe_voice_audio(
             "recording_too_long",
             "recording_failed",
             "transcribing",
-            "远程控制语音音频超过 1 MiB",
+            "remote-control voice audio exceeds 1 MiB",
         ));
     }
     // The local command has switched to a base64 payload (a `audio_bytes` JSON
@@ -1535,7 +1594,11 @@ pub async fn web_access_transcribe_voice_audio(
 }
 
 /// Read a bounded chunk from a Session-owned artifact. The resolver rejects
-/// files outside that Session's isolated workspace/artifact authority.
+/// files outside that Session's isolated workspace/artifact authority. The
+/// native chains (store errors embed host paths, open/stat errors embed the
+/// resolved absolute path) fold into the stable
+/// `web_session_read_artifact_chunk_failed` code; the raw detail is
+/// desktop-log-only.
 #[tauri::command]
 pub fn web_access_read_artifact_chunk(
     path: String,
@@ -1544,7 +1607,10 @@ pub fn web_access_read_artifact_chunk(
     limit: Option<usize>,
     store: State<'_, SessionStore>,
 ) -> Result<file_access::ArtifactChunk, String> {
-    file_access::read_artifact_chunk(&store, &path, &session_id, offset, limit)
+    web_session_result(
+        WebSessionOperation::ReadArtifactChunk,
+        file_access::read_artifact_chunk(&store, &path, &session_id, offset, limit),
+    )
 }
 
 /// Merge only settings that remain visible and meaningful in WebUI. Hidden
@@ -1568,26 +1634,46 @@ fn scoped_artifact_path(
     session_id: &str,
     path: &str,
 ) -> Result<String, String> {
-    file_access::resolve_session_artifact_path(store, session_id, path)
-        .map(|resolved| resolved.to_string_lossy().into_owned())
+    web_session_result(
+        WebSessionOperation::ArtifactAccess,
+        file_access::resolve_session_artifact_path(store, session_id, path)
+            .map(|resolved| resolved.to_string_lossy().into_owned()),
+    )
 }
 
+/// 产物读写族(ArtifactAccess)的公共折叠:impl 层错误内嵌绝对宿主路径
+/// (`read_artifact_text({path}): {e}` 等),一律折成稳定 wire code,
+/// 原生链只进桌面日志。
+fn web_artifact_access<T>(result: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    web_session_result(WebSessionOperation::ArtifactAccess, result())
+}
+
+/// Artifact preview size guards fold into stable codes the browser can map
+/// to trilingual copy: the stat error carries the resolved absolute host
+/// path, and the raw zh refusals would leak as unmapped text on the phone.
+/// The native detail stays in the desktop log only.
 fn ensure_web_artifact_file_size(path: &str, max_bytes: u64) -> Result<(), String> {
     let size = std::fs::metadata(path)
-        .map_err(|error| format!("stat Web artifact {path}: {error}"))?
+        .map_err(|error| {
+            log::warn!("[remote_control] stat Web artifact {path} failed: {error}");
+            "web_artifact_read_failed".to_string()
+        })?
         .len();
     if size > max_bytes {
-        return Err("产物过大，无法在远程控制中预览，请改为下载".to_string());
+        return Err("web_artifact_too_large".to_string());
     }
     Ok(())
 }
 
 fn ensure_web_artifact_response<T: Serialize>(value: T) -> Result<T, String> {
     let size = serde_json::to_vec(&value)
-        .map_err(|error| format!("serialize Web artifact preview: {error}"))?
+        .map_err(|error| {
+            log::warn!("[remote_control] serialize Web artifact preview failed: {error}");
+            "web_artifact_read_failed".to_string()
+        })?
         .len();
     if size > MAX_WEB_ARTIFACT_RPC_BYTES {
-        return Err("产物预览超过远程控制响应上限，请改为下载".to_string());
+        return Err("web_artifact_preview_too_large".to_string());
     }
     Ok(value)
 }
@@ -1599,7 +1685,7 @@ pub fn web_access_artifact_info(
     store: State<'_, SessionStore>,
 ) -> Result<super::artifacts::ArtifactInfo, String> {
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
-    super::artifacts::artifact_info_impl(&resolved)
+    web_artifact_access(|| super::artifacts::artifact_info_impl(&resolved))
 }
 
 #[tauri::command]
@@ -1610,7 +1696,9 @@ pub fn web_access_read_artifact_text(
 ) -> Result<String, String> {
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
     ensure_web_artifact_file_size(&resolved, MAX_WEB_ARTIFACT_RPC_BYTES as u64)?;
-    ensure_web_artifact_response(super::artifacts::read_artifact_text_impl(&resolved)?)
+    ensure_web_artifact_response(web_artifact_access(|| {
+        super::artifacts::read_artifact_text_impl(&resolved)
+    })?)
 }
 
 #[tauri::command]
@@ -1621,10 +1709,10 @@ pub fn web_access_write_artifact_text(
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
     if content.len() > MAX_WEB_ARTIFACT_RPC_BYTES {
-        return Err("Markdown 过大，无法在远程控制中编辑，请改为下载".to_string());
+        return Err("web_artifact_edit_too_large".to_string());
     }
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
-    super::artifacts::write_artifact_text_impl(&resolved, &content)
+    web_artifact_access(|| super::artifacts::write_artifact_text_impl(&resolved, &content))
 }
 
 #[tauri::command]
@@ -1637,7 +1725,10 @@ pub async fn web_access_read_artifact_image_b64(
     // Base64 expands by roughly 4/3, leaving ample room below Relay's 4 MiB
     // frame ceiling for the surrounding RPC envelope.
     ensure_web_artifact_file_size(&resolved, 1_500_000)?;
-    ensure_web_artifact_response(super::artifacts::read_artifact_image_b64(resolved).await?)
+    let value = super::artifacts::read_artifact_image_b64(resolved)
+        .await
+        .map_err(|error| fold_web_session_error(WebSessionOperation::ArtifactAccess, error))?;
+    ensure_web_artifact_response(value)
 }
 
 #[tauri::command]
@@ -1647,7 +1738,10 @@ pub async fn web_access_read_artifact_thumbnail(
     store: State<'_, SessionStore>,
 ) -> Result<Option<String>, String> {
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
-    ensure_web_artifact_response(super::artifacts::read_artifact_thumbnail(resolved).await?)
+    let value = super::artifacts::read_artifact_thumbnail(resolved)
+        .await
+        .map_err(|error| fold_web_session_error(WebSessionOperation::ArtifactAccess, error))?;
+    ensure_web_artifact_response(value)
 }
 
 #[tauri::command]
@@ -1657,14 +1751,18 @@ pub async fn web_access_render_artifact_visual(
     store: State<'_, SessionStore>,
 ) -> Result<super::artifacts::VisualResult, String> {
     let resolved = scoped_artifact_path(&store, &session_id, &path)?;
-    ensure_web_artifact_response(super::artifacts::render_artifact_visual(resolved).await?)
+    let value = super::artifacts::render_artifact_visual(resolved)
+        .await
+        .map_err(|error| fold_web_session_error(WebSessionOperation::ArtifactAccess, error))?;
+    ensure_web_artifact_response(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         WebAcpOperation, WebSavedSession, WebSessionMetadata, WebSessionOperation,
-        WebWorkspaceOperation, ensure_owned_session_download_id, ensure_web_chat_session_supported,
+        WebWorkspaceOperation, ensure_owned_session_download_id, ensure_web_artifact_file_size,
+        ensure_web_artifact_response, ensure_web_chat_session_supported, fold_web_session_error,
         web_acp_agent_id, web_acp_result, web_artifact_storage_path, web_session_result,
         web_workspace_result,
     };
@@ -1784,6 +1882,28 @@ mod tests {
         assert_eq!(
             web_session_result(WebSessionOperation::LoadSessionChunk, error).unwrap_err(),
             "web_session_load_session_chunk_failed"
+        );
+        // Chat admission (web_access_chat / web_access_create_session_and_chat)
+        // folds the whole native chain — store-load host paths, turn-gate
+        // refusals, attachment-handle refusals — into one stable code.
+        assert_eq!(
+            web_session_result(WebSessionOperation::Chat, error).unwrap_err(),
+            "web_session_chat_failed"
+        );
+        assert_eq!(
+            web_session_result(WebSessionOperation::ReadConversationAttachmentChunk, error)
+                .unwrap_err(),
+            "web_session_read_conversation_attachment_chunk_failed"
+        );
+        assert_eq!(
+            web_session_result(WebSessionOperation::ReadArtifactChunk, error).unwrap_err(),
+            "web_session_read_artifact_chunk_failed"
+        );
+        // The artifact preview/edit family folds scope-resolution and impl
+        // errors (which embed absolute host paths) through ArtifactAccess.
+        assert_eq!(
+            web_session_result(WebSessionOperation::ArtifactAccess, error).unwrap_err(),
+            "web_session_artifact_access_failed"
         );
         // Round-30 B7: the two aux commands are web-allowlisted; their chains
         // fold into stable codes too, never leaking host paths across Relay.
@@ -1976,6 +2096,100 @@ mod tests {
                 assert!(!acp_error.contains(private_path));
             }
         }
+    }
+
+    /// The chat admission fold (`web_access_chat` /
+    /// `web_access_create_session_and_chat`) must reduce arbitrary native
+    /// chains — multi-line anyhow chains, store errors embedding host paths,
+    /// zh attachment-handle refusals — to the bare stable code.
+    #[test]
+    fn web_chat_errors_do_not_expose_host_paths_or_raw_chains() {
+        for private_path in [
+            "/Users/alice/.pinvou3/sessions/aux-x/session.json",
+            "/home/alice/.pinvou3/sessions/aux-x",
+            r"C:\Users\alice\.pinvou3\sessions",
+        ] {
+            let folded = fold_web_session_error(
+                WebSessionOperation::Chat,
+                format!("load Session aux-x: failed to read {private_path}: os error 2"),
+            );
+            assert_eq!(folded, "web_session_chat_failed");
+            assert!(
+                !folded.contains('/'),
+                "folded chat error leaked a path: {folded}"
+            );
+            assert!(
+                !folded.contains('\\'),
+                "folded chat error leaked a path: {folded}"
+            );
+            assert!(
+                !folded.contains("os error"),
+                "folded chat error kept the raw chain: {folded}"
+            );
+
+            let chained = fold_web_session_error(
+                WebSessionOperation::Chat,
+                format!(
+                    "reserve Web chat turn: session_turn_in_progress\ncaused by {private_path}"
+                ),
+            );
+            assert_eq!(chained, "web_session_chat_failed");
+            assert!(!chained.contains(private_path));
+            assert!(
+                !chained.contains('\n'),
+                "folded chat error kept a multi-line chain"
+            );
+        }
+        // The attachment-handle refusals originate as raw manager-side text
+        // (manager/mod.rs owns those strings); the command-boundary fold
+        // still reduces them to the stable code.
+        let handle_refusal = fold_web_session_error(
+            WebSessionOperation::Chat,
+            "远程控制附件句柄不存在或已过期：webatt_abc123".to_string(),
+        );
+        assert_eq!(handle_refusal, "web_session_chat_failed");
+        assert!(!handle_refusal.contains("webatt_abc123"));
+    }
+
+    /// The Web artifact size guards must fold both failure classes — the
+    /// stat error (its message embeds the resolved absolute host path) and
+    /// the oversize refusal — into stable codes, so no host path or raw
+    /// zh-only copy reaches the browser.
+    #[test]
+    fn web_artifact_size_errors_fold_to_stable_codes() {
+        let missing = std::env::temp_dir().join(format!(
+            "pinvou3-artifact-stat-missing-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let stat_error = ensure_web_artifact_file_size(&missing.to_string_lossy(), 1024)
+            .expect_err("stat of a missing artifact must fail");
+        assert_eq!(stat_error, "web_artifact_read_failed");
+        assert!(
+            !stat_error.contains('/'),
+            "stat fold leaked a path segment: {stat_error}"
+        );
+
+        let existing = std::env::temp_dir().join(format!(
+            "pinvou3-artifact-size-guard-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&existing, b"artifact").expect("write size-guard fixture");
+        assert!(ensure_web_artifact_file_size(&existing.to_string_lossy(), 1024).is_ok());
+        assert_eq!(
+            ensure_web_artifact_file_size(&existing.to_string_lossy(), 1).expect_err("oversize"),
+            "web_artifact_too_large"
+        );
+        let _ = std::fs::remove_file(&existing);
+
+        assert_eq!(
+            ensure_web_artifact_response("preview body").expect("small preview"),
+            "preview body"
+        );
+        let oversized = "x".repeat(super::MAX_WEB_ARTIFACT_RPC_BYTES + 1);
+        assert_eq!(
+            ensure_web_artifact_response(oversized).expect_err("oversized preview"),
+            "web_artifact_preview_too_large"
+        );
     }
 
     #[test]
