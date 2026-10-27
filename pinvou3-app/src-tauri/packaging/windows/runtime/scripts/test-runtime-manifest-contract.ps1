@@ -1,8 +1,11 @@
-﻿# Windows runtime manifest contract suite. Scope note: the contract library
-# (runtime-manifest-contract.ps1) is currently exercised ONLY here, via
-# `npm run test:windows-runtime-manifest` in pr-check's Windows job.
-# Production staging validation still lives in resolve-runtime.ps1's own
-# checks; wiring this contract into that flow is a follow-up.
+# Windows runtime manifest contract suite. Scope note: production already
+# consumes the contract library directly -- resolve-runtime.ps1 runs
+# Assert-WindowsRuntimeStagedFilesDeclared on every manifest read and
+# Assert-WindowsRuntimeStagedFilesExact inside Stage-Submodule, and that
+# production wiring is itself pinned by tests/windows_runtime_packaging_
+# contract.test.js. This suite is the library's direct test home (per-throw-
+# site negative cases), run via `npm run test:windows-runtime-manifest` in
+# pr-check's Windows job.
 #
 # The Write-Utf8Atomically assertions below (atomic write / FILE_SHARE_DELETE
 # / litter cleanup) dot-source resolve-runtime.ps1 -ImportFunctionsOnly,
@@ -137,7 +140,7 @@ try {
   # in one guard cannot be masked by the other one throwing instead. The
   # whole-path guard's whitespace-only case and the segment guard's
   # trailing-dot / colon (ADS) / trailing-whitespace cases previously shipped
-  # without direct assertions — a guard regression there passed the suite
+  # without direct assertions -- a guard regression there passed the suite
   # while staging validation weakened.
   foreach ($wholePathViolation in @(
     "/absolute.txt",
