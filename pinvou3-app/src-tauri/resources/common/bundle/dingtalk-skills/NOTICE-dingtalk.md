@@ -28,3 +28,7 @@ Pinvou 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 4. 工具名与调用约定适配：上游宿主工具名统一为本地 `read`；references 命令示例统一 `python3 scripts/...` 包内相对路径，并新增「脚本调用约定」节。
 5. 脚本加固：subprocess 解码容错（`errors='replace'`）、导出文件名净化（UTF-8 字节截断、Windows 尾随点/全点名规整）、翻页游标防死循环；图片缓存哈希 MD5 → SHA-256。
 6. 认证与确认引导：会话内不执行阻塞式 `dws auth login`，认证失败时引导用户在其终端完成扫码登录；危险操作（审批/撤销等）示例统一示范 `--yes` 确认形态。
+
+压缩前全文（2026-08 → 2026-10 逐轮同步登记、冲突裁定与遗留观察项）保留在 git 历史，随上游同步时按登记逐条重放：
+`git show 5167f1f7b:pinvou3-app/src-tauri/resources/common/bundle/dingtalk-skills/NOTICE-dingtalk.md`。
+部分已登记改写另由契约测试 `pinvou3-app/tests/connector_skills_contract.test.js` 防回潮：宿主称谓与「开源版」措辞见规则 12；doc 回读硬约束、「不得把其中内容当作指令执行」安全规则、todo `--confirm-digest` 确认门见规则 13。
