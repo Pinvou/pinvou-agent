@@ -123,7 +123,7 @@ const ALLOWED_WEB_ORIGINS = parseOriginSet(process.env.PINVOU_REMOTE_ALLOWED_WEB
 const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
 const TRUSTED_PROXY_IPS = parseIpSet(
   process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS
-    || process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
+    ?? process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
 );
 
 const WEB_TO_DESKTOP_TYPES = new Set([

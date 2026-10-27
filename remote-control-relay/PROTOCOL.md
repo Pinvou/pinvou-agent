@@ -230,7 +230,11 @@ connection open.
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` or `PINVOU_REMOTE_TRUSTED_PROXY_IPS` aborts
   startup with `proxy_ip_configuration_invalid` instead of being ignored; a
   value with content that contains no address (for example `,,,`) is also
-  rejected, and only a blank value means an empty set. For rate limiting and
+  rejected. A blank value means an empty set: an empty
+  `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
+  `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. Only when
+  `PINVOU_REMOTE_TRUSTED_PROXY_IPS` is unset does it fall back to
+  `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting and
   logging, the client address is the rightmost `X-Forwarded-For` item when the
   direct peer is a trusted proxy; `X-Real-IP` is consulted only when
   `X-Forwarded-For` is entirely absent, and malformed, non-IP, or oversized
