@@ -24,6 +24,12 @@ const descriptorPath = path.join(
   "runtime-descriptor.json",
 );
 const requireStagedRuntime = process.argv.includes("--require-staged-runtime");
+if (requireStagedRuntime && !fs.existsSync(descriptorPath)) {
+  throw new Error(
+    `--require-staged-runtime was passed but no runtime descriptor exists at ${descriptorPath}; ` +
+      "run `npm run runtime:windows:stage` before this test",
+  );
+}
 const skipReason = !requireStagedRuntime && (
   process.platform !== "win32" || !fs.existsSync(descriptorPath)
 )
@@ -38,9 +44,11 @@ test("Windows runtime installer adapter integration", { skip: skipReason }, () =
     const runtime = describeWindowsRuntime();
     // The descriptor records the EXPANDED staging destination
     // (resolve-runtime.ps1 Get-RuntimeDescriptorContent writes
-    // "<relativeRoot>/expanded/vc_redist/..."; the payload/ tree is only the
-    // transient copy source inside the resolver's temporary root and is
-    // deleted after staging).
+    // "<relativeRoot>/expanded/vc_redist/..." with forward slashes; the
+    // payload/ tree is only the transient copy source inside the resolver's
+    // temporary root and is deleted after staging). describeWindowsRuntime
+    // resolves that entry to an absolute host path, so the separators are
+    // backslashes on Windows and are normalized before matching.
     assert.match(
       runtime.vcRedist.sourcePath.replaceAll("\\", "/"),
       /target\/windows-runtime\/[^/]+\/expanded\/vc_redist\/VC_redist\.x64\.exe$/u,
