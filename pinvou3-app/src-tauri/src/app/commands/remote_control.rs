@@ -237,17 +237,24 @@ pub fn web_access_disable(manager: State<'_, RemoteControlManager>) -> Result<()
     manager.stop_current()
 }
 
+/// 与 enable/revoke 同一口径:状态 payload 携带含 access_token 片段的配对
+/// URL,轮换会改写凭据——两者都只属于主 WebView 的设置入口,读者/宠物等
+/// 辅助 WebView 不得触发或轮询。
 #[tauri::command]
 pub fn web_access_status(
+    window: WebviewWindow,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessStatus, String> {
+    require_main_webview(&window)?;
     Ok(manager.status())
 }
 
 #[tauri::command]
 pub fn web_access_rotate(
+    window: WebviewWindow,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessInfo, String> {
+    require_main_webview(&window)?;
     manager.refresh()
 }
 
