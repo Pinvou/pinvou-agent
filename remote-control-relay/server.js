@@ -164,7 +164,16 @@ const endpointCreationBuckets = new Map();
 const wsConnectionBuckets = new Map();
 let relayStateMutation = Promise.resolve();
 
-await loadRelayState();
+try {
+  await loadRelayState();
+} catch (error) {
+  // Report only the fixed message and the errno name. Letting the rejection
+  // reach Node's default handler would print the error cause, whose message
+  // and `path` property embed the state file location.
+  const code = error?.cause?.code;
+  console.error(`[relay-error] ${error.message}${code ? ` code=${code}` : ""}`);
+  process.exit(1);
+}
 
 function send(ws, value) {
   if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
@@ -517,13 +526,13 @@ async function loadRelayState() {
 
   let state;
   try { state = JSON.parse(contents); } catch (error) {
-    throw new Error("failed to load relay state: invalid JSON", { cause: error });
+    throw new Error("relay_state_load_failed: invalid JSON", { cause: error });
   }
   if (!state || typeof state !== "object" || Array.isArray(state)
     || state.version !== RELAY_STATE_VERSION
     || !Array.isArray(state.revoked_endpoints)
     || state.revoked_endpoints.length > MAX_REVOKED_ENDPOINTS) {
-    throw new Error("failed to load relay state: unsupported or malformed state");
+    throw new Error("relay_state_load_failed: unsupported or malformed state");
   }
 
   for (const entry of state.revoked_endpoints) {
@@ -532,7 +541,7 @@ async function loadRelayState() {
       || !validEndpointId(entry.endpoint_id)
       || !Number.isFinite(Date.parse(revokedAt))
       || revokedEndpoints.has(entry.endpoint_id)) {
-      throw new Error("failed to load relay state: malformed revoked endpoint");
+      throw new Error("relay_state_load_failed: malformed revoked endpoint");
     }
     revokedEndpoints.set(entry.endpoint_id, revokedAt);
   }
@@ -765,7 +774,18 @@ async function serveWebUi(req, res, routePath) {
     : contentHashedAsset
       ? "public, max-age=31536000, immutable"
       : "no-cache";
-  const body = req.method === "HEAD" ? null : await readFile(path);
+  let body = null;
+  if (req.method !== "HEAD") {
+    // The file can vanish or become unreadable between the stat above and this
+    // read (a redeploy in progress); that must not take the relay down.
+    try {
+      body = await readFile(path);
+    } catch {
+      res.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+      res.end("WebUI build is not available");
+      return;
+    }
+  }
   res.writeHead(200, webHeaders(MIME_TYPES.get(extension) || "application/octet-stream", cacheControl));
   res.end(body);
 }
