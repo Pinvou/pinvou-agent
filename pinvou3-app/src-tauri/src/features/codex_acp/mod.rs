@@ -6406,6 +6406,14 @@ mod tests {
             "the Missing arm must settle leftover cards before spawning \
              the replacement"
         );
+        assert!(
+            missing.contains(
+                "restarted_after_stall || restarted_after_crash || pending_restart.is_some()"
+            ),
+            "the publish line must consume the parked restart disclosure; \
+             dropping the pending_restart term silently loses the throttled \
+             replacement's restart notice (round-3 MAJOR-1)"
+        );
         let restart = production_body(src, "async fn restart_agent_sessions");
         assert!(
             restart.contains("flush_journal()"),

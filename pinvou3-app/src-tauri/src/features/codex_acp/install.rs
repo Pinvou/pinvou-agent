@@ -1132,6 +1132,40 @@ mod tests {
         }
     }
 
+    /// The failure path must reclaim group survivors BEFORE the output tail:
+    /// the tail idles up to IDLE_TIMEOUT exactly when a descendant holds the
+    /// pipes — the case that has survivors — so a kill deferred behind it
+    /// fires on a pid the OS may have handed to an unrelated group leader.
+    /// `run_managed_install`'s failure arm needs a real installer process
+    /// tree, so pin the ordering in the source (mutation-verified: moving
+    /// the reclaim behind `finish().await` turns this red).
+    #[test]
+    fn failed_install_reclaims_group_before_the_output_tail() {
+        let src = include_str!("install.rs");
+        let production = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("the test module marker must exist")];
+        let fn_start = production
+            .find("async fn run_managed_install")
+            .expect("run_managed_install must exist");
+        let body = &production[fn_start..];
+        let tail = body
+            .find("output_readers.finish().await")
+            .expect("the output tail must exist");
+        // Both wait-exit arms (the failure arm and the timeout arm) reclaim
+        // before the tail; counting rather than slicing keeps the pin honest
+        // about the failure arm specifically, which a range check would
+        // otherwise satisfy via the timeout arm's own call.
+        assert_eq!(
+            body[..tail]
+                .matches("child_guard.reclaim_group_survivors()")
+                .count(),
+            2,
+            "the failure arm must reclaim group survivors before the output \
+             tail; deferring it kills by a possibly recycled pid"
+        );
+    }
+
     #[test]
     pub(super) fn install_child_guard_drop_reclaims_tree_and_settled_guards_never_rekill() {
         let children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>> =
