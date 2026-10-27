@@ -71,6 +71,142 @@ function fixture() {
 const options = (f, execute = f.execute) => ({ appVersion: '0.10.13', execute });
 const completion = (f) => path.join(f.out, 'completion.json');
 
+function hostFixture(t) {
+  const f = fixture();
+  const tempRoot = fs.realpathSync(os.tmpdir());
+  const owned = fs.realpathSync(f.directory);
+  const relative = path.relative(tempRoot, owned);
+  assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+  assert.ok(path.basename(owned).startsWith('pinvou-t04-adapter-control-'));
+  t.after(() => fs.rmSync(owned, { recursive: true }));
+  const source = path.join(f.directory, 'source'); fs.mkdirSync(source);
+  fs.mkdirSync(path.join(source, 'app')); fs.mkdirSync(path.join(source, 'app', 'nested'));
+  for (const [index, name] of ['installer.exe', 'pinvou-upgrade-helper.exe', 'pinvou-upgrade-launcher.exe'].entries()) {
+    fs.copyFileSync(f.config.inputs[index].file.path, path.join(source, name));
+  }
+  fs.writeFileSync(path.join(source, 'app', 'pinvou3-tauri.exe'), 'actual app fixture');
+  fs.writeFileSync(path.join(source, 'app', 'nested', 'empty.txt'), '');
+  f.config.version = 2; f.config.sourceDirectory = source; delete f.config.inputs;
+  fs.writeFileSync(f.configPath, JSON.stringify(f.config));
+  return f;
+}
+
+test('fixed Windows host source is snapped and passed through the real adapter entry', async (t) => {
+  const f = hostFixture(t);
+  await packageBuild(f.configPath, f.out, options(f, async (exe, args, opts) => {
+    if (args[0] === 'prepare') {
+      const input = JSON.parse(fs.readFileSync(args[args.indexOf('-config') + 1], 'utf8'));
+      assert.equal(input.sourceProfile, 'pinvou3-windows-host-source.v1');
+      assert.equal(input.sourceDirectory, 'host-source');
+      assert.deepEqual(input.inputs, []);
+      assert.equal(fs.readFileSync(path.join(f.out, input.sourceDirectory, 'app', 'pinvou3-tauri.exe'), 'utf8'), 'actual app fixture');
+      assert.equal(fs.statSync(path.join(f.out, input.sourceDirectory, 'app', 'nested', 'empty.txt')).size, 0);
+    }
+    return f.execute(exe, args, opts);
+  }));
+  assert.deepEqual(f.calls.map((call) => call.args[0]), ['prepare', '--input', 'assemble', 'verify']);
+  const receipt = JSON.parse(fs.readFileSync(completion(f)));
+  assert.equal(receipt.version, 2);
+  assert.equal(receipt.hostSource.profile, 'pinvou3-windows-host-source.v1');
+  assert.equal(receipt.hostSource.fileCount, 5);
+  const names = ['installer.exe', 'pinvou-upgrade-helper.exe', 'pinvou-upgrade-launcher.exe',
+    'app/nested/empty.txt', 'app/pinvou3-tauri.exe'];
+  const records = names.map((name) => {
+    const bytes = fs.readFileSync(path.join(f.config.sourceDirectory, ...name.split('/')));
+    return `${JSON.stringify([name, bytes.length, digest(bytes)])}\n`;
+  }).join('');
+  assert.equal(receipt.hostSource.membersSha256, digest(records));
+  assert.equal(receipt.dsseAuthenticated, false);
+  assert.equal(receipt.currentQualificationChecked, false);
+});
+
+test('fixed Windows host source changes and missing roles refuse before completion', async (t) => {
+  for (const fault of ['missing-helper', 'source-drift', 'new-entry', 'empty-drift', 'snapshot-drift']) await t.test(fault, async (t) => {
+    const f = hostFixture(t);
+    if (fault === 'missing-helper') fs.renameSync(path.join(f.config.sourceDirectory, 'pinvou-upgrade-helper.exe'), path.join(f.directory, 'retained-helper'));
+    await assert.rejects(packageBuild(f.configPath, f.out, options(f, async (exe, args, opts) => {
+      const code = await f.execute(exe, args, opts);
+      if (args[0] === '--input' && fault === 'source-drift') fs.appendFileSync(path.join(f.config.sourceDirectory, 'app', 'pinvou3-tauri.exe'), 'changed');
+      if (args[0] === '--input' && fault === 'new-entry') fs.writeFileSync(path.join(f.config.sourceDirectory, 'app', 'new.txt'), 'changed');
+      if (args[0] === '--input' && fault === 'empty-drift') fs.writeFileSync(path.join(f.config.sourceDirectory, 'app', 'nested', 'empty.txt'), 'changed');
+      if (args[0] === '--input' && fault === 'snapshot-drift') fs.appendFileSync(path.join(f.out, 'host-source', 'app', 'pinvou3-tauri.exe'), 'changed');
+      return code;
+    })));
+    assert.equal(fs.existsSync(completion(f)), false);
+  });
+});
+
+test('host source overlapping output is rejected before mutating source', async (t) => {
+  const f = hostFixture(t);
+  const outputInsideSource = path.join(f.config.sourceDirectory, 'app', 'output');
+  await assert.rejects(packageBuild(f.configPath, outputInsideSource, options(f)), /T04_SOURCE_DIRECTORY/u);
+  assert.equal(fs.existsSync(outputInsideSource), false);
+  assert.equal(f.calls.length, 0);
+});
+
+test('host source refuses same-byte replacement between hashing and copying', async (t) => {
+  const f = hostFixture(t);
+  const target = path.join(f.config.sourceDirectory, 'app', 'pinvou3-tauri.exe');
+  const originalHashReference = F.hashReference;
+  let replaced = false;
+  F.hashReference = (...args) => {
+    const ref = originalHashReference(...args);
+    if (args[0] === target && !replaced) {
+      replaced = true;
+      const bytes = fs.readFileSync(target);
+      fs.renameSync(target, path.join(f.directory, 'original-app'));
+      fs.writeFileSync(target, bytes, { flag: 'wx' });
+    }
+    return ref;
+  };
+  t.after(() => { F.hashReference = originalHashReference; });
+  await assert.rejects(packageBuild(f.configPath, f.out, options(f)), /T04_SOURCE_CHANGED/u);
+  assert.equal(replaced, true);
+  assert.equal(f.calls.length, 0);
+  assert.equal(fs.existsSync(completion(f)), false);
+});
+
+test('host source rejects a hard-linked app member and empty native role', async (t) => {
+  for (const fault of ['hard-link', 'empty-installer']) await t.test(fault, async (t) => {
+    const f = hostFixture(t);
+    if (fault === 'hard-link') {
+      fs.linkSync(path.join(f.config.sourceDirectory, 'app', 'pinvou3-tauri.exe'),
+        path.join(f.config.sourceDirectory, 'app', 'linked.exe'));
+    } else fs.writeFileSync(path.join(f.config.sourceDirectory, 'installer.exe'), '');
+    await assert.rejects(packageBuild(f.configPath, f.out, options(f)));
+    assert.equal(f.calls.length, 0);
+    assert.equal(fs.existsSync(completion(f)), false);
+  });
+});
+
+test('host source enforces the exact aggregate input boundary', async (t) => {
+  for (const delta of [0, -1]) await t.test(`limit ${delta}`, async (t) => {
+    const f = hostFixture(t);
+    const materials = ['claims', 'sbom', 'provenance', 'root'].reduce((sum, key) => sum + f.config[key].size, 0);
+    const names = ['installer.exe', 'pinvou-upgrade-helper.exe', 'pinvou-upgrade-launcher.exe',
+      'app/nested/empty.txt', 'app/pinvou3-tauri.exe'];
+    const bytes = names.reduce((sum, name) => sum + fs.statSync(path.join(f.config.sourceDirectory, ...name.split('/'))).size, 0);
+    f.config.limits.TotalInputBytes = materials + bytes + delta;
+    fs.writeFileSync(f.configPath, JSON.stringify(f.config));
+    if (delta === 0) {
+      await packageBuild(f.configPath, f.out, options(f));
+      assert.equal(fs.existsSync(completion(f)), true);
+    } else {
+      await assert.rejects(packageBuild(f.configPath, f.out, options(f)), /T04_CAPACITY/u);
+      assert.equal(f.calls.length, 0);
+      assert.equal(fs.existsSync(completion(f)), false);
+    }
+  });
+});
+
+test('host source profile rejects ambiguous version and extra inputs', (t) => {
+  const common = hostFixture(t).config;
+  assert.doesNotThrow(() => configuration(common));
+  for (const altered of [{ ...common, version: 3 }, { ...common, inputs: [] }, { ...common, sourceDirectory: 'relative' }]) {
+    assert.throws(() => configuration(altered));
+  }
+});
+
 test('post-build orchestrator completes four fixed stages and preserves qualification boundary', async () => {
   const f = fixture(); await packageBuild(f.configPath, f.out, options(f));
   assert.deepEqual(f.calls.map((c) => c.args[0]), ['prepare', '--input', 'assemble', 'verify']);

@@ -9,6 +9,14 @@ The equal-task engineering estimate is **38.7%** (1820/47). T07, T08, T09, T10, 
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
+The scoped T04 Windows host-source adapter accepts the actual host build's
+source directory through a versioned configuration and preserves the V1 input
+mode. Independent review and local adapter, CI-policy and Go component tests
+cover the stated scope. The tests use synthetic native inputs and simulated
+pack/signing at the JavaScript boundary; they do not certify real NSIS output,
+production signing, current qualification or the complete T04 task. Other T04
+work and the overall estimates remain unchanged.
+
 ## Delivery rules and active work
 
 The current main task is **T28 Windows preparation**, with T26 original-budget

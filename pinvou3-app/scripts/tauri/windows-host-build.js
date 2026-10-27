@@ -76,7 +76,7 @@ async function finishHostBuild(plan, artifacts, { appRoot, environment = process
     outputParent, environment });
   // Hashes/profile are public. Detailed tool output and actual source paths stay
   // in the private build directory; the wrapper prints no signing configuration.
-  console.log(`[build] Host ${plan.profile.seed.profileKind} installer completed: profile=${plan.profile.seed.profileId}`);
+  console.log(`[build] Host ${plan.profile.seed.profileKind} installer completed: profile=${plan.profile.seed.profileId} source-build=${path.basename(result.outputDirectory)}`);
   return result;
 }
 module.exports = { HOST_FEATURE, PRODUCTION_HOST_FEATURE, TRIPLE, prepareHostBuild, finishHostBuild };

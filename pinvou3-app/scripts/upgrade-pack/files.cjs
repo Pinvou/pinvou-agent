@@ -12,9 +12,9 @@ function positive(value) {
   if (!Number.isSafeInteger(value) || value <= 0) refuse('T04_CAPACITY');
   return value;
 }
-function reference(value) {
+function reference(value, { allowEmpty = false } = {}) {
   object(value, ['path', 'size', 'sha256']);
-  positive(value.size);
+  if (!Number.isSafeInteger(value.size) || value.size < (allowEmpty ? 0 : 1)) refuse('T04_CAPACITY');
   if (typeof value.path !== 'string' || !path.isAbsolute(value.path)
       || typeof value.sha256 !== 'string' || value.sha256.length !== 64
       || !/^[0-9a-f]{64}$/u.test(value.sha256)) refuse('T04_REFERENCE');
@@ -49,8 +49,8 @@ function checkSignal(signal) { if (signal?.aborted) refuse('T04_CANCELLED'); }
 
 // No allocation from an unvalidated file size. Short reads are legal; growth,
 // premature EOF, rebind, same-byte replacement, and failed closes all fail.
-function inspect(ref, maximum, { destination, signal } = {}) {
-  reference(ref); positive(maximum); checkSignal(signal);
+function inspect(ref, maximum, { destination, signal, allowEmpty = false } = {}) {
+  reference(ref, { allowEmpty }); positive(maximum); checkSignal(signal);
   if (ref.size > maximum) refuse('T04_CAPACITY');
   const before = ordinary(ref.path);
   if (before.size !== BigInt(ref.size)) refuse('T04_SIZE');
@@ -91,10 +91,10 @@ function inspect(ref, maximum, { destination, signal } = {}) {
   checkSignal(signal);
   return { ...ref, identity: identity(before) };
 }
-function hashReference(filename, maximum, signal) {
+function hashReference(filename, maximum, signal, { allowEmpty = false } = {}) {
   const before = ordinary(filename);
   positive(maximum); checkSignal(signal);
-  if (before.size <= 0n || before.size > BigInt(maximum)) refuse('T04_CAPACITY');
+  if (before.size < (allowEmpty ? 0n : 1n) || before.size > BigInt(maximum)) refuse('T04_CAPACITY');
   // Generated files are bounded too. Hash through a stable held file, without
   // requiring a previously known digest from an untrusted output document.
   const fd = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));

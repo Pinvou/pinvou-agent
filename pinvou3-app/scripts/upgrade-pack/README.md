@@ -52,16 +52,40 @@ Supply exactly these top-level keys:
 | `inputs` | Exact role rows described below |
 | `limits` | Existing Windows subset of `packaging.Limits`, detailed below |
 
-Every path is absolute, size is a positive safe integer and SHA-256 is exactly
+Every configured file reference has an absolute path, a positive safe-integer
+size and a SHA-256 of exactly
 64 lowercase hexadecimal characters. Root bytes and digest must come from the
 operator's independently trusted build configuration, not the supplied upload.
 The unsigned V1 claims must select `windows-x86_64-nsis-perMachine`, match the
-project's actual `0.10.13` version and retain production `incrementalPackages:[]`.
+project's current package version and retain production `incrementalPackages:[]`.
 The underlying CLI owns complete claims Schema validation and required helper
 inventory. It allocates no package identifier: supply one through the real build
 owner. This tool never invents a global package ID or publisher identity.
 
-Each input row has exactly `{role,helperId,name,file}`. `file` is an exact file
+For the Windows host build, set `version` to `2` and replace `inputs` with the
+absolute `sourceDirectory` for the host NSIS build. The build prints a
+`source-build` identifier; use `<target-root>/windows-host-packaging/<source-build>/source`
+for that invocation, resolving `target-root` as described in
+[`windows-host-lab-packaging.md`](../../../docs/windows-host-lab-packaging.md).
+The directory must
+contain `installer.exe`, `pinvou-upgrade-helper.exe`,
+`pinvou-upgrade-launcher.exe`, and `app/`. The adapter snapshots the actual
+tree into a new private output directory, including zero-byte app resources,
+and invokes the pack tool's `pinvou3-windows-host-source.v1` profile. That tool
+checks the installer's embedded inventory against the copied app members;
+the directory walk itself does not authenticate the inventory. The adapter
+refuses additions, removals, rebinding or modifications observed during its
+snapshot and later rechecks; it cannot detect every transient change between
+checks, so the source must remain under a trusted, stable parent directory.
+Version 2 completion receipts contain the observed member count, total bytes,
+and an incremental SHA-256 over UTF-8 lines of `JSON.stringify([name,size,sha256])`.
+The order is installer, helper, launcher, then depth-first app entries in
+JavaScript string sort order. The exact observed member bytes are retained in
+`host-source/`; the digest is not a substitute for the Go tool's catalog check.
+The Go tool must support this profile; an older tool fails without fallback.
+Version 1 and its explicit `inputs` remain supported unchanged.
+
+For version 1, each input row has exactly `{role,helperId,name,file}`. `file` is an exact file
 reference. Roles are `finalInstaller`, `helper`, `launcher`, `helperArtifact`;
 only the latter has a nonempty helper ID, and other rows use explicit `null`.
 Roles and archive member names are unique. Every declared helper must appear.
