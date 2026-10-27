@@ -14,7 +14,7 @@
 
 import { projectDeepSeekConversation, conversationItemsForMode, timelineDisplayError } from '../conversation/deepseek-conversation.js';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
-import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
+import { isInternalUserMessage, isKnownInternalMetadataBlock } from '../../shared/internal-message.mjs';
 
 // Native controls are session-owned; bridge state belongs to the separate
 // chat workspace. Only a loaded model whose controls belong to this very
@@ -313,9 +313,10 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
     case 'chat:user_message': {
       const content = String(p.content || '');
       if (!content) return false;
-      // 内部运行时信封（subagent handoff / background shell 完成等）：与 bridge 实时
-      // 路径一致不上屏；后续 transcript 重载同样会被 hydrate 过滤，两条路径行为对齐。
-      if (isInternalRuntimeEnvelopeText(content)) return false;
+      // Internal runtime messages (subagent handoff / background shell
+      // completion / context update): match the bridge live path and never
+      // render; the transcript reload hydrate filter keeps both paths aligned.
+      if (isInternalUserMessage([{ type: 'text', text: content }])) return false;
       // accept_plan 的用户回声（本地/远端批准都会广播）：先把命中的 active 方案卡
       // 置为已批准（对齐 bridge chat-events.js 的 action === "accept_plan" 处理），
       // 再走普通用户消息去重/插入。
@@ -715,10 +716,17 @@ function messageText(blocks) {
     .trim();
 }
 
-// 与 src/shared/internal-message.mjs 的内部运行时消息判定同源（bridge 侧的
-// 超集实现见 src/shared/bridge-messages.js）：CodeWhale 内部运行时信封
-// （subagent handoff / background shell 完成等）以 role=user 持久化供父模型
-// 上下文使用，展示层不得渲染为用户气泡。
+function userMessageText(blocks) {
+  return messageText(blocks.filter(block => !(
+    block && block.type === 'text' && isKnownInternalMetadataBlock(block.text)
+  )));
+}
+
+// Same classifier family as src/shared/internal-message.mjs (the classic
+// bridge equivalent lives in src/shared/bridge-messages.js): CodeWhale's
+// internal runtime messages (sub-agent handoff / background shell completion /
+// context update) are persisted as role=user for the parent model's context
+// and must never render as user bubbles.
 
 /// SavedSession messages → lane.items（hydration 是 rerenderFromMessages 的精简版：
 /// 覆盖 user / assistant text / thinking / tool_use+tool_result / request_user_input /
@@ -768,7 +776,7 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       : (typeof raw === 'string' && raw ? [{ type: 'text', text: raw }] : []);
     if (role === 'user') {
       if (isInternalUserMessage(blocks)) continue; // 内部运行时信封/交接：保留在模型上下文，不上屏
-      const text = messageText(blocks);
+      const text = userMessageText(blocks);
       if (text) lane.items.push({ id: nextId(lane), type: 'user', text });
       for (const block of blocks) {
         if (!block || block.type !== 'tool_result') continue;

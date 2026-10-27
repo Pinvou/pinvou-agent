@@ -130,13 +130,55 @@
     return "";
   }
 
+  // CodeWhale may persist a prompt-cache delta as a user-role message so the
+  // model keeps the effective session context. It is runtime metadata, not a
+  // user turn. Match the complete canonical shape only: a user's mention or
+  // quotation of the tag must remain visible.
+  function isContextUpdateRuntimeMessage(value) {
+    const text = String(value || "").trim().replaceAll("\r\n", "\n");
+    const prefix = [
+      "<context_update>",
+      "Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):",
+      "",
+    ].join("\n");
+    return text.startsWith(prefix) && text.endsWith("\n</context_update>");
+  }
+
   function isInternalRuntimeUserMessage(value) {
-    return containsOnlyInternalRuntimeMetadata(value) ||
+    return isContextUpdateRuntimeMessage(value) ||
+      containsOnlyInternalRuntimeMetadata(value) ||
       isInternalUserMessageProvenance(inputProvenanceFromText(value));
+  }
+
+  function isKnownInternalMetadataBlock(value) {
+    if (isInternalRuntimeUserMessage(value)) return true;
+    const text = String(value || "").trim().toLowerCase();
+    return /^<turn_meta_unchanged\s*\/>$/.test(text) ||
+      (text.startsWith("<turn_meta>") && text.endsWith("</turn_meta>"));
+  }
+
+  // A persisted user message is internal only when every non-empty text block
+  // is known runtime metadata. A canonical context update may be accompanied
+  // by other internal metadata, but any ordinary text keeps the user turn.
+  function isInternalUserMessage(blocks) {
+    const textBlocks = Array.isArray(blocks) ? blocks : [];
+    if (isInternalUserMessageProvenance(userMessageInputProvenance(textBlocks))) return true;
+    let foundInternal = false;
+    for (let i = 0; i < textBlocks.length; i++) {
+      const block = textBlocks[i];
+      if (!block || block.type !== "text") continue;
+      const text = String(block.text || "");
+      if (!text.trim()) continue;
+      if (!isKnownInternalMetadataBlock(text)) return false;
+      foundInternal = true;
+    }
+    return foundInternal;
   }
 
   window.PinvouBridgeMessages = Object.freeze({
     isInternalRuntimeUserMessage,
+    isInternalUserMessage,
+    isKnownInternalMetadataBlock,
     isInternalUserMessageProvenance,
     userMessageInputProvenance,
     computerUseKnownErrorText,
