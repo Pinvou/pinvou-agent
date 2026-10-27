@@ -174,6 +174,13 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
     file.take((super::MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
         .read_to_string(&mut text)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
+    // 读取即修复,且先于内容判定:损坏 + 放宽权限的组合也不能把一个世界
+    // 可读的凭据文件留在盘上(备份恢复或外部工具可能把它改成组/全员可读)。
+    // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛。(take() 消耗
+    // 了读句柄,这里重新打开;Windows/fallback 平台该调用是显式 no-op。)
+    let handle = File::open(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    platform::enforce_private_permissions(&handle, path)
+        .map_err(|error| format!("restrict {}: {error}", path.display()))?;
     if text.len() > super::MAX_WEB_ACCESS_CONFIG_BYTES {
         return Err(format!(
             "Web access config is larger than {} KiB: {}",
@@ -184,13 +191,6 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
     let config: WebAccessConfig = serde_json::from_str(&text)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
     validate_config(&config)?;
-    // 读取即修复:备份恢复或外部工具可能把私有凭据文件改成组/全员可读。
-    // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛,避免把一个
-    // 已经放宽权限的凭据文件继续当作可信配置。(take() 消耗了读句柄,这里
-    // 重新打开;Windows/fallback 平台该调用是显式 no-op。)
-    let handle = File::open(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    platform::enforce_private_permissions(&handle, path)
-        .map_err(|error| format!("restrict {}: {error}", path.display()))?;
     Ok(Some(config))
 }
 
@@ -310,14 +310,51 @@ pub(super) fn load_pending_revocations_from(
     }
 }
 
-/// Pending-revocation 账本读取的三分类:损坏(parse/超限/校验失败)的内容
-/// 不可恢复、重试无意义;Unavailable 是瞬时 IO,重试有意义。queue/acknowledge
-/// 路径靠它决定「挪开坏账本继续」还是「上抛等重试」——停用/轮换是恢复
-/// 路径,不能被一个坏文件永久卡死。
+/// Pending-revocation 账本读取的三分类:Corrupt 表示无法解析或超限的内容
+/// (没有任何条目可救;原件已在读取时隔离留证),重试无意义;可解析但未过
+/// 整体校验的账本在读取时已逐条抢救为 Ledger,不走这里。Unavailable 是瞬时
+/// IO,重试有意义。queue/acknowledge 路径靠它决定「挪开坏账本继续」还是
+/// 「上抛等重试」——停用/轮换是恢复路径,不能被一个坏文件永久卡死。
 enum RevocationLedgerLoad {
     Ledger(PendingRevocationLedger),
     Corrupt(String),
     Unavailable(String),
+}
+
+/// 逐条抢救可解析但未过整体校验的账本:version 漂移、条目超限、单条损坏、
+/// 重复键都只否定各自的条目,不否定其余仍然合法的待吊销记录——整体丢弃会
+/// 让旧 endpoint 在 relay 侧保持可加入。每条沿用与正常加载相同的
+/// `validate_pending_revocation` 严格度,重复键保留首个,超出容量即止。
+fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevocationLedger {
+    let mut salvaged = PendingRevocationLedger::default();
+    let mut keys = HashSet::new();
+    for pending in &ledger.entries {
+        if salvaged.entries.len() >= super::MAX_PENDING_REVOCATIONS {
+            break;
+        }
+        if validate_pending_revocation(pending).is_err() {
+            continue;
+        }
+        if !keys.insert(pending_revocation_key(pending)) {
+            continue;
+        }
+        salvaged.entries.push_back(pending.clone());
+    }
+    salvaged
+}
+
+fn quarantine_pending_ledger(path: &Path) {
+    match crate::platform::filesystem::quarantine_corrupt_file(path) {
+        Ok(quarantined) => {
+            eprintln!("[web-access] quarantined corrupt pending-revocation ledger to {}", quarantined.display());
+        }
+        Err(error) => {
+            eprintln!(
+                "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
@@ -339,7 +376,21 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
     {
         return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
     }
+    // 读取即修复,且先于内容判定(同 load_config_from):该文件持有
+    // desktop_secret,损坏 + 放宽权限的组合也不能把世界可读的密文件留在
+    // 盘上——隔离搬移会带着同样的权限,必须先收紧。(Windows/fallback 平台
+    // 该调用是显式 no-op。)
+    let handle = match File::open(path) {
+        Ok(handle) => handle,
+        Err(error) => {
+            return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
+        }
+    };
+    if let Err(error) = platform::enforce_private_permissions(&handle, path) {
+        return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
+    }
     if data.len() > super::MAX_PENDING_REVOCATIONS_FILE_BYTES {
+        quarantine_pending_ledger(path);
         return RevocationLedgerLoad::Corrupt(format!(
             "pending Web revocation file is larger than {} KiB: {}",
             super::MAX_PENDING_REVOCATIONS_FILE_BYTES / 1024,
@@ -349,23 +400,24 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
     let ledger = match serde_json::from_slice::<PendingRevocationLedger>(&data) {
         Ok(ledger) => ledger,
         Err(error) => {
+            // 完全不可解析:没有任何条目可救,隔离原件留证后按损坏处理
+            //(queue/acknowledge 会从空账本继续并用合法内容重写)。
+            quarantine_pending_ledger(path);
             return RevocationLedgerLoad::Corrupt(format!("parse {}: {error}", path.display()));
         }
     };
     if let Err(error) = validate_pending_revocation_ledger(&ledger) {
-        return RevocationLedgerLoad::Corrupt(error);
-    }
-    // 读取即修复(同 load_config_from):该文件持有 desktop_secret,备份
-    // 恢复或外部工具可能把它放宽成组/全员可读;修复失败按读取错误上抛。
-    // (Windows/fallback 平台该调用是显式 no-op。)
-    let handle = match File::open(path) {
-        Ok(handle) => handle,
-        Err(error) => {
-            return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
-        }
-    };
-    if let Err(error) = platform::enforce_private_permissions(&handle, path) {
-        return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
+        // 可解析但未过整体校验(version 漂移/超限/单条损坏/重复键):逐条
+        // 抢救仍合法的条目并隔离原件,而不是整体丢弃——被丢弃的待吊销条目
+        // 会让旧 endpoint 在 relay 侧保持可加入。
+        let salvaged = salvage_pending_revocations(&ledger);
+        eprintln!(
+            "[web-access] pending-revocation ledger invalid ({error}); salvaged {} of {} entries",
+            salvaged.entries.len(),
+            ledger.entries.len()
+        );
+        quarantine_pending_ledger(path);
+        return RevocationLedgerLoad::Ledger(salvaged);
     }
     RevocationLedgerLoad::Ledger(ledger)
 }
@@ -394,9 +446,10 @@ pub(super) fn queue_pending_revocation_at(
     let mut ledger = match load_pending_revocations_classified(path) {
         RevocationLedgerLoad::Ledger(ledger) => ledger,
         RevocationLedgerLoad::Corrupt(error) => {
-            // 停用/轮换是恢复路径:坏账本里的条目本就无法解析,记录后从空
-            // 账本继续;随后的持久化会用合法内容覆盖坏文件,旧 endpoint 的
-            // 吊销不会被永久卡死。
+            // 停用/轮换是恢复路径:Corrupt 只剩完全不可解析/超限两类(可解
+            // 析但未过验证的账本已在读取时逐条抢救并隔离原件),记录后从空
+            // 账本继续;随后的持久化会用合法内容重写,旧 endpoint 的吊销
+            // 不会被永久卡死。
             eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
             PendingRevocationLedger::default()
         }
