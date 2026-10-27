@@ -44,6 +44,20 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// `cleanup_warning` 会随成功负载进入手机可读的命令响应
+/// （`update_memory_preference` / `update_work_context_memory` /
+/// `get_memory_overview` 均在 Web 访问策略内），因此警告里的宿主路径必须
+/// 脱敏：存储根前缀折叠为 `~/.pinvou3`，文件名与错误文本保留，桌面端诊断
+/// 不受影响，绝对路径不跨 relay。
+fn display_redacted(path: &Path) -> String {
+    let raw = path.display().to_string();
+    let prefix = paths::pinvou3_home().display().to_string();
+    match raw.strip_prefix(&prefix) {
+        Some(rest) => format!("~/.pinvou3{rest}"),
+        None => raw,
+    }
+}
+
 /// Stored-text caps per store, shared by the write path (which re-cleans every
 /// incoming text) and by organize validation (which must validate against the
 /// same cap so a passing action is not silently truncated when stored).
@@ -423,7 +437,7 @@ fn resolve_topic_authorities<T: Clone>(
             // instead of a hard error — mirroring the soft handling in
             // reconcile_topic_migration_journals_unlocked.
             if let Err(error) = fs::remove_file(&duplicate) {
-                cleanup_failures.push(format!("{}: {error}", duplicate.display()));
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&duplicate)));
             }
         }
         debug_assert!(authority_path.is_file());
@@ -597,12 +611,12 @@ where
             continue;
         }
         if let Err(error) = remove(stale) {
-            cleanup_failures.push(format!("{}: {error}", stale.display()));
+            cleanup_failures.push(format!("{}: {error}", display_redacted(&stale)));
         }
     }
     if cleanup_failures.is_empty() {
         if let Err(error) = remove(journal_path) {
-            cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+            cleanup_failures.push(format!("{}: {error}", display_redacted(&journal_path)));
         }
     }
     Ok(TopicMutation {
@@ -727,12 +741,12 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
             if let Err(error) = fs::remove_file(&stale) {
                 journal_cleanup_pending = true;
                 hidden_files.insert(stale.clone());
-                cleanup_failures.push(format!("{}: {error}", stale.display()));
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&stale)));
             }
         }
         if !journal_cleanup_pending {
             if let Err(error) = fs::remove_file(&journal_path) {
-                cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&journal_path)));
             }
         }
     }

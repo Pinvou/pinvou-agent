@@ -179,6 +179,22 @@ fn fold_web_session_error(operation: WebSessionOperation, error: String) -> Stri
     format!("web_session_{}_failed", operation.as_str())
 }
 
+/// Chat failures fold to `web_session_chat_failed`, EXCEPT turn-gate busy
+/// refusals: the engine bails with the bare `session_turn_in_progress` chain
+/// (engine.rs), and the phone classifies that transient condition by code to
+/// drive its remote-turn reconciliation (`includes("session_turn_in_progress")`)
+/// and to show the right copy. Folding it into the generic chat code would
+/// make a losing admission race indistinguishable from a hard failure, so it
+/// keeps a dedicated stable code whose suffix preserves the classifier
+/// substring; the raw chain stays desktop-log-only like every other fold.
+fn fold_web_chat_error(error: String) -> String {
+    if error.contains("session_turn_in_progress") {
+        log::warn!("[remote_control] Web session chat refused: turn already in progress");
+        return "web_session_turn_in_progress".to_string();
+    }
+    fold_web_session_error(WebSessionOperation::Chat, error)
+}
+
 fn web_workspace_result<T, E: std::fmt::Display>(
     operation: WebWorkspaceOperation,
     result: Result<T, E>,
@@ -233,6 +249,19 @@ pub fn web_access_rotate(
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessInfo, String> {
     manager.refresh()
+}
+
+/// Desktop-only consent surface: take back the host-folder authorization
+/// without stopping the link. The phone can never flip consent — this command
+/// is main-WebView-gated like `web_access_enable` and absent from the Web
+/// access policy.
+#[tauri::command]
+pub fn web_access_revoke_host_workspace(
+    window: WebviewWindow,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<WebAccessInfo, String> {
+    require_main_webview(&window)?;
+    manager.revoke_host_workspace()
 }
 
 /// 桌面专属：查询自定义 Relay 地址。不进 Web 命令白名单——Relay 指向
@@ -381,8 +410,11 @@ pub async fn web_access_create_session(
         super::sessions::create_session(Some(false), None, None, None, app, store, pool, projects)
             .await,
     )?;
-    let transcript_revision = crate::features::sessions::transcript_revision(&[])
-        .map_err(|error| format!("create empty transcript revision: {error:#}"))?;
+    let transcript_revision = web_session_result(
+        WebSessionOperation::CreateSession,
+        crate::features::sessions::transcript_revision(&[])
+            .map_err(|error| format!("create empty transcript revision: {error:#}")),
+    )?;
     Ok(WebSessionMetadata::project(metadata, transcript_revision))
 }
 
@@ -892,10 +924,7 @@ pub async fn web_access_create_session_and_chat(
             Ok(()) => error,
             Err(rollback_error) => format!("{error}; {rollback_error}"),
         };
-        return Err(fold_web_session_error(
-            WebSessionOperation::Chat,
-            chat_error,
-        ));
+        return Err(fold_web_chat_error(chat_error));
     }
 
     super::sessions::emit_session_event(&app, "session:list_changed", &session_id, "created");
@@ -904,10 +933,12 @@ pub async fn web_access_create_session_and_chat(
 
 /// Web-safe chat entry point: Session routing is mandatory and attachment
 /// contents never cross Relay in either direction. Every failure path folds
-/// into the stable `web_session_chat_failed` code — store-load errors embed
-/// host paths, turn-reservation refusals carry raw chains, and the
-/// attachment-handle refusals are manager-side raw text — so the combined
-/// native chain is desktop-log-only.
+/// into the stable `web_session_chat_failed` code (turn-gate busy refusals
+/// keep their own `web_session_turn_in_progress` code — see
+/// [`fold_web_chat_error`]) — store-load errors embed host paths,
+/// turn-reservation refusals carry raw chains, and the attachment-handle
+/// refusals are manager-side raw text — so the combined native chain is
+/// desktop-log-only.
 #[tauri::command]
 pub async fn web_access_chat(
     message: String,
@@ -930,7 +961,10 @@ pub async fn web_access_chat(
         &app,
     )
     .await;
-    web_session_result(WebSessionOperation::Chat, outcome)
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(error) => Err(fold_web_chat_error(format!("{error:#}"))),
+    }
 }
 
 /// Create a Web code Session from either a private temporary workspace or a
@@ -1762,9 +1796,9 @@ mod tests {
     use super::{
         WebAcpOperation, WebSavedSession, WebSessionMetadata, WebSessionOperation,
         WebWorkspaceOperation, ensure_owned_session_download_id, ensure_web_artifact_file_size,
-        ensure_web_artifact_response, ensure_web_chat_session_supported, fold_web_session_error,
-        web_acp_agent_id, web_acp_result, web_artifact_storage_path, web_session_result,
-        web_workspace_result,
+        ensure_web_artifact_response, ensure_web_chat_session_supported, fold_web_chat_error,
+        fold_web_session_error, web_acp_agent_id, web_acp_result, web_artifact_storage_path,
+        web_session_result, web_workspace_result,
     };
     use deepseek_tui::session_manager::{SavedSession, create_saved_session};
     use serde_json::{Value, json};
@@ -1889,6 +1923,13 @@ mod tests {
         assert_eq!(
             web_session_result(WebSessionOperation::Chat, error).unwrap_err(),
             "web_session_chat_failed"
+        );
+        // The dedicated turn-gate busy code (fold_web_chat_error) is part of
+        // the locked wire surface: the phone's classifier and trilingual copy
+        // key on it.
+        assert_eq!(
+            fold_web_chat_error("session_turn_in_progress".to_string()),
+            "web_session_turn_in_progress"
         );
         assert_eq!(
             web_session_result(WebSessionOperation::ReadConversationAttachmentChunk, error)
@@ -2149,6 +2190,43 @@ mod tests {
         );
         assert_eq!(handle_refusal, "web_session_chat_failed");
         assert!(!handle_refusal.contains("webatt_abc123"));
+    }
+
+    /// The chat fold must keep the turn-gate busy refusal distinguishable:
+    /// the phone classifies `session_turn_in_progress` by code substring to
+    /// drive its remote-turn reconciliation and pick the right copy. The
+    /// dedicated code's suffix therefore preserves that substring, and every
+    /// other chat failure still folds to the generic code.
+    #[test]
+    fn web_chat_busy_refusals_keep_their_stable_code() {
+        let busy = fold_web_chat_error(
+            "reserve Web chat turn: session_turn_in_progress\ncaused by /Users/alice/.pinvou3/secret"
+                .to_string(),
+        );
+        assert_eq!(busy, "web_session_turn_in_progress");
+        assert!(
+            !busy.contains("/Users/alice"),
+            "busy fold leaked the raw chain: {busy}"
+        );
+        assert!(
+            !busy.contains('\n'),
+            "busy fold kept a multi-line chain: {busy}"
+        );
+        // The phone-side classifier is a substring match; the dedicated code
+        // must keep matching it so the reconciliation path stays wired.
+        assert!(busy.contains("session_turn_in_progress"));
+
+        for other in [
+            "load Session aux-x: failed to read /Users/alice/.pinvou3/sessions/x: os error 2",
+            "远程控制附件句柄不存在或已过期：webatt_abc123",
+        ] {
+            let folded = fold_web_chat_error(other.to_string());
+            assert_eq!(
+                folded, "web_session_chat_failed",
+                "non-busy chains must fold to the generic code"
+            );
+            assert!(!folded.contains("session_turn_in_progress"));
+        }
     }
 
     /// The Web artifact size guards must fold both failure classes — the

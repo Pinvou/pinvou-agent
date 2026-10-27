@@ -815,6 +815,10 @@ fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
             Some(
                 "invalid_access_token" | "invalid_desktop_secret" | "bad_desktop_endpoint_register",
             ) => Some(RelayTerminal::RegisterRejected),
+            // 协议版本不匹配对给定构建对是确定的:同一份持久化配置重试永不
+            // 可能成功,必须带原因停下(提示更新桌面端),否则退回
+            // Error↔Connecting 永久翻转。
+            Some("unsupported_protocol_version") => Some(RelayTerminal::RegisterRejected),
             // 瞬时拒绝(endpoint_capacity_reached、
             // endpoint_creation_rate_limited、authentication_timeout 等)
             // 保持既有重连行为。
@@ -1275,6 +1279,8 @@ mod tests {
             "invalid_access_token",
             "invalid_desktop_secret",
             "bad_desktop_endpoint_register",
+            // 协议版本不匹配对给定构建对同样是确定的。
+            "unsupported_protocol_version",
         ] {
             assert_eq!(
                 terminal_message(&json!({ "type": "error", "code": code }), "ep_1"),
@@ -1316,5 +1322,28 @@ mod tests {
             &json!({ "type": "error", "code": "invalid_desktop_secret" }),
             "ep_1"
         ));
+    }
+
+    /// 接线钉:manager 的注册终结清单必须与本模块 `terminal_message` 的
+    /// RegisterRejected/Revoked 分类对齐(刻意排除 `endpoint_not_found`——
+    /// 其 reject 帧不带 endpoint_id,manager 入口本就丢弃)。清单漂移时
+    /// run_loop 无事件返回、UI 静默冻结在 Connecting,比被修复的翻转更糟。
+    #[test]
+    fn terminal_registration_code_lists_stay_aligned() {
+        for code in super::super::manager::TERMINAL_REGISTRATION_ERROR_CODES {
+            let classified =
+                terminal_message(&json!({ "type": "error", "code": code }), "ep-cross-pin");
+            assert!(
+                matches!(
+                    classified,
+                    Some(RelayTerminal::RegisterRejected | RelayTerminal::Revoked)
+                ),
+                "manager terminal code {code} must stop the loop in relay_client, got {classified:?}"
+            );
+        }
+        assert!(
+            !super::super::manager::TERMINAL_REGISTRATION_ERROR_CODES
+                .contains(&"endpoint_not_found")
+        );
     }
 }

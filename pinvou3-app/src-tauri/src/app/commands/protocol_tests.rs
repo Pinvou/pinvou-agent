@@ -388,6 +388,7 @@ command_protocol!(
         "web_access_disable",
         "web_access_status",
         "web_access_rotate",
+        "web_access_revoke_host_workspace",
         "web_access_relay_settings",
         "web_access_bridge_ready",
         "web_access_rpc_begin",

@@ -1788,6 +1788,7 @@ pub fn run() {
             commands::remote_control::web_access_disable,
             commands::remote_control::web_access_status,
             commands::remote_control::web_access_rotate,
+            commands::remote_control::web_access_revoke_host_workspace,
             commands::remote_control::web_access_relay_settings,
             commands::remote_control::web_access_bridge_ready,
             commands::remote_control::web_access_rpc_begin,

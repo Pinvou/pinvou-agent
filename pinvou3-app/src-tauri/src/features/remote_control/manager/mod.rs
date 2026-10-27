@@ -190,12 +190,17 @@ const WEB_SESSION_TRANSFER_REAPER_INTERVAL: Duration = Duration::from_secs(60);
 /// 这些 error 码终结本次注册(relay_client 的 run_loop 停止重连),manager
 /// 需要据此做完整清理或停在带原因的 Error 状态。Relay 的 reject 帧不携带
 /// endpoint_id,`handle_relay_message` 的入口必须为它们放行;其余 error 码
-/// (含 `endpoint_not_found` 与瞬时容量/限流类)保持既有行为。
-const TERMINAL_REGISTRATION_ERROR_CODES: &[&str] = &[
+/// (含 `endpoint_not_found` 与瞬时容量/限流类)保持既有行为。本清单与
+/// relay_client::terminal_message 的 RegisterRejected/Revoked 臂保持对齐
+/// (刻意排除 `endpoint_not_found`:其 reject 帧不带 endpoint_id,入口本就
+/// 丢弃;清单放行它只会造出无消费的终结路径),对齐由 relay_client 测试
+/// `terminal_registration_code_lists_stay_aligned` 钉住。
+pub(crate) const TERMINAL_REGISTRATION_ERROR_CODES: &[&str] = &[
     "endpoint_revoked",
     "invalid_access_token",
     "invalid_desktop_secret",
     "bad_desktop_endpoint_register",
+    "unsupported_protocol_version",
 ];
 
 /// 从事件 payload 提取会话 id（不同事件用不同字段名）。
@@ -976,6 +981,37 @@ impl RemoteControlManager {
         Ok(pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
             "Web access endpoint failed to rotate".to_string()
         })?))
+    }
+
+    /// 撤销本机目录授权但不断开链接:后续 workspace grant 在铸造时被拒,
+    /// 已发出的 grant 仍是短时效一次性句柄(30 分钟 TTL)自然过期。这是
+    /// 设置弹窗的显式撤权入口——让旧版本「开启访问」单按钮顺带写下的
+    /// allow_host_workspace 可见、可单独收回,而不必轮换或停用整条链接
+    /// (Stop 之外的唯一清除路径)。幂等:已是未授权状态时不重写凭据文件。
+    pub fn revoke_host_workspace(&self) -> Result<WebAccessInfo, String> {
+        let _lifecycle = self.lifecycle.lock();
+        self.ensure_policy()?;
+        self.ensure_process_ownership()?;
+        let mut config =
+            load_config()?.ok_or_else(|| "Web access is not configured".to_string())?;
+        validate_config(&config)?;
+        if config.allow_host_workspace {
+            config.allow_host_workspace = false;
+            persist_config(&config)?;
+            {
+                let mut inner = self.inner.lock();
+                if let Some(endpoint) = inner.endpoint.as_mut() {
+                    endpoint.config.allow_host_workspace = false;
+                }
+            }
+            self.emit_status();
+        }
+        let inner = self.inner.lock();
+        inner
+            .endpoint
+            .as_ref()
+            .map(pairing_info)
+            .ok_or_else(|| "Web access is not active".to_string())
     }
 
     pub fn relay_settings(&self) -> RelaySettingsInfo {
@@ -2235,6 +2271,42 @@ impl RemoteControlManager {
         }
     }
 
+    /// 墓碑分支的结算收口:完成值计算与「是否进 Complete 缓存」的判定在这
+    /// 一个函数里,`handle_rpc_request` 的墓碑臂与测试共同消费。只有「墓碑
+    /// 自身指纹 + 已确认」的 outcome_unknown 可缓存;指纹冲突按次重算、绝不
+    /// 入缓存——缓存到墓碑指纹下会在重启后把探针的冲突重放给合法指纹,缓
+    /// 存到来方指纹下又会经 Complete 分支抢占合法指纹的重派发(见
+    /// `tombstone_completion_cacheable`)。测试直接驱动本函数钉住决策本身;
+    /// 三个接线点都只剩对它的平凡调用,改动即审。
+    fn settle_tombstone_outcome(
+        inner: &mut Inner,
+        request_id: &str,
+        fingerprint: String,
+        tombstone: &RpcTombstone,
+    ) -> RpcCompletion {
+        let completion = tombstone_completion(tombstone, &fingerprint);
+        if tombstone_completion_cacheable(tombstone, &fingerprint) {
+            Self::settle_complete(inner, request_id, fingerprint, completion.clone());
+        }
+        completion
+    }
+
+    /// 准入拒绝分支的结算收口:cacheable(确定性)拒绝进 Complete 缓存,
+    /// 瞬时拒绝(在途饱和、Session/账本暂不可用、触盘的 kb 路径校验)只应答
+    /// 本次——缓存瞬时拒绝会让同 client_request_id 的重试永远重放它,直到
+    /// FIFO 淘汰。收口理由同 [`Self::settle_tombstone_outcome`]。
+    fn settle_admission_rejection(
+        inner: &mut Inner,
+        request_id: &str,
+        fingerprint: String,
+        rejection: &RpcRejection,
+    ) -> RpcCompletion {
+        if rejection.cacheable {
+            Self::settle_complete(inner, request_id, fingerprint, rejection.completion.clone());
+        }
+        rejection.completion.clone()
+    }
+
     fn handle_rpc_request(&self, value: &Value) {
         let request_id = value
             .get("client_request_id")
@@ -2395,20 +2467,14 @@ impl RemoteControlManager {
                 None => {
                     if let Some(tombstone) = inner.rpc_ledger.get(&request_id).cloned() {
                         if tombstone.fingerprint != fingerprint || tombstone.acknowledged {
-                            let completion = tombstone_completion(&tombstone, &fingerprint);
-                            // 只有「墓碑自身指纹 + 已确认」的 outcome_unknown 是
-                            // 可缓存的终态;指纹冲突按次重算、绝不入缓存——缓存
-                            // 到墓碑指纹下会在重启后把探针的冲突重放给合法指纹,
-                            // 缓存到来方指纹下又会经 Complete 分支抢占合法指纹
-                            // 的重派发(见 tombstone_completion_cacheable)。
-                            if tombstone_completion_cacheable(&tombstone, &fingerprint) {
-                                Self::settle_complete(
-                                    &mut inner,
-                                    &request_id,
-                                    fingerprint.clone(),
-                                    completion.clone(),
-                                );
-                            }
+                            // 缓存判定收口在 settle_tombstone_outcome(只有
+                            // 自身指纹+已确认可缓存,冲突按次重算)。
+                            let completion = Self::settle_tombstone_outcome(
+                                &mut inner,
+                                &request_id,
+                                fingerprint.clone(),
+                                &tombstone,
+                            );
                             RpcRequestAction::Respond(
                                 sender,
                                 rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
@@ -2427,23 +2493,17 @@ impl RemoteControlManager {
                             if let Some(rejection) = rejection {
                                 // 瞬时拒绝(在途饱和、Session 暂不可用)只回复
                                 // 本次请求;缓存会让同 client_request_id 的重试
-                                // 永远重放这个拒绝,直到 FIFO 淘汰。
-                                if rejection.cacheable {
-                                    Self::settle_complete(
-                                        &mut inner,
-                                        &request_id,
-                                        fingerprint.clone(),
-                                        rejection.completion.clone(),
-                                    );
-                                }
+                                // 永远重放这个拒绝,直到 FIFO 淘汰。结算收口在
+                                // settle_admission_rejection,测试直接钉住它。
+                                let completion = Self::settle_admission_rejection(
+                                    &mut inner,
+                                    &request_id,
+                                    fingerprint.clone(),
+                                    &rejection,
+                                );
                                 RpcRequestAction::Respond(
                                     sender,
-                                    rpc_response(
-                                        &endpoint_id,
-                                        &lease_id,
-                                        &request_id,
-                                        &rejection.completion,
-                                    ),
+                                    rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
                                 )
                             } else {
                                 Self::admit_pending_rpc(
@@ -2467,22 +2527,15 @@ impl RemoteControlManager {
                             in_flight_count,
                         ) {
                             Ok(NewRpcAdmission::Rejected(rejection)) => {
-                                if rejection.cacheable {
-                                    Self::settle_complete(
-                                        &mut inner,
-                                        &request_id,
-                                        fingerprint.clone(),
-                                        rejection.completion.clone(),
-                                    );
-                                }
+                                let completion = Self::settle_admission_rejection(
+                                    &mut inner,
+                                    &request_id,
+                                    fingerprint.clone(),
+                                    &rejection,
+                                );
                                 RpcRequestAction::Respond(
                                     sender,
-                                    rpc_response(
-                                        &endpoint_id,
-                                        &lease_id,
-                                        &request_id,
-                                        &rejection.completion,
-                                    ),
+                                    rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
                                 )
                             }
                             Ok(NewRpcAdmission::Durable(next_ledger)) => {
@@ -3759,6 +3812,99 @@ mod tests {
         assert_eq!(protected.fingerprint, protected_fingerprint);
     }
 
+    /// 接线钉:缓存判定收口在 `settle_admission_rejection` 与
+    /// `settle_tombstone_outcome`,直接驱动两个入口钉住「确定性(含已确认
+    /// 墓碑)才进 Complete 缓存;瞬时拒绝与指纹冲突绝不进」。此前的变异
+    /// 测试证明:handle_rpc_request 的接线点被改回无条件缓存时,既有的
+    /// helper 级测试仍然全绿——决策收口成单点后,这里直接钉决策。
+    #[test]
+    fn rpc_settle_entry_points_cache_only_cacheable_outcomes() {
+        let mut inner = Inner::default();
+
+        let transient = RpcRejection::transient(rpc_error_completion(
+            "too_many_in_flight_requests",
+            "正在运行的远程控制请求过多",
+        ));
+        let completion = RemoteControlManager::settle_admission_rejection(
+            &mut inner,
+            "transient-req",
+            "fp-transient".to_string(),
+            &transient,
+        );
+        assert_eq!(
+            completion.error_code.as_deref(),
+            Some("too_many_in_flight_requests")
+        );
+        assert!(
+            !inner.rpc_cache.contains_key("transient-req"),
+            "a transient rejection must never enter the completion cache"
+        );
+        assert!(
+            inner.rpc_order.is_empty(),
+            "transient rejections must not consume journal-order slots"
+        );
+
+        let deterministic = RpcRejection::deterministic(rpc_error_completion(
+            "command_not_allowed",
+            "远程控制不允许调用该命令",
+        ));
+        let completion = RemoteControlManager::settle_admission_rejection(
+            &mut inner,
+            "deterministic-req",
+            "fp-deterministic".to_string(),
+            &deterministic,
+        );
+        assert_eq!(
+            completion.error_code.as_deref(),
+            Some("command_not_allowed")
+        );
+        assert!(matches!(
+            inner.rpc_cache.get("deterministic-req"),
+            Some(RpcCacheEntry::Complete { fingerprint, .. }) if fingerprint == "fp-deterministic",
+        ));
+
+        let acknowledged = RpcTombstone {
+            request_id: "tomb-req".to_string(),
+            fingerprint: "fp-owner".to_string(),
+            acknowledged: true,
+        };
+        let outcome = RemoteControlManager::settle_tombstone_outcome(
+            &mut inner,
+            "tomb-req",
+            "fp-owner".to_string(),
+            &acknowledged,
+        );
+        assert_eq!(outcome.error_code.as_deref(), Some("outcome_unknown"));
+        assert!(matches!(
+            inner.rpc_cache.get("tomb-req"),
+            Some(RpcCacheEntry::Complete { fingerprint, .. }) if fingerprint == "fp-owner",
+        ));
+
+        // 指纹冲突:应答冲突,但两种指纹下都绝不入缓存。
+        inner.rpc_cache.remove("tomb-req");
+        let conflict = RemoteControlManager::settle_tombstone_outcome(
+            &mut inner,
+            "tomb-req",
+            "fp-probe".to_string(),
+            &acknowledged,
+        );
+        assert_eq!(conflict.error_code.as_deref(), Some("request_id_conflict"));
+        assert!(
+            !inner.rpc_cache.contains_key("tomb-req"),
+            "a fingerprint conflict must not be cached under either fingerprint"
+        );
+        assert_eq!(
+            inner
+                .rpc_order
+                .iter()
+                .filter(|request_id| *request_id == "tomb-req")
+                .count(),
+            1,
+            "the conflict must not push a second journal-order slot (the first \
+             Complete settle legitimately holds one)"
+        );
+    }
+
     #[test]
     fn rpc_command_and_error_envelopes_are_bounded() {
         assert!(validate_rpc_command("web_access_chat").is_ok());
@@ -4200,6 +4346,55 @@ mod tests {
         assert_eq!(restored.version, PENDING_REVOCATIONS_VERSION);
         assert_eq!(restored.entries, VecDeque::from([first, second]));
         assert!(platform::private_file_is_restricted(&path).unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn corrupt_pending_revocation_ledger_does_not_block_rotation_or_stop() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-revocation-corrupt-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        std::fs::write(&path, b"{corrupt json").unwrap();
+
+        // 内容损坏按 Corrupt 分类:queue(停用/轮换的必经点)从空账本继续,
+        // 用合法内容覆盖坏文件——旧 endpoint 的吊销不能被坏文件永久卡死。
+        // load_pending_revocations_from 对外仍如实报错,fail-closed 语义不变。
+        let pending = test_pending_revocation("ep_retired_corrupt");
+        queue_pending_revocation_at(&path, pending.clone()).unwrap();
+        let restored = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(restored.entries, VecDeque::from([pending]));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn loading_pending_revocations_repairs_world_readable_private_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-revocation-perm-repair-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        let pending = test_pending_revocation("ep_perm_repair");
+        queue_pending_revocation_at(&path, pending).unwrap();
+        // POSIX modes only exist on unix; the mode manipulation lives behind
+        // the platform adapter so this file carries no target selector.
+        if !crate::platform::test_support::force_private_file_mode(&path, 0o644) {
+            std::fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+
+        // 该文件持有 desktop_secret:load 必须恢复 0600 基线(同 config)。
+        assert!(load_pending_revocations_from(&path).is_ok());
+        assert_eq!(
+            crate::platform::test_support::private_file_mode(&path),
+            Some(0o600),
+            "load must restore the private 0600 baseline for the secret-bearing ledger"
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
