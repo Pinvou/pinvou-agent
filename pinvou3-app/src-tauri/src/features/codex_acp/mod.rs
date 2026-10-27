@@ -4851,28 +4851,58 @@ impl AcpPool {
         }
     }
 
+    /// Cards of the resident generation only. A dead generation's leftovers
+    /// are swept by the Dead arm's drain or a retirement, but between the
+    /// handlers' check-then-insert race and the next sweep a stale card can
+    /// sit in the map; listing it would make the UI prompt for a runtime that
+    /// no longer exists. With no runtime resident every card in the map is a
+    /// ghost, so the listing is empty. Does not spawn: pure listing lanes
+    /// must keep their no-spawn behavior.
     pub async fn pending_permissions_for(
         &self,
         session_id: &str,
     ) -> Vec<CodexAcpPendingPermission> {
+        let resident = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.lifecycle.generation());
+        let Some(generation) = resident else {
+            return Vec::new();
+        };
         self.pending_permissions
             .lock()
             .await
             .values()
-            .filter(|pending| pending.view.session_id == session_id)
+            .filter(|pending| {
+                pending.view.session_id == session_id && pending.generation == generation
+            })
             .map(|pending| pending.view.clone())
             .collect()
     }
 
+    /// Same resident-generation contract as [`Self::pending_permissions_for`].
     pub async fn pending_elicitations_for(
         &self,
         session_id: &str,
     ) -> Vec<CodexAcpPendingElicitation> {
+        let resident = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.lifecycle.generation());
+        let Some(generation) = resident else {
+            return Vec::new();
+        };
         self.pending_elicitations
             .lock()
             .await
             .values()
-            .filter(|pending| pending.view.session_id == session_id)
+            .filter(|pending| {
+                pending.view.session_id == session_id && pending.generation == generation
+            })
             .map(|pending| pending.view.clone())
             .collect()
     }
