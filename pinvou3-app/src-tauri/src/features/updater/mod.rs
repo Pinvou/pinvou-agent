@@ -1,5 +1,5 @@
 //! 应用内升级（当前未实施）：各平台更新检查与安装均为 unsupported 占位——
-//! `check_for_update_info` 恒返回无更新，下载/安装返回不支持；应用内更新能力规划中。
+//! 检查、下载和安装均返回不支持；应用内更新能力规划中。
 //!
 //! 以下为历史设计（未实施，仅作背景保留）：
 //! - Linux：检查 latest.json → 下载 deb（sha256 校验）→ pkexec apt 安装 → 重启。
@@ -96,24 +96,11 @@ pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Fetches latest.json and compares it with the current version. Network
-/// failures return Err — the frontend swallows them for the startup silent
-/// check, and only a manual check surfaces the error. The raw cause is
-/// logged here: the failure hint shown to the user is short copy, the
-/// diagnostics live in the log (the app log in packaged builds).
+/// The community platform currently has no implemented update check. An
+/// unsupported result is not evidence that the installed version is current.
 pub async fn check_for_update() -> Result<UpdateInfo, String> {
     let current = env!("CARGO_PKG_VERSION");
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-    {
-        Ok(client) => client,
-        Err(e) => {
-            log::warn!("[updater] update check failed: {e}");
-            return Err(format!("failed to build the HTTP client: {e}"));
-        }
-    };
-    platform::check_for_update_info(&client, current)
+    platform::check_for_update_info(current)
         .await
         .inspect_err(|e| log::warn!("[updater] update check failed: {e}"))
 }
@@ -168,6 +155,14 @@ pub async fn report_pending_update_result() -> Result<PendingUpdateReportResult,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unsupported_check_does_not_claim_the_installed_version_is_latest() {
+        assert_eq!(
+            check_for_update().await.unwrap_err(),
+            "UPDATER_CHECK_UNSUPPORTED"
+        );
+    }
 
     #[test]
     fn update_info_platforms_defaults_empty() {

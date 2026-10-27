@@ -7,22 +7,8 @@ use super::super::{PendingUpdateReportResult, UpdateInfo};
 
 pub fn cleanup_stale_backup() {}
 
-pub async fn check_for_update_info(
-    _client: &reqwest::Client,
-    current_version: &str,
-) -> Result<UpdateInfo, String> {
-    Ok(UpdateInfo {
-        available: false,
-        current_version: current_version.to_string(),
-        latest_version: current_version.to_string(),
-        notes: String::new(),
-        pub_date: String::new(),
-        url: String::new(),
-        sha256: String::new(),
-        size: 0,
-        platform: std::env::consts::OS.to_string(),
-        platforms: std::collections::HashMap::new(),
-    })
+pub async fn check_for_update_info(_current_version: &str) -> Result<UpdateInfo, String> {
+    Err("UPDATER_CHECK_UNSUPPORTED".to_owned())
 }
 
 pub async fn download_update_package(

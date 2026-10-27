@@ -1,5 +1,14 @@
 # Upgrade implementation progress
 
+T27 check presentation: the current unimplemented application update check now
+returns an explicit unsupported error instead of claiming that the app is up to
+date without a network request. Manual checks show localized unsupported text;
+startup checks remain silent and the existing successful-response branch retains its
+meaning. This fixes the current user-facing status but does not implement the
+trusted online check, protected metadata acceptance or an upgrade Session.
+The scoped source review passed. Bridge tests use a mocked Tauri invocation;
+the App Rust test was stopped before execution at user request and is pending CI. Actual CI and end-to-end Tauri behavior remain unverified. No E2E was run.
+
 T27 Windows host observation: the installed-image diagnostic now reports the
 native machine architecture and Windows version from system APIs, sampling before
 and after the existing identity and service checks. The result is diagnostic data,

@@ -22,6 +22,7 @@ import {
 import { CommunityPanel } from './CommunityPanel.jsx';
 import { COMMUNITY_DISCUSSIONS_URL } from './community-config.js';
 import { ProvidersSection } from './ProvidersSection.jsx';
+import { updateErrorCopy } from './update-check-copy.js';
 import {
   VOICE_POSTPROCESS_ENABLED_KEY,
   VOICE_SHORTCUT_ENABLED_KEY,
@@ -2681,9 +2682,7 @@ function hasStoredCredential(record) {
         // The localized hint replaces the raw backend string (it may carry request
         // details and be untranslated); the raw cause stays in bridge state and
         // is logged by the updater for diagnostics.
-        const updateError = bs && bs.updateError
-          ? t.updateInstallFailed
-          : (bs && bs.updateCheckError && bs.updateCheckError !== 'latest' ? t.updateCheckFailed : '');
+        const updateError = updateErrorCopy(bs, t);
         const updateStatusDesc = updateDownloading
           ? (updateProgress >= 100 ? t.uiSettings.installingUpdate : t.uiSettings.downloading(updateProgress))
           : updateReady

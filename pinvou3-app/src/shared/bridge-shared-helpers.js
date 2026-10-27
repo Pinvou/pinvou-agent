@@ -4378,7 +4378,9 @@
       state.updateInfo = info;
       if (!info.available) state.updateCheckError = "latest"; // 前端按 i18n 显示「已是最新」
     } catch (e) {
-      state.updateCheckError = String(e);
+      const unsupported = e === "UPDATER_CHECK_UNSUPPORTED" || e?.message === "UPDATER_CHECK_UNSUPPORTED";
+      state.updateCheckError = unsupported ? "UPDATER_CHECK_UNSUPPORTED" : String(e);
+      if (unsupported) state.updateInfo = null;
     }
     state.updateChecking = false; notify();
   }

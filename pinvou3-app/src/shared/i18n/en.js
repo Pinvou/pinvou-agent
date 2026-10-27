@@ -482,7 +482,7 @@ export const dictEn = {
             "unavailable": "The time status could not be read or the refresh could not be requested. Read status again."
           }
         },
-        checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date', updateCheckFailed: 'Check failed', updateInstallFailed: 'Update failed',
+        checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date', updateCheckFailed: 'Check failed', updateCheckUnsupported: 'In-app update checks are not currently supported', updateInstallFailed: 'Update failed',
         newVersionFound: 'New version available', updateNotes: 'Release Notes',
         downloadInstall: 'Download & Install', downloading: 'Downloading…', installing: 'Installing…',
         downloadInstallRestart: 'Update & Restart',

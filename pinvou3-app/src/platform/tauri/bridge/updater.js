@@ -18,8 +18,9 @@ function pinvouSharedtauriUpdater() {
   const notify = context.notify;
   const invoke = context.invoke;
   // ── 应用内升级 ───────────────────────────────────────────────────
-  // Chain: check_for_update (compares the server's latest.json) → download_update (streamed download + sha256)
-  // → install_update (pkexec apt) → restart_app. Download progress emits no separate frontend event.
+  // The community backend currently reports update checking and installation
+  // as unsupported. This bridge preserves the existing action interfaces for
+  // a future implementation; it does not establish update availability.
   // Local diagnostics are independent of check/download/install. In-flight
   // invokes are shared across mounts; no automatic refresh or network retry.
   let timeStatusPending = null;

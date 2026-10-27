@@ -482,7 +482,7 @@ const jaBase = {
             "unavailable": "時刻の状態の読み取り、または取得要求の送信ができませんでした。状態を再度読み取ってください。"
           }
         },
-        checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです', updateCheckFailed: '確認に失敗しました', updateInstallFailed: '更新に失敗しました',
+        checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです', updateCheckFailed: '確認に失敗しました', updateCheckUnsupported: 'アプリ内の更新確認は現在サポートされていません', updateInstallFailed: '更新に失敗しました',
         newVersionFound: '新しいバージョンがあります', updateNotes: '更新内容',
         downloadInstall: 'ダウンロードしてインストール', downloading: 'ダウンロード中…', installing: 'インストール中…',
         downloadInstallRestart: '更新して再起動',
