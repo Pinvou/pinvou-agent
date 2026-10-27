@@ -193,9 +193,10 @@ mod tests {
     /// 大写变体逐项钉住比较语义：大小写不敏感平台上 `.ENV`/`.AWS` 等拼写
     /// 会解析到与原样拼写相同的磁盘文件，词法黑名单必须同样命中；Linux 上
     /// 同一批大写变体是不同文件、放行，而原样拼写仍拦截。
-    /// check_sensitive_components 纯组件判定、不触盘，断言的是比较语义本身
-    /// （canonicalize 的输出是磁盘拼写，字节比较天然安全；本折叠针对的是
-    /// 规范化之前的词法检查——workspace 车道对调用方相对拼写先行判定）。
+    /// check_sensitive_components 纯组件判定、不触盘，断言的是比较语义本身。
+    /// 大小写不敏感卷上 canonicalize 输出的拼写是平台实现细节（macOS
+    /// realpath 保留调用方拼写），任何判定都不得依赖它——词法与解析后两次
+    /// 判定都经折叠比较，折叠是承载语义的判定，不得改回字节精确比较。
     #[test]
     fn uppercase_credential_variants_follow_platform() {
         let uppercase_variants = [

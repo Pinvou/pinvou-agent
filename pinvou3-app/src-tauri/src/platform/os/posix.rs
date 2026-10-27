@@ -69,9 +69,11 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
 /// macOS 默认 APFS 卷大小写不敏感——文件系统层会把 `.AWS` 解析到磁盘上的
 /// `.aws`，所以按调用方拼写做字节比较的词法检查（canonicalize 之前的相对
 /// 路径判定）会让大写变体绕过凭据黑名单，因此与 windows_path.rs 同用
-/// ASCII 折叠，使词法判定与卷的真实解析语义一致。注意：`std::fs::
-/// canonicalize`（realpath）返回的是磁盘拼写而非调用方拼写——已规范化
-/// 路径上的字节比较本来就安全，本折叠针对的是规范化之前的词法检查。
+/// ASCII 折叠，使词法判定与卷的真实解析语义一致。注意:大小写不敏感卷上
+/// `std::fs::canonicalize`(realpath)返回的拼写是平台实现细节(macOS
+/// realpath 保留调用方拼写,不做大小写规范化),任何判定都不得依赖它——
+/// 词法与解析后两次判定都经本折叠比较,折叠是承载语义的判定,不得「简化」
+/// 回字节精确比较。
 #[cfg(target_os = "macos")]
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component.to_string_lossy().eq_ignore_ascii_case(expected)
@@ -348,8 +350,9 @@ mod tests {
     fn path_component_eq_case_semantics_follow_platform() {
         assert!(path_component_eq(OsStr::new("home"), "home"));
         if cfg!(target_os = "macos") {
-            // macOS 默认 APFS 卷大小写不敏感且 canonicalize 保留传入拼写；
-            // 大写变体必须命中，否则凭据黑名单被 `.AWS` 之类拼写绕过。
+            // macOS 默认 APFS 卷大小写不敏感；大写变体必须命中，否则凭据
+            // 黑名单被 `.AWS` 之类拼写绕过（canonicalize 输出的拼写是平台
+            // 实现细节，判定不得依赖它——比较本身经折叠即安全）。
             assert!(path_component_eq(OsStr::new("Home"), "home"));
             assert!(path_component_eq(OsStr::new("HOME"), "home"));
         } else {
