@@ -22,7 +22,8 @@ mod self_metrics;
 
 // re-export 子模块 pub 面，保持 `crate::features::monitor::Foo` 调用路径不变。
 pub use model_probe::{
-    VllmSnapshot, VllmStatus, active_model_snapshot, adopts_probed_facts, resolve_served_model,
+    HealthStatus, MonitorDiagnostic, VllmSnapshot, VllmStatus, active_model_snapshot,
+    adopts_probed_facts, resolve_served_model,
 };
 pub use self_metrics::{SelfMetrics, SelfPerfSnapshot};
 
