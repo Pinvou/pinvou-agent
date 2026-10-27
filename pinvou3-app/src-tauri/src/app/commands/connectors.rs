@@ -260,14 +260,22 @@ pub async fn refresh_connector_auth_gates(
     app: AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<ConnectorAuthGateRefresh, String> {
-    let result = connector_cli_domain::refresh_connector_auth_gates().await?;
     // Round-9 review P2: the backfill materializes skill dirs, so a session
     // composed BEFORE the connector connected must get the rewrite too — the
     // send path's ensure only rebuilds an ABSENT dir. Full wrap-up (live
     // sessions + disallowed + rulesets + cross-window broadcast), same as the
     // manual enable's write path below.
+    //
+    // The wrap-up must run on the ERROR path too: the aggregate always runs
+    // every connector's gate to completion and reports only the first error,
+    // so a failed gate does not undo a sibling's already-persisted grant +
+    // materialization — an early `?` here would leave a running conversation
+    // with its pre-refresh catalog/rules while that connector is live and
+    // enabled. The aggregate verdict is still returned verbatim: this
+    // projects persisted state, it does not soften the failure.
+    let result = connector_cli_domain::refresh_connector_auth_gates().await;
     refresh_tools_and_broadcast(&app, pool.inner()).await;
-    Ok(result)
+    Ok(result?)
 }
 
 async_command_passthrough!(feishu_domain, feishu_ensure_cli() -> Result<Value, String>);
