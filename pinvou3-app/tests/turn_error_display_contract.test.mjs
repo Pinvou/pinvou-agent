@@ -179,11 +179,14 @@ vm.runInContext(read('src', 'shared', 'model-service-errors.js'), context, {
 });
 assert.equal(typeof windowObject.PinvouModelServiceErrors.redactTechnicalDetail, 'function');
 
-// Execute the shipped desktop localization table and error-display block.
-// Surrounding turn mutation is excluded: it is exercised by error-isolation
-// tests. bt delegates to the shared-base cluster accessor; the sandbox loads
-// the shared base and wires the accessor against the shipped BT_TABLE exactly
-// like the desktop bridge does.
+// Build the shipped desktop localization table and error-display block in a
+// sandbox. The per-locale legs below run the web lane with the real helper
+// loaded; the desktop block executes in the closing agreement loop, which
+// compares both blocks input by input. Surrounding turn mutation is excluded:
+// it is exercised by error-isolation tests. bt delegates to the shared-base
+// cluster accessor; the sandbox loads the shared base and wires the accessor
+// against the shipped BT_TABLE (a value cell, which ensureCells normalizes to
+// the same shape the desktop bridge passes).
 const desktopBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
 const desktopContext = vm.createContext({
   window: windowObject,
@@ -206,9 +209,10 @@ for (const [language, { marker, tail }] of Object.entries(LOCALE_MARKERS)) {
     assert.match(localized, new RegExp(marker));
     assert.match(localized, new RegExp(tail));
     assert.ok(localized.includes(STALE_ID));
-    // The unspaced form is the exact rejection shape produced by the web RPC
-    // client (pinned on the web lane above); it must localize through the
-    // desktop table too, and the raw code must never leak into the copy.
+    // The backend emits the spaced form (engine_pool formats `<code>: <id>`);
+    // both bridges localize by code prefix and trim the remainder, so the
+    // unspaced form is a tolerance pin (also pinned on the web lane above):
+    // it must still localize, and the raw code must never leak into the copy.
     const unspaced = displayTurnError(new Error(`session_model_binding_stale:${STALE_ID}`));
     assert.match(unspaced, new RegExp(marker));
     assert.match(unspaced, new RegExp(tail));
