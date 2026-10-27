@@ -2,7 +2,7 @@
   "version": "V2.4.5",
   "author": "Codex (OpenAI)",
   "model": "GPT-6; exact variant/reasoning level unavailable",
-  "scope": "Illustrated report artifact hashes. Measurements come from the unchanged published run; report creation made no model calls.",
+  "scope": "Current report artifact hashes, including append-only review notes. Model measurements and frozen measurement manifests remain historical V2.4.5; no R1 model run is claimed.",
   "pdf_pages": 8,
   "figures": 4,
   "formats": [
@@ -52,8 +52,8 @@
     },
     {
       "path": "prompt-optimization-evaluation/README.md",
-      "bytes": 2181,
-      "sha256": "b57e9dc071b506ecf7a29dde5536160ea24285785174419db4636adb7300a0e5"
+      "bytes": 3416,
+      "sha256": "e051182e8997087995792ef98a9f95411e87bcbfc61e2dfaf570887785f9729c"
     },
     {
       "path": "prompt-optimization-evaluation/figures/01-results.png",
@@ -123,8 +123,8 @@
     },
     {
       "path": "提示词优化-普通模式与代码模式.md",
-      "bytes": 170990,
-      "sha256": "48b6b653b6ee788819f7146ba27befaa15df0f0edf0cb473f28691a01a5fc0ab"
+      "bytes": 176698,
+      "sha256": "f96abbeafcefe0a3c24990ea21f8e73005c6bec6b15377aa267fdfef7902e440"
     }
   ],
   "publication_note": "SVG end-of-line spaces normalized without altering chart content; PDFs explicitly marked binary to preserve stream/xref bytes."

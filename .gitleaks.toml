@@ -115,3 +115,18 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''^pinvou3-app/src-tauri/src/platform/credential_store\.rs$''']
 regexes = ['''xox[ar]-shortexample''']
+
+[[allowlists]]
+description = "Audited evaluation content digests, never arbitrary manifest values"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = [
+  '''^docs/prompt-optimization-evaluation/(?:extension-manifest-v2\.4\.5-(?:ornith-local|glm-cloud)|manifest-community-(?:ornith-local|glm-cloud)|manifest-v2\.4\.5-(?:ornith-local|glm-cloud)|source-manifest-v2\.4\.5|supplemental-api-v2\.3-manifest)\.json$''',
+]
+# Three source/document hashes were recomputed from their exact current bytes.
+# 70db... is the historical credential-CLI executable digest recorded under
+# binary_hashes (the executable is no longer retained on this host).
+regexes = [
+  '''^(?:32de7566388daa48cd7c10625c59c6bff98c12a95b9d44388a40cfbdf656b6cd|4ab992b92fa5ac8d2b4862571340651186860f8ce7bb02d2b3e2555db04b7a03|1821d16da48d4d847156cbe3a0fad28a41be4ed922f786403bf065166550d37c|70dbb8b69ae34adc421157c749c0ac4e2a03d1fffe1a36256a4dee5eb049678b)$''',
+]

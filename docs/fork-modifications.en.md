@@ -343,6 +343,46 @@ review gitlink. After foundation integration, update the parent to the actual
 squash SHA, recount/fingerprint it, and rerun the gates before marking ready.
 
 Author: Codex (OpenAI); model: GPT-6 (exact variant/reasoning level unavailable).
+
+### Parent adaptations for the prompt review candidate
+
+The existing T3 candidate also has application-side adaptations: eager ordinary-mode
+artifact presentation with code-mode denial still winning, unattended question-tool
+exclusion, and target-root rule discovery with pinned scope labels. Behavior checks:
+`artifact_delivery_is_loaded_without_widening_code_mode_tools`,
+`unattended_shield_tests::unattended_turn_denies_scheduled_task_write_family` (and the existing
+unattended shield tests), and
+`project_rules_keep_additional_roots_for_on_demand_discovery`. The latter also
+checks that an unbound session does not receive a rule-scope label. These app
+changes reuse foundation policy/session mechanisms; they do not add a turn loop.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## 2026-10-27 review revision R1 (T3; CodeWhale#125)
+
+Current review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance stays `6e1ee88ee`.
+The two review commits total 17 files, +296/-49. Candidate topology is 86 commits
+above v0.9.12, 71 above r1, 84 signed; only the two registered historical squashes
+lack a footer. Drift: 522 files, +90219/-39420, net +50799; 255 distinct guard names.
+
+R1 restores a bounded documented-name probe when discovery is unavailable and
+access has not been denied. It preserves the exact-allowlist embedding path and
+again agrees with the existing Goal-family fallback. Schema receipts do not
+establish execution/transcript evidence. The new
+`forkguard_parent_deferred_tools_remain_reachable_without_discovery` exercises
+real catalog narrowing/hydration and denial controls. Host declaration channels
+and the standalone default are documented; Registry-result guidance now respects
+the same carve-out. Historical bundled-body coverage and peer-marker limits are
+documented without a blanket overwrite. No dispatch/approval loop is changed.
+
+The parent fixes browser error-code and evidence-authority wording, strict Plan
+and unattended constraints, and additional-root labels. The original model matrix
+remains the immutable pre-review V2.4.5 measurement, not a score for R1. See
+[review verification](prompt-optimization-evaluation/review-r1-verification.json).
+The app PR remains draft; public-head verification is unchanged and still must
+pass after the foundation's actual maintenance squash is repinned.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 ## 2026-10-28 consumed baseline: streaming tool-input reuse and discovery-guidance alignment (T2/T3)
 
 The public maintenance branch advanced by two reviewed squashes — #114 `fe90f72f9`, #125 `f1eb10efc` — and this parent consumes them with reference and register updates only; it creates no new fork topic and leaves both parent `Cargo.lock` files untouched (neither squash changes the fork's `Cargo.toml`/lock; the crates' public signatures toward the parent are unchanged).

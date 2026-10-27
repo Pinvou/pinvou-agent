@@ -118,9 +118,16 @@ test('work instructions define a durable and verified loopback preview workflow'
     new URL('../src-tauri/resources/common/bundle/instructions-work.md', import.meta.url),
     'utf8',
   );
-  assert.match(instructions, /browser\/host-request-timeout.*停止本次流程并说明/);
+  assert.match(instructions, /browser\/host-request-expired.*停止本次流程并说明/);
+  const hostSource = readFileSync(new URL('../src-tauri/src/features/browser/mod.rs', import.meta.url), 'utf8');
+  for (const code of ['browser/host-request-expired', 'browser/host-consumer-unavailable', 'browser/host-caller-not-live']) {
+    assert.ok(instructions.includes(code));
+    assert.ok(hostSource.includes(code), `advertised browser error must exist: ${code}`);
+  }
+  assert.doesNotMatch(instructions, /browser\/host-request-timeout/);
   assert.match(instructions, /mcp_browser_list_pages/);
   assert.match(instructions, /tool_search` 搜索准确名称 `mcp_browser_list_pages`/);
+  assert.match(instructions, /不能只凭初始列表缺失就宣称不可用；实际发现或准确名称探测也无法提供时，才说明本轮限制/);
   assert.doesNotMatch(instructions, /搜索 `mcp_browser_\*`/);
   assert.match(instructions, /127\.0\.0\.1/);
   assert.match(instructions, /命名 `terminal\/run`.*timeout_secs/);
@@ -150,8 +157,15 @@ test('shared instructions keep the deferred-tool doctrine, credential red line, 
   // layers, so this line would otherwise silently regress.
   assert.match(
     shared,
-    /缺少工具时先 `tool_search` 发现并激活/,
+    /未激活时先 `tool_search` 发现/,
   );
+  assert.match(shared, /未被拒绝.*探测一次/);
+  assert.match(shared, /收到 schema 只表示工具已加载/);
+  assert.match(shared, /不可用或被拒绝就停止/);
+  assert.match(shared, /记忆与证据冲突时，先重读或复核/);
+  assert.match(shared, /精确当前时间.*软件或库的最新版本/);
+  assert.match(shared, /说做就做/);
+  assert.doesNotMatch(shared, /文件呈现流程/);
   assert.match(shared, /搜索返回 `mcp_boot` connecting/);
 
   // The per-turn super-permission reminders realigned their credential list to

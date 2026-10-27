@@ -17,3 +17,25 @@ Foundation review: [CodeWhale#125](https://github.com/Pinvou/CodeWhale/pull/125)
 The application branch integrates main `0dd56c965` without changing the measured prompt bodies. Model results retain their frozen historical binary/source/lock boundary. Fresh [submission checks](pr-submission-verification-v2.4.5.json), [UI/Node checks](pr-submission-ui-v2.4.5.json), and [public-head dependency record](pr-public-head-boundary-v2.4.5.json) are separate from the earlier full Rust receipts. The [single-poster summary](figures/pinvou-poster-v2.4.5.png) uses the same result-layer caveats.
 
 Signed: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## Review revision and attribution
+
+The V2.4.5 model results are historical measurements of the frozen sources, not
+new measurements of later review fixes. The review revision restores bounded
+documented-name probes for deferred tools, fixes browser/authority/Plan wording,
+and tightens publication evidence. Its deterministic checks are recorded
+separately. No new 540-task model run is implied.
+
+Current foundation review head: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`.
+The parent revision follows the reviewer's clean replay onto main `a9885b080d`.
+See the [R1 verification](review-r1-verification.json) and separate
+[R1 source manifest](source-manifest-review-r1.json). The original submission's
+seven freshly executed namespace/proxy checks are in
+[pr-submission-verification-v2.4.5.json](pr-submission-verification-v2.4.5.json);
+they are distinct from the retained notes in `verification-v2.4.5.json`.
+
+"Signed" in these prose reports means author/model attribution, not a digital
+signature. File integrity is recorded by the SHA-256 manifest chain. Cryptographic
+Git signatures, if present, are a separate property; a DCO trailer is also distinct.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).

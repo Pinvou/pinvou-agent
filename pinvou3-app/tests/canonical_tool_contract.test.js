@@ -67,7 +67,7 @@ test('runtime guidance uses live schemas and canonical app entry points', () => 
   // text and can teach stale arguments. Keep the catalog/discovery contract and
   // app-only workflow entry points; the preceding scan still bans retired names.
   const shared = fs.readFileSync(path.join(BUNDLE, 'instructions-shared.md'), 'utf8');
-  assert.match(shared, /当前工具目录.*精确名称/);
+  assert.match(shared, /本轮真实目录.*准确名称/);
   assert.match(shared, /参数.*实际 schema/);
   for (const canonical of ['tool_search', 'terminal/run', 'todo_write']) {
     assert.ok(rendered.includes(canonical), `canonical guidance missing: ${canonical}`);

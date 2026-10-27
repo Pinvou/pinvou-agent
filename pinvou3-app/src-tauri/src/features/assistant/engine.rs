@@ -49,7 +49,7 @@ use crate::features::sessions::{
 use crate::features::sessions::{SerializableMode, SessionModeState};
 
 /// Unattended turns must finish or report a blocker without waiting for a user.
-const SCHEDULED_TURN_REMINDER: &str = "本轮为无人值守自动执行，只完成用户给定的任务，不扩展目标。\n\
+const SCHEDULED_TURN_REMINDER: &str = "本轮为无人值守自动执行，只完成用户给定的任务，不改写、替换或扩展任务目标。\n\
 有安全默认且在已有授权范围内时直接推进；不要发起等待用户回答或确认的操作。\n\
 缺少关键条件或授权时，说明阻塞、已完成部分和未执行事项，然后结束本轮；不猜测缺失事实或声称已经完成。";
 

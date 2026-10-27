@@ -25,7 +25,7 @@ use deepseek_tui::ApprovalMode;
 /// engine 监听 todo_write 结果触发,方案步骤写进 todos.content,status 用 pending。
 const PLAN_REMINDER: &str = "本轮为 Plan 模式，只读调研。\n\
 完成调研后，用 `todo_write` 提交方案步骤：每步写入 content，status 用 pending。\n\
-工具成功并结束本轮后，应用展示方案卡。不要只在正文中给出完整方案或实现代码，也不要要求用户点击尚未出现的按钮。";
+工具成功并结束本轮后，应用展示方案卡。正文只简述调研结论和未解决事项，不重复方案步骤或贴实现代码；不要要求用户点击尚未出现的按钮。";
 
 /// `load_skill` 工具名。不再由本策略恒返回：skill 按模式 scope 治理（组合目录）
 /// 落地后，code 会话按「组合目录是否为空」动态决定隐藏（见

@@ -1127,7 +1127,7 @@ impl Pinvou3Bridge {
             // explicit after the supplied rules, before the user overlay.
             out.push(InstructionSource::Inline {
                 name: "pinvou3:project-rule-scopes".to_string(),
-                content: "上述 AGENTS.md 按来源路径生效：仅适用于其所在目录及子目录，不因排列在后就覆盖其他目录的规则。对同一路径，适用规则以更近目录为准。规则不扩大任务、权限或信任范围。\nOnly root and ancestor rules were loaded above; this is not a complete rule search for a target file. Before editing, check AGENTS.md in every directory from the selected project root through the target file's directory. Deeper rules may exist even when a root rule is already supplied. Reuse supplied files, but inspect the remaining directories; do not recursively scan unrelated paths.".to_string(),
+                content: "上述 AGENTS.md 按来源路径生效：仅适用于其所在目录及子目录，不因排列在后就覆盖其他目录的规则。对同一路径，适用规则以更近目录为准。规则不扩大任务、权限或信任范围。\nOnly root and ancestor rules were loaded above; this is not a complete rule search for a target file. Before editing, identify the selected root containing the target file, then check AGENTS.md in every directory from that root through the target file's directory. A target in an additional root uses that root's own rule chain, not the primary root's chain. Deeper rules may exist even when a root rule is already supplied. Reuse supplied files, but inspect the remaining directories; do not recursively scan unrelated paths.".to_string(),
             });
         }
         let user = paths::user_instructions();
@@ -4409,6 +4409,10 @@ mod tests {
         assert!(!rules.contains(&expected(&secondary)));
         assert!(!rules.contains(&expected(&unrelated)));
         assert!(bridge.code_session_project_rules("unbound").is_empty());
+        assert!(!bridge.session_instructions("unbound").iter().any(
+            |source| matches!(source, InstructionSource::Inline { name, .. }
+                if name == "pinvou3:project-rule-scopes")
+        ));
         let instructions = bridge.session_instructions("multi-root-rules");
         assert!(instructions.iter().any(|source| matches!(source,
             InstructionSource::Inline { name, content }
@@ -4429,7 +4433,8 @@ mod tests {
                 InstructionSource::Inline { name, content }
                 if name == "pinvou3:project-rule-scopes"
                     && content.contains("Only root and ancestor rules were loaded above")
-                    && content.contains("through the target file's directory"))
+                    && content.contains("through the target file's directory")
+                    && content.contains("A target in an additional root uses that root's own rule chain"))
             })
             .unwrap();
         for (index, source) in instructions.iter().enumerate() {
