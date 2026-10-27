@@ -262,12 +262,34 @@
       }
     }
 
+    // 撤销本机目录授权但不断开链接：桌面专属同意面，手机侧永不可达
+    // （命令仅主 WebView 可调，且不在 Web 访问策略内）。
+    async function revokeRemoteHostWorkspace() {
+      const seq = ++webAccessIntentSeq;
+      try {
+        const info = await invoke("web_access_revoke_host_workspace");
+        if (seq !== webAccessIntentSeq) return info;
+        state.webAccess = Object.assign({}, state.webAccess, info || {}, {
+          active: true, starting: false, host_workspace_authorized: false,
+        });
+        notify();
+        await refreshRemoteControlStatus(seq);
+        return info;
+      } catch (error) {
+        if (seq !== webAccessIntentSeq) throw error;
+        state.webAccess = Object.assign({}, state.webAccess, { last_error: String(error) });
+        notify();
+        throw error;
+      }
+    }
+
     return {
       startDesktopProxy,
       refreshRemoteControlStatus,
       startRemoteControl,
       stopRemoteControl,
       refreshRemoteControlQr,
+      revokeRemoteHostWorkspace,
     };
   };
 })(window);

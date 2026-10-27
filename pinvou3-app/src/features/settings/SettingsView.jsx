@@ -232,6 +232,16 @@ function hasStoredCredential(record) {
         finally { setActionBusy(false); }
       }
 
+      // 撤销本机目录授权但保持链接：folder 授权的独立收回路径，不复用
+      // Stop（那会断开整条链接）。
+      async function handleRevokeHostWorkspace() {
+        if (!bridge.available) return;
+        setActionBusy(true);
+        try { await bridge.remoteControl.revokeRemoteHostWorkspace(); }
+        catch { /* revoke failure surfaced by the banner */ }
+        finally { setActionBusy(false); }
+      }
+
       // Escape closes the layered dialog: the rotate-confirm overlay first, then the
       // modal itself. Skipped while an action is in flight so an in-progress call is
       // never discarded mid-flight.
@@ -299,6 +309,15 @@ function hasStoredCredential(record) {
               </div>
             )}
             {webAccess.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccess.last_error}</div>}
+            {webAccessActive && hostWorkspaceAuthorized && (
+              // 授权状态 affirmative 可见 + 可单独撤销:旧版本「开启访问」顺带
+              // 写下的 allow_host_workspace 不再只能靠 Stop 整体清除。
+              <div className="mt-3 flex items-center justify-between gap-2 rounded-xl px-3 py-2 bg-[#E6F4EA] dark:bg-[#0D2B1A]">
+                <span className="text-[12px] text-[#137333] dark:text-[#81C995]">{remoteCopy.workspaceAllowed}</span>
+                <button type="button" disabled={actionBusy} onClick={handleRevokeHostWorkspace}
+                  className={`px-3 py-1.5 rounded-lg text-[12px] disabled:opacity-50 border border-[#137333]/30 text-[#137333] hover:bg-black/5 dark:border-[#81C995]/30 dark:text-[#81C995] dark:hover:bg-white/10`}>{remoteCopy.revokeWorkspace}</button>
+              </div>
+            )}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button type="button" onClick={() => { if (webAccess.url) copyClipboardText(webAccess.url); }}
                 disabled={actionBusy || !webAccess.url}
