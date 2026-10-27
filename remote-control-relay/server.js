@@ -126,16 +126,30 @@ const MAX_IP_TEXT_CHARS = 128;
 // connection is attributed to the direct peer; real proxy chains stay far
 // below it.
 const MAX_FORWARDED_HEADER_CHARS = 4096;
-const ALLOWED_WEB_ORIGINS = parseOriginSet(process.env.PINVOU_REMOTE_ALLOWED_WEB_ORIGINS);
-const ALLOWED_PROXY_IPS = parseIpSet(
+// Config parsing runs at module init: an escaping throw would die with a
+// stack that prints repo paths. Every configuration failure reports one
+// fixed [relay-error] line and exits 1, like every other startup failure.
+function configOrExit(parse) {
+  try {
+    return parse();
+  } catch (error) {
+    console.error(`[relay-error] ${error.message}`);
+    process.exit(1);
+  }
+}
+
+const ALLOWED_WEB_ORIGINS = configOrExit(
+  () => parseOriginSet(process.env.PINVOU_REMOTE_ALLOWED_WEB_ORIGINS),
+);
+const ALLOWED_PROXY_IPS = configOrExit(() => parseIpSet(
   "PINVOU_REMOTE_ALLOWED_PROXY_IPS",
   process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
-);
-const TRUSTED_PROXY_IPS = parseIpSet(
+));
+const TRUSTED_PROXY_IPS = configOrExit(() => parseIpSet(
   "PINVOU_REMOTE_TRUSTED_PROXY_IPS",
   process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS
     ?? process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
-);
+));
 
 const WEB_TO_DESKTOP_TYPES = new Set([
   "rpc_request",
