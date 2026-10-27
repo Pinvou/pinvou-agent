@@ -16,7 +16,17 @@ The two standalone executables use closed arguments:
   It accepts no caller PID, handle, path or command arguments and performs no
   installation or business-data writes.
 - `pinvou-upgrade-helper --installer-stage <stage>` accepts only `prepare-install`, `prepare-local-install`, `prepare-metadata-upgrade`, `verify-files`, `start-service`, `prepare-remove`, `remove-target`, or `launch-desktop`, from the actual independently protected original source installer. `prepare-metadata-upgrade` currently refuses with `InitialTrustUnavailable` until its authenticated producer is implemented; it never falls back to local installation.
-- `pinvou-upgrade-launcher` starts the fixed registered app as its ordinary interactive user. Its only additional mode is `--restart-handoff <restart-id>`, authenticated against the actual original association.
+- `pinvou-upgrade-launcher` starts the fixed registered app as its ordinary interactive user. `--restart-handoff <restart-id>` instead uses the authenticated original restart association.
+- `pinvou-upgrade-launcher --writer-status` instead reads the authenticated
+  protected writer journal as the actual ordinary-user launcher. It accepts no
+  scope, PID, path, repair or release arguments and never launches the App.
+  JSON reports the current host epoch and journal revision, with separate
+  Reserved, Admitted, Draining and Closed-pending-release counts. Its explicit
+  `journal_only` observation does not establish native Job emptiness, successful
+  recovery, saved data or permission to prepare, freeze, install or release.
+  Missing/corrupt/unavailable owners return a fixed error, never zero counts.
+  The command performs no HTTP, service installation or implicit repair; a
+  repeated request reads again rather than replaying historical success.
 
 The private manifest version 2 binds the complete application inventory through at most eight separately parsed shards (each at most 1 MiB and 4,096 files). Root and every shard are embedded before NSIS archive/CRC construction, and atomically persisted with the original registry intent. Missing, changed, swapped, extra or wrong-language shards refuse. Unpublished inline manifest version 1 is not adopted. The assembled inventory is never serialized as one oversized metadata input.
 

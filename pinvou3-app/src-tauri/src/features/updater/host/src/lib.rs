@@ -1,6 +1,8 @@
 //! Windows first-install host. Data models are not protected capabilities.
 //! Shipping app integration remains disabled until actual named-profile acceptance.
 mod app_writer;
+mod writer_status;
+pub use writer_status::{WriterJournalCounts, WriterJournalStatus, WriterStatusObservation};
 mod bootstrap;
 pub use app_writer::{AppWriterAdmission, AppWriterStartup, admit_current_app_writer};
 mod error;
@@ -29,6 +31,11 @@ pub fn trusted_time_diagnostics_supported() -> bool {
 /// Read the actual authenticated host diagnostic; this never performs HTTP.
 pub fn inspect_trusted_time() -> std::result::Result<TrustedTimeStatus, Error> {
     platform::inspect_trusted_time()
+}
+/// Fixed registered launcher diagnostic. This never starts an App, installs a
+/// service, retries an action, or proves that a writer/freeze has been released.
+pub fn inspect_writer_journal() -> std::result::Result<WriterJournalStatus, Error> {
+    platform::inspect_writer_journal()
 }
 /// One explicit local request. Accepted means activity only; re-read status.
 pub fn request_trusted_time_refresh() -> std::result::Result<TrustedTimeRefreshReply, Error> {

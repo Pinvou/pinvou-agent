@@ -113,6 +113,25 @@ fn state_reply(id: &str, snapshot: Snapshot, epoch: u64) -> ipc::StateReply {
     }
 }
 impl Connection {
+    fn writer_status(
+        &self,
+        request: &ipc::Request,
+        record: &HostRegistration,
+        pipe: &Pipe,
+    ) -> Result<(Vec<u8>, bool)> {
+        require_writer_status(self.peer.role, self.bootstrap)?;
+        let _: ipc::Empty = request.body()?;
+        let actual = self.authorize(pipe)?;
+        if actual.installation_scope_id != record.installation_scope_id
+            || actual.host_epoch != record.host_epoch
+        {
+            return Err(Error::ScopeConflict);
+        }
+        let status = super::registry::writers::inspect_journal(&self.core.host)?;
+        let confirmed = self.authorize(pipe)?;
+        status.validate_for(&confirmed.installation_scope_id, confirmed.host_epoch)?;
+        self.reply(request, status)
+    }
     fn writer_admit(
         &self,
         request: &ipc::Request,
@@ -191,6 +210,11 @@ impl Connection {
     ) -> Result<(Vec<u8>, bool)> {
         if request.kind == "writer-admit" {
             return self.writer_admit(request, record, pipe);
+        }
+        if request.kind == "writer-status" {
+            // Read-only diagnostics must not reap restart associations or
+            // enter writer admission/recovery/keeper effects as a side effect.
+            return self.writer_status(request, record, pipe);
         }
         let epoch = record.host_epoch;
         self.core.actions()?.reap_expired(Instant::now())?;
@@ -592,6 +616,9 @@ impl Connection {
             return Ok(cached.to_vec());
         }
         match request.kind.as_str() {
+            "writer-status" => self
+                .writer_status(request, record, pipe)
+                .map(|(bytes, _)| bytes),
             "writer-admit" => self
                 .writer_admit(request, record, pipe)
                 .map(|(bytes, _)| bytes),
@@ -723,6 +750,25 @@ fn require_time_app(role: Role) -> Result<()> {
         return Err(Error::OperationUnsupported);
     }
     Ok(())
+}
+fn require_writer_status(role: Role, bootstrap: bool) -> Result<()> {
+    if bootstrap || !matches!(role, Role::App | Role::Launcher) {
+        return Err(Error::PeerRefused);
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod writer_status_role_tests {
+    use super::*;
+    #[test]
+    fn only_actual_nonbootstrap_app_or_launcher_peers_can_read_writer_status() {
+        for role in [Role::App, Role::Launcher] {
+            assert!(require_writer_status(role, false).is_ok());
+            assert!(require_writer_status(role, true).is_err());
+        }
+        assert!(require_writer_status(Role::SourceInstaller, false).is_err());
+        assert!(require_writer_status(Role::SourceInstaller, true).is_err());
+    }
 }
 #[cfg(test)]
 mod time_role_tests {

@@ -17,6 +17,27 @@ pub(crate) enum HelperMode {
     RemoveTarget,
     LaunchDesktop,
 }
+#[derive(Debug, PartialEq, Eq)]
+enum LauncherMode {
+    Launch,
+    Restart(String),
+    WriterStatus,
+}
+fn launcher(values: &[String]) -> Result<LauncherMode> {
+    match values
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] => Ok(LauncherMode::Launch),
+        ["--restart-handoff", id] if crate::json::digest(id) => {
+            Ok(LauncherMode::Restart((*id).to_owned()))
+        }
+        ["--writer-status"] => Ok(LauncherMode::WriterStatus),
+        _ => Err(Error::IpcInvalid),
+    }
+}
 fn arguments(values: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Vec<String>> {
     let mut result = Vec::new();
     for value in values {
@@ -125,24 +146,46 @@ pub fn launcher_main(
     values: impl IntoIterator<Item = std::ffi::OsString>,
 ) -> std::process::ExitCode {
     finish((|| {
-        let values = arguments(values)?;
-        let id = match values
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .as_slice()
-        {
-            [] => None,
-            ["--restart-handoff", id] if crate::json::digest(id) => Some((*id).to_owned()),
-            _ => return Err(Error::IpcInvalid),
-        };
+        let mode = launcher(&arguments(values)?)?;
         crate::platform::harden_role_process()?;
-        crate::platform::execute_launcher(id.as_deref())
+        match mode {
+            LauncherMode::Launch => crate::platform::execute_launcher(None),
+            LauncherMode::Restart(id) => crate::platform::execute_launcher(Some(&id)),
+            LauncherMode::WriterStatus => {
+                use std::io::Write;
+                let bytes = crate::inspect_writer_journal()?.diagnostic_json()?;
+                let mut output = std::io::stdout().lock();
+                output.write_all(&bytes).map_err(|_| Error::Unavailable)?;
+                output.write_all(b"\n").map_err(|_| Error::Unavailable)
+            }
+        }
     })())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn writer_status_is_a_fixed_launcher_read_not_a_helper_or_launch_argument() {
+        assert_eq!(launcher(&[]), Ok(LauncherMode::Launch));
+        assert_eq!(
+            launcher(&["--writer-status".into()]),
+            Ok(LauncherMode::WriterStatus)
+        );
+        let id = "a".repeat(64);
+        assert_eq!(
+            launcher(&["--restart-handoff".into(), id.clone()]),
+            Ok(LauncherMode::Restart(id))
+        );
+        assert_eq!(helper(&["--writer-status".into()]), Err(Error::IpcInvalid));
+        for args in [
+            vec!["--writer-status=all".into()],
+            vec!["--writer-status".into(), "--repair".into()],
+            vec!["--writer-status".into(), "123".into()],
+            vec!["--restart-handoff".into(), "--writer-status".into()],
+        ] {
+            assert_eq!(launcher(&args), Err(Error::IpcInvalid));
+        }
+    }
     #[test]
     fn role_arguments_are_closed_before_native_effects() {
         assert_eq!(

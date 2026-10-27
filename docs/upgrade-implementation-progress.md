@@ -1,11 +1,11 @@
 # Upgrade implementation progress
 
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
-Checkpoint: **2026-10-27, Windows GUI writer admission and restricted keeper recovery implemented; full T28 preparation remains in progress**.
+Checkpoint: **2026-10-27, Windows writer admission delivered; read-only journal diagnostics verified locally; full T28 preparation remains in progress**.
 
-There are 47 tasks: eight completed, eighteen in progress, twenty not completed,
+There are 47 tasks: eight completed, nineteen in progress, nineteen not completed,
 and T42 explicitly deferred. The strict completion ratio is **8/47 (17.0%)**.
-The equal-task engineering estimate is **38.5%** (1810/47). T07, T08, T09, T10, T13, T25, T29 and T31 reflect their current delivery;
+The equal-task engineering estimate is **38.7%** (1820/47). T07, T08, T09, T10, T13, T25, T28, T29 and T31 reflect their current delivery;
 other estimates retain their 2026-10-22 assessment. These estimates are not
 measured hours or release readiness.
 
@@ -17,12 +17,14 @@ The current component connects an early GUI App startup barrier, the actual
 authenticated service, protected writer journal, native Job custody and the
 owner-approved restricted keeper. A bounded pending-release index preserves
 retirement work across service restart. Scoped V3 review covers this component;
-the task completion counts below are unchanged.
+the strict completion count below is unchanged. T28 is now estimated at **10%**
+for its delivered admission, journal and native custody foundations. This is a
+component-based engineering estimate, not measured acceptance coverage.
 CLI/headless admission, real Session preparation, Saved acknowledgements, complete
 writer freezing and other platforms remain outside this App admission component
 and are still required by T28. No new E2E tests are being run.
 
-Current-source local verification passed the host's **188 tests, zero failed,
+The delivered admission component's local verification passed the host's **188 tests, zero failed,
 one existing ignored**, including ordinary owned native Job and Event fixtures.
 Both normal-CRT library tests and static-CRT standalone all-target linked tests
 closed naturally; helper/launcher harnesses contain no additional test cases.
@@ -33,6 +35,24 @@ language tests, UI/Web builds and the Safari 14 compatibility audit passed;
 unchanged-source evidence is inherited only for its original scope. A minimal
 Event-ordering negative control failed the intended assertion; exact restoration
 passed. Earlier runs requiring forced compiler-helper cleanup remain excluded.
+
+The diagnostic increment adds the launcher's fixed `--writer-status`
+command. It reads the authenticated service's protected journal in one
+transaction and reports reserved, admitted, draining and pending-release counts.
+It neither launches the GUI nor repairs state. Missing or corrupt state and
+changed service identity return errors; zero counts are only journal data,
+never proof of stopped writers, saved data or installation permission.
+Its five independent source first reviews are frozen. Current library
+compilation, architecture and scoped formatting passed. Exact-source cached
+normal-CRT library and static-CRT all-target linked tests each passed **193 tests,
+zero failed, one existing ignored**, with natural process cleanup; the two
+configurations execute the same cases. Earlier cold runs requiring forced
+compiler-helper cleanup remain excluded. Their normal/static cold builds
+took about 15/17 minutes, while test execution took 19.6/15.7 seconds;
+qualified cached runs took 22.7/19.8 seconds. Prior App assembly evidence is
+inherited after independently checking unchanged callers, manifests, locks,
+features and build inputs; it was not rerun.
+No new E2E tests are scheduled.
 
 Five independent first reports were frozen before findings were exchanged;
 original-finder repair reviews and separate non-author adjudication apply to the
@@ -1706,7 +1726,7 @@ completion blocker; outstanding business implementation is.
 | T25 | 85% | In progress | Delivered full-platform network-week read/export requires current all-product/component/channel/target operations.read and returns the same authenticated canonical body. Scoped51 plus native1 and the final required Go/build/contract checks passed as recorded above. Source-v2, protected internal freeze/CLI/host, independent Stage/Release capture, restricted Stage reader and callable three-language disclosure remain delivered with their historical verification above. The Release-purpose restricted owner still needs genuine T18 selector/issuance source-class production; self-reported facts/default primary/fake authority cannot replace it. T21 atomic projection/cursor consumption and T24 report ownership remain separate tasks, not T25 prerequisites. |
 | T26 | 20% | In progress | Nonce-bound issuer/verifier, fixed Root transport, Windows incarnation/Root custody and protected anchor/deny/barrier are delivered. The current native interval/original-budget kernel preserves scope/operation/kind, original cutoffs, spending and global time watermark; its timing intentions do not prove actual stage execution. Local diagnostics, explicit refresh and actual fresh-install never-enabled zero-custody completion have current host/Node module verification and inherited synthetic React/browser evidence; the production-host application library check passed, while default application compilation remains unverified after resource-guard interruptions, explicitly accepted for this commit/push with CI follow-up. The approved initial engineering preparation policy is provisioned only in genuine Windows original registration; this is not certified platform performance. Actual stage composition, nonzero backup/secret producers and cleanup, backup-specific recovery and other platform adapters remain incomplete. No durable Known clock or installation permission is claimed. |
 | T27 | 55% | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; immutable first-install anchor initialization and live read-only installed-image diagnostics are delivered; complete SourceFacts, protected current acceptance/time, workflow and qualification integration remain pending |
-| T28 | 0% | Not completed | Immutable first-install genesis is delivered under T31. Live machine-wide preparation ownership, allocation/handoff/recovery and multi-user writer freezing remain unimplemented; the shared initializer does not count as this workflow. |
+| T28 | 10% | In progress | Windows GUI admission, protected writer journal, native Job custody and restricted keeper recovery foundations are delivered. Read-only journal diagnostics passed local checks. Genuine Session preparation, complete writer inventory including CLI/headless, durable save/drain, machine-wide ownership handoff/recovery, multi-user freezing and other platforms remain incomplete. |
 | T29 | 75% | In progress | Signed immutable-source/URL binding and independently pinned Windows cache continuation are verified alongside existing transfer, FullPack/native observation, protected staging, historical Root succession and same-process VerifiedExecutionObject custody; the service pins the committed contract and passes cross-language/real-Transit verification; protected production qualification/checkpoint ownership and authorized-executor composition remain pending. |
 | T30 | 0% | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | 100% | Implemented; independently reviewed and verified | Protected helper/launcher, explicit package source deployment, native identity/IPC/takeover/restart and atomic independent-owner initialization delivered. Current code, modules, role builds and safe refusal paths passed scoped review and checks. Physical SCM/multi-user/crash/reboot E2E remains unverified and is non-blocking under the owner's policy; no deployment or shipping qualification is claimed. |

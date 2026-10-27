@@ -56,6 +56,8 @@ mod writer_coordinator;
 mod writer_job;
 mod writer_keeper;
 mod writer_service;
+mod writer_status;
+pub(crate) use writer_status::inspect_writer_journal;
 
 mod bootstrap;
 mod dispatch;

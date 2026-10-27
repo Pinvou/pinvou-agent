@@ -172,6 +172,68 @@ fn current(store: &Store, host: &StartedServiceContext) -> Result<storage::Loade
     let private = store.key(false, None)?.ok_or(Error::SetupIncomplete)?;
     storage::load(&private, &actual, None)
 }
+
+/// Actual read-only same-transaction census. No missing namespace is converted
+/// to an empty journal, and no query creates a keeper or performs recovery.
+#[allow(unsafe_code)]
+pub(in crate::platform::windows) fn inspect_journal(
+    host: &StartedServiceContext,
+) -> Result<crate::WriterJournalStatus> {
+    let store = Store::new(&host.context.seed);
+    let _guard = BootstrapGuard::acquire(&host.context.seed, false)?;
+    let tx = Handle::owned(unsafe {
+        CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+    })?;
+    let actual = store
+        .read_in(&host.context.seed, Some(&tx))?
+        .ok_or(Error::SetupIncomplete)?;
+    host.authenticate_running(&actual)?;
+    let private = store.key(false, Some(&tx))?.ok_or(Error::SetupIncomplete)?;
+    let loaded = storage::load(&private, &actual, Some(&tx))?;
+    let counts = journal_counts(&loaded)?;
+    let status = crate::WriterJournalStatus {
+        protocol_version: 1,
+        observation: crate::WriterStatusObservation::JournalOnly,
+        installation_scope_id: actual.installation_scope_id.clone(),
+        host_epoch: actual.host_epoch,
+        journal_revision: loaded.head.revision,
+        counts,
+    };
+    status.validate().map_err(|_| Error::StateCorrupt)?;
+    host.authenticate_running(&actual)?;
+    // Dropping the read-only transaction abandons it without any publication.
+    Ok(status)
+}
+
+fn journal_counts(loaded: &storage::Loaded) -> Result<crate::WriterJournalCounts> {
+    if loaded
+        .active
+        .len()
+        .checked_add(loaded.pending.len())
+        .is_none_or(|n| n > pinvou_upgrade_ownership::live::MAX_PARTICIPANTS)
+        || loaded
+            .pending
+            .iter()
+            .any(|(row, _)| row.phase != record::Phase::Closed)
+    {
+        return Err(Error::StateCorrupt);
+    }
+    let mut counts = crate::WriterJournalCounts {
+        reserved: 0,
+        admitted: 0,
+        draining: 0,
+        pending_release: u32::try_from(loaded.pending.len()).map_err(|_| Error::StateCorrupt)?,
+    };
+    for (row, _) in &loaded.active {
+        match row.phase {
+            record::Phase::Reserved => counts.reserved += 1,
+            record::Phase::Admitted => counts.admitted += 1,
+            record::Phase::Draining => counts.draining += 1,
+            record::Phase::Closed => return Err(Error::StateCorrupt),
+        }
+    }
+    Ok(counts)
+}
 #[allow(unsafe_code)]
 fn original_identity(
     host: &StartedServiceContext,
@@ -904,6 +966,41 @@ mod tests {
             active,
             pending: Vec::new(),
         }
+    }
+
+    #[test]
+    fn journal_diagnostic_counts_uncertain_reservations_and_closed_pending_release_separately() {
+        let (genesis, base) = record::census_test_data();
+        let mut input = loaded(genesis, vec![base.clone()]);
+        // Synthetic aggregation DATA, not a native read set or a transition
+        // grant. Production first validates each row/history through load().
+        for phase in [record::Phase::Admitted, record::Phase::Draining] {
+            let mut row = base.clone();
+            row.phase = phase;
+            input.active.push((row, Vec::new()));
+        }
+        let mut closed = base;
+        closed.phase = record::Phase::Closed;
+        input.pending.push((closed.clone(), Vec::new()));
+        assert_eq!(
+            journal_counts(&input).unwrap(),
+            crate::WriterJournalCounts {
+                reserved: 1,
+                admitted: 1,
+                draining: 1,
+                pending_release: 1,
+            }
+        );
+        input.active.push((closed, Vec::new()));
+        assert!(journal_counts(&input).is_err());
+        input.active.pop();
+        input.pending[0].0.phase = record::Phase::Admitted;
+        assert!(journal_counts(&input).is_err());
+        input.pending.clear();
+        while input.active.len() <= pinvou_upgrade_ownership::live::MAX_PARTICIPANTS {
+            input.active.push(input.active[0].clone());
+        }
+        assert!(journal_counts(&input).is_err());
     }
 
     #[test]

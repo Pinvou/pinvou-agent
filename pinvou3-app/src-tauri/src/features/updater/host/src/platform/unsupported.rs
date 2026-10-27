@@ -1,5 +1,8 @@
 //! This host profile requires Windows native SCM, process, ACL and TxR semantics.
 use crate::error::{Error, Result};
+pub(crate) fn inspect_writer_journal() -> Result<crate::WriterJournalStatus> {
+    Err(Error::Unsupported)
+}
 /// Configured unsupported hosts cannot construct startup writer admission.
 pub(crate) enum AppWriterAdmission {}
 pub(crate) fn admit_current_app_writer() -> Result<AppWriterAdmission> {
