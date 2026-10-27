@@ -5138,7 +5138,11 @@ impl AcpPool {
                     // first stall stays conservative because long work can
                     // look wedged; this branch is a deliberate retirement, so
                     // it never feeds the crash budget and clears what the
-                    // session had accumulated.
+                    // session had accumulated. The clear sits after the
+                    // settlement await above: that is safe only because the
+                    // pool sessions lock is held across this whole arm, so
+                    // the lock — not statement order alone — orders the
+                    // clears after the take.
                     self.runtime_crash_budgets.lock().remove(session_id);
                     // The replacement may be published by a later call if the
                     // budget throttles this one, so park the disclosure in the

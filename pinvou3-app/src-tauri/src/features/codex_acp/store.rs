@@ -2396,6 +2396,14 @@ impl SessionAgentStore {
     /// lock is held throughout so no concurrent writer can publish over the
     /// snapshot being persisted; callers still take `lock_and_reload` first
     /// for the cross-process section.
+    ///
+    /// Cost note: the exclusive lock now spans the whole serialize + fsync +
+    /// rename, so one writer's fsync duration stalls every reader of the
+    /// store — and, because pool paths read the store under the pool-wide
+    /// sessions lock, every ACP session entry point behind those. Accepted
+    /// at the human-frequency write rates of these tables; revisit with a
+    /// snapshot-then-validated-publish shape if a writer ever moves to a
+    /// slow or networked disk.
     fn update_records_transactional(
         &self,
         update: impl FnOnce(&mut HashMap<String, SessionAgentRecord>) -> Result<bool>,

@@ -762,12 +762,18 @@ async fn run_managed_install(
             // the Drop never re-kills, then reclaim group survivors once for
             // descendants that outlived the leader. Like the cancel recheck,
             // the (Windows-bounded) tree kill runs on the blocking pool.
-            // The wait itself is unbounded by design: if a stalled taskkill
-            // left the direct child alive (Windows), this parks the install
-            // task — and the install mutex — until the installer exits on its
-            // own. That tolerance is accepted over killing by a possibly
-            // recycled pid, and user cancel still reaches the tree through
-            // the registry entry, which only the settle below removes.
+            // The wait itself is unbounded by design, with one trigger per
+            // platform: a stalled taskkill may leave the direct child alive
+            // (Windows), and on unix a child in uninterruptible kernel sleep
+            // (D state, e.g. NFS/FUSE mid-download) never observes SIGKILL at
+            // all — either way this parks the install task, and the install
+            // mutex with it, until the child exits on its own or the app
+            // restarts. The codebase's bounded REAP_GRACE reap is not used
+            // here because abandoning the wait early would have to settle an
+            // unreaped child to make progress, re-arming exactly the
+            // recycled-pid hazard this order exists to avoid; user cancel
+            // still reaches the tree through the registry entry, which only
+            // the settle below removes.
             if let Some(pid) = child.id() {
                 let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
             }
@@ -1086,7 +1092,12 @@ mod tests {
     /// manager involved). Unix makes it its own process-group leader through
     /// the platform primitive — the same contract the managed install channels
     /// run under — so the pid-based group kill used by the guard reaches the
-    /// whole tree; Windows relies on `taskkill /T` tree semantics.
+    /// whole tree; Windows relies on `taskkill /T` tree semantics. Two
+    /// boundaries of what this fixture can prove: it is a single process (no
+    /// portable grandchild), so descendant-tree reach itself is delegated to
+    /// the platform kill tests; and the Windows arm executes only in the
+    /// native Windows regression filter — the Linux legs exercise the unix
+    /// arm.
     fn spawn_install_fixture() -> (std::process::Child, u32) {
         let (program, args): (&str, &[&str]) = if crate::platform::capabilities::is_windows() {
             // `ping -n 30` idles ~30 seconds; there is no portable sleep.
