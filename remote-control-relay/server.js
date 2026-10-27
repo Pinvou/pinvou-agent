@@ -127,8 +127,12 @@ const MAX_IP_TEXT_CHARS = 128;
 // below it.
 const MAX_FORWARDED_HEADER_CHARS = 4096;
 const ALLOWED_WEB_ORIGINS = parseOriginSet(process.env.PINVOU_REMOTE_ALLOWED_WEB_ORIGINS);
-const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
+const ALLOWED_PROXY_IPS = parseIpSet(
+  "PINVOU_REMOTE_ALLOWED_PROXY_IPS",
+  process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
+);
 const TRUSTED_PROXY_IPS = parseIpSet(
+  "PINVOU_REMOTE_TRUSTED_PROXY_IPS",
   process.env.PINVOU_REMOTE_TRUSTED_PROXY_IPS
     ?? process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS,
 );
@@ -227,7 +231,7 @@ function normalizeIp(value) {
   return ip.startsWith("::ffff:") && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
 }
 
-function parseIpSet(value) {
+function parseIpSet(name, value) {
   const raw = String(value || "");
   const result = new Set();
   for (const item of raw.split(",")) {
@@ -235,13 +239,15 @@ function parseIpSet(value) {
     const ip = normalizeIp(item);
     // Fail closed: a typo must shrink the trust set to nothing at startup,
     // never silently open the proxy allowlist to every client.
-    if (!ip) throw new Error("proxy_ip_configuration_invalid");
+    if (!ip) throw new Error(`proxy_ip_configuration_invalid: ${name}`);
     result.add(ip);
   }
   // A value with visible content that yields no entries (e.g. ",,,") is a
   // broken edit, not an intentional empty allowlist; only a blank value means
   // "empty set".
-  if (result.size === 0 && raw.trim()) throw new Error("proxy_ip_configuration_invalid");
+  if (result.size === 0 && raw.trim()) {
+    throw new Error(`proxy_ip_configuration_invalid: ${name}`);
+  }
   return result;
 }
 
@@ -516,21 +522,22 @@ function relayStateContents(entries) {
 }
 
 async function loadRelayState() {
+  let metadata;
   let contents;
   try {
-    const metadata = await stat(RELAY_STATE_PATH);
-    if (!metadata.isFile()) throw new Error("relay state path is not a regular file");
-    if (metadata.size > MAX_RELAY_STATE_BYTES) {
-      throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
-    }
+    metadata = await stat(RELAY_STATE_PATH);
     contents = await readFile(RELAY_STATE_PATH, "utf8");
-    if (Buffer.byteLength(contents) > MAX_RELAY_STATE_BYTES) {
-      throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
-    }
   } catch (error) {
     if (error?.code === "ENOENT") return;
     // Do not interpolate the failure reason: it can embed filesystem paths.
     throw new Error("relay_state_load_failed", { cause: error });
+  }
+  // Deliberate validation failures keep their own messages so the startup
+  // report distinguishes them from filesystem errors, which stay wrapped.
+  if (!metadata.isFile()) throw new Error("relay state path is not a regular file");
+  if (metadata.size > MAX_RELAY_STATE_BYTES
+    || Buffer.byteLength(contents) > MAX_RELAY_STATE_BYTES) {
+    throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
   }
 
   let state;
@@ -1178,7 +1185,7 @@ wss.on("connection", (ws, req) => {
         // throw can never leave the socket ignoring messages or the endpoint
         // unable to expire.
         ws.revokePending = false;
-        const endpoint = endpoints.get(msg.endpoint_id);
+        const endpoint = endpoints.get(msg.endpoint_id || ws.endpointId);
         if (endpoint) endpoint.revoking = false;
         console.error("[relay-error] revocation_unexpected_failure");
         rejectSocket(ws, "revoke_failed", "endpoint revocation failed");
@@ -1237,6 +1244,13 @@ const heartbeatTimer = setInterval(() => {
 }, HEARTBEAT_INTERVAL_MS);
 heartbeatTimer.unref();
 
+server.on("error", (error) => {
+  // An unhandled "error" event here would crash with a stack that prints the
+  // bind address and module paths.
+  console.error(`[relay-error] listen_failed${error?.code ? ` code=${error.code}` : ""}`);
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
   console.log(
     "pinvou remote relay listening"
@@ -1265,5 +1279,7 @@ function shutdown() {
   process.exit(0);
 }
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+// on, not once: a repeated signal during the exit window is absorbed by the
+// shuttingDown guard instead of reverting to the default (signal) disposition.
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
