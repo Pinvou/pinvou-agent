@@ -1188,13 +1188,34 @@ struct PendingPermission {
     view: CodexAcpPendingPermission,
     option_ids: Vec<String>,
     activity: stall::ActivityClock,
+    generation: u64,
     response_tx: oneshot::Sender<RequestPermissionResponse>,
 }
 
 struct PendingElicitation {
     view: CodexAcpPendingElicitation,
     activity: stall::ActivityClock,
+    generation: u64,
     response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+/// Whether a card for `session_id` from exactly `generation` awaits the user.
+/// Cards left by an older generation must not count: a dead generation's
+/// handler can still be polled after the cancel sweeps, and its late insert
+/// would otherwise hold the replacement's stall watchdog open until the user
+/// answers a card for a runtime that no longer exists.
+fn generation_awaits_user_decision(
+    generation: u64,
+    session_id: &str,
+    pending_permissions: &HashMap<String, PendingPermission>,
+    pending_elicitations: &HashMap<String, PendingElicitation>,
+) -> bool {
+    pending_permissions
+        .values()
+        .any(|pending| pending.generation == generation && pending.view.session_id == session_id)
+        || pending_elicitations.values().any(|pending| {
+            pending.generation == generation && pending.view.session_id == session_id
+        })
 }
 
 async fn take_pending_permission(
@@ -1473,20 +1494,14 @@ impl AcpSession {
     /// is expected while a human reads the card and must not count as a stall.
     async fn awaiting_user_decision(&self) -> bool {
         let session_id = self.bridge.pinvou_session_id();
-        if self
-            .pending_permissions
-            .lock()
-            .await
-            .values()
-            .any(|pending| pending.view.session_id == session_id)
-        {
-            return true;
-        }
-        self.pending_elicitations
-            .lock()
-            .await
-            .values()
-            .any(|pending| pending.view.session_id == session_id)
+        let permissions = self.pending_permissions.lock().await;
+        let elicitations = self.pending_elicitations.lock().await;
+        generation_awaits_user_decision(
+            self.lifecycle.generation(),
+            session_id,
+            &permissions,
+            &elicitations,
+        )
     }
 
     fn bridge_session_id(&self) -> String {
@@ -5090,7 +5105,19 @@ impl AcpPool {
                 // the journal.
                 runtime.bridge.flush_journal();
             }
-            RuntimeLookup::Missing => {}
+            RuntimeLookup::Missing => {
+                // No runtime exists for the session, so every pending card
+                // belongs to a generation that is gone — typically one that
+                // exited before publication and whose handler can still be
+                // polled after the exit-path sweep. Settle them so the
+                // replacement starts with clean shared maps; with no bridge
+                // the settlement is only the cancelled response, not a
+                // journal entry.
+                self.cancel_pending_permissions_with_bridge(session_id, None)
+                    .await;
+                self.cancel_pending_elicitations_with_bridge(session_id, None)
+                    .await;
+            }
         }
 
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
@@ -5361,6 +5388,9 @@ impl AcpPool {
         let pending_for_elicitation = self.pending_elicitations.clone();
         let pinvou_id_for_permission = pinvou_session_id.to_string();
         let pinvou_id_for_elicitation = pinvou_session_id.to_string();
+        let generation_for_handlers = lifecycle.generation();
+        let lifecycle_for_permission = lifecycle.clone();
+        let lifecycle_for_elicitation = lifecycle.clone();
         // The connection task is the one place that observes the transport
         // ending. It stamps the lifecycle so the next `get_or_spawn` can tell
         // an unexpected exit (crash-budget slot) from an expected shutdown.
@@ -5385,6 +5415,15 @@ impl AcpPool {
                 )
                 .on_receive_request(
                     async move |request: RequestPermissionRequest, responder, _cx| {
+                        // A dead generation's handler can still be polled
+                        // after the exit-path cancel sweeps have run; deny
+                        // the frame instead of inserting a card no live
+                        // runtime will ever settle.
+                        if !lifecycle_for_permission.is_running() {
+                            return responder.respond(RequestPermissionResponse::new(
+                                RequestPermissionOutcome::Cancelled,
+                            ));
+                        }
                         let tool_call_id = request.tool_call.tool_call_id.to_string();
                         let key = permission_key(&pinvou_id_for_permission, &tool_call_id);
                         let option_ids = request
@@ -5406,6 +5445,7 @@ impl AcpPool {
                                 view,
                                 option_ids,
                                 activity: bridge_for_permission.activity(),
+                                generation: generation_for_handlers,
                                 response_tx,
                             },
                         );
@@ -5433,6 +5473,11 @@ impl AcpPool {
                 )
                 .on_receive_request(
                     async move |request: CreateElicitationRequest, responder, _cx| {
+                        if !lifecycle_for_elicitation.is_running() {
+                            return responder.respond(CreateElicitationResponse::new(
+                                ElicitationAction::Cancel,
+                            ));
+                        }
                         let request_value =
                             serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
                         let elicitation_id = elicitation_id_for(&request_value);
@@ -5449,6 +5494,7 @@ impl AcpPool {
                             PendingElicitation {
                                 view,
                                 activity: bridge_for_elicitation.activity(),
+                                generation: generation_for_handlers,
                                 response_tx,
                             },
                         );
@@ -6181,6 +6227,96 @@ mod tests {
         assert!(!npm_fallback_available(Some("@openai/codex"), false));
         assert!(!npm_fallback_available(None, true));
         assert!(!npm_fallback_available(None, false));
+    }
+
+    /// A card from an older generation must not hold the current
+    /// generation's stall watchdog open, even while it still sits in the
+    /// shared pending maps.
+    #[test]
+    fn pending_cards_await_decisions_only_for_their_own_generation() {
+        let session_id = "pinvou-session".to_string();
+        let card = |generation: u64| PendingPermission {
+            view: CodexAcpPendingPermission {
+                session_id: session_id.clone(),
+                tool_call_id: "tool-1".to_string(),
+                request: serde_json::Value::Null,
+            },
+            option_ids: Vec::new(),
+            activity: stall::new_activity_clock(),
+            generation,
+            response_tx: oneshot::channel().0,
+        };
+        let elicitation = |generation: u64| PendingElicitation {
+            view: CodexAcpPendingElicitation {
+                session_id: session_id.clone(),
+                elicitation_id: "elicit-1".to_string(),
+                request: serde_json::Value::Null,
+            },
+            activity: stall::new_activity_clock(),
+            generation,
+            response_tx: oneshot::channel().0,
+        };
+
+        let permissions = HashMap::from([("k".to_string(), card(7))]);
+        assert!(generation_awaits_user_decision(
+            7,
+            "pinvou-session",
+            &permissions,
+            &HashMap::new()
+        ));
+        assert!(!generation_awaits_user_decision(
+            8,
+            "pinvou-session",
+            &permissions,
+            &HashMap::new()
+        ));
+        assert!(!generation_awaits_user_decision(
+            7,
+            "other-session",
+            &permissions,
+            &HashMap::new()
+        ));
+
+        let elicitations = HashMap::from([("e".to_string(), elicitation(9))]);
+        assert!(generation_awaits_user_decision(
+            9,
+            "pinvou-session",
+            &HashMap::new(),
+            &elicitations
+        ));
+        assert!(!generation_awaits_user_decision(
+            10,
+            "pinvou-session",
+            &HashMap::new(),
+            &elicitations
+        ));
+    }
+
+    /// The isolation the lifecycle module doc claims lives in the spawn
+    /// wiring — one fresh [`RuntimeLifecycle`] per spawned generation — and
+    /// in the watchdog consulting only its own generation's cards. Neither
+    /// is constructible without a real child, so pin the source shape the
+    /// same way the rebind probes do.
+    #[test]
+    fn lifecycle_wiring_is_per_spawn_and_generation_scoped() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("the test module marker must exist")];
+        let spawn = production_body(src, "async fn spawn_session");
+        assert!(
+            spawn.contains("RuntimeLifecycle::new("),
+            "every spawn must build a fresh lifecycle; a session-keyed \
+             shared lifecycle would let an old generation's exit mark or \
+             bill its replacement"
+        );
+        let watchdog = production_body(src, "async fn awaiting_user_decision");
+        assert!(
+            watchdog.contains("generation_awaits_user_decision")
+                && watchdog.contains("self.lifecycle.generation()"),
+            "the stall watchdog must consult only the runtime's own \
+             generation's cards"
+        );
     }
 
     /// The move-aside check only recognizes "the script path is the resolved
@@ -7480,6 +7616,7 @@ mod tests {
                 },
                 option_ids: vec!["allow".to_string()],
                 activity: activity.clone(),
+                generation: 1,
                 response_tx,
             },
         );
