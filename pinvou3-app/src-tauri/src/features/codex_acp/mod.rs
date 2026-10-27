@@ -451,6 +451,10 @@ fn rebind_evictable(
 /// converges once the spawn settles.
 const REBIND_ACP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Retry hints of at least this many milliseconds are phrased in seconds
+/// instead of raw ms, so long backoffs read as actionable waits.
+const RETRY_HINT_SECONDS_MIN_MS: u128 = 2_000;
+
 /// Complete a claimed turn in the shared order: timing, then admission gate.
 ///
 /// The claim itself is performed by the caller because it also emits the
@@ -3580,9 +3584,7 @@ impl AcpPool {
             // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
             // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
             // 状态同时收口。
-            self.cancel_pending_permissions_with_bridge(&session_id, Some(&runtime.bridge))
-                .await;
-            self.cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))
+            self.cancel_runtime_pending_cards(&session_id, Some(&runtime.bridge))
                 .await;
             runtime.shutdown().await;
             // The teardown events (card settlement, shutdown side) must be
@@ -4549,10 +4551,7 @@ impl AcpPool {
             // it) far past the documented ceiling; the session was absent at
             // take time, so the lookup could only resolve None anyway.
             if matches!(taken, RebindEvictTake::NoRuntime) {
-                self.cancel_pending_permissions_with_bridge(session_id, None)
-                    .await;
-                self.cancel_pending_elicitations_with_bridge(session_id, None)
-                    .await;
+                self.cancel_runtime_pending_cards(session_id, None).await;
             }
             return matches!(taken, RebindEvictTake::NoRuntime);
         };
@@ -5017,6 +5016,19 @@ impl AcpPool {
         }
     }
 
+    /// Settle both pending-card kinds for `session_id`, emitting the
+    /// cancellation events through `bridge` when one is available (an exit
+    /// path with the runtime still in scope). Callers without a bridge —
+    /// the rebind NoRuntime arm and the Missing arm of `get_or_spawn` —
+    /// pass `None`: the settlement is then only the cancelled response,
+    /// not a journal entry.
+    async fn cancel_runtime_pending_cards(&self, session_id: &str, bridge: Option<&EventBridge>) {
+        self.cancel_pending_permissions_with_bridge(session_id, bridge)
+            .await;
+        self.cancel_pending_elicitations_with_bridge(session_id, bridge)
+            .await;
+    }
+
     async fn get_or_spawn(&self, session_id: &str) -> Result<Arc<AcpSession>> {
         let operation_id = diagnostics::operation_id("session");
         diagnostics::write(
@@ -5059,9 +5071,7 @@ impl AcpPool {
                 // before the replacement watchdog observes shared pending maps,
                 // and before the transport goes away so Cancelled responses
                 // still reach a stalled-but-live agent.
-                self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
-                    .await;
-                self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
+                self.cancel_runtime_pending_cards(session_id, Some(&runtime.bridge))
                     .await;
                 if was_running {
                     // Repeated stalls in one window request replacement. The
@@ -5124,10 +5134,7 @@ impl AcpPool {
                 // replacement starts with clean shared maps; with no bridge
                 // the settlement is only the cancelled response, not a
                 // journal entry.
-                self.cancel_pending_permissions_with_bridge(session_id, None)
-                    .await;
-                self.cancel_pending_elicitations_with_bridge(session_id, None)
-                    .await;
+                self.cancel_runtime_pending_cards(session_id, None).await;
             }
         }
 
@@ -5180,7 +5187,7 @@ impl AcpPool {
             } else {
                 "ACP runtime just exited; backing off"
             };
-            let retry_hint = if retry_ms >= 2_000 {
+            let retry_hint = if retry_ms >= RETRY_HINT_SECONDS_MIN_MS {
                 format!("about {} s", retry_ms.div_ceil(1_000))
             } else {
                 format!("{retry_ms} ms")
@@ -5237,9 +5244,7 @@ impl AcpPool {
             // between initialize and publication, so cards it registered
             // during session/load must not linger in the shared maps and its
             // journal events must be durable before the next bridge seeds.
-            self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
-                .await;
-            self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
+            self.cancel_runtime_pending_cards(session_id, Some(&runtime.bridge))
                 .await;
             runtime.bridge.flush_journal();
             diagnostics::write(
