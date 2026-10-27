@@ -129,6 +129,19 @@ function waitForClose(ws, timeoutMs = 3000) {
   });
 }
 
+function waitForCloseInfo(ws, timeoutMs = 3000) {
+  if (ws.readyState === ws.CLOSED) {
+    return Promise.resolve({ code: null, reason: "" });
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout waiting for websocket close")), timeoutMs);
+    ws.once("close", (code, reason) => {
+      clearTimeout(timer);
+      resolve({ code, reason: reason.toString() });
+    });
+  });
+}
+
 async function registerDesktop(endpointId, accessToken, desktopSecret, url = wsUrl) {
   const ws = await openSocket(url);
   const registered = nextMessage(ws, "desktop_endpoint_registered");
@@ -1019,4 +1032,354 @@ test("proxy allowlist keeps local health checks available", async () => {
   } finally {
     await stopRelay(isolated.child);
   }
+});
+
+test("survives a web frame the relay cannot serialize and keeps the desktop reconnectable", async () => {
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_deep_request_${Date.now()}`;
+  const accessToken = "access-token-deep-request-0000000000001";
+  const desktopSecret = "desktop-secret-deep-request-000000000001";
+  try {
+    const desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // ~120 KB, far below the 4 MiB ingress cap, but 20000 levels deep:
+    // JSON.parse accepts it while JSON.stringify in send() cannot.
+    const deepArgs = `${'{"a":'.repeat(20000)}1${"}".repeat(20000)}`;
+    web.ws.send(
+      `{"v":2,"type":"rpc_request","id":"deep","client_request_id":"deep",`
+      + `"command":"list_sessions","args":${deepArgs}}`,
+    );
+
+    // The unserializable destination socket is terminated; the sending web
+    // socket stays open and the frame is dropped without an error reply.
+    await waitForClose(desktop.ws);
+    assert.equal(web.ws.readyState, web.ws.OPEN);
+    await expectNoMessage(web.ws, "error");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // The endpoint still works: the desktop reconnects onto the same lease
+    // and a normal round-trip completes.
+    const reconnected = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    assert.equal(reconnected.registered.lease_id, web.joined.lease_id);
+    const forwarded = nextMessage(reconnected.ws, "rpc_request");
+    web.ws.send(JSON.stringify({
+      v: 2,
+      type: "rpc_request",
+      id: "after-deep",
+      client_request_id: "after-deep",
+      command: "list_sessions",
+      args: { offset: 1 },
+    }));
+    assert.equal((await forwarded).id, "after-deep");
+    const response = nextMessage(web.ws, "rpc_response");
+    reconnected.ws.send(JSON.stringify({
+      v: 2,
+      type: "rpc_response",
+      id: "after-deep",
+      ok: true,
+      result: [],
+    }));
+    assert.equal((await response).id, "after-deep");
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("survives a desktop frame the relay cannot serialize and keeps the web client joined", async () => {
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_deep_event_${Date.now()}`;
+  const accessToken = "access-token-deep-event-00000000000001";
+  const desktopSecret = "desktop-secret-deep-event-0000000000001";
+  try {
+    const desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const deepPayload = `${"[".repeat(20000)}0${"]".repeat(20000)}`;
+    desktop.ws.send(`{"v":2,"type":"event","payload":${deepPayload}}`);
+
+    await waitForClose(web.ws);
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+    await expectNoMessage(desktop.ws, "error");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // A fresh web client joins and the desktop forwards normally again.
+    const rejoined = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    assert.equal(rejoined.joined.desktop_connected, true);
+    const event = nextMessage(rejoined.ws, "event");
+    desktop.ws.send(JSON.stringify({
+      v: 2,
+      type: "event",
+      payload: { marker: "after-deep" },
+    }));
+    assert.deepEqual((await event).payload, { marker: "after-deep" });
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("a newer desktop registration replaces the old socket and keeps the web lease", async (t) => {
+  const endpointId = `endpoint_desktop_replace_${Date.now()}`;
+  const accessToken = "access-token-desktop-replace-000000001";
+  const desktopSecret = "desktop-secret-desktop-replace-00000001";
+  const first = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(first.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+  const replacedNotice = nextMessage(first.ws, "desktop_endpoint_replaced");
+  const replacedClose = waitForCloseInfo(first.ws);
+  const second = await registerDesktop(endpointId, accessToken, desktopSecret);
+  t.after(() => { closeSocket(web.ws); closeSocket(second.ws); });
+
+  assert.deepEqual(await replacedNotice, {
+    v: 2,
+    type: "desktop_endpoint_replaced",
+    endpoint_id: endpointId,
+  });
+  assert.equal(second.registered.web_client_connected, true);
+  assert.equal(second.registered.lease_id, web.joined.lease_id);
+  assert.deepEqual(await replacedClose, { code: 4001, reason: "desktop endpoint replaced" });
+
+  // A late frame from the replaced desktop socket must not cross the endpoint.
+  first.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "from-replaced",
+    client_request_id: "from-replaced",
+    command: "list_sessions",
+    args: {},
+  }));
+  await expectNoMessage(second.ws, "rpc_request");
+
+  // The untouched lease still round-trips through the replacement desktop.
+  const forwarded = nextMessage(second.ws, "rpc_request");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "after-replace",
+    client_request_id: "after-replace",
+    command: "list_sessions",
+    args: {},
+  }));
+  const received = await forwarded;
+  assert.equal(received.lease_id, web.joined.lease_id);
+  assert.equal(received.id, "after-replace");
+});
+
+test("a web client keeps its lease while the desktop is offline and loses it on takeover", async (t) => {
+  const endpointId = `endpoint_offline_lease_${Date.now()}`;
+  const accessToken = "access-token-offline-lease-000000001";
+  const desktopSecret = "desktop-secret-offline-lease-00000001";
+  let secondDesktop;
+  let second;
+  t.after(() => {
+    closeSocket(web.ws);
+    closeSocket(secondDesktop?.ws);
+    closeSocket(second?.ws);
+  });
+  const firstDesktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(firstDesktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+
+  const offline = nextMessage(web.ws, "desktop_connection_state");
+  firstDesktop.ws.terminate();
+  assert.equal((await offline).status, "offline");
+
+  const offlineError = nextMessage(web.ws, "error");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "while-away",
+    client_request_id: "while-away",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await offlineError).code, "desktop_offline");
+  assert.equal(web.ws.readyState, web.ws.OPEN);
+
+  secondDesktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  assert.equal(secondDesktop.registered.lease_id, web.joined.lease_id);
+
+  const forwarded = nextMessage(secondDesktop.ws, "rpc_request");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "after-return",
+    client_request_id: "after-return",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await forwarded).lease_id, web.joined.lease_id);
+  const response = nextMessage(web.ws, "rpc_response");
+  secondDesktop.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_response",
+    id: "after-return",
+    ok: true,
+  }));
+  assert.equal((await response).id, "after-return");
+
+  // A takeover replaces the lease holder and closes it with 4001; its late
+  // frames must not reach the desktop as if they were still active traffic.
+  const replaced = nextMessage(web.ws, "endpoint_replaced");
+  const replacedClose = waitForCloseInfo(web.ws);
+  second = await joinWeb(endpointId, accessToken);
+  assert.equal((await replaced).lease_id, web.joined.lease_id);
+  assert.deepEqual(await replacedClose, { code: 4001, reason: "endpoint replaced" });
+
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "stale-after-takeover",
+    client_request_id: "stale-after-takeover",
+    command: "list_sessions",
+    args: {},
+  }));
+  await expectNoMessage(secondDesktop.ws, "rpc_request");
+
+  // The replacement lease still round-trips.
+  const forwardedAgain = nextMessage(secondDesktop.ws, "rpc_request");
+  second.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "from-replacement",
+    client_request_id: "from-replacement",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await forwardedAgain).lease_id, second.joined.lease_id);
+});
+
+test("reports recoverable framing errors without closing the socket", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+
+  const binary = nextMessage(ws, "error");
+  ws.send(Buffer.from("not-json-bytes"));
+  assert.equal((await binary).code, "binary_unsupported");
+
+  const badJson = nextMessage(ws, "error");
+  ws.send("not json{");
+  assert.equal((await badJson).code, "bad_json");
+
+  const numberFrame = nextMessage(ws, "error");
+  ws.send("42");
+  assert.equal((await numberFrame).code, "bad_message");
+
+  const arrayFrame = nextMessage(ws, "error");
+  ws.send("[1,2]");
+  assert.equal((await arrayFrame).code, "bad_message");
+
+  // Every framing error above was informational: the same socket still
+  // authenticates as a desktop afterwards.
+  const endpointId = `endpoint_framing_${Date.now()}`;
+  const registered = nextMessage(ws, "desktop_endpoint_registered");
+  ws.send(JSON.stringify({
+    v: 2,
+    type: "desktop_endpoint_register",
+    endpoint_id: endpointId,
+    access_token: "access-token-framing-000000000000001",
+    desktop_secret: "desktop-secret-framing-0000000000001",
+  }));
+  assert.equal((await registered).endpoint_id, endpointId);
+  assert.equal(ws.readyState, ws.OPEN);
+});
+
+test("closes a socket that forwards before authenticating", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+  const unauthorized = nextMessage(ws, "error");
+  const closed = waitForCloseInfo(ws);
+  ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "pre-auth",
+    client_request_id: "pre-auth",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await unauthorized).code, "authentication_required");
+  assert.deepEqual(await closed, { code: 1008, reason: "authenticate first" });
+});
+
+test("rejects a concurrent revoke while the first is still being persisted", async () => {
+  // A large tombstone state keeps the first revoke's persistence busy long
+  // enough for the second revoke to land inside the in-progress window.
+  const statePath = join(testRoot, `revoke-window-${Date.now()}.json`);
+  const tombstones = [];
+  for (let i = 0; i < 50000; i++) {
+    tombstones.push(`{"endpoint_id":"endpoint_tombstone_${i}","revoked_at":"2026-01-01T00:00:00.000Z"}`);
+  }
+  await writeFile(statePath, `{"version":1,"revoked_endpoints":[${tombstones.join(",")}]}\n`);
+  const isolated = await spawnRelay({ PINVOU_REMOTE_STATE_PATH: statePath });
+  const endpointId = `endpoint_double_revoke_${Date.now()}`;
+  const accessToken = "access-token-double-revoke-00000001";
+  const desktopSecret = "desktop-secret-double-revoke-0000001";
+  try {
+    const desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const revokedAck = nextMessage(desktop.ws, "desktop_endpoint_revoked", 10000);
+    const inProgress = nextMessage(web.ws, "error", 10000);
+    const inProgressClose = waitForCloseInfo(web.ws, 10000);
+    desktop.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: endpointId,
+      reason: "first",
+    }));
+    // Let the relay begin persisting the first revoke before racing it.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    web.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: endpointId,
+      desktop_secret: desktopSecret,
+      reason: "second",
+    }));
+
+    assert.equal((await inProgress).code, "revocation_in_progress");
+    assert.deepEqual(
+      await inProgressClose,
+      { code: 1008, reason: "endpoint revocation is already in progress" },
+    );
+    assert.equal((await revokedAck).reason, "first");
+    await waitForClose(desktop.ws);
+
+    const persistedState = JSON.parse(await readFile(statePath, "utf8"));
+    assert.ok(persistedState.revoked_endpoints.some((entry) => entry.endpoint_id === endpointId));
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("notifies the desktop when the active web client disconnects", async (t) => {
+  const endpointId = `endpoint_disconnect_notice_${Date.now()}`;
+  const accessToken = "access-token-disconnect-notice-000001";
+  const desktopSecret = "desktop-secret-disconnect-notice-0001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+  t.after(() => closeSocket(desktop.ws));
+
+  const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(web.ws);
+  assert.deepEqual(await disconnected, {
+    v: 2,
+    type: "web_client_disconnected",
+    endpoint_id: endpointId,
+    lease_id: web.joined.lease_id,
+  });
 });

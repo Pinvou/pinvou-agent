@@ -110,7 +110,9 @@ It accepts only these desktop-to-Web types:
 The original top-level fields are forwarded unchanged except that the Relay
 sets authoritative `v`, `endpoint_id`, and `lease_id` fields. Credential fields
 (`access_token`, `token`, `pairing_token`, `desktop_secret`) are additionally
-stripped from forwarded frames. A desktop message that explicitly targets a
+stripped from forwarded frames. That strip is top-level only: nested objects
+such as `args` or `payload` are forwarded verbatim, so endpoints must never
+embed credentials inside them. A desktop message that explicitly targets a
 stale lease is dropped so a late response cannot leak into the replacement
 client.
 
@@ -180,9 +182,11 @@ endpoint IDs.
 ## Error codes
 
 The Relay reports rejects with a `type: "error"` message carrying a `code`.
-Codes enforced by the reject helper also close the socket with WebSocket close
-code 1008; the remaining codes are informational errors that leave the
-connection open.
+Exactly five codes are informational and leave the connection open:
+`bad_json`, `bad_message`, `binary_unsupported`, `unsupported_message_type`,
+and `desktop_offline`. Every other code in the table is a reject: the Relay
+sends the error message and then closes the socket with WebSocket close code
+1008.
 
 | Code | Trigger |
 | --- | --- |
@@ -199,7 +203,7 @@ connection open.
 | `invalid_access_token` | Desktop re-registration whose access token hash does not match the endpoint. |
 | `invalid_desktop_secret` | Desktop re-registration or revoke whose desktop secret hash does not match the endpoint. |
 | `invalid_token` | `web_client_join` whose access token hash does not match the endpoint. |
-| `bad_web_client_join` | Malformed `web_client_join`: invalid `endpoint_id` or missing access token. |
+| `bad_web_client_join` | Malformed `web_client_join`: invalid `endpoint_id`, missing or oversized access token, or the socket already authenticated. |
 | `endpoint_not_found` | Join, revoke, or forwarded message referenced an endpoint that does not exist. |
 | `stale_lease` | A Web message arrived from a socket that no longer holds the active lease. |
 | `desktop_endpoint_replaced` | A desktop message arrived from a socket already replaced by a newer registration. |
@@ -210,6 +214,13 @@ connection open.
 | `revocation_in_progress` | A second revoke arrived while one is already in progress for the endpoint. |
 | `revoke_persistence_failed` | Persisting the revoke tombstone failed; the requester is closed and the endpoint remains usable. |
 | `revoke_failed` | An unexpected error occurred while processing a revoke. |
+
+Besides reject code 1008, clients observe these WebSocket close codes: `1000`
+when the revoke requester is acknowledged with a normal close ("endpoint
+revoked"), `4001` when a replaced desktop or Web client is closed ("desktop
+endpoint replaced" or "endpoint replaced"), and `4003` when revoke or TTL
+expiry tears down the affected client ("endpoint revoked" or "endpoint
+expired").
 
 ## HTTP and operational behavior
 

@@ -163,7 +163,21 @@ await loadRelayState();
 
 function send(ws, value) {
   if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
-  const encoded = JSON.stringify(value);
+  // JSON.stringify is recursive and throws RangeError on deeply nested values
+  // that JSON.parse accepted, so a forwarded frame can be unserializable even
+  // though ingress let it through. Treat this destination exactly like the
+  // high-water-mark path below: one poisoned frame must terminate only this
+  // socket, never crash the Relay process.
+  let encoded;
+  try {
+    encoded = JSON.stringify(value);
+  } catch {
+    ws.policyClosing = true;
+    clearTimeout(ws.authTimer);
+    ws.authTimer = null;
+    try { ws.terminate(); } catch {}
+    return false;
+  }
   const bytes = Buffer.byteLength(encoded);
   if (bytes > WS_MAX_BUFFERED_BYTES
     || ws.bufferedAmount + bytes > WS_MAX_BUFFERED_BYTES) {
