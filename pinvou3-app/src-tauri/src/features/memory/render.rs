@@ -233,7 +233,7 @@ pub fn runtime_snapshot(session_id: &str) -> stdio::Result<RuntimeMemorySnapshot
     write_text_atomic(&path, &block)?;
     Ok(RuntimeMemorySnapshot {
         session_id: session_id.to_string(),
-        runtime_path: path.display().to_string(),
+        runtime_path: io::display_redacted(&path),
         block,
         items,
     })

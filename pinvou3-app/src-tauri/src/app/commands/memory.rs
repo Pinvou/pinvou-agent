@@ -459,7 +459,7 @@ pub async fn get_memory_overview(
                         code: None,
                     },
                 );
-                path.display().to_string()
+                crate::features::memory::display_redacted(&path)
             }
             Err(error) => {
                 let detail = format!("write memory snapshot: {error}");
