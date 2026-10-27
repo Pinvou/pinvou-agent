@@ -302,30 +302,72 @@ pub(super) fn load_pending_revocations() -> Result<PendingRevocationLedger, Stri
 pub(super) fn load_pending_revocations_from(
     path: &Path,
 ) -> Result<PendingRevocationLedger, String> {
+    match load_pending_revocations_classified(path) {
+        RevocationLedgerLoad::Ledger(ledger) => Ok(ledger),
+        RevocationLedgerLoad::Corrupt(error) | RevocationLedgerLoad::Unavailable(error) => {
+            Err(error)
+        }
+    }
+}
+
+/// Pending-revocation 账本读取的三分类:损坏(parse/超限/校验失败)的内容
+/// 不可恢复、重试无意义;Unavailable 是瞬时 IO,重试有意义。queue/acknowledge
+/// 路径靠它决定「挪开坏账本继续」还是「上抛等重试」——停用/轮换是恢复
+/// 路径,不能被一个坏文件永久卡死。
+enum RevocationLedgerLoad {
+    Ledger(PendingRevocationLedger),
+    Corrupt(String),
+    Unavailable(String),
+}
+
+fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
     // 与 config 读取相同的 take() 有界读取:先按上限截断再检查,损坏/超大
     // 文件不能触发无界分配。
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PendingRevocationLedger::default());
+            return RevocationLedgerLoad::Ledger(PendingRevocationLedger::default());
         }
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
+        Err(error) => {
+            return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
+        }
     };
     let mut data = Vec::new();
-    file.take((super::MAX_PENDING_REVOCATIONS_FILE_BYTES + 1) as u64)
+    if let Err(error) = file
+        .take((super::MAX_PENDING_REVOCATIONS_FILE_BYTES + 1) as u64)
         .read_to_end(&mut data)
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    {
+        return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
+    }
     if data.len() > super::MAX_PENDING_REVOCATIONS_FILE_BYTES {
-        return Err(format!(
+        return RevocationLedgerLoad::Corrupt(format!(
             "pending Web revocation file is larger than {} KiB: {}",
             super::MAX_PENDING_REVOCATIONS_FILE_BYTES / 1024,
             path.display()
         ));
     }
-    let ledger: PendingRevocationLedger = serde_json::from_slice(&data)
-        .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    validate_pending_revocation_ledger(&ledger)?;
-    Ok(ledger)
+    let ledger = match serde_json::from_slice::<PendingRevocationLedger>(&data) {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            return RevocationLedgerLoad::Corrupt(format!("parse {}: {error}", path.display()));
+        }
+    };
+    if let Err(error) = validate_pending_revocation_ledger(&ledger) {
+        return RevocationLedgerLoad::Corrupt(error);
+    }
+    // 读取即修复(同 load_config_from):该文件持有 desktop_secret,备份
+    // 恢复或外部工具可能把它放宽成组/全员可读;修复失败按读取错误上抛。
+    // (Windows/fallback 平台该调用是显式 no-op。)
+    let handle = match File::open(path) {
+        Ok(handle) => handle,
+        Err(error) => {
+            return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
+        }
+    };
+    if let Err(error) = platform::enforce_private_permissions(&handle, path) {
+        return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
+    }
+    RevocationLedgerLoad::Ledger(ledger)
 }
 
 pub(super) fn persist_pending_revocations_to(
@@ -349,7 +391,17 @@ pub(super) fn queue_pending_revocation_at(
     pending: PendingRevocation,
 ) -> Result<(), String> {
     validate_pending_revocation(&pending)?;
-    let mut ledger = load_pending_revocations_from(path)?;
+    let mut ledger = match load_pending_revocations_classified(path) {
+        RevocationLedgerLoad::Ledger(ledger) => ledger,
+        RevocationLedgerLoad::Corrupt(error) => {
+            // 停用/轮换是恢复路径:坏账本里的条目本就无法解析,记录后从空
+            // 账本继续;随后的持久化会用合法内容覆盖坏文件,旧 endpoint 的
+            // 吊销不会被永久卡死。
+            eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
+            PendingRevocationLedger::default()
+        }
+        RevocationLedgerLoad::Unavailable(error) => return Err(error),
+    };
     let key = pending_revocation_key(&pending);
     if let Some(existing) = ledger
         .entries
@@ -383,7 +435,16 @@ pub(super) fn acknowledge_pending_revocation_at(
     path: &Path,
     pending: &PendingRevocation,
 ) -> Result<(), String> {
-    let mut ledger = load_pending_revocations_from(path)?;
+    let mut ledger = match load_pending_revocations_classified(path) {
+        RevocationLedgerLoad::Ledger(ledger) => ledger,
+        RevocationLedgerLoad::Corrupt(error) => {
+            // 与 queue 同理:吊销回放的确认不能被坏账本卡死;从空账本继续
+            // 意味着确认结果(删除条目)覆盖坏文件。
+            eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
+            PendingRevocationLedger::default()
+        }
+        RevocationLedgerLoad::Unavailable(error) => return Err(error),
+    };
     ledger.entries.retain(|entry| entry != pending);
     persist_pending_revocations_to(path, &ledger)
 }
@@ -560,7 +621,11 @@ pub(super) fn remote_public_base_url() -> String {
 }
 
 pub(super) fn remote_relay_ws_url() -> String {
-    if let Ok(url) = std::env::var("PINVOU_REMOTE_RELAY_WS_URL") {
+    // 与另外两个 env 覆盖同规则(trim 后为空/非法一律回落,不报错):非法
+    // 覆盖降级到存储值/内置默认,而不是把 enable 卡死在 validate_config。
+    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_RELAY_WS_URL").ok(), |url| {
+        validate_ws_url(url, "PINVOU_REMOTE_RELAY_WS_URL is invalid")
+    }) {
         return url;
     }
     if let Some(settings) = load_relay_settings() {

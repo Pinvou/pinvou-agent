@@ -58,7 +58,7 @@ impl RpcRejection {
         }
     }
 
-    fn transient(completion: RpcCompletion) -> Self {
+    pub(super) fn transient(completion: RpcCompletion) -> Self {
         Self {
             completion,
             cacheable: false,
@@ -446,8 +446,19 @@ pub(super) enum WebSessionScope {
 /// gate the token holder could index (and then read out via kb_documents)
 /// arbitrary disk trees. Every path must clear the same browsable policy as
 /// `web_access_list_host_files`: $HOME subtree minus credential components.
-/// Rejection messages stay path-free; the native detail is log-only.
-fn validate_web_kb_paths(command: &str, args: &Value) -> Result<(), String> {
+/// 上限防滥用:1 MiB 请求体可塞下数万条路径,而每条都要过一次触盘的
+/// canonicalize;逐条准入前先按条数做确定性的形状拒绝。
+const MAX_WEB_KB_PATHS: usize = 128;
+
+/// Rejection messages stay path-free; the native detail is log-only. The
+/// cache classification follows the module-head criterion: arg-shape
+/// violations depend only on the request itself and stay deterministic
+/// (cacheable), while `validate_browsable_path` touches the filesystem
+/// (`canonicalize` + `metadata`), so a not-yet-existing path or a
+/// temporarily unavailable volume is a TRANSIENT rejection — caching it as
+/// a terminal completion would brick that `client_request_id` until FIFO
+/// eviction, exactly the poisoning class this module exists to prevent.
+fn validate_web_kb_paths(command: &str, args: &Value) -> Result<(), WebScopeRejection> {
     let paths_field = match command {
         "kb_collection_add_sources" => "paths",
         "kb_start_scan" => "roots",
@@ -460,20 +471,31 @@ fn validate_web_kb_paths(command: &str, args: &Value) -> Result<(), String> {
         if command == "kb_start_scan" {
             return Ok(());
         }
-        return Err(format!("{command} requires {paths_field}"));
+        return Err(WebScopeRejection::Deterministic(format!(
+            "{command} requires {paths_field}"
+        )));
     };
     let Some(paths) = paths.as_array() else {
-        return Err(format!("{paths_field} must be an array of paths"));
+        return Err(WebScopeRejection::Deterministic(format!(
+            "{paths_field} must be an array of paths"
+        )));
     };
+    if paths.len() > MAX_WEB_KB_PATHS {
+        return Err(WebScopeRejection::Deterministic(format!(
+            "{command} accepts at most {MAX_WEB_KB_PATHS} {paths_field} entries"
+        )));
+    }
     for path in paths {
         let Some(path) = path.as_str() else {
-            return Err(format!("{paths_field} entries must be strings"));
+            return Err(WebScopeRejection::Deterministic(format!(
+                "{paths_field} entries must be strings"
+            )));
         };
         if crate::features::files::file_ingest::validate_browsable_path(path).is_err() {
             log::warn!("[remote_control] rejected non-browsable kb path over Web");
-            return Err(format!(
+            return Err(WebScopeRejection::Transient(format!(
                 "{command} may only index browsable paths under the home directory"
-            ));
+            )));
         }
     }
     Ok(())
@@ -586,7 +608,7 @@ pub(super) fn validate_web_rpc_scope(
 ) -> Result<(), WebScopeRejection> {
     validate_web_workspace_rpc(command, args)
         .map_err(|error| WebScopeRejection::Deterministic(error))?;
-    validate_web_kb_paths(command, args).map_err(WebScopeRejection::Deterministic)?;
+    validate_web_kb_paths(command, args)?;
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
     };
@@ -857,16 +879,45 @@ mod tests {
             validate_web_kb_paths("kb_start_scan", &json!({ "roots": ["relative/path"] })).is_err()
         );
         // 绝对但越出 $HOME(且真实存在)的路径必须拒绝;拒绝消息不得回显路径。
-        // 两种平台拼写都测:任一平台上,另一平台的绝对路径都无法落在 $HOME 下。
+        // 触盘校验失败归类 Transient(路径尚不存在/卷暂不可用都可能恢复),
+        // 不能缓存成终态——否则同 client_request_id 的重试永远重放这次失败,
+        // 正是本模块要消灭的毒化类。两种平台拼写都测:任一平台上,另一平台
+        // 的绝对路径都无法落在 $HOME 下。
         for outside in ["/etc/hosts", r"C:\Windows\notepad.exe"] {
             let rejection =
                 validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": [outside] }))
                     .expect_err("a path outside $HOME must not be indexable over Web");
             assert!(
-                !rejection.contains(outside),
-                "rejection must not echo the path: {rejection}"
+                matches!(rejection, WebScopeRejection::Transient(_)),
+                "filesystem-backed rejections must be transient, got {rejection:?}"
+            );
+            let message = rejection.message();
+            assert!(
+                !message.contains(outside),
+                "rejection must not echo the path: {message}"
             );
         }
+
+        // 形状违规只依赖请求参数,保持确定性(可缓存)。
+        for shape in [json!({}), json!({ "paths": "x" }), json!({ "paths": [42] })] {
+            let rejection = validate_web_kb_paths("kb_collection_add_sources", &shape)
+                .expect_err("arg-shape violations must be deterministic");
+            assert!(
+                matches!(rejection, WebScopeRejection::Deterministic(_)),
+                "arg-shape rejections must stay deterministic, got {rejection:?}"
+            );
+        }
+
+        // 条数上限:确定性拒绝。条目故意用相对路径——触盘校验对它们的拒绝
+        // 会归类 Transient,这里的 Deterministic 恰好证明拒绝来自条数上限
+        // (上限检查先于逐条触盘)而非路径校验。
+        let flood: Vec<String> = (0..MAX_WEB_KB_PATHS + 1)
+            .map(|i| format!("docs/{i}.txt"))
+            .collect();
+        let rejection =
+            validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": flood }))
+                .expect_err("over-cap path lists must be rejected");
+        assert!(matches!(rejection, WebScopeRejection::Deterministic(_)));
     }
 
     #[test]
