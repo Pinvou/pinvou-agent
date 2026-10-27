@@ -980,6 +980,21 @@ assert.doesNotMatch(settingsView, /useEffect\(\(\) => \{[\s\S]{0,240}startRemote
   'opening the remote-control modal must not silently authorize host workspace access');
 assert.match(desktopRemoteControlBridge, /allowHostWorkspace: !!\(options && options\.allowHostWorkspace\)/,
   'the desktop bridge must carry explicit host-workspace consent');
+// Folder consent must stay visible and individually revocable while the link
+// is active: consent latched by the pre-split single-button UI can be seen
+// and taken back without stopping or rotating the whole link.
+assert.match(settingsView, /async function handleRevokeHostWorkspace\(\) \{[\s\S]{0,220}revokeRemoteHostWorkspace\(\)/,
+  'the modal must expose a dedicated revoke-folder-consent handler');
+assert.match(settingsView, /webAccessActive && hostWorkspaceAuthorized && \([\s\S]{0,420}\{remoteCopy\.workspaceAllowed\}[\s\S]{0,300}onClick=\{handleRevokeHostWorkspace\}/,
+  'folder authorization must render an affirmative indicator wired to the revoke handler');
+assert.match(settingsView, /\{remoteCopy\.revokeWorkspace\}/,
+  'the revoke control must carry explicit trilingual copy');
+assert.doesNotMatch(settingsView, /handleRevokeHostWorkspace[\s\S]{0,200}allowHostWorkspace: true/,
+  'revoking folder consent must never re-grant it');
+assert.match(desktopRemoteControlBridge, /invoke\("web_access_revoke_host_workspace"\)/,
+  'the desktop bridge must call the desktop-only revoke command');
+assert.match(remoteControlCommands, /web_access_revoke_host_workspace\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'only the main desktop WebView may revoke folder consent');
 assert.match(remoteControlCommands, /web_access_enable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'only the main desktop WebView may enable a persistent remote endpoint');
 assert.match(remoteControlManager, /require_host_workspace_authorization\(endpoint\.config\.allow_host_workspace\)\?/,
