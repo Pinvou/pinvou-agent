@@ -1103,6 +1103,21 @@ mod tests {
         (child, pid)
     }
 
+    /// Asserts the fixture survives a full observation window. The kills
+    /// this guards against run on detached threads, so a fixed short sleep
+    /// can false-pass a disarm regression under CI load; poll for the whole
+    /// window instead.
+    fn stay_alive(child: &mut std::process::Child, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            assert!(
+                child.try_wait().expect("poll install fixture").is_none(),
+                "{what} killed the install fixture"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
     fn wait_exited(child: &mut std::process::Child, what: &str) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
@@ -1147,11 +1162,7 @@ mod tests {
             children.lock().get(&backend).is_none(),
             "settled guard Drop must still unregister the pid"
         );
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        assert!(
-            child.try_wait().expect("poll settled fixture").is_none(),
-            "settled guard Drop killed by a freed pid"
-        );
+        stay_alive(&mut child, "settled guard Drop");
         kill_install_process_tree(pid);
         let _ = child.wait();
 
@@ -1165,11 +1176,7 @@ mod tests {
         guard.settle_reaped();
         guard.reclaim_group_survivors();
         if crate::platform::capabilities::is_windows() {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            assert!(
-                child.try_wait().expect("poll reaped fixture").is_none(),
-                "reclaim_group_survivors must not kill by a possibly recycled pid on Windows"
-            );
+            stay_alive(&mut child, "windows post-reap reclaim");
         } else {
             wait_exited(&mut child, "unix post-reap group reclaim");
         }
@@ -1179,11 +1186,7 @@ mod tests {
             "settled guard Drop must still unregister the pid"
         );
         if crate::platform::capabilities::is_windows() {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            assert!(
-                child.try_wait().expect("poll reaped fixture").is_none(),
-                "settled guard Drop re-killed a reaped pid"
-            );
+            stay_alive(&mut child, "windows settled guard Drop");
             kill_install_process_tree(pid);
         }
         let _ = child.wait();

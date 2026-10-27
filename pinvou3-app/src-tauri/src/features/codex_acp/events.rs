@@ -2560,6 +2560,8 @@ mod tests {
         for event_type in [
             "agent_message_chunk",
             "permission_requested",
+            "permission_resolved",
+            "elicitation_resolved",
             "runtime_notice",
         ] {
             assert!(

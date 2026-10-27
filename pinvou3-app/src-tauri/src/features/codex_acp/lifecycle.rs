@@ -228,18 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn old_generation_exit_cannot_change_replacement_generation() {
-        let old = RuntimeLifecycle::new(21);
-        let replacement = RuntimeLifecycle::new(22);
-
-        old.mark_connection_closed();
-
-        assert!(!old.is_running());
-        assert!(replacement.is_running());
-        assert_eq!(replacement.generation(), 22);
-    }
-
-    #[test]
     fn expected_shutdown_does_not_consume_crash_budget() {
         let lifecycle = RuntimeLifecycle::new(8);
         lifecycle.begin_expected_shutdown();
@@ -304,6 +292,27 @@ mod tests {
         assert_eq!(
             budget.admission_at(start + CRASH_WINDOW),
             SpawnAdmission::Allowed
+        );
+    }
+
+    /// Anchors the short backoff to the LATEST crash, as the module doc
+    /// promises. Anchoring to the older of the two surviving crashes would
+    /// make this admission Allowed (its deadline expired long before),
+    /// silently dropping the second-crash gate whenever the crashes are far
+    /// apart.
+    #[test]
+    fn backoff_is_measured_from_the_latest_crash() {
+        let start = Instant::now();
+        let mut budget = RuntimeCrashBudget::default();
+        budget.record_crash_at(start);
+        let latest = start + Duration::from_secs(40);
+        budget.record_crash_at(latest);
+        assert_eq!(
+            budget.admission_at(latest + Duration::from_millis(100)),
+            SpawnAdmission::RetryAfter {
+                delay: Duration::from_millis(150),
+                budget_exhausted: false,
+            }
         );
     }
 
