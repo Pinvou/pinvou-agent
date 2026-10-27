@@ -241,11 +241,15 @@ connection open.
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting, the client address is
   the rightmost `X-Forwarded-For` item when the direct peer is a trusted proxy;
   `X-Real-IP` is consulted only when `X-Forwarded-For` is entirely absent, and
-  malformed, non-IP, repeated, or oversized (>4096 chars) forwarded headers
-  fall back to the direct peer address.
-- `SIGINT` and `SIGTERM` terminate all WebSocket clients without a close
-  handshake (peers observe an abnormal closure) and exit the process with
-  code 0; in-flight HTTP responses are not drained.
+  empty, malformed, non-IP, or oversized (>4096 chars) forwarded headers fall
+  back to the direct peer address. Repeated `X-Forwarded-For` lines are joined
+  into one list by the runtime, so the rightmost item of the joined list is
+  used; they are not a fallback case.
+- Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
+  all WebSocket clients without a close handshake (peers observe an abnormal
+  closure) and exit the process with code 0; in-flight HTTP responses are not
+  drained. A signal that arrives during startup state loading takes the
+  default action instead.
 - Protocol v2 requires `MAX_PAYLOAD_BYTES` to be at least 4 MiB. Desktop-originated
   frames are bounded by the complete serialized WebSocket message, not just the
   event payload, and stay at or below `4 MiB - 64 KiB`.
