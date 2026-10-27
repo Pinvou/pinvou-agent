@@ -46,6 +46,8 @@ Thumbs.db
 # Secrets
 .env
 .env*
+# 官方构建签名凭据(官方构建环境注入,任何情况下不得提交)
+scripts/.builtin-secrets.env
 *.pem
 
 # Playwright
