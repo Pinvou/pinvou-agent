@@ -463,7 +463,7 @@ const ToolOutput = ({ item, t }) => {
       if (quiet) {
         const iconColor = isDone ? mutedColor : statusColor;
         return (
-          <div className={expanded ? `rounded-[12px] overflow-hidden border border-black/5 dark:border-white/5` : ''}>
+          <div className={displayExpanded ? `rounded-[12px] overflow-hidden border border-black/5 dark:border-white/5` : ''}>
             {/* biome-ignore lint/a11y/useSemanticElements: the tool card collapse header hosts a multi-child layout; a button would break existing styles */}
             <div
               role="button"
