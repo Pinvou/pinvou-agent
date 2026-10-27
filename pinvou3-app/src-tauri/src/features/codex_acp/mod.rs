@@ -5243,14 +5243,14 @@ impl AcpPool {
         {
             let retry_ms = delay.as_millis().max(1);
             let reason = if budget_exhausted {
-                "ACP runtime exited repeatedly in a short window; automatic rebuild is paused"
+                "ACP 运行时在短时间窗口内多次退出，已暂停自动重建"
             } else {
-                "ACP runtime just exited; backing off"
+                "ACP 运行时刚刚退出，正在退避"
             };
             let retry_hint = if retry_ms >= RETRY_HINT_SECONDS_MIN_MS {
-                format!("about {} s", retry_ms.div_ceil(1_000))
+                format!("约 {} 秒", retry_ms.div_ceil(1_000))
             } else {
-                format!("{retry_ms} ms")
+                format!("{retry_ms} 毫秒")
             };
             diagnostics::write(
                 &operation_id,
@@ -5259,7 +5259,7 @@ impl AcpPool {
                     "session_id={session_id} retry_after_ms={retry_ms} budget_exhausted={budget_exhausted}"
                 ),
             );
-            bail!("{reason}; retry in {retry_hint}");
+            bail!("{reason}；{retry_hint}后可重试");
         }
         diagnostics::write(
             &operation_id,
@@ -5312,7 +5312,7 @@ impl AcpPool {
                 "session:exited_before_publish",
                 format!("session_id={session_id} generation={generation}"),
             );
-            bail!("ACP runtime exited right after initialization; please retry");
+            bail!("ACP 运行时初始化后立即退出，请重试");
         }
         sessions.insert(session_id.to_string(), runtime.clone());
         // Consume any disclosure parked by an earlier reclaim invocation:
