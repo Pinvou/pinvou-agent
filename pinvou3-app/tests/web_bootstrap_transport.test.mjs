@@ -709,11 +709,44 @@ async function connectWithCapabilities(events, listener) {
     'connectivity restored must reconnect immediately');
 
   const live = await connectWithCapabilities(['chat:delta'], () => {});
+  const broadcastsBefore = live.dispatched.filter(event => event.type === 'pinvou:web-connection').length;
   live.window.emit('online');
   assert.equal(live.socket.closeCalled, true,
     'an OPEN socket must be treated as suspicion when the OS reports a network change');
   assert.ok(live.timers.find(timer => timer.delay < 10_000),
     'the suspicion close must schedule a reconnect');
+  assert.equal(live.client.connectionState.status, 'connected',
+    'the online-triggered suspicion close is speculative: the UI stays on connected');
+  assert.equal(live.dispatched.filter(event => event.type === 'pinvou:web-connection').length,
+    broadcastsBefore,
+    'the online-triggered speculative close must not broadcast a connecting status');
+  // A failed speculative verification still escalates.
+  takeReconnectTimer(live.timers).callback();
+  live.MockWebSocket.instances[1].close();
+  assert.equal(live.client.connectionState.status, 'connecting',
+    'a failed speculative verification must escalate to the visible status');
+}
+
+// 看门狗必须救出卡在 CONNECTING 的 wedge 连接:超过 wedge 窗口的 CONNECTING
+// socket 被中止走重连漏斗;窗口内的年轻 CONNECTING socket 不受影响。
+{
+  const wedged = bootClient();
+  const wedgedClient = wedged.window.PinvouWebClient;
+  await wedgedClient.policyPromise;
+  const wedgedSocket = wedged.MockWebSocket.instances[0];
+  assert.equal(wedgedSocket.readyState, 0, 'fixture starts CONNECTING');
+  wedgedClient.connectStartedAt = Date.now() - 46_000;
+  wedgedClient._livenessCheck();
+  assert.equal(wedgedSocket.closeCalled, true,
+    'a CONNECTING socket wedged past the window must be abandoned by the watchdog');
+
+  const young = bootClient();
+  const youngClient = young.window.PinvouWebClient;
+  await youngClient.policyPromise;
+  youngClient.connectStartedAt = Date.now();
+  youngClient._livenessCheck();
+  assert.equal(young.MockWebSocket.instances[0].closeCalled, false,
+    'a young CONNECTING socket must keep its full wedge window');
 }
 
 // 页面重新可见：未连接时立即重连；不得凭空丢弃健康的 OPEN 连接（后台标签页
