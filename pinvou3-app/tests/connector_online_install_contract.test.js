@@ -125,8 +125,13 @@ const dwsFloorNumeric =
   Number(dwsFloor[1]) * 10000 + Number(dwsFloor[2]) * 100 + Number(dwsFloor[3]);
 assert.match(
   dingtalkSmoke,
-  new RegExp(`>= ${dwsFloorNumeric}\\)`),
+  new RegExp(`MIN_TRI="${dwsFloor[1]}\\.${dwsFloor[2]}\\.${dwsFloor[3]}"`),
   "dingtalk-smoke.sh version floor must stay in lockstep with the dws SKILL.md cli_version",
+);
+assert.match(
+  dingtalkSmoke,
+  /grep -qxF "\$MIN_TRI"/,
+  "dingtalk-smoke.sh must compare against the pinned MIN_TRI floor, not a drift copy",
 );
 const [dwsLockMajor, dwsLockMinor, dwsLockPatch] = lockVersions["dws"].split(".").map(Number);
 assert.ok(
