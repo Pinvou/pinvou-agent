@@ -52,6 +52,7 @@ const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 /// `validate_browsable_path`) stayed closed; that failure class is gone now
 /// that both surfaces read one constant.
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COMPONENTS;
+use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
 
 /// The system-prefix blocklist, imported from
 /// `platform::path_policy::BLOCKED_PREFIXES` for the same reason.
@@ -69,13 +70,25 @@ use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFI
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
 /// the blacklisted component it crosses, if any. The comparison delegates to
-/// `pinvou3_lib::platform::path_component_eq` (byte-exact on unix, ASCII
-/// case-insensitive on Windows — a case-sensitive compare there would let
-/// `ID_RSA` through on a filesystem that treats it as the same file).
+/// `pinvou3_lib::platform::path_component_eq` (byte-exact on non-macOS unix,
+/// ASCII case-insensitive on macOS and Windows — on those platforms the
+/// default volume folds case at the filesystem layer, so a case-sensitive
+/// compare would let `ID_RSA`-style spellings through the lexical check).
 fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
     SENSITIVE_PATH_COMPONENTS.iter().copied().find(|blocked| {
         canonical.components().any(|component| {
             pinvou3_lib::platform::path_component_eq(component.as_os_str(), blocked)
+        })
+    })
+}
+
+/// The component-prefix half (`BLOCKED_COMPONENT_PREFIXES`, the `.env.*`
+/// credential variants), with the same platform-aware compare as the exact
+/// half via `pinvou3_lib::platform::path_component_prefix`.
+fn crosses_sensitive_component_prefix(canonical: &Path) -> Option<&'static str> {
+    SENSITIVE_PATH_COMPONENT_PREFIXES.iter().copied().find(|prefix| {
+        canonical.components().any(|component| {
+            pinvou3_lib::platform::path_component_prefix(component.as_os_str(), prefix)
         })
     })
 }
@@ -87,6 +100,12 @@ pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
     if let Some(blocked) = crosses_sensitive_component(canonical) {
         return Err(format!(
             "{} crosses the credential path component `{blocked}`",
+            canonical.display()
+        ));
+    }
+    if let Some(prefix) = crosses_sensitive_component_prefix(canonical) {
+        return Err(format!(
+            "{} crosses the credential path component prefix `{prefix}`",
             canonical.display()
         ));
     }
@@ -319,7 +338,9 @@ fn resolve_session_artifact(
     // inside its own workspace, and there the GUI refuses while the CLI did
     // not. Same refusal on read and write: the risk is the content reaching a
     // model context, which is the read direction.
-    if let Some(blocked) = crosses_sensitive_component(&canonical) {
+    if let Some(blocked) = crosses_sensitive_component(&canonical)
+        .or_else(|| crosses_sensitive_component_prefix(&canonical))
+    {
         return Err(CliError::failed(format!(
             "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
              never read or written through this command",
@@ -744,6 +765,16 @@ mod tests {
             );
             assert!(check_sensitive_path(&path).is_err(), "{component}");
         }
+        for prefix in SENSITIVE_PATH_COMPONENT_PREFIXES {
+            let path = PathBuf::from("/home/u/.pinvou3/sessions/s-1/workspace")
+                .join(format!("{prefix}local"));
+            assert_eq!(
+                crosses_sensitive_component_prefix(&path),
+                Some(*prefix),
+                "{prefix} variant must be refused"
+            );
+            assert!(check_sensitive_path(&path).is_err(), "{prefix} variant");
+        }
         for prefix in SENSITIVE_PATH_PREFIXES {
             let path = PathBuf::from(format!("{prefix}probe"));
             assert!(
@@ -760,6 +791,11 @@ mod tests {
         ] {
             let path = PathBuf::from(benign);
             assert_eq!(crosses_sensitive_component(&path), None, "{benign}");
+            assert_eq!(
+                crosses_sensitive_component_prefix(&path),
+                None,
+                "{benign}"
+            );
             assert!(check_sensitive_path(&path).is_ok(), "{benign}");
         }
     }

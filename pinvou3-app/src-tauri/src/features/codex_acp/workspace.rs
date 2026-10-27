@@ -1070,10 +1070,12 @@ fn normalize_relative_path(raw: &str) -> Result<String> {
 }
 
 /// 相对路径是否途经凭据黑名单组件（`.env`、`.aws`、`id_rsa`、
-/// `credentials.json` 等，逐组件精确匹配——`.env.production` 是不同组件，
-/// 不在黑名单内）。判定复用 `path_policy::check_sensitive_components`（内部
-/// 经平台感知 `path_component_eq`，macOS 默认卷大小写不敏感）；其系统前缀
-/// 黑名单均以 `/` 开头，相对路径不可能命中，这里等价于纯组件判定。
+/// `credentials.json` 等逐组件精确匹配,`.env.` 系变体按组件前缀匹配——
+/// 判定细则见 `path_policy::BLOCKED_COMPONENT_PREFIXES`）。判定复用
+/// `path_policy::check_sensitive_components`（内部经平台感知
+/// `path_component_eq`/`path_component_prefix`，macOS 默认卷大小写不敏感）；
+/// 其系统前缀黑名单均以 `/` 开头，相对路径不可能命中，这里等价于纯组件
+/// 判定。
 /// 策略意图见 file_ingest::validate_browsable_path：凭据内容不得进入外部
 /// 模型上下文——codex workspace 车道与附件摄入同约束。
 fn relative_path_crosses_blocked_component(relative: &str) -> bool {
@@ -2251,15 +2253,17 @@ mod tests {
         assert_eq!(preview.text.as_deref(), Some("fn main() {}"));
     }
 
-    /// 凭据黑名单逐组件精确匹配：`.env`、`.aws/credentials`、`sub/.ssh/id_rsa`
-    /// 命中；`.env.production` / `.environment` 是不同组件、放行（黑名单语义
-    /// 与 path_policy 一致，不做子串/前缀匹配）。
+    /// 凭据黑名单逐组件精确匹配，`.env.` 系变体按组件前缀匹配：`.env`、
+    /// `.aws/credentials`、`sub/.ssh/id_rsa`、`.env.local` 命中；
+    /// `.environment` 是不同前缀、放行（黑名单语义与 path_policy 一致，
+    /// 不做任意子串匹配）。
     #[test]
     fn blocked_component_detection_is_exact_per_component() {
         assert!(relative_path_crosses_blocked_component(".env"));
         assert!(relative_path_crosses_blocked_component(".aws/credentials"));
         assert!(relative_path_crosses_blocked_component("sub/.ssh/id_rsa"));
-        assert!(!relative_path_crosses_blocked_component(".env.production"));
+        assert!(relative_path_crosses_blocked_component(".env.production"));
+        assert!(relative_path_crosses_blocked_component(".env.local"));
         assert!(!relative_path_crosses_blocked_component(".environment"));
         assert!(!relative_path_crosses_blocked_component("notes.md"));
     }
