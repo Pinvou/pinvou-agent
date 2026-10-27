@@ -48,8 +48,9 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
 /// （`update_memory_preference` / `update_work_context_memory` /
 /// `get_memory_overview` 均在 Web 访问策略内），因此警告里的宿主路径必须
 /// 脱敏：存储根前缀折叠为 `~/.pinvou3`，文件名与错误文本保留，桌面端诊断
-/// 不受影响，绝对路径不跨 relay。
-fn display_redacted(path: &Path) -> String {
+/// 不受影响，绝对路径不跨 relay。同一策略也用于随成功负载出站的
+/// `snapshot_path` / `runtime_path` 展示字段（内容仅作展示，无回读消费方）。
+pub(crate) fn display_redacted(path: &Path) -> String {
     let raw = path.display().to_string();
     let prefix = paths::pinvou3_home().display().to_string();
     match raw.strip_prefix(&prefix) {
@@ -1663,7 +1664,7 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
     write_text_atomic(&path, "")?;
     Ok(RuntimeMemorySnapshot {
         session_id: session_id.to_string(),
-        runtime_path: path.display().to_string(),
+        runtime_path: display_redacted(&path),
         block: String::new(),
         items: Vec::new(),
     })
@@ -2254,4 +2255,42 @@ fn compact_pending_memory_items(items: &[PendingMemoryItem]) -> Vec<PendingMemor
         PENDING_MEMORY_ACTIVE_MAX_STORED,
         PENDING_MEMORY_RESOLVED_MAX_STORED,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_redacted_folds_storage_root_prefix() {
+        crate::platform::test_support::with_temp_home("pinvou-redact-test", || {
+            let home = crate::platform::paths::pinvou3_home();
+            let under = home.join("user/memory/snapshot.md");
+            assert_eq!(
+                display_redacted(&under),
+                "~/.pinvou3/user/memory/snapshot.md"
+            );
+            let outside = std::env::temp_dir().join("elsewhere/notes.md");
+            assert_eq!(display_redacted(&outside), outside.display().to_string());
+            // 相对路径原样保留(展示字段不构造相对路径,此处只钉不误伤)。
+            let relative = std::path::Path::new("notes.md");
+            assert_eq!(display_redacted(relative), "notes.md");
+        });
+    }
+
+    #[test]
+    fn runtime_snapshot_payloads_carry_redacted_paths() {
+        crate::platform::test_support::with_temp_home("pinvoy-runtime-redact", || {
+            let snapshot =
+                disabled_runtime_snapshot("sess-redact-1").expect("disabled snapshot");
+            assert!(
+                !snapshot.runtime_path.contains(
+                    crate::platform::paths::pinvou3_home().display().to_string().as_str()
+                ),
+                "runtime_path must not leak the absolute storage root: {}",
+                snapshot.runtime_path
+            );
+            assert!(snapshot.runtime_path.starts_with("~/.pinvou3/"));
+        });
+    }
 }
