@@ -257,9 +257,14 @@ function boundedInteger(raw, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
+// Returned lowercase so configuration entries and attributed addresses
+// compare case-insensitively; textual IP case carries no meaning (and the
+// mapped-prefix strip only works on the lowercase spelling). Full IPv6
+// canonicalization stays out of scope: an entry spelled differently from the
+// peer address, for example an expanded form, still never matches.
 function normalizeIp(value) {
   if (typeof value !== "string" || value.length > MAX_IP_TEXT_CHARS) return "";
-  const ip = value.trim();
+  const ip = value.trim().toLowerCase();
   if (!isIP(ip)) return "";
   return ip.startsWith("::ffff:") && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
 }

@@ -1245,6 +1245,29 @@ test("attributes trusted-proxy connections to the rightmost forwarded address", 
   }
 });
 
+test("matches proxy and forwarded addresses case-insensitively", async () => {
+  // A valid-but-non-canonical spelling must still trust the proxy: IPv6 text
+  // case carries no meaning, and a silently dead trust entry collapses every
+  // client behind the proxy into one shared bucket.
+  const isolated = await spawnRelay({
+    WS_CONNECT_LIMIT: "1",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "::FFFF:127.0.0.1",
+  });
+  let first;
+  let second;
+  try {
+    first = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "198.51.100.9" } });
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "198.51.100.9" },
+    }), 429);
+    second = await openSocket(isolated.wsUrl);
+  } finally {
+    closeSocket(first);
+    closeSocket(second);
+    await stopRelay(isolated.child);
+  }
+});
+
 test("shuts down with exit code 0 on SIGTERM and does not log the bind address", async () => {
   const isolated = await spawnRelay({});
   const ws = await openSocket(isolated.wsUrl);
