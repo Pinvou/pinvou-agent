@@ -8,7 +8,7 @@ pub const PROTOCOL_VERSION: u8 = 2;
 /// `access_token` is safe to put in the browser URL fragment.  The
 /// `desktop_secret` is never returned to the UI and is only used to prove the
 /// desktop role to the relay.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebAccessConfig {
     pub relay_url: String,
     pub endpoint_id: String,
@@ -19,6 +19,21 @@ pub struct WebAccessConfig {
     /// explicitly enables access again.
     #[serde(default)]
     pub allow_host_workspace: bool,
+}
+
+// Debug is implemented by hand so logs and panic messages can never carry the
+// plaintext credentials (`{:?}`-derived Debug would print every field).
+impl std::fmt::Debug for WebAccessConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebAccessConfig")
+            .field("relay_url", &self.relay_url)
+            .field("endpoint_id", &self.endpoint_id)
+            .field("access_token", &"[redacted]")
+            .field("desktop_secret", &"[redacted]")
+            .field("allow_host_workspace", &self.allow_host_workspace)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,5 +102,24 @@ mod tests {
         )
         .expect("parse legacy config");
         assert!(!decoded.allow_host_workspace);
+    }
+
+    #[test]
+    fn config_debug_output_never_contains_plaintext_credentials() {
+        let config = WebAccessConfig {
+            relay_url: "wss://example.test/ws".into(),
+            endpoint_id: "ep_123".into(),
+            access_token: "browser-token-secret-value".into(),
+            desktop_secret: "desktop-secret-value".into(),
+            allow_host_workspace: true,
+        };
+        let rendered = format!("{config:?}");
+        assert!(
+            rendered.contains("ep_123"),
+            "non-secret fields stay visible"
+        );
+        assert!(!rendered.contains("browser-token-secret-value"));
+        assert!(!rendered.contains("desktop-secret-value"));
+        assert!(rendered.contains("[redacted]"));
     }
 }

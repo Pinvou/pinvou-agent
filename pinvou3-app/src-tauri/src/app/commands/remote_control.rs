@@ -16,7 +16,9 @@ use crate::features::codex_acp::{
     project_acp_permission_request_for_web, project_acp_value_for_web,
 };
 use crate::features::remote_control::{MAX_TRANSFER_CHUNK_BYTES, file_access, manager};
-use crate::features::remote_control::{RemoteControlManager, WebAccessInfo, WebAccessStatus};
+use crate::features::remote_control::{
+    RelaySettingsInfo, RemoteControlManager, WebAccessInfo, WebAccessStatus,
+};
 use crate::features::sessions::SessionStore;
 use crate::platform::prefs::UserPrefs;
 

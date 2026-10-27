@@ -38,11 +38,15 @@ fn inbound_silence_exceeded(silence: Duration) -> bool {
 
 const MAX_PENDING_MESSAGES: usize = 2_048;
 const OUTBOUND_CHANNEL_CAPACITY: usize = 2_048;
-// RelayInbound queues raw JSON text, so 32 slots at the 2 MiB frame ceiling
-// bound retained wire payload to roughly 64 MiB. Only the current frame is
+// RelayInbound queues raw JSON text, so 32 slots at the 4 MiB frame ceiling
+// bound retained wire payload to roughly 128 MiB. Only the current frame is
 // parsed at either side of the queue.
 const INBOUND_CHANNEL_CAPACITY: usize = 32;
-const MAX_INBOUND_TEXT_BYTES: usize = 2 * 1024 * 1024;
+/// Must accept every frame the desktop itself is allowed to send: PROTOCOL.md
+/// pins MAX_PAYLOAD_BYTES at >= 4 MiB with desktop frames at or below
+/// 4 MiB - 64 KiB (the same bound as `MAX_RELAY_FRAME_BYTES`). A lower ceiling
+/// would make the Relay's own large frames disconnect us.
+const MAX_INBOUND_TEXT_BYTES: usize = (4 * 1024 * 1024) - (64 * 1024);
 const OUTBOUND_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 // Stream resets are tiny control messages. Keeping at most one in-flight and
 // one latest replacement outside the saturated data budget adds a hard 128 KiB
@@ -96,7 +100,7 @@ pub enum RelayInbound {
     },
 }
 
-struct OutboundFrame {
+pub(super) struct OutboundFrame {
     text: String,
     // The permit follows the serialized frame from the channel into the
     // reconnect queue and is released only after send or intentional discard.
@@ -291,7 +295,9 @@ impl RelaySender {
 
 pub type RelayReceiver = mpsc::Receiver<RelayInbound>;
 
-fn outbound_channel(
+/// Visible to the manager tests so they can mint a `RelaySender` for
+/// `ActiveEndpoint` fixtures without spawning a relay task.
+pub(super) fn outbound_channel(
     channel_capacity: usize,
     byte_budget: usize,
     max_frame_bytes: usize,
@@ -788,15 +794,32 @@ enum RelayTerminal {
     Revoked,
     Replaced,
     Missing,
+    /// The relay deterministically rejected the registration itself
+    /// (`endpoint_revoked` tombstone, mismatched credentials, malformed
+    /// register frame): retrying with the same persisted config can never
+    /// succeed, so the run loop stops instead of flapping
+    /// Error↔Connecting every backoff window.
+    RegisterRejected,
 }
 
 fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
     let message_endpoint = value.get("endpoint_id").and_then(Value::as_str);
-    if value.get("type").and_then(Value::as_str) == Some("error")
-        && value.get("code").and_then(Value::as_str) == Some("endpoint_not_found")
-        && message_endpoint.is_none_or(|value| value == endpoint_id)
-    {
-        return Some(RelayTerminal::Missing);
+    if value.get("type").and_then(Value::as_str) == Some("error") {
+        if !message_endpoint.is_none_or(|value| value == endpoint_id) {
+            return None;
+        }
+        return match value.get("code").and_then(Value::as_str) {
+            Some("endpoint_not_found") => Some(RelayTerminal::Missing),
+            // 墓碑化 endpoint 的注册重试:与 desktop_endpoint_revoked 等价。
+            Some("endpoint_revoked") => Some(RelayTerminal::Revoked),
+            Some(
+                "invalid_access_token" | "invalid_desktop_secret" | "bad_desktop_endpoint_register",
+            ) => Some(RelayTerminal::RegisterRejected),
+            // 瞬时拒绝(endpoint_capacity_reached、
+            // endpoint_creation_rate_limited、authentication_timeout 等)
+            // 保持既有重连行为。
+            _ => None,
+        };
     }
     if message_endpoint != Some(endpoint_id) {
         return None;
@@ -809,13 +832,18 @@ fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
 }
 
 /// Whether an inbound relay message is terminal for the given endpoint
-/// (revoked / replaced / endpoint-not-found): the boolean view of
-/// [`terminal_message`]. The live connection loop needs the terminal kind;
-/// the persistence-driven pending-revocation replay only consumes the
-/// terminal/not-terminal bit, so both call sites share this
-/// one predicate and their test suites jointly pin it.
+/// (revoked / replaced / endpoint-not-found). The live connection loop
+/// consumes the full [`terminal_message`] classification, including the new
+/// `RegisterRejected` stop; the persistence-driven pending-revocation replay
+/// only acknowledges outcomes that prove the endpoint is genuinely gone or
+/// displaced (a credential rejection proves nothing about the endpoint, so
+/// the durable entry stays for a later manual cleanup), which is why the
+/// boolean view deliberately excludes it.
 pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
-    terminal_message(value, endpoint_id).is_some()
+    matches!(
+        terminal_message(value, endpoint_id),
+        Some(RelayTerminal::Revoked | RelayTerminal::Replaced | RelayTerminal::Missing)
+    )
 }
 
 fn registration_acknowledges_endpoint(value: &Value, endpoint_id: &str) -> bool {
@@ -1172,6 +1200,10 @@ mod tests {
         let websocket = relay_websocket_config();
         assert_eq!(websocket.max_message_size, Some(MAX_INBOUND_TEXT_BYTES));
         assert_eq!(websocket.max_frame_size, Some(MAX_INBOUND_TEXT_BYTES));
+        // PROTOCOL.md: MAX_PAYLOAD_BYTES >= 4 MiB,桌面帧上限 4 MiB - 64 KiB。
+        // 入站上限必须能容纳桌面自己允许发出的最大帧。
+        assert_eq!(MAX_INBOUND_TEXT_BYTES, MAX_RELAY_FRAME_BYTES);
+        assert_eq!(MAX_INBOUND_TEXT_BYTES, 4 * 1024 * 1024 - 64 * 1024);
 
         assert!(!inbound_text_too_large(MAX_INBOUND_TEXT_BYTES));
         assert!(inbound_text_too_large(MAX_INBOUND_TEXT_BYTES + 1));
@@ -1221,5 +1253,68 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn registration_rejections_are_terminal_but_transient_errors_keep_reconnecting() {
+        // 墓碑化 endpoint:同一凭据重试必然同样失败,必须停止重连。
+        assert_eq!(
+            terminal_message(
+                &json!({
+                    "type": "error",
+                    "code": "endpoint_revoked",
+                    "message": "endpoint was permanently revoked"
+                }),
+                "ep_1"
+            ),
+            Some(RelayTerminal::Revoked)
+        );
+        // 凭据被确定性拒绝:停止重连,manager 停在带具体原因的 Error 状态,
+        // 而不是每 ~10s 在 Error↔Connecting 之间翻转。
+        for code in [
+            "invalid_access_token",
+            "invalid_desktop_secret",
+            "bad_desktop_endpoint_register",
+        ] {
+            assert_eq!(
+                terminal_message(&json!({ "type": "error", "code": code }), "ep_1"),
+                Some(RelayTerminal::RegisterRejected),
+                "{code} must stop the reconnect loop"
+            );
+        }
+        // 瞬时错误(容量/限流/认证超时)仍然重连。
+        for code in [
+            "endpoint_capacity_reached",
+            "endpoint_creation_rate_limited",
+            "authentication_timeout",
+        ] {
+            assert_eq!(
+                terminal_message(&json!({ "type": "error", "code": code }), "ep_1"),
+                None,
+                "{code} must keep reconnecting"
+            );
+        }
+        // 拒绝帧不携带 endpoint_id 时才默认命中本连接;带他端点 id 的不终结。
+        assert_eq!(
+            terminal_message(
+                &json!({
+                    "type": "error",
+                    "code": "endpoint_revoked",
+                    "endpoint_id": "ep_other"
+                }),
+                "ep_1"
+            ),
+            None
+        );
+        // 撤销回放的布尔视图只认可「endpoint 确认消失/被顶替」的终结;
+        // 凭据拒绝不能让回放把持久撤销条目当作已确认删掉。
+        assert!(terminal_relay_message(
+            &json!({ "type": "error", "code": "endpoint_revoked" }),
+            "ep_1"
+        ));
+        assert!(!terminal_relay_message(
+            &json!({ "type": "error", "code": "invalid_desktop_secret" }),
+            "ep_1"
+        ));
     }
 }
