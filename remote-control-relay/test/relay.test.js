@@ -187,6 +187,8 @@ function rawRequest(hostPort, requestText) {
     const socket = connect(hostPort, "127.0.0.1", () => {
       socket.end(requestText);
     });
+    // A server that accepts but never answers must fail the test, not hang CI.
+    socket.setTimeout(5000, () => socket.destroy());
     let text = "";
     socket.on("data", (chunk) => { text += String(chunk); });
     socket.once("error", reject);
@@ -1076,7 +1078,10 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
       try {
         await waitForExit(isolated.child, 10000);
         assert.notEqual(isolated.child.exitCode, 0);
-        assert.match(isolated.errors(), /proxy_ip_configuration_invalid/u);
+        assert.match(
+          isolated.errors(),
+          new RegExp(`proxy_ip_configuration_invalid: ${variable}`, "u"),
+        );
         assert.doesNotMatch(isolated.output(), /pinvou remote relay listening/u);
       } finally {
         await stopRelay(isolated.child);
@@ -1185,17 +1190,24 @@ test("shuts down with exit code 0 on SIGTERM and does not log the bind address",
 });
 
 test("configuration errors do not echo the offending value", async () => {
-  const isolated = await spawnRelay(
-    { PINVOU_REMOTE_ALLOWED_WEB_ORIGINS: "https://good.example, ftp://evil.example" },
-    { awaitListening: false },
-  );
-  try {
-    await waitForExit(isolated.child, 10000);
-    assert.notEqual(isolated.child.exitCode, 0);
-    assert.match(isolated.errors(), /invalid browser WebSocket origin/u);
-    assert.ok(!isolated.errors().includes("ftp://evil.example"), "offending origin echoed into stderr");
-  } finally {
-    await stopRelay(isolated.child);
+  // Both parseOriginSet failure shapes: a parseable origin with a forbidden
+  // scheme, and text that fails URL construction outright.
+  for (const value of ["https://good.example, ftp://evil.example", "not a url"]) {
+    const isolated = await spawnRelay(
+      { PINVOU_REMOTE_ALLOWED_WEB_ORIGINS: value },
+      { awaitListening: false },
+    );
+    try {
+      await waitForExit(isolated.child, 10000);
+      assert.notEqual(isolated.child.exitCode, 0);
+      assert.match(
+        isolated.errors(),
+        /invalid (browser WebSocket origin|PINVOU_REMOTE_ALLOWED_WEB_ORIGINS entry)/u,
+      );
+      assert.ok(!isolated.errors().includes(value), "offending origin echoed into stderr");
+    } finally {
+      await stopRelay(isolated.child);
+    }
   }
 });
 
@@ -1284,6 +1296,73 @@ test("serves 503 instead of crashing when a web asset becomes unreadable", async
   } finally {
     await chmod(indexPath, 0o600).catch(() => {});
     await stopRelay(isolated.child);
+  }
+});
+
+test("consults X-Real-IP only when X-Forwarded-For is entirely absent", async () => {
+  const isolated = await spawnRelay({
+    WS_CONNECT_LIMIT: "1",
+    WS_CONNECT_WINDOW_MS: "60000",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "127.0.0.1",
+  });
+  let realIp;
+  let peer;
+  try {
+    // With no forwarded header at all, X-Real-IP chooses the bucket.
+    realIp = await openSocket(isolated.wsUrl, { headers: { "x-real-ip": "198.51.100.7" } });
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-real-ip": "198.51.100.7" },
+    }), 429);
+    // A present-but-unusable forwarded header outranks X-Real-IP: the
+    // connection falls back to the peer bucket, and a second connection with
+    // the same unusable header must not open a bucket for its X-Real-IP.
+    peer = await openSocket(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "not-an-ip", "x-real-ip": "203.0.113.9" },
+    });
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "", "x-real-ip": "203.0.113.9" },
+    }), 429);
+    assert.equal(await rejectedUpgrade(isolated.wsUrl), 429);
+  } finally {
+    closeSocket(realIp);
+    closeSocket(peer);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("relay state exceeding the configured maximum names the limit", async () => {
+  const statePath = join(testRoot, `oversize-state-${Date.now()}.json`);
+  await writeFile(statePath, "0".repeat(2048));
+  const isolated = await spawnRelay(
+    { PINVOU_REMOTE_STATE_PATH: statePath, MAX_RELAY_STATE_BYTES: "1024" },
+    { awaitListening: false },
+  );
+  try {
+    await waitForExit(isolated.child, 10000);
+    assert.notEqual(isolated.child.exitCode, 0);
+    assert.equal(
+      isolated.errors().trim(),
+      "[relay-error] relay state exceeds MAX_RELAY_STATE_BYTES",
+    );
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("a failed bind reports a fixed error without the bind address", async () => {
+  const first = await spawnRelay({});
+  try {
+    const second = await spawnRelay({ PORT: String(first.port) }, { awaitListening: false });
+    try {
+      await waitForExit(second.child, 10000);
+      assert.notEqual(second.child.exitCode, 0);
+      assert.equal(second.errors().trim(), "[relay-error] listen_failed code=EADDRINUSE");
+      assert.ok(!second.errors().includes(String(first.port)), "bind address echoed into stderr");
+    } finally {
+      await stopRelay(second.child);
+    }
+  } finally {
+    await stopRelay(first.child);
   }
 });
 
