@@ -8,13 +8,13 @@ const { stageWindowsInstaller } = require("../scripts/tauri/windows-installer.js
 const { describeWindowsRuntime } = require("../scripts/tauri/windows-runtime.js");
 
 // The body needs a staged private runtime, so bare `node --test` discovery
-// skips everywhere (the pr-check Windows lane never stages it). The
-// `--require-staged-runtime` escape hatch must be passed via DIRECT
-// invocation (`node tests/windows_runtime_installer_integration.test.js
+// skips everywhere (no PR lane stages it). The `--require-staged-runtime`
+// escape hatch must be passed via DIRECT invocation (`node tests/…
 // --require-staged-runtime`): `node --test` drops unknown argv flags before
-// they reach process.argv. The release build-windows-x64 job invokes it
-// directly right after `npm run runtime:windows:init` has staged the
-// runtime and written the descriptor.
+// they reach process.argv. The release build-windows-x64 job stages the
+// runtime with `npm run runtime:windows:stage` — `runtime:windows:init`
+// only materializes the private submodule and neither expands the runtime
+// nor writes the descriptor — and then invokes this file directly.
 const descriptorPath = path.join(
   __dirname,
   "..",

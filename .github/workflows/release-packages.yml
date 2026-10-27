@@ -741,9 +741,16 @@ jobs:
         working-directory: pinvou3-app
         run: npm run runtime:windows:init
 
-      # 运行时已 stage、descriptor 已写入,直接调用集成测试钉住
-      # stageWindowsInstaller 的安装器适配(须直接调用:node --test 会丢弃
-      # 未知 argv 参数,--require-staged-runtime 到不了 process.argv)。
+      # init 只物化私有运行时 submodule;本步才展开运行时并写入
+      # runtime-descriptor.json(Stage 幂等:按 stageId 复用,后续
+      # build:nsis 的 staging 直接命中本次产物,不重复展开)。
+      - name: 展开 Windows 独立运行时并写入 descriptor
+        working-directory: pinvou3-app
+        run: npm run runtime:windows:stage
+
+      # descriptor 已就绪,直接调用集成测试钉住 stageWindowsInstaller
+      # 的安装器适配(须直接调用:node --test 会丢弃未知 argv 参数,
+      # --require-staged-runtime 到不了 process.argv)。
       - name: 运行时安装器集成测试
         working-directory: pinvou3-app
         run: node tests/windows_runtime_installer_integration.test.js --require-staged-runtime
