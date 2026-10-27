@@ -6340,6 +6340,32 @@ mod tests {
             "the stall watchdog must consult only the runtime's own \
              generation's cards"
         );
+        let handlers = production_body(src, "async fn spawn_session");
+        assert!(
+            handlers.contains("if !lifecycle_for_permission.is_running()")
+                && spawn.contains("if !lifecycle_for_elicitation.is_running()"),
+            "the card handlers must deny frames from a dead generation \
+             instead of inserting cards no runtime will settle"
+        );
+        let missing = production_body(src, "async fn get_or_spawn");
+        assert!(
+            missing.contains("cancel_runtime_pending_cards(session_id, None)"),
+            "the Missing arm must settle leftover cards before spawning \
+             the replacement"
+        );
+        let restart = production_body(src, "async fn restart_agent_sessions");
+        assert!(
+            restart.contains("flush_journal()"),
+            "the restart teardown must flush before a replacement bridge \
+             seeds its sequence from the journal"
+        );
+        let shutdown = production_body(src, "pub async fn shutdown_all");
+        assert!(
+            shutdown.contains("runtime_crash_budgets.lock().clear()")
+                && shutdown.contains("runtime_restart_disclosures.lock().clear()"),
+            "shutdown_all must clear the retirement state of the pool it \
+             just drained"
+        );
     }
 
     /// The move-aside check only recognizes "the script path is the resolved
