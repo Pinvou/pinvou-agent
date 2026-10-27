@@ -426,8 +426,13 @@ const ToolOutput = ({ item, t }) => {
             <div
               role="button"
               tabIndex={0}
+              aria-expanded={displayExpanded}
               onClick={toggleExpanded}
               onKeyDown={(event) => {
+                // The row hosts a real <button> (shell-task cancel): ignore
+                // keys bubbled from it, or preventDefault here would swallow
+                // the nested button's native Enter/Space activation.
+                if (event.target !== event.currentTarget) return;
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault();
                   toggleExpanded();
@@ -458,14 +463,21 @@ const ToolOutput = ({ item, t }) => {
       if (quiet) {
         const iconColor = isDone ? mutedColor : statusColor;
         return (
-          <div className={expanded ? `rounded-[12px] overflow-hidden border border-black/5 dark:border-white/5` : ''}>
+          <div className={displayExpanded ? `rounded-[12px] overflow-hidden border border-black/5 dark:border-white/5` : ''}>
             {/* biome-ignore lint/a11y/useSemanticElements: the tool card collapse header hosts a multi-child layout; a button would break existing styles */}
             <div
               role="button"
               tabIndex={0}
+              aria-expanded={displayExpanded}
               className={`flex items-center gap-2 px-2 py-1 rounded-[8px] cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
               onClick={() => setExpanded(!expanded)}
-              onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(!expanded); } }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  setExpanded(!expanded);
+                }
+              }}
             >
               <Wrench size={12} className={iconColor} />
               <span className={`text-[12px] ${mutedColor}`}>{item.name}</span>
@@ -475,7 +487,7 @@ const ToolOutput = ({ item, t }) => {
               {isRunning && <span className={`text-[11px] ${statusColor}`}>{t.toolRunning}</span>}
               {isFailed && <span className={`text-[11px] ${statusColor}`}>{t.toolFailed}</span>}
               {cancelButton}
-              <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''} ${mutedColor}`} />
+              <ChevronDown size={12} className={`transition-transform ${displayExpanded ? 'rotate-180' : ''} ${mutedColor}`} />
             </div>
             {detail}
           </div>
@@ -489,9 +501,16 @@ const ToolOutput = ({ item, t }) => {
           <div
             role="button"
             tabIndex={0}
+            aria-expanded={displayExpanded}
             className={`flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[#E8EDF2] dark:hover:bg-[#282A2C]`}
             onClick={() => setExpanded(!expanded)}
-            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(!expanded); } }}
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setExpanded(!expanded);
+              }
+            }}
           >
             <Wrench size={14} className={statusColor} />
             <span className={`text-[13px] font-medium text-[#1F1F1F] dark:text-[#E3E3E3]`}>
@@ -502,7 +521,7 @@ const ToolOutput = ({ item, t }) => {
               : <span className="flex-1" />}
             <span className={`text-[12px] ${statusColor}`}>{statusText}</span>
             {cancelButton}
-            <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''} text-[#444746] dark:text-[#C4C7C5]`} />
+            <ChevronDown size={14} className={`transition-transform ${displayExpanded ? 'rotate-180' : ''} text-[#444746] dark:text-[#C4C7C5]`} />
           </div>
           {shellCancelError && (
             <div className={`px-4 pb-2 text-[11px] text-[#C5221F] dark:text-[#F28B82]`}>

@@ -964,6 +964,10 @@ export function BrowserView({
                 title={browserTabLabel(tab, t.browserEmptyTab)}
                 onClick={() => activateTab(tab.target_id)}
                 onKeyDown={(event) => {
+                  // The tab hosts a real <button> (close): ignore keys bubbled
+                  // from it, or preventDefault here would swallow its native
+                  // Enter/Space activation and activate the tab instead.
+                  if (event.target !== event.currentTarget) return;
                   if (event.key !== 'Enter' && event.key !== ' ') return;
                   event.preventDefault();
                   activateTab(tab.target_id);
@@ -983,7 +987,7 @@ export function BrowserView({
                 {tabs.length > 1 && <button
                   type="button"
                   aria-label={t.browserTabClose}
-                  className={`shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 ${
+                  className={`shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 ${
                     isDark ? 'hover:bg-[#3A3B3F]' : 'hover:bg-[#DCDCDC]'
                   }`}
                   title={t.browserTabClose}
