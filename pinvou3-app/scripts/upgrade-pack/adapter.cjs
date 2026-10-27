@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const F = require('./files.cjs');
+const { HOST_PROFILE, validateHostLocations, snapshotHostSource } = require('./host-source.cjs');
 const { childEnvironment, requireSuccess, runChild } = require('./process.cjs');
 const WINDOWS = 'windows-x86_64-nsis-perMachine';
 const METADATA = 1024 * 1024;
@@ -26,11 +27,19 @@ async function originalJSON() {
   return import(pathToFileURL(path.resolve(__dirname, '../../..', 'specs/upgrade/v1/reference/canonical-json.mjs')).href);
 }
 function configuration(value) {
-  F.object(value, ['version', 'packTool', 'manifestSigner', 'claims', 'sbom', 'provenance', 'root', 'at', 'inputs', 'limits']);
-  if (value.version !== 1 || !Number.isSafeInteger(value.at) || value.at < 0) F.refuse('T04_CONFIGURATION');
+  const common = ['version', 'packTool', 'manifestSigner', 'claims', 'sbom', 'provenance', 'root', 'at', 'limits'];
+  if (value?.version === 1) F.object(value, [...common, 'inputs']);
+  else if (value?.version === 2) F.object(value, [...common, 'sourceDirectory']);
+  else F.refuse('T04_CONFIGURATION');
+  if (!Number.isSafeInteger(value.at) || value.at < 0) F.refuse('T04_CONFIGURATION');
   for (const key of ['packTool', 'manifestSigner', 'claims', 'sbom', 'provenance', 'root']) F.reference(value[key]);
   for (const key of ['packTool', 'manifestSigner']) {
     if (!value[key].path.toLowerCase().endsWith('.exe')) F.refuse('T04_EXECUTABLE');
+  }
+  if (value.version === 2) {
+    if (typeof value.sourceDirectory !== 'string' || !path.isAbsolute(value.sourceDirectory)) F.refuse('T04_SOURCE_DIRECTORY');
+    windowsLimits(value.limits);
+    return value;
   }
   if (!Array.isArray(value.inputs) || value.inputs.length < 4 || value.inputs.length > 4096) F.refuse('T04_INPUTS');
   const names = new Set(); const roles = new Set();
@@ -84,7 +93,8 @@ async function packageBuild(configPath, outputDirectory, { appVersion, signal, e
   const config = configuration(parseJson(F.readBounded(configPath, METADATA, signal)));
   F.inspect(originalConfig, METADATA, { signal });
   let total = 0;
-  const materials = [config.claims, config.sbom, config.provenance, config.root, ...config.inputs.map((i) => i.file)];
+  const materials = [config.claims, config.sbom, config.provenance, config.root,
+    ...(config.version === 1 ? config.inputs.map((i) => i.file) : [])];
   for (const ref of materials) {
     if (ref.size > config.limits.InputBytes || ref.size > config.limits.TotalInputBytes - total) F.refuse('T04_CAPACITY');
     total += ref.size;
@@ -95,30 +105,39 @@ async function packageBuild(configPath, outputDirectory, { appVersion, signal, e
   F.inspect(config.claims, METADATA, { signal });
   provenanceMaterial(F.readBounded(config.provenance.path, Math.min(METADATA, config.limits.InputBytes), signal), claims, parseJson);
   F.inspect(config.provenance, Math.min(METADATA, config.limits.InputBytes), { signal });
+  if (config.version === 2) validateHostLocations(config.sourceDirectory, outputDirectory);
   F.ordinary(path.dirname(outputDirectory), true);
   fs.mkdirSync(outputDirectory, { mode: 0o700 }); // New leaf only; never recursive/overwrite.
   const directory = F.directoryIdentity(F.ordinary(outputDirectory, true));
   const temp = path.join(outputDirectory, 'child-temp'); fs.mkdirSync(temp, { mode: 0o700 });
   const sources = []; const snapshots = [];
-  function remember(ref) {
-    snapshots.push(F.inspect(ref, ref.size, { signal }));
+  function remember(ref, allowEmpty = false) {
+    snapshots.push({ ...F.inspect(ref, Math.max(1, ref.size), { signal, allowEmpty }), allowEmpty });
     return ref;
   }
-  function snapshot(ref, name, maximum) {
+  function snapshot(ref, name, maximum, allowEmpty = false, expectedIdentity) {
     F.sameDirectory(outputDirectory, directory);
     const destination = path.join(outputDirectory, name);
-    const source = F.inspect(ref, maximum, { destination, signal }); sources.push(source);
-    remember({ ...ref, path: destination });
+    const source = F.inspect(ref, maximum, { destination, signal, allowEmpty });
+    if (expectedIdentity !== undefined && source.identity !== expectedIdentity) F.refuse('T04_SOURCE_CHANGED');
+    sources.push({ ...source, allowEmpty });
+    remember({ ...ref, path: destination }, allowEmpty);
     return name;
   }
   const local = {
     claims: snapshot(config.claims, 'claims.json', METADATA),
     sbom: snapshot(config.sbom, 'sbom.json', config.limits.InputBytes),
     provenance: snapshot(config.provenance, 'provenance.jsonl', Math.min(METADATA, config.limits.InputBytes)),
-    inputs: config.inputs.map((input, i) => ({ role: input.role, helperId: input.helperId || '', name: input.name,
-      path: snapshot(input.file, `native-${i}.bin`, config.limits.InputBytes) })),
+    inputs: config.version === 1 ? config.inputs.map((input, i) => ({ role: input.role, helperId: input.helperId || '', name: input.name,
+      path: snapshot(input.file, `native-${i}.bin`, config.limits.InputBytes) })) : [],
     limits: config.limits,
   };
+  let hostSource;
+  if (config.version === 2) {
+    hostSource = snapshotHostSource(config.sourceDirectory, outputDirectory, config.limits, snapshot, signal, total);
+    local.sourceProfile = HOST_PROFILE;
+    local.sourceDirectory = 'host-source';
+  }
   const rootPath = path.join(outputDirectory, snapshot(config.root, 'root.json', METADATA));
   const packPath = path.join(outputDirectory, snapshot(config.packTool, 'upgrade-pack.exe', config.packTool.size));
   const signerPath = path.join(outputDirectory, snapshot(config.manifestSigner, 'manifest-signer.exe', config.manifestSigner.size));
@@ -130,9 +149,10 @@ async function packageBuild(configPath, outputDirectory, { appVersion, signal, e
     if (F.inspect(originalConfig, METADATA, { signal }).identity !== originalConfigIdentity) F.refuse('T04_SOURCE_CHANGED');
     for (const source of [...sources, ...snapshots]) {
       const ref = { path: source.path, size: source.size, sha256: source.sha256 };
-      const current = F.inspect(ref, source.size, { signal });
+      const current = F.inspect(ref, Math.max(1, source.size), { signal, allowEmpty: source.allowEmpty });
       if (current.identity !== source.identity) F.refuse('T04_SOURCE_CHANGED');
     }
+    hostSource?.recheckDirectories();
   }
   const options = { cwd: outputDirectory, env: childEnvironment(temp), signal };
   async function stage(executable, args) {
@@ -172,11 +192,13 @@ async function packageBuild(configPath, outputDirectory, { appVersion, signal, e
       || outputs['provenance.jsonl'].sha256 !== config.provenance.sha256
       || outputs['provenance.jsonl'].size !== config.provenance.size) F.refuse('T04_OUTPUT_BINDING');
   recheck();
-  const receipt = { version: 1, targetKey: WINDOWS, appVersion, config: originalConfig,
+  const receipt = { version: config.version, targetKey: WINDOWS, appVersion, config: originalConfig,
     packTool: config.packTool, manifestSigner: config.manifestSigner, offlineRoot: config.root,
     offlineVerificationAt: config.at, inputMaterials: materials, outputs,
     offlineManifestVerifiedByPackTool: true, dsseAuthenticated: false,
     currentQualificationChecked: false, nativeInstallationTested: false };
+  if (hostSource) receipt.hostSource = { profile: HOST_PROFILE, fileCount: hostSource.fileCount,
+    totalBytes: hostSource.totalBytes, membersSha256: hostSource.membersSha256 };
   F.publishCompletion(outputDirectory, Buffer.from(canonicalize(receipt)), directory);
   // No fallible operation after completion publication.
 }

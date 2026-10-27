@@ -507,6 +507,7 @@ jobs:
               - 'pinvou3-app/src-tauri/src/app/commands/marketplace.rs'
               - 'pinvou3-app/src-tauri/src/features/connectors/skill_gate.rs'
               - 'pinvou3-app/scripts/tauri/**'
+              - 'pinvou3-app/scripts/upgrade-pack/**'
               - 'pinvou3-app/src-tauri/config/**'
               - 'pinvou3-app/src-tauri/packaging/**'
               # bundle 技能树变更须跑 connector 契约测试(版本联动/口径 lint 经

@@ -19,11 +19,11 @@ function fixture() {
     environment[key] = path.join(root, name);
     fs.writeFileSync(environment[key], "fixture-only-never-executed");
   }
-  const calls = [], builds = [];
+  const calls = [], builds = [], logs = [];
   const module = { exports: {} };
   const source = path.resolve(__dirname, "../scripts/tauri/windows-host-build.js");
   vm.runInNewContext(fs.readFileSync(source, "utf8"), { module, process,
-    console: { log() {} }, require(name) {
+    console: { log(message) { logs.push(message); } }, require(name) {
       if (name === "./windows-host-profile.js") return {
         loadBuildProfile: async () => ({ seed: { profileKind: "lab", profileId: "path-test-only", appVersion: "1.0.0" } }),
         // Opaque dependency for path tests; real policy validation lives in packaging tests.
@@ -33,7 +33,7 @@ function fixture() {
       if (name === "./windows-host-nsis.js") return {
         // Opaque numeric-version port; the real validator is covered separately.
         nsisFileVersion: value => { assert.equal(value, "1.0.0"); return "1.0.0.0"; },
-        packageHostNSIS: async options => { calls.push(options); return { pathTestOnly: true }; },
+        packageHostNSIS: async options => { calls.push(options); return { pathTestOnly: true, outputDirectory: path.join(options.outputParent, "host-nsis-example") }; },
       };
       if (name === "node:child_process") return {
         spawn(command, args, options) {
@@ -49,7 +49,7 @@ function fixture() {
       throw new Error("UNEXPECTED_TEST_DEPENDENCY");
     },
   }, { filename: source });
-  return { root, appRoot, environment, calls, builds, ...module.exports,
+  return { root, appRoot, environment, calls, builds, logs, ...module.exports,
     async prepare() { return this.prepareHostBuild(["build", "--bundles", "nsis"], {
       appRoot, environment, platform: "win32", architecture: "x64" }); },
     async finish(plan) { return this.finishHostBuild(plan, { resourceManifest: {}, effectiveConfig: {} },
@@ -74,6 +74,9 @@ test("default target keeps the original host packaging directory", async () => {
     assert.ok(f.builds[0].includes("--release"));
     assert.equal(f.calls[0].outputParent, path.join(plan.targetRoot, "windows-host-packaging"));
     assert.equal(f.calls[0].cli, path.join(plan.targetRoot, "windows-host-cli/x86_64-pc-windows-msvc/release/pinvou.exe"));
+    assert.match(f.logs[0], /source-build=host-nsis-example/u);
+    assert.equal(f.logs[0].includes(f.root), false);
+
     assert.ok(fs.statSync(f.calls[0].outputParent).isDirectory());
   } finally { f.close(); }
 });

@@ -990,6 +990,11 @@ class CiGatePolicyTests(unittest.TestCase):
         install = "npm --prefix ../specs/upgrade/v1 ci --ignore-scripts --no-audit --no-fund"
         self.assertIn(install, frontend)
         self.assertLess(frontend.index(install), frontend.index("run: npm test"))
+
+    def test_upgrade_pack_scripts_route_to_frontend_test(self):
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        self.assertIn("pinvou3-app/scripts/upgrade-pack/**", _frontend_filter_paths(changes))
+
     def test_static_analysis_gate_configs_route_to_frontend_test(self):
         # The static-analysis gates (oxlint/Biome/knip/jsconfig/audit-compat)
         # only run inside frontend-test, so their config files must be in the
