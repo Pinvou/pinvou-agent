@@ -139,7 +139,9 @@ assert.equal(combinedSnapshots[2].settings, combinedSnapshots[1].settings,
 // snapshot identity stays unchanged when the content did not change (React
 // skips unrelated renders via Object.is). (Open's shared-bridge refactor made
 // the whole-list models reload a startup-internal loader, so the baseline is
-// taken after draining the publications the earlier model APIs started.)
+// taken after draining the bridge's load-time auto-init publications — the
+// coherent notify plus its fire-and-forget status/persona/scheduled loaders;
+// the earlier model APIs publish synchronously and start nothing deferred.)
 for (let attempt = 0; attempt < 5; attempt += 1) {
   await new Promise(resolve => { setTimeout(resolve, 0); });
 }
@@ -191,6 +193,9 @@ const monitorWithContextLimit = {
   },
 };
 invokeResponse = async command => command === 'get_monitor_snapshot' ? monitorWithContextLimit : {};
+// Re-polls immediately (not via the interval): the vm's setInterval stub
+// returns falsy 0, so startMonitorPolling's poller-dedupe guard never trips
+// and each call runs its one synchronous pollMonitor().
 api.monitor.startMonitorPolling();
 for (let attempt = 0; attempt < 20
   && !chatSnapshots.some(snapshot => snapshot.tokens?.max === 77777); attempt += 1) {
