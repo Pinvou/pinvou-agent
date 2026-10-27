@@ -4468,6 +4468,11 @@ impl AcpPool {
         self.runtime_restart_disclosures.lock().remove(session_id);
         if let Some(runtime) = taken {
             runtime.shutdown().await;
+            // Same flush-before-reseed invariant as the restart teardown: the
+            // card settlements above emit through this bridge's buffered
+            // writer, and a later buffered drop-flush must not regress a
+            // replacement's journal sequence.
+            runtime.bridge.flush_journal();
         }
     }
 
@@ -4508,6 +4513,8 @@ impl AcpPool {
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
         runtime.shutdown().await;
+        // Same flush-before-reseed invariant as `evict`.
+        runtime.bridge.flush_journal();
         true
     }
 
@@ -4581,6 +4588,8 @@ impl AcpPool {
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
         runtime.shutdown().await;
+        // Same flush-before-reseed invariant as `evict`.
+        runtime.bridge.flush_journal();
         true
     }
 
@@ -4702,6 +4711,10 @@ impl AcpPool {
         };
         for runtime in runtimes {
             runtime.shutdown().await;
+            // Flush any card settlements a racing retirement buffered on this
+            // bridge before the drain, so a later drop-flush cannot regress a
+            // replacement's journal sequence.
+            runtime.bridge.flush_journal();
         }
     }
 
@@ -6368,6 +6381,18 @@ mod tests {
             "shutdown_all must clear the retirement state of the pool it \
              just drained"
         );
+        for (lane, signature) in [
+            ("evict", "pub async fn evict("),
+            ("idle reap", "async fn evict_if_idle("),
+            ("rebind", "pub async fn evict_if_idle_for_rebind("),
+            ("shutdown_all", "pub async fn shutdown_all"),
+        ] {
+            assert!(
+                production_body(src, signature).contains("flush_journal()"),
+                "the {lane} retirement must flush settled journal events \
+                 before a replacement bridge seeds its sequence"
+            );
+        }
     }
 
     /// The move-aside check only recognizes "the script path is the resolved
