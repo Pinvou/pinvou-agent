@@ -433,82 +433,91 @@ function hasLegacyTokenAlias(message) {
 // object whose version key appears twice, including escaped spellings.
 //
 // This runs on every inbound frame ahead of JSON.parse, so it must stay cheap:
-// string values are skipped without decoding, and a key is decoded only when
-// its raw text could possibly spell "v" (it is exactly "v" or contains an
-// escape). Anything the scanner lets through that is not valid JSON is still
-// rejected by the JSON.parse that follows.
-function assertNoDuplicateVersionKey(text) {
-  let cursor = 0;
-  const isWs = (c) => c === 32 || c === 9 || c === 10 || c === 13;
-  const skipWhitespace = () => {
-    while (cursor < text.length && isWs(text.charCodeAt(cursor))) cursor += 1;
-  };
-  // Jump to the next quote and treat it as the terminator unless it is
-  // preceded by an odd run of backslashes (an escaped quote).
-  const readString = (decodeKey) => {
-    const start = cursor;
-    let from = cursor + 1;
+// the scan allocates nothing for keys that cannot spell "v", and string values
+// are skipped without decoding. Anything the scanner lets through that is not
+// valid JSON is still rejected by the JSON.parse that follows.
+function isWsCharCode(code) {
+  return code === 32 || code === 9 || code === 10 || code === 13;
+}
+
+function skipWireWhitespace(text, cursor) {
+  while (cursor < text.length && isWsCharCode(text.charCodeAt(cursor))) cursor += 1;
+  return cursor;
+}
+
+// Jump to the next quote and treat it as the terminator unless it is
+// preceded by an odd run of backslashes (an escaped quote). Returns the
+// decoded key when decodeKey is set, else null.
+function readWireString(text, state, decodeKey) {
+  const start = state.cursor;
+  let from = start + 1;
+  for (;;) {
+    const quote = text.indexOf("\"", from);
+    if (quote === -1) throw new Error("unterminated string");
+    let j = quote - 1;
+    let backslashes = 0;
+    while (j > start && text.charCodeAt(j) === 92) { backslashes += 1; j -= 1; }
+    if (backslashes & 1) { from = quote + 1; continue; }
+    state.cursor = quote + 1;
+    if (!decodeKey) return null;
+    if (quote - start === 2 && text.charCodeAt(start + 1) === 118) return "v";
+    const escape = text.indexOf("\\", start + 1);
+    if (escape === -1 || escape >= quote) return null;
+    return JSON.parse(text.slice(start, state.cursor)) === "v" ? "v" : null;
+  }
+}
+
+function scanWireValue(text, state, depth) {
+  if (depth > MAX_WIRE_NESTING_DEPTH) throw new Error("nesting too deep");
+  state.cursor = skipWireWhitespace(text, state.cursor);
+  const head = text.charCodeAt(state.cursor);
+  if (head === 34) { readWireString(text, state, false); return; }
+  if (head === 123) {
+    state.cursor += 1;
+    let seenVersionKey = false;
+    state.cursor = skipWireWhitespace(text, state.cursor);
+    if (text.charCodeAt(state.cursor) === 125) { state.cursor += 1; return; }
     for (;;) {
-      const quote = text.indexOf("\"", from);
-      if (quote === -1) throw new Error("unterminated string");
-      let j = quote - 1;
-      let backslashes = 0;
-      while (j > start && text.charCodeAt(j) === 92) { backslashes += 1; j -= 1; }
-      if (backslashes & 1) { from = quote + 1; continue; }
-      cursor = quote + 1;
-      if (!decodeKey) return null;
-      const raw = text.slice(start, cursor);
-      if (raw.includes("\\")) return JSON.parse(raw);
-      return raw === "\"v\"" ? "v" : null;
-    }
-  };
-  const scanValue = (depth = 0) => {
-    if (depth > MAX_WIRE_NESTING_DEPTH) throw new Error("nesting too deep");
-    skipWhitespace();
-    const head = text.charCodeAt(cursor);
-    if (head === 34) { readString(false); return; }
-    if (head === 123) {
-      cursor += 1;
-      let seenVersionKey = false;
-      skipWhitespace();
-      if (text.charCodeAt(cursor) === 125) { cursor += 1; return; }
-      for (;;) {
-        skipWhitespace();
-        if (text.charCodeAt(cursor) !== 34) throw new Error("malformed object");
-        if (readString(true) === "v") {
-          if (seenVersionKey) throw new Error("duplicate version key");
-          seenVersionKey = true;
-        }
-        skipWhitespace();
-        if (text.charCodeAt(cursor++) !== 58) throw new Error("malformed object");
-        scanValue(depth + 1);
-        skipWhitespace();
-        const delimiter = text.charCodeAt(cursor++);
-        if (delimiter === 125) return;
-        if (delimiter !== 44) throw new Error("malformed object");
+      state.cursor = skipWireWhitespace(text, state.cursor);
+      if (text.charCodeAt(state.cursor) !== 34) throw new Error("malformed object");
+      if (readWireString(text, state, true) === "v") {
+        if (seenVersionKey) throw new Error("duplicate version key");
+        seenVersionKey = true;
       }
+      state.cursor = skipWireWhitespace(text, state.cursor);
+      if (text.charCodeAt(state.cursor++) !== 58) throw new Error("malformed object");
+      scanWireValue(text, state, depth + 1);
+      state.cursor = skipWireWhitespace(text, state.cursor);
+      const delimiter = text.charCodeAt(state.cursor++);
+      if (delimiter === 125) return;
+      if (delimiter !== 44) throw new Error("malformed object");
     }
-    if (head === 91) {
-      cursor += 1;
-      skipWhitespace();
-      if (text.charCodeAt(cursor) === 93) { cursor += 1; return; }
-      for (;;) {
-        scanValue(depth + 1);
-        skipWhitespace();
-        const delimiter = text.charCodeAt(cursor++);
-        if (delimiter === 93) return;
-        if (delimiter !== 44) throw new Error("malformed array");
-      }
+  }
+  if (head === 91) {
+    state.cursor += 1;
+    state.cursor = skipWireWhitespace(text, state.cursor);
+    if (text.charCodeAt(state.cursor) === 93) { state.cursor += 1; return; }
+    for (;;) {
+      scanWireValue(text, state, depth + 1);
+      state.cursor = skipWireWhitespace(text, state.cursor);
+      const delimiter = text.charCodeAt(state.cursor++);
+      if (delimiter === 93) return;
+      if (delimiter !== 44) throw new Error("malformed array");
     }
-    while (cursor < text.length) {
-      const c = text.charCodeAt(cursor);
-      if (c === 44 || c === 125 || c === 93 || isWs(c)) break;
-      cursor += 1;
-    }
-  };
-  scanValue();
-  skipWhitespace();
-  if (cursor !== text.length) throw new Error("trailing content");
+  }
+  while (state.cursor < text.length) {
+    const code = text.charCodeAt(state.cursor);
+    if (code === 44 || code === 125 || code === 93 || isWsCharCode(code)) break;
+    state.cursor += 1;
+  }
+}
+
+function assertNoDuplicateVersionKey(text) {
+  const state = { cursor: 0 };
+  scanWireValue(text, state, 0);
+  if (skipWireWhitespace(text, state.cursor) !== text.length) {
+    throw new Error("trailing content");
+  }
 }
 
 function validEndpointId(value) {
