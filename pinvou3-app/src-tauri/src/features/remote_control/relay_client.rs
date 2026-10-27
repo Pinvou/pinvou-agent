@@ -793,7 +793,6 @@ async fn run_loop(
 enum RelayTerminal {
     Revoked,
     Replaced,
-    Missing,
     /// The relay deterministically rejected the registration itself
     /// (`endpoint_revoked` tombstone, mismatched credentials, malformed
     /// register frame): retrying with the same persisted config can never
@@ -822,8 +821,12 @@ fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
             return None;
         }
         let code = value.get("code").and_then(Value::as_str);
+        // endpoint_not_found 是可恢复的:relay 丢失了该 endpoint 的内存状态
+        // (进程重启/TTL 清理),重连后的 register 会用同一 endpoint_id 与凭据
+        // 重建它,按普通断开走重连自愈;永久停止只会让 UI 静默冻结(且 reject
+        // 帧不带 endpoint_id,manager 入口本就丢弃,连原因都看不到)。
         return if code == Some("endpoint_not_found") {
-            Some(RelayTerminal::Missing)
+            None
         } else if code == Some("endpoint_revoked") {
             // 墓碑化 endpoint 的注册重试:与 desktop_endpoint_revoked 等价。
             Some(RelayTerminal::Revoked)
@@ -855,9 +858,17 @@ fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
 /// the durable entry stays for a later manual cleanup), which is why the
 /// boolean view deliberately excludes it.
 pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
+    if value.get("type").and_then(Value::as_str) == Some("error")
+        && value.get("code").and_then(Value::as_str) == Some("endpoint_not_found")
+    {
+        // The endpoint is already absent: the pending revocation is
+        // trivially confirmed even though the live loop must keep
+        // reconnecting.
+        return true;
+    }
     matches!(
         terminal_message(value, endpoint_id),
-        Some(RelayTerminal::Revoked | RelayTerminal::Replaced | RelayTerminal::Missing)
+        Some(RelayTerminal::Revoked | RelayTerminal::Replaced)
     )
 }
 
@@ -1247,6 +1258,8 @@ mod tests {
             Some(RelayTerminal::Replaced)
         );
         assert_eq!(
+            // endpoint_not_found 可恢复:重连后 register 重建 endpoint,
+            // 不终结连接(否则 UI 静默冻结且 manager 拿不到任何原因)。
             terminal_message(
                 &json!({
                     "type": "error",
@@ -1254,7 +1267,7 @@ mod tests {
                 }),
                 "ep_1"
             ),
-            Some(RelayTerminal::Missing)
+            None
         );
         // 终结判定只对已注册 endpoint 生效:他端点消息不得终结本连接
         // (原 terminal_messages_are_scoped_to_the_registered_endpoint)。
@@ -1327,6 +1340,11 @@ mod tests {
         // 凭据拒绝不能让回放把持久撤销条目当作已确认删掉。
         assert!(terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_revoked" }),
+            "ep_1"
+        ));
+        // endpoint 不存在同样等价于吊销已确认。
+        assert!(terminal_relay_message(
+            &json!({ "type": "error", "code": "endpoint_not_found" }),
             "ep_1"
         ));
         assert!(!terminal_relay_message(
