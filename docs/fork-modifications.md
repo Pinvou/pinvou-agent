@@ -179,6 +179,7 @@
 | `0bc868ff0` | T4 修复 | drain-cap 测试的四个名字（`drain_pipe`/`DRAIN_CAPTURE_CAP`/`DRAIN_CAP_TRUNCATED_NOTE`/`Arc`/`Mutex`）不再经 tests mod 的 unix 门控 glob（#77 同形）解析，改为显式导入：测试本身平台无关（tokio duplex），Windows lib test 编译此前 7 处 E0425/E0433（#95） |
 | `906ffa979` | T5 修复 | Windows 硬链接计数改走稳定句柄 API：`number_of_links` 仍 unstable（`windows_by_handle`），父仓 Windows 腿 E0658；以 `GetFileInformationByHandle` 读取（与 Runtime store 身份检查同机制），无法打开/查询按单链接放行、由归档写入端的流式读取大声暴露真实问题；unix/fallback 臂仅增加未用 path 参数保持单一调用点（#94） |
 | `7624cd3db` | T4 特性 | human-wait 墙钟暂停（自主 #75 剥离，按 12-agent 对抗复审重建）：可交付决策面（runtime API 的 `decide_approval`/`submit_user_input`）上的审批/用户输入等待窗暂停任务墙钟并让 idle 时钟窗闭后全新重计，TUI 私有任务运行时无投递通道故不武装该窗、墙钟照常到期；聚合 24h fail-safe 上限跨整任务求和，超限以 `HumanWaitTimeout` 终态；parked 轮询自 200ms 捕获节奏倍退至 2s 上限、决策到达广播提前唤醒；逐 claim 突变验证红绿互钉（#78） |
+| `f27672935` | T1 修复 | 同 wire model/protocol 的 model-aware 请求及 subagent/fleet rebind 保留宿主冻结 route limits，避免无宿主 overrides 的静态重解析将声明输出额度降回未知模型 8192 默认钳制；跨模型/协议继续重建（#107，公开提交未含 DCO trailer） |
 | `7d2636993` | T2 fix | Preserve shell defaults when task environment overlays are merged; explicit Windows names override case-insensitively. CodeWhale#115 adds generic overlay and Windows foreground/background Python stdio regressions; child-env sanitization and public signatures are unchanged. |
 | `e9a7f48da` | T2 fix | Preserve failed tool results as `is_error:true` during history recording. Existing upstream round-trip regression covers HTTP/tool errors, success and schema-loaded non-execution. CodeWhale#116; no public signature/dependency change. |
 | `ea9fdc90f` | T2 help/contract | Document the already supported Web JSONPath subset; one schema-description string changes, with a resultful parser-contract regression. No execution/parser/API/dependency change (CodeWhale#117). |
@@ -196,6 +197,7 @@
 
 - 对宿主公开 `AppMode`、`ApprovalMode`、Automation、Task、route 和 worker ledger API。当前兼容 facade 还包含 18 个 `pub mod`，父仓全部 Rust 源码中有 61 个文件、340 处直接引用；这些模块作为不稳定下游兼容桥刻意不进入生成 API 文档。这是已登记的收窄债务，不在本次热修中做破坏性改名。
 - `resolve_runtime_route_with_limits` 保留 wire model、context/output 上限与 embedding alias。
+- #107 的 `client.rs` 保留同模型请求及同 wire model/protocol rebind 的冻结宿主额度；跨模型仍重解析，协议改变仍走既有重建路径。本轮随集成分支继承已合入的底座修复，gitlink 无独有增量，不修改底座源码、配置或依赖；保留已有下列两条结果式测试和对应指纹，不新增底座测试。
 - `EngineConfig.session_id` 在 Engine spawn 前绑定，所有子智能体/工作流事件带 owner session 并由宿主按 owner 过滤。
 - `EngineHandle::steer` 返回 opaque id；`withdraw_steer` 区分已撤回与非 pending；中断、停止、压缩、换会话和 Engine drop 都使每个 id 恰好进入 committed/dropped 终态。
 - `CancelSubAgents` 对当前 session 的子智能体做幂等批量取消。
@@ -206,6 +208,8 @@
 ### 关键测试
 
 - `forkguard_embedding_route_limits_preserve_wire_alias`
+- `client::tests::model_aware_same_model_request_keeps_host_declared_route_limits`
+- `client::tests::rebinding_the_same_model_keeps_host_declared_route_limits`
 - `forkguard_steer_lifecycle_withdrawal_is_bounded_and_prevents_commit`
 - `forkguard_steer_lifecycle_late_withdraw_reconciles_committed_state`
 - `forkguard_steer_channel_commits_live_and_drops_withdrawn_input_in_turn_loop`
