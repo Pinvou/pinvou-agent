@@ -32,8 +32,9 @@ const MAX_PAYLOAD_BYTES = boundedInteger(
   4 * MIB,
   16 * MIB,
 );
-// Deepest frame a desktop can produce: serde_json parses at most 127 nested
-// containers, plus one wire envelope level. Deeper frames are rejected before
+// serde_json parses chains of at most 127 nested containers across the whole
+// frame, envelope included, so this cap deliberately sits above anything the
+// desktop could produce while still rejecting unbounded-depth frames before
 // JSON.parse, which alone would accept them.
 const MAX_WIRE_NESTING_DEPTH = 128;
 const MAX_ENDPOINTS = boundedInteger(

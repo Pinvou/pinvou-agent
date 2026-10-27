@@ -14,9 +14,10 @@ whose text repeats the `v` key in any object (including escaped spellings such
 as `"\u0076"`) is rejected as `bad_json` before parsing instead of being
 upgraded to whatever the last occurrence says. A frame that nests any value
 more than 128 levels deep is likewise rejected as `bad_json`; senders must keep
-nesting within this bound. One envelope level plus the 127 containers that
-serde_json can parse fits exactly, so a payload the desktop could deserialize
-is never rejected, but wrapping a parsed payload in further layers would be.
+nesting within this bound. serde_json parses chains of at most 127 containers
+across the whole frame, envelope included, so the cap deliberately sits above
+anything the desktop could deserialize: no parseable frame is rejected, while
+unbounded-depth frames are still caught before JSON.parse.
 Credentials belong only in the authentication messages. The browser link keeps
 its credentials in the URL fragment, which is never included in an HTTP request.
 On the wire, `access_token` is the only accepted access-token field; legacy
@@ -234,18 +235,24 @@ connection open.
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` or `PINVOU_REMOTE_TRUSTED_PROXY_IPS` aborts
   startup with `proxy_ip_configuration_invalid` instead of being ignored; a
   value with content that contains no address (for example `,,,`) is also
-  rejected. A blank value means an empty set: an empty
+  rejected. Entries are lowercased before matching, so an uppercase or
+  expanded IPv6 spelling is accepted at startup yet never matches a peer; use
+  the spelling the runtime reports. A blank value means an empty set: an empty
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. Only when
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` is unset does it fall back to
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting, the client address is
   the rightmost `X-Forwarded-For` item when the direct peer is a trusted proxy;
-  `X-Real-IP` is consulted only when `X-Forwarded-For` is entirely absent. The
+  `X-Real-IP` is consulted only when `X-Forwarded-For` is entirely absent, and
+  a present-but-unusable `X-Real-IP` falls back to the direct peer too. The
   forwarded header falls back to the direct peer address when its rightmost
-  item is empty or not an IP (an entirely empty header included), when it is
-  malformed, or when it exceeds 4096 characters. Repeated `X-Forwarded-For`
-  lines are joined into one list by the runtime, so the rightmost item of the
-  joined list is used; they are not a fallback case.
+  item is empty or not a literal IP of at most 128 characters (an entirely
+  empty header included), or when the whole header exceeds 4096 characters;
+  there is no separate "malformed header" fallback. Repeated
+  `X-Forwarded-For` lines are joined into one list by the runtime, so the
+  rightmost item of the joined list is used; they are not a fallback case. A
+  trusted proxy must set these headers itself and strip client-supplied ones;
+  a proxy that forwards them lets senders pick their rate-limit identity.
 - Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
   all WebSocket clients without a close handshake (peers observe an abnormal
   closure) and exit the process with code 0; in-flight HTTP responses are not

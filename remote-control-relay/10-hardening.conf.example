@@ -3,9 +3,14 @@
 # Entries must be literal IPs; anything else aborts startup
 # (proxy_ip_configuration_invalid). A blank or whitespace-only value means an
 # empty list: no source restriction for ALLOWED, no trusted proxy for
-# TRUSTED. Only an unset TRUSTED line falls back to the ALLOWED list. IPv6
-# zone-id spellings (fe80::1%eth0) parse only on runtimes whose isIP accepts
-# them (Node 22+); elsewhere such an entry aborts startup.
+# TRUSTED. Only an unset TRUSTED line falls back to the ALLOWED list. Entries
+# are lowercased before matching, so spell them the way the runtime reports
+# the peer address: an uppercase or expanded IPv6 form starts up but never
+# matches. IPv6 zone-id suffixes (fe80::1%eth0) are accepted on every
+# supported Node version and match only peers reporting the identical zone
+# string. A trusted proxy must set these forwarding headers itself; a proxy
+# that forwards client-supplied values lets senders pick their own
+# rate-limit identity.
 Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
 Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000
