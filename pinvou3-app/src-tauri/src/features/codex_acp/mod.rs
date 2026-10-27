@@ -1812,6 +1812,10 @@ impl InstallChildGuard {
     /// have handed to another process.
     fn settle_reaped(&mut self) {
         self.armed = false;
+        // The reaped pid no longer names a live process: drop the registry
+        // entry now so a user cancel during the post-wait tail cannot
+        // tree-kill by the freed pid (the Drop's removal then finds nothing).
+        self.install_children.lock().remove(&self.backend);
     }
 
     /// Best-effort reclaim of process-group survivors after the leader was
