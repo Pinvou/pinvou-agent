@@ -49,7 +49,7 @@ default = ["local-embed"]
 local-embed = ["pinvou-knowledge/local-embed"]
 dev-tools = []
 upgrade-host-lab = ["dep:pinvou-upgrade-host"]
-upgrade-host-production = ["dep:pinvou-upgrade-host"]
+upgrade-host-production = ["dep:pinvou-upgrade-host", "pinvou-upgrade-host/production"]
 benchmark-hooks = ["dep:agent-backend-api", "deepseek-tui/benchmark-eval-controls"]
 
 [build-dependencies]

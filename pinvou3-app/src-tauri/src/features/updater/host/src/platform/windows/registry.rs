@@ -3,6 +3,8 @@
 pub(super) mod budgets;
 pub(super) mod keeper;
 mod metadata;
+#[cfg(feature = "metadata-component-tests")]
+pub(super) mod metadata_component_tests;
 pub(super) mod preparation;
 pub(super) mod retention;
 pub(super) mod time;
@@ -21,6 +23,8 @@ use crate::{
     registration::{HostRegistration, PublicRegistration},
 };
 use std::{marker::PhantomData, ptr, rc::Rc};
+#[cfg(feature = "metadata-component-tests")]
+static INITIAL_COMMIT_FAULT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 use windows_sys::Win32::{
     Foundation::{
         ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, WAIT_ABANDONED,
@@ -858,10 +862,36 @@ impl Store {
         drop(history_root);
         drop(private);
         drop(parent);
+        #[cfg(feature = "metadata-component-tests")]
+        if expected.is_none()
+            && INITIAL_COMMIT_FAULT
+                .compare_exchange(
+                    1,
+                    0,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+        {
+            return Err(Error::Unavailable);
+        }
         if unsafe { CommitTransaction(transaction.raw()) } == 0 {
             return Err(Error::StateCommitUnknown);
         }
         drop(transaction);
+        #[cfg(feature = "metadata-component-tests")]
+        if expected.is_none()
+            && INITIAL_COMMIT_FAULT
+                .compare_exchange(
+                    2,
+                    0,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+        {
+            return Err(Error::StateCommitUnknown);
+        }
         // Flush ONLY fresh real committed nontransacted handles. Never claim
         // directory/power-loss certification, nor retry an ambiguous commit.
         let verify_committed = || -> Result<()> {

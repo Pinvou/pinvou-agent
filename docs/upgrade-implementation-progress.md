@@ -1,5 +1,16 @@
 # Upgrade implementation progress
 
+T27 Windows metadata component verification: an isolated, lab-only executable
+and a dedicated Windows CI job are designed to exercise the protected registry transaction and
+initial-state recovery without installing a service. The job requires an elevated
+token and fails if its fixture, production-feature exclusion, execution or success
+marker is invalid. The fixed public test Root and Seed are not production trust.
+The executable and its production-feature rejection were checked at compile time;
+the privileged component test and actual CI have not run. It does not prove the
+real installer claim, SCM integration, power-loss recovery or a complete T27 flow.
+No E2E was run. Windows CI is selected for applicable Ready PRs and main pushes;
+Merge Queue does not repeat this Windows component check on the combined tree.
+
 T27 Windows metadata bootstrap: new installation initializes a protected initial
 metadata state alongside the original trust anchor in the same registration
 transaction, then reopens and checks it. A revision-1 initial-install retry checks
@@ -9,7 +20,7 @@ This is initialization only: no production metadata acceptance or qualification
 consumer has been connected, and existing installations still require a separate
 migration before they can use that future consumer. Scoped source review passed;
 the targeted host test checks in-memory state comparison only. Real protected
-registry transactions, ACLs and recovery have not been verified; existing CI does
+registry transactions, ACLs and recovery have not been verified; previous CI does
 not cover those scenarios. No E2E was run, and T27 remains in progress.
 
 T27 Windows host observation: the installed-image diagnostic now reports the

@@ -52,6 +52,7 @@ async function prepareHostBuild(args, { environment = process.env, platform = pr
   const hostFeature = production ? PRODUCTION_HOST_FEATURE : HOST_FEATURE;
   const otherHostFeature = production ? HOST_FEATURE : PRODUCTION_HOST_FEATURE;
   if (features.includes(otherHostFeature)
+      || features.some((feature) => feature.split("/").at(-1) === "metadata-component-tests")
       || (production && features.some((feature) => feature.split("/").at(-1) === "native-acceptance-hooks"))) {
     refuse("HOST_BUILD_ARGUMENT_UNSUPPORTED");
   }

@@ -291,6 +291,36 @@ cargo test --manifest-path pinvou3-app/src-tauri/src/features/updater/host/Cargo
 
 Passing these tests or compiling the standalone roles does not qualify SCM installation, authenticated IPC, multiple users or crash recovery. Those scenarios require the isolated Windows guest; do not install or exercise the service on the development host.
 
+The Windows regression job also runs the `metadata-component-test` binary with an
+elevated administrator token. The dedicated test process redirects HKLM to a
+new protected test key under HKCU, and deletes that key through its retained
+handle. Missing elevation is a failure, not a skip. The actual Store transaction
+and protected ACL are exercised without installing a service or touching the
+product registry. Fault injection before commit and immediately after successful
+commit models rollback and a lost result; it does not reproduce an OS commit
+failure, power loss, or prove the complete source-installer claim path. The old
+Ready fixture is a synthesized legacy serialized shape, not an installed upgrade.
+Normal cleanup failures fail the test; abrupt process termination may leave its
+protected test key behind. The test feature accepts only the fixed lab inputs and
+is rejected when the production host feature is enabled or packaging is requested.
+
+`tests/metadata-component-fixture/{seed,root}.json` are public, lab-only test
+inputs. They were generated once with the command below, where the absolute
+output directory already exists and is empty. The generator refuses to overwrite
+the two output files and does not remove the directory:
+
+```powershell
+node scripts/metadata-component-fixture.mjs C:/temp/pinvou-public-test-fixture
+```
+
+The generator creates random test keys in memory
+and writes no private keys. Consequently a new run creates equivalent signed
+inputs but cannot reproduce these exact bytes. Their SHA-256 values are
+`8c8ff90906149a7f411c96211c66a36a5adab45009bf0a2e38cd241c7187f454`
+and `79c68c47565c54580fd41e00125650c227b8300eba7a99949e79dc1ec7848b25`,
+respectively. The production parser and metadata bootstrap verify their schema
+and signatures during the test; these inputs are never shipping trust material.
+
 ## Initial engineering preparation limits
 
 Fresh original registration atomically writes the protected, scope-bound budget

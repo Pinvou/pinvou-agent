@@ -171,6 +171,7 @@ test("enabled wrapper closes routes and preserves the default-off argument path"
   assert.match(plan.appBinary, /x86_64-pc-windows-msvc[\\/]release[\\/]pinvou3-tauri\.exe$/u);
   for (const args of [["build"], ["bundle", "--bundles", "nsis"], ["build", "--bundles", "msi"],
     ["build", "--bundles", "nsis", "--profile", "other"], ["build", "--bundles", "nsis", "--", "--anything"],
+    ["build", "--bundles", "nsis", "--features", "pinvou-upgrade-host/metadata-component-tests"],
     ["build", "--bundles", "nsis", "--target", "i686-pc-windows-msvc"]]) {
     await assert.rejects(prepareHostBuild(args, options));
   }

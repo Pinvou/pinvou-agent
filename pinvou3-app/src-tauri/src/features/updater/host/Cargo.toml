@@ -50,3 +50,10 @@ serde_json = "=1.0.154"
 [features]
 default = []
 native-acceptance-hooks = []
+production = []
+metadata-component-tests = []
+
+[[bin]]
+name = "metadata-component-test"
+path = "src/lib.rs"
+required-features = ["metadata-component-tests"]

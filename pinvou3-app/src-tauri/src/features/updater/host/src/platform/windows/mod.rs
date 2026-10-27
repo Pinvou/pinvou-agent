@@ -17,6 +17,10 @@ pub(crate) fn install_local() -> Result<u32> {
 mod layout;
 mod pipe;
 mod registry;
+#[cfg(feature = "metadata-component-tests")]
+pub(crate) fn metadata_component_test() {
+    registry::metadata_component_tests::run_isolated();
+}
 mod scm;
 mod source;
 

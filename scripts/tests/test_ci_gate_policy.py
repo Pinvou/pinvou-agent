@@ -820,6 +820,37 @@ class CiGatePolicyTests(unittest.TestCase):
                 else:
                     self.assertNotIn("if:", step)
 
+    def test_windows_metadata_component_is_a_required_routed_gate(self):
+        block = self.pr_workflow.split("            metadata_component:", 1)[1].split("            rust_code:", 1)[0]
+        patterns = _extract_quoted_paths(block)
+        for path in (
+            ".github/workflows/pr-check.yml",
+            "scripts/metadata-component-fixture.mjs",
+            "scripts/tests/test_ci_gate_policy.py",
+            "pinvou3-app/scripts/tauri/windows-host-profile.js",
+            "pinvou3-app/scripts/tauri/windows-host-build.js",
+            "pinvou3-app/tests/windows_host_packaging.test.js",
+            "pinvou3-app/src-tauri/src/features/updater/host/tests/metadata-component-fixture/root.json",
+            "pinvou3-app/src-tauri/src/features/updater/host/tests/metadata-component-fixture/seed.json",
+            "specs/upgrade/v1/reference/tests/fixtures.mjs",
+            "specs/upgrade/v1/schemas/metadata/root.json",
+        ):
+            self.assertTrue(_matches_paths_filter(path, patterns), path)
+        job = self.pr_workflow.split("\n  windows-metadata-component:", 1)[1].split("\n  windows-rust-test:", 1)[0]
+        step = job.split("- name: Check protected Windows metadata initialization", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("needs.changes.outputs.metadata_component == 'true'", job)
+        self.assertIn("github.event.pull_request.draft == false", job)
+        self.assertIn("WindowsBuiltInRole]::Administrator", step)
+        self.assertIn("Get-FileHash", step)
+        self.assertIn("--features metadata-component-tests --bin metadata-component-test", step)
+        self.assertIn("HOST_METADATA_TEST_PRODUCTION_REFUSED", step)
+        self.assertIn("$code -ne 0", step)
+        self.assertIn(".Count -ne 1", step)
+        self.assertNotIn("continue-on-error", step)
+        gate = self.pr_workflow.split("\n  required-gate:", 1)[1]
+        self.assertIn("- windows-metadata-component", gate)
+        self.assertIn('"$METADATA_COMPONENT_EXPECTED" == true && "$METADATA_COMPONENT_RESULT" != success', gate)
+
     def test_durable_metadata_qa_runs_actual_transaction_process_tests(self):
         root = "pinvou3-app/src-tauri/src/features/updater/protocol/acceptance"
         block = self.pr_workflow.split("            rust_code:", 1)[1].split("            rust_dependencies:", 1)[0]

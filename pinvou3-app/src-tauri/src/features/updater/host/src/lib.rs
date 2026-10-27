@@ -15,6 +15,15 @@ mod ipc;
 mod json;
 mod monotonic;
 mod platform;
+#[cfg(all(
+    feature = "metadata-component-tests",
+    target_os = "windows",
+    target_arch = "x86_64"
+))]
+fn main() {
+    platform::metadata_component_test();
+    println!("PINVOU_METADATA_COMPONENT_TEST_PASSED");
+}
 mod preparation_policy;
 mod profile;
 mod registration;
