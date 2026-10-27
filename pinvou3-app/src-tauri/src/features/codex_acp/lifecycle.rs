@@ -8,7 +8,9 @@
 //! removed atomically in the same critical section ([`resolve_runtime`]), and
 //! [`RuntimeCrashBudget`] backs off repeated respawns of a runtime that keeps
 //! exiting so a broken install cannot turn every UI access into a tight
-//! respawn loop.
+//! respawn loop. The budget is per session: one broken install with N
+//! resident sessions admits up to N×3 attempts per window (no global cap),
+//! so one session's throttle never blocks another session's first spawn.
 //!
 //! Budget schedule, per session, inside a 60 s window: the first crash
 //! respawns immediately; from the second crash a respawn waits 250 ms after
@@ -22,7 +24,11 @@
 //! (`incoming_closed`), which resolves only once every writer of the runtime
 //! child's stdout pipe is gone. A child that exits while a forked descendant
 //! keeps the pipe open stays `running` here; the stall watchdog (with a turn
-//! in flight) or the idle reaper still reclaims it later.
+//! in flight) or the idle reaper still reclaims it later. Such a blind exit
+//! is classified as a stall when reclaimed (`was_running` is still true), so
+//! it clears rather than feeds the crash budget: a blind crash-loop cycles at
+//! the stall-watchdog cadence without the respawn backoff, until the
+//! descendant lets the pipe close.
 //!
 //! Ported from the official fork's `codex_acp/lifecycle.rs` (crash-budget
 //! core). The controller-only custody helpers that share the upstream file

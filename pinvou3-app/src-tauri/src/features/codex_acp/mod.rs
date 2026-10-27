@@ -4553,6 +4553,13 @@ impl AcpPool {
             if matches!(taken, RebindEvictTake::NoRuntime) {
                 self.cancel_runtime_pending_cards(session_id, None).await;
             }
+            // Deliberately no budget/disclosure clear on this arm, unlike
+            // the Reclaimed arm below: there is no runtime to retire, and a
+            // rebind does not repair a broken install, so an accumulated
+            // backoff staying armed is the honest state (and a parked
+            // disclosure still fires when the rebuild eventually succeeds).
+            // Clearing here would let a rebind be used to bypass the
+            // tight-loop throttle.
             return matches!(taken, RebindEvictTake::NoRuntime);
         };
         self.acp_metadata_backends.write().remove(session_id);
