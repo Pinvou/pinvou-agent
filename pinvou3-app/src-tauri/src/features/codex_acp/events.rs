@@ -989,7 +989,7 @@ impl EventBridge {
         self.emit_with_turn(self.current_turn.read().clone(), event_type, data)
     }
 
-    fn emit_with_turn(
+    pub(super) fn emit_with_turn(
         &self,
         turn_id: Option<String>,
         event_type: &str,

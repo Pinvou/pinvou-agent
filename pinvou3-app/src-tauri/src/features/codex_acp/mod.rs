@@ -4341,9 +4341,11 @@ impl AcpPool {
                     // the watchdog has to settle locally. This is a journal
                     // record only — acp-state `lastStatus` is not patched and
                     // the UI renders no cancelling state from it.
-                    runtime
-                        .bridge
-                        .emit("cancel_requested", json!({ "status": "cancelling" }));
+                    runtime.bridge.emit_with_turn(
+                        turn_id.clone(),
+                        "cancel_requested",
+                        json!({ "status": "cancelling" }),
+                    );
                     // Stop cannot wait forever for the agent. An upstream adapter
                     // may never answer a dropped or absorbed prompt; field evidence
                     // showed four clicks before its own cancel floor settled it.
