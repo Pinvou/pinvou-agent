@@ -3242,7 +3242,8 @@ pub fn enable_packages_in_scope(
                 // likely not installed/known yet, so there is nothing to persist).
                 // A batch whose ids are all connect-granted (already on) lands
                 // here too but reports nothing and warns about nothing: the
-                // opt-in is already material, there is just no row delta. The
+                // opt-in is already material, there is just no row delta (the
+                // standing grant's token is committed below). The
                 // warn names only the NOT-applied ids: in a mixed batch the
                 // granted member did match (it is already on), so warning
                 // about the whole request would be false.
@@ -3256,6 +3257,33 @@ pub fn enable_packages_in_scope(
             let before = hidden.len();
             hidden.retain(|id| !ids.contains(id));
             changed |= hidden.len() != before;
+        }
+        // An explicit enable also COMMITS the standing connect grant it
+        // acknowledges (review P2). A connect that granted and is still
+        // materializing leaves its ownership token beside the standing
+        // entry, so its compensating revoke can still match — and the
+        // enable used to acknowledge the already-on pack (empty
+        // blocked/not_applied, no row delta) WITHOUT touching that token:
+        // the connect's later failure then stripped the consent the user's
+        // own explicit opt-in just re-affirmed, disabling the connector
+        // behind a successful enable report. The enable is the newest
+        // verdict, so this same transaction clears the pending token — the
+        // same single mutation `commit_relied_connect_grant` performs for
+        // completions — and the older operation's revoke stops matching.
+        // This deliberately outranks operation ownership: the commit path's
+        // `Superseded` exception protects a newer OWNER's own failure
+        // compensation, while a user gesture needs no failure compensation
+        // of its own. Later user verdicts stay supreme — the blocked
+        // refusal above returns before this runs, and a composer
+        // toggle-off still removes the grant (and its ledger pair) whole.
+        // Grant, ledger, and rows are untouched; the token removal makes
+        // the standing consent permanent, nothing else.
+        for id in ids.iter() {
+            if file.connect_granted.contains(id)
+                && file.connect_grant_tokens.remove(id).is_some()
+            {
+                changed = true;
+            }
         }
         // An explicit enable also RECORDS the ledger
         // pair. The connect/install sync normally wrote it first (the
@@ -4339,6 +4367,144 @@ mod tests {
         });
     }
 
+    /// Review P2 (welcome enable vs an older pending connect): a connect
+    /// granted and is still materializing when the user's explicit
+    /// welcome-card enable acknowledges the already-on pack (empty
+    /// blocked/not_applied — the granted id matches no expansion row). The
+    /// enable used to leave the connect's ownership token standing, so the
+    /// materialization failure's compensating revoke later stripped the
+    /// consent AFTER the explicit opt-in — the connector went dark behind a
+    /// successful enable report. The enable must commit the token in the
+    /// same transaction (fresh-home cohort: grant + ledger pair are the
+    /// whole consent shape).
+    #[test]
+    fn welcome_enable_commits_the_pending_connect_grant_it_acknowledges() {
+        with_temp_home("pinvou3-scope-welcome-commit-fresh", || {
+            // Connect A granted; its materialization is in flight.
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_a.granted,
+                "fixture: the connect grant lands on a fresh home: {grant_a:?}"
+            );
+
+            // The welcome action's explicit enable runs while A is applying.
+            let outcome =
+                enable_packages_in_scope(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            assert!(
+                outcome.blocked.is_empty() && outcome.not_applied.is_empty(),
+                "the enable must acknowledge the granted pack as enabled: {outcome:?}"
+            );
+
+            // A's materialization now fails; its owning revoke must no
+            // longer match the grant the explicit enable committed.
+            revoke_connect_enable(&grant_a).unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the stale revoke must not strip the consent the explicit enable committed: {file:?}"
+            );
+            assert!(
+                file.install_default_synced
+                    .iter()
+                    .any(|entry| entry.ends_with(":feishu")),
+                "the ledger pair must survive with the grant: {file:?}"
+            );
+            assert!(
+                !resolve_scope_disabled_ids(&file, ConnectorScope::Plain)
+                    .contains(&"feishu".to_string()),
+                "the uninitialized plain scope must keep computing the connector ON"
+            );
+        });
+    }
+
+    /// The initialized-scope half of the same hole: the connect's GESTURE
+    /// grant lifted a stored default-off row, so the stored list no longer
+    /// names the id and the enable takes the applied path (it even records
+    /// the ledger pair) — but it still left the token standing, and the
+    /// failure revoke re-added the lifted row behind the explicit opt-in.
+    #[test]
+    fn welcome_enable_commits_the_pending_grant_in_an_initialized_scope() {
+        with_temp_home("pinvou3-scope-welcome-commit-init", || {
+            // Upgrade-cohort shape: an initialized plain scope holding an
+            // install-default row for feishu (row + marker, no ledger pair —
+            // a no-ledger row is exactly what a gesture grant lifts).
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+            std::fs::write(
+                &store,
+                r#"{"scopes":{"plain":["feishu"]},"default_off_scopes":{"plain":["feishu"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+
+            // Connect A's gesture lifts the stale default-off row.
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_a.granted && grant_a.lifted_scopes.iter().any(|k| k == "plain"),
+                "fixture: the gesture grants and lifts plain's default-off row: {grant_a:?}"
+            );
+
+            // The welcome enable acknowledges the lifted (already-on) pack.
+            let outcome =
+                enable_packages_in_scope(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            assert!(
+                outcome.blocked.is_empty() && outcome.not_applied.is_empty(),
+                "the enable must acknowledge the lifted pack: {outcome:?}"
+            );
+
+            // A's failure compensation must not re-add the row the explicit
+            // enable acknowledged.
+            revoke_connect_enable(&grant_a).unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the stale revoke must not strip the committed consent: {file:?}"
+            );
+            assert!(
+                !file
+                    .scopes
+                    .get("plain")
+                    .is_some_and(|list| list.iter().any(|id| id == "feishu")),
+                "the lifted row must not come back behind the explicit enable: {file:?}"
+            );
+        });
+    }
+
+    /// The commit outranks operation ownership on purpose: the enable is a
+    /// USER verdict, not a completion, so it commits even a replacement
+    /// owner's token. The `Superseded` exception on
+    /// `commit_relied_connect_grant` protects an in-flight operation's own
+    /// failure compensation; a user gesture needs no failure compensation,
+    /// and a later verdict write still removes the grant whole.
+    #[test]
+    fn welcome_enable_commits_even_a_replacement_owners_token() {
+        with_temp_home("pinvou3-scope-welcome-commit-replace", || {
+            let grant_a = grant_connect_enable_inner("feishu", false).unwrap();
+            assert!(grant_a.granted, "fixture: the first connect grants");
+            // Teardown + reconnect: A's consent is swept and a replacement
+            // connect lands a fresh ownership token.
+            revoke_connect_enable(&grant_a).unwrap();
+            let grant_b = grant_connect_enable_inner("feishu", false).unwrap();
+            assert!(
+                grant_b.granted && grant_b.grant_token != grant_a.grant_token,
+                "fixture: the reconnect owns a fresh token: {grant_b:?}"
+            );
+
+            enable_packages_in_scope(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+
+            // BOTH operations' revokes are now stale — the user's explicit
+            // enable owns the consent.
+            revoke_connect_enable(&grant_a).unwrap();
+            revoke_connect_enable(&grant_b).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "neither stale revoke may strip the consent the user's enable committed: {file:?}"
+            );
+        });
+    }
+
     /// The disclosed global-grant asymmetry, pinned: a composer toggle-off in
     /// ONE scope removes the grant for ALL still-uninitialized scopes
     /// (fail-closed) — plain's computed expansion must re-deny the id even
@@ -4519,10 +4685,13 @@ mod tests {
     }
 
     /// The grant-aware reporting leg of the enable path: a connect-granted id
-    /// is already ON, so requesting it must not be reported `not_applied` (and
-    /// must persist nothing), while a genuinely unknown id in the same batch
-    /// still is. Dropping the grant conjunct from the not-applied filter
-    /// fails here. (The warn wording is NOT pinned — `log::warn!` content is
+    /// is already ON, so requesting it must not be reported `not_applied`,
+    /// while a genuinely unknown id in the same batch still is. Dropping the
+    /// grant conjunct from the not-applied filter fails here. The granted id
+    /// adds no row and materializes no scope, but its standing ownership
+    /// token IS committed (the review-P2 commit), so the batch persists
+    /// exactly that one mutation and `state_changed` reports it.
+    /// (The warn wording is NOT pinned — `log::warn!` content is
     /// unasserted; round-1 review corrected this doc's over-claim.)
     #[test]
     fn enable_reporting_treats_a_connect_granted_id_as_applied() {
@@ -4542,13 +4711,21 @@ mod tests {
                 "only the unknown id may be reported not applied: {outcome:?}"
             );
             assert!(
-                !outcome.state_changed,
-                "an all-granted batch persists nothing — the opt-in is already material"
+                outcome.state_changed,
+                "the batch persists the granted id's token commit (fail-visible)"
             );
             let file = load_disabled_bundles_file();
             assert!(
                 file.scopes.get("plain").is_none() && !file.initialized.contains("plain"),
                 "the reporting path must not materialize the scope as a side effect: {file:?}"
+            );
+            assert!(
+                !file.connect_grant_tokens.contains_key("feishu"),
+                "the explicit enable commits the standing ownership token: {file:?}"
+            );
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the grant itself must survive untouched: {file:?}"
             );
         });
     }
