@@ -1,5 +1,17 @@
 # Upgrade implementation progress
 
+T27 Windows metadata bootstrap: new installation initializes a protected initial
+metadata state alongside the original trust anchor in the same registration
+transaction, then reopens and checks it. A revision-1 initial-install retry checks
+the state again; existing Ready installations retain ordinary host access. Older
+unfinished revision-1 registrations without the new state refuse continuation.
+This is initialization only: no production metadata acceptance or qualification
+consumer has been connected, and existing installations still require a separate
+migration before they can use that future consumer. Scoped source review passed;
+the targeted host test checks in-memory state comparison only. Real protected
+registry transactions, ACLs and recovery have not been verified; existing CI does
+not cover those scenarios. No E2E was run, and T27 remains in progress.
+
 T27 Windows host observation: the installed-image diagnostic now reports the
 native machine architecture and Windows version from system APIs, sampling before
 and after the existing identity and service checks. The result is diagnostic data,

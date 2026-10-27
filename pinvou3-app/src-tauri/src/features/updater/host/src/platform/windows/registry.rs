@@ -2,6 +2,7 @@
 //! Files/SCM are outside this transaction and are recovered from original intent.
 pub(super) mod budgets;
 pub(super) mod keeper;
+mod metadata;
 pub(super) mod preparation;
 pub(super) mod retention;
 pub(super) mod time;
@@ -505,6 +506,49 @@ impl Store {
     pub(super) fn read(&self, seed: &Seed) -> Result<Option<HostRegistration>> {
         self.read_in(seed, None)
     }
+    /// Recheck a revision-one first-install intent before either resuming it
+    /// or changing its installer. The caller holds the bootstrap mutex.
+    #[allow(unsafe_code)]
+    pub(super) fn verify_initial_metadata(
+        &self,
+        seed: &Seed,
+        expected: &HostRegistration,
+    ) -> Result<()> {
+        if expected.revision != 1 {
+            return Err(Error::ScopeConflict);
+        }
+        let key = self.key(false, None)?.ok_or(Error::SetupIncomplete)?;
+        let public = self.public_key(None)?.ok_or(Error::SetupIncomplete)?;
+        let history = open(
+            key.0,
+            &format!("history\\{}", revision_name(1)),
+            false,
+            None,
+        )?
+        .ok_or(Error::StateCorrupt)?;
+        if unsafe { RegFlushKey(key.0) } != 0
+            || unsafe { RegFlushKey(public.0) } != 0
+            || unsafe { RegFlushKey(history.0) } != 0
+        {
+            return Err(Error::StateCommitUnknown);
+        }
+        metadata::verify_fresh_in(&key, seed, expected)?;
+        let actual = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
+        if actual.digest()? != expected.digest()? {
+            return Err(Error::ScopeConflict);
+        }
+        budgets::verify_fresh_in(&key, &actual)?;
+        preparation::verify_fresh_in(&key, &actual)?;
+        writers::verify_fresh_in(&key, &actual)?;
+        keeper::verify_fresh_in(&key, &actual)?;
+        retention::verify_fresh_in(&key, &actual)?;
+        time::verify_fresh_policy_in(&key, &actual)?;
+        let time = self.time_load(seed, &actual)?;
+        if time.state.revision != 1 || time.state.floor.is_some() || !time.state.cleanup_pending {
+            return Err(Error::StateCorrupt);
+        }
+        Ok(())
+    }
     fn read_in(
         &self,
         seed: &Seed,
@@ -788,6 +832,7 @@ impl Store {
                 owners.ownership.record_bytes(),
             )?;
             owner_bootstrap_in(&private, seed, next)?;
+            metadata::initialize_in(&private, &transaction, seed, next)?;
             time::initialize_in(&private, &transaction, next)?;
             budgets::initialize_in(&private, &transaction, next)?;
             preparation::initialize_in(&private, &transaction, next)?;
@@ -840,6 +885,7 @@ impl Store {
                 return Err(Error::StateCommitUnknown);
             }
             if expected.is_none() {
+                metadata::verify_fresh_in(&key, seed, &actual)?;
                 // Fresh time genesis is part of the original definitive commit,
                 // not a later best-effort initializer or an adopted empty scope.
                 budgets::verify_fresh_in(&key, &actual)?;

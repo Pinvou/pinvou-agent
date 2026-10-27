@@ -57,6 +57,12 @@ fn bound(record: &HostRegistration, source: &Source) -> Result<()> {
 }
 fn claim(source: &Source, store: &Store, record: HostRegistration) -> Result<HostRegistration> {
     bound(&record, source)?;
+    // Revision one is the original first-install intent, including an unknown
+    // commit outcome. Old unfinished revision-one installs are indistinguishable
+    // and must not be silently initialized or adopted here.
+    if record.revision == 1 {
+        store.verify_initial_metadata(&source.seed, &record)?;
+    }
     if same_installer(&record, source) {
         return Ok(record);
     }
