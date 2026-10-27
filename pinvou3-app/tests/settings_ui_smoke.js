@@ -587,6 +587,40 @@ async function modalWidth(page, headingText) {
   await sleep(400);
   rec('① 设置页可打开且无错误边界', await page.evaluate(() => document.body.innerText.includes('通用') && !document.body.innerText.includes('设置页加载失败')));
 
+  // Exercise the app shell -> SettingsView callback and actual bridge payload:
+  // an explicit light preference must not follow a darkened OS, "system"
+  // saves the authoritative color_scheme plus the legacy theme mirror, and an
+  // explicit dark pick overrides a light OS.
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+  // The .dark class is toggled from a passive useEffect on the media query,
+  // so an absence assertion needs the media change to be observed and one
+  // render committed first — otherwise the check can read the pre-effect DOM
+  // and vacuously pass exactly when explicit light wrongly follows the OS.
+  await page.waitForFunction(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  await page.evaluate(() => new Promise(resolve => {
+    requestAnimationFrame(() => { requestAnimationFrame(resolve); });
+  }));
+  await sleep(200);
+  rec('① 旧显式浅色偏好不随系统变深', await page.evaluate(() => !document.documentElement.classList.contains('dark')));
+  await clickExact(page, '跟随系统');
+  await page.waitForFunction(() => document.documentElement.classList.contains('dark')
+    && window.__SETTINGS_TEST__.settings().color_scheme === 'system');
+  rec('① 跟随系统保存权威偏好并兼容旧主题字段', await page.evaluate(() =>
+    window.__SETTINGS_TEST__.settings().theme === 'genesis'));
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }]);
+  await page.waitForFunction(() => !document.documentElement.classList.contains('dark'));
+  await clickExact(page, '深色');
+  await page.waitForFunction(() => document.documentElement.classList.contains('dark')
+    && window.__SETTINGS_TEST__.settings().color_scheme === 'dark');
+  rec('① 显式深色覆盖系统浅色', await page.evaluate(() =>
+    window.__SETTINGS_TEST__.settings().theme === 'genesis'));
+  await clickExact(page, '浅色');
+  await page.waitForFunction(() => !document.documentElement.classList.contains('dark')
+    && window.__SETTINGS_TEST__.settings().color_scheme === 'light');
+  rec('① 显式浅色恢复初始偏好与旧主题镜像', await page.evaluate(() =>
+    window.__SETTINGS_TEST__.settings().color_scheme === 'light'
+      && window.__SETTINGS_TEST__.settings().theme === 'liquid-light'));
+
   const voiceShortcutRow = await page.evaluate(() => {
     const row = [...document.querySelectorAll('div')].filter(node => (node.textContent || '').includes('启用 Alt 唤醒语音') && node.querySelector('[role="switch"]')).pop();
     const button = row && row.querySelector('[role="switch"]');

@@ -1,3 +1,17 @@
+# Windows runtime manifest contract suite. Scope note: production already
+# consumes the contract library directly -- resolve-runtime.ps1 runs
+# Assert-WindowsRuntimeStagedFilesDeclared on every manifest read and
+# Assert-WindowsRuntimeStagedFilesExact inside Stage-Submodule, and that
+# production wiring is itself pinned by tests/windows_runtime_packaging_
+# contract.test.js. This suite is the library's direct test home (per-throw-
+# site negative cases), run via `npm run test:windows-runtime-manifest` in
+# pr-check's Windows job.
+#
+# The Write-Utf8Atomically assertions below (atomic write / FILE_SHARE_DELETE
+# / litter cleanup) dot-source resolve-runtime.ps1 -ImportFunctionsOnly,
+# which runs its top-level lock validation (read-only, and it passes against
+# the checked-in x86_64.lock.json) before returning ahead of all staging
+# work, so no further resolve-runtime.ps1 parity is required for them.
 $ErrorActionPreference = "Stop"
 
 . (Join-Path $PSScriptRoot "runtime-manifest-contract.ps1")
@@ -122,19 +136,41 @@ try {
       -StageRoot $schema2Root
   }
 
-  foreach ($invalidPath in @(
+  # Pattern is per-throw-site (not the shared word "canonical") so a regression
+  # in one guard cannot be masked by the other one throwing instead. The
+  # whole-path guard's whitespace-only case and the segment guard's
+  # trailing-dot / colon (ADS) / trailing-whitespace cases previously shipped
+  # without direct assertions -- a guard regression there passed the suite
+  # while staging validation weakened.
+  foreach ($wholePathViolation in @(
     "/absolute.txt",
     "C:/absolute.txt",
-    "payload//archive.zip",
-    "payload/./archive.zip",
-    "payload/../archive.zip",
-    "payload\archive.zip"
+    "payload\archive.zip",
+    "   "
   )) {
-    Assert-Throws -Name "schema2 non-canonical path $invalidPath" -MessagePattern "canonical" -Action {
+    Assert-Throws -Name "schema2 non-canonical path $wholePathViolation" -MessagePattern "must be a canonical relative path" -Action {
       Assert-WindowsRuntimeStagedFilesExact `
         -Manifest ([pscustomobject]@{
           schemaVersion = 2
-          stagedFiles = @([pscustomobject]@{ path = $invalidPath; bytes = 1; sha256 = ("0" * 64) })
+          stagedFiles = @([pscustomobject]@{ path = $wholePathViolation; bytes = 1; sha256 = ("0" * 64) })
+        }) `
+        -StageRoot $schema2Root
+    }
+  }
+
+  foreach ($segmentViolation in @(
+    "payload//archive.zip",
+    "payload/./archive.zip",
+    "payload/../archive.zip",
+    "payload/archive.zip.",
+    "payload /archive.zip",
+    "payload/arch:ive.zip"
+  )) {
+    Assert-Throws -Name "schema2 non-canonical segment $segmentViolation" -MessagePattern "non-canonical segment" -Action {
+      Assert-WindowsRuntimeStagedFilesExact `
+        -Manifest ([pscustomobject]@{
+          schemaVersion = 2
+          stagedFiles = @([pscustomobject]@{ path = $segmentViolation; bytes = 1; sha256 = ("0" * 64) })
         }) `
         -StageRoot $schema2Root
     }

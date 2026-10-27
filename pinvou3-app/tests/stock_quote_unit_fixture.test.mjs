@@ -63,3 +63,17 @@ test('missing fields fall back to -- without toFixed crashes', () => {
   assert.ok((html.match(/--/g) || []).length >= 4, 'missing changePercent/open/high/low render --');
   assert.ok(!html.includes('NaN'), 'no NaN may leak into the card');
 });
+
+test('explicit null fields render -- instead of crashing on toFixed', () => {
+  // The real-world crash shape: the broken global-isNaN variant carried no
+  // null short-circuit at all (isNaN(null) === false, so null.toFixed
+  // throws), while undefined always rendered '--' (isNaN(undefined) ===
+  // true). Pin the null case explicitly — the undefined fixture alone never
+  // catches that regression.
+  const html = renderToStaticMarkup(React.createElement(StockQuoteCard, {
+    data: { name: '贵州茅台', code: '600519', price: null, changePercent: null, open: null, high: null, low: null },
+    t,
+  }));
+  assert.ok((html.match(/--/g) || []).length >= 5, 'null price/changePercent/open/high/low all render --');
+  assert.ok(!html.includes('NaN'), 'no NaN may leak into the card');
+});

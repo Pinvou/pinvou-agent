@@ -792,6 +792,23 @@ assert.doesNotMatch(
   "public Windows runtime builds must not depend on cross-repository credentials",
 );
 assert.match(windowsBuildJob, /npm run runtime:windows:init/);
+// The installer integration test self-skips unless the runtime is staged and
+// it is invoked directly with --require-staged-runtime (node --test drops the
+// flag); without these pins a dropped or reordered step would make it skip
+// silently forever instead of failing.
+const windowsInitStep = windowsBuildJob.indexOf("npm run runtime:windows:init");
+const windowsStageStep = windowsBuildJob.indexOf("npm run runtime:windows:stage");
+const windowsInstallerTestStep = windowsBuildJob.indexOf(
+  "node tests/windows_runtime_installer_integration.test.js --require-staged-runtime",
+);
+assert.ok(
+  windowsStageStep > windowsInitStep,
+  "the release job must stage the Windows runtime after materializing the submodule",
+);
+assert.ok(
+  windowsInstallerTestStep > windowsStageStep,
+  "the installer integration test must run directly, after the runtime is staged",
+);
 assert.doesNotMatch(
   windowsBuildJob,
   /runtime-access|available == 'true'|available != 'true'/,

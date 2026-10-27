@@ -23,7 +23,18 @@ const docs = files.filter(
   (f) => path.basename(f).toLowerCase().endsWith(".md") && !path.basename(f).startsWith("NOTICE"),
 );
 const read = (f) => fs.readFileSync(f, "utf8");
-const rel = (f) => path.relative(root, f);
+// Windows checkouts produce backslash separators from path.relative, and
+// the consumers compare against repository-form ('/') literals: rule 6's
+// `binsByPack` prefixes silently vacuous-skipped every pack, while rule
+// 10's dws `endsWith` self-check failed loud-red. Every path.relative
+// result is normalized before use; assertion messages merely benefit from
+// the same.
+const repositoryRelative = (relative) => relative.replace(/\\/g, "/");
+const rel = (f) => repositoryRelative(path.relative(root, f));
+for (const relative of ["dingtalk-skills/dws/scripts/calendar_schedule_meeting.py",
+  "dingtalk-skills\\dws\\scripts\\calendar_schedule_meeting.py"]) {
+  assert.equal(repositoryRelative(relative), "dingtalk-skills/dws/scripts/calendar_schedule_meeting.py");
+}
 // 规则 1/4 判定前剥掉 URL 与行内代码段:黑名单/宿主断言是子串匹配,上游正文
 // 在 URL(如 …/recovery-guide)或代码标识符中合法出现这些词不是违例。
 const stripAnchors = (line) =>
@@ -202,7 +213,7 @@ const scanLarkAuthLogin = (text) => {
   return null;
 };
 
-for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
+for (const f of docs.filter((f) => repositoryRelative(path.relative(bundle("lark-skills"), f)).startsWith("lark-"))) {
   const violation = scanLarkAuthLogin(read(f));
   if (violation) assert.fail(`${rel(f)}: ${violation}`);
 }
@@ -293,7 +304,7 @@ const binsByPack = {
   "tmeet-skills/tmeet-skill": "tmeet",
 };
 for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
-  const relPath = path.relative(bundle(), f);
+  const relPath = repositoryRelative(path.relative(bundle(), f));
   const match = Object.keys(binsByPack).find((prefix) => relPath.startsWith(prefix));
   if (!match) continue; // visual-design 等本地技能不适用
   const text = read(f);
