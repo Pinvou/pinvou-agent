@@ -3570,6 +3570,12 @@ impl AcpPool {
             self.cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))
                 .await;
             runtime.shutdown().await;
+            // The teardown events (card settlement, shutdown side) must be
+            // durable before a replacement EventBridge seeds its sequence
+            // from the journal — same invariant as the get_or_spawn Dead
+            // arm: a concurrent get_or_spawn can republish this session
+            // while the loop is still walking its tail.
+            runtime.bridge.flush_journal();
         }
     }
 
