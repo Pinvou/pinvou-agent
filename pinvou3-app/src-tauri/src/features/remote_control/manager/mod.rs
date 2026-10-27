@@ -256,6 +256,24 @@ fn revoke_host_workspace_state(inner: &mut Inner) {
     inner.web_workspace_grants.clear();
 }
 
+/// 注册类 error 帧的可操作恢复提示。版本不匹配的正确恢复路径是更新桌面
+/// 端——轮换只会铸出同一协议版本的新 endpoint,「rotate」提示在那里是
+/// 错误指引。
+fn relay_registration_error_reason(error_code: &str, relay_message: &str) -> String {
+    match error_code {
+        "invalid_access_token" | "invalid_desktop_secret" => {
+            format!("{relay_message}; rotate Web access to mint a fresh endpoint")
+        }
+        "bad_desktop_endpoint_register" => format!(
+            "{relay_message}; the persisted Web access config is unusable, rotate Web access to recover"
+        ),
+        "unsupported_protocol_version" => format!(
+            "{relay_message}; update this desktop to the latest version to restore Web access"
+        ),
+        _ => relay_message.to_string(),
+    }
+}
+
 fn rpc_request_targets_active_lease(inner: &Inner, lease_id: &str) -> bool {
     inner
         .endpoint
@@ -2029,16 +2047,10 @@ impl RemoteControlManager {
                 // 路径,并且该原因必须保持粘性(run_loop 终止路径不再发送
                 // Connection 事件,last_error 不会被「relay connection lost」
                 // 覆盖)。
-                let error = match error_code {
-                    "invalid_access_token" | "invalid_desktop_secret" => {
-                        format!("{relay_message}; rotate Web access to mint a fresh endpoint")
-                    }
-                    "bad_desktop_endpoint_register" => format!(
-                        "{relay_message}; the persisted Web access config is unusable, rotate Web access to recover"
-                    ),
-                    _ => relay_message.to_string(),
-                };
-                self.set_endpoint_error(error);
+                self.set_endpoint_error(relay_registration_error_reason(
+                    error_code,
+                    relay_message,
+                ));
             }
             _ => {}
         }
@@ -4873,6 +4885,31 @@ mod tests {
             "an already-minted grant must not stay redeemable after revoke"
         );
         std::fs::remove_dir_all(staging).ok();
+    }
+
+    #[test]
+    fn registration_error_reasons_are_actionable() {
+        // 凭据被拒 → 轮换;配置不可用 → 轮换恢复;版本不匹配 → 更新桌面端
+        // (轮换无济于事);其余码原样保留 relay 文本。
+        assert!(relay_registration_error_reason("invalid_access_token", "denied")
+            .contains("rotate Web access"));
+        assert!(relay_registration_error_reason("invalid_desktop_secret", "denied")
+            .contains("rotate Web access"));
+        assert!(relay_registration_error_reason("bad_desktop_endpoint_register", "rejected")
+            .contains("rotate Web access"));
+        let version = relay_registration_error_reason(
+            "unsupported_protocol_version",
+            "protocol version 2 is required",
+        );
+        assert!(
+            version.contains("update this desktop"),
+            "version mismatch must point at updating, not rotating: {version}"
+        );
+        assert!(!version.contains("rotate"));
+        assert_eq!(
+            relay_registration_error_reason("endpoint_capacity_reached", "capacity"),
+            "capacity"
+        );
     }
 
     #[test]
