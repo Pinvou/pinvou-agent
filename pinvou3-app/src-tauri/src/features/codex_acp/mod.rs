@@ -3474,8 +3474,16 @@ impl AcpPool {
         }
         self.install_cancelled.lock().insert(backend);
         if guard_held {
-            if let Some(pid) = self.install_children.lock().get(&backend).copied() {
-                kill_install_process_tree(pid);
+            // Bind before awaiting: an `if let` scrutinee temporary (the
+            // parking_lot guard here) lives to the end of the statement, and
+            // a non-Send guard held across the await below would make this
+            // future !Send.
+            let pid = self.install_children.lock().get(&backend).copied();
+            if let Some(pid) = pid {
+                // Same blocking-pool discipline as the install-lane kills:
+                // the Windows taskkill wait is budgeted (2 s) and must not
+                // stall an async runtime worker from the cancel command.
+                let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
             }
         }
         Ok(self.status_for_async(backend).await)
