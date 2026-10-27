@@ -66,10 +66,12 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
 }
 
 /// 比较路径组件是否等于预期字符串。Linux 文件系统大小写敏感，字节精确比较；
-/// macOS 默认 APFS 卷大小写不敏感，且 `std::fs::canonicalize`（realpath）保留
-/// 调用方传入的大小写——`/Users/u/.AWS/credentials` 不会改写成磁盘上的 `.aws`
-/// 拼写，字节比较会让大写变体绕过凭据黑名单，因此与 windows_path.rs 同用
-/// ASCII 折叠。
+/// macOS 默认 APFS 卷大小写不敏感——文件系统层会把 `.AWS` 解析到磁盘上的
+/// `.aws`，所以按调用方拼写做字节比较的词法检查（canonicalize 之前的相对
+/// 路径判定）会让大写变体绕过凭据黑名单，因此与 windows_path.rs 同用
+/// ASCII 折叠，使词法判定与卷的真实解析语义一致。注意：`std::fs::
+/// canonicalize`（realpath）返回的是磁盘拼写而非调用方拼写——已规范化
+/// 路径上的字节比较本来就安全，本折叠针对的是规范化之前的词法检查。
 #[cfg(target_os = "macos")]
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component.to_string_lossy().eq_ignore_ascii_case(expected)
@@ -81,10 +83,9 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
 }
 
-/// Unix 文件系统路径的稳定标识 key(大小写敏感,直接用原串)。
-/// 注意 macOS 的 canonicalize 保留调用方拼写，同一文件可有多种大小写 key；
-/// grant 身份匹配按「不同 key」失败闭合（宁可重新授权，不凭拼写放宽），故
-/// 刻意不折叠。
+/// Unix 文件系统路径的稳定标识 key(按原串字节)。大小写不敏感卷上同一文件
+/// 可被多种拼写引用,grant 身份匹配按「不同 key」失败闭合(宁可重新授权,
+/// 不凭拼写放宽),故刻意不折叠。
 pub fn filesystem_path_identity_key(path: &str) -> String {
     path.to_string()
 }

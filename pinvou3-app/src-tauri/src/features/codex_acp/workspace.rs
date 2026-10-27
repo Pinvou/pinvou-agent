@@ -194,6 +194,11 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
         bail!("工作区路径途经凭据文件，拒绝读取: {relative}");
     }
     let path = resolve_existing_path(root, &relative, false)?;
+    // 解析后的真实落点仍需过黑名单：工作区内 `notes.txt -> .env` 的链接名
+    // 本身清白，仅凭调用方拼写拦截会被符号链接绕过。
+    if path_crosses_blocked_component(&path) {
+        bail!("工作区路径途经凭据文件，拒绝读取: {relative}");
+    }
     let metadata = path
         .metadata()
         .with_context(|| format!("读取文件信息失败: {}", path.display()))?;
@@ -374,6 +379,9 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
     for change in &mut changes {
         change.origin = classify_origin(&root, baseline.as_ref(), &change.relative_path)?;
     }
+    // 列表与搜索不外泄凭据文件的存在(见 list_workspace 的过滤注释);
+    // changes 车道同约束——名称/状态元数据同样不得为黑名单组件回显。
+    changes.retain(|change| !relative_path_crosses_blocked_component(&change.relative_path));
     changes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(WorkspaceChanges {
         git,
@@ -963,6 +971,11 @@ pub(super) fn resolve_workspace_references(
             continue;
         }
         let absolute_path = resolve_existing_path(root, &relative, false)?;
+        // 凭据内容不得进入外部模型上下文：提示引用与 preview 同约束，词法
+        // 与解析后双重判定（同 preview_workspace_file）。
+        if path_crosses_blocked_component(&absolute_path) {
+            bail!("工作区引用途经凭据文件，拒绝读取: {relative}");
+        }
         let metadata = absolute_path
             .metadata()
             .with_context(|| format!("读取工作区文件失败: {}", absolute_path.display()))?;
@@ -1065,6 +1078,14 @@ fn normalize_relative_path(raw: &str) -> Result<String> {
 /// 模型上下文——codex workspace 车道与附件摄入同约束。
 fn relative_path_crosses_blocked_component(relative: &str) -> bool {
     crate::platform::path_policy::check_sensitive_components(Path::new(relative)).is_err()
+}
+
+/// 解析后（canonicalize）的绝对路径黑名单判定：与 file_ingest::
+/// validate_browsable_path 对 canonical 路径的组件判定同约束。调用方拼写的
+/// 词法检查拦不住「链接名清白」的符号链接（`notes.txt -> .env`），解析
+/// 落点必须再过一次黑名单。
+fn path_crosses_blocked_component(path: &Path) -> bool {
+    crate::platform::path_policy::check_sensitive_components(path).is_err()
 }
 
 fn resource_path_from_uri(raw: &str) -> Result<PathBuf> {
@@ -1548,6 +1569,11 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String> {
         .with_context(|| format!("读取未跟踪文件失败: {}", path.display()))?;
     if !canonical.starts_with(&canonical_root) {
         bail!("未跟踪路径通过符号链接越出了工作区: {}", relative);
+    }
+    // 越界链接已被上面的 containment 拦住;落在工作区内部的链接
+    // (`notes.md -> .env`)还需对解析后的落点过黑名单,与 preview 同约束。
+    if path_crosses_blocked_component(&canonical) {
+        bail!("工作区路径途经凭据文件，拒绝生成差异: {}", relative);
     }
     if file_kind(&canonical) != "text" {
         return Ok("未跟踪的二进制文件不支持差异预览。".to_string());
@@ -2311,6 +2337,90 @@ mod tests {
             .expect("credential file diff must be rejected");
         assert!(error.to_string().contains("凭据"), "got: {error}");
         assert!(workspace_diff("s-cred", root.path(), "sub/.ssh/id_rsa").is_err());
+    }
+
+    /// 提示引用车道(`web_access_codex_acp_prompt` 的 workspace_references)
+    /// 与 preview 同约束:凭据内容不得经 ResourceLink 进入外部模型上下文。
+    #[test]
+    fn workspace_references_reject_credential_components() {
+        let root = TestDir::new("credential-references");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+
+        let error = resolve_workspace_references(root.path(), &[".env".to_string()])
+            .err()
+            .expect("credential prompt reference must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        let resolved = resolve_workspace_references(root.path(), &["notes.md".to_string()])
+            .expect("ordinary references stay allowed");
+        assert_eq!(resolved.len(), 1);
+    }
+
+    /// 链接名清白的符号链接(`notes.txt -> .env`)必须在对解析后落点的
+    /// 判定处被拦:仅凭调用方拼写的词法检查会被绕过。preview 与未跟踪
+    /// 差异两条读取路径都钉住。
+    #[test]
+    #[cfg(unix)]
+    fn credential_symlink_alias_is_blocked_after_resolution() {
+        use std::os::unix::fs::symlink;
+        let root = TestDir::new("credential-symlink-alias");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        symlink(".env", root.path().join("notes.txt")).unwrap();
+
+        let error = preview_workspace_file(root.path(), "notes.txt")
+            .err()
+            .expect("a symlink resolving onto a credential file must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        let error = workspace_diff("s-symlink", root.path(), "notes.txt")
+            .err()
+            .expect("the untracked-diff read must refuse the resolved credential target");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        // 提示引用车道同样拦截。
+        assert!(resolve_workspace_references(root.path(), &["notes.txt".to_string()]).is_err());
+    }
+
+    /// changes 车道与列表/搜索同约束:黑名单组件的存在本身(名称/状态
+    /// 元数据)不得回显给手机端。
+    #[test]
+    fn workspace_changes_skip_credential_components() {
+        let root = TestDir::new("credential-changes");
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+
+        let changes = workspace_changes("s-changes", root.path()).unwrap();
+        let names: Vec<&str> = changes
+            .changes
+            .iter()
+            .map(|change| change.relative_path.as_str())
+            .collect();
+        assert!(names.contains(&"notes.md"), "got: {names:?}");
+        assert!(
+            !names.iter().any(|name| name.ends_with(".env")),
+            "credential names must not leak through the changes lane: {names:?}"
+        );
+    }
+
+    /// 大小写变体经真实入口的端到端钉(macOS 独有意义:APFS 默认卷大小写
+    /// 不敏感,`.ENV` 会解析到磁盘上的 `.env`;词法检查经 path_component_eq
+    /// 的 ASCII 折叠在同平台上必须拦住它)。Linux 大小写敏感,同一拼写是
+    /// 另一个不存在的文件,断言平凡成立,故仅在 macOS 上运行。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn case_variant_spellings_are_blocked_end_to_end() {
+        let root = TestDir::new("credential-case-variant");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+
+        for spelling in [".ENV", ".Env"] {
+            let error = preview_workspace_file(root.path(), spelling)
+                .err()
+                .expect("case-variant credential spellings must be blocked");
+            assert!(
+                error.to_string().contains("凭据"),
+                "{spelling} must hit the credential gate, got: {error}"
+            );
+        }
     }
 
     #[test]
