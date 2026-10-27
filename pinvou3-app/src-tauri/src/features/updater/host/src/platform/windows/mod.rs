@@ -32,6 +32,7 @@ mod installed;
 mod installed_images;
 mod live_time;
 mod original_root;
+mod source_host;
 mod time_owner;
 mod time_service;
 mod time_transport;

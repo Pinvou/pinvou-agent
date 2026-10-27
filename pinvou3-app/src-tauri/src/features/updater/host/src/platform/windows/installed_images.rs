@@ -12,8 +12,8 @@ use crate::{
     download_stage::poll,
     error::{Error, Result},
     installed_images::{
-        ImageDiagnostic, InstalledImageDiagnostic, ObservationStamp, require_observed_app_version,
-        require_unchanged,
+        HostDiagnostic, ImageDiagnostic, InstalledImageDiagnostic, ObservationStamp,
+        require_observed_app_version, require_unchanged,
     },
     profile::Seed,
     registration::{HostRegistration, Phase},
@@ -71,6 +71,7 @@ impl InstalledImages {
         // A failed refresh cannot leave a currently usable diagnostic projection.
         self.verified = false;
         poll(cancelled)?;
+        let host = super::source_host::capture()?;
         let store = Store::new(&self.seed);
         let before = store.read(&self.seed)?.ok_or(Error::SetupIncomplete)?;
         let live = running(&self.seed, &self.layout, &before)?;
@@ -148,8 +149,17 @@ impl InstalledImages {
         if self.service.exited()? || live.exited()? {
             return Err(Error::ServiceIdentityRefused);
         }
+        if super::source_host::capture()? != host {
+            return Err(Error::SourceUnavailable);
+        }
         poll(cancelled)?;
         self.diagnostic.observed_application_version = observed.canonical_version;
+        self.diagnostic.observed_host = Some(HostDiagnostic {
+            os: "windows",
+            architecture: host.architecture,
+            os_version: host.os_version,
+            workstation: host.workstation,
+        });
         self.verified = true;
         Ok(())
     }
@@ -199,6 +209,7 @@ pub(crate) fn inspect_images(cancelled: &mut dyn FnMut() -> bool) -> Result<Inst
         manifest_sha256: record.genesis_manifest_sha256.clone(),
         application: image_fact(&images.manifest.app),
         observed_application_version: String::new(),
+        observed_host: None,
         helper: image_fact(&images.manifest.helper),
         launcher: image_fact(&images.manifest.launcher),
         checked_inventory_files: members.len(),

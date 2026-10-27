@@ -65,6 +65,14 @@ pub(crate) struct ImageDiagnostic {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct HostDiagnostic {
+    pub(crate) os: &'static str,
+    pub(crate) architecture: &'static str,
+    pub(crate) os_version: String,
+    pub(crate) workstation: bool,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct InstalledImageDiagnostic {
     pub(crate) observation_version: u8,
     pub(crate) observation_kind: &'static str,
@@ -73,6 +81,7 @@ pub(crate) struct InstalledImageDiagnostic {
     pub(crate) manifest_sha256: String,
     pub(crate) application: ImageDiagnostic,
     pub(crate) observed_application_version: String,
+    pub(crate) observed_host: Option<HostDiagnostic>,
     pub(crate) helper: ImageDiagnostic,
     pub(crate) launcher: ImageDiagnostic,
     pub(crate) checked_inventory_files: usize,
@@ -156,6 +165,12 @@ mod tests {
             manifest_sha256: "b".repeat(64),
             application: image(),
             observed_application_version: "1.2.3".into(),
+            observed_host: Some(HostDiagnostic {
+                os: "windows",
+                architecture: "x86_64",
+                os_version: "10.0.26100".into(),
+                workstation: true,
+            }),
             helper: image(),
             launcher: image(),
             checked_inventory_files: 5,
@@ -167,10 +182,14 @@ mod tests {
             installation_permission: false,
         };
         let value = serde_json::to_value(diagnostic).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 16);
+        assert_eq!(value.as_object().unwrap().len(), 17);
         assert_eq!(value["application"].as_object().unwrap().len(), 3);
         assert_eq!(value["application"]["manifestDeclaredVersion"], "1.2.3");
         assert_eq!(value["observedApplicationVersion"], "1.2.3");
+        assert_eq!(
+            value["observedHost"],
+            serde_json::json!({"os":"windows", "architecture":"x86_64", "osVersion":"10.0.26100", "workstation":true})
+        );
         for key in [
             "jsonRetainsLeases",
             "sourceFactsProduced",

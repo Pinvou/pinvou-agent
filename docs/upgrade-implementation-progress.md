@@ -1,5 +1,14 @@
 # Upgrade implementation progress
 
+T27 Windows host observation: the installed-image diagnostic now reports the
+native machine architecture and Windows version from system APIs, sampling before
+and after the existing identity and service checks. The result is diagnostic data,
+not target approval or an upgrade Session. Scoped source review passed. The fixed
+host test executable reported 239 passed and 2 ignored; current-host sampling and
+simulated error and architecture cases were exercised. Real ARM hosts, including emulation, older
+Windows and the complete Ready service diagnostic remain unverified. No E2E was
+run, and T27 remains in progress.
+
 T27 Windows source observation: the existing elevated installed-image diagnostic
 now reads the held application PE fixed version, compares it with the protected
 manifest and Seed, and publishes the observation only after the existing identity,

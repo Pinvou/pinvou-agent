@@ -263,6 +263,17 @@ publisher identity, migration facts, protected metadata acceptance and trusted
 current time remain separate prerequisites. No production installation is tested
 by parser unit tests alone.
 
+The additive `observedHost` JSON object reports `os`, native `architecture`,
+`osVersion` (kernel major.minor.build) and `workstation`, observed from Windows
+itself. Existing fields and observation version are unchanged; consumers that
+require an exact JSON key set must allow this additional object. The observation
+does not filter otherwise valid older versions or server editions, or certify
+their upgrade support. An unavailable API or unrecognized native architecture
+refuses; the process's emulated machine is not substituted for the native one.
+The host observation is sampled before and after the retained-image/SCM checks,
+and each recheck samples it again. It is not complete SourceFacts or an
+installation grant; qualification requires the separately approved target registry.
+
 Parser, cancellation/refusal mapping, registration/incarnation comparison and
 minimal JSON-projection tests accompany the interface. The existing cancellable
 full-file hash test exercises its shared byte reader. A real Ready installation,
