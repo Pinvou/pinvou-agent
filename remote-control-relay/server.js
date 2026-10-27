@@ -119,6 +119,13 @@ const MAX_RELAY_STATE_BYTES = boundedInteger(
 const RELAY_STATE_PATH = resolve(
   process.env.PINVOU_REMOTE_STATE_PATH || resolve(__dirname, "data", "relay-state.json"),
 );
+// No textual IP (including an IPv6 zone id) approaches this length; the cap
+// bounds header-derived garbage before isIP ever sees it.
+const MAX_IP_TEXT_CHARS = 128;
+// A forwarded header longer than this is treated as unusable and the
+// connection is attributed to the direct peer; real proxy chains stay far
+// below it.
+const MAX_FORWARDED_HEADER_CHARS = 4096;
 const ALLOWED_WEB_ORIGINS = parseOriginSet(process.env.PINVOU_REMOTE_ALLOWED_WEB_ORIGINS);
 const ALLOWED_PROXY_IPS = parseIpSet(process.env.PINVOU_REMOTE_ALLOWED_PROXY_IPS);
 const TRUSTED_PROXY_IPS = parseIpSet(
@@ -214,7 +221,7 @@ function boundedInteger(raw, fallback, min, max) {
 }
 
 function normalizeIp(value) {
-  if (typeof value !== "string" || value.length > 128) return "";
+  if (typeof value !== "string" || value.length > MAX_IP_TEXT_CHARS) return "";
   const ip = value.trim();
   if (!isIP(ip)) return "";
   return ip.startsWith("::ffff:") && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
@@ -286,12 +293,14 @@ function clientIp(req) {
   const peer = peerIp(req);
   if (!TRUSTED_PROXY_IPS.has(peer)) return peer || "unknown";
   const header = req.headers["x-forwarded-for"];
+  // X-Real-IP is consulted only when X-Forwarded-For is entirely absent: a
+  // present-but-unusable forwarded header must never let a second, equally
+  // client-controlled header choose the attribution.
+  if (header === undefined) return normalizeIp(req.headers["x-real-ip"]) || peer || "unknown";
+  if (typeof header !== "string" || header.length > MAX_FORWARDED_HEADER_CHARS) return peer;
   // Only the rightmost proxy-appended address is authoritative. Never skip a
   // malformed final item and fall back to an attacker-controlled earlier item.
-  if (typeof header === "string" && header.length <= 4096) {
-    return normalizeIp(header.split(",").at(-1)) || peer || "unknown";
-  }
-  return (header === undefined ? normalizeIp(req.headers["x-real-ip"]) : "") || peer || "unknown";
+  return normalizeIp(header.split(",").at(-1)) || peer;
 }
 
 function consumeRateLimit(buckets, ip, limit, windowMs, now = Date.now()) {
