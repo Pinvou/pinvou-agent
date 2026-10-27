@@ -38,8 +38,10 @@ case "$(uname -s 2>/dev/null)" in
   *) PLAT=""; EXE=dws ;;
 esac
 if [ -z "$CLI" ]; then
-  # 多版本并存时取最高版本(按数字段排序,不依赖 sort -V)
+  # 多版本并存时取最高版本(按数字段排序,不依赖 sort -V);只认纯数字点分目录,
+  # 排除 1.0.99.bak 这类改名残留目录冒充高版本。
   ver="$(for d in "$HOME"/.pinvou3/assets/cli/dws/*/; do
+           case "$(basename "$d")" in *[!0-9.]*) continue ;; esac
            [ -x "$d$EXE" ] && basename "$d"; done 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
   [ -n "$ver" ] && CLI="$HOME/.pinvou3/assets/cli/dws/$ver/$EXE"
 fi
@@ -47,17 +49,39 @@ fi
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/dws.cmd" ] && CLI="$APPDATA/npm/dws.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/dws.cmd" ] && CLI="$HOME/AppData/Roaming/npm/dws.cmd"
 if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连接钉钉,应用会在线下载并校验)"; exit 2; fi
+
+# 探测必须限时:connector_cli.rs run_probe 对同一族命令用 30s kill-tree——npm-shim
+# CLI 曾实测卡在网络/代理/无 TTY 提示上无限挂起,冒烟脚本挂着不退出比红更糟。
+# 有 coreutils timeout 用之;macOS 裸机退化为 bash 看门狗(kill 直接子进程已覆盖
+# 本脚本的全部发现形态:native 二进制/带 shebang 的 npm 全局脚本)。
+DWS_TIMEOUT=30
+if command -v timeout >/dev/null 2>&1; then
+  dws_run() { timeout "$DWS_TIMEOUT" "$CLI" "$@"; }
+else
+  dws_run() {
+    "$CLI" "$@" &
+    local pid=$!
+    ( sleep "$DWS_TIMEOUT" && kill "$pid" 2>/dev/null ) &
+    local wpid=$!
+    wait "$pid" 2>/dev/null; local rc=$?
+    kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+    [ "$rc" -eq 143 ] && rc=124
+    return "$rc"
+  }
+fi
 echo "dws = $CLI"
 echo
 
-echo "[1] --version runs and is >= 1.0.64 (dws SKILL.md cli_version floor; lock pins 1.0.65)"
-# stdout/stderr 都收(与 [2] auth 同口径,个别发行把版本打在 stderr);取输出前三个数字段
-# 逐段数值比较、不足三段补 0;不用 sort -V。The floor value (10064 = 1.0.64) is pinned
-# to the SKILL.md cli_version by connector_online_install_contract.test.js, so drift
-# on either side fails the test.
-VER="$("$CLI" --version 2>&1 || true)"
-TRI="$(echo "$VER" | grep -oE '[0-9]+' | head -3 | paste -sd. -)"
-GE="$(printf '%s\n' "$TRI" | awk -F. '($1*10000+$2*100+$3 >= 10064) {print "yes"}')"
+MIN_TRI="1.0.64"  # dws SKILL.md cli_version floor;connector_online_install_contract.test.js 与 SKILL.md、connectors.lock.json 三方钉扎,漂移即红
+echo "[1] --version runs and is >= ${MIN_TRI} (dws SKILL.md cli_version floor; lock pins 1.0.65)"
+# stdout/stderr 都收(与 [2] auth 同口径,个别发行把版本打在 stderr)。只认点分版本号
+# (与 connector_cli.rs parse_semver3 同口径):裸数字串如构建日期 20261027 会被
+# 逐段比较误当 2026.10.27 放行,点分要求天然排除。不足三段补 0,不用 sort -V。
+VER="$(dws_run --version 2>&1 || true)"
+TRI="$(printf '%s\n' "$VER" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 | awk -F. '{printf "%d.%d.%d", $1, $2+0, $3+0}')"
+# 逐段数值比较(与上面目录排序同键;加权 1*10000+... 会把 0.99.164 误判 >= 1.0.64):
+# TRI >= MIN_TRI 当且仅当两行升序排序后的首行就是 MIN_TRI。
+GE="$(printf '%s\n%s\n' "$TRI" "$MIN_TRI" | sort -t. -k1,1n -k2,2n -k3,3n | head -1 | grep -qxF "$MIN_TRI" && echo yes || echo no)"
 if [ -n "$TRI" ]; then
   ok "--version 可执行: $(echo "$VER" | tr -d '\r' | head -1)"
   if [ "$GE" = yes ]; then
@@ -71,8 +95,12 @@ fi
 
 echo "[2] 连接状态(auth status --format json 的 authenticated=true = 已授权)"
 # 与 dingtalk.rs 同口径:只认官方 JSON 的 authenticated:true,stdout/stderr 都看;剥 \r。
-AUTH="$("$CLI" auth status --format json 2>&1 || true)"
-if echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*true'; then
+AUTH="$(dws_run auth status --format json 2>&1 || true)"
+# dingtalk.rs 同口径是「顶层 authenticated == true」;grep 没有树的概念,加一条
+# 「不得同时出现 authenticated:false」排除嵌套假真(如 {"authenticated":false,
+# "detail":{"authenticated":true}})。
+if echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*true' \
+  && ! echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*false'; then
   ok "已连接(auth status authenticated=true)"
 else
   no "未连接/未授权(先扫码): $(echo "$AUTH" | tr -d '\n' | head -c 160)"
@@ -83,7 +111,7 @@ echo "[3] 服务域抽样探测(代表性子集,只读 --help;存在的服务 ex
 # "Run '… --help' for usage." 行,grep Usage 会把不存在的域误报可用。只探顶层服务:
 # Cobra 对组命令下的未知叶子会直接打印组帮助并 exit 0,叶子级探测分不出真假。
 for d in doc drive calendar todo chat sheet aitable; do
-  OUT="$("$CLI" "$d" --help 2>&1)"; d_rc=$?
+  OUT="$(dws_run "$d" --help 2>&1)"; d_rc=$?
   if [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
   elif echo "$OUT" | grep -Eqi 'unknown command|not found|不存在|未知'; then no "$d 域不存在(CLI 无此服务)"
   else sk "$d 域结果未知(exit $d_rc): $(echo "$OUT" | tr -d '\n' | head -c 60)"; fi
@@ -91,10 +119,13 @@ done
 
 echo "[4] 真实读文档(可选,需 DINGTALK_TEST_DOC_ID)"
 if [ -n "${DINGTALK_TEST_DOC_ID:-}" ]; then
-  R="$("$CLI" doc read --node "$DINGTALK_TEST_DOC_ID" --format json 2>&1)"; r_rc=$?
+  R="$(dws_run doc read --node "$DINGTALK_TEST_DOC_ID" --format json 2>&1)"; r_rc=$?
   # PASS 以退出码 0 为前提:flag 漂移时 Cobra 打 usage 走非零退出,
-  # 不能因输出里没有错误字样就把 usage 误判成读成功。
-  if [ "$r_rc" -eq 0 ] && [ -n "$R" ] && ! echo "$R" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false|错误|失败|权限'; then
+  # 不能因输出里没有错误字样就把 usage 误判成读成功。--format json 下成功读取
+  # 必含 JSON 对象(dingtalk.rs 取首个 { 到末个 } 同口径),exit 0 的 usage/help
+  # 倾倒不含 {,同样不判读成功。
+  if [ "$r_rc" -eq 0 ] && [ -n "$R" ] && echo "$R" | grep -q '{' \
+    && ! echo "$R" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false|错误|失败|权限'; then
     ok "读到文档内容($(printf '%s' "$R" | wc -c | tr -d ' ') 字节)"
   else
     no "读文档失败(exit $r_rc): $(echo "$R" | tr -d '\n' | head -c 160)"
