@@ -2321,6 +2321,7 @@ jobs:
             'features::voice_shortcut::platform::tests::' \
             'app::commands::dependencies::platform::windows::tests::' \
             'features::codex_acp::platform::windows::tests::' \
+            'install_child_guard_drop_reclaims_tree_and_settled_guards_never_rekill' \
             'platform::os::windows::' \
             'windows_attachment_runtime_stays_security_gated'; do
             index=$((index+1))
