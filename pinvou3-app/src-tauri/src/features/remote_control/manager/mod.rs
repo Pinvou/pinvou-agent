@@ -245,6 +245,17 @@ fn apply_web_lease_change(inner: &mut Inner, web_rejoining: bool) {
     }
 }
 
+/// 撤权的内存侧效果:同步活跃 endpoint 的授权旗标,并立刻作废已铸出的
+/// workspace grant。grant 是绑定 endpoint 的一次性句柄(30 分钟 TTL),
+/// 不清除的话,手机在撤权前铸出的 grant 在整个 TTL 窗口内仍可兑换建立
+/// host 目录会话。
+fn revoke_host_workspace_state(inner: &mut Inner) {
+    if let Some(endpoint) = inner.endpoint.as_mut() {
+        endpoint.config.allow_host_workspace = false;
+    }
+    inner.web_workspace_grants.clear();
+}
+
 fn rpc_request_targets_active_lease(inner: &Inner, lease_id: &str) -> bool {
     inner
         .endpoint
@@ -1000,8 +1011,9 @@ impl RemoteControlManager {
     }
 
     /// 撤销本机目录授权但不断开链接:后续 workspace grant 在铸造时被拒,
-    /// 已发出的 grant 仍是短时效一次性句柄(30 分钟 TTL)自然过期。这是
-    /// 设置弹窗的显式撤权入口——让旧版本「开启访问」单按钮顺带写下的
+    /// 已发出的 grant 也随之立刻作废(否则一个 30 分钟 TTL 的一次性句柄
+    /// 仍可在撤权后兑换,授权旗标与实际可访问面不一致)。这是设置弹窗的
+    /// 显式撤权入口——让旧版本「开启访问」单按钮顺带写下的
     /// allow_host_workspace 可见、可单独收回,而不必轮换或停用整条链接
     /// (Stop 之外的唯一清除路径)。幂等:已是未授权状态时不重写凭据文件。
     pub fn revoke_host_workspace(&self) -> Result<WebAccessInfo, String> {
@@ -1014,12 +1026,8 @@ impl RemoteControlManager {
         if config.allow_host_workspace {
             config.allow_host_workspace = false;
             persist_config(&config)?;
-            {
-                let mut inner = self.inner.lock();
-                if let Some(endpoint) = inner.endpoint.as_mut() {
-                    endpoint.config.allow_host_workspace = false;
-                }
-            }
+            let mut inner = self.inner.lock();
+            revoke_host_workspace_state(&mut inner);
             self.emit_status();
         }
         let inner = self.inner.lock();
@@ -4821,6 +4829,50 @@ mod tests {
         assert!(inner.web_session_downloads.is_empty());
 
         std::fs::remove_dir_all(&staging).ok();
+    }
+
+    #[test]
+    fn revoking_host_workspace_also_invalidates_minted_grants() {
+        let staging = std::env::temp_dir().join(format!(
+            "pinvou-revoke-grant-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(8)
+        ));
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let mut inner = Inner::default();
+        inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
+        inner
+            .endpoint
+            .as_mut()
+            .unwrap()
+            .config
+            .allow_host_workspace = true;
+        let identity = WebWorkspaceIdentity::capture(&staging).unwrap();
+        inner.web_workspace_grants.issue(
+            "workspace_test_handle".into(),
+            TEST_ENDPOINT_ID.into(),
+            staging.clone(),
+            identity,
+            Instant::now(),
+        );
+        assert!(inner.web_workspace_grants.contains("workspace_test_handle"));
+
+        revoke_host_workspace_state(&mut inner);
+        assert!(
+            !inner
+                .endpoint
+                .as_ref()
+                .unwrap()
+                .config
+                .allow_host_workspace,
+            "the live endpoint must reflect the revoked consent"
+        );
+        assert!(
+            !inner.web_workspace_grants.contains("workspace_test_handle"),
+            "an already-minted grant must not stay redeemable after revoke"
+        );
+        std::fs::remove_dir_all(staging).ok();
     }
 
     #[test]
