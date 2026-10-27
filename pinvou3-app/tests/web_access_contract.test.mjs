@@ -997,6 +997,16 @@ assert.match(remoteControlCommands, /web_access_revoke_host_workspace\([\s\S]{0,
   'only the main desktop WebView may revoke folder consent');
 assert.match(remoteControlCommands, /web_access_enable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'only the main desktop WebView may enable a persistent remote endpoint');
+assert.match(
+  remoteControlCommands,
+  /web_access_status\([\s\S]{0,260}require_main_webview\(&window\)\?/,
+  'web_access_status carries the token-bearing pairing URL and must stay main-WebView only',
+);
+assert.match(
+  remoteControlCommands,
+  /web_access_rotate\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'rotation rewrites link credentials and must stay main-WebView only',
+);
 assert.match(remoteControlManager, /require_host_workspace_authorization\(endpoint\.config\.allow_host_workspace\)\?/,
   'workspace capabilities must fail closed until desktop authorization is persisted');
 assert.doesNotMatch(settingsView, />刷新链接</);
