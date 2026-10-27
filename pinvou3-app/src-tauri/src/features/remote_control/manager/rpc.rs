@@ -458,6 +458,35 @@ const MAX_WEB_KB_PATHS: usize = 128;
 /// temporarily unavailable volume is a TRANSIENT rejection — caching it as
 /// a terminal completion would brick that `client_request_id` until FIFO
 /// eviction, exactly the poisoning class this module exists to prevent.
+/// `web_access_codex_acp_prompt` 的 workspace_references 条数上限:每条引用
+/// 都要触盘 canonicalize(与 `MAX_WEB_KB_PATHS` 同一成本类),1 MiB 请求体
+/// 可塞下数万条;超限按确定性形状拒绝。
+const MAX_WEB_WORKSPACE_REFERENCES: usize = 128;
+
+fn validate_web_prompt_references(command: &str, args: &Value) -> Result<(), WebScopeRejection> {
+    if command != "web_access_codex_acp_prompt" {
+        return Ok(());
+    }
+    // 手机侧经 Tauri 参数绑定,两个字段拼写都可能出现;同一请求不会同时
+    // 携带两者,逐一检查即可。
+    for field in ["workspaceReferences", "workspace_references"] {
+        let Some(references) = args.get(field).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let Some(references) = references.as_array() else {
+            return Err(WebScopeRejection::Deterministic(format!(
+                "{field} must be an array of paths"
+            )));
+        };
+        if references.len() > MAX_WEB_WORKSPACE_REFERENCES {
+            return Err(WebScopeRejection::Deterministic(format!(
+                "web_access_codex_acp_prompt accepts at most {MAX_WEB_WORKSPACE_REFERENCES} workspace references"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_web_kb_paths(command: &str, args: &Value) -> Result<(), WebScopeRejection> {
     let paths_field = match command {
         "kb_collection_add_sources" => "paths",
@@ -608,6 +637,7 @@ pub(super) fn validate_web_rpc_scope(
 ) -> Result<(), WebScopeRejection> {
     validate_web_workspace_rpc(command, args)
         .map_err(|error| WebScopeRejection::Deterministic(error))?;
+    validate_web_prompt_references(command, args)?;
     validate_web_kb_paths(command, args)?;
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
@@ -860,6 +890,55 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn web_prompt_references_are_capped_deterministically() {
+        // 129 条引用超出上限:确定性(可缓存)形状拒绝,消息不回显路径。
+        let many: Vec<String> = (0..129).map(|index| format!("file-{index}.md")).collect();
+        for field in ["workspaceReferences", "workspace_references"] {
+            let rejection = validate_web_prompt_references(
+                "web_access_codex_acp_prompt",
+                &json!({ field: many }),
+            )
+            .err()
+            .expect("over-cap references must be rejected");
+            let message = match &rejection {
+                WebScopeRejection::Deterministic(message)
+                | WebScopeRejection::Transient(message) => message,
+            };
+            assert!(
+                matches!(rejection, WebScopeRejection::Deterministic(_)),
+                "shape violations stay deterministic, got {rejection:?}"
+            );
+            assert!(!message.contains("file-"));
+        }
+        // 恰在上限内、缺省、null、非本命令一律放行。
+        let at_cap: Vec<String> = (0..128).map(|index| format!("file-{index}.md")).collect();
+        assert!(validate_web_prompt_references(
+            "web_access_codex_acp_prompt",
+            &json!({ "workspaceReferences": at_cap })
+        )
+        .is_ok());
+        assert!(validate_web_prompt_references(
+            "web_access_codex_acp_prompt",
+            &json!({})
+        )
+        .is_ok());
+        assert!(validate_web_prompt_references(
+            "web_access_codex_acp_prompt",
+            &json!({ "workspaceReferences": null })
+        )
+        .is_ok());
+        assert!(validate_web_prompt_references("web_access_chat", &json!({ "workspaceReferences": many })).is_ok());
+        // 非数组条目也是确定性形状拒绝。
+        assert!(matches!(
+            validate_web_prompt_references(
+                "web_access_codex_acp_prompt",
+                &json!({ "workspaceReferences": "x" })
+            ),
+            Err(WebScopeRejection::Deterministic(_))
+        ));
+    }
+
     fn web_kb_paths_require_browsable_home_paths() {
         // 无路径字段的知识库命令不受影响;kb_start_scan 缺省 roots 扫描
         // 主目录(桌面自动扫描同一数据集),放行。
