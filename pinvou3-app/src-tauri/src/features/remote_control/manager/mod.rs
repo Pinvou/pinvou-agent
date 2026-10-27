@@ -4389,6 +4389,89 @@ mod tests {
     }
 
     #[test]
+    fn invalid_ledger_salvages_valid_entries_and_quarantines_the_original() {
+        // 可解析但未过整体校验的账本(此处:一条 endpoint_id 非法的坏条目 +
+        // 一条与合法条目重复的键)必须逐条抢救合法条目并隔离原件,而不是
+        // 整体重写——整体丢弃会让旧 endpoint 在 relay 侧保持可加入。
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-ledger-salvage-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+
+        let valid_a = PendingRevocation::from(&test_web_config("ep_salv_a"));
+        let valid_b = PendingRevocation::from(&test_web_config("ep_salv_b"));
+        let mut bad = serde_json::to_value(&valid_a).unwrap();
+        bad["endpoint_id"] = json!("bad id");
+        let body = json!({
+            "version": PENDING_REVOCATIONS_VERSION,
+            "entries": [
+                serde_json::to_value(&valid_a).unwrap(),
+                bad,
+                serde_json::to_value(&valid_b).unwrap(),
+            ],
+        });
+        std::fs::write(&path, serde_json::to_vec(&body).unwrap()).unwrap();
+
+        let fresh = PendingRevocation::from(&test_web_config("ep_salv_c"));
+        queue_pending_revocation_at(&path, fresh)
+            .expect("queue must salvage the valid entries and continue");
+
+        let restored = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(
+            restored.entries.len(),
+            3,
+            "two salvaged entries plus the freshly queued one must survive"
+        );
+        let keys: Vec<_> = restored
+            .entries
+            .iter()
+            .map(pending_revocation_key)
+            .collect();
+        assert!(keys.contains(&pending_revocation_key(&valid_a)));
+        assert!(keys.contains(&pending_revocation_key(&valid_b)));
+        assert!(
+            directory
+                .read_dir()
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().contains("pending.json.corrupt-")),
+            "the original invalid ledger must be quarantined for inspection"
+        );
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn unparseable_ledger_is_quarantined_before_the_fresh_start() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-ledger-quarantine-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        std::fs::write(&path, b"{corrupt json").unwrap();
+
+        let pending = PendingRevocation::from(&test_web_config("ep_quar_a"));
+        queue_pending_revocation_at(&path, pending.clone())
+            .expect("an unparseable ledger must not block the recovery path");
+        assert!(
+            directory
+                .read_dir()
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().contains("pending.json.corrupt-")),
+            "the unparseable ledger must be quarantined, not silently overwritten"
+        );
+        let restored = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(restored.entries.len(), 1);
+        assert_eq!(restored.entries[0], pending);
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
     fn loading_pending_revocations_repairs_world_readable_private_files() {
         let directory = std::env::temp_dir().join(format!(
             "pinvou-revocation-perm-repair-test-{}-{}",
