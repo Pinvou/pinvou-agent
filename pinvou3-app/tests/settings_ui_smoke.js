@@ -617,6 +617,9 @@ async function modalWidth(page, headingText) {
   await clickExact(page, '浅色');
   await page.waitForFunction(() => !document.documentElement.classList.contains('dark')
     && window.__SETTINGS_TEST__.settings().color_scheme === 'light');
+  rec('① 显式浅色恢复初始偏好与旧主题镜像', await page.evaluate(() =>
+    window.__SETTINGS_TEST__.settings().color_scheme === 'light'
+      && window.__SETTINGS_TEST__.settings().theme === 'liquid-light'));
 
   const voiceShortcutRow = await page.evaluate(() => {
     const row = [...document.querySelectorAll('div')].filter(node => (node.textContent || '').includes('启用 Alt 唤醒语音') && node.querySelector('[role="switch"]')).pop();
