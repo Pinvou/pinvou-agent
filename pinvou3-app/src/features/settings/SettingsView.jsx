@@ -209,12 +209,22 @@ function hasStoredCredential(record) {
         try {
           await bridge.remoteControl.stopRemoteControl();
           onClose();
-        } finally {
+        } catch { /* stop failure surfaced by the banner */ } finally {
           setActionBusy(false);
         }
       }
 
-      async function handleRetryWebAccess() {
+      // Enable only starts the link; granting host folders stays a separate explicit
+      // consent step, so a single Enable click can never latch folder authorization.
+      async function handleEnableWebAccess() {
+        if (!bridge.available) return;
+        setActionBusy(true);
+        try { await bridge.remoteControl.startRemoteControl({}); }
+        catch { /* start failure surfaced by the banner */ }
+        finally { setActionBusy(false); }
+      }
+
+      async function handleAllowHostWorkspace() {
         if (!bridge.available) return;
         setActionBusy(true);
         try { await bridge.remoteControl.startRemoteControl({ allowHostWorkspace: true }); }
@@ -222,12 +232,25 @@ function hasStoredCredential(record) {
         finally { setActionBusy(false); }
       }
 
+      // Escape closes the layered dialog: the rotate-confirm overlay first, then the
+      // modal itself. Skipped while an action is in flight so an in-progress call is
+      // never discarded mid-flight.
+      useEffect(() => {
+        const onModalKeyDown = (e) => {
+          if (e.key !== 'Escape' || actionBusy) return;
+          if (refreshConfirmOpen) setRefreshConfirmOpen(false);
+          else onClose();
+        };
+        window.addEventListener('keydown', onModalKeyDown);
+        return () => window.removeEventListener('keydown', onModalKeyDown);
+      }, [actionBusy, refreshConfirmOpen, onClose]);
+
       if (!canManageWebAccess) return null;
 
       return (
-        // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the modal close button
+        // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the Escape listener and the close button
         // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
+        <div role="dialog" aria-modal="true" aria-label={remoteCopy.title} className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
           <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]`}>
@@ -236,7 +259,7 @@ function hasStoredCredential(record) {
                 <div className="text-[17px] font-semibold">{remoteCopy.title}</div>
                 <div className={`text-[12px] mt-1 text-[#5F6368] dark:text-[#AEB4BC]`}>{remoteCopy.desc}</div>
               </div>
-              <button type="button" onClick={onClose} className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10`}><X size={17} /></button>
+              <button type="button" onClick={onClose} aria-label={remoteCopy.close} className={`w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5 dark:hover:bg-white/10`}><X size={17} /></button>
             </div>
             <div className={`rounded-[16px] border p-3 mb-4 border-black/10 bg-[#F8F9FA] dark:border-white/10 dark:bg-white/[0.035]`}>
               <div className="flex items-start justify-between gap-3">
@@ -278,17 +301,17 @@ function hasStoredCredential(record) {
             {webAccess.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccess.last_error}</div>}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button type="button" onClick={() => { if (webAccess.url) copyClipboardText(webAccess.url); }}
-                disabled={!webAccess.url}
+                disabled={actionBusy || !webAccess.url}
                 className={`px-3.5 py-2 rounded-full text-[13px] bg-black/5 hover:bg-black/10 disabled:opacity-40 dark:bg-white/10 dark:hover:bg-white/15 dark:disabled:opacity-40`}>{remoteCopy.copy}</button>
-              {webAccessActive && !hostWorkspaceAuthorized && <button type="button" disabled={actionBusy} onClick={handleRetryWebAccess}
+              {webAccessActive && !hostWorkspaceAuthorized && <button type="button" disabled={actionBusy} onClick={handleAllowHostWorkspace}
                 className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0A4BB8] disabled:opacity-50 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]">{remoteCopy.allowWorkspace}</button>}
               {webAccessActive ? <button type="button" disabled={actionBusy} onClick={() => setRefreshConfirmOpen(true)}
                 className={`px-3.5 py-2 rounded-full text-[13px] disabled:opacity-50 bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15`}>{remoteCopy.refresh}</button>
-                : <button type="button" disabled={actionBusy} onClick={handleRetryWebAccess}
+                : <button type="button" disabled={actionBusy} onClick={handleEnableWebAccess}
                   className="px-3.5 py-2 rounded-full text-[13px] bg-[#0B57D0] text-white hover:bg-[#0A4BB8] disabled:opacity-50 dark:bg-[#A8C7FA] dark:text-[#062E6F] dark:hover:bg-[#C2DBFF]">{remoteCopy.enable}</button>}
             </div>
             {refreshConfirmOpen && (
-              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
+              // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the Escape listener and the cancel button
               // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
               <div className="absolute inset-0 z-10 flex items-center justify-center p-4 rounded-[22px] bg-black/55" onClick={() => !actionBusy && setRefreshConfirmOpen(false)}>
                 {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}

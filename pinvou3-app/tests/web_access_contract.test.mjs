@@ -964,8 +964,18 @@ assert.match(settingsView, /remoteCopy = t\.uiRemote/);
 assert.match(settingsView, /\{remoteCopy\.title\}/);
 assert.match(settingsView, /\{remoteCopy\.link\}/);
 assert.match(settingsView, /\{remoteCopy\.refresh\}/);
-assert.match(settingsView, /startRemoteControl\(\{ allowHostWorkspace: true \}\)/,
-  'host workspace access must follow an explicit action in the desktop modal');
+// Enable and allow-folders must stay on separate handlers (regression: one shared
+// handler made a single Enable click silently latch allow_host_workspace consent):
+// the Enable handler starts with an empty options object, and the explicit
+// allow-folders handler is the only place that passes allowHostWorkspace: true.
+assert.match(settingsView, /async function handleEnableWebAccess\(\) \{[\s\S]{0,220}startRemoteControl\(\{\}\)/,
+  'Enable Access must start remote control without host workspace consent');
+assert.match(settingsView, /async function handleAllowHostWorkspace\(\) \{[\s\S]{0,220}startRemoteControl\(\{ allowHostWorkspace: true \}\)/,
+  'host workspace access must follow an explicit allow-folders action in the desktop modal');
+assert.match(settingsView, /onClick=\{handleAllowHostWorkspace\}[\s\S]{0,260}\{remoteCopy\.allowWorkspace\}/,
+  'the allow-folders button must keep its dedicated consent handler');
+assert.match(settingsView, /onClick=\{handleEnableWebAccess\}[\s\S]{0,260}\{remoteCopy\.enable\}/,
+  'the Enable button must use the consent-free start handler');
 assert.doesNotMatch(settingsView, /useEffect\(\(\) => \{[\s\S]{0,240}startRemoteControl/,
   'opening the remote-control modal must not silently authorize host workspace access');
 assert.match(desktopRemoteControlBridge, /allowHostWorkspace: !!\(options && options\.allowHostWorkspace\)/,
