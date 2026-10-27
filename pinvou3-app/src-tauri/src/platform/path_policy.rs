@@ -145,10 +145,10 @@ mod tests {
     }
 
     /// 大小写变体语义跟随平台：Windows 与 macOS 默认卷大小写不敏感，黑名单
-    /// 大写写法同样必须命中（macOS 的 canonicalize 保留调用方拼写，字节比较
-    /// 会被 `.AWS` 之类绕过，见 posix.rs `path_component_eq`）；Linux 大小写
-    /// 敏感，大写变体是不同文件，不拦属正确语义。此用例同时锁住「比较经由
-    /// 平台感知 helper」这一修复点。
+    /// 大写写法同样必须命中（卷层会把 `.AWS` 解析到磁盘上的 `.aws`，按调用方
+    /// 拼写字节比较的词法检查会被绕过，见 posix.rs `path_component_eq`）；
+    /// Linux 大小写敏感，大写变体是不同文件，不拦属正确语义。此用例同时锁住
+    /// 「比较经由平台感知 helper」这一修复点。
     #[test]
     fn case_variant_semantics_follow_platform() {
         for blocked in BLOCKED_COMPONENTS {
@@ -163,10 +163,12 @@ mod tests {
         }
     }
 
-    /// 实测绕过形状逐项钉住：macOS 上 canonicalize 保留 `.ENV`/`.AWS` 等传入
-    /// 拼写，这些凭据路径必须被拦；Linux 上同一批大写变体是不同文件、放行，
-    /// 而原样拼写仍拦截。check_sensitive_components 纯组件判定、不触盘，
-    /// 断言的是比较语义本身。
+    /// 大写变体逐项钉住比较语义：大小写不敏感平台上 `.ENV`/`.AWS` 等拼写
+    /// 会解析到与原样拼写相同的磁盘文件，词法黑名单必须同样命中；Linux 上
+    /// 同一批大写变体是不同文件、放行，而原样拼写仍拦截。
+    /// check_sensitive_components 纯组件判定、不触盘，断言的是比较语义本身
+    /// （canonicalize 的输出是磁盘拼写，字节比较天然安全；本折叠针对的是
+    /// 规范化之前的词法检查——workspace 车道对调用方相对拼写先行判定）。
     #[test]
     fn uppercase_credential_variants_follow_platform() {
         let uppercase_variants = [

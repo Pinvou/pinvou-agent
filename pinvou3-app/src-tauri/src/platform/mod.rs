@@ -50,8 +50,10 @@ pub use os::path_identity_is_same_or_nested;
 // Same crate-boundary shape as the re-exports above: the CLI's artifacts
 // lane answers its credential-component blacklist through the same
 // platform-aware component compare as the GUI's `path_policy` (byte-exact
-// on Linux, ASCII case-insensitive on Windows and macOS — APFS's default
-// volume folds case and canonicalize preserves the caller's spelling)
+// on Linux, ASCII case-insensitive on Windows and macOS — on those platforms
+// the default volume folds case at the filesystem layer, so lexical checks
+// that run on the caller's spelling must fold to match what the volume will
+// actually resolve; `canonicalize` output is disk-spelled and needs no fold)
 // instead of a drifting `cfg!(windows)` re-copy.
 pub use os::path_component_eq;
 // Same crate-boundary shape as the re-exports above: the headless CLI's
