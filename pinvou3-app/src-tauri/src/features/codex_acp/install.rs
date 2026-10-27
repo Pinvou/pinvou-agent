@@ -1177,6 +1177,31 @@ mod tests {
         );
     }
 
+    /// Both wait-exit arms must settle the guard at the reap site: settling
+    /// disarms the Drop kill and unregisters the pid, so a settle that
+    /// silently disappears from either arm re-arms the recycled-pid hazard
+    /// on an already-reaped child while every behavioral test stays green
+    /// (the guard fixture settles explicitly, so it cannot observe the
+    /// production call sites).
+    #[test]
+    fn both_install_wait_arms_settle_the_guard_at_the_reap_site() {
+        let src = include_str!("install.rs");
+        let production = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("the test module marker must exist")];
+        let fn_start = production
+            .find("async fn run_managed_install")
+            .expect("run_managed_install must exist");
+        let body = &production[fn_start..];
+        assert_eq!(
+            body.matches("child_guard.settle_reaped()").count(),
+            2,
+            "the Ok arm and the timeout arm must both settle the guard \
+             immediately after their wait; a missing settle leaves the Drop \
+             kill armed on a reaped (recyclable) pid"
+        );
+    }
+
     #[test]
     pub(super) fn install_child_guard_drop_reclaims_tree_and_settled_guards_never_rekill() {
         let children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>> =

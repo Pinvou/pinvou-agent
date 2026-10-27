@@ -6503,6 +6503,69 @@ mod tests {
                  before a replacement bridge seeds its sequence"
             );
         }
+        // The keyed retirement bookkeeping must be cleared inside the take's
+        // sessions critical section (the helper asserts the pairing; holding
+        // the take guard is what orders it against a concurrent
+        // `get_or_spawn`). shutdown_all clears the whole drained pool and is
+        // pinned above; restart_agent_sessions shares the helper with these.
+        for (lane, signature) in [
+            ("evict", "pub async fn evict("),
+            ("idle reap", "async fn evict_if_idle("),
+            ("rebind", "pub async fn evict_if_idle_for_rebind("),
+            ("account switch", "async fn restart_agent_sessions"),
+        ] {
+            assert!(
+                production_body(src, signature).contains("clear_retirement_bookkeeping("),
+                "the {lane} retirement must clear the crash budget and the \
+                 parked restart disclosure through the paired helper inside \
+                 its sessions critical section"
+            );
+        }
+        // The transport-completion dead stamp is the detection keystone of
+        // the whole reclaim: reverting to waiting on the shutdown channel
+        // alone leaves a crashed child `running` forever and every test in
+        // this module stays green.
+        assert!(
+            spawn.contains("connection.incoming_closed()")
+                && spawn.contains("mark_connection_closed()"),
+            "the connection task must select on transport completion and \
+             stamp the generation dead; without the stamp a crashed runtime \
+             is never reclaimed"
+        );
+        // The cancel_requested producer is the only new journal behavior of
+        // the envelope claim; dropping the emit or the turn tag currently
+        // has no behavioral consumer, so pin the wiring. (The signature is
+        // spelled out because `production_body` matches substrings —
+        // `pub async fn cancel` would find `cancel_agent_install` first.)
+        let cancel = production_body(src, "pub async fn cancel(&self, session_id: &str)");
+        assert!(
+            cancel.contains("emit_with_turn(") && cancel.contains("\"cancel_requested\""),
+            "a user cancel must journal the cancel_requested envelope \
+             through the captured busy turn"
+        );
+        // The idle reap can land on a runtime that died unexpectedly; the
+        // re-parked disclosure is what keeps the next spawn's restart notice
+        // honest for that generation.
+        let reap = production_body(src, "async fn evict_if_idle(");
+        assert!(
+            reap.contains("take_uncounted_crash()") && reap.contains("RuntimeRestart::Crash"),
+            "an idle reap of an unexpectedly dead runtime must re-park the \
+             crash disclosure so the next rebuild discloses the context loss"
+        );
+        // The listing lanes are the resident-generation contract of the
+        // ghost-card containment.
+        for (lane, signature) in [
+            ("permission", "pub async fn pending_permissions_for("),
+            ("elicitation", "pub async fn pending_elicitations_for("),
+        ] {
+            let listing = production_body(src, signature);
+            assert!(
+                listing.contains("let Some(generation) = resident else {")
+                    && listing.contains("pending.generation == generation"),
+                "the {lane} listing lane must filter cards to the resident \
+                 generation and return nothing without a resident runtime"
+            );
+        }
     }
 
     /// The move-aside check only recognizes "the script path is the resolved
