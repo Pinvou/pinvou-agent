@@ -144,20 +144,54 @@ mod tests {
         }
     }
 
-    /// 大小写变体语义跟随平台：Windows 文件系统大小写不敏感，黑名单大写
-    /// 写法同样必须命中；Unix 大小写敏感，大写变体是不同文件，不拦属正确
-    /// 语义。此用例同时锁住「比较经由平台感知 helper」这一修复点。
+    /// 大小写变体语义跟随平台：Windows 与 macOS 默认卷大小写不敏感，黑名单
+    /// 大写写法同样必须命中（macOS 的 canonicalize 保留调用方拼写，字节比较
+    /// 会被 `.AWS` 之类绕过，见 posix.rs `path_component_eq`）；Linux 大小写
+    /// 敏感，大写变体是不同文件，不拦属正确语义。此用例同时锁住「比较经由
+    /// 平台感知 helper」这一修复点。
     #[test]
     fn case_variant_semantics_follow_platform() {
         for blocked in BLOCKED_COMPONENTS {
             let upper = blocked.to_uppercase();
             let path = std::env::temp_dir().join(&upper).join("x.txt");
             let r = check_sensitive_components(&path);
-            if cfg!(windows) {
-                assert!(r.is_err(), "Windows 上 {upper} 应被拦");
+            if cfg!(windows) || cfg!(target_os = "macos") {
+                assert!(r.is_err(), "{upper} 应被拦");
             } else {
-                assert!(r.is_ok(), "Unix 上 {upper} 是不同文件，不应拦");
+                assert!(r.is_ok(), "Linux 上 {upper} 是不同文件，不应拦");
             }
+        }
+    }
+
+    /// 实测绕过形状逐项钉住：macOS 上 canonicalize 保留 `.ENV`/`.AWS` 等传入
+    /// 拼写，这些凭据路径必须被拦；Linux 上同一批大写变体是不同文件、放行，
+    /// 而原样拼写仍拦截。check_sensitive_components 纯组件判定、不触盘，
+    /// 断言的是比较语义本身。
+    #[test]
+    fn uppercase_credential_variants_follow_platform() {
+        let uppercase_variants = [
+            ".ENV",
+            ".AWS/credentials",
+            ".KUBE/config",
+            ".DOCKER/config.json",
+            ".SSH",
+        ];
+        for raw in uppercase_variants {
+            let path = std::env::temp_dir().join(raw);
+            let r = check_sensitive_components(&path);
+            if cfg!(windows) || cfg!(target_os = "macos") {
+                assert!(r.is_err(), "大小写不敏感平台上 {raw} 应被拦");
+            } else {
+                assert!(r.is_ok(), "Linux 上 {raw} 是不同文件，不应拦");
+            }
+        }
+        for raw in uppercase_variants {
+            let lower = raw.to_lowercase();
+            let path = std::env::temp_dir().join(&lower);
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "原样拼写 {lower} 应被拦"
+            );
         }
     }
 }
