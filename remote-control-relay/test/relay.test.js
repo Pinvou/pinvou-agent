@@ -854,6 +854,73 @@ test("expires offline endpoints after TTL and releases endpoint capacity", async
   }
 });
 
+test("a non-numeric heartbeat falls back instead of a 1 ms NaN tick", async () => {
+  // setInterval(NaN) beats at 1 ms and prints a Node warning; the bounded
+  // parser must fall back to the default cadence instead.
+  const isolated = await spawnRelay({ HEARTBEAT_INTERVAL_MS: "abc" });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.ok(!isolated.errors().includes("TimeoutNaNWarning"), "NaN heartbeat reached setInterval");
+    const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
+    assert.equal(health.endpoint_count, 0);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("tombstone capacity stays inside what the state limit can hold", async () => {
+  // MAX_REVOKED_ENDPOINTS is clamped to what MAX_RELAY_STATE_BYTES can hold:
+  // revocations past the clamp refuse through the normal capacity path instead
+  // of persisting entries until the size check fails every further revoke.
+  const isolated = await spawnRelay({
+    MAX_RELAY_STATE_BYTES: "2048",
+    MAX_REVOKED_ENDPOINTS: "100",
+    ENDPOINT_CREATE_LIMIT: "100",
+  });
+  try {
+    for (let i = 0; i < 8; i += 1) {
+      const endpointId = `endpoint_clamp_${String(i).padStart(2, "0")}`;
+      const desktop = await registerDesktop(
+        endpointId,
+        `clamp-token-${String(i).padStart(22, "0")}`,
+        `clamp-secret-${String(i).padStart(22, "0")}`,
+        isolated.wsUrl,
+      );
+      desktop.ws.send(JSON.stringify({
+        v: 2,
+        type: "desktop_endpoint_revoke",
+        endpoint_id: endpointId,
+      }));
+      assert.equal((await desktop.registered).endpoint_id, endpointId);
+      await nextMessage(desktop.ws, "desktop_endpoint_revoked");
+      await waitForClose(desktop.ws);
+    }
+    const over = await registerDesktop(
+      "endpoint_clamp_over_capacity_x",
+      "clamp-token-over-capacity-000000000x",
+      "clamp-secret-over-capacity-00000000x",
+      isolated.wsUrl,
+    );
+    over.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: "endpoint_clamp_over_capacity_x",
+    }));
+    const refusal = await nextMessage(over.ws, "error");
+    assert.equal(refusal.code, "revoke_persistence_failed");
+    await waitForClose(over.ws);
+
+    const persisted = JSON.parse(await readFile(isolated.statePath, "utf8"));
+    assert.equal(persisted.revoked_endpoints.length, 8);
+    // The refused endpoint stays registered and usable, like any failed
+    // persistence; only the tombstone is missing.
+    const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
+    assert.equal(health.endpoint_count, 1);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
 test("allows native and approved browser origins while rejecting other browser origins", async () => {
   const isolated = await spawnRelay({
     PINVOU_REMOTE_ALLOWED_WEB_ORIGINS: "https://trusted.example",

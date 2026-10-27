@@ -15,9 +15,14 @@ const PUBLIC_BASE_PATH = normalizeBasePath(
   process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote",
 );
 const WEB_ROOT = resolve(process.env.PINVOU_REMOTE_WEB_DIR || resolve(__dirname, "web", "dist"));
-const HEARTBEAT_INTERVAL_MS = Math.max(
-  5000,
-  Number(process.env.HEARTBEAT_INTERVAL_MS || 15_000),
+// A non-numeric value used to reach setInterval as NaN, which Node clamps to
+// a 1 ms tick while printing a warning; bound the input like every other
+// numeric env instead.
+const HEARTBEAT_INTERVAL_MS = boundedInteger(
+  process.env.HEARTBEAT_INTERVAL_MS,
+  15_000,
+  5_000,
+  24 * 60 * 60_000,
 );
 // The v2 RPC contract permits up to 1 MiB of JSON args. Base64-heavy requests
 // and normal envelope overhead need a Relay ceiling comfortably above that.
@@ -104,17 +109,19 @@ const WS_MAX_BUFFERED_BYTES = Math.max(
     256 * MIB,
   ),
 );
-const MAX_REVOKED_ENDPOINTS = boundedInteger(
-  process.env.MAX_REVOKED_ENDPOINTS,
-  100_000,
-  1,
-  1_000_000,
-);
 const MAX_RELAY_STATE_BYTES = boundedInteger(
   process.env.MAX_RELAY_STATE_BYTES,
   16 * MIB,
   1024,
   256 * MIB,
+);
+// A tombstone serializes to well under 256 bytes even with the longest legal
+// endpoint id, so clamping the configured capacity to what the state limit
+// can hold keeps revocation persistence possible however the two env values
+// combine; relayStateContents stays the exact backstop.
+const MAX_REVOKED_ENDPOINTS = Math.min(
+  boundedInteger(process.env.MAX_REVOKED_ENDPOINTS, 100_000, 1, 1_000_000),
+  Math.max(1, Math.floor(MAX_RELAY_STATE_BYTES / 256)),
 );
 const RELAY_STATE_PATH = resolve(
   process.env.PINVOU_REMOTE_STATE_PATH || resolve(__dirname, "data", "relay-state.json"),
