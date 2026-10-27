@@ -9,7 +9,7 @@ import { WebSocketServer } from "ws";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIB = 1024 * 1024;
 const RELAY_STATE_VERSION = 1;
-const PORT = Number(process.env.PORT || 8787);
+const PORT = configOrExit(() => parsePort(process.env.PORT || 8787));
 const HOST = process.env.PINVOU_REMOTE_HOST || "0.0.0.0";
 const PUBLIC_BASE_PATH = normalizeBasePath(
   process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote",
@@ -136,6 +136,18 @@ function configOrExit(parse) {
     console.error(`[relay-error] ${error.message}`);
     process.exit(1);
   }
+}
+
+// listen() validates the port synchronously, so an invalid value would die
+// with a RangeError whose stack prints the module path instead of the fixed
+// startup report. Port 0 is also rejected: the banner no longer prints the
+// bound address, so an ephemeral port could never be discovered.
+function parsePort(value) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("invalid PORT: use an integer from 1 to 65535");
+  }
+  return port;
 }
 
 const ALLOWED_WEB_ORIGINS = configOrExit(

@@ -1217,6 +1217,24 @@ test("configuration errors do not echo the offending value", async () => {
   }
 });
 
+test("an invalid PORT reports the fixed line instead of a stack", async () => {
+  // listen() validates the port synchronously, so an invalid value dies
+  // inside the call with a RangeError whose stack prints the module path.
+  for (const value of ["abc", "99999", "-1", "1.5"]) {
+    const isolated = await spawnRelay({ PORT: value }, { awaitListening: false });
+    try {
+      await waitForExit(isolated.child, 10000);
+      assert.notEqual(isolated.child.exitCode, 0);
+      assert.equal(
+        isolated.errors().trim(),
+        "[relay-error] invalid PORT: use an integer from 1 to 65535",
+      );
+    } finally {
+      await stopRelay(isolated.child);
+    }
+  }
+});
+
 test("relay state load failures surface a fixed message without paths", async (t) => {
   if (process.platform === "win32") {
     t.skip("Windows maps stat through a regular file to ENOENT, not ENOTDIR");
