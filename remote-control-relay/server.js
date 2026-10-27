@@ -1012,11 +1012,12 @@ async function revokeFromSocket(ws, msg) {
   ws.authTimer = null;
   try {
     await persistRevocation(endpointId);
-  } catch {
+  } catch (error) {
     endpoint.revoking = false;
     ws.revokePending = false;
-    // Fixed event code only: never log the endpoint id or raw error text.
-    console.error("[relay-error] revocation_persist_failed");
+    // Fixed event code plus the errno name (never a path); the endpoint id is
+    // a persistent device identifier and raw error text embeds fs paths.
+    console.error(`[relay-error] revocation_persist_failed${error?.code ? ` code=${error.code}` : ""}`);
     rejectSocket(ws, "revoke_persistence_failed", "failed to persist endpoint revocation");
     return;
   }
@@ -1163,9 +1164,13 @@ wss.on("connection", (ws, req) => {
     }
     if (msg.type === "desktop_endpoint_revoke") {
       void revokeFromSocket(ws, msg).catch(() => {
-        // Defensive: revokeFromSocket resets ws.revokePending and
-        // endpoint.revoking on every reachable failure path; this outer catch
-        // only keeps an unexpected throw from surfacing as a crash.
+        // Defensive: every reachable failure path inside revokeFromSocket
+        // already resets these flags. Reset them here too so an unexpected
+        // throw can never leave the socket ignoring messages or the endpoint
+        // unable to expire.
+        ws.revokePending = false;
+        const endpoint = endpoints.get(msg.endpoint_id);
+        if (endpoint) endpoint.revoking = false;
         console.error("[relay-error] revocation_unexpected_failure");
         rejectSocket(ws, "revoke_failed", "endpoint revocation failed");
       });
