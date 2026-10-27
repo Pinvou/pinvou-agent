@@ -2730,6 +2730,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // 脱敏兜底。码表与 Rust 侧 stable_web_error_codes_are_locked 同步演进。
   const WEB_TURN_ERROR_KEYS = {
     web_session_chat_failed: "webChatFailed",
+    web_session_turn_in_progress: "turnAlreadyInProgress",
     session_revision_conflict: "editStaleRevision",
     session_revision_unavailable: "editRevisionUnavailable",
     web_artifact_too_large: "artifactTooLarge",
@@ -5404,7 +5405,12 @@ function openScheduledTaskFolder(automationId) { return pinvouSharedweb().openSc
     try {
       return await downloadArtifactRaw(path, sessionId);
     } catch (e) {
-      addSystemItem(bt("downloadFailed") + String((e && e.message) || e));
+      // Stable wire codes fold to trilingual copy here too, so the download
+      // path does not render raw machine codes (the turn-error lane maps the
+      // same table via displayTurnError).
+      const code = String((e && e.message) || e || "");
+      const copyKey = WEB_TURN_ERROR_KEYS[code];
+      addSystemItem(bt("downloadFailed") + (copyKey ? bt(copyKey) : code));
       return false;
     }
   }

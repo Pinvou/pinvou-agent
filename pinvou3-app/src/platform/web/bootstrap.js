@@ -98,13 +98,21 @@
   const relayOverride = fragment.get("relay") || "";
   const protocolVersion = 2;
   // Liveness watchdog. Protocol-level Relay pings are invisible to JS, so a
-  // healthy-but-idle socket is silent by design; pure silence is therefore
-  // only a suspicion, not proof of a dead connection. Silence past the
-  // threshold is resolved with a speculative reconnect: the durable cursor
-  // makes replay idempotent and RPCs replay by design, so an occasional
-  // extra reconnect is cheap and invisible to the UI.
+  // healthy-but-idle socket is silent by design: staleness is only suspicion
+  // of a half-open connection, never proof. Suspicion is resolved with a
+  // speculative reconnect — the durable cursor makes replay idempotent and
+  // RPCs replay by design, so an extra reconnect is cheap. While the rejoin
+  // verifies, the UI stays on "connected"; only a failed verification (a
+  // connect error, or a close before the join ack) escalates to the ordinary
+  // visible reconnecting state.
   const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;
   const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;
+  // Desktop-gone failures (endpoint_not_found, desktop_offline_ttl_expired)
+  // keep the historical fast retry pace for the first attempts so a desktop
+  // recreating its endpoint is rejoined within seconds, then double per
+  // attempt up to the cap so an absent desktop is not retried ~10s forever.
+  const DESKTOP_GONE_FAST_RETRIES = 5;
+  const DESKTOP_GONE_MAX_DELAY_MS = 60_000;
 
   function relayWebSocketUrl() {
     if (relayOverride) return relayOverride;
@@ -144,6 +152,13 @@
       this.closedPermanently = false;
       this.reconnectAttempt = 0;
       this.reconnectTimer = null;
+      // Speculative-reconnect state: set only by the liveness watchdog, whose
+      // staleness close is a suspicion to verify, not a proven failure.
+      this.speculativeReconnect = false;
+      this.speculativeSource = null;
+      // Consecutive desktop-gone reconnects (endpoint_not_found / TTL expiry).
+      this.desktopGoneRetries = 0;
+      this.reconnectForDesktopGone = false;
       this.lastInboundAt = 0;
       this.livenessTimer = null;
       this.pending = new Map();
@@ -217,7 +232,9 @@
 
     connect() {
       if (this.closedPermanently || this.socket) return;
-      this.setConnection("connecting", "正在连接桌面端…");
+      // A speculative reconnect keeps the UI on "connected" until verification
+      // fails; see the LIVENESS_SILENCE_TIMEOUT_MS note above.
+      if (!this.speculativeReconnect) this.setConnection("connecting", "正在连接桌面端…");
       let socket;
       try { socket = new WebSocket(this.url); }
       catch (error) { this.scheduleReconnect(String(error)); return; }
@@ -243,15 +260,34 @@
         this.desktopOnline = false;
         this.desktopCapabilitiesReady = false;
         this.leaseId = null;
+        if (this.speculativeReconnect && socket !== this.speculativeSource) {
+          // A socket issued by the speculative reconnect died before it could
+          // rejoin: verification failed, so stop hiding the recovery.
+          this.clearSpeculativeReconnect();
+        }
         if (!this.closedPermanently) this.scheduleReconnect("连接已断开，正在重试…");
       });
-      socket.addEventListener("error", () => this.setConnection("connecting", "连接异常，正在重试…"));
+      socket.addEventListener("error", () => {
+        this.clearSpeculativeReconnect();
+        this.setConnection("connecting", "连接异常，正在重试…");
+      });
     }
 
     scheduleReconnect(message) {
       if (this.closedPermanently || this.reconnectTimer) return;
-      this.setConnection("connecting", message);
-      const base = Math.min(10_000, 500 * (2 ** Math.min(this.reconnectAttempt, 5)));
+      if (!this.speculativeReconnect) this.setConnection("connecting", message);
+      // Desktop-gone failures keep the fast pace only for the first attempts;
+      // any other failure class resets the streak (a successful join resets it
+      // in the join handler).
+      this.desktopGoneRetries = this.reconnectForDesktopGone ? this.desktopGoneRetries + 1 : 0;
+      this.reconnectForDesktopGone = false;
+      let base = Math.min(10_000, 500 * (2 ** Math.min(this.reconnectAttempt, 5)));
+      if (this.desktopGoneRetries > DESKTOP_GONE_FAST_RETRIES) {
+        base = Math.min(
+          DESKTOP_GONE_MAX_DELAY_MS,
+          10_000 * 2 ** (this.desktopGoneRetries - DESKTOP_GONE_FAST_RETRIES),
+        );
+      }
       // eslint-disable-next-line sonarjs/pseudo-random -- not security-sensitive: reconnect backoff jitter (±20%); only affects retry pacing
       const delay = Math.round(base * (0.8 + Math.random() * 0.4));
       this.reconnectAttempt += 1;
@@ -259,6 +295,11 @@
         this.reconnectTimer = null;
         this.connect();
       }, delay);
+    }
+
+    clearSpeculativeReconnect() {
+      this.speculativeReconnect = false;
+      this.speculativeSource = null;
     }
 
     startLivenessWatchdog() {
@@ -273,21 +314,27 @@
     // inbound frame for LIVENESS_SILENCE_TIMEOUT_MS is probably half-open
     // (phone sleep, network switch): RPCs would hang until their timeout and
     // the close event would never fire. Closing routes recovery through the
-    // ordinary close -> backoff -> rejoin path, where the durable cursor makes
-    // the replay idempotent. See the LIVENESS_SILENCE_TIMEOUT_MS note above.
+    // ordinary close -> backoff -> rejoin path, marked speculative so the UI
+    // stays on "connected" unless the rejoin fails to verify. See the
+    // LIVENESS_SILENCE_TIMEOUT_MS note above.
     _livenessCheck() {
       if (this.closedPermanently || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - this.lastInboundAt <= LIVENESS_SILENCE_TIMEOUT_MS) return;
-      try { this.socket.close(); } catch { /* socket already closed */ }
+      this.speculativeReconnect = true;
+      this.speculativeSource = this.socket;
+      try { this.socket.close(); } catch { this.clearSpeculativeReconnect(); }
     }
 
     // OS-level connectivity change: neither the old socket nor the old
     // backoff is trustworthy across it.
     handleNetworkBecomeOnline() {
       if (this.closedPermanently) return;
-      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-        // The socket looks alive, but the OS just said connectivity changed;
-        // treat it as the same suspicion as the liveness watchdog.
+      if (this.socket && (this.socket.readyState === WebSocket.OPEN
+        || this.socket.readyState === WebSocket.CONNECTING)) {
+        // An OPEN socket looks alive, but the OS just said connectivity
+        // changed: treat it as the same suspicion as the liveness watchdog.
+        // A CONNECTING socket is wedged on the browser TCP timeout; abort it
+        // so recovery reroutes through the close handler immediately.
         try { this.socket.close(); } catch { /* socket already closed */ }
         return;
       }
@@ -302,10 +349,15 @@
     // Waking tab: reconnect immediately when no socket is live. Do NOT
     // speculatively drop an OPEN socket here — backgrounded tabs throttle
     // timers, so liveness state is stale on wake; the watchdog and the online
-    // event cover that case.
+    // event cover that case. A CONNECTING socket gets the same abort as in
+    // handleNetworkBecomeOnline: recovery must not wait out the TCP timeout.
     handlePageVisible() {
       if (this.closedPermanently) return;
       if (this.socket && this.socket.readyState === WebSocket.OPEN) return;
+      if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+        try { this.socket.close(); } catch { /* socket already closed */ }
+        return;
+      }
       this.reconnectAttempt = 0;
       if (this.reconnectTimer) {
         window.clearTimeout(this.reconnectTimer);
@@ -348,6 +400,8 @@
           // join acknowledgement, so transient endpoint misses must continue
           // to increase the retry delay.
           this.reconnectAttempt = 0;
+          this.desktopGoneRetries = 0;
+          this.clearSpeculativeReconnect();
           this.joined = true;
           this.lastInboundAt = Date.now();
           this.desktopOnline = message.desktop_connected !== false;
@@ -407,6 +461,7 @@
           // real revoke.
           if (message.reason === "desktop_offline_ttl_expired") {
             this.desktopOnline = false;
+            this.reconnectForDesktopGone = true;
             this.setConnection("desktop_offline", "桌面端离线，等待重新连接…");
             try { this.socket && this.socket.close(); } catch { /* socket already closed */ }
           } else {
@@ -422,6 +477,7 @@
             // desktop endpoint, so keep retrying instead of invalidating the
             // user's stable link.
             this.desktopOnline = false;
+            this.reconnectForDesktopGone = true;
             this.setConnection("desktop_offline", "等待桌面端重新连接…");
             try { this.socket && this.socket.close(); } catch { /* socket already closed */ }
           } else {
@@ -438,6 +494,7 @@
       this.joined = false;
       this.desktopOnline = false;
       this.desktopCapabilitiesReady = false;
+      this.clearSpeculativeReconnect();
       this.negotiatedCapabilitiesKnown = false;
       this.negotiatedCommands.clear();
       this.negotiatedEvents.clear();
