@@ -12,7 +12,11 @@ any other value; it never upgrades an older message by rewriting its version.
 Because JSON parsing collapses repeated keys to the last occurrence, a frame
 whose text repeats the `v` key in any object (including escaped spellings such
 as `"\u0076"`) is rejected as `bad_json` before parsing instead of being
-upgraded to whatever the last occurrence says.
+upgraded to whatever the last occurrence says. A frame that nests any value
+more than 128 levels deep is likewise rejected as `bad_json`; senders must keep
+nesting within this bound. One envelope level plus the 127 containers that
+serde_json can parse fits exactly, so a payload the desktop could deserialize
+is never rejected, but wrapping a parsed payload in further layers would be.
 Credentials belong only in the authentication messages. The browser link keeps
 its credentials in the URL fragment, which is never included in an HTTP request.
 On the wire, `access_token` is the only accepted access-token field; legacy
@@ -190,7 +194,7 @@ connection open.
 
 | Code | Trigger |
 | --- | --- |
-| `bad_json` | A text frame is not valid JSON, repeats the `v` key in any object, or nests more than 128 levels. |
+| `bad_json` | A text frame is not valid JSON, repeats the `v` key in any object, or nests any value more than 128 levels deep. |
 | `bad_message` | The parsed frame is not a JSON object. |
 | `binary_unsupported` | A binary WebSocket frame arrived. |
 | `unsupported_protocol_version` | `v` is missing or is not `2`. |
@@ -234,13 +238,14 @@ connection open.
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. Only when
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` is unset does it fall back to
-  `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting and
-  logging, the client address is the rightmost `X-Forwarded-For` item when the
-  direct peer is a trusted proxy; `X-Real-IP` is consulted only when
-  `X-Forwarded-For` is entirely absent, and malformed, non-IP, or oversized
-  (>4096 chars) forwarded headers fall back to the direct peer address.
-- `SIGINT` and `SIGTERM` terminate all websocket clients, close the HTTP
-  server, and exit the process with code 0.
+  `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting, the client address is
+  the rightmost `X-Forwarded-For` item when the direct peer is a trusted proxy;
+  `X-Real-IP` is consulted only when `X-Forwarded-For` is entirely absent, and
+  malformed, non-IP, repeated, or oversized (>4096 chars) forwarded headers
+  fall back to the direct peer address.
+- `SIGINT` and `SIGTERM` terminate all WebSocket clients without a close
+  handshake (peers observe an abnormal closure) and exit the process with
+  code 0; in-flight HTTP responses are not drained.
 - Protocol v2 requires `MAX_PAYLOAD_BYTES` to be at least 4 MiB. Desktop-originated
   frames are bounded by the complete serialized WebSocket message, not just the
   event payload, and stay at or below `4 MiB - 64 KiB`.
