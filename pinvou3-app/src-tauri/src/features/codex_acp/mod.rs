@@ -4772,14 +4772,18 @@ impl AcpPool {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        // Resolve (and, when needed, reclaim/rebuild) the runtime BEFORE
+        // listing cards: the lists are filtered to the resident generation,
+        // and a poll that itself triggers a Dead/Missing reclaim must not
+        // attach the just-drained dead generation's cards to the
+        // replacement's info (mirrors `apply_config_change`'s list-after-
+        // resolve order). The listing helpers never spawn, so this stays a
+        // single get_or_spawn.
+        let runtime = self.get_or_spawn(session_id).await?;
         let pending_permissions = self.pending_permissions_for(session_id).await;
         let pending_elicitations = self.pending_elicitations_for(session_id).await;
         // provider is already filled from the session record by info(); nothing to add here.
-        Ok(self.get_or_spawn(session_id).await?.info(
-            &self.agents,
-            pending_permissions,
-            pending_elicitations,
-        ))
+        Ok(runtime.info(&self.agents, pending_permissions, pending_elicitations))
     }
 
     /// 一次性模型探针：切换/删除 Provider（或恢复官方）后，草稿态会话本不连接
