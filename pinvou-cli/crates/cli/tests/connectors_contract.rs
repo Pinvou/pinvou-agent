@@ -1991,7 +1991,12 @@ fn connect_fails_when_the_relied_grant_commit_cannot_persist() {
     .unwrap();
     // Pre-create the lock file so the failure lands on the data-file write,
     // not on the lock open (an existing file opens fine in a read-only dir).
-    std::fs::write(home.0.path().join("disabled_bundles.json.lock"), b"").unwrap();
+    // The lock name is the data file's EXTENSION replaced
+    // (`disabled_bundles.json` → `disabled_bundles.lock`, the same derivation
+    // `lock_path_for` pins) — a `disabled_bundles.json.lock` sibling is never
+    // opened by production, so pre-creating that name left the failure at the
+    // lock open and the pin exercised the wrong fault layer.
+    std::fs::write(home.0.path().join("disabled_bundles.lock"), b"").unwrap();
 
     // Read-only DIRECTORY (0o555). Root is not constrained by 0555: probe and
     // skip loudly rather than exercise nothing (same doctrine as the app
