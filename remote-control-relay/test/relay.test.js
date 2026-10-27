@@ -219,7 +219,11 @@ async function spawnRelay(env = {}, { awaitListening = true } = {}) {
   let errors = "";
   child.stdout.on("data", (chunk) => { output += String(chunk); });
   child.stderr.on("data", (chunk) => { errors += String(chunk); });
-  if (awaitListening) await waitForOutput(child, /pinvou remote relay listening/);
+  if (awaitListening) {
+    // Kill before propagating: a failed wait must not orphan the child.
+    try { await waitForOutput(child, /pinvou remote relay listening/); }
+    catch (error) { child.kill(); throw error; }
+  }
   return {
     child,
     port: isolatedPort,
@@ -1078,9 +1082,9 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
       try {
         await waitForExit(isolated.child, 10000);
         assert.notEqual(isolated.child.exitCode, 0);
-        assert.match(
-          isolated.errors(),
-          new RegExp(`proxy_ip_configuration_invalid: ${variable}`, "u"),
+        assert.equal(
+          isolated.errors().trim(),
+          `[relay-error] proxy_ip_configuration_invalid: ${variable}`,
         );
         assert.doesNotMatch(isolated.output(), /pinvou remote relay listening/u);
       } finally {
@@ -1191,8 +1195,13 @@ test("shuts down with exit code 0 on SIGTERM and does not log the bind address",
 
 test("configuration errors do not echo the offending value", async () => {
   // Both parseOriginSet failure shapes: a parseable origin with a forbidden
-  // scheme, and text that fails URL construction outright.
-  for (const value of ["https://good.example, ftp://evil.example", "not a url"]) {
+  // scheme, and text that fails URL construction outright. The failure is one
+  // fixed [relay-error] line: no stack, no offending value.
+  const cases = [
+    ["https://good.example, ftp://evil.example", "invalid browser WebSocket origin"],
+    ["not a url", "invalid PINVOU_REMOTE_ALLOWED_WEB_ORIGINS entry"],
+  ];
+  for (const [value, message] of cases) {
     const isolated = await spawnRelay(
       { PINVOU_REMOTE_ALLOWED_WEB_ORIGINS: value },
       { awaitListening: false },
@@ -1200,10 +1209,7 @@ test("configuration errors do not echo the offending value", async () => {
     try {
       await waitForExit(isolated.child, 10000);
       assert.notEqual(isolated.child.exitCode, 0);
-      assert.match(
-        isolated.errors(),
-        /invalid (browser WebSocket origin|PINVOU_REMOTE_ALLOWED_WEB_ORIGINS entry)/u,
-      );
+      assert.equal(isolated.errors().trim(), `[relay-error] ${message}`);
       assert.ok(!isolated.errors().includes(value), "offending origin echoed into stderr");
     } finally {
       await stopRelay(isolated.child);
@@ -1211,7 +1217,11 @@ test("configuration errors do not echo the offending value", async () => {
   }
 });
 
-test("relay state load failures surface a fixed message without paths", async () => {
+test("relay state load failures surface a fixed message without paths", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows maps stat through a regular file to ENOENT, not ENOTDIR");
+    return;
+  }
   // A regular file where a directory is expected makes stat() fail with
   // ENOTDIR, whose message and `path` property both carry the full state path;
   // only a fixed code plus the errno name may reach stderr.
@@ -1274,6 +1284,10 @@ test("a blank trusted proxy list is empty while an unset one inherits the allowl
 });
 
 test("serves 503 instead of crashing when a web asset becomes unreadable", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("file modes do not restrict read access on Windows");
+    return;
+  }
   if (process.getuid?.() === 0) {
     t.skip("file modes do not restrict root");
     return;
