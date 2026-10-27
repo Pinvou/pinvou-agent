@@ -967,6 +967,11 @@ pub(super) fn resolve_workspace_references(
     let mut references = Vec::new();
     for raw in relative_paths {
         let relative = normalize_relative_path(raw)?;
+        // 词法判定与 preview 同约束:解析前的调用方拼写先过一次黑名单
+        // (注释所称的双重判定的前一半;解析后落点另有一次)。
+        if relative_path_crosses_blocked_component(&relative) {
+            bail!("工作区引用途经凭据文件，拒绝读取: {relative}");
+        }
         if !unique.insert(relative.clone()) {
             continue;
         }
@@ -2354,6 +2359,11 @@ mod tests {
         let error = resolve_workspace_references(root.path(), &[".env".to_string()])
             .err()
             .expect("credential prompt reference must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        // `.env.` 系变体在前缀判定处被拦(无需落盘解析)。
+        let error = resolve_workspace_references(root.path(), &[".env.production".to_string()])
+            .err()
+            .expect("env-variant prompt reference must be rejected");
         assert!(error.to_string().contains("凭据"), "got: {error}");
         let resolved = resolve_workspace_references(root.path(), &["notes.md".to_string()])
             .expect("ordinary references stay allowed");
