@@ -3544,16 +3544,20 @@ impl AcpPool {
             session_ids
                 .iter()
                 .filter_map(|session_id| {
-                    sessions
-                        .remove(session_id)
-                        .map(|runtime| (session_id.clone(), runtime))
+                    let runtime = sessions.remove(session_id)?;
+                    // A completed install/upgrade restart is not a crash: the
+                    // rebuilt runtime must start with a clean crash budget.
+                    // Cleared right after the take, before any await (see
+                    // `evict_if_idle`) — the loop below awaits per runtime, so
+                    // a clear there would leave a window where a concurrent
+                    // `get_or_spawn` throttles against the discarded runtime.
+                    self.runtime_crash_budgets.lock().remove(session_id);
+                    self.runtime_restart_disclosures.lock().remove(session_id);
+                    Some((session_id.clone(), runtime))
                 })
                 .collect::<Vec<_>>()
         };
         for (session_id, runtime) in runtimes {
-            // A completed install/upgrade restart is not a crash: the rebuilt
-            // runtime must start with a clean crash budget.
-            self.runtime_crash_budgets.lock().remove(&session_id);
             // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
             // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
             // 状态同时收口。
@@ -4423,10 +4427,17 @@ impl AcpPool {
         // probes) self-heal on the next list(); idle eviction goes through
         // `evict_if_idle`, never through this path, so its map entries stay.
         self.acp_metadata_backends.write().remove(session_id);
+        let taken = self.sessions.lock().await.remove(session_id);
         // A deliberate eviction is not a crash: drop the session's crash
         // budget together with the runtime so the next spawn starts clean.
+        // Cleared right after the take, before any await (see
+        // `evict_if_idle`): clearing before the removal would let a
+        // concurrent `get_or_spawn` record a crash and spawn a replacement
+        // that this eviction then removes, leaving a stale budget on the
+        // fresh runtime.
         self.runtime_crash_budgets.lock().remove(session_id);
-        if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
+        self.runtime_restart_disclosures.lock().remove(session_id);
+        if let Some(runtime) = taken {
             runtime.shutdown().await;
         }
     }
@@ -4458,6 +4469,7 @@ impl AcpPool {
         // take, before any await, so a concurrent `get_or_spawn` for the same
         // session neither reads the stale budget nor has a fresh crash wiped.
         self.runtime_crash_budgets.lock().remove(session_id);
+        self.runtime_restart_disclosures.lock().remove(session_id);
         // Same F3 contract as `evict_if_idle_for_rebind`: the take already
         // removed the runtime from the map, so the pending-request cancels
         // must go through the reclaimed runtime's own bridge — a map lookup
@@ -4519,8 +4531,10 @@ impl AcpPool {
         };
         self.acp_metadata_backends.write().remove(session_id);
         // Rebind eviction is deliberate retirement, not a crash. Clear the
-        // budget right after the take, before any await (see `evict_if_idle`).
+        // budget and any pending restart disclosure right after the take,
+        // before any await (see `evict_if_idle`).
         self.runtime_crash_budgets.lock().remove(session_id);
+        self.runtime_restart_disclosures.lock().remove(session_id);
         // Cancel before shutdown, through the RECLAIMED runtime's own bridge
         // (review #463 F3): the take already removed the session from the map,
         // so the plain `cancel_pending_permissions` lookup would resolve
