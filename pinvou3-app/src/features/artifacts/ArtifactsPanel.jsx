@@ -727,6 +727,10 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       // biome-ignore lint/a11y/useSemanticElements: the list row has multiple nested layouts and inline buttons; a button would break existing styles
                       <div key={a.path} role="button" tabIndex={0} onClick={() => preview(a)}
                         onKeyDown={(e) => {
+                          // The row hosts a real <button> (locate folder): ignore
+                          // keys bubbled from it, or preventDefault here would
+                          // swallow its native Enter/Space activation and
+                          // preview the artifact instead.
                           if (e.target !== e.currentTarget) return;
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
