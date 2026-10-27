@@ -11,6 +11,9 @@ name: PR Check
 #   select browser smokes from their actual base/head diff and fail closed for
 #   unknown or shared paths.
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
+# - relay-test:remote-control-relay 回归套件(纯 Node,单依赖,10 分钟上限);
+#   relay 路径的 PR(含 draft)与 Merge Queue 运行,直推 main 不跑(MQ 是
+#   main 侧唯一 relay 执行点)。
 # - knowledge-rust:独立 pinvou-knowledge crate/部署入口改动跑 fmt/clippy/test 与 shell
 #   语法检查；依赖或策略改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
 #   main push 无条件运行刷新 knowledge-rust-v2 存档(同 cli-test);draft 跳过。
@@ -128,6 +131,20 @@ jobs:
             python3 scripts/validate-commit-msg.py --range "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
           else
             before="${{ github.event.before }}"
+            # A ref creation reports the zero SHA as `before`, and a
+            # force-push reports the previous head, which a fresh checkout
+            # may no longer contain. Either way there is no usable old
+            # boundary: the validator's missing-base fallback sweeps the
+            # whole lineage and false-reds on pre-convention history. Skip
+            # instead — those commits reached main through pull requests,
+            # whose base..head lane validates format, and dco.yml enforces
+            # the sign-off trailers there. Sign-offs are never this job's
+            # concern.
+            if [ "$before" = "0000000000000000000000000000000000000000" ] || \
+              ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+              echo "No usable push boundary (ref created or history rewritten); skipping commit-message range validation."
+              exit 0
+            fi
             python3 scripts/validate-commit-msg.py --range "$before" "${{ github.sha }}"
           fi
 
@@ -771,7 +788,9 @@ jobs:
   relay-test:
     name: relay-test
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.relay == 'true' && (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
+    # Drafts run too: the relay suite is short (10m cap) and early feedback
+    # beats a queue-time surprise on relay-touching changes.
+    if: ${{ !cancelled() && needs.changes.outputs.relay == 'true' && (github.event_name == 'merge_group' || github.event_name == 'pull_request') }}
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
@@ -1401,6 +1420,20 @@ jobs:
         with:
           submodules: false
 
+      # / and /mnt share one disk on hosted runners. Memory setup first claims
+      # 8 GiB of swap (16 GiB when zram is unavailable), then system/Node
+      # dependencies and the Rust cache are installed/unpacked on top. Freeing
+      # space only after the cache restore can be too late: the runner may hit
+      # ENOSPC before it can even write diagnostic logs. Remove explicitly
+      # unused preinstalled SDKs before any large write and require at least
+      # 24 GiB of initial headroom; the second and third calls below re-run
+      # before and after the cache restore.
+      - name: Prepare Rust disk space before swap and caches
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py --min-free-gib 24
+
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
@@ -1497,6 +1530,15 @@ jobs:
         # 因此直接用 package-lock 驱动的 npm ci，避免额外维护一份硬编码版本并保证可复现。
         run: npm --prefix pinvou3-app ci --prefer-offline --no-audit
 
+      # Cache extraction itself can exhaust the build disk; unused SDKs must
+      # go before the restore, not after it. Base tier only (this job needs
+      # Chrome for the e2e round, so the aggressive tier cannot be used).
+      - name: Prepare Rust disk space before cache restore
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py
+
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -1525,10 +1567,10 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Single-disk hosted runners are tight on disk (PR #988: cold build had only 7.3 GiB
-      # left); remove unused preinstalled SDKs before dependency and test compilation. "base" tier:
-      # this job needs Chrome for e2e, so the "aggressive" tier (which removes /opt/google/chrome) cannot be used.
-      - name: Prepare disk space for the two Rust test rounds
+      # Reserve room after dependencies, the cache restore and the swap
+      # allocation; only unused SDKs on this disposable hosted runner are
+      # removed (PR #988: a cold build once started with only 7.3 GiB free).
+      - name: Re-check Rust disk space after cache restore
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \

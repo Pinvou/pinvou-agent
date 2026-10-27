@@ -427,6 +427,7 @@ export const lazyChunkContracts = {
   cardpool: ['features/personas/Personas.jsx', 'Personas'],
   toolStore: ['features/tools/ToolStoreView.jsx', 'ToolStoreView'],
   scheduled: ['features/scheduled/ScheduledTasksView.jsx', 'ScheduledTasksView'],
+  browser: ['features/browser/BrowserView.jsx', 'BrowserView'],
   knowledge: ['features/knowledge/KnowledgeView.jsx', 'KnowledgeView'],
   monitor: ['features/monitor/MonitorView.jsx', 'MonitorView'],
   search: ['features/search/SearchView.jsx', 'SearchView'],
@@ -471,11 +472,11 @@ function enforceLazyChunks() {
   };
 }
 
-// The enforced gate is assertMainEntryBudget below; it sits deliberately
-// ABOVE Vite's informational 500 kB chunk warning for the web build (the
-// warning currently fires on every web build and is expected — the gate,
-// not the warning, is the budget). New entry work should still be split or
-// lazy-loaded. Raising this limit requires measured desktop + web
+// The enforced gates are assertMainEntryBudget below, one ceiling per build
+// mode. Vite's informational 500 kB chunk warning still fires on every web
+// build (on the statically-preloaded chat-view group chunk) and is expected
+// — the gate, not the warning, is the budget. New entry work should still be
+// split or lazy-loaded. Raising a ceiling requires measured desktop + web
 // before/after sizes and an explicit review decision.
 //
 // 500_000 → 502_000 (round-21 B-1; decided in PR #627 and disclosed after
@@ -526,7 +527,28 @@ function enforceLazyChunks() {
 // (verified by chunk diff — no comments or dead code ride along). The next
 // thousand step leaves 808 B web headroom at the CI measurement; this cap
 // does not promise headroom for unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 507_000;
+//
+// 507_000 → 485_000 desktop / 128_000 web (PR #787, measured per policy):
+// the browser view joined the lazy route table, so the startup graph no
+// longer carries the browser pane graph: entry 502,952 → 484,660 B desktop
+// and 506,357 → 127,605 B web; startup closures 1,114,837 → 1,096,545 B
+// desktop main window and 1,114,426 → 1,093,018 B web; pet/reader windows
+// byte-identical. The web build additionally groups ChatView and the
+// marked/dompurify stack out of the entry file (both chunks still load at
+// startup, so that part is layout and cache stability, not a startup
+// reduction; the groups' constraints are documented at the groups below).
+// The web entry therefore gets its own ceiling: a single 507_000 ceiling
+// would have stayed ≈4× the web entry and never fired again. Both ceilings
+// are the next thousand step above the measured entry. Toolchain headroom:
+// the last two recorded CI (node 24) vs local (node 22) comparisons differed
+// by 0–17 B, but round-43 above recorded ~0.9 kB; a recurrence of that
+// delta exceeds this headroom and forces a re-cut per policy.
+export const MAIN_ENTRY_BUDGET_BYTES = 485_000;
+export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
+
+function mainEntryBudgetBytesFor(mode) {
+  return mode === 'web' ? WEB_MAIN_ENTRY_BUDGET_BYTES : MAIN_ENTRY_BUDGET_BYTES;
+}
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (
@@ -540,7 +562,7 @@ export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BY
   return bytes;
 }
 
-function enforceMainEntryBudget() {
+function enforceMainEntryBudget(mode) {
   return {
     name: 'pinvou-enforce-main-entry-budget',
     apply: 'build',
@@ -548,7 +570,7 @@ function enforceMainEntryBudget() {
     // hooks. writeBundle sees the final code that is written to disk, so the
     // reported byte count matches the built asset exactly.
     writeBundle(_options, bundle) {
-      assertMainEntryBudget(bundle);
+      assertMainEntryBudget(bundle, mainEntryBudgetBytesFor(mode));
     },
   };
 }
@@ -570,7 +592,7 @@ export default defineConfig(({ mode }) => {
     react(),
     copyRuntimeAssets(),
     enforceLazyChunks(),
-    enforceMainEntryBudget(),
+    enforceMainEntryBudget(mode),
     conditionalPlatformScripts(webBuild),
     bundleClassicStartup(webBuild),
   ],
@@ -600,16 +622,42 @@ export default defineConfig(({ mode }) => {
             // Single-entry web build has no multi-entry sharing, so react-dom/
             // react/scheduler would stay inlined in main and trip the 500 kB
             // chunk warning. Extract them into a dedicated vendor chunk; the
-            // multi-entry UI build already gets an equivalent separate shared
-            // chunk from rolldown's automatic splitting, so this only applies
-            // to the web mode.
+            // multi-entry UI build gets an equivalent separate shared chunk
+            // from rolldown's automatic splitting, so the vendor group only
+            // applies to the web mode.
             codeSplitting: {
-              groups: [{
-                name: 'vendor',
-                test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
-              }],
+              groups: [
+                {
+                  name: 'vendor',
+                  test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+                },
+                {
+                  // marked and dompurify stay statically imported by the entry,
+                  // so this group only moves them out of the entry file for
+                  // cache stability, not out of the startup graph. highlight.js
+                  // must stay ungrouped: its 48 low-frequency fence languages
+                  // are dynamic imports (syntax-highlighter.js), and grouping
+                  // the package merges them into this statically-preloaded
+                  // chunk, hoisting ~176 kB into the web startup graph.
+                  name: 'markdown-vendor',
+                  test: /node_modules[\\/](marked|dompurify)[\\/]/,
+                },
+                {
+                  // ChatView stays statically imported by the entry (it is
+                  // deliberately absent from VIEW_LOADERS, see view-loaders.js),
+                  // so this group only moves the module and its closure out of
+                  // the entry file for entry-budget headroom and cache
+                  // stability; it does not change what loads at startup.
+                  name: 'chat-view',
+                  test: /[\\/]features[\\/]chat[\\/]ChatView\.jsx$/,
+                },
+              ],
             },
           }
+        // The desktop multi-entry build keeps rolldown's automatic splitting: a
+        // recursive group here absorbs the pet/reader windows' shared modules
+        // into the group chunk and inflates those windows' startup payload by
+        // ~0.5 MB each.
         : undefined,
     },
   },

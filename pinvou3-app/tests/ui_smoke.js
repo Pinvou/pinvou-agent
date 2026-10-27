@@ -451,7 +451,12 @@ async function expand(page) {
     const nativeShowsBeforeInitialStatus = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length;
     defaultBrowserOption?.click();
-    await wait(120);
+    // The browser view mounts from a lazy chunk, so its first (delayed)
+    // browser_status lands only after the chunk loads. Wait for the queued
+    // resolver instead of sleeping a fixed 120ms: releasing the latch before
+    // the view's request is queued would leave the one-shot resolver a no-op
+    // and the initial status pending forever (no native surface show).
+    await window.__uiWait__(() => window.__BROWSER_STATUS_RESOLVERS__.length > 0, 10000);
     const initialStatusGated = window.__TAURI_INVOKES__
       .filter(call => call.cmd === 'browser_show_native_surface').length === nativeShowsBeforeInitialStatus;
     window.__RESOLVE_BROWSER_STATUS__?.();

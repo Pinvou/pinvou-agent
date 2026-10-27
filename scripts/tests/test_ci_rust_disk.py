@@ -247,17 +247,109 @@ class RustDiskTests(unittest.TestCase):
                 self.assertEqual(DISK.main(["--min-free-gib", "10"]), 1)
         self.assertTrue(self.keep.exists())
 
-    def test_workflow_prepares_disk_after_swap_and_before_both_harnesses(self):
+    def _rust_test_job(self):
         workflow = (ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-        job = workflow.split("\n  rust-test:", 1)[1].split("\n  windows-rust-test:", 1)[0]
-        prepare = job.index("python3 scripts/ci-rust-disk.py")
-        self.assertLess(job.index("Set up zram and swap"), prepare)
-        self.assertLess(job.index("- name: Cargo cache"), prepare)
+        return workflow.split("\n  rust-test:", 1)[1].split("\n  cli-test:", 1)[0]
+
+    def _assert_disk_preparation_recipe(self, job):
+        pre_swap = "- name: Prepare Rust disk space before swap and caches"
+        pre = "- name: Prepare Rust disk space before cache restore"
+        post = "- name: Re-check Rust disk space after cache restore"
+        self.assertEqual(job.count("python3 scripts/ci-rust-disk.py"), 3)
+        self.assertLess(job.index(pre_swap), job.index("Set up zram and swap"))
+        self.assertLess(job.index("Set up zram and swap"), job.index(pre))
+        self.assertLess(job.index(pre), job.index("- name: Cargo cache"))
+        self.assertLess(job.index("- name: Cargo cache"), job.index(post))
         self.assertLess(
-            prepare, job.index("- name: cargo test --lib --no-run（编译链接测试二进制）")
+            job.index(post), job.index("- name: cargo test --lib --no-run（编译链接测试二进制）")
+        )
+        expected = (
+            'run: |\n'
+            '          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \\\n'
+            '            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \\\n'
+            '            python3 scripts/ci-rust-disk.py'
+        )
+        for marker in (pre_swap, pre, post):
+            step = job.split(marker, 1)[1].split("\n      - name:", 1)[0]
+            body = "\n".join(line for line in step.splitlines() if not line.lstrip().startswith("#"))
+            # Exact unconditional recipe: no aggressive SDK removal, no skipped
+            # gate, no swallowed failure after tools install. Only the initial
+            # call raises the bar (24 GiB) before swap and caches land.
+            suffix = " --min-free-gib 24" if marker == pre_swap else ""
+            self.assertEqual(body.strip(), expected + suffix)
+        self.assertNotIn("continue-on-error", job)
+
+    def test_workflow_prepares_disk_before_swap_and_rechecks_after_caches(self):
+        job = self._rust_test_job()
+        preflight = job.index("- name: Prepare Rust disk space before swap and caches")
+        swap = job.index("Set up zram and swap")
+        cache = job.index("- name: Cargo cache")
+        recheck = job.index("- name: Re-check Rust disk space after cache restore")
+
+        self.assertEqual(job.count("python3 scripts/ci-rust-disk.py"), 3)
+        self.assertLess(preflight, swap)
+        self.assertLess(swap, cache)
+        self.assertLess(cache, recheck)
+        self.assertIn("--min-free-gib 24", job[preflight:swap])
+        self.assertLess(
+            recheck, job.index("- name: cargo test --lib --no-run（编译链接测试二进制）")
         )
         self.assertIn('RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT"', job)
         self.assertNotIn("continue-on-error", job)
+
+    def test_workflow_prepares_disk_before_cache_restore_and_rechecks_after_it(self):
+        self._assert_disk_preparation_recipe(self._rust_test_job())
+
+    def test_workflow_rejects_cache_restore_after_post_restore_check(self):
+        job = self._rust_test_job()
+        post = "      - name: Re-check Rust disk space after cache restore"
+        for cache in ("Cargo cache",):
+            marker = "      - name: " + cache
+            start = job.index(marker)
+            end = job.index("\n      - name:", start + len(marker))
+            block = job[start:end]
+            without_cache = job[:start] + job[end:]
+            post_start = without_cache.index(post)
+            after_post = without_cache.index("\n      - name:", post_start + len(post))
+            changed = without_cache[:after_post] + "\n" + block + without_cache[after_post:]
+            with self.subTest(cache=cache), self.assertRaises(AssertionError):
+                self._assert_disk_preparation_recipe(changed)
+
+    def test_workflow_rejects_missing_or_reordered_disk_preparation(self):
+        job = self._rust_test_job()
+        pre = "      - name: Prepare Rust disk space before cache restore"
+        post = "      - name: Re-check Rust disk space after cache restore"
+        pre_start = job.index(pre)
+        pre_end = job.index("\n      - name:", pre_start + len(pre))
+        post_start = job.index(post)
+        post_end = job.index("\n      - name:", post_start + len(post))
+        block = job[pre_start:pre_end]
+        without_pre = job[:pre_start] + job[pre_end:]
+        late = without_pre.index(post)
+        mutations = {
+            "missing pre-restore": without_pre,
+            "missing post-restore": job[:post_start] + job[post_end:],
+            "both preparations after cache": without_pre[:late] + block + without_pre[late:],
+        }
+        for name, changed in mutations.items():
+            with self.subTest(mutation=name), self.assertRaises((AssertionError, ValueError)):
+                self._assert_disk_preparation_recipe(changed)
+
+    def test_workflow_rejects_weakened_or_unsafe_disk_preparation(self):
+        job = self._rust_test_job()
+        command = "python3 scripts/ci-rust-disk.py"
+        for replacement in (
+            command + " --aggressive",
+            command + " --min-free-gib 1",
+            command + " || true",
+            "echo " + command,
+        ):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                self._assert_disk_preparation_recipe(job.replace(command, replacement, 1))
+        marker = "- name: Prepare Rust disk space before cache restore"
+        for bypass in ("\n        if: false", "\n        continue-on-error: true"):
+            with self.subTest(bypass=bypass), self.assertRaises(AssertionError):
+                self._assert_disk_preparation_recipe(job.replace(marker, marker + bypass, 1))
 
 
 if __name__ == "__main__":

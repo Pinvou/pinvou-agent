@@ -1749,18 +1749,21 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
          post-connect apply-skills write): {persisted}"
     );
 
-    // And the divergent GUI-mirror write this round removes: no asset pins
-    // on the connect write — the GUI's own write is a bare `installed_now`
-    // record with `source=Builtin`. dingtalk is a lock-table connector
-    // (`cli_bundle_bin("dingtalk")` → "dws"), so the pre-fix code's
-    // `artifact_pin("dws")` lookup really fires on this arm.
+    // And the deliberately divergent mirror write: no asset pins on the CLI
+    // connect — this lane writes a bare `installed_now` record with
+    // `source=Builtin`, while the GUI's connect records a pin only after
+    // hashing the on-disk binary against the lock table (marketplace
+    // `verified_cli_asset`). dingtalk is a lock-table connector
+    // (`cli_bundle_bin("dingtalk")` → "dws"), so a pin-writing regression
+    // here would really fire on this arm.
     let record = pinvou3_lib::features::marketplace::store::BundleStore::new()
         .get("dingtalk")
         .expect("store read succeeds")
         .expect("connect registers the record");
     assert!(
         record.assets.is_empty(),
-        "connect must not fabricate asset pins the GUI never writes: {:?}",
+        "the CLI connect mirror must stay pin-less (the GUI's connect pin \
+         is the app lib's hash-verified write): {:?}",
         record.assets
     );
 }

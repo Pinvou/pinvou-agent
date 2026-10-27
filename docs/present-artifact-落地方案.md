@@ -1,7 +1,7 @@
 # present_artifact 落地方案(pinvou3)
 
 > 状态:**已实现,待端到端验证(需 GUI+vLLM)** · 2026-06-02（2026-09 补注：端到端链路已随后续附带功能的使用得到验证——召唤式评审已把本工具成品卡当作可用基础消费，见 `品悟v4-召唤式评审设计.md`；本状态行为写作时点原状）
-> 注:文中路径/行号为 2026-06 时点,仓库后经 `features/` 与 `platform/` 目录重组(现行位置如 `app/commands/artifacts.rs`、`platform/paths.rs`、`src/platform/tauri/bridge.js`)。重组之外还有两处**机制性**迁移:`resources/common/bundle/instructions.md` 已拆分为 `base.md` + `instructions-shared/work/code.md` 等分模式文件,且 present_artifact 的模型引导在 instructions 侧仅存于 `instructions-work.md`(仅 work 模式可见;内置技能 `visual-design` 的 SKILL.md 亦引导该工具,同受 work 模式门控);`src-tauri/src/bridge/bundle.rs` 及其 `DEFAULT_MCP_JSON` 字符串已删除,默认 MCP server 改由 `features/runtime_bundle/platform/extraction.rs` 在运行时 upsert 写入。
+> 注:文中路径/行号为 2026-06 时点,仓库后经 `features/` 与 `platform/` 目录重组(现行位置如 `app/commands/artifacts.rs`、`platform/paths.rs`、`src/platform/tauri/bridge.js`)。重组之外还有两处**机制性**迁移:`resources/common/bundle/instructions.md` 已拆分为 `base.md` + `instructions-shared/work/code.md` 等分模式文件,且 present_artifact 的模型引导在 instructions 侧仅存于 `instructions-work.md` 与其 work 模式绑定目录变体 `instructions-work-bound.md`(仅 work 模式可见;内置技能 `visual-design` 的 SKILL.md 亦引导该工具,同受 work 模式门控);`src-tauri/src/bridge/bundle.rs` 及其 `DEFAULT_MCP_JSON` 字符串已删除,默认 MCP server 改由 `features/runtime_bundle/platform/extraction.rs` 在运行时 upsert 写入。
 > 已过:MCP server 协议单测 / cargo check / bundle 解包测试 / JS 语法 / 工具名格式代码核对。
 > 端到端(agent 真调用 → 弹卡 → 点击打开 → 切会话不丢)需在跑起来的 GUI 里走 §5。
 > 路线:**本地 MCP server(零 fork drift)** · 前端渲染成品卡 + 复用现成打开能力

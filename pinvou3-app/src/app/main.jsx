@@ -49,10 +49,7 @@ import { runSessionBatch } from '../shared/session-management.js';
 import { filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../shared/session-list-pipeline.js';
 import { can, isWeb } from '../shared/platform.js';
 import { installGlobalMarkdownRenderer } from '../shared/markdown-renderer.js';
-import {
-  acquireNativeSurfaceTransitionHide,
-  BrowserView,
-} from '../features/browser/BrowserView.jsx';
+import { acquireNativeSurfaceTransitionHide } from '../features/browser/native-surface-coordinator.js';
 import {
   createNativeSurfaceTransitionGate,
   settleBrowserUiPublicationAfterCommit,
@@ -131,6 +128,8 @@ const LazySettingsView = lazy(() => VIEW_LOADERS.settings().then(m => ({ default
 const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ default: m.ToolStoreView })));
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const LazyScheduledTasksView = lazy(() => VIEW_LOADERS.scheduled().then(m => ({ default: m.ScheduledTasksView })));
+// The browser pane graph is dead weight at startup until a browser session opens.
+const LazyBrowserView = lazy(() => VIEW_LOADERS.browser().then(m => ({ default: m.BrowserView })));
 const LazyKnowledgeView = lazy(() => VIEW_LOADERS.knowledge().then(m => ({ default: m.KnowledgeView })));
 const LazyMonitorView = lazy(() => VIEW_LOADERS.monitor().then(m => ({ default: m.MonitorView })));
 const LazySearchView = lazy(() => VIEW_LOADERS.search().then(m => ({ default: m.SearchView })));
@@ -230,6 +229,7 @@ const NAV_PREFETCH = {
   monitor: () => prefetchView('monitor'),
   toolStore: () => prefetchView('toolStore'),
   cardpool: () => prefetchView('cardpool'),
+  browser: () => prefetchView('browser'),
 };
 
 const EMPTY_PICKER_ROWS = [];
@@ -620,6 +620,10 @@ const App = () => {
         if (!browserNativeDisplayAvailable || !requestedSessionId || !browserPaneAllowed) return;
         setBrowserPaneStates((current) => activateBrowserPane(current, requestedSessionId));
         if (browserActive) return;
+        // Hide the lazy chunk fetch inside the Rust workspace preparation. A
+        // failed prefetch remains non-blocking; React.lazy owns the visible
+        // retry/error boundary when the view actually mounts.
+        prefetchView('browser');
         const attempt = browserOpenAttemptSequenceRef.current + 1;
         browserOpenAttemptSequenceRef.current = attempt;
         browserOpenAttemptsRef.current[requestedSessionId] = attempt;
@@ -4443,7 +4447,7 @@ const App = () => {
               </ViewErrorBoundary>
             )}
             {isCompactShell && browserActive && currentView === 'browser' && (
-              <BrowserView
+              <LazyBrowserView
                 key={browserSessionId}
                 theme={activeTheme}
                 t={t}
@@ -4638,14 +4642,18 @@ const App = () => {
                 </div>
                 <div className="min-h-0 flex-1">
                   {browserActive ? (
-                    <BrowserView
-                      key={browserSessionId}
-                      theme={activeTheme}
-                      t={t}
-                      sessionId={browserSessionId}
-                      nativeSurfaceSuspended={browserSurfaceSuspended}
-                      ownershipSlot={browserOwnershipSlot}
-                    />
+                    <ViewErrorBoundary t={t} variant="panel">
+                      <Suspense fallback={null}>
+                        <LazyBrowserView
+                          key={browserSessionId}
+                          theme={activeTheme}
+                          t={t}
+                          sessionId={browserSessionId}
+                          nativeSurfaceSuspended={browserSurfaceSuspended}
+                          ownershipSlot={browserOwnershipSlot}
+                        />
+                      </Suspense>
+                    </ViewErrorBoundary>
                   ) : (
                     <div
                       className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-[13px]"

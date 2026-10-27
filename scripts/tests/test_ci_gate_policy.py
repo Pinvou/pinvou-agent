@@ -417,10 +417,11 @@ GATE_JOB_LEVEL_IFS = {
         "(needs.changes.outputs.frontend == 'true' || "
         "needs.changes.outputs.pet == 'true') }}"
     ),
+    # relay-test runs on drafts as well: the suite is short and draft
+    # feedback beats a queue-time surprise on relay-touching changes.
     "relay-test": (
         "${{ !cancelled() && needs.changes.outputs.relay == 'true' && "
-        "(github.event_name == 'merge_group' || (github.event_name == "
-        "'pull_request' && github.event.pull_request.draft == false)) }}"
+        "(github.event_name == 'merge_group' || github.event_name == 'pull_request') }}"
     ),
     "release-contract-test": (
         "${{ !cancelled() && github.event.action != 'closed' && "
@@ -2431,6 +2432,34 @@ class CiGatePolicyTests(unittest.TestCase):
             # appears WITHOUT its paired restore-plus-explicit-status
             # handling.
 
+    def test_commit_message_push_lane_skips_only_without_a_usable_boundary(self):
+        # The push lane validates before..HEAD. A ref creation reports the
+        # zero SHA and a force-push may report a head the fresh checkout no
+        # longer has; with no usable boundary the validator's missing-base
+        # fallback sweeps the whole lineage and false-reds on
+        # pre-convention history. The job must skip explicitly in both
+        # cases and never fall through to the validator without a real
+        # boundary — in particular no rev-list root fallback: root..HEAD is
+        # the whole lineage minus the root commit, byte-identical to the
+        # old behavior. commit-message's job-level if is deliberately not
+        # in GATE_JOB_LEVEL_IFS (its skip is caught by required-gate's base
+        # check), so this pins the run block instead.
+        body = _without_yaml_comments(
+            self.pr_workflow.split(
+                "\n  commit-message:", maxsplit=1
+            )[1].split("\n  version-consistency:", maxsplit=1)[0]
+        )
+        zero_guard = body.index(
+            'if [ "$before" = "0000000000000000000000000000000000000000" ]'
+        )
+        missing_guard = body.index('git cat-file -e "$before^{commit}"')
+        skip = body.index("exit 0")
+        validate = body.index('validate-commit-msg.py --range "$before"')
+        self.assertLess(zero_guard, missing_guard)
+        self.assertLess(missing_guard, skip)
+        self.assertLess(skip, validate)
+        self.assertNotIn("rev-list --max-parents=0", body)
+
     def test_gate_job_level_ifs_are_pinned_verbatim(self):
         # Round-52 review: a job-level `if: >-` folded block can get
         # `&& false` appended inside its `${{ }}` block (or after `}}` on
@@ -3853,6 +3882,15 @@ class CiGatePolicyTests(unittest.TestCase):
             self.assertNotIn("RUSTFLAGS", body, step_name)
             self.assertNotIn("CARGO_PROFILE_DEV_LTO", body, step_name)
 
+    def test_relay_test_keeps_the_ten_minute_cap_that_justifies_draft_runs(self):
+        # Running relay-test on drafts is justified by its 10-minute cap
+        # (the job-level if comment and GATE_JOB_LEVEL_IFS say so); a
+        # silent bump would invalidate that tradeoff with no red.
+        job = self.pr_workflow.split(
+            "\n  relay-test:", maxsplit=1
+        )[1].split("\n  release-contract-test:", maxsplit=1)[0]
+        self.assertIn("timeout-minutes: 10", job)
+
     def test_main_rust_caches_save_on_failure_and_rust_test_keeps_targets(self):
         # cache-on-failure keeps one failed main run from stranding a
         # namespace cold — mac-build's exact death loop (evicted once, then
@@ -3864,7 +3902,6 @@ class CiGatePolicyTests(unittest.TestCase):
         # ruling, recorded at the cache step) — dropping targets again is a
         # policy change, not cleanup, and must revisit this pin.
         for job_name, end_marker in (
-            ("rust-test", "\n  cli-test:"),
             ("windows-rust-test", "\n  macos-rust-check:"),
             ("macos-rust-check", "\n  windows-codex-runtime-test:"),
             # Round-49 review: macos-cli-check joined the flag in round-48
@@ -3893,14 +3930,33 @@ class CiGatePolicyTests(unittest.TestCase):
             )
             self.assertIn("cache-on-failure: true", cache_step, job_name)
             self.assertIn("refs/heads/main", cache_step, job_name)
-        rust_test_cache = _without_yaml_comments(
-            self.pr_workflow.split(
-                "\n  rust-test:", maxsplit=1
-            )[1].split("\n  cli-test:", maxsplit=1)[0].split(
-                "uses: Swatinem/rust-cache@v2", maxsplit=1
-            )[1].split("\n      - name:", maxsplit=1)[0]
+        rust_test_job = self.pr_workflow.split(
+            "\n  rust-test:", maxsplit=1
+        )[1].split("\n  cli-test:", maxsplit=1)[0]
+        rust_test_cache_blocks = [
+            _without_yaml_comments(
+                rust_test_job[match.end() :].split("\n      - name:", maxsplit=1)[0]
+            )
+            for match in re.finditer(
+                r"uses: Swatinem/rust-cache@v2", rust_test_job
+            )
+        ]
+        # rust-test restores exactly one cache: its own rust-test-v2
+        # namespace, saved on main only and read-only elsewhere. Any second
+        # block is a new policy decision and must be pinned here (a lint
+        # warm restore was evaluated and rejected: the lint job compiles
+        # without this job's dev-profile overrides, so its target/ cannot
+        # satisfy test-build fingerprints, and its ~/.cargo half is already
+        # covered by this restore's prefix fallback).
+        self.assertEqual(
+            len(rust_test_cache_blocks), 1,
+            "rust-test must have exactly one rust-cache step",
         )
+        rust_test_cache = rust_test_cache_blocks[0]
+        self.assertIn("workspaces: pinvou3-app/src-tauri", rust_test_cache)
         self.assertIn("shared-key: rust-test-v2", rust_test_cache)
+        self.assertIn("cache-on-failure: true", rust_test_cache)
+        self.assertIn("refs/heads/main", rust_test_cache)
         # The re-enable is the absence of the old cache-targets: false
         # (rust-cache's default keeps target artifacts). Comments stripped:
         # the decision record above mentions the old value historically.

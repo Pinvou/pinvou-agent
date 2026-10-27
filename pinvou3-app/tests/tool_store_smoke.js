@@ -364,6 +364,14 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     const input=document.querySelector('input[type="password"][placeholder="粘贴高德 Web 服务 Key"]');
     return document.body.innerText.includes('高德天气 Key')&&!!input;
   }));
+  // 回归：配置弹窗的「查看文档」按钮曾是全文件唯一不带 .catch 的 open_external_url
+  // 调用点，白名单拒绝时点击无声无息（PR779 评审 m1，与 QR 弹窗同病）。钉住拒绝
+  // 必须像连接流程一样冒出可见报错，而不是静默。
+  await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = true; });
+  await clickExact(page, '去创建 Web 服务 Key →'); await sleep(150);
+  rec('天气配置弹窗文档按钮被白名单拒绝时显示可见报错',await page.evaluate(()=>document.body.innerText.includes('未能打开浏览器')));
+  await page.evaluate(() => { window.__TOOL_STORE_TEST__.failOpenExternal = false; });
+  await dismiss(page);
   const weatherInput=await page.$('input[type="password"][placeholder="粘贴高德 Web 服务 Key"]');
   await weatherInput.type('amap-test-token');
   await clickExact(page,'连接'); await sleep(260); await dismiss(page);

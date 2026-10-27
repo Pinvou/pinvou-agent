@@ -158,8 +158,8 @@ fn status_payload(
     // the `"verified"` literal here — see get_backend_status's twin.
     let online = snapshot.is_some_and(VllmSnapshot::is_online);
     let health_status = snapshot
-        .map(|snapshot| snapshot.health_status.clone())
-        .unwrap_or_else(|| "unavailable".to_owned());
+        .map(|snapshot| snapshot.health_status.as_str())
+        .unwrap_or("unavailable");
     // An unreadable clock renders like the other absent measurements: `null`
     // in JSON, `-` in the human row.
     let checked = measured_cell(now_ms);
@@ -296,14 +296,36 @@ fn snapshot_payload(
         ),
         None => "Cpu: unavailable".to_owned(),
     };
+    // The headless operator reads this line instead of the GUI card, so the
+    // snapshot fields this lane publishes are rendered here too (round-2
+    // review: a field with no reader is wire-dead): the vLLM queue gauges,
+    // the offline refinement code, and the notice codes. Each segment prints
+    // only when present, and the line stays a single line on every shape.
     let vllm_line = match &snapshot.vllm {
-        Some(vllm) => format!(
-            "Backend: {}\thealth={}\tmodel={}\twindow={}",
-            status_label(vllm.status),
-            vllm.health_status,
-            remote_cell(vllm.model.as_deref()),
-            measured_cell(vllm.max_model_len),
-        ),
+        Some(vllm) => {
+            let mut line = format!(
+                "Backend: {}\thealth={}\tmodel={}\twindow={}",
+                status_label(vllm.status),
+                vllm.health_status.as_str(),
+                remote_cell(vllm.model.as_deref()),
+                measured_cell(vllm.max_model_len),
+            );
+            if let (Some(running), Some(waiting)) =
+                (vllm.num_requests_running, vllm.num_requests_waiting)
+            {
+                // Gauges are integral request counts; the f64 is the
+                // Prometheus wire type, not a fractional measurement.
+                line.push_str(&format!("\tqueue={}/{}", running as u64, waiting as u64));
+            }
+            if let Some(diagnostic) = &vllm.diagnostic {
+                line.push_str(&format!("\tdiag={}", diagnostic.code));
+            }
+            if !vllm.notices.is_empty() {
+                let codes: Vec<&str> = vllm.notices.iter().map(|n| n.code.as_str()).collect();
+                line.push_str(&format!("\tnotice={}", codes.join(",")));
+            }
+            line
+        }
         None => "Backend: unavailable".to_owned(),
     };
     let sampled = serde_json::to_value(snapshot)
@@ -409,6 +431,7 @@ fn redact(error: &impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pinvou3_lib::features::monitor::{HealthStatus, MonitorDiagnostic};
 
     /// Hermetic shape guards. The end-to-end `monitor status|snapshot` tests
     /// need a display host and a model endpoint and therefore live behind
@@ -416,19 +439,29 @@ mod tests {
     /// neither, so it is asserted here and always runs. That split is the
     /// point: while the shape assertion was `#[ignore]`d with the probe, the
     /// two `status` branches drifted to different key sets unnoticed.
-    fn probe(status: VllmStatus, health: &str) -> VllmSnapshot {
+    /// Hermetic base fixture. A real verified local snapshot reports the
+    /// served model for both names and a live queue, so those are the
+    /// defaults here; `..VllmSnapshot::default()` keeps a field addition a
+    /// compile-and-pin concern instead of a 20-line literal to touch blindly.
+    /// (Fixture coherence: the offline case is constructed explicitly where
+    /// it is used — a real offline snapshot always carries its refinement
+    /// diagnostic.)
+    fn probe(status: VllmStatus, health: HealthStatus) -> VllmSnapshot {
         VllmSnapshot {
             status,
             model: Some("served-model".to_owned()),
-            configured_model: Some("configured-model".to_owned()),
+            configured_model: Some("served-model".to_owned()),
             target_kind: "local".to_owned(),
             metrics_applicable: true,
-            health_status: health.to_owned(),
+            health_status: health,
             max_model_len: Some(8192),
+            num_requests_running: Some(2.0),
+            num_requests_waiting: Some(1.0),
             prefix_cache_hits: Some(1.0),
             prefix_cache_queries: Some(2.0),
             ttft_sum_s: Some(0.5),
             ttft_count: Some(1.0),
+            ..VllmSnapshot::default()
         }
     }
 
@@ -447,7 +480,10 @@ mod tests {
     #[test]
     fn status_json_has_one_key_set_in_both_branches() {
         let (_, without_model) = status_payload(None, Some(7));
-        let (_, with_model) = status_payload(Some(&probe(VllmStatus::Ready, "verified")), Some(7));
+        let (_, with_model) = status_payload(
+            Some(&probe(VllmStatus::Ready, HealthStatus::Verified)),
+            Some(7),
+        );
         assert_eq!(keys(&without_model), keys(&with_model));
         assert_eq!(keys(&with_model), STATUS_KEYS);
     }
@@ -512,6 +548,117 @@ mod tests {
         }
     }
 
+    /// `HealthStatus` is the wire the GUI dot and this lane's JSON both read.
+    /// The human label must match the serde rendering, and the serde
+    /// rendering must stay on the literal spellings the frontend
+    /// string-matches (`bridge-shared-helpers.js`), so a `rename_all` change
+    /// cannot move the wire silently.
+    #[test]
+    fn health_label_matches_the_serde_rendering_of_every_variant() {
+        for (health, wire) in [
+            (HealthStatus::Verified, "verified"),
+            (HealthStatus::AuthFailed, "auth_failed"),
+            (HealthStatus::Offline, "offline"),
+            (HealthStatus::MissingApiKey, "missing_api_key"),
+            (HealthStatus::Unverified, "unverified"),
+            (HealthStatus::Mismatch, "mismatch"),
+        ] {
+            assert_eq!(
+                health.as_str(),
+                wire,
+                "the GUI string-matches this spelling"
+            );
+            assert_eq!(
+                serde_json::Value::String(health.as_str().to_owned()),
+                serde_json::to_value(health).expect("HealthStatus serializes"),
+                "the human label must not drift from the serialized name"
+            );
+        }
+    }
+
+    /// The surfaced vllm fields have a reader in this lane: the human
+    /// `Backend:` line renders the queue gauges, the offline refinement code
+    /// and the notice codes, each only when present, and the JSON keeps the
+    /// structured detail for scripts. Dropping any of the three segments, or
+    /// rendering them on a quiet snapshot, goes red here.
+    #[test]
+    fn snapshot_human_line_renders_queue_diag_and_notices() {
+        let notice = |code: &str| MonitorDiagnostic {
+            code: code.to_owned(),
+            http_status: None,
+            transport: None,
+            endpoint: None,
+        };
+        let loud = MonitorSnapshot {
+            vllm: Some(VllmSnapshot {
+                diagnostic: Some(MonitorDiagnostic {
+                    code: "models_unreachable".to_owned(),
+                    http_status: None,
+                    transport: Some("connection_refused"),
+                    endpoint: Some("http://127.0.0.1:8000".to_owned()),
+                }),
+                notices: vec![
+                    notice("metrics_unavailable"),
+                    notice("context_window_inferred"),
+                ],
+                ..probe(VllmStatus::Offline, HealthStatus::Offline)
+            }),
+            ..MonitorSnapshot::default()
+        };
+        let (human, value) = snapshot_payload(&loud, Some(1)).expect("renders");
+        let backend = human
+            .lines()
+            .find(|line| line.starts_with("Backend: "))
+            .expect("one Backend line");
+        assert!(backend.contains("\tqueue=2/1"), "{backend}");
+        assert!(backend.contains("\tdiag=models_unreachable"), "{backend}");
+        assert!(
+            backend.contains("\tnotice=metrics_unavailable,context_window_inferred"),
+            "{backend}"
+        );
+        assert_eq!(
+            value["vllm"]["diagnostic"]["transport"], "connection_refused",
+            "scripts keep the structured detail: {value}"
+        );
+        assert_eq!(
+            value["vllm"]["diagnostic"]["endpoint"],
+            "http://127.0.0.1:8000"
+        );
+        assert_eq!(
+            value["vllm"]["notices"][1]["code"],
+            "context_window_inferred"
+        );
+
+        let quiet = MonitorSnapshot {
+            vllm: Some(VllmSnapshot {
+                num_requests_running: None,
+                num_requests_waiting: None,
+                ..probe(VllmStatus::Ready, HealthStatus::Verified)
+            }),
+            ..MonitorSnapshot::default()
+        };
+        let (human, _) = snapshot_payload(&quiet, Some(1)).expect("renders");
+        let backend = human
+            .lines()
+            .find(|line| line.starts_with("Backend: "))
+            .expect("one Backend line");
+        for absent in ["queue=", "diag=", "notice="] {
+            assert!(
+                !backend.contains(absent),
+                "a quiet snapshot must not render {absent}: {backend}"
+            );
+        }
+        assert_eq!(
+            human.lines().count(),
+            snapshot_payload(&loud, Some(1))
+                .expect("renders")
+                .0
+                .lines()
+                .count(),
+            "the segments ride the Backend line; the line count never moves"
+        );
+    }
+
     /// Round-47 review: probe errors can embed the configured `base_url`
     /// verbatim. The userinfo must come out scrubbed, and the host must
     /// stay for diagnosis — the URL is chosen short enough that the
@@ -542,7 +689,19 @@ mod tests {
     fn status_json_never_carries_the_dropped_upstream_key() {
         for payload in [
             status_payload(None, Some(7)).1,
-            status_payload(Some(&probe(VllmStatus::Offline, "offline")), Some(7)).1,
+            status_payload(
+                Some(&VllmSnapshot {
+                    diagnostic: Some(MonitorDiagnostic {
+                        code: "models_unreachable".to_owned(),
+                        http_status: None,
+                        transport: Some("connection_refused"),
+                        endpoint: Some("http://127.0.0.1:1".to_owned()),
+                    }),
+                    ..probe(VllmStatus::Offline, HealthStatus::Offline)
+                }),
+                Some(7),
+            )
+            .1,
         ] {
             assert!(
                 !keys(&payload).iter().any(|key| key == "upstream"),
@@ -556,7 +715,10 @@ mod tests {
     #[test]
     fn status_human_has_one_line_set_in_both_branches() {
         let (without_model, _) = status_payload(None, Some(7));
-        let (with_model, _) = status_payload(Some(&probe(VllmStatus::Busy, "verified")), Some(7));
+        let (with_model, _) = status_payload(
+            Some(&probe(VllmStatus::Busy, HealthStatus::Verified)),
+            Some(7),
+        );
         let labels = |text: &str| -> Vec<String> {
             text.lines()
                 .map(|line| {
@@ -593,15 +755,21 @@ mod tests {
         // read offline even when health is verified (dropping either
         // conjunct used to pass the whole suite).
         assert!(
-            status_payload(Some(&probe(VllmStatus::Ready, "unverified")), Some(7))
-                .0
-                .contains("Online: false"),
+            status_payload(
+                Some(&probe(VllmStatus::Ready, HealthStatus::Unverified)),
+                Some(7)
+            )
+            .0
+            .contains("Online: false"),
             "an unverified health status must not read online"
         );
         assert!(
-            status_payload(Some(&probe(VllmStatus::Offline, "verified")), Some(7))
-                .0
-                .contains("Online: false"),
+            status_payload(
+                Some(&probe(VllmStatus::Offline, HealthStatus::Verified)),
+                Some(7)
+            )
+            .0
+            .contains("Online: false"),
             "a non-ready status must not read online even with verified health"
         );
     }
@@ -663,5 +831,41 @@ mod tests {
             "{human_without}"
         );
         assert!(human_with.contains("Cpu: test-cpu"), "{human_with}");
+    }
+
+    /// The `vllm` object is serialized whole from the shared `VllmSnapshot`
+    /// (`serde_json::to_value`), so an app-crate field change widens this
+    /// lane's JSON silently — the leftover shape guard above watches top-level
+    /// keys only. This pin makes the widening conscious: a field added to or
+    /// removed from `VllmSnapshot` fails here until this list is updated in
+    /// the same change (serde declaration order; `serde_json` preserves it).
+    #[test]
+    fn snapshot_vllm_object_keeps_a_stable_key_set() {
+        let sample = MonitorSnapshot {
+            vllm: Some(probe(VllmStatus::Ready, HealthStatus::Verified)),
+            ..MonitorSnapshot::default()
+        };
+        let (_, value) = snapshot_payload(&sample, Some(1)).expect("renders");
+        assert_eq!(
+            keys(&value["vllm"]),
+            [
+                "status",
+                "model",
+                "configured_model",
+                "target_kind",
+                "metrics_applicable",
+                "health_status",
+                "diagnostic",
+                "notices",
+                "max_model_len",
+                "num_requests_running",
+                "num_requests_waiting",
+                "prefix_cache_hits",
+                "prefix_cache_queries",
+                "ttft_sum_s",
+                "ttft_count",
+            ],
+            "the vllm object's key set moved — update this pin in the same change"
+        );
     }
 }

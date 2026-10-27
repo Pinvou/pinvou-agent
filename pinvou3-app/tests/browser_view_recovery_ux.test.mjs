@@ -22,6 +22,10 @@ const browserView = fs.readFileSync(
   path.resolve(here, '..', 'src', 'features', 'browser', 'BrowserView.jsx'),
   'utf8',
 );
+const nativeSurfaceCoordinator = fs.readFileSync(
+  path.resolve(here, '..', 'src', 'features', 'browser', 'native-surface-coordinator.js'),
+  'utf8',
+);
 const appMain = fs.readFileSync(
   path.resolve(here, '..', 'src', 'app', 'main.jsx'),
   'utf8',
@@ -32,24 +36,24 @@ const browserI18n = fs.readFileSync(
 );
 
 test('hide retry is guarded by the latest surface identity and visibility intent', () => {
-  assert.match(browserView, /hideNativeSurfaceWithRetry\(\{/);
-  assert.match(browserView, /nativeSurfaceCoordinator\.desired === 'hide'/);
-  assert.match(browserView, /nativeSurfaceCoordinator\.sessionId === sessionId/);
+  assert.match(nativeSurfaceCoordinator, /hideNativeSurfaceWithRetry\(\{/);
+  assert.match(nativeSurfaceCoordinator, /nativeSurfaceCoordinator\.desired === 'hide'/);
+  assert.match(nativeSurfaceCoordinator, /nativeSurfaceCoordinator\.sessionId === sessionId/);
   assert.match(
-    browserView,
+    nativeSurfaceCoordinator,
     /nativeSurfaceCoordinator\.owner === nativeSurfaceCoordinator\.intentOwner/,
   );
-  assert.match(browserView, /nativeSurfaceCoordinator\.intentSequence === intentSequence/);
+  assert.match(nativeSurfaceCoordinator, /nativeSurfaceCoordinator\.intentSequence === intentSequence/);
   assert.match(
-    browserView,
+    nativeSurfaceCoordinator,
     /nativeSurfaceCoordinator\.intentSequence = \+\+nativeSurfaceIntentSequence;[\s\S]*?browser_show_native_surface/,
   );
-  assert.match(browserView, /visibilityGeneration,[\s\S]*?visibilitySequence:/);
+  assert.match(nativeSurfaceCoordinator, /visibilityGeneration,[\s\S]*?visibilitySequence:/);
   assert.doesNotMatch(
-    browserView,
+    nativeSurfaceCoordinator,
     /(?:claimNativeSurfaceHide|releaseNativeSurface)\([^;]+?\)\.catch\(\(\) => \{\}\)/,
   );
-  assert.match(browserView, /console\.error\([\s\S]*?native surface hide failed/);
+  assert.match(nativeSurfaceCoordinator, /console\.error\([\s\S]*?native surface hide failed/);
 });
 
 test('persistence warning has a local, translated dismiss control', () => {

@@ -674,7 +674,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     };
 
     // API Key 配置弹窗（需要 config_fields 的工具安装前弹出）
-    const TsConfigDialog = ({ config, onConfirm, onCancel, copy }) => {
+    const TsConfigDialog = ({ config, onConfirm, onCancel, copy, onBrowserOpenError = NOOP }) => {
       const [values, setValues] = useState({});
       if (!config) return null;
       const fields = config.fields || [];
@@ -697,7 +697,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               )}
               {config.configDocUrl && (
                 <button type="button"
-                  onClick={() => invokeTauri('open_external_url', { url: config.configDocUrl })}
+                  onClick={() => invokeTauri('open_external_url', { url: config.configDocUrl }).catch(onBrowserOpenError)}
                   className={`text-[13px] mb-4 inline-block text-[#007AFF] dark:text-[#0A84FF] hover:underline`}
                 >
                   {config.configDocLabel || copy.configDocDefault} →
@@ -2210,6 +2210,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             copy={storeCopy}
             onCancel={() => setConfigDialog(null)}
             onConfirm={(values) => { const bid = configDialog.backendId; setConfigDialog(null); if (bid === 'ima') connectIma(values); else doInstall(bid, values); }}
+            onBrowserOpenError={browserOpenFailed}
           />, document.body)}
           {createPortal(<TsObsidianGuide
             guide={obsidianGuide}
