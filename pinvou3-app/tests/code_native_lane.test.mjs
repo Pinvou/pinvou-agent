@@ -1028,8 +1028,10 @@ try {
   // cannot slip past BOTH sides at once — with a restrictive class shared by
   // the two regexes, such a name is invisible on the handler side and the
   // manifest side simultaneously and the drift escapes the pin. A stray
-  // quoted 'chat:...' string inside either window makes the two sets diverge
-  // and fails loudly, so over-capture is safe.
+  // quoted 'chat:...' string inside the manifest slice makes the two sets
+  // diverge and fails loudly, so manifest-side over-capture is safe; the
+  // handler regex only matches `case '…':` labels, so handler-side strays
+  // (comments, call arguments) stay invisible on that side alone.
   const handledEvents = [...laneSource.matchAll(/case '(chat:[^']+)':/g)].map(match => match[1]);
   const listStart = acpViewSource.indexOf('const NATIVE_CHAT_EVENTS = [');
   const listEnd = acpViewSource.indexOf('];', listStart);

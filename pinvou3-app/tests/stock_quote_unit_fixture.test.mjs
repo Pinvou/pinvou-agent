@@ -65,10 +65,11 @@ test('missing fields fall back to -- without toFixed crashes', () => {
 });
 
 test('explicit null fields render -- instead of crashing on toFixed', () => {
-  // The real-world crash shape: a null numeric field bypasses the
-  // `v == null` short-circuit only in the broken global-isNaN variant
-  // (isNaN(null) === false, so null.toFixed throws). Pin the null case
-  // explicitly — undefined alone never regressed.
+  // The real-world crash shape: the broken global-isNaN variant carried no
+  // null short-circuit at all (isNaN(null) === false, so null.toFixed
+  // throws), while undefined always rendered '--' (isNaN(undefined) ===
+  // true). Pin the null case explicitly — the undefined fixture alone never
+  // catches that regression.
   const html = renderToStaticMarkup(React.createElement(StockQuoteCard, {
     data: { name: '贵州茅台', code: '600519', price: null, changePercent: null, open: null, high: null, low: null },
     t,

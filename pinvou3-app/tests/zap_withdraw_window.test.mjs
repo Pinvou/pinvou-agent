@@ -47,7 +47,9 @@ function loadChatApi() {
     notify() {},
     bt(key) { return key; },
     runSyncOnSession(sid, fn) {
-      if (sid === state.activeSessionId) return fn();
+      // Production (bridge.js runSyncOnSession) runs fn inline for a falsy
+      // sid too; mirror that exactly.
+      if (!sid || sid === state.activeSessionId) return fn();
       // Production returns early when the background buffer is missing (the
       // session was evicted); mirror that so the stub can never run fn
       // against the active working set under a foreign session id.

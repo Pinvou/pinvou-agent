@@ -23,11 +23,12 @@ const docs = files.filter(
   (f) => path.basename(f).toLowerCase().endsWith(".md") && !path.basename(f).startsWith("NOTICE"),
 );
 const read = (f) => fs.readFileSync(f, "utf8");
-// Windows checkouts produce backslash separators from path.relative. The
-// load-bearing consumers compare against repository-form ('/') literals —
-// rule 10's dws `endsWith` self-check and rule 6's `binsByPack` prefixes —
-// so every path.relative result must be normalized before use; assertion
-// messages merely benefit from the same.
+// Windows checkouts produce backslash separators from path.relative, and
+// the consumers compare against repository-form ('/') literals: rule 6's
+// `binsByPack` prefixes silently vacuous-skipped every pack, while rule
+// 10's dws `endsWith` self-check failed loud-red. Every path.relative
+// result is normalized before use; assertion messages merely benefit from
+// the same.
 const repositoryRelative = (relative) => relative.replace(/\\/g, "/");
 const rel = (f) => repositoryRelative(path.relative(root, f));
 for (const relative of ["dingtalk-skills/dws/scripts/calendar_schedule_meeting.py",
@@ -212,7 +213,7 @@ const scanLarkAuthLogin = (text) => {
   return null;
 };
 
-for (const f of docs.filter((f) => path.relative(bundle("lark-skills"), f).startsWith("lark-"))) {
+for (const f of docs.filter((f) => repositoryRelative(path.relative(bundle("lark-skills"), f)).startsWith("lark-"))) {
   const violation = scanLarkAuthLogin(read(f));
   if (violation) assert.fail(`${rel(f)}: ${violation}`);
 }
