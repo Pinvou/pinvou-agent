@@ -107,6 +107,10 @@
   // visible reconnecting state.
   const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;
   const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;
+  // A connect wedged past this window (browser TCP timeouts can run minutes,
+  // and background tabs never fire the error event for a silent drop) gets
+  // one watchdog kick so recovery reroutes through the close handler.
+  const LIVENESS_CONNECT_WEDGE_TIMEOUT_MS = 45_000;
   // Desktop-gone failures (endpoint_not_found, desktop_offline_ttl_expired)
   // keep the historical fast retry pace for the first attempts so a desktop
   // recreating its endpoint is rejoined within seconds, then double per
@@ -242,8 +246,10 @@
       catch (error) { this.scheduleReconnect(String(error)); return; }
       this.socket = socket;
       // Every new socket gets a full silence window to deliver its join ack
-      // before the liveness watchdog may judge it.
+      // before the liveness watchdog may judge it, and a wedge window before
+      // a CONNECTING socket may be abandoned.
       this.lastInboundAt = Date.now();
+      this.connectStartedAt = Date.now();
       socket.addEventListener("open", () => {
         this.sendRaw({
           v: protocolVersion,
@@ -320,7 +326,17 @@
     // stays on "connected" unless the rejoin fails to verify. See the
     // LIVENESS_SILENCE_TIMEOUT_MS note above.
     _livenessCheck() {
-      if (this.closedPermanently || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+      if (this.closedPermanently || !this.socket) return;
+      if (this.socket.readyState === WebSocket.CONNECTING) {
+        // The watchdog is the only timer that notices a wedged connect (the
+        // browser may never deliver an error event); give it the wedge window
+        // first. The UI is already in the visible connecting state, so this
+        // abort stays non-speculative.
+        if (Date.now() - this.connectStartedAt <= LIVENESS_CONNECT_WEDGE_TIMEOUT_MS) return;
+        try { this.socket.close(); } catch { /* already closing */ }
+        return;
+      }
+      if (this.socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - this.lastInboundAt <= LIVENESS_SILENCE_TIMEOUT_MS) return;
       this.speculativeReconnect = true;
       this.speculativeSource = this.socket;
@@ -331,12 +347,20 @@
     // backoff is trustworthy across it.
     handleNetworkBecomeOnline() {
       if (this.closedPermanently) return;
-      if (this.socket && (this.socket.readyState === WebSocket.OPEN
-        || this.socket.readyState === WebSocket.CONNECTING)) {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
         // An OPEN socket looks alive, but the OS just said connectivity
         // changed: treat it as the same suspicion as the liveness watchdog.
+        // Like the watchdog, the close is speculative — the UI stays on
+        // "connected" unless the rejoin fails to verify.
+        this.speculativeReconnect = true;
+        this.speculativeSource = this.socket;
+        try { this.socket.close(); } catch { this.clearSpeculativeReconnect(); }
+        return;
+      }
+      if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
         // A CONNECTING socket is wedged on the browser TCP timeout; abort it
-        // so recovery reroutes through the close handler immediately.
+        // so recovery reroutes through the close handler immediately. The
+        // UI is already in the visible connecting state.
         try { this.socket.close(); } catch { /* socket already closed */ }
         return;
       }
