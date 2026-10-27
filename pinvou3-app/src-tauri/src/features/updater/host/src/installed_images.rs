@@ -72,6 +72,7 @@ pub(crate) struct InstalledImageDiagnostic {
     pub(crate) host_epoch: u64,
     pub(crate) manifest_sha256: String,
     pub(crate) application: ImageDiagnostic,
+    pub(crate) observed_application_version: String,
     pub(crate) helper: ImageDiagnostic,
     pub(crate) launcher: ImageDiagnostic,
     pub(crate) checked_inventory_files: usize,
@@ -95,6 +96,17 @@ pub(crate) struct ObservationStamp {
 pub(crate) fn require_unchanged(before: &ObservationStamp, after: &ObservationStamp) -> Result<()> {
     if before != after {
         return Err(Error::ScopeConflict);
+    }
+    Ok(())
+}
+
+pub(crate) fn require_observed_app_version(
+    observed: &str,
+    manifest: &str,
+    seed: &str,
+) -> Result<()> {
+    if observed != manifest || observed != seed {
+        return Err(Error::ImageRefused);
     }
     Ok(())
 }
@@ -143,6 +155,7 @@ mod tests {
             host_epoch: 2,
             manifest_sha256: "b".repeat(64),
             application: image(),
+            observed_application_version: "1.2.3".into(),
             helper: image(),
             launcher: image(),
             checked_inventory_files: 5,
@@ -154,9 +167,10 @@ mod tests {
             installation_permission: false,
         };
         let value = serde_json::to_value(diagnostic).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 15);
+        assert_eq!(value.as_object().unwrap().len(), 16);
         assert_eq!(value["application"].as_object().unwrap().len(), 3);
         assert_eq!(value["application"]["manifestDeclaredVersion"], "1.2.3");
+        assert_eq!(value["observedApplicationVersion"], "1.2.3");
         for key in [
             "jsonRetainsLeases",
             "sourceFactsProduced",
@@ -176,6 +190,18 @@ mod tests {
         ] {
             assert!(!serde_json::to_string(&value).unwrap().contains(forbidden));
         }
+    }
+    #[test]
+    fn observed_version_must_match_both_installation_expectations() {
+        assert!(require_observed_app_version("1.2.3", "1.2.3", "1.2.3").is_ok());
+        assert_eq!(
+            require_observed_app_version("1.2.3", "1.2.4", "1.2.3"),
+            Err(Error::ImageRefused)
+        );
+        assert_eq!(
+            require_observed_app_version("1.2.3", "1.2.3", "1.2.4"),
+            Err(Error::ImageRefused)
+        );
     }
     #[test]
     fn inspection_preserves_refusals_and_has_a_distinct_cancellation() {

@@ -12,7 +12,8 @@ use crate::{
     download_stage::poll,
     error::{Error, Result},
     installed_images::{
-        ImageDiagnostic, InstalledImageDiagnostic, ObservationStamp, require_unchanged,
+        ImageDiagnostic, InstalledImageDiagnostic, ObservationStamp, require_observed_app_version,
+        require_unchanged,
     },
     profile::Seed,
     registration::{HostRegistration, Phase},
@@ -92,6 +93,14 @@ impl InstalledImages {
         for member in &mut self.members {
             member.recheck(&self.images.targets.app, cancelled)?;
         }
+        // Parse the held application image before the complete byte recheck.
+        let observed =
+            crate::package_resource::observe_version(&mut self.images.app.file, cancelled)?;
+        require_observed_app_version(
+            &observed.canonical_version,
+            &self.images.manifest.app.version,
+            &self.seed.app_version,
+        )?;
         for (name, root, image) in [
             (
                 "pinvou-upgrade-helper.exe",
@@ -140,6 +149,7 @@ impl InstalledImages {
             return Err(Error::ServiceIdentityRefused);
         }
         poll(cancelled)?;
+        self.diagnostic.observed_application_version = observed.canonical_version;
         self.verified = true;
         Ok(())
     }
@@ -188,6 +198,7 @@ pub(crate) fn inspect_images(cancelled: &mut dyn FnMut() -> bool) -> Result<Inst
         host_epoch: record.host_epoch,
         manifest_sha256: record.genesis_manifest_sha256.clone(),
         application: image_fact(&images.manifest.app),
+        observed_application_version: String::new(),
         helper: image_fact(&images.manifest.helper),
         launcher: image_fact(&images.manifest.launcher),
         checked_inventory_files: members.len(),

@@ -7,6 +7,9 @@ use crate::{
 };
 use std::io::{Read, Seek, SeekFrom};
 
+mod version;
+pub(crate) use version::observe_version;
+
 const MAX_SECTIONS: usize = 96;
 const MAX_DIRECTORY_ENTRIES: usize = 4096;
 const MAX_METADATA_BYTES: usize = 1024 * 1024;
@@ -207,10 +210,16 @@ impl<'a, R: Read + Seek> Reader<'a, R> {
         if rows.len() != 1 || rows[0].0 != 0 || rows[0].1 & 0x8000_0000 != 0 {
             return refused();
         }
-        let data = self.metadata(rows[0].1, 16)?;
+        Ok(Some(self.payload(rows[0].1, json::RECORD_MAX)?))
+    }
+    fn payload(&mut self, entry: u32, remaining: usize) -> Result<Vec<u8>> {
+        if entry & 0x8000_0000 != 0 {
+            return refused();
+        }
+        let data = self.metadata(entry, 16)?;
         let rva = u32_at(&data, 0) as u64;
         let size = u32_at(&data, 4) as usize;
-        if size == 0 || size > json::RECORD_MAX || u32_at(&data, 12) != 0 {
+        if size == 0 || size > json::RECORD_MAX || size > remaining || u32_at(&data, 12) != 0 {
             return refused();
         }
         let relative = rva
@@ -220,7 +229,7 @@ impl<'a, R: Read + Seek> Reader<'a, R> {
             return refused();
         }
         let offset = self.map(rva, size as u64)?;
-        Ok(Some(self.bytes(offset, size)?))
+        self.bytes(offset, size)
     }
 }
 
@@ -253,7 +262,7 @@ mod tests {
     fn dword(bytes: &mut [u8], at: usize, value: u32) {
         bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
-    fn fixture() -> Vec<u8> {
+    pub(super) fn fixture() -> Vec<u8> {
         let mut b = vec![0; 1024];
         b[..2].copy_from_slice(b"MZ");
         dword(&mut b, 60, 64);

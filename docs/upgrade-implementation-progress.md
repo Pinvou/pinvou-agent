@@ -1,5 +1,16 @@
 # Upgrade implementation progress
 
+T27 Windows source observation: the existing elevated installed-image diagnostic
+now reads the held application PE fixed version, compares it with the protected
+manifest and Seed, and publishes the observation only after the existing identity,
+content, registration and service rechecks. This is diagnostic evidence, not a
+complete SourceFacts record, online qualification or an upgrade Session.
+Independent scoped source review passed after resource-framing fixes. The fixed
+Windows host test executable reported 236 passed and 2 ignored; a separate read-only
+check of an installed Pinvou PE observed 0.10.16. This does not verify a Ready
+installation end to end or every release build. No E2E was run. T27 and T28 remain
+in progress; Linux and macOS upgrade development remain deferred.
+
 Windows T28 managed CLI admission component: the scoped source review covers the
 protected worker launch, restricted non-console streams, disconnect cleanup and
 completion receipt. It is one component of T28, not complete preparation or an

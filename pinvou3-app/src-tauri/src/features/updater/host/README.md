@@ -250,6 +250,19 @@ complete protocol `SourceFacts`, current qualification, source-registry authorit
 ownership/freeze or installation permission. Original manifest version declarations
 are not presented as independently derived source-semantic descriptors.
 
+The diagnostic also reports `observedApplicationVersion`, read from the held
+application PE's fixed version resources. Every version resource must agree,
+its file and product versions must match with a zero fourth component, and the
+result must match both the protected manifest and embedded Seed. Missing resources,
+invalid fixed fields or child framing, and mismatches refuse inspection. Child
+text values and the full version-resource hierarchy are not semantically validated.
+The existing full byte,
+inventory, registration and service recheck follows parsing before publication.
+This supplies a real version observation needed by T27, not complete SourceFacts;
+publisher identity, migration facts, protected metadata acceptance and trusted
+current time remain separate prerequisites. No production installation is tested
+by parser unit tests alone.
+
 Parser, cancellation/refusal mapping, registration/incarnation comparison and
 minimal JSON-projection tests accompany the interface. The existing cancellable
 full-file hash test exercises its shared byte reader. A real Ready installation,
