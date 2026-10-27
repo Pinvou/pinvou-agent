@@ -8,6 +8,12 @@ mod build_toolchain;
 mod preparation_policy;
 
 fn main() {
+    if env::var_os("CARGO_FEATURE_METADATA_COMPONENT_TESTS").is_some()
+        && (env::var_os("CARGO_FEATURE_PRODUCTION").is_some()
+            || env::var_os("CARGO_FEATURE_NATIVE_ACCEPTANCE_HOOKS").is_some())
+    {
+        panic!("HOST_METADATA_TEST_PRODUCTION_REFUSED");
+    }
     // Public build configuration only. Runtime environment cannot change the
     // original protected policy or extend an already started budget window.
     let preparation_input = |name: &str| {
@@ -57,6 +63,14 @@ fn main() {
         (Some(seed), Some(root)) => (load(seed), load(root)),
         _ => panic!("HOST_BUILD_INPUT_PAIR_REQUIRED"),
     };
+    // The destructive-by-design isolated test adapter is unavailable to all
+    // shipping profiles, including ordinary lab builds and empty inputs.
+    if env::var_os("CARGO_FEATURE_METADATA_COMPONENT_TESTS").is_some()
+        && (seed.as_slice() != include_bytes!("tests/metadata-component-fixture/seed.json")
+            || root.as_slice() != include_bytes!("tests/metadata-component-fixture/root.json"))
+    {
+        panic!("HOST_METADATA_TEST_INPUTS_REQUIRED");
+    }
     build_input::validate_profile_mode(
         &seed,
         env::var_os("CARGO_FEATURE_NATIVE_ACCEPTANCE_HOOKS").is_some(),

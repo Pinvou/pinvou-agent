@@ -201,6 +201,7 @@ jobs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
       rust_dependencies: ${{ steps.filter.outputs.rust_dependencies }}
       rust_full: ${{ steps.filter.outputs.rust_full }}
+      metadata_component: ${{ steps.filter.outputs.metadata_component }}
       cli_rust: ${{ steps.filter.outputs.cli_rust }}
       knowledge_rust: ${{ steps.filter.outputs.knowledge_rust }}
       knowledge_dependencies: ${{ steps.filter.outputs.knowledge_dependencies }}
@@ -224,7 +225,21 @@ jobs:
         with:
           predicate-quantifier: some-with-excludes
           filters: |
+            metadata_component:
+              - '.github/workflows/pr-check.yml'
+              - 'pinvou3-app/src-tauri/src/features/updater/**'
+              - 'pinvou3-app/src-tauri/Cargo.toml'
+              - 'pinvou3-app/src-tauri/rust-toolchain.toml'
+              - 'pinvou3-app/scripts/tauri/windows-host-profile.js'
+              - 'pinvou3-app/scripts/tauri/windows-host-build.js'
+              - 'pinvou3-app/tests/windows_host_packaging.test.js'
+              - 'scripts/metadata-component-fixture.mjs'
+              - 'scripts/tests/test_ci_gate_policy.py'
+              - 'specs/upgrade/v1/**'
             rust_code:
+              - 'pinvou3-app/src-tauri/src/features/updater/host/tests/metadata-component-fixture/**'
+              - 'scripts/metadata-component-fixture.mjs'
+              - 'scripts/tests/test_ci_gate_policy.py'
               - 'pinvou3-app/src/shared/i18n/startup-admission.js'
               - 'pinvou3-app/src-tauri/src/features/updater/download/archive/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/package/**'
@@ -1962,6 +1977,48 @@ jobs:
           cargo check --manifest-path pinvou-cli/Cargo.toml
           --workspace --all-targets --no-default-features --locked
 
+  windows-metadata-component:
+    name: windows-metadata-component
+    needs: changes
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'push' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.draft == false &&
+         needs.changes.outputs.metadata_component == 'true')) }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Use project Rust toolchain
+        shell: bash
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+      - name: Check protected Windows metadata initialization
+        shell: pwsh
+        run: |
+          $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Protected metadata component test requires an elevated administrator token'
+          }
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'pinvou3-app/src-tauri/src/features/updater/host/tests/metadata-component-fixture'
+          $env:PINVOU_HOST_BOOTSTRAP_SEED = Join-Path $dir 'seed.json'
+          $env:PINVOU_HOST_INITIAL_ROOT = Join-Path $dir 'root.json'
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $env:PINVOU_HOST_BOOTSTRAP_SEED).Hash -ne '8C8FF90906149A7F411C96211C66A36A5ADAB45009BF0A2E38CD241C7187F454' -or
+              (Get-FileHash -Algorithm SHA256 -LiteralPath $env:PINVOU_HOST_INITIAL_ROOT).Hash -ne '79C68C47565C54580FD41E00125650C227B8300EBA7A99949E79DC1EC7848B25') { throw 'Unexpected public test fixture' }
+          $env:RUSTFLAGS = "$env:RUSTFLAGS -C target-feature=+crt-static"
+          $rejected = cargo check --manifest-path pinvou3-app/src-tauri/src/features/updater/host/Cargo.toml --target x86_64-pc-windows-msvc --locked --lib --features metadata-component-tests,production 2>&1 | Out-String
+          if ($LASTEXITCODE -eq 0 -or $rejected -notmatch 'HOST_METADATA_TEST_PRODUCTION_REFUSED') { throw 'Test feature must reject production builds' }
+          $output = cargo run --manifest-path pinvou3-app/src-tauri/src/features/updater/host/Cargo.toml --target x86_64-pc-windows-msvc --locked --features metadata-component-tests --bin metadata-component-test 2>&1 | Tee-Object -Variable outputLines
+          $code = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($code -ne 0 -or @($outputLines | Where-Object { $_ -eq 'PINVOU_METADATA_COMPONENT_TEST_PASSED' }).Count -ne 1) {
+            throw 'Protected metadata component test failed or did not run'
+          }
+
+
   windows-rust-test:
     name: windows-rust-test (${{ matrix.phase }})
     needs: changes
@@ -3636,6 +3693,7 @@ jobs:
       - cli-test
       - cli-lint
       - windows-rust-test
+      - windows-metadata-component
       - macos-rust-check
       - macos-codex-runtime-test
       - macos-cli-check
@@ -3668,6 +3726,8 @@ jobs:
           CLI_TEST_RESULT: ${{ needs.cli-test.result }}
           CLI_LINT_RESULT: ${{ needs.cli-lint.result }}
           WINDOWS_RUST_RESULT: ${{ needs.windows-rust-test.result }}
+          METADATA_COMPONENT_RESULT: ${{ needs.windows-metadata-component.result }}
+          METADATA_COMPONENT_EXPECTED: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && needs.changes.outputs.metadata_component == 'true' }}
           MACOS_RUST_CHECK_RESULT: ${{ needs.macos-rust-check.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}
@@ -3687,6 +3747,10 @@ jobs:
             exit 1
           fi
 
+          if [[ "$METADATA_COMPONENT_EXPECTED" == true && "$METADATA_COMPONENT_RESULT" != success ]]; then
+            echo "Required Windows metadata component test did not pass: $METADATA_COMPONENT_RESULT" >&2
+            exit 1
+          fi
           failed=0
           for item in \
             "frontend-test:$FRONTEND_RESULT" \
@@ -3698,6 +3762,7 @@ jobs:
             "cli-test:$CLI_TEST_RESULT" \
             "cli-lint:$CLI_LINT_RESULT" \
             "windows-rust-test:$WINDOWS_RUST_RESULT" \
+            "windows-metadata-component:$METADATA_COMPONENT_RESULT" \
             "macos-rust-check:$MACOS_RUST_CHECK_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "macos-cli-check:$MACOS_CLI_RESULT" \

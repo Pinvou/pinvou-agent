@@ -143,7 +143,7 @@ impl std::ops::Deref for InstallationManifest {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "metadata-component-tests"))]
 pub(crate) mod tests {
     use super::*;
     use crate::profile::{ByteReference, ImageReference};
@@ -152,6 +152,10 @@ pub(crate) mod tests {
     }
     pub(crate) fn fixture(groups: Vec<Vec<AppFile>>) -> (Seed, InventoryBytes) {
         let seed = seed();
+        let input = fixture_for_seed(&seed, groups);
+        (seed, input)
+    }
+    pub(crate) fn fixture_for_seed(seed: &Seed, groups: Vec<Vec<AppFile>>) -> InventoryBytes {
         let image = ImageReference {
             build_id: seed.build_id.clone(),
             version: seed.app_version.clone(),
@@ -208,13 +212,10 @@ pub(crate) mod tests {
                 shards: references,
             },
         };
-        (
-            seed,
-            InventoryBytes {
-                root: json::encode(&root, false).unwrap(),
-                shards,
-            },
-        )
+        InventoryBytes {
+            root: json::encode(&root, false).unwrap(),
+            shards,
+        }
     }
     pub(crate) fn app() -> AppFile {
         AppFile {
