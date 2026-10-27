@@ -3,8 +3,8 @@
 //! Boss 主动召唤 → 从 session messages 投影出「需求 vs 应对」→ 单次独立 LLM
 //! 审查 → 返回 personas/issues。Pinvou 只检阅、不替 Boss 决策。
 //!
-//! 设计与实证：`docs/品悟v4-常驻检阅助手设计.md` / `docs/品悟v4-召唤式实测报告.md`。
-//! 上下文策略（§4.1，实测背书）：能全喂就全喂（实测 1.2 万 token 级高噪音
+//! 设计与实证：`docs/品悟v4-召唤式评审设计.md`（§6 上下文策略、§7 实证）。
+//! 上下文策略（§6，实测背书）：能全喂就全喂（实测 1.2 万 token 级高噪音
 //! 会话不崩、还能事实核查），超过 `FULL_FEED_CHAR_LIMIT` 才降级到确定性投影。
 
 use std::collections::{HashMap, HashSet};
