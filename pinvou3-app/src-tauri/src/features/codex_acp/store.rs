@@ -2397,6 +2397,13 @@ impl SessionAgentStore {
     /// snapshot being persisted; callers still take `lock_and_reload` first
     /// for the cross-process section.
     ///
+    /// Not every whole-table writer is on this helper: the workspace-roots
+    /// commit (`commit_session_workspace_roots_locked`), the workspace-prefix
+    /// rebind (`rebind_workspace_prefix`) and the workspace-index rekeys
+    /// (`commit_index_rekeys`) keep the older mutate-then-rollback shape on
+    /// purpose — their per-field restore logic is documented at each site.
+    /// Prefer this helper for new writers.
+    ///
     /// Cost note: the exclusive lock now spans the whole serialize + fsync +
     /// rename, so one writer's fsync duration stalls every reader of the
     /// store — and, because pool paths read the store under the pool-wide
