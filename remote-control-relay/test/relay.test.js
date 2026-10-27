@@ -101,6 +101,16 @@ function nextMessage(ws, type, timeoutMs = 3000) {
   });
 }
 
+// Like nextMessage, but resolves null instead of rejecting when no matching
+// message arrives in time, so callers can branch on "the relay replied" vs
+// "the relay stayed silent".
+function nextMessageOrTimeout(ws, type, timeoutMs = 2500) {
+  return nextMessage(ws, type, timeoutMs).catch((error) => {
+    if (!String(error.message).startsWith("timeout waiting for")) throw error;
+    return null;
+  });
+}
+
 function expectNoMessage(ws, type, timeoutMs = 250) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -139,6 +149,23 @@ function waitForCloseInfo(ws, timeoutMs = 3000) {
       clearTimeout(timer);
       resolve({ code, reason: reason.toString() });
     });
+  });
+}
+
+// Inverse of waitForClose, like expectNoMessage is the inverse of nextMessage:
+// resolves after timeoutMs with the socket never having closed, rejects as
+// soon as it does.
+function expectStillOpen(ws, timeoutMs = 250) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.off("close", onClose);
+      resolve();
+    }, timeoutMs);
+    const onClose = () => {
+      clearTimeout(timer);
+      reject(new Error("websocket closed unexpectedly"));
+    };
+    ws.once("close", onClose);
   });
 }
 
@@ -1034,6 +1061,32 @@ test("proxy allowlist keeps local health checks available", async () => {
   }
 });
 
+// The deep frames below exercise the send() serialization guard, but open PR
+// #781 adds an ingress wire-nesting cap (MAX_WIRE_NESTING_DEPTH = 128) that
+// rejects any frame nested deeper than that as `bad_json` before JSON.parse.
+// On a tree that includes #781 the cap fires first: the relay replies to the
+// sender, keeps the sender open, and never touches the destination socket, so
+// the destination-termination assertions in these tests do not apply there.
+// The Merge Queue gates this branch against the combined tree, so probe the
+// sender first. A `bad_json` error reply means the ingress cap handled the
+// frame; verify that behavior and pass — on such a tree the send() guard this
+// PR adds remains as defense-in-depth for frames that parse but cannot be
+// serialized. Returning false means no reply arrived, i.e. the relay under
+// test has no ingress cap and the frame reached the forward path, so the
+// caller proceeds with the original assertions.
+async function deepFrameRejectedAtIngress(sender, destination, isolated) {
+  const error = await nextMessageOrTimeout(sender.ws, "error");
+  if (!error) return false;
+  assert.equal(error.code, "bad_json");
+  assert.equal(isolated.child.exitCode, null);
+  assert.equal(isolated.child.signalCode, null);
+  // #781 rejects the frame without closing anything: both sockets stay open.
+  assert.equal(sender.ws.readyState, sender.ws.OPEN);
+  assert.equal(destination.ws.readyState, destination.ws.OPEN);
+  await expectStillOpen(destination.ws);
+  return true;
+}
+
 test("survives a web frame the relay cannot serialize and keeps the desktop reconnectable", async () => {
   const isolated = await spawnRelay();
   const endpointId = `endpoint_deep_request_${Date.now()}`;
@@ -1052,6 +1105,8 @@ test("survives a web frame the relay cannot serialize and keeps the desktop reco
       `{"v":2,"type":"rpc_request","id":"deep","client_request_id":"deep",`
       + `"command":"list_sessions","args":${deepArgs}}`,
     );
+
+    if (await deepFrameRejectedAtIngress(web, desktop, isolated)) return;
 
     // The unserializable destination socket is terminated; the sending web
     // socket stays open and the frame is dropped without an error reply.
@@ -1103,6 +1158,8 @@ test("survives a desktop frame the relay cannot serialize and keeps the web clie
 
     const deepPayload = `${"[".repeat(20000)}0${"]".repeat(20000)}`;
     desktop.ws.send(`{"v":2,"type":"event","payload":${deepPayload}}`);
+
+    if (await deepFrameRejectedAtIngress(desktop, web, isolated)) return;
 
     await waitForClose(web.ws);
     assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
