@@ -1,0 +1,1082 @@
+[
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "code_fix",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "root": "secondary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "plan_execute",
+    "turn": 1,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "code_consult",
+    "turn": 0,
+    "root": "primary",
+    "fixture_git_history_preserved": true
+  }
+]

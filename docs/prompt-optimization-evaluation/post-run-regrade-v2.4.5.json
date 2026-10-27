@@ -1,0 +1,307 @@
+{
+  "scope": "All20 third-root task trials replayed with current repaired grader; generated code remains read-only/networkless in the same verifier. No model calls, source/prompt/binary/settings change to measured candidate. Frozen records retained.",
+  "grader_sha256": "086a2c76e166b53f29aa32f278d4328dadcf1cc574357acd89e9032c0da67f8e",
+  "rows": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0,
+      "changed_checks": {
+        "third_tests_requested": {
+          "before": false,
+          "after": true
+        }
+      },
+      "all_fixed_checks_pass": true,
+      "scope": "post-run uniform evaluator repair, not a new model run"
+    }
+  ],
+  "new_model_calls": 0
+}

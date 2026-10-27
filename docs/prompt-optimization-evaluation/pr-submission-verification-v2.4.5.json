@@ -1,0 +1,162 @@
+{
+  "author": "Codex (OpenAI)",
+  "model": "GPT-6; exact variant/reasoning level unavailable",
+  "parent_base": "0dd56c9655c6353727e9def0858e1aeb41cb3f37",
+  "parent_candidate_before_receipt": "cc4b2659ecaffe1d5624af7c1eceb3abe5793028",
+  "foundation_candidate": "50a42c38edf81e45019403d33ac05ef87da77555",
+  "foundation_pr": "https://github.com/Pinvou/CodeWhale/pull/125",
+  "scope": "Fresh PR-preparation checks after resolving documentation conflicts with main; live model data remains the frozen earlier run.",
+  "gates": [
+    {
+      "name": "python-full",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 23.505,
+      "summaries": [
+        "ok: /usr/bin/true architecture arm64",
+        "ok: /usr/bin/true GLIBC_2.34 ≤ GLIBC_2.35",
+        "python3 -m unittest: error: argument --min-free-gib: --min-free-gib must be >= 1 GiB",
+        "python3 -m unittest: error: argument --min-free-gib: --min-free-gib must be >= 1 GiB",
+        "python3 -m unittest: error: argument --min-free-gib: invalid int value: 'abc'",
+        "python3 -m unittest: error: argument --only-session: expected one argument",
+        "Ran 582 tests in 23.292s",
+        "OK (skipped=3)"
+      ]
+    },
+    {
+      "name": "namespace-opt-in",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_prompt_eval_namespace.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 1.244,
+      "summaries": [
+        "Ran 7 tests in 1.184s",
+        "OK"
+      ]
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 2.072,
+      "summaries": [
+        "architecture guard passed: no architecture debt increased"
+      ]
+    },
+    {
+      "name": "fork-fast",
+      "command": [
+        "bash",
+        "scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.388,
+      "summaries": [
+        "\u001b[32m  ✓ CodeWhale 至少保留 64 条独立 forkguard 行为名（实际 254）\u001b[0m",
+        "\u001b[32m指纹层全过 (--fast)\u001b[0m"
+      ]
+    },
+    {
+      "name": "fmt-app",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 1.652,
+      "summaries": []
+    },
+    {
+      "name": "fmt-cli",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou-cli/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 7.556,
+      "summaries": []
+    },
+    {
+      "name": "version",
+      "command": [
+        "node",
+        "scripts/sync-version.mjs",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.057,
+      "summaries": []
+    },
+    {
+      "name": "parent-commit-message-dco",
+      "command": [
+        "python3",
+        "scripts/validate-commit-msg.py",
+        "--range",
+        "origin/main",
+        "HEAD"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.027,
+      "summaries": []
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "origin/main",
+        "HEAD",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.025,
+      "summaries": []
+    }
+  ],
+  "limitations": [
+    "No new model calls after source freeze. Main advanced by release-version metadata, recovery-contract fingerprints/documentation and a WeCom documentation allowlist entry; these changes do not rewrite the historical measured run.",
+    "Earlier Rust workspace/app behavior and Clippy results retain verification-v2.4.5.json source/provenance boundaries; they are not claimed as freshly rerun on this rebased tree.",
+    "The public-submodule verifier is expected to fail until CodeWhale#125 is integrated and the gitlink is repinned. No protected-branch/tag/public-head check is relaxed."
+  ],
+  "four_layers_full_and_non_browser_summaries_reproduced": true
+}

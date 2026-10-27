@@ -322,6 +322,27 @@ Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f2767293
 - This PR adds 24 T2 checks beyond main's existing fingerprints. Two of the old candidate's 26 additions already landed; the remaining checks still match the current public tree. They cover structured omissions, recovery guidance, real gate/child DTOs, complete fetch envelopes, immutable artifacts, retrieval activation and serial/parallel/aggregate dispatch contracts. Production code, gitlink, maintenance count, existing predicates and execution layers stay unchanged. Earlier foundation native/mutation evidence retains its original commit boundary; this round's fingerprint checks do not rerun those native tests or establish release qualification.
 - The historical mutation-validation workflow remains on CodeWhale validation-only branch `validation/returned-result-20261024` at `b4eb108335a99556429b11191b9a2dabadbd23c8` (six selected tests × baseline and three negative variants). It differs from its then-source commit only in the validation workflow; it was not delivered as production CI and is not introduced by this PR. This round verified that the public branch still names that commit; earlier execution receipts are not transferred to a new run on the current foundation.
 
+## 2026-10-27 prompt guidance review candidate (T3; CodeWhale#125)
+
+The parent review gitlink is `50a42c38edf81e45019403d33ac05ef87da77555`; public maintenance remains
+`6e1ee88ee8f8ea28eec7be3d8add3a591468412a`. This adds one DCO-signed commit
+(14 files, +173/-47) in T3. It advances bundled Skills from generation 11 to 12,
+records the exact old discovery-body digest, and keeps existing user-edit/deletion
+protection. An old-body fixture and installer regression fail without the fix
+and pass restored. The one-line `repo_law.rs` borrow cleanup is test-only, made
+after model timing to satisfy all-target Clippy; its existing behavior test passes.
+
+Upstream already implements [exact-name Skill guidance](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/skills/mod.rs#L1996)
+and [available-capability-first discovery](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/core/engine.rs#L149);
+this is a narrow maintenance adaptation, not a duplicate upstream proposal.
+Model comparisons use the combined Pinvou candidate and cannot isolate this
+foundation patch. See [V2.4.5 evaluation](prompt-optimization-evaluation/report-v2.4.5.md)
+and [verification provenance](prompt-optimization-evaluation/verification-v2.4.5.json).
+The public-head verifier is unchanged and is expected to reject this pending
+review gitlink. After foundation integration, update the parent to the actual
+squash SHA, recount/fingerprint it, and rerun the gates before marking ready.
+
+Author: Codex (OpenAI); model: GPT-6 (exact variant/reasoning level unavailable).
 ## 2026-10-28 consumed baseline: streaming tool-input reuse and discovery-guidance alignment (T2/T3)
 
 The public maintenance branch advanced by two reviewed squashes — #114 `fe90f72f9`, #125 `f1eb10efc` — and this parent consumes them with reference and register updates only; it creates no new fork topic and leaves both parent `Cargo.lock` files untouched (neither squash changes the fork's `Cargo.toml`/lock; the crates' public signatures toward the parent are unchanged).

@@ -1,0 +1,2 @@
+# PDF streams must remain byte-identical, including their xref offsets.
+*.pdf binary

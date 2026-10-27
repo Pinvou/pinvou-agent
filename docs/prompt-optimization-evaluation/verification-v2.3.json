@@ -1,0 +1,175 @@
+{
+  "parent_base": "0041ba29d7aae206703a5393b4d4511a58e120c9",
+  "foundation_base": "6e1ee88ee8f8ea28eec7be3d8add3a591468412a",
+  "v2.3_gates": [
+    {
+      "name": "node-prompt-contracts",
+      "command": [
+        "node",
+        "--test",
+        "pinvou3-app/tests/browser_core_protocol.test.mjs",
+        "pinvou3-app/tests/canonical_tool_contract.test.js"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.172,
+      "summaries": [
+        "# tests 18",
+        "# pass 18",
+        "# fail 0",
+        "# skipped 0"
+      ]
+    },
+    {
+      "name": "python-full",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 22.93,
+      "summaries": [
+        "Ran 568 tests in 22.697s",
+        "OK (skipped=3)"
+      ]
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 2.054,
+      "summaries": []
+    },
+    {
+      "name": "fork-fast",
+      "command": [
+        "bash",
+        "scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.599,
+      "summaries": []
+    },
+    {
+      "name": "fmt-app",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 1.586,
+      "summaries": []
+    },
+    {
+      "name": "bundle-tests-compile",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "runtime_bundle",
+        "--locked",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 38.503,
+      "summaries": []
+    },
+    {
+      "name": "bundle-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "runtime_bundle",
+        "--locked",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 4.102,
+      "summaries": [
+        "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 3687 filtered out; finished in 3.64s"
+      ]
+    },
+    {
+      "name": "version",
+      "command": [
+        "node",
+        "scripts/sync-version.mjs",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.064,
+      "summaries": []
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.036,
+      "summaries": []
+    }
+  ],
+  "production_delta_since_full_v2.2_gates": [
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md"
+  ],
+  "prior_full_integration": "verification-v2.2.json; unchanged-source receipts retained, not rerun as if new results",
+  "v2.3_python": {
+    "run": 568,
+    "passed": 565,
+    "skipped": 3,
+    "failed": 0
+  },
+  "v2.3_node_contracts": 18,
+  "v2.3_rust_bundle": 65,
+  "live_model_results": "Pending separately; development probes excluded",
+  "limitations": [
+    "Linux host only; native Windows/macOS not executed here.",
+    "Healthy native browser/card visuals, memory-on and scheduled real-model execution not covered."
+  ],
+  "author": "Codex (OpenAI)",
+  "model": "GPT-6; exact variant/reasoning level unavailable",
+  "post_namespace_repair": {
+    "python": {
+      "run": 570,
+      "passed": 570,
+      "skipped": 0,
+      "failed": 0,
+      "opt_in": "PINVOU_EVAL_NS_SELFTEST=1",
+      "namespace_proxy_tests_included": 7
+    },
+    "architecture_exit_code": 0,
+    "provider_free_case_preflight": {
+      "scenarios": 27,
+      "all_selected_project_roots_visible": true,
+      "controller_metadata_hidden": true
+    },
+    "production_delta_since_original_v2_3": [],
+    "evaluation_delta": [
+      "scripts/prompt_eval_sandbox.py",
+      "scripts/tests/test_prompt_eval_namespace.py"
+    ],
+    "complete_formal_comparison": "V2.3 attempt2, pending separately"
+  }
+}

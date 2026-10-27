@@ -204,15 +204,15 @@ pub(crate) use crate::platform::connector_skills::{
 /// NOTICE files. Next free slot after 0.33.
 pub const BUNDLE_VERSION: &str = concat!("0.34-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
-/// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
+/// Native ordinary/code instructions share this compile-time skeleton.
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
 /// how-to / red lines / output; three placeholder lines:
 /// `{{PINVOU3_MEMORY_SECTION}}` at the 「用户记忆」 slot, filled per the memory toggle
 /// (see [`memory_section`]),
 /// `{{PINVOU3_MODE_ENV_SECTION}}`（§工作环境 位）与
-/// `{{PINVOU3_MODE_ARTIFACT_RULE}}`（§工具与事实 的成品条位）。
-/// 拆分说明：work 专属的 §工作环境(L10-13) 与 present_artifact 条(L18) 在原文中
-/// 不连续，纯 concat 无法逐字节复原，故骨架留占位行、按模式替换拼装。
+/// `{{PINVOU3_MODE_ARTIFACT_RULE}}`（§验证与交付 的成品条位）。
+/// Work environment/browser sections and the final artifact rule occupy separate
+/// slots, preserving the current mode composition without duplicating the skeleton.
 pub const INSTRUCTIONS_SHARED_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-shared.md");
 
@@ -222,24 +222,23 @@ pub const INSTRUCTIONS_SHARED_MD: &str =
 /// non-Simplified-Chinese users by prefs' `enforce_memory_locale_policy`. If the section
 /// went into the skeleton unconditionally, a memory-disabled user saying 「记住」
 /// ("remember this") would get the guided confirmation 「已记下」 ("noted") while the
-/// background writes no memory — exactly violating rule 3 of the section, 「不编造已记住
-/// 的内容」 ("never fabricate remembered content"). So the skeleton keeps only the
+/// background writes no memory — violating the factual persistence contract.
+/// So the skeleton keeps only the
 /// placeholder line, and the session render layer fills the body or an explicit
 /// off-notice based on `memory_enabled`; it stays out of the `instructions_md` OnceLock and shares
 /// `{{PINVOU3_SUDO_INSTRUCTION}}`'s lifecycle (setting changes take effect on new sessions).
 const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
-- 用户明确要你记住(「记住」「记一下」「帮我记下」/\"remember this\" 之类):**简短确认已记下,同轮照常把任务做完**;要点由应用后台在回合结束后写入长期记忆(个别情况会先请用户确认),无需你复述或调用工具。\n\
-- 对「以后都…」这类没有明说「记」的偏好表述:自然回应即可,不要断言已记住,是否入库由后台判断。\n\
-- **不编造、不夸大已记住的内容**;不确定是否已记住就如实说,别假装记得。与当下指令冲突时以当下指令为准(权威顺序见「底线」)。\n\n";
+- 用户明确要求记住内容时，简短确认收到请求，同轮继续任务。应用后台在回合结束后处理长期保存，必要时请求确认；未取得保存结果前，不断言已持久保存。\n\
+- 对未明确要求记忆的偏好自然回应，不承诺入库。只使用实际提供的记忆，不编造“我记得”；与当前明确要求冲突时，以当前要求为准。\n\n";
 
 /// Off-state fill for the same placeholder: memory is off by default (and
 /// force-disabled for non-Simplified-Chinese users), so the default session has
 /// no 「用户记忆」 section at all. Without this line the model's default behavior
 /// on 「记住」 is still a confirmation ("sure, noted") while nothing persists —
-/// the same fabrication rule 3 of [`MEMORY_SECTION_MD`] guards against. Chinese
+/// the same persistence contract [`MEMORY_SECTION_MD`] guards against. Chinese
 /// is used to match the all-Chinese instruction file this line embeds into (the
 /// on-state [`MEMORY_SECTION_MD`] is Chinese as well).
-const MEMORY_OFF_NOTICE_MD: &str = "- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅在简体中文界面提供,若当前界面非简体中文需先切换后再在设置中开启,不要声称已保存,同轮照常完成任务。\n\n";
+const MEMORY_OFF_NOTICE_MD: &str = "本会话长期记忆已关闭。用户要求记住时，不声称已长期保存；说明可在简体中文界面的设置中开启。本轮照常完成任务。\n\n";
 
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
 /// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
@@ -254,7 +253,7 @@ pub(crate) fn memory_section(enabled: bool) -> &'static str {
 
 /// Work-mode layer: the `## 工作环境` section for artifact-panel and tmp/ semantics, the
 /// `## Browser capabilities` section as the model's static discovery entry point for the
-/// embedded headed browser, and the present_artifact rule from `## 工具与事实`. Blank lines
+/// embedded headed browser, and the present_artifact rule for `## 验证与交付`. Blank lines
 /// separate the three sections for [`work_layer_sections`].
 pub const INSTRUCTIONS_WORK_MD: &str =
     include_str!("../../../../resources/common/bundle/instructions-work.md");
@@ -423,12 +422,12 @@ pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
 pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
-Tools run without per-call approval — the user has already authorized
-execution. Unless the turn's `<system-reminder>` marks a read-only
-(planning) mode, produce files and run commands now, then verify and
-report. If a gated write call is rejected, do not retry it: present the change
-in your reply and wait for the user to decide.
-Follow each message's `<system-reminder>`.";
+Follow this turn's `<turn_meta>` permission/sandbox posture and `<system-reminder>`.
+Plan is read-only; consultation can be answered without changing files.
+For authorized implementation tasks, act, verify and deliver.
+After a permission/approval refusal, stop the blocked operation. Reconsider it
+only when the required authorization or runtime conditions have actually changed;
+do not retry unchanged requests or switch channels to bypass the refusal.";
 
 /// pinvou3 版静态层 composer：接管底座全部编译期静态文案
 /// (taxonomy/base/personality/mode/approval/ContextMgmt/compact 模板)。
@@ -722,14 +721,7 @@ mod tests {
                 "retired tool leaked: {retired}"
             );
         }
-        for canonical in [
-            "read(path=",
-            "write(path=",
-            "file_search(query=",
-            "bash(command=",
-            "terminal/run",
-            "todo_write",
-        ] {
+        for canonical in ["file_search", "terminal/run", "todo_write", "tool_search"] {
             assert!(
                 rendered.contains(canonical),
                 "canonical guidance missing: {canonical}"
@@ -743,12 +735,13 @@ mod tests {
         // browser tools (their "unavailable" branch is reachable only through
         // a failed `tool_search`, never through plain list absence).
         assert!(
-            rendered.contains("先 `tool_search` 激活") && rendered.contains("产物卡后端本轮不可用"),
+            rendered.contains("工具未出现时先 `tool_search`")
+                && rendered.contains("确认本轮无法呈现时"),
             "the artifact-card rule must teach tool_search activation before declaring the backend unavailable"
         );
         assert!(
-            rendered.contains("If `tool_search` cannot surface any `mcp_browser_*` tools"),
-            "the browser unavailability branch must be gated on a failed tool_search, not on first-turn list absence"
+            rendered.contains("工具未出现时，`tool_search` 搜索准确名称 `mcp_browser_list_pages`"),
+            "browser discovery must teach an exact query before concluding the entry is unavailable"
         );
     }
 
@@ -780,8 +773,9 @@ mod tests {
             "the instructions must override registry-first guidance for the built-in browser"
         );
         assert!(
-            rendered.contains("Never describe a successful screenshot as having seen or visually confirmed the page"),
-            "the instructions must state that screenshot results are not model-readable image input"
+            rendered
+                .contains("实际取得图像输入或图像分析结果后，才能声称看到了颜色、布局等视觉细节"),
+            "visual claims require image evidence rather than a successful tool status alone"
         );
         assert!(
             !rendered.contains("take_screenshot` to inspect visual details"),
@@ -902,49 +896,31 @@ mod tests {
 
     #[test]
     fn shared_skeleton_keeps_mode_placeholder_rows_in_place() {
-        // 骨架占位行必须仍在原位：§底线 与 §工具与事实 之间、§工具与事实 与 §怎么干 之间。
-        let env_at = INSTRUCTIONS_SHARED_MD
-            .find("{{PINVOU3_MODE_ENV_SECTION}}")
-            .expect("env placeholder");
-        let artifact_at = INSTRUCTIONS_SHARED_MD
-            .find("{{PINVOU3_MODE_ARTIFACT_RULE}}")
-            .expect("artifact placeholder");
-        let tools_at = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
-        let how_at = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
-        assert!(env_at < tools_at && tools_at < artifact_at && artifact_at < how_at);
-        // The 「用户记忆」 placeholder line sits right after 「底线」 and before the
-        // mode-layer environment section (see where the baseline's authority order is cited).
-        let bottom_at = INSTRUCTIONS_SHARED_MD.find("## 底线").unwrap();
-        let memory_at = INSTRUCTIONS_SHARED_MD
+        let bottom = INSTRUCTIONS_SHARED_MD.find("## 底线").unwrap();
+        let memory = INSTRUCTIONS_SHARED_MD
             .find("{{PINVOU3_MEMORY_SECTION}}")
-            .expect("memory placeholder must stay in the shared skeleton");
-        assert!(bottom_at < memory_at && memory_at < env_at);
-    }
-
-    #[test]
-    fn memory_section_renders_verbatim_when_enabled_and_off_notice_when_disabled() {
-        // Enabled: the whole section body lands in the skeleton verbatim with no
-        // placeholder left; the section directly follows the baseline section.
-        let enabled =
-            INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(true));
-        assert!(enabled.contains(MEMORY_SECTION_MD));
-        assert!(!enabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
-        assert!(enabled.contains("语气平实,少感叹号与最高级。\n\n## 用户记忆\n"));
-        // The section's trailing blank line catches the mode-layer environment placeholder,
-        // preserving the original inter-section blank line.
-        assert!(enabled.contains("权威顺序见「底线」)。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"));
-        // Disabled: the section body is replaced by the truthful off-notice (no
-        // 「用户记忆」 header, no placeholder left, exactly one blank line between the
-        // baseline section and the mode-layer environment section).
-        let disabled =
-            INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", memory_section(false));
-        assert!(disabled.contains(MEMORY_OFF_NOTICE_MD));
-        assert!(!disabled.contains("## 用户记忆"));
-        assert!(!disabled.contains("已记下"));
-        assert!(!disabled.contains("{{PINVOU3_MEMORY_SECTION}}"));
-        assert!(disabled.contains(
-            "语气平实,少感叹号与最高级。\n\n- 本会话长期记忆为**关闭**状态:用户要你记住内容时,告知该功能仅在简体中文界面提供,若当前界面非简体中文需先切换后再在设置中开启,不要声称已保存,同轮照常完成任务。\n\n{{PINVOU3_MODE_ENV_SECTION}}\n"
-        ));
+            .unwrap();
+        let env = INSTRUCTIONS_SHARED_MD
+            .find("{{PINVOU3_MODE_ENV_SECTION}}")
+            .unwrap();
+        let tools = INSTRUCTIONS_SHARED_MD.find("## 工具与事实").unwrap();
+        let how = INSTRUCTIONS_SHARED_MD.find("## 怎么干").unwrap();
+        let delivery = INSTRUCTIONS_SHARED_MD.find("## 验证与交付").unwrap();
+        let artifact = INSTRUCTIONS_SHARED_MD
+            .find("{{PINVOU3_MODE_ARTIFACT_RULE}}")
+            .unwrap();
+        assert!(bottom < memory && memory < env && env < tools);
+        assert!(tools < how && how < delivery && delivery < artifact);
+        for enabled in [false, true] {
+            let section = memory_section(enabled);
+            let rendered = INSTRUCTIONS_SHARED_MD.replace("{{PINVOU3_MEMORY_SECTION}}\n", section);
+            assert!(!rendered.contains("{{PINVOU3_MEMORY_SECTION}}"));
+            assert!(rendered.contains(&format!("{section}{{{{PINVOU3_MODE_ENV_SECTION}}}}")));
+            assert_eq!(rendered.contains("## 用户记忆"), enabled);
+        }
+        assert!(memory_section(true).contains("未取得保存结果前，不断言已持久保存"));
+        assert!(!memory_section(true).contains("确认已记下"));
+        assert!(memory_section(false).contains("不声称已长期保存"));
     }
 
     #[test]
@@ -967,7 +943,7 @@ mod tests {
         assert!(!rendered.contains("产出用**相对路径**写"));
         // 代码场景纪律与共享红线都在。
         assert!(rendered.contains("## 代码场景纪律"));
-        assert!(rendered.contains("不主动执行 git 写操作"));
+        assert!(rendered.contains("不主动 commit、push、reset 或 rebase"));
         assert!(rendered.contains("## 红线"));
         // 占位行无残留。
         assert!(!rendered.contains("{{PINVOU3_MODE_ENV_SECTION}}"));
@@ -1021,63 +997,31 @@ mod tests {
         // The bound variant's existence does not affect unbound rendering: the
         // default work instructions keep their original semantics.
         let rendered = instructions_md();
-        assert!(rendered.contains("自动落到工作区"));
+        assert!(rendered.contains("最终成品默认写在 `Current workspace` 给出的实际目录"));
         assert!(!rendered.contains("用户选择的工作目录"));
     }
 
-    /// Prompt-composition regression for the auto-approval override: only code
-    /// sessions compose the base core_execution loop, so only their rendered
-    /// instructions may carry the reconciling note (current production posture
-    /// is auto-approval; runtime truth stays with the per-turn reminder), and
-    /// the note must sit after the base approval clause it qualifies. Also
-    /// locks the MODE_EXECUTE_MD dedup contract: the "never end the turn with
-    /// a promise" sentence was removed because the shared skeleton carries the
-    /// equivalent prohibition.
+    /// The upstream execution profile remains code-only and occurs once;
+    /// host guidance must preserve independent permissions and lawful recovery.
     #[test]
-    fn code_instructions_carry_auto_approval_note_work_mode_does_not() {
-        let rendered = instructions_code_md("你在本会话专属工作目录中工作,相对路径即相对该目录;");
+    fn code_instructions_preserve_core_permissions_without_a_host_override() {
+        let code = instructions_code_md("temporary workspace;");
         let core = deepseek_tui::prompts::CORE_EXECUTION_PROFILE_PROMPT.trim();
-        let core_at = rendered
-            .find(core)
-            .expect("code instructions must compose the base core_execution loop");
-        let note_at = rendered
-            .find("gated write 工具走 auto-approval")
-            .expect("code instructions must carry the auto-approval note");
-        assert!(
-            note_at > core_at,
-            "auto-approval note must follow the base approval clause it qualifies"
-        );
-        assert!(
-            rendered.contains("运行时批准姿态以每轮 `<system-reminder>` 为准"),
-            "auto-approval note must defer runtime posture to the per-turn reminder"
-        );
-
-        let work = instructions_md();
-        assert!(
-            !work.contains("auto-approval"),
-            "work mode never composes core_execution, so it must not carry the note"
-        );
-
-        assert!(
-            INSTRUCTIONS_SHARED_MD.contains("说做就做"),
-            "MODE_EXECUTE_MD dropped its promise prohibition only because the shared skeleton carries it"
-        );
-        assert!(!MODE_EXECUTE_MD.contains("promise of future action"));
+        assert_eq!(code.matches(core).count(), 1);
+        assert!(!instructions_md().contains(core));
+        assert!(!code.contains("gated write 工具走 auto-approval"));
+        assert!(code.contains("相关条件按工具要求有效改变后"));
+        assert!(code.contains("自动批准不扩大"));
     }
 
-    /// MODE_EXECUTE_MD 是全模式静态层（plan 回合也会看到），条件从句把只读回合
-    /// 的执行命令让位给 per-turn reminder——钉住从句，防止回退成无条件祈使句
-    /// （plan 回合会被静态层指挥「立刻写文件跑命令」，与只读 reminder 打架）。
     #[test]
     fn mode_execute_defers_to_read_only_turn_reminders() {
-        assert!(
-            MODE_EXECUTE_MD.contains("Unless the turn's `<system-reminder>` marks a read-only")
-        );
-        assert!(MODE_EXECUTE_MD.contains("(planning) mode"));
-        assert!(
-            !MODE_EXECUTE_MD.contains("execution. Produce files"),
-            "unconditional produce-files imperative must stay gone"
-        );
+        assert!(MODE_EXECUTE_MD.contains("Plan is read-only"));
+        assert!(MODE_EXECUTE_MD.contains("<turn_meta>"));
+        assert!(MODE_EXECUTE_MD.contains("<system-reminder>"));
+        assert!(MODE_EXECUTE_MD.contains("consultation can be answered without changing files"));
+        assert!(MODE_EXECUTE_MD.contains("conditions have actually changed"));
+        assert!(!MODE_EXECUTE_MD.contains("Tools run without per-call approval"));
     }
 
     /// 共享骨架的定时红线钉死：模型确实没有任何调度工具（deny 规则还封了

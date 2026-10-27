@@ -48,10 +48,10 @@ use crate::features::sessions::{
 };
 use crate::features::sessions::{SerializableMode, SessionModeState};
 
-/// 定时任务无人值守首轮的唯一附加约束。任务 prompt 原文已作为用户消息传入，
-/// 这一句只防模型把目标改写成别的事，不再堆叠更长的提示词。
-const SCHEDULED_TURN_REMINDER: &str =
-    "本轮是定时任务的自动执行：直接执行用户消息里的任务，不要改写、替换或扩展任务目标。";
+/// Unattended turns must finish or report a blocker without waiting for a user.
+const SCHEDULED_TURN_REMINDER: &str = "本轮为无人值守自动执行，只完成用户给定的任务，不扩展目标。\n\
+有安全默认且在已有授权范围内时直接推进；不要发起等待用户回答或确认的操作。\n\
+缺少关键条件或授权时，说明阻塞、已完成部分和未执行事项，然后结束本轮；不猜测缺失事实或声称已经完成。";
 
 /// 单个 session 的 engine wrapper(handle + 该 session 绑定的 bridge)。
 ///
@@ -1691,6 +1691,7 @@ pub(crate) fn unattended_disallowed_tools(disallowed: &[String]) -> Vec<String> 
     for tool in [
         "create_goal",
         "update_goal",
+        "request_user_input",
         crate::features::assistant::platform::bridge::SCHEDULED_TASK_CREATE_TOOL,
         crate::features::assistant::platform::bridge::SCHEDULED_TASK_UPDATE_TOOL,
         crate::features::assistant::platform::bridge::SCHEDULED_TASK_DELETE_TOOL,
@@ -4569,6 +4570,7 @@ mod unattended_shield_tests {
         for tool in [
             "create_goal",
             "update_goal",
+            "request_user_input",
             "mcp_app-automations_create_scheduled_task",
             "mcp_app-automations_update_scheduled_task",
             "mcp_app-automations_delete_scheduled_task",

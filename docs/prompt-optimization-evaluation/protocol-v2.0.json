@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-23 (Asia/Shanghai)",
+  "client_platform": "Linux aarch64",
+  "primary_comparison_turns": 104,
+  "order": "Each scenario: round 1 baseline then candidate; round 2 candidate then baseline. Each variant uses local then cloud model. Paired turns retain their session.",
+  "manifests": {
+    "baseline": {
+      "variant": "baseline",
+      "binary_sha256": "b6a100d6d238663c2767538bd4ecc084f68d7b2edcf4fad0d62617e8671bb7c0",
+      "suite_sha256": "edf6caaae10bcbb3fa0d665b2cdc6bc6979635523169600d6ef3bef7c64bf2e2",
+      "model_ids": [
+        "ornith-local",
+        "glm-cloud"
+      ],
+      "scenarios": [
+        "consult",
+        "artifact",
+        "code_fix",
+        "multi_artifact",
+        "multi_code",
+        "plan_execute",
+        "skill",
+        "attachment",
+        "untrusted_data",
+        "browser_host_boundary"
+      ],
+      "repetitions": 2,
+      "settings_policy": "configured models, isolated home, memory off, max_steps=40",
+      "host": "Pinvou windowless product runtime; GUI bridge mode/root inputs; no browser windows"
+    },
+    "candidate": {
+      "variant": "candidate",
+      "binary_sha256": "2f70090909c65cc486bd4897d4ec9a51b0fb6b251563c3e12eddcd026db45b1e",
+      "suite_sha256": "edf6caaae10bcbb3fa0d665b2cdc6bc6979635523169600d6ef3bef7c64bf2e2",
+      "model_ids": [
+        "ornith-local",
+        "glm-cloud"
+      ],
+      "scenarios": [
+        "consult",
+        "artifact",
+        "code_fix",
+        "multi_artifact",
+        "multi_code",
+        "plan_execute",
+        "skill",
+        "attachment",
+        "untrusted_data",
+        "browser_host_boundary"
+      ],
+      "repetitions": 2,
+      "settings_policy": "configured models, isolated home, memory off, max_steps=40",
+      "host": "Pinvou windowless product runtime; GUI bridge mode/root inputs; no browser windows"
+    }
+  },
+  "postprocessing": {
+    "scripts/audit-prompt-eval.py": "e4aa0254b436aa1569618bd2158fa738e258f4e5434bbd03df06b2bce9c42a91",
+    "scripts/summarize-prompt-eval.py": "7d24630df85500eeb00a2aa5bee64a0825d21c0a7b8d0f80221634e7e368da36"
+  },
+  "build_profile": "Cargo dev (unoptimized + debuginfo)"
+}

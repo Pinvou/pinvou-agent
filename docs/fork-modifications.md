@@ -440,6 +440,51 @@ Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f2767293
 - 本 PR 只在父仓 main 已有指纹之外补充 24 项 T2 检查；旧候选新增的 26 项中已有两项进入父仓 main，其余仍能匹配当前公开树。它们覆盖结构化结果遗漏、恢复提示、真实 gate/子代理 DTO、完整 fetch 信封、不可变 artifact、检索激活及串行/并行/聚合派发合同；不改生产代码、gitlink、维护计数、已有谓词或执行层。既有底座原生测试/变异证据仍只属于其原提交；本轮指纹检查不等于重新执行这些原生测试，也不构成发布验证。
 - 历史变异验证工作流保留在 CodeWhale 的验证专用分支 `validation/returned-result-20261024`，提交为 `b4eb108335a99556429b11191b9a2dabadbd23c8`（六项指定测试 × 正常分支及三个反例）。它相对当时源码提交只改验证工作流，不属于已合入的生产 CI，也不在本 PR 引入；本次核实该公开分支仍指向此提交，不将旧执行回执扩展为当前底座重新执行。
 
+## 2026-10-23 local prompt candidate (T3; unpublished)
+
+The prompt-optimization worktree now consumes the registered `6e1ee88ee` gitlink
+and keeps the published topology intact; prior frozen measurements used `ea9fdc90f`. Its local CodeWhale diff updates model guidance only:
+known Skills load by exact name; missing tools require discovery and an honest
+unavailable fallback; transcript hints no longer recommend calling absent tools.
+Registry-first guidance and the bundled discovery Skill now respect a host's
+explicit built-in entry points before applying the Registry default. Ordinary
+repository work and the existing external-capability discovery flow are retained.
+No tool registry, allowlist, approval rule, Skill source validation, or execution
+loop is changed. The existing Skill-index, child-catalog, transcript-hint and
+Registry instruction tests cover the guidance; corresponding fingerprints track
+these contracts. This is a local candidate, not a published fork baseline.
+
+Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
+
+The same candidate advances the bundled Skill catalog from generation 11 to 12
+and records the exact superseded discovery-body digest. Existing unmodified
+installs receive the host-aware discovery guidance; user edits and intentional
+deletions retain the installer's existing protection. A regression fixture and
+upgrade test cover the old shipped body and a user-customized body. This install
+migration does not alter the prompt text used by the frozen fresh-home model
+comparison. Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
+
+## 2026-10-27 prompt guidance review candidate (T3; CodeWhale#125)
+
+The parent review gitlink is `50a42c38edf81e45019403d33ac05ef87da77555`; public maintenance remains
+`6e1ee88ee8f8ea28eec7be3d8add3a591468412a`. This adds one DCO-signed commit
+(14 files, +173/-47) in T3. It advances bundled Skills from generation 11 to 12,
+records the exact old discovery-body digest, and keeps existing user-edit/deletion
+protection. An old-body fixture and installer regression fail without the fix
+and pass restored. The one-line `repo_law.rs` borrow cleanup is test-only, made
+after model timing to satisfy all-target Clippy; its existing behavior test passes.
+
+Upstream already implements [exact-name Skill guidance](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/skills/mod.rs#L1996)
+and [available-capability-first discovery](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/core/engine.rs#L149);
+this is a narrow maintenance adaptation, not a duplicate upstream proposal.
+Model comparisons use the combined Pinvou candidate and cannot isolate this
+foundation patch. See [V2.4.5 evaluation](prompt-optimization-evaluation/report-v2.4.5.md)
+and [verification provenance](prompt-optimization-evaluation/verification-v2.4.5.json).
+The public-head verifier is unchanged and is expected to reject this pending
+review gitlink. After foundation integration, update the parent to the actual
+squash SHA, recount/fingerprint it, and rerun the gates before marking ready.
+
+Author: Codex (OpenAI); model: GPT-6 (exact variant/reasoning level unavailable).
 ## 2026-10-28 消费基线：流式工具入参复用与发现指引对齐（T2/T3）
 
 公开维护分支以两次评审 squash 前进——#114 `fe90f72f9`、#125 `f1eb10efc`——父仓仅以引用与登记更新消费；不新增 fork 主题，也不改父仓 `Cargo.lock`（两次 squash 均不改 fork 的 `Cargo.toml`/lock，crates 对父仓公开签名不变）。

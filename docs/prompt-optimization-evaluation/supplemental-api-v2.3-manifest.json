@@ -1,0 +1,28 @@
+{
+  "scope": "post-freeze exploratory public-API diagnostic; excluded from primary score",
+  "recorded_at_utc": "2026-10-26T14:09:57.295930+00:00",
+  "sources": {
+    "scripts/prompt_eval_extra_api.py": "32de7566388daa48cd7c10625c59c6bff98c12a95b9d44388a40cfbdf656b6cd",
+    "scripts/tests/test_prompt_eval_extra_api.py": "4ab992b92fa5ac8d2b4862571340651186860f8ce7bb02d2b3e2555db04b7a03",
+    "docs/prompt-optimization-evaluation/post-freeze-api-diagnostic-v2.3.md": "1821d16da48d4d847156cbe3a0fad28a41be4ed922f786403bf065166550d37c"
+  },
+  "trusted_unit_controls": {
+    "run": 8,
+    "passed": 8
+  },
+  "actual_namespace_controls": [
+    {
+      "name": "original-keyword",
+      "passed": true
+    },
+    {
+      "name": "renamed-keyword",
+      "passed": true
+    },
+    {
+      "name": "read-only-generated-import",
+      "passed": true
+    }
+  ],
+  "production_and_frozen_live_grader_changed": false
+}

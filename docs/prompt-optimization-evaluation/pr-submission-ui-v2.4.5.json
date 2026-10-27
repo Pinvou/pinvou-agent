@@ -1,0 +1,96 @@
+{
+  "scope": "Fresh UI/Node checks after main integration; no native GUI visual validation.",
+  "gates": [
+    {
+      "name": "lint-ui",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "lint:ui"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 48.125,
+      "summaries": [
+        "✖ 2 problems (0 errors, 2 warnings)",
+        "  0 errors and 1 warning potentially fixable with the `--fix` option."
+      ]
+    },
+    {
+      "name": "lint-node",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "lint:node"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 5.207,
+      "summaries": []
+    },
+    {
+      "name": "build-ui",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "build:ui"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 2.432,
+      "summaries": [
+        "✓ built in 2.09s",
+        "<script src=\"/shared/model-service-errors.js\"> in \"/pet.html\" can't be bundled without type=\"module\" attribute",
+        "<script src=\"/shared/model-service-errors.js\"> in \"/index.html\" can't be bundled without type=\"module\" attribute"
+      ]
+    },
+    {
+      "name": "build-web",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "build:web"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 2.044,
+      "summaries": [
+        "✓ built in 1.79s",
+        "<script src=\"/pinvou3/remote/shared/model-service-errors.js\"> in \"/index.html\" can't be bundled without type=\"module\" attribute"
+      ]
+    },
+    {
+      "name": "node-full",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "test"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 109.22,
+      "summaries": [
+        "ok 1335 - desktop: a start that fails after claiming releases the ownership claim",
+        "# Subtest: desktop: a claim IPC failure fails closed without probing and reports the check, not another window",
+        "ok 1336 - desktop: a claim IPC failure fails closed without probing and reports the check, not another window",
+        "# (Use `node --trace-warnings ...` to show where the warning was created)",
+        "# Subtest: unexpected probe or repair failures stop the build",
+        "ok 1373 - unexpected probe or repair failures stop the build",
+        "# Subtest: a toolchain check that fails to spawn stops the build",
+        "ok 1374 - a toolchain check that fails to spawn stops the build",
+        "# Subtest: a missing or failed wrapper build stops before Cargo can overflow",
+        "ok 1389 - a missing or failed wrapper build stops before Cargo can overflow",
+        "# (Use `node --trace-warnings ...` to show where the warning was created)",
+        "# (Use `node --trace-warnings ...` to show where the warning was created)",
+        "# tests 1436",
+        "# pass 1421",
+        "# fail 0",
+        "# skipped 15"
+      ]
+    }
+  ]
+}

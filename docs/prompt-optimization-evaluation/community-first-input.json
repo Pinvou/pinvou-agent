@@ -1,0 +1,80 @@
+[
+  {
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "mode": "ordinary",
+    "samples_per_variant": {
+      "baseline": 55,
+      "candidate": 55
+    },
+    "first_input_median": {
+      "baseline": 8850,
+      "candidate": 8271
+    },
+    "delta_pct": -6.542372881355929
+  },
+  {
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "mode": "code-agent",
+    "samples_per_variant": {
+      "baseline": 20,
+      "candidate": 20
+    },
+    "first_input_median": {
+      "baseline": 7460.5,
+      "candidate": 7546.5
+    },
+    "delta_pct": 1.1527377521613813
+  },
+  {
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "mode": "code-plan",
+    "samples_per_variant": {
+      "baseline": 5,
+      "candidate": 5
+    },
+    "first_input_median": {
+      "baseline": 7438,
+      "candidate": 7486
+    },
+    "delta_pct": 0.6453347674105991
+  },
+  {
+    "model": "glm-5.3-flash",
+    "mode": "ordinary",
+    "samples_per_variant": {
+      "baseline": 55,
+      "candidate": 55
+    },
+    "first_input_median": {
+      "baseline": 8724,
+      "candidate": 8155
+    },
+    "delta_pct": -6.52223750573132
+  },
+  {
+    "model": "glm-5.3-flash",
+    "mode": "code-agent",
+    "samples_per_variant": {
+      "baseline": 20,
+      "candidate": 20
+    },
+    "first_input_median": {
+      "baseline": 7339.5,
+      "candidate": 7426.5
+    },
+    "delta_pct": 1.1853668506029091
+  },
+  {
+    "model": "glm-5.3-flash",
+    "mode": "code-plan",
+    "samples_per_variant": {
+      "baseline": 5,
+      "candidate": 5
+    },
+    "first_input_median": {
+      "baseline": 7309,
+      "candidate": 7358
+    },
+    "delta_pct": 0.6704063483376599
+  }
+]

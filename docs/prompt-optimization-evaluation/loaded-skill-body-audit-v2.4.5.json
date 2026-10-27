@@ -1,0 +1,1202 @@
+[
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill",
+    "turn": 0,
+    "expected_skill": "eval-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "expected_skill": "fact-style",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "relative_deadline",
+    "turn": 0,
+    "expected_skill": "status-note",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill_format",
+    "turn": 0,
+    "expected_skill": "brief-facts",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "relative_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "absolute_json",
+    "turn": 0,
+    "expected_skill": "record-json",
+    "exact_body_loaded": true,
+    "list_calls": 0
+  }
+]

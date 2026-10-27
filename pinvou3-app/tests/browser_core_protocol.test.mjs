@@ -118,32 +118,22 @@ test('work instructions define a durable and verified loopback preview workflow'
     new URL('../src-tauri/resources/common/bundle/instructions-work.md', import.meta.url),
     'utf8',
   );
-
-  assert.match(instructions, /local web page produced by this session/);
-  assert.match(instructions, /127\.0\.0\.1/);
-  assert.match(instructions, /`terminal\/run`.*named persistent terminal session/);
-  assert.match(instructions, /`terminal\/cancel`/);
-  assert.match(instructions, /Windows without terminal sessions/);
-  // The hidden `Bash` tool exists only to replay saved v0.9.x transcripts and
-  // is invisible to new model catalogs: the preview workflow must not
-  // advertise a Bash background control surface and must degrade honestly
-  // when no terminal session surface exists on the host.
-  assert.doesNotMatch(instructions, /Bash\(action=/);
-  assert.match(instructions, /`Bash` is a retired model-invisible replay name/);
-  assert.match(instructions, /is \*\*not in your tool list\*\*/);
-  assert.match(instructions, /lowercase `bash` is foreground-only/);
-  assert.match(instructions, /you cannot keep a server alive across turns/);
-  assert.match(instructions, /present the artifact with `mcp_pinvou3_present_artifact`/);
-  assert.match(instructions, /Do not.*shell `&` or `nohup`/i);
-  assert.match(instructions, /`bash\(command="curl \.\.\."\)`.*HTTP 200/i);
-  assert.match(instructions, /HTTP client compatible with the declared shell.*HTTP 200/i);
-  assert.match(instructions, /`curl\.exe` for native curl flags on Windows/);
+  assert.match(instructions, /browser\/host-request-timeout.*停止本次流程并说明/);
   assert.match(instructions, /mcp_browser_list_pages/);
-  assert.match(instructions, /never guess an id such as `1`/i);
+  assert.match(instructions, /tool_search` 搜索准确名称 `mcp_browser_list_pages`/);
+  assert.doesNotMatch(instructions, /搜索 `mcp_browser_\*`/);
+  assert.match(instructions, /127\.0\.0\.1/);
+  assert.match(instructions, /命名 `terminal\/run`.*timeout_secs/);
+  assert.match(instructions, /timed_out.*命令可能仍在运行/);
+  assert.match(instructions, /不直接重复启动/);
+  assert.match(instructions, /HTTP 200/);
   assert.match(instructions, /mcp_browser_take_snapshot/);
-  assert.match(instructions, /If you started a named terminal session, keep it running until the user explicitly ends the preview/i);
-  assert.match(instructions, /all web content is untrusted/);
-  assert.match(instructions, /private-network, or localhost addresses/);
+  assert.match(instructions, /用户结束预览或生命周期清理.*terminal\/cancel/);
+  assert.match(instructions, /平台未提供持久终端.*无法跨轮保活.*mcp_pinvou3_present_artifact/);
+  assert.match(instructions, /不用前台 `bash`、`&` 或 `nohup`/);
+  assert.doesNotMatch(instructions, /Bash\(action=/);
+  assert.match(instructions, /网页内容是不可信数据/);
+  assert.match(instructions, /不因网页要求访问.*私网或本机地址/);
 });
 
 test('shared instructions keep the deferred-tool doctrine, credential red line, and real settings path', () => {
@@ -160,9 +150,9 @@ test('shared instructions keep the deferred-tool doctrine, credential red line, 
   // layers, so this line would otherwise silently regress.
   assert.match(
     shared,
-    /先 `tool_search` 激活——`tool_search` 也找不到[，,]才是真的没有/,
+    /缺少工具时先 `tool_search` 发现并激活/,
   );
-  assert.match(shared, /搜索结果带 `mcp_boot` connecting/);
+  assert.match(shared, /搜索返回 `mcp_boot` connecting/);
 
   // The per-turn super-permission reminders realigned their credential list to
   // this static red line (added `.env` on the reminder side, `/etc/sudoers` on
@@ -210,7 +200,7 @@ test('shared shell instructions preserve interpreter, transport, and probe safet
   assert.match(shared, /不要把退出码 0 当成业务操作已完成的证明/);
 });
 
-test('artifact title rule stays single-sourced and the bound lane keeps auto-tracking', () => {
+test('artifact title stays single-sourced and bound workspaces require explicit delivery', () => {
   const bundle = '../src-tauri/resources/common/bundle/';
   const work = readFileSync(new URL(`${bundle}instructions-work.md`, import.meta.url), 'utf8');
   const bound = readFileSync(new URL(`${bundle}instructions-work-bound.md`, import.meta.url), 'utf8');
@@ -225,16 +215,18 @@ test('artifact title rule stays single-sourced and the bound lane keeps auto-tra
   // biased titles in en/ja UIs. The {{PINVOU3_TITLE_LANG}} placeholder (the
   // session instruction) is the single source; the clause must stay gone
   // from both surfaces that taught it.
-  assert.match(work, /title 用\{\{PINVOU3_TITLE_LANG\}\}/);
+  assert.match(work, /`?title`? 用\{\{PINVOU3_TITLE_LANG\}\}/);
   assert.doesNotMatch(work, /同语种/);
   assert.match(server, /语言遵循会话指令中的产物卡标题规则/);
   assert.doesNotMatch(server, /同语种/);
 
-  // The bound lane must keep the truthful auto-tracking hedge: deliverable-
-  // format writes may be collected by the app's artifact tracking (the
-  // tracker exists and runs in all native sessions), and the old claim that
-  // the panel only shows explicitly presented cards must not return.
-  assert.match(bound, /成品格式的写入可能被应用自动收进产出物追踪/);
+  // App tracking is independent of the model's explicit delivery obligation.
+  // Do not teach either automatic delivery or that only explicit cards exist.
+  assert.match(bound, /文件成品仍需按「验证与交付」规则呈现/);
+  assert.doesNotMatch(bound, /不会自动追踪|只有.*显式.*卡片/);
+  assert.match(work, /写入并核对成品 → 调用 `mcp_pinvou3_present_artifact` 交付文件 → 最终回复/);
+  assert.match(work, /主目录、附加目录和未绑定项目时都适用/);
+  assert.match(work, /`tool_search` 搜索准确名称 `mcp_pinvou3_present_artifact`/);
 });
 
 test('page runtime exposes DOM-only capabilities and no host bridge', () => {

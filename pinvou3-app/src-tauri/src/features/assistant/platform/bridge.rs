@@ -1117,8 +1117,18 @@ impl Pinvou3Bridge {
             name: "pinvou3:instructions".to_string(),
             content: rendered,
         });
-        for project_rule in self.code_session_project_rules(session_id) {
-            out.push(InstructionSource::File(project_rule));
+        let project_rules = self.code_session_project_rules(session_id);
+        for project_rule in &project_rules {
+            out.push(InstructionSource::File(project_rule.clone()));
+        }
+        if !project_rules.is_empty() {
+            // Fixed at engine creation like the existing File sources. These
+            // labels preserve path scope and make incomplete discovery
+            // explicit after the supplied rules, before the user overlay.
+            out.push(InstructionSource::Inline {
+                name: "pinvou3:project-rule-scopes".to_string(),
+                content: "上述 AGENTS.md 按来源路径生效：仅适用于其所在目录及子目录，不因排列在后就覆盖其他目录的规则。对同一路径，适用规则以更近目录为准。规则不扩大任务、权限或信任范围。\nOnly root and ancestor rules were loaded above; this is not a complete rule search for a target file. Before editing, check AGENTS.md in every directory from the selected project root through the target file's directory. Deeper rules may exist even when a root rule is already supplied. Reuse supplied files, but inspect the remaining directories; do not recursively scan unrelated paths.".to_string(),
+            });
         }
         let user = paths::user_instructions();
         if user.is_file() {
@@ -1179,11 +1189,10 @@ impl Pinvou3Bridge {
         // determined; fail-closed: inject only the project root's own level.
         let home = normalize_rule_boundary_path(&crate::platform::paths::user_home_dir());
         let mut rules = Vec::new();
+        // Additional selected roots stay available through the workspace
+        // context. Their task-specific rules are discovered on demand instead
+        // of loading sibling rule bodies into every session's instructions.
         for dir in collect_project_rule_chain(&project_root, home.as_deref()) {
-            // AGENTS.md from the project root and every ancestor level
-            // (excluding the home directory itself) is injected, supporting
-            // the existing semantics of a monorepo-root rule covering
-            // subdirectories.
             let agents = dir.join("AGENTS.md");
             if is_plain_file(&agents) {
                 rules.push(agents);
@@ -4368,6 +4377,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn project_rules_keep_additional_roots_for_on_demand_discovery() {
+        let base = tempfile::tempdir().unwrap();
+        let primary = base.path().join("primary");
+        let secondary = base.path().join("secondary");
+        let unrelated = base.path().join("unrelated");
+        for dir in [&primary, &secondary, &unrelated] {
+            std::fs::create_dir(dir).unwrap();
+            std::fs::write(dir.join("AGENTS.md"), "local rule").unwrap();
+        }
+        std::fs::write(base.path().join("AGENTS.md"), "shared ancestor rule").unwrap();
+        let expected =
+            |dir: &std::path::Path| normalize_rule_boundary_path(dir).unwrap().join("AGENTS.md");
+        let mut bridge = fixture_bridge();
+        let bound = primary.clone();
+        bridge.set_execution_root_resolver(Arc::new(move |id| {
+            (id == "multi-root-rules").then(|| bound.clone())
+        }));
+        let selected = vec![
+            primary.clone(),
+            secondary.clone(),
+            secondary.clone(),
+            base.path().join("missing"),
+        ];
+        bridge.set_workspace_roots_resolver(Arc::new(move |_| selected.clone()));
+        let rules = bridge.code_session_project_rules("multi-root-rules");
+        for path in [expected(base.path()), expected(&primary)] {
+            assert_eq!(rules.iter().filter(|p| **p == path).count(), 1);
+        }
+        assert!(!rules.contains(&expected(&secondary)));
+        assert!(!rules.contains(&expected(&unrelated)));
+        assert!(bridge.code_session_project_rules("unbound").is_empty());
+        let instructions = bridge.session_instructions("multi-root-rules");
+        assert!(instructions.iter().any(|source| matches!(source,
+            InstructionSource::Inline { name, content }
+            if name == "pinvou3:project-rule-scopes"
+                && content.contains("仅适用于其所在目录及子目录")
+                && content.contains("对同一路径"))));
+        assert!(!instructions.iter().any(|source| matches!(source,
+            InstructionSource::File(path) if path == &expected(&secondary))));
+        assert!(
+            bridge
+                .session_workspace_roots("multi-root-rules")
+                .contains(&secondary)
+        );
+        let scope_index = instructions
+            .iter()
+            .position(|source| {
+                matches!(source,
+                InstructionSource::Inline { name, content }
+                if name == "pinvou3:project-rule-scopes"
+                    && content.contains("Only root and ancestor rules were loaded above")
+                    && content.contains("through the target file's directory"))
+            })
+            .unwrap();
+        for (index, source) in instructions.iter().enumerate() {
+            if matches!(source, InstructionSource::File(path) if rules.contains(path)) {
+                assert!(
+                    index < scope_index,
+                    "discovery caveat follows supplied rules"
+                );
+            }
+        }
+    }
+
     /// A plain chat session bound to a real working directory: its mode identity is
     /// still Plain (prompt recipe / artifact capabilities unchanged), but its safety
     /// posture follows the binding — code scope, dual roots, AGENTS.md injection,
@@ -4419,9 +4493,9 @@ mod tests {
         // work semantics.
         let prompt = bridge.build_session_system_prompt("sess-plain-bound");
         assert!(prompt.contains("用户选择的工作目录"), "应渲染绑定环境段");
-        assert!(!prompt.contains("自动落到工作区"));
+        assert!(!prompt.contains("最终成品默认写在 `Current workspace` 给出的实际目录"));
         let plain_prompt = bridge.build_session_system_prompt("sess-plain");
-        assert!(plain_prompt.contains("自动落到工作区"));
+        assert!(plain_prompt.contains("最终成品默认写在 `Current workspace` 给出的实际目录"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -4530,6 +4604,15 @@ mod tests {
                 !rules.iter().any(|p| p.to_string_lossy().contains(&marker)),
                 "symlink 的 AGENTS.md 不得注入: {rules:?}"
             );
+
+            // Selecting an additional root must not inject its rule file
+            // into the primary session's instructions either.
+            let primary = base.join("primary");
+            std::fs::create_dir(&primary).unwrap();
+            bridge.set_execution_root_resolver(Arc::new(move |_| Some(primary.clone())));
+            bridge.set_workspace_roots_resolver(Arc::new(move |_| vec![project.clone()]));
+            let rules = bridge.code_session_project_rules("sess-code-project");
+            assert!(!rules.iter().any(|p| p.to_string_lossy().contains(&marker)));
 
             let _ = std::fs::remove_dir_all(&base);
         }
@@ -8869,7 +8952,7 @@ mod tests {
             other => panic!("期望 SendMessage,得到 {other:?}"),
         };
         assert!(
-            !yolo.contains("Plan 模式(只读调研)"),
+            !yolo.contains("本轮为 Plan 模式"),
             "Yolo 不该再有 mode reminder(大产物分块已砍)"
         );
         // Plan still has a reminder (produced by the session policy, D-2),
@@ -8915,7 +8998,7 @@ mod tests {
         }));
         let code = content_of(&bridge, "sess-code");
         assert!(
-            plain.contains("Plan 模式(只读调研)"),
+            plain.contains("本轮为 Plan 模式，只读调研"),
             "Plan 模式必须注入 per-turn reminder,得到:\n{plain}"
         );
         assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");

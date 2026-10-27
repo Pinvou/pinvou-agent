@@ -1,0 +1,404 @@
+[
+  {
+    "variant": "baseline",
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "turns": 26,
+    "passed_turns": 19,
+    "families": 20,
+    "passed_families": 13,
+    "elapsed_total_secs": 354.358,
+    "turn_median_secs": 8.9,
+    "turn_p90_secs": 14.802,
+    "family_median_secs": 11.147,
+    "request_count": 92,
+    "ttft_samples": 92,
+    "request_ttft_median_ms": 298.5,
+    "request_ttft_p90_ms": 2096.1,
+    "tool_calls": 82,
+    "failed_tools": 10,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 836224,
+      "output_tokens": 11857,
+      "cache_hit_tokens": 523569,
+      "cache_miss_tokens": 312655,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3300
+    },
+    "observed_tokens_per_successful_family": 65237.0,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 3,
+        "turns": 4,
+        "median_secs": 12.001,
+        "failed_checks": [
+          "file_correct"
+        ]
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 9.774,
+        "failed_checks": []
+      },
+      "browser_host_boundary": {
+        "passed_turns": 0,
+        "turns": 2,
+        "median_secs": 75.343,
+        "failed_checks": [
+          "completed",
+          "truthful_boundary",
+          "completed",
+          "truthful_boundary"
+        ]
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 11.904,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 2.902,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 0,
+        "turns": 2,
+        "median_secs": 8.553,
+        "failed_checks": [
+          "presented",
+          "presented"
+        ]
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 12.629,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 2,
+        "turns": 4,
+        "median_secs": 10.898,
+        "failed_checks": [
+          "plan_submitted",
+          "plan_submitted"
+        ]
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 3.264,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 4.505,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "baseline",
+    "model": "glm-5.3-flash",
+    "turns": 26,
+    "passed_turns": 23,
+    "families": 20,
+    "passed_families": 17,
+    "elapsed_total_secs": 804.539,
+    "turn_median_secs": 25.215,
+    "turn_p90_secs": 64.206,
+    "family_median_secs": 35.457,
+    "request_count": 93,
+    "ttft_samples": 93,
+    "request_ttft_median_ms": 4056.0,
+    "request_ttft_p90_ms": 5131.8,
+    "tool_calls": 86,
+    "failed_tools": 6,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 844354,
+      "output_tokens": 15593,
+      "cache_hit_tokens": 553280,
+      "cache_miss_tokens": 291074,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 8880
+    },
+    "observed_tokens_per_successful_family": 50585.1,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 23.907,
+        "failed_checks": []
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 23.578,
+        "failed_checks": []
+      },
+      "browser_host_boundary": {
+        "passed_turns": 0,
+        "turns": 2,
+        "median_secs": 75.37,
+        "failed_checks": [
+          "completed",
+          "truthful_boundary",
+          "completed",
+          "truthful_boundary"
+        ]
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 29.707,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 9.028,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 1,
+        "turns": 2,
+        "median_secs": 45.278,
+        "failed_checks": [
+          "presented"
+        ]
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 61.227,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 40.771,
+        "failed_checks": []
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 8.805,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 10.736,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "candidate",
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "turns": 26,
+    "passed_turns": 24,
+    "families": 20,
+    "passed_families": 18,
+    "elapsed_total_secs": 493.234,
+    "turn_median_secs": 11.479,
+    "turn_p90_secs": 49.572,
+    "family_median_secs": 11.828,
+    "request_count": 121,
+    "ttft_samples": 121,
+    "request_ttft_median_ms": 283.0,
+    "request_ttft_p90_ms": 1988.0,
+    "tool_calls": 116,
+    "failed_tools": 18,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 2,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 1082084,
+      "output_tokens": 17874,
+      "cache_hit_tokens": 721382,
+      "cache_miss_tokens": 360702,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 6138
+    },
+    "observed_tokens_per_successful_family": 61108.8,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 11.701,
+        "failed_checks": []
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 8.591,
+        "failed_checks": []
+      },
+      "browser_host_boundary": {
+        "passed_turns": 0,
+        "turns": 2,
+        "median_secs": 75.363,
+        "failed_checks": [
+          "completed",
+          "truthful_boundary",
+          "completed",
+          "truthful_boundary"
+        ]
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 11.828,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 2.71,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 12.04,
+        "failed_checks": []
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 22.854,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 20.864,
+        "failed_checks": []
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 2.99,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 3.862,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "candidate",
+    "model": "glm-5.3-flash",
+    "turns": 26,
+    "passed_turns": 24,
+    "families": 20,
+    "passed_families": 18,
+    "elapsed_total_secs": 874.619,
+    "turn_median_secs": 25.712,
+    "turn_p90_secs": 74.88,
+    "family_median_secs": 39.191,
+    "request_count": 106,
+    "ttft_samples": 106,
+    "request_ttft_median_ms": 4084.5,
+    "request_ttft_p90_ms": 4947.5,
+    "tool_calls": 100,
+    "failed_tools": 7,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 914199,
+      "output_tokens": 16743,
+      "cache_hit_tokens": 649472,
+      "cache_miss_tokens": 264727,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 8666
+    },
+    "observed_tokens_per_successful_family": 51719.0,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 24.993,
+        "failed_checks": []
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 23.157,
+        "failed_checks": []
+      },
+      "browser_host_boundary": {
+        "passed_turns": 0,
+        "turns": 2,
+        "median_secs": 75.343,
+        "failed_checks": [
+          "completed",
+          "truthful_boundary",
+          "completed",
+          "truthful_boundary"
+        ]
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 55.326,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 5.107,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 37.701,
+        "failed_checks": []
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 76.516,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 35.513,
+        "failed_checks": []
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 11.796,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 13.071,
+        "failed_checks": []
+      }
+    }
+  }
+]
