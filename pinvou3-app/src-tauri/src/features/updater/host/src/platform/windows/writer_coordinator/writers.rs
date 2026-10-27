@@ -93,6 +93,92 @@ pub(super) fn enroll(
     Err(CoordinatorFailure::unknown(Error::HandoffOutcomeUnknown))
 }
 
+/// The requester pipe authenticates the creator; the retained child object is
+/// the writer. The child remains suspended throughout this transaction.
+#[allow(unsafe_code)]
+pub(super) fn enroll_spawned(
+    host: &Arc<StartedServiceContext>,
+    keeper: &mut KeeperState,
+    slot: &mut WriterSlot,
+    child: &super::super::cli_spawn::SuspendedCli,
+    peer: &Peer,
+    pipe: &Pipe,
+    stop: &Event,
+) -> Result<Participant> {
+    let original = Arc::clone(&slot.original);
+    let check = || -> NativeResult<()> {
+        child.recheck(host, peer, pipe)?;
+        if unsafe { CompareObjectHandles(original.raw(), child.original().raw()) } == 0 {
+            return Err(Error::PeerRefused);
+        }
+        Ok(())
+    };
+    check_stop(stop).map_err(CoordinatorFailure::unknown)?;
+    if slot.close_attempted {
+        return Err(CoordinatorFailure::unknown(Error::PeerRefused));
+    }
+    check().map_err(CoordinatorFailure::unknown)?;
+    let mut intent = match &mut slot.custody {
+        WriterCustody::Reserved(job) => Store::begin_writer_spawned(host, job, child, peer, pipe),
+        WriterCustody::Pending(job) => Store::resume_writer_pending(host, job),
+        WriterCustody::Assigned(job) => Store::resume_writer_custody(host, job),
+        WriterCustody::Transition => return Err(CoordinatorFailure::unknown(Error::StateCorrupt)),
+    }
+    .map_err(CoordinatorFailure::unknown)?;
+    slot.reference = Some(intent.reference().map_err(CoordinatorFailure::unknown)?);
+    for _ in 0..4 {
+        check_stop(stop).map_err(CoordinatorFailure::unknown)?;
+        check().map_err(CoordinatorFailure::unknown)?;
+        match &mut slot.custody {
+            WriterCustody::Reserved(_) => {
+                let owned = std::mem::replace(&mut slot.custody, WriterCustody::Transition);
+                let WriterCustody::Reserved(job) = owned else {
+                    slot.custody = owned;
+                    return Err(CoordinatorFailure::unknown(Error::StateCorrupt));
+                };
+                match job.create_spawned(host, child, peer, pipe, &intent) {
+                    Ok(job) => slot.custody = WriterCustody::Pending(job),
+                    Err(failure) => {
+                        slot.custody = WriterCustody::Reserved(failure.reservation);
+                        return Err(CoordinatorFailure::unknown(failure.error));
+                    }
+                }
+            }
+            WriterCustody::Pending(_) => {
+                let owned = std::mem::replace(&mut slot.custody, WriterCustody::Transition);
+                let WriterCustody::Pending(job) = owned else {
+                    slot.custody = owned;
+                    return Err(CoordinatorFailure::unknown(Error::StateCorrupt));
+                };
+                match job.assign_spawned(host, child, peer, pipe, &intent) {
+                    Ok(job) => slot.custody = WriterCustody::Assigned(job),
+                    Err(failure) => {
+                        slot.custody = WriterCustody::Pending(failure.pending);
+                        return Err(CoordinatorFailure::unknown(failure.error));
+                    }
+                }
+            }
+            WriterCustody::Assigned(job) => {
+                return admit_assigned_checked(
+                    host,
+                    keeper,
+                    job,
+                    &mut intent,
+                    &mut slot.keeper_copy,
+                    &mut slot.keeper_ack,
+                    stop,
+                    check,
+                )
+                .map_err(CoordinatorFailure::unknown);
+            }
+            WriterCustody::Transition => {
+                return Err(CoordinatorFailure::unknown(Error::StateCorrupt));
+            }
+        }
+    }
+    Err(CoordinatorFailure::unknown(Error::HandoffOutcomeUnknown))
+}
+
 fn admit_assigned<'host>(
     host: &'host Arc<StartedServiceContext>,
     keeper: &mut KeeperState,
@@ -103,6 +189,25 @@ fn admit_assigned<'host>(
     peer: &Peer,
     pipe: &Pipe,
     stop: &Event,
+) -> NativeResult<Participant> {
+    admit_assigned_checked(host, keeper, job, intent, copy, ack, stop, || {
+        peer.recheck(pipe)?;
+        if !same_original(job.original(), peer) {
+            return Err(Error::PeerRefused);
+        }
+        Ok(())
+    })
+}
+
+fn admit_assigned_checked<'host>(
+    host: &'host Arc<StartedServiceContext>,
+    keeper: &mut KeeperState,
+    job: &WriterJob,
+    intent: &mut ProtectedAdmissionIntent<'host>,
+    copy: &mut Option<ParkedQueryCopy>,
+    ack: &mut Option<KeeperJobAck>,
+    stop: &Event,
+    check: impl Fn() -> NativeResult<()>,
 ) -> NativeResult<Participant> {
     check_stop(stop)?;
     if !matches!(
@@ -124,10 +229,7 @@ fn admit_assigned<'host>(
         _ => return Err(Error::ScopeConflict),
     };
     // Final native checks follow the DATA getter and protected publication.
-    peer.recheck(pipe)?;
-    if !same_original(job.original(), peer) {
-        return Err(Error::PeerRefused);
-    }
+    check()?;
     published.recheck(job, ack, &mut live)?;
     check_stop(stop)?;
     Ok(participant)

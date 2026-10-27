@@ -8,6 +8,8 @@ license.workspace = true
 [features]
 default = ["product-backend"]
 product-backend = ["dep:anyhow", "dep:async-trait", "dep:pinvou-product-backend"]
+upgrade-host-lab = ["pinvou3-lib/upgrade-host-lab"]
+upgrade-host-production = ["pinvou3-lib/upgrade-host-production"]
 
 [dependencies]
 adapter-gaia = { path = "../adapter-gaia" }

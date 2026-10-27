@@ -213,6 +213,10 @@ impl InstalledServiceContext {
         {
             return Err(Error::ServiceIdentityRefused);
         }
+        // Disable all non-baseline privileges before opening the application
+        // inventory. The CLI creation owner may later enable its approved pair
+        // only on a short-lived thread token, never on this shared process token.
+        seal_host_query_access(sid)?;
         // Preserve startup's original snapshot lifetime: each inventory member
         // is verified then dropped. Diagnostics supply a retaining sink instead.
         let RegisteredImages {
@@ -223,7 +227,6 @@ impl InstalledServiceContext {
             app,
             helper_root: _helpers,
         } = seal_registered_images(&seed, &layout, &original, &mut || false, drop)?;
-        seal_host_query_access(sid)?;
         Ok(Self {
             seed,
             layout,

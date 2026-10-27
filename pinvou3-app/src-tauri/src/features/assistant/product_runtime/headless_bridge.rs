@@ -1388,6 +1388,8 @@ where
     Work: FnOnce(EnginePool, SessionStore) -> WorkFuture + Send + 'static,
     WorkFuture: Future<Output = Result<T>> + Send + 'static,
 {
+    let _writer_admission = crate::admit_current_cli_writer()
+        .map_err(|code| anyhow::anyhow!("upgrade host admission failed: {code}"))?;
     #[cfg(debug_assertions)]
     ensure_isolated_debug_home()?;
     let async_runtime = claim_headless_host_runtime()?;
@@ -1573,6 +1575,8 @@ where
     Work: FnOnce() -> WorkFuture + Send + 'static,
     WorkFuture: Future<Output = Result<T>> + Send + 'static,
 {
+    let _writer_admission = crate::admit_current_cli_writer()
+        .map_err(|code| anyhow::anyhow!("upgrade host admission failed: {code}"))?;
     let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let joined = async_runtime.spawn(work());

@@ -38,8 +38,20 @@ mod time_transport;
 pub(crate) use installed_images::{InstalledImages, inspect_images};
 
 mod app_writer;
+mod cli_bridge;
+mod cli_frontend;
+pub(crate) use cli_frontend::run_current_frontend as run_current_cli_frontend;
+mod cli_spawn;
+mod cli_stream;
+mod cli_stream_wire;
+mod cli_transport;
+mod cli_worker_stdio;
+pub(crate) use cli_worker_stdio::{finish_current_cli_worker, start_current_cli_worker};
+mod cli_token;
 mod client;
-pub(crate) use app_writer::{AppWriterAdmission, admit_current_app_writer};
+pub(crate) use app_writer::{
+    AppWriterAdmission, admit_current_app_writer, admit_current_cli_writer, is_current_cli_worker,
+};
 pub(crate) use client::{inspect_trusted_time, request_trusted_time_refresh};
 
 mod launch;

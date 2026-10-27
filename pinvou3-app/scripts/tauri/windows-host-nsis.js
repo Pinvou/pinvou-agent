@@ -56,12 +56,7 @@ function nativeTool(mode, parameters, options) {
   return runBuildTool(POWERSHELL, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
     "-File", RESOURCE_SCRIPT, "-Mode", mode, ...parameters], options);
 }
-async function checkHelperProfile(image, profile) {
-  assertHostRoleImage(image);
-  const bytes = await new Promise((resolve, reject) => {
-    execFile(image, ["--profile"], { windowsHide: true, encoding: "buffer", maxBuffer: 65536 },
-      (error, stdout) => error ? reject(new Error("HOST_BUILD_COMPILED_PROFILE_INVALID")) : resolve(stdout));
-  });
+async function validateCompiledProfile(bytes, profile) {
   let actual;
   try { actual = (await codec()).parseJson(bytes, 65536); } catch { refuse("HOST_BUILD_COMPILED_PROFILE_INVALID"); }
   const seed = profile.seed;
@@ -69,6 +64,21 @@ async function checkHelperProfile(image, profile) {
     profileId: seed.profileId, product: seed.product, component: seed.component, targetKey: seed.targetKey,
     buildId: seed.buildId, layoutId: seed.layoutId, seedSha256: profile.seedSha256, originalRoot: seed.originalRoot };
   if (!(await canonicalBytes(actual)).equals(await canonicalBytes(expected))) refuse("HOST_BUILD_COMPILED_PROFILE_INVALID");
+}
+async function checkHelperProfile(image, profile) {
+  assertHostRoleImage(image);
+  const bytes = await new Promise((resolve, reject) => {
+    execFile(image, ["--profile"], { windowsHide: true, encoding: "buffer", maxBuffer: 65536 },
+      (error, stdout) => error ? reject(new Error("HOST_BUILD_COMPILED_PROFILE_INVALID")) : resolve(stdout));
+  });
+  await validateCompiledProfile(bytes, profile);
+}
+async function checkCliProfile(image, profile) {
+  const bytes = await new Promise((resolve, reject) => {
+    execFile(image, ["--host-profile"], { windowsHide: true, encoding: "buffer", maxBuffer: 65536 },
+      (error, stdout) => error ? reject(new Error("HOST_BUILD_COMPILED_PROFILE_INVALID")) : resolve(stdout));
+  });
+  await validateCompiledProfile(bytes, profile);
 }
 function renderInclude({ profile, entries, installer, manifestPath, stubPath }) {
   const seed = profile.seed;
@@ -150,7 +160,7 @@ async function verifyInstallerCRC(file) {
   } finally { await handle.close(); }
 }
 
-async function packageHostNSIS({ profile, appBinary, helper, launcher, resourceManifest,
+async function packageHostNSIS({ profile, appBinary, helper, launcher, cli, resourceManifest,
   effectiveConfig, tauriRoot, outputParent, signer, makensis, environment = process.env,
   run = runBuildTool, native = nativeTool }) {
   validateHostApplicationConfig(profile, effectiveConfig);
@@ -168,6 +178,10 @@ async function packageHostNSIS({ profile, appBinary, helper, launcher, resourceM
   assertHostRoleImage(helper);
   assertHostRoleImage(launcher);
   const declaredEntries = inventorySources({ appBinary, resourceManifest, tauriRoot });
+  executable(cli);
+  if (declaredEntries.some((entry) => entry.relativeName.toLowerCase() === "pinvou.exe")) refuse("HOST_BUILD_MAPPING_UNSUPPORTED");
+  declaredEntries.push({ relativeName: "pinvou.exe", source: cli });
+  declaredEntries.sort((left, right) => Buffer.compare(Buffer.from(left.relativeName, "utf8"), Buffer.from(right.relativeName, "utf8")));
   const root = fs.mkdtempSync(path.join(outputParent, "host-nsis-"));
   // Only the explicit Cargo output boundary accepts multiple source links.
   // Subsequent app inventory uses only this rehashed single-link snapshot.
@@ -175,8 +189,15 @@ async function packageHostNSIS({ profile, appBinary, helper, launcher, resourceM
   const inputEvidence = await snapshotCargoApp(appBinary, appSnapshot);
   fs.writeFileSync(path.join(root, "cargo-input-evidence.json"),
     `${JSON.stringify(inputEvidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-  const originalEntries = declaredEntries.map((entry) => entry.relativeName === "pinvou3-tauri.exe"
-    ? { ...entry, source: appSnapshot } : entry);
+  const cliSnapshot = path.join(root, "cargo-cli-input.exe");
+  const cliEvidence = await snapshotCargoApp(cli, cliSnapshot);
+  fs.writeFileSync(path.join(root, "cargo-cli-input-evidence.json"),
+    `${JSON.stringify(cliEvidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  const originalEntries = declaredEntries.map((entry) => {
+    if (entry.relativeName === "pinvou3-tauri.exe") return { ...entry, source: appSnapshot };
+    if (entry.relativeName === "pinvou.exe") return { ...entry, source: cliSnapshot };
+    return entry;
+  });
   const logFile = path.join(root, "build-private.log");
   const options = { cwd: root, logFile, environment };
   const originalControlDirectory = path.join(root, "original-native-controls");
@@ -219,6 +240,7 @@ async function packageHostNSIS({ profile, appBinary, helper, launcher, resourceM
     }
   }
   await checkHelperProfile(helperCopy, profile);
+  await checkCliProfile(path.join(appRoot, "pinvou.exe"), profile);
   const finalControlDirectory = path.join(root, "final-native-controls");
   fs.mkdirSync(finalControlDirectory);
   let finalControls;
@@ -269,4 +291,4 @@ async function packageHostNSIS({ profile, appBinary, helper, launcher, resourceM
 }
 
 module.exports = { RESOURCE_SCRIPT, TEMPLATE, POWERSHELL, quoted, runBuildTool, nativeTool,
-  checkHelperProfile, nsisFileVersion, renderInclude, verifyInstallerCRC, packageHostNSIS };
+  checkHelperProfile, checkCliProfile, validateCompiledProfile, nsisFileVersion, renderInclude, verifyInstallerCRC, packageHostNSIS };

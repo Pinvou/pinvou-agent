@@ -28,6 +28,12 @@ fn equal_path(left: &std::path::Path, right: &std::path::Path) -> Result<bool> {
         right.to_str().ok_or(Error::PeerRefused)?,
     )
 }
+fn untrusted_cli_role(actual: &std::path::Path, cli: &std::path::Path) -> Result<Option<Role>> {
+    if equal_path(actual, cli)? {
+        return Ok(Some(Role::CliRequester));
+    }
+    Ok(None)
+}
 fn same_token(left: &TokenFacts, right: &TokenFacts) -> bool {
     left.user == right.user
         && left.integrity == right.integrity
@@ -41,6 +47,12 @@ fn acceptable(token: &TokenFacts) -> bool {
     token.interactive
         && token.user.session_id != 0
         && token.user.sid != "S-1-5-18"
+        && !token.app_container
+        && !token.network
+        && token.integrity >= 0x2000
+}
+fn acceptable_cli(token: &TokenFacts) -> bool {
+    token.user.sid != "S-1-5-18"
         && !token.app_container
         && !token.network
         && token.integrity >= 0x2000
@@ -65,10 +77,23 @@ impl Peer {
             return Err(Error::PeerRefused);
         }
         let context = &host.context;
-        let (role, source) = if equal_path(&process.image, &context.layout.app_path())? {
+        // A pathname is only enough for the untrusted request role. The
+        // service must separately prove a held child before writer promotion.
+        let (role, source) = if let Some(role) =
+            untrusted_cli_role(&process.image, &context.layout.app.join("pinvou.exe"))?
+        {
+            (role, None)
+        } else if equal_path(&process.image, &context.layout.app_path())? {
             (Role::App, None)
         } else if equal_path(&process.image, &context.layout.launcher_path())? {
-            (Role::Launcher, None)
+            (
+                if acceptable(&process.token) {
+                    Role::Launcher
+                } else {
+                    Role::CliRequester
+                },
+                None,
+            )
         } else if equal_path(
             &process.image,
             &context.layout.source.join("pinvou-upgrade-helper.exe"),
@@ -123,7 +148,11 @@ impl Peer {
         } else {
             return Err(Error::PeerRefused);
         };
-        if role != Role::SourceInstaller && !acceptable(&process.token) {
+        if (matches!(role, Role::Cli | Role::CliRequester) && !acceptable_cli(&process.token))
+            || (role != Role::SourceInstaller
+                && !matches!(role, Role::Cli | Role::CliRequester)
+                && !acceptable(&process.token))
+        {
             return Err(Error::PeerRefused);
         }
         let value = Self {
@@ -143,7 +172,10 @@ impl Peer {
         }
         let current = self.process.fresh_token(None)?;
         if !same_token(&current, &self.process.token)
-            || (self.role != Role::SourceInstaller && !acceptable(&current))
+            || (matches!(self.role, Role::Cli | Role::CliRequester) && !acceptable_cli(&current))
+            || (self.role != Role::SourceInstaller
+                && !matches!(self.role, Role::Cli | Role::CliRequester)
+                && !acceptable(&current))
         {
             return Err(Error::PeerRefused);
         }
@@ -161,5 +193,44 @@ impl Peer {
             logon: self.process.token.user.logon,
             session_id: self.process.token.user.session_id,
         }
+    }
+    pub(super) fn promote_cli(
+        &mut self,
+        proof: &super::writer_coordinator::AdmittedCliPeer,
+    ) -> Result<()> {
+        if self.role != Role::CliRequester || !proof.matches(&self.process) {
+            return Err(Error::PeerRefused);
+        }
+        self.role = Role::Cli;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn cli_path_only_selects_untrusted_request_role() {
+        let expected = Path::new(r"C:\Program Files\Pinvou\app\pinvou.exe");
+        assert!(matches!(
+            untrusted_cli_role(expected, expected),
+            Ok(Some(Role::CliRequester))
+        ));
+        assert!(matches!(
+            untrusted_cli_role(
+                Path::new(r"c:\PROGRAM FILES\PINVOU\APP\PINVOU.EXE"),
+                expected
+            ),
+            Ok(Some(Role::CliRequester))
+        ));
+        assert!(matches!(
+            untrusted_cli_role(
+                Path::new(r"C:\Program Files\Pinvou\app\pinvou3-tauri.exe"),
+                expected
+            ),
+            Ok(None)
+        ));
     }
 }

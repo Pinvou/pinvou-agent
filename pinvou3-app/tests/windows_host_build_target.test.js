@@ -19,7 +19,7 @@ function fixture() {
     environment[key] = path.join(root, name);
     fs.writeFileSync(environment[key], "fixture-only-never-executed");
   }
-  const calls = [];
+  const calls = [], builds = [];
   const module = { exports: {} };
   const source = path.resolve(__dirname, "../scripts/tauri/windows-host-build.js");
   vm.runInNewContext(fs.readFileSync(source, "utf8"), { module, process,
@@ -35,11 +35,21 @@ function fixture() {
         nsisFileVersion: value => { assert.equal(value, "1.0.0"); return "1.0.0.0"; },
         packageHostNSIS: async options => { calls.push(options); return { pathTestOnly: true }; },
       };
+      if (name === "node:child_process") return {
+        spawn(command, args, options) {
+          assert.equal(command, "cargo");
+          assert.equal(options.shell, false);
+          builds.push(args);
+          const child = new (require("node:events").EventEmitter)();
+          process.nextTick(() => child.emit("close", 0, null));
+          return child;
+        },
+      };
       if (name.startsWith("node:")) return require(name);
       throw new Error("UNEXPECTED_TEST_DEPENDENCY");
     },
   }, { filename: source });
-  return { root, appRoot, environment, calls, ...module.exports,
+  return { root, appRoot, environment, calls, builds, ...module.exports,
     async prepare() { return this.prepareHostBuild(["build", "--bundles", "nsis"], {
       appRoot, environment, platform: "win32", architecture: "x64" }); },
     async finish(plan) { return this.finishHostBuild(plan, { resourceManifest: {}, effectiveConfig: {} },
@@ -59,8 +69,23 @@ test("default target keeps the original host packaging directory", async () => {
     const plan = await f.prepare();
     assert.equal(plan.targetRoot, path.join(f.appRoot, "src-tauri/target"));
     await f.finish(plan);
+    assert.ok(f.builds[0].includes("upgrade-host-lab"));
+    assert.ok(f.builds[0].includes("--locked"));
+    assert.ok(f.builds[0].includes("--release"));
     assert.equal(f.calls[0].outputParent, path.join(plan.targetRoot, "windows-host-packaging"));
+    assert.equal(f.calls[0].cli, path.join(plan.targetRoot, "windows-host-cli/x86_64-pc-windows-msvc/release/pinvou.exe"));
     assert.ok(fs.statSync(f.calls[0].outputParent).isDirectory());
+  } finally { f.close(); }
+});
+
+test("production CLI build uses the production host feature", async () => {
+  const f = fixture();
+  try {
+    const plan = await f.prepare();
+    plan.profile.seed.profileKind = "production";
+    await f.finish(plan);
+    assert.ok(f.builds[0].includes("upgrade-host-production"));
+    assert.ok(!f.builds[0].includes("upgrade-host-lab"));
   } finally { f.close(); }
 });
 

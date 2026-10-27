@@ -41,6 +41,14 @@ mutually exclusive. Production rejects fault profile IDs and native acceptance
 hooks. It invokes its existing Tauri preparation and
 build with `--no-bundle`, fixing the MSVC target. The host leaf is built by its
 own owner; packaging does not run a second Cargo build for those two images.
+The same wrapper also builds the `pinvou` CLI with the matching host feature,
+using the pinned CLI lockfile. It snapshots the resulting `pinvou.exe` into
+the protected application inventory and checks its embedded public host profile
+against the helper and build inputs before packaging. An invalid or mismatched
+CLI refuses the host package; the default non-host build remains unchanged.
+The managed CLI currently requires non-console file or pipe standard streams
+and distinct stdout and stderr objects. See [the CLI guide](pinvou-cli.md) for
+the supported invocation and output-lifetime limitations.
 Enabled builds require the actual composed version to equal the Seed and the
 main binary to remain `pinvou3-tauri` (the repository's Cargo default when no
 override is supplied). Resource and presentation overlays remain supported.

@@ -437,6 +437,11 @@ jobs:
               - 'pinvou3-app/eslint.config.mjs'
               - '.github/workflows/pr-check.yml'
             frontend:
+              # Packaging contract tests consume the upgrade protocol reference and schemas.
+              - 'specs/upgrade/v1/reference/**'
+              - 'specs/upgrade/v1/schemas/**'
+              - 'specs/upgrade/v1/package.json'
+              - 'specs/upgrade/v1/package-lock.json'
               - 'pinvou3-app/src/**'
               - 'pinvou3-app/tests/**'
               # multiagent_plan_normalize.test.mjs 读取下列 Rust 源做跨语言
@@ -683,6 +688,10 @@ jobs:
 
       - name: 安装前端依赖
         run: npm ci --prefer-offline --no-audit
+
+      # Packaging tests import the separately locked protocol reference.
+      - name: Install upgrade protocol reference dependencies
+        run: npm --prefix ../specs/upgrade/v1 ci --ignore-scripts --no-audit --no-fund
 
       # test:webui smoke (本 job 末尾) 会 spawn remote-control-relay/server.js,
       # 其顶层 require('ws') 解析自 remote-control-relay/node_modules,故必须装 relay 依赖。
@@ -2287,6 +2296,14 @@ jobs:
           cargo check --manifest-path pinvou-cli/Cargo.toml \
             --workspace --all-targets --locked
           status=$?
+          if [ "$status" -eq 0 ]; then
+            cargo check --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli \
+              --all-targets --features upgrade-host-production --locked || status=$?
+          fi
+          if [ "$status" -eq 0 ]; then
+            cargo check --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli \
+              --all-targets --features upgrade-host-lab --locked || status=$?
+          fi
           set -e
           echo "WINDOWS_RUST_TIMING phase=all-targets-check step=cli-check elapsed_seconds=$((SECONDS-started)) status=$status"
           exit "$status"

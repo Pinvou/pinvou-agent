@@ -9,7 +9,7 @@
 mod exit;
 mod job_copy;
 mod recovered;
-mod staging;
+pub(in crate::platform::windows) mod staging;
 mod token;
 
 use super::{

@@ -70,7 +70,17 @@ fn session(core: &Arc<Core>, pipe: &Pipe, stop: &Event) -> Result<()> {
         let bytes = pipe.read_frame(stop, None)?;
         let hello = ipc::Hello::parse(&bytes)?;
         let record = core.record()?;
-        let peer = Peer::authenticate(pipe, &core.host, &record)?;
+        let mut peer = Peer::authenticate(pipe, &core.host, &record)?;
+        if peer.role == Role::CliRequester {
+            if let Some(proof) = core
+                .writers
+                .admitted_cli_process(&peer.process)
+                .map_err(|failure| failure.error)?
+            {
+                peer.promote_cli(&proof)?;
+                peer.recheck(pipe)?;
+            }
+        }
         let bootstrap = hello.kind == "bootstrap-hello";
         if hello.expected_registration_digest != record.public().digest()? {
             return Err(Error::ScopeConflict);
@@ -135,9 +145,13 @@ fn session(core: &Arc<Core>, pipe: &Pipe, stop: &Event) -> Result<()> {
                     host_instance_nonce: startup.instance_nonce.clone(),
                     client_nonce: hello.client_nonce,
                     server_nonce,
-                    capabilities: ipc::Capabilities::ready(
-                        connection.peer.role != Role::SourceInstaller,
-                    ),
+                    capabilities: if connection.peer.role == Role::Cli {
+                        ipc::Capabilities::writer_only()
+                    } else if connection.peer.role == Role::CliRequester {
+                        ipc::Capabilities::setup()
+                    } else {
+                        ipc::Capabilities::ready(connection.peer.role != Role::SourceInstaller)
+                    },
                 },
             )?
         };
@@ -146,33 +160,57 @@ fn session(core: &Arc<Core>, pipe: &Pipe, stop: &Event) -> Result<()> {
         authenticated = true;
         let mut sequencer = ipc::Sequencer::new(session.clone())?;
         loop {
-            let bytes = pipe.read_frame(stop, Some(connection.peer.process.raw()))?;
+            let bytes = if connection.peer.role == Role::Cli {
+                pipe.read_worker_control(stop, connection.peer.process.raw())?
+            } else {
+                pipe.read_frame(stop, Some(connection.peer.process.raw()))?
+            };
             let request = ipc::Request::parse(&bytes)?;
             let record = connection.authorize(pipe)?;
-            let reply = match sequencer.check(&request) {
-                Ok(ipc::Dispatch::Replay(cached)) => connection
-                    .replay(&request, &record, cached, pipe)
-                    .or_else(|error| ipc::failure(Some(&session), Some(request.sequence), error))?,
-                Ok(ipc::Dispatch::New) => {
-                    let (reply, grant) = match connection.dispatch(&request, &record, pipe) {
-                        Ok(reply) => reply,
-                        Err(error) => (
-                            ipc::failure(Some(&session), Some(request.sequence), error)?,
+            let (reply, receive_environment, worker_stream, frontend_stream) =
+                match sequencer.check(&request) {
+                    Ok(ipc::Dispatch::Replay(cached)) => {
+                        (
+                            connection.replay(&request, &record, cached, pipe).or_else(
+                                |error| ipc::failure(Some(&session), Some(request.sequence), error),
+                            )?,
                             false,
-                        ),
-                    };
-                    // Consumption is committed before attempting a send. A
-                    // lost send never rebuilds/reissues a sensitive grant.
-                    sequencer.completed(&request, reply.clone(), grant)?;
-                    reply
-                }
-                Err(error) => {
-                    let reply = ipc::failure(Some(&session), Some(request.sequence), error)?;
-                    pipe.write_frame(&reply, stop, Some(connection.peer.process.raw()))?;
-                    return Err(error);
-                }
-            };
+                            false,
+                            false,
+                        )
+                    }
+                    Ok(ipc::Dispatch::New) => {
+                        let (reply, grant) = match connection.dispatch(&request, &record, pipe) {
+                            Ok(reply) => reply,
+                            Err(error) => (
+                                ipc::failure(Some(&session), Some(request.sequence), error)?,
+                                false,
+                            ),
+                        };
+                        // Consumption is committed before attempting a send. A
+                        // lost send never rebuilds/reissues a sensitive grant.
+                        sequencer.completed(&request, reply.clone(), grant)?;
+                        let receive_environment = grant && request.kind == "cli-begin";
+                        let worker_stream = grant && request.kind == "cli-worker-attach";
+                        let frontend_stream = grant && request.kind == "cli-commit";
+                        (reply, receive_environment, worker_stream, frontend_stream)
+                    }
+                    Err(error) => {
+                        let reply = ipc::failure(Some(&session), Some(request.sequence), error)?;
+                        pipe.write_frame(&reply, stop, Some(connection.peer.process.raw()))?;
+                        return Err(error);
+                    }
+                };
             pipe.write_frame(&reply, stop, Some(connection.peer.process.raw()))?;
+            if receive_environment {
+                connection.receive_cli_environment(pipe, stop)?;
+            }
+            if worker_stream {
+                return connection.run_cli_worker_stream(pipe, stop);
+            }
+            if frontend_stream {
+                return connection.run_cli_frontend_stream(pipe, stop);
+            }
         }
     })();
     // Before authenticated hello there is no peer identity to project. Do not

@@ -5,6 +5,11 @@ mod core;
 pub mod features;
 pub mod platform;
 
+pub use features::updater::cli_writer_admission::{
+    CliMainEntry, CliWriterAdmission, admit_current_cli_writer, compiled_cli_profile,
+    enter_current_cli, finish_current_cli,
+};
+
 // The Windows unit-test harness imports TaskDialogIndirect. Link the same
 // Common Controls v6 manifest resource as the Tauri executable so the loader
 // can start the harness before any Rust test code runs.

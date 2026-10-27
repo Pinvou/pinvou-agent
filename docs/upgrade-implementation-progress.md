@@ -1,5 +1,23 @@
 # Upgrade implementation progress
 
+Windows T28 managed CLI admission component: the scoped source review covers the
+protected worker launch, restricted non-console streams, disconnect cleanup and
+completion receipt. It is one component of T28, not complete preparation or an
+end-to-end upgrade. The 32 MiB environment limit and 64 MiB in-flight environment
+budget do not limit downloads. Full Session preparation and writer freezing remain
+unfinished. Connection exhaustion can reject new requests; unresolved old-epoch
+records can retain capacity under the existing fail-closed recovery rules.
+
+The prior candidate d2b89f3 passed 33 host tests selected by `cli` (including
+one unrelated match); that evidence applies only where source and configuration
+remain relevant. Tree 8478cde3 passed one targeted poisoned-lock cleanup
+test using simulated resources. Packaging checks passed 21 tests with 3 skipped
+and include mocks; CI gate policy passed 80 tests, and architecture and formatting
+checks passed before the documentation update and apply to unchanged inputs. Actual CI, service installation, real Seed packaging, native Job
+failure recovery and Windows-version compatibility remain unverified. The CLI
+is not asserted to be signed; its packaging profile check and later inventory hash
+are not atomic. No E2E was run.
+
 Task source: [V1.0 development tasks](pinvou-upgrade-platform-development-tasks.zh-CN.md).
 Checkpoint: **2026-10-27, Windows writer admission delivered; read-only journal diagnostics verified locally; full T28 preparation remains in progress**.
 

@@ -15,7 +15,6 @@ use super::super::{
     writer_keeper::{KeeperJobAck, KeeperReleasedAck},
 };
 use super::*;
-use crate::handoff::Role;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::CompareObjectHandles;
 
@@ -242,7 +241,7 @@ fn original_identity(
     pipe: &Pipe,
 ) -> Result<(String, record::Identity)> {
     peer.recheck(pipe)?;
-    if peer.role != Role::App
+    if !peer.role.is_writer()
         || reservation.origin_host_epoch() != host.startup.host_epoch
         || unsafe { CompareObjectHandles(reservation.original().raw(), peer.process.raw()) } == 0
         || reservation.original().exited()?
@@ -262,6 +261,24 @@ fn retained_reservation_identity(
         .strip_prefix("Global\\PinvouWriter-")
         .filter(|v| json::digest(v))
         .ok_or(Error::StateCorrupt)?;
+    let cli_path = host.context.layout.app.join("pinvou.exe");
+    let cli_image_sha256 = if super::super::layout::ordinal_equal(
+        original.image.to_str().ok_or(Error::ImageRefused)?,
+        cli_path.to_str().ok_or(Error::ImageRefused)?,
+    )? {
+        Some(
+            host.context
+                .manifest
+                .app_files
+                .iter()
+                .find(|entry| entry.relative_name == "pinvou.exe")
+                .ok_or(Error::ImageRefused)?
+                .sha256
+                .clone(),
+        )
+    } else {
+        None
+    };
     Ok((
         id.to_owned(),
         record::Identity {
@@ -278,6 +295,7 @@ fn retained_reservation_identity(
             logon: original.token.user.logon,
             session_id: original.token.user.session_id,
             app_image_sha256: host.context.app.sha256.clone(),
+            cli_image_sha256,
             integrity: original.token.integrity,
             elevated: original.token.elevated,
             administrator: original.token.administrator,
@@ -608,9 +626,41 @@ impl Store {
         peer: &Peer,
         pipe: &Pipe,
     ) -> Result<ProtectedAdmissionIntent<'h>> {
+        Self::begin_writer_checked(host, &peer.process, || {
+            original_identity(host, reservation, peer, pipe)
+        })
+    }
+    #[allow(unsafe_code)]
+    pub(in crate::platform::windows) fn begin_writer_spawned<'h>(
+        host: &'h StartedServiceContext,
+        reservation: &ReservedWriterJob,
+        child: &super::super::cli_spawn::SuspendedCli,
+        peer: &Peer,
+        pipe: &Pipe,
+    ) -> Result<ProtectedAdmissionIntent<'h>> {
+        Self::begin_writer_checked(host, child.original(), || {
+            child.recheck(host, peer, pipe)?;
+            if reservation.origin_host_epoch() != host.startup.host_epoch
+                || unsafe {
+                    windows_sys::Win32::Foundation::CompareObjectHandles(
+                        reservation.original().raw(),
+                        child.original().raw(),
+                    )
+                } == 0
+            {
+                return Err(Error::PeerRefused);
+            }
+            retained_reservation_identity(host, reservation, child.original())
+        })
+    }
+    fn begin_writer_checked<'h>(
+        host: &'h StartedServiceContext,
+        original: &Arc<RetainedProcess>,
+        check: impl Fn() -> Result<(String, record::Identity)>,
+    ) -> Result<ProtectedAdmissionIntent<'h>> {
         let guard = BootstrapGuard::acquire(&host.context.seed, false)?;
         let store = Store::new(&host.context.seed);
-        let (id, identity) = original_identity(host, reservation, peer, pipe)?;
+        let (id, identity) = check()?;
         let loaded = current(&store, host)?;
         let row = record::Row::reserved(id, identity);
         row.validate(&loaded.genesis)?;
@@ -627,7 +677,7 @@ impl Store {
                 head_raw: loaded.head_raw.clone(),
                 row: existing.clone(),
                 row_raw: raw.clone(),
-                actual_original: Some(Arc::clone(&peer.process)),
+                actual_original: Some(Arc::clone(original)),
             });
         }
         if loaded
@@ -644,7 +694,9 @@ impl Store {
             None,
             storage::Change::Reserve(row),
         )?;
-        peer.recheck(pipe)?;
+        if check()? != (row.id.clone(), row.identity.clone()) {
+            return Err(Error::PeerRefused);
+        }
         Ok(ProtectedAdmissionIntent {
             _guard: guard,
             store,
@@ -653,7 +705,7 @@ impl Store {
             head_raw: next.head_raw,
             row,
             row_raw,
-            actual_original: Some(Arc::clone(&peer.process)),
+            actual_original: Some(Arc::clone(original)),
         })
     }
     /// Retry only the same retained reservation/actual original after an

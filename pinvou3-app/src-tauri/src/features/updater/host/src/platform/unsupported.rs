@@ -5,7 +5,27 @@ pub(crate) fn inspect_writer_journal() -> Result<crate::WriterJournalStatus> {
 }
 /// Configured unsupported hosts cannot construct startup writer admission.
 pub(crate) enum AppWriterAdmission {}
+impl AppWriterAdmission {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        match *self {}
+    }
+}
 pub(crate) fn admit_current_app_writer() -> Result<AppWriterAdmission> {
+    Err(Error::Unsupported)
+}
+pub(crate) fn admit_current_cli_writer() -> Result<AppWriterAdmission> {
+    Err(Error::Unsupported)
+}
+pub(crate) fn is_current_cli_worker() -> Result<bool> {
+    Err(Error::Unsupported)
+}
+pub(crate) fn run_current_cli_frontend() -> Result<i32> {
+    Err(Error::Unsupported)
+}
+pub(crate) fn start_current_cli_worker(_: &AppWriterAdmission) -> Result<()> {
+    Err(Error::Unsupported)
+}
+pub(crate) fn finish_current_cli_worker(_: i32) -> Result<i32> {
     Err(Error::Unsupported)
 }
 pub(crate) struct InstalledImages;

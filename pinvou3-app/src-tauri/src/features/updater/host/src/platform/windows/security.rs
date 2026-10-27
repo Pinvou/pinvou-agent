@@ -321,10 +321,10 @@ impl NativeSecurity {
         })
     }
     pub(super) fn host_process() -> Result<Self> {
-        Self::from_aces("(A;;0x00121000;;;IU)")
+        Self::from_aces("(A;;0x00121000;;;BU)")
     }
     pub(super) fn host_token() -> Result<Self> {
-        Self::from_aces("(A;;0x00020008;;;IU)")
+        Self::from_aces("(A;;0x00020008;;;BU)")
     }
     pub(super) fn mutex() -> Result<Self> {
         Self::from_aces("")
@@ -411,10 +411,10 @@ impl NativeSecurity {
     pub(super) fn pipe() -> Result<Self> {
         // Exact data IO/query/synchronize; omit FILE_APPEND_DATA=4 because it
         // is FILE_CREATE_PIPE_INSTANCE on named pipes. Never GENERIC_WRITE.
-        Self::from_aces("(A;;0x00120083;;;IU)")
+        Self::from_aces("(A;;0x00120083;;;BU)")
     }
     fn service() -> Result<Self> {
-        Self::from_aces("(A;;0x00020085;;;IU)")
+        Self::from_aces("(A;;0x00020085;;;BU)")
     }
     pub(super) fn attributes(&self) -> windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
         windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
@@ -531,6 +531,74 @@ pub(super) fn seal_service(handle: HANDLE) -> Result<()> {
 #[cfg(test)]
 mod policy_tests {
     use super::*;
+    #[test]
+    #[allow(unsafe_code)]
+    fn cli_service_objects_grant_local_users_only_the_selected_masks() {
+        use windows_sys::Win32::Security::GetSecurityDescriptorDacl;
+        for (descriptor, expected, policy) in [
+            (
+                NativeSecurity::host_process().unwrap(),
+                0x0012_1000,
+                AccessPolicy::ProcessQuery,
+            ),
+            (
+                NativeSecurity::host_token().unwrap(),
+                0x0002_0008,
+                AccessPolicy::TokenQuery,
+            ),
+            (
+                NativeSecurity::pipe().unwrap(),
+                0x0012_0083,
+                AccessPolicy::Pipe,
+            ),
+            (
+                NativeSecurity::service().unwrap(),
+                0x0002_0085,
+                AccessPolicy::Service { quarantine: false },
+            ),
+        ] {
+            let mut present = 0;
+            let mut defaulted = 0;
+            let mut acl = ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    GetSecurityDescriptorDacl(
+                        descriptor.descriptor.0,
+                        &mut present,
+                        &mut acl,
+                        &mut defaulted,
+                    )
+                },
+                0
+            );
+            assert_ne!(present, 0);
+            let mut information = ACL_SIZE_INFORMATION::default();
+            assert_ne!(
+                unsafe {
+                    GetAclInformation(
+                        acl,
+                        (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+                        size_of::<ACL_SIZE_INFORMATION>() as u32,
+                        AclSizeInformation,
+                    )
+                },
+                0
+            );
+            let mut found = false;
+            for index in 0..information.AceCount {
+                let mut raw = ptr::null_mut();
+                assert_ne!(unsafe { GetAce(acl, index, &mut raw) }, 0);
+                let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+                let sid = ptr::addr_of!(ace.SidStart).cast_mut().cast::<c_void>();
+                if sid_string(sid).unwrap() == "S-1-5-32-545" {
+                    assert_eq!(ace.Mask, expected);
+                    assert!(policy.permits_untrusted(ace.Mask));
+                    found = true;
+                }
+            }
+            assert!(found);
+        }
+    }
     #[test]
     fn writer_job_descriptor_is_exact_owner_rights_system_and_query_service_policy() {
         assert_eq!(

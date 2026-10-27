@@ -56,6 +56,8 @@ pub(super) struct Identity {
     pub(super) logon: LogonId,
     pub(super) session_id: u32,
     pub(super) app_image_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cli_image_sha256: Option<String>,
     pub(super) integrity: u32,
     pub(super) elevated: bool,
     pub(super) administrator: bool,
@@ -146,10 +148,13 @@ impl Identity {
             || !sid(&self.service_sid, true)
             || !sid(&self.user_sid, false)
             || !positive(self.origin_host_epoch)
-            || self.session_id == 0
             || !json::digest(&self.app_image_sha256)
+            || self
+                .cli_image_sha256
+                .as_ref()
+                .is_some_and(|hash| !json::digest(hash))
             || self.integrity < 0x2000
-            || !self.interactive
+            || (self.cli_image_sha256.is_none() && (self.session_id == 0 || !self.interactive))
             || self.network
             || self.app_container
             || self.user_sid == "S-1-5-18"
@@ -372,6 +377,7 @@ mod tests {
             logon: LogonId { high: 1, low: 2 },
             session_id: 1,
             app_image_sha256: "4".repeat(64),
+            cli_image_sha256: None,
             integrity: 0x2000,
             elevated: false,
             administrator: false,
@@ -396,6 +402,29 @@ mod tests {
         let mut changed = first.clone();
         changed.identity.user_sid = "S-1-5--21".into();
         assert!(changed.validate(&g).is_err());
+    }
+
+    #[test]
+    fn cli_writer_preserves_old_records_and_binds_the_actual_cli_image() {
+        let (genesis, original) = data();
+        let old_bytes = encode(&original).unwrap();
+        assert!(!String::from_utf8_lossy(&old_bytes).contains("cliImageSha256"));
+        let decoded: Row = decode(&old_bytes).unwrap();
+        decoded.validate(&genesis).unwrap();
+        let mut cli = original;
+        cli.identity.cli_image_sha256 = Some("5".repeat(64));
+        cli.identity.session_id = 0;
+        cli.identity.interactive = false;
+        cli.validate(&genesis).unwrap();
+        let bytes = encode(&cli).unwrap();
+        let reread: Row = decode(&bytes).unwrap();
+        reread.validate(&genesis).unwrap();
+        assert_eq!(
+            reread.identity.cli_image_sha256.as_deref(),
+            Some("5555555555555555555555555555555555555555555555555555555555555555")
+        );
+        cli.identity.cli_image_sha256 = Some("not-a-digest".into());
+        assert!(cli.validate(&genesis).is_err());
     }
     #[test]
     fn closing_one_writer_does_not_exhaust_future_active_capacity() {

@@ -83,7 +83,8 @@ pub(crate) fn exit_code(error: Error) -> u8 {
         Error::Unsupported
         | Error::ProfileDisabled
         | Error::InitialTrustUnavailable
-        | Error::OperationUnsupported => 10,
+        | Error::OperationUnsupported
+        | Error::CliStreamsUnsupported => 10,
         Error::IpcInvalid
         | Error::IpcConflict
         | Error::InstallerContextRefused

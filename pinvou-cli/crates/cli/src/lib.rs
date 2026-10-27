@@ -677,6 +677,25 @@ pub struct CliOutcome {
 }
 
 pub fn execute(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
+    // Also guard callers that use the library without the CLI binary.
+    with_writer_admission(
+        || {
+            pinvou3_lib::admit_current_cli_writer()
+                .map_err(|code| CliError::failed(format!("upgrade host admission failed: {code}")))
+        },
+        || execute_command(parsed),
+    )
+}
+
+fn with_writer_admission<A, T>(
+    admit: impl FnOnce() -> Result<A, CliError>,
+    work: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    let _writer_admission = admit()?;
+    work()
+}
+
+fn execute_command(parsed: ParsedCli) -> Result<CliOutcome, CliError> {
     let output = parsed.output;
     match parsed.command {
         // Success, on stdout: the caller asked for this text.
@@ -1886,6 +1905,48 @@ fn run_gaia(output: OutputMode) -> Result<CliOutcome, CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(any(feature = "upgrade-host-lab", feature = "upgrade-host-production")))]
+    #[test]
+    fn community_cli_entry_preserves_the_unconfigured_host_path() {
+        assert!(matches!(
+            pinvou3_lib::enter_current_cli(),
+            Ok(pinvou3_lib::CliMainEntry::DisabledProfile)
+        ));
+    }
+
+    #[test]
+    fn admission_failure_stops_dispatch_and_success_retains_guard_until_return() {
+        let called = std::cell::Cell::new(false);
+        let error = with_writer_admission(
+            || Err::<(), _>(CliError::failed("admission refused")),
+            || {
+                called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "admission refused");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(!called.get());
+
+        struct Guard<'a>(&'a std::cell::Cell<bool>);
+        impl Drop for Guard<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = std::cell::Cell::new(false);
+        with_writer_admission(
+            || Ok(Guard(&dropped)),
+            || {
+                assert!(!dropped.get(), "admission must remain held while work runs");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(dropped.get());
+    }
 
     #[test]
     fn parse_args_still_rejects_bare_pinvou_invocation() {

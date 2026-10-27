@@ -944,6 +944,20 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("npm run test:browser-smoke", frontend)
         self.assertEqual(frontend.count("npm run test:markdown"), 0)
 
+    def test_frontend_installs_and_routes_upgrade_reference_inputs(self):
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        paths = _frontend_filter_paths(changes)
+        for pattern in (
+            "specs/upgrade/v1/reference/**",
+            "specs/upgrade/v1/schemas/**",
+            "specs/upgrade/v1/package.json",
+            "specs/upgrade/v1/package-lock.json",
+        ):
+            self.assertIn(pattern, paths)
+        frontend = _without_yaml_comments(_extract_job_block(self.pr_workflow, "frontend-test"))
+        install = "npm --prefix ../specs/upgrade/v1 ci --ignore-scripts --no-audit --no-fund"
+        self.assertIn(install, frontend)
+        self.assertLess(frontend.index(install), frontend.index("run: npm test"))
     def test_static_analysis_gate_configs_route_to_frontend_test(self):
         # The static-analysis gates (oxlint/Biome/knip/jsconfig/audit-compat)
         # only run inside frontend-test, so their config files must be in the

@@ -1,6 +1,7 @@
 // Optional host packaging orchestration, called only by the existing project wrapper.
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const { loadBuildProfile, refuse, imageCertificatePolicy } = require("./windows-host-profile.js");
 const { packageHostNSIS, nsisFileVersion } = require("./windows-host-nsis.js");
 
@@ -61,17 +62,33 @@ async function prepareHostBuild(args, { environment = process.env, platform = pr
     || environment.PINVOU_HOST_SIGNER_SCRIPT !== undefined
     ? requiredFile(environment, "PINVOU_HOST_SIGNER_SCRIPT", ".ps1") : null;
   return { profile, args: rewritten, targetRoot,
+    cliDebug: debug,
     appBinary: path.join(targetRoot, TRIPLE, debug ? "debug" : "release", "pinvou3-tauri.exe"),
     helper: requiredFile(environment, "PINVOU_HOST_HELPER_BINARY", ".exe"),
     launcher: requiredFile(environment, "PINVOU_HOST_LAUNCHER_BINARY", ".exe"),
     signer,
     makensis: requiredFile(environment, "PINVOU_HOST_MAKENSIS", ".exe") };
 }
+async function buildHostCli(plan, { appRoot, environment }) {
+  const targetDir = path.join(plan.targetRoot, "windows-host-cli");
+  const manifest = path.resolve(appRoot, "../pinvou-cli/Cargo.toml");
+  const feature = plan.profile.seed.profileKind === "production" ? PRODUCTION_HOST_FEATURE : HOST_FEATURE;
+  const args = ["build", "--manifest-path", manifest, "--package", "pinvou-cli", "--bin", "pinvou",
+    "--target", TRIPLE, "--target-dir", targetDir, "--features", feature, "--locked"];
+  if (!plan.cliDebug) args.push("--release");
+  await new Promise((resolve, reject) => {
+    const child = spawn("cargo", args, { cwd: appRoot, env: environment, shell: false, windowsHide: true, stdio: "inherit" });
+    child.once("error", () => reject(new Error("HOST_BUILD_CLI_FAILED")));
+    child.once("close", (code, signal) => code === 0 && !signal ? resolve() : reject(new Error("HOST_BUILD_CLI_FAILED")));
+  });
+  return path.join(targetDir, TRIPLE, plan.cliDebug ? "debug" : "release", "pinvou.exe");
+}
 async function finishHostBuild(plan, artifacts, { appRoot, environment = process.env } = {}) {
   if (typeof plan.targetRoot !== "string" || !path.isAbsolute(plan.targetRoot)) refuse();
   const outputParent = path.join(plan.targetRoot, "windows-host-packaging");
   fs.mkdirSync(outputParent, { recursive: true });
-  const result = await packageHostNSIS({ ...plan, resourceManifest: artifacts.resourceManifest,
+  const cli = await buildHostCli(plan, { appRoot, environment });
+  const result = await packageHostNSIS({ ...plan, cli, resourceManifest: artifacts.resourceManifest,
     effectiveConfig: artifacts.effectiveConfig, tauriRoot: path.join(appRoot, "src-tauri"),
     outputParent, environment });
   // Hashes/profile are public. Detailed tool output and actual source paths stay
@@ -79,4 +96,4 @@ async function finishHostBuild(plan, artifacts, { appRoot, environment = process
   console.log(`[build] Host ${plan.profile.seed.profileKind} installer completed: profile=${plan.profile.seed.profileId}`);
   return result;
 }
-module.exports = { HOST_FEATURE, PRODUCTION_HOST_FEATURE, TRIPLE, prepareHostBuild, finishHostBuild };
+module.exports = { HOST_FEATURE, PRODUCTION_HOST_FEATURE, TRIPLE, prepareHostBuild, buildHostCli, finishHostBuild };

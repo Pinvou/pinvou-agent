@@ -12,6 +12,20 @@ as is computer use entirely (its consent and confirmation flow needs a
 window; the headless host refuses to construct the tool outright, so an
 agent turn run from here can never drive the machine's GUI).
 
+Windows packages built with an upgrade-host profile currently support the CLI
+only when stdin, stdout, and stderr are non-console files or pipes and stdout
+and stderr are different operating-system objects. An ordinary interactive
+terminal, merged output such as `2>&1`, and other stream types are not yet
+supported by that managed configuration. For example, in Command Prompt:
+
+```cmd
+pinvou --version < input.txt > output.txt 2> error.txt
+```
+
+Create `input.txt` before running the example. Output from descendants after
+the main CLI exits is not guaranteed. These restrictions do not apply to the
+default community build without an upgrade-host profile.
+
 Build:
 
 ```bash

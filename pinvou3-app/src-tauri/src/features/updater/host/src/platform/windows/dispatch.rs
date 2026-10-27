@@ -72,6 +72,9 @@ impl Core {
             session,
             bootstrap,
             operation,
+            cli_pending: Mutex::new(None),
+            cli_launch: Mutex::new(None),
+            cli_worker: Mutex::new(None),
         })
     }
     fn image_binding(&self, record: &HostRegistration) -> Result<String> {
@@ -96,9 +99,27 @@ pub(super) struct Connection {
     pub(super) session: String,
     bootstrap: bool,
     operation: Option<String>,
+    cli_pending: Mutex<Option<super::cli_frontend::PendingCli>>,
+    cli_launch: Mutex<Option<CliPrepared>>,
+    cli_worker: Mutex<Option<super::cli_bridge::WorkerEndpoint>>,
+}
+struct CliPrepared {
+    ticket: super::cli_spawn::CliLaunchTicket,
+    frontend: Option<super::cli_bridge::FrontendEndpoint>,
+    resumed: bool,
+    finished: bool,
 }
 impl Drop for Connection {
     fn drop(&mut self) {
+        let launch = match self.cli_launch.lock() {
+            Ok(mut value) => value.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(launch) = launch.filter(|launch| !launch.finished) {
+            // Unexpected frontend loss closes the held stage and ends its
+            // actual worker tree. Journal custody remains for reconciliation.
+            let _ = self.core.writers.abort_spawned_setup(&launch.ticket);
+        }
         if let Ok(mut actions) = self.core.actions() {
             let _ = actions.disconnect(self.id);
         }
@@ -113,6 +134,178 @@ fn state_reply(id: &str, snapshot: Snapshot, epoch: u64) -> ipc::StateReply {
     }
 }
 impl Connection {
+    fn begin_cli(&self, request: &ipc::Request, pipe: &Pipe) -> Result<(Vec<u8>, bool)> {
+        if self.bootstrap || self.peer.role != Role::CliRequester {
+            return Err(Error::OperationUnsupported);
+        }
+        let body: ipc::CliBegin = request.body()?;
+        let mut pending = self.cli_pending.lock().map_err(|_| Error::Unavailable)?;
+        if pending.is_some() {
+            return Err(Error::IpcConflict);
+        }
+        let prepared =
+            super::cli_frontend::PendingCli::begin(&self.core.host, &self.peer, pipe, body)?;
+        let reply = ipc::success(
+            &self.session,
+            request.sequence,
+            &request.kind,
+            ipc::Empty {},
+        )?;
+        *pending = Some(prepared);
+        // One-time protocol transition: never replay an accepted begin.
+        Ok((reply, true))
+    }
+    pub(super) fn receive_cli_environment(
+        &self,
+        pipe: &Pipe,
+        stop: &super::pipe::Event,
+    ) -> Result<()> {
+        let mut pending = self.cli_pending.lock().map_err(|_| Error::Unavailable)?;
+        pending
+            .as_mut()
+            .ok_or(Error::IpcConflict)?
+            .receive(&self.peer, pipe, stop)
+    }
+    fn commit_cli(&self, request: &ipc::Request, pipe: &Pipe) -> Result<(Vec<u8>, bool)> {
+        if self.bootstrap || self.peer.role != Role::CliRequester {
+            return Err(Error::OperationUnsupported);
+        }
+        let _: ipc::Empty = request.body()?;
+        let reply = ipc::success(
+            &self.session,
+            request.sequence,
+            &request.kind,
+            ipc::Empty {},
+        )?;
+        let mut launch = self.cli_launch.lock().map_err(|_| Error::Unavailable)?;
+        if launch.is_some() {
+            return Err(Error::IpcConflict);
+        }
+        let pending = self
+            .cli_pending
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .take()
+            .ok_or(Error::IpcConflict)?;
+        let (arguments, cwd, environment) = pending.into_parts()?;
+        let ticket = super::cli_spawn::prepare_suspended_writer(
+            &self.core.host,
+            &self.core.writers,
+            &self.peer,
+            pipe,
+            &arguments,
+            &cwd,
+            environment,
+        )?;
+        let endpoint = match self
+            .core
+            .writers
+            .take_cli_frontend(&ticket, &self.peer, pipe)
+        {
+            Ok(value) => value,
+            Err(failure) => {
+                self.core
+                    .writers
+                    .abort_spawned_setup(&ticket)
+                    .map_err(|_| Error::HandoffOutcomeUnknown)?;
+                return Err(failure.error);
+            }
+        };
+        *launch = Some(CliPrepared {
+            ticket,
+            frontend: Some(endpoint),
+            resumed: false,
+            finished: false,
+        });
+        Ok((reply, true))
+    }
+    fn attach_cli_worker(&self, request: &ipc::Request, pipe: &Pipe) -> Result<(Vec<u8>, bool)> {
+        if self.bootstrap || self.peer.role != Role::Cli {
+            return Err(Error::OperationUnsupported);
+        }
+        let _: ipc::Empty = request.body()?;
+        let reply = ipc::success(
+            &self.session,
+            request.sequence,
+            &request.kind,
+            ipc::Empty {},
+        )?;
+        let mut worker = self.cli_worker.lock().map_err(|_| Error::Unavailable)?;
+        if worker.is_some() {
+            return Err(Error::IpcConflict);
+        }
+        let endpoint = self
+            .core
+            .writers
+            .take_cli_worker(&self.peer, pipe)
+            .map_err(|failure| failure.error)?;
+        *worker = Some(endpoint);
+        Ok((reply, true))
+    }
+    pub(super) fn run_cli_worker_stream(
+        &self,
+        pipe: &Pipe,
+        stop: &super::pipe::Event,
+    ) -> Result<()> {
+        self.peer.recheck(pipe)?;
+        let endpoint = self
+            .cli_worker
+            .lock()
+            .map_err(|_| Error::Unavailable)?
+            .take()
+            .ok_or(Error::IpcConflict)?;
+        super::cli_transport::worker(pipe, stop, &self.peer.process, endpoint)
+    }
+    /// Switch only a prepared requester to its dedicated stream. The real
+    /// frontend endpoint and protected custody are checked before resume.
+    pub(super) fn run_cli_frontend_stream(
+        &self,
+        pipe: &Pipe,
+        stop: &super::pipe::Event,
+    ) -> Result<()> {
+        let (endpoint, original) = {
+            let mut launch = self.cli_launch.lock().map_err(|_| Error::Unavailable)?;
+            let launch = launch.as_mut().ok_or(Error::IpcConflict)?;
+            if launch.resumed {
+                return Err(Error::HandoffOutcomeUnknown);
+            }
+            let endpoint = launch.frontend.take().ok_or(Error::IpcConflict)?;
+            self.core
+                .writers
+                .resume_spawned(&launch.ticket, &self.peer, pipe, &endpoint)
+                .map_err(|failure| failure.error)?;
+            launch.resumed = true;
+            (endpoint, launch.ticket.original_arc())
+        };
+        super::cli_transport::frontend(pipe, stop, &self.peer.process, &original, endpoint)?;
+        let mut launch = self
+            .cli_launch
+            .lock()
+            .map_err(|_| Error::HandoffOutcomeUnknown)?;
+        launch
+            .as_mut()
+            .ok_or(Error::HandoffOutcomeUnknown)?
+            .finished = true;
+        // Commit normal completion before telling the frontend it may exit.
+        // Do not hold the connection lock while writing to the peer.
+        drop(launch);
+        let receipt = super::cli_transport::send_completion_receipt(
+            pipe.stream_writer(stop, &self.peer.process),
+        );
+        if receipt.is_err() {
+            // A failed write cannot complete the handoff; re-arm disconnect
+            // cleanup before returning the error.
+            let mut launch = self
+                .cli_launch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            launch
+                .as_mut()
+                .ok_or(Error::HandoffOutcomeUnknown)?
+                .finished = false;
+        }
+        receipt
+    }
     fn writer_status(
         &self,
         request: &ipc::Request,
@@ -139,7 +332,7 @@ impl Connection {
         pipe: &Pipe,
     ) -> Result<(Vec<u8>, bool)> {
         let _: ipc::Empty = request.body()?;
-        if self.bootstrap || self.peer.role != Role::App {
+        if self.bootstrap || !self.peer.role.is_writer() {
             return Err(Error::PeerRefused);
         }
         let actual = self.authorize(pipe)?;
@@ -208,8 +401,20 @@ impl Connection {
         record: &HostRegistration,
         pipe: &Pipe,
     ) -> Result<(Vec<u8>, bool)> {
+        if request.kind == "cli-begin" {
+            return self.begin_cli(request, pipe);
+        }
+        if request.kind == "cli-commit" {
+            return self.commit_cli(request, pipe);
+        }
+        if request.kind == "cli-worker-attach" {
+            return self.attach_cli_worker(request, pipe);
+        }
         if request.kind == "writer-admit" {
             return self.writer_admit(request, record, pipe);
+        }
+        if matches!(self.peer.role, Role::Cli | Role::CliRequester) {
+            return Err(Error::OperationUnsupported);
         }
         if request.kind == "writer-status" {
             // Read-only diagnostics must not reap restart associations or
@@ -768,6 +973,8 @@ mod writer_status_role_tests {
         }
         assert!(require_writer_status(Role::SourceInstaller, false).is_err());
         assert!(require_writer_status(Role::SourceInstaller, true).is_err());
+        assert!(require_writer_status(Role::Cli, false).is_err());
+        assert!(require_writer_status(Role::CliRequester, false).is_err());
     }
 }
 #[cfg(test)]
@@ -777,6 +984,14 @@ mod time_role_tests {
     fn time_route_rule_rejects_launcher_and_source_installer() {
         // Authorization-rule control only. No process/pipe identity is minted.
         require_time_app(Role::App).unwrap();
+        assert_eq!(
+            require_time_app(Role::CliRequester),
+            Err(Error::OperationUnsupported)
+        );
+        assert_eq!(
+            require_time_app(Role::Cli),
+            Err(Error::OperationUnsupported)
+        );
         assert_eq!(
             require_time_app(Role::Launcher),
             Err(Error::OperationUnsupported)

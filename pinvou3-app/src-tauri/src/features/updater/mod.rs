@@ -22,6 +22,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
+pub mod cli_writer_admission;
 pub(crate) mod download;
 mod platform;
 pub(crate) mod protocol;

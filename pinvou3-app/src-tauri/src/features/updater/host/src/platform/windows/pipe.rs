@@ -8,7 +8,12 @@ use crate::{
     profile::Seed,
 };
 use std::{
+    io::{self, Read, Write},
     ptr,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -21,7 +26,7 @@ use windows_sys::Win32::{
         PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
     },
     System::{
-        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+        IO::{CancelIoEx, GetOverlappedResult, IO_STATUS_BLOCK, OVERLAPPED},
         Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
             GetNamedPipeClientSessionId, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE,
@@ -31,6 +36,39 @@ use windows_sys::Win32::{
     },
 };
 const IDLE: Duration = Duration::from_secs(15);
+
+#[repr(C)]
+#[derive(Default)]
+struct PipeLocalInformation {
+    pipe_type: u32,
+    configuration: u32,
+    maximum_instances: u32,
+    current_instances: u32,
+    inbound_quota: u32,
+    read_available: u32,
+    outbound_quota: u32,
+    write_available: u32,
+    state: u32,
+    end: u32,
+}
+
+#[allow(unsafe_code)]
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtQueryInformationFile(
+        file: windows_sys::Win32::Foundation::HANDLE,
+        status: *mut IO_STATUS_BLOCK,
+        information: *mut core::ffi::c_void,
+        length: u32,
+        information_class: i32,
+    ) -> i32;
+}
+
+// The native query is documented as synchronous. If a platform violates
+// that contract, keep its output buffers alive and disable further queries;
+// never release memory that the kernel could still be writing.
+static PIPE_QUERY_LOCK: Mutex<()> = Mutex::new(());
+static PIPE_QUERY_UNUSABLE: AtomicBool = AtomicBool::new(false);
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
@@ -87,7 +125,7 @@ impl<'a> Operation<'a> {
         &mut self,
         started: i32,
         error: u32,
-        deadline: Instant,
+        deadline: Option<Instant>,
         stop: &Event,
         peer: Option<windows_sys::Win32::Foundation::HANDLE>,
     ) -> Result<u32> {
@@ -106,18 +144,17 @@ impl<'a> Operation<'a> {
             } else {
                 2
             };
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::Unavailable);
-            }
-            match unsafe {
-                WaitForMultipleObjects(
-                    length,
-                    handles.as_ptr(),
-                    0,
-                    remaining.as_millis().min(u32::MAX as u128) as u32,
-                )
-            } {
+            let timeout = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(Error::Unavailable);
+                    }
+                    remaining.as_millis().min((u32::MAX - 1) as u128) as u32
+                }
+                None => u32::MAX, // INFINITE: stop and peer handles still cancel.
+            };
+            match unsafe { WaitForMultipleObjects(length, handles.as_ptr(), 0, timeout) } {
                 WAIT_OBJECT_0 => {}
                 WAIT_TIMEOUT => return Err(Error::Unavailable),
                 _ => return Err(Error::RestartCanceled),
@@ -155,7 +192,150 @@ pub(super) struct Pipe {
     handle: Handle,
     server: bool,
 }
+/// An authenticated protocol's sensitive binary frame. The allocation is
+/// cleared on both successful consumption and partial-read failure.
+pub(super) struct SensitiveFrame(Vec<u8>);
+impl SensitiveFrame {
+    pub(super) fn bytes(&self) -> &[u8] {
+        &self.0
+    }
+    #[allow(unsafe_code)]
+    fn clear(&mut self) {
+        for byte in &mut self.0 {
+            unsafe { std::ptr::write_volatile(byte, 0) };
+        }
+    }
+}
+/// Stream codec adapters are restricted to a dedicated already-authenticated
+/// pipe. One reader and one writer may operate concurrently; the connection
+/// owner must never attach a second reader or writer.
+pub(super) struct StreamReader<'a> {
+    pipe: &'a Pipe,
+    stop: &'a Event,
+    peer: &'a super::process::RetainedProcess,
+    frame: Option<SensitiveFrame>,
+    offset: usize,
+}
+impl Read for StreamReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self
+            .frame
+            .as_ref()
+            .is_none_or(|frame| self.offset == frame.0.len())
+        {
+            self.frame = Some(
+                self.pipe
+                    .read_stream_packet(self.stop, self.peer.raw())
+                    .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "stream closed"))?,
+            );
+            self.offset = 0;
+        }
+        let frame = self
+            .frame
+            .as_ref()
+            .ok_or_else(|| io::Error::other("stream unavailable"))?;
+        let count = output.len().min(frame.0.len() - self.offset);
+        output[..count].copy_from_slice(&frame.0[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
+    }
+}
+pub(super) struct StreamWriter<'a> {
+    pipe: &'a Pipe,
+    stop: &'a Event,
+    peer: &'a super::process::RetainedProcess,
+    frame: SensitiveFrame,
+    poisoned: bool,
+}
+impl Write for StreamWriter<'_> {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        if self.poisoned
+            || self
+                .frame
+                .0
+                .len()
+                .checked_add(input.len())
+                .is_none_or(|n| n > 16 * 1024 + 5)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream frame too large",
+            ));
+        }
+        self.frame.0.extend_from_slice(input);
+        Ok(input.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        if self.frame.0.is_empty() {
+            return Ok(());
+        }
+        if self.poisoned {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
+        }
+        if self
+            .pipe
+            .write_stream_packet(&self.frame.0, self.stop, self.peer.raw())
+            .is_err()
+        {
+            self.poisoned = true;
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"));
+        }
+        self.frame.clear();
+        self.frame.0.clear();
+        Ok(())
+    }
+}
+impl Drop for SensitiveFrame {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+pub(super) fn for_sensitive_frames(
+    units: &[u16],
+    mut send: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    if units.is_empty() || units.len() > crate::ipc::CLI_ENV_MAX_UNITS {
+        return Err(Error::IpcInvalid);
+    }
+    for chunk in units.chunks(json::FRAME_MAX / 2) {
+        let mut bytes = SensitiveFrame(Vec::with_capacity(chunk.len() * 2));
+        for unit in chunk {
+            bytes.0.extend_from_slice(&unit.to_le_bytes());
+        }
+        send(&bytes.0)?;
+    }
+    Ok(())
+}
 impl Pipe {
+    pub(super) fn stream_reader<'a>(
+        &'a self,
+        stop: &'a Event,
+        peer: &'a super::process::RetainedProcess,
+    ) -> StreamReader<'a> {
+        StreamReader {
+            pipe: self,
+            stop,
+            peer,
+            frame: None,
+            offset: 0,
+        }
+    }
+    pub(super) fn stream_writer<'a>(
+        &'a self,
+        stop: &'a Event,
+        peer: &'a super::process::RetainedProcess,
+    ) -> StreamWriter<'a> {
+        StreamWriter {
+            pipe: self,
+            stop,
+            peer,
+            frame: SensitiveFrame(Vec::new()),
+            poisoned: false,
+        }
+    }
     /// Fixed-purpose keeper transport only. The service creates its sole server
     /// instance; the restricted child inherits an exact reduced server handle.
     /// These operations do not authenticate that child or grant writer custody.
@@ -233,6 +413,66 @@ impl Pipe {
     pub(super) fn raw(&self) -> windows_sys::Win32::Foundation::HANDLE {
         self.handle.raw()
     }
+    #[cfg(test)]
+    pub(super) fn test_pair() -> Result<(Self, Self)> {
+        let name = format!(r"\\.\pipe\Pinvou.CliWatchUnit.{}", nonce()?);
+        let server = Self::create_named(&name, true, None)?;
+        let client = Self::connect_named(&name)?;
+        server.accept(&Event::new()?)?;
+        Ok((server, client))
+    }
+    /// Observe the server end without consuming queued stream bytes. Only an
+    /// exact connected result is usable; unknown states fail closed.
+    #[allow(unsafe_code)]
+    pub(super) fn client_connected(&self) -> Result<bool> {
+        const FILE_PIPE_LOCAL_INFORMATION: i32 = 24;
+        const STATUS_PENDING: i32 = 0x103;
+        const FILE_PIPE_CONNECTED_STATE: u32 = 3;
+        const FILE_PIPE_SERVER_END: u32 = 1;
+        if !self.server {
+            return Err(Error::IpcInvalid);
+        }
+        let _guard = PIPE_QUERY_LOCK.lock().map_err(|_| Error::Unavailable)?;
+        if PIPE_QUERY_UNUSABLE.load(Ordering::Acquire) {
+            return Err(Error::Unavailable);
+        }
+        let mut status = Box::<IO_STATUS_BLOCK>::default();
+        let mut info = Box::<PipeLocalInformation>::default();
+        // SAFETY: the pipe and both boxed outputs remain valid throughout the
+        // synchronous native query; the buffer matches the SDK structure.
+        let result = unsafe {
+            NtQueryInformationFile(
+                self.handle.raw(),
+                &mut *status,
+                (&mut *info as *mut PipeLocalInformation).cast(),
+                std::mem::size_of::<PipeLocalInformation>() as u32,
+                FILE_PIPE_LOCAL_INFORMATION,
+            )
+        };
+        if result == STATUS_PENDING {
+            PIPE_QUERY_UNUSABLE.store(true, Ordering::Release);
+            let _ = Box::leak(status);
+            let _ = Box::leak(info);
+            return Err(Error::Unavailable);
+        }
+        // SAFETY: a non-pending return has completed the synchronous query,
+        // which writes the Status arm of this union.
+        let final_status = unsafe { status.Anonymous.Status };
+        if final_status == STATUS_PENDING {
+            PIPE_QUERY_UNUSABLE.store(true, Ordering::Release);
+            let _ = Box::leak(status);
+            let _ = Box::leak(info);
+            return Err(Error::Unavailable);
+        }
+        if result != 0
+            || final_status != 0
+            || status.Information != std::mem::size_of::<PipeLocalInformation>()
+            || info.end != FILE_PIPE_SERVER_END
+        {
+            return Err(Error::Unavailable);
+        }
+        Ok(info.state == FILE_PIPE_CONNECTED_STATE)
+    }
     #[allow(unsafe_code)]
     pub(super) fn accept(&self, stop: &Event) -> Result<()> {
         if !self.server || stop.is_set()? {
@@ -248,7 +488,7 @@ impl Pipe {
         if started == 0 && error == ERROR_PIPE_CONNECTED {
             return Ok(());
         }
-        operation.complete(started, error, Instant::now() + IDLE, stop, None)?;
+        operation.complete(started, error, Some(Instant::now() + IDLE), stop, None)?;
         Ok(())
     }
     #[allow(unsafe_code)]
@@ -356,6 +596,16 @@ impl Pipe {
         stop: &Event,
         peer: Option<windows_sys::Win32::Foundation::HANDLE>,
     ) -> Result<()> {
+        self.read_exact_until(bytes, Some(deadline), stop, peer)
+    }
+    #[allow(unsafe_code)]
+    fn read_exact_until(
+        &self,
+        mut bytes: &mut [u8],
+        deadline: Option<Instant>,
+        stop: &Event,
+        peer: Option<windows_sys::Win32::Foundation::HANDLE>,
+    ) -> Result<()> {
         while !bytes.is_empty() {
             if stop.is_set()? {
                 return Err(Error::RestartCanceled);
@@ -391,6 +641,16 @@ impl Pipe {
         &self,
         mut bytes: &[u8],
         deadline: Instant,
+        stop: &Event,
+        peer: Option<windows_sys::Win32::Foundation::HANDLE>,
+    ) -> Result<()> {
+        self.write_all_until(bytes, Some(deadline), stop, peer)
+    }
+    #[allow(unsafe_code)]
+    fn write_all_until(
+        &self,
+        mut bytes: &[u8],
+        deadline: Option<Instant>,
         stop: &Event,
         peer: Option<windows_sys::Win32::Foundation::HANDLE>,
     ) -> Result<()> {
@@ -445,6 +705,87 @@ impl Pipe {
         }
         Ok(bytes)
     }
+    /// Used only after the service has authenticated a held CLI worker. A
+    /// quiet worker admission may outlive any fixed interval, but stop and
+    /// the actual peer process still terminate each pending operation.
+    pub(super) fn read_worker_control(
+        &self,
+        stop: &Event,
+        peer: windows_sys::Win32::Foundation::HANDLE,
+    ) -> Result<Vec<u8>> {
+        let mut header = [0u8; 4];
+        self.read_exact_until(&mut header, None, stop, Some(peer))?;
+        let length = u32::from_le_bytes(header) as usize;
+        if length == 0 || length > json::FRAME_MAX {
+            return Err(Error::IpcInvalid);
+        }
+        let mut bytes = vec![0u8; length];
+        self.read_exact_until(&mut bytes, None, stop, Some(peer))?;
+        if std::str::from_utf8(&bytes).is_err() {
+            return Err(Error::IpcInvalid);
+        }
+        Ok(bytes)
+    }
+    /// Caller must first authenticate the live pipe peer and enter the fixed
+    /// sensitive protocol state. Binary data bypasses JSON/UTF-8 conversion.
+    pub(super) fn read_sensitive_frame(
+        &self,
+        stop: &Event,
+        peer: windows_sys::Win32::Foundation::HANDLE,
+    ) -> Result<SensitiveFrame> {
+        let deadline = Instant::now() + IDLE;
+        let mut header = [0u8; 4];
+        self.read_exact(&mut header, deadline, stop, Some(peer))?;
+        let length = u32::from_le_bytes(header) as usize;
+        if length == 0 || length > json::FRAME_MAX {
+            return Err(Error::IpcInvalid);
+        }
+        let mut bytes = SensitiveFrame(vec![0; length]);
+        self.read_exact(&mut bytes.0, deadline, stop, Some(peer))?;
+        Ok(bytes)
+    }
+    /// Send raw UTF-16LE in bounded frames on an already authenticated pipe.
+    /// The temporary serialized bytes are never logged and are cleared after
+    /// each write, including failures. No total transfer deadline is added.
+    pub(super) fn write_sensitive_units(
+        &self,
+        units: &[u16],
+        stop: &Event,
+        peer: windows_sys::Win32::Foundation::HANDLE,
+    ) -> Result<()> {
+        for_sensitive_frames(units, |bytes| self.write_frame(bytes, stop, Some(peer)))
+    }
+    /// Dedicated authenticated CLI data connection. Unlike control messages,
+    /// a quiet interactive or redirected stream has no overall idle deadline.
+    /// The actual service-stop and peer-process handles remain cancellation
+    /// inputs to each native overlapped operation.
+    pub(super) fn read_stream_packet(
+        &self,
+        stop: &Event,
+        peer: windows_sys::Win32::Foundation::HANDLE,
+    ) -> Result<SensitiveFrame> {
+        let mut header = [0u8; 4];
+        self.read_exact_until(&mut header, None, stop, Some(peer))?;
+        let length = u32::from_le_bytes(header) as usize;
+        if length == 0 || length > 16 * 1024 + 5 {
+            return Err(Error::IpcInvalid);
+        }
+        let mut frame = SensitiveFrame(vec![0; length]);
+        self.read_exact_until(&mut frame.0, None, stop, Some(peer))?;
+        Ok(frame)
+    }
+    pub(super) fn write_stream_packet(
+        &self,
+        bytes: &[u8],
+        stop: &Event,
+        peer: windows_sys::Win32::Foundation::HANDLE,
+    ) -> Result<()> {
+        if bytes.is_empty() || bytes.len() > 16 * 1024 + 5 {
+            return Err(Error::IpcInvalid);
+        }
+        self.write_all_until(&(bytes.len() as u32).to_le_bytes(), None, stop, Some(peer))?;
+        self.write_all_until(bytes, None, stop, Some(peer))
+    }
     pub(super) fn write_frame(
         &self,
         bytes: &[u8],
@@ -487,6 +828,70 @@ pub(super) fn nonce() -> Result<String> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    #[test]
+    fn cli_stream_real_pipe_preserves_binary_and_terminal_ack() {
+        use super::super::cli_stream_wire::{Data, Decoder, Direction, Encoder, Frame};
+        use super::super::process::RetainedProcess;
+        struct StopOnDrop(Arc<Event>);
+        impl Drop for StopOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.set();
+            }
+        }
+        let name = format!(r"\\.\pipe\Pinvou.CliStreamUnit.{}", nonce().unwrap());
+        let server = Pipe::create_named(&name, true, None).unwrap();
+        let stop = Arc::new(Event::new().unwrap());
+        let _stop = StopOnDrop(Arc::clone(&stop));
+        let worker_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let peer = RetainedProcess::current().unwrap();
+            server.accept(&worker_stop).unwrap();
+            let mut reader = Decoder::new(
+                server.stream_reader(&worker_stop, &peer),
+                Direction::FrontendInput,
+            );
+            assert!(matches!(reader.receive().unwrap(), Some(Frame::InputEof)));
+            let mut writer = Encoder::new(
+                server.stream_writer(&worker_stop, &peer),
+                Direction::FrontendOutput,
+            );
+            writer
+                .send(Frame::Stdout(Data::new(vec![0xff, 0, 1]).unwrap()))
+                .unwrap();
+            writer.send(Frame::StdoutEof).unwrap();
+            writer.send(Frame::StderrEof).unwrap();
+            writer.send(Frame::OutputChallenge([b'a'; 64])).unwrap();
+            writer.send(Frame::Exit(259)).unwrap();
+            assert!(
+                matches!(reader.receive().unwrap(), Some(Frame::OutputAck(value)) if value == [b'a'; 64])
+            );
+        });
+        let client = Pipe::connect_named(&name).unwrap();
+        let peer = RetainedProcess::current().unwrap();
+        let mut writer = Encoder::new(client.stream_writer(&stop, &peer), Direction::FrontendInput);
+        writer.send(Frame::InputEof).unwrap();
+        let mut reader = Decoder::new(
+            client.stream_reader(&stop, &peer),
+            Direction::FrontendOutput,
+        );
+        assert!(
+            matches!(reader.receive().unwrap(), Some(Frame::Stdout(data)) if data.as_slice() == [0xff, 0, 1])
+        );
+        assert!(matches!(reader.receive().unwrap(), Some(Frame::StdoutEof)));
+        assert!(matches!(reader.receive().unwrap(), Some(Frame::StderrEof)));
+        assert!(
+            matches!(reader.receive().unwrap(), Some(Frame::OutputChallenge(value)) if value == [b'a'; 64])
+        );
+        assert!(matches!(reader.receive().unwrap(), Some(Frame::Exit(259))));
+        writer.send(Frame::OutputAck([b'a'; 64])).unwrap();
+        thread.join().unwrap();
+    }
+    #[test]
+    fn sensitive_frame_clear_overwrites_its_owned_buffer() {
+        let mut frame = SensitiveFrame(vec![1, 2, 3, 4]);
+        frame.clear();
+        assert!(frame.bytes().iter().all(|byte| *byte == 0));
+    }
     #[test]
     #[allow(unsafe_code)]
     fn actual_overlapped_frame_echo_and_cancel_are_joined_without_host_authority() {
@@ -550,7 +955,7 @@ mod tests {
             assert!(operation.pending);
             pending_tx.send(()).unwrap();
             assert!(matches!(
-                operation.complete(started, error, Instant::now() + IDLE, &ready, None),
+                operation.complete(started, error, Some(Instant::now() + IDLE), &ready, None),
                 Err(Error::RestartCanceled)
             ));
         });

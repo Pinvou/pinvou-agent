@@ -20,6 +20,17 @@ use windows_sys::Win32::{
     Security::LookupAccountNameW,
     System::Services::*,
 };
+// Kept disabled at service startup. The CLI creation owner must acquire and
+// enable only these approved privileges in an isolated operation context.
+const LEGACY_REQUIRED_PRIVILEGES: &str = "SeChangeNotifyPrivilege\0\0";
+const CLI_REQUIRED_PRIVILEGES: &str =
+    "SeChangeNotifyPrivilege\0SeAssignPrimaryTokenPrivilege\0SeIncreaseQuotaPrivilege\0\0";
+
+fn supported_privileges(value: &[u16]) -> bool {
+    [LEGACY_REQUIRED_PRIVILEGES, CLI_REQUIRED_PRIVILEGES]
+        .iter()
+        .any(|expected| value.starts_with(&expected.encode_utf16().collect::<Vec<_>>()))
+}
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -325,10 +336,14 @@ pub(super) fn configure_original(
         security::seal_service(service.0.cast())?;
         checkpoint(super::acceptance::Stage::ServiceSealed)?;
     } else {
-        // Only this original previously recorded creation can resume, and an
-        // enabled existing object must ALREADY have the exact sealed policy.
+        // Only this original previously recorded creation can resume. Inspect
+        // the existing ACL before reapplying the fixed policy: this controlled
+        // stopped-service repair also upgrades an older interactive-only ACL
+        // to the local Users query policy required by authenticated CLI peers.
         config.validate(seed, layout, false)?;
         security::inspect_service(service.0.cast())?;
+        security::seal_service(service.0.cast())?;
+        checkpoint(super::acceptance::Stage::ServiceSealed)?;
     }
     let sid = SERVICE_SID_INFO {
         dwServiceSidType: SERVICE_SID_TYPE_UNRESTRICTED,
@@ -343,8 +358,7 @@ pub(super) fn configure_original(
     {
         return Err(Error::Unavailable);
     }
-    let mut privileges = wide("SeChangeNotifyPrivilege");
-    privileges.push(0);
+    let mut privileges: Vec<u16> = CLI_REQUIRED_PRIVILEGES.encode_utf16().collect();
     let privilege_info = SERVICE_REQUIRED_PRIVILEGES_INFOW {
         pmszRequiredPrivileges: privileges.as_mut_ptr(),
     };
@@ -423,11 +437,10 @@ fn verify_privileges(service: &ServiceHandle) -> Result<()> {
     if p < start || p >= start + needed as usize || p % 2 != 0 {
         return Err(Error::ServiceIdentityRefused);
     }
-    let expected: Vec<u16> = "SeChangeNotifyPrivilege\0\0".encode_utf16().collect();
-    if p + expected.len() * 2 > start + needed as usize
-        || unsafe { std::slice::from_raw_parts(info.pmszRequiredPrivileges, expected.len()) }
-            != expected
-    {
+    let count = (start + needed as usize - p) / 2;
+    if !supported_privileges(unsafe {
+        std::slice::from_raw_parts(info.pmszRequiredPrivileges, count)
+    }) {
         return Err(Error::ServiceIdentityRefused);
     }
     Ok(())
@@ -599,6 +612,19 @@ pub(super) fn remove_stopped(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn required_privileges_allow_legacy_or_exact_cli_set_only() {
+        let words = |value: &str| value.encode_utf16().collect::<Vec<_>>();
+        assert!(supported_privileges(&words(LEGACY_REQUIRED_PRIVILEGES)));
+        assert!(supported_privileges(&words(CLI_REQUIRED_PRIVILEGES)));
+        assert!(!supported_privileges(&words(
+            "SeChangeNotifyPrivilege\0SeDebugPrivilege\0\0"
+        )));
+        assert!(!supported_privileges(&words(
+            "SeChangeNotifyPrivilege\0SeAssignPrimaryTokenPrivilege\0\0"
+        )));
+        assert!(!supported_privileges(&words("SeChangeNotifyPrivilege\0")));
+    }
     #[test]
     #[allow(unsafe_code)]
     fn actual_os_service_queries_prove_sdk_buffer_extents_only() {

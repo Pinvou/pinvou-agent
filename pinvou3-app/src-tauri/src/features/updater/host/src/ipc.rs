@@ -6,6 +6,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+/// Maximum raw UTF-16 units in a CLI environment (32 MiB).
+pub(crate) const CLI_ENV_MAX_UNITS: usize = 32 * 1024 * 1024 / 2;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Hello {
@@ -158,6 +160,12 @@ pub(crate) struct Capabilities {
     pub(crate) trusted_deadline: bool,
 }
 impl Capabilities {
+    pub(crate) fn writer_only() -> Self {
+        let mut value = Self::ready(false);
+        value.status = false;
+        value.writer_admission = true;
+        value
+    }
     pub(crate) fn ready(launch: bool) -> Self {
         Self {
             status: true,
@@ -186,6 +194,11 @@ macro_rules! body {
     }
 }
 body!(Empty {});
+body!(CliBegin {
+    arguments: Vec<String>,
+    cwd_utf16: Vec<u16>,
+    environment_units: u32
+});
 body!(WriterAdmissionReply {
     installation_scope_id: String,
     host_epoch: u64,
@@ -530,6 +543,20 @@ pub(crate) fn response<T: DeserializeOwned>(
     }
 }
 impl Capabilities {
+    pub(crate) fn is_writer_only(&self) -> bool {
+        !self.status
+            && !self.launch_registered_application
+            && self.writer_admission
+            && !self.prepare
+            && !self.freeze
+            && !self.backup
+            && !self.consume
+            && !self.install
+            && !self.activate
+            && !self.helper_evolution
+            && !self.protected_metadata_acceptance
+            && !self.trusted_deadline
+    }
     pub(crate) fn is_exact(&self, status: bool, launch: bool) -> bool {
         self.status == status
             && self.launch_registered_application == launch
@@ -548,6 +575,17 @@ impl Capabilities {
 #[cfg(test)]
 mod reply_tests {
     use super::*;
+    #[test]
+    fn cli_capability_is_writer_only_and_refuses_other_grants() {
+        let mut capability = Capabilities::writer_only();
+        assert!(capability.is_writer_only());
+        capability.launch_registered_application = true;
+        assert!(!capability.is_writer_only());
+        let mut capability = Capabilities::writer_only();
+        capability.install = true;
+        assert!(!capability.is_writer_only());
+        assert!(!Capabilities::ready(true).is_writer_only());
+    }
     #[test]
     fn exact_authenticated_reply_fields_are_closed_and_errors_keep_unknown() {
         let session = "1".repeat(64);

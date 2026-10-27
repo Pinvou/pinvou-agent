@@ -18,7 +18,6 @@ use super::{
 };
 use crate::{
     error::{Error, Result},
-    handoff::Role,
     identity::ProcessSelector,
 };
 use std::{mem::size_of, sync::Arc};
@@ -185,13 +184,35 @@ impl ReservedWriterJob {
     pub(super) fn reserve(host: &StartedServiceContext, peer: &Peer, pipe: &Pipe) -> Result<Self> {
         let (scope, genesis, service_sid) = current_scope(host)?;
         peer.recheck(pipe)?;
-        if peer.role != Role::App {
+        if !peer.role.is_writer() {
             return Err(Error::PeerRefused);
         }
         let name = format!("Global\\PinvouWriter-{}", nonce()?);
         peer.recheck(pipe)?;
         Ok(Self {
             original: Arc::clone(&peer.process),
+            name,
+            service_sid,
+            scope,
+            genesis,
+            origin_host_epoch: host.startup.host_epoch,
+        })
+    }
+    /// Reserve for the actual suspended process retained by the service. The
+    /// requester's pipe is checked only as the creator's authority; it is
+    /// never represented as the child process's pipe.
+    pub(super) fn reserve_spawned(
+        host: &StartedServiceContext,
+        child: &super::cli_spawn::SuspendedCli,
+        peer: &Peer,
+        pipe: &Pipe,
+    ) -> Result<Self> {
+        let (scope, genesis, service_sid) = current_scope(host)?;
+        child.recheck(host, peer, pipe)?;
+        let name = format!("Global\\PinvouWriter-{}", nonce()?);
+        child.recheck(host, peer, pipe)?;
+        Ok(Self {
+            original: Arc::clone(child.original()),
             name,
             service_sid,
             scope,
@@ -229,6 +250,27 @@ impl ReservedWriterJob {
         pipe: &Pipe,
         intent: &ProtectedAdmissionIntent<'_>,
     ) -> std::result::Result<PendingWriterJob, WriterJobCreationFailure> {
+        self.create_checked(host, intent, |original| recheck_peer(original, peer, pipe))
+    }
+    pub(super) fn create_spawned(
+        self,
+        host: &StartedServiceContext,
+        child: &super::cli_spawn::SuspendedCli,
+        peer: &Peer,
+        pipe: &Pipe,
+        intent: &ProtectedAdmissionIntent<'_>,
+    ) -> std::result::Result<PendingWriterJob, WriterJobCreationFailure> {
+        self.create_checked(host, intent, |original| {
+            recheck_spawned(host, original, child, peer, pipe)
+        })
+    }
+    #[allow(unsafe_code)]
+    fn create_checked(
+        self,
+        host: &StartedServiceContext,
+        intent: &ProtectedAdmissionIntent<'_>,
+        check: impl Fn(&RetainedProcess) -> Result<()>,
+    ) -> std::result::Result<PendingWriterJob, WriterJobCreationFailure> {
         let attempt = || -> Result<Handle> {
             let (scope, genesis, sid) = current_scope(host)?;
             if scope != self.scope || genesis != self.genesis || sid != self.service_sid {
@@ -245,7 +287,7 @@ impl ReservedWriterJob {
                 self.origin_host_epoch,
             )?;
             verify_creation_original(host, intent, &self.original)?;
-            recheck_peer(&self.original, peer, pipe)?;
+            check(&self.original)?;
             let security = NativeSecurity::writer_job(&self.service_sid)?;
             let attributes = security.attributes();
             let wide: Vec<_> = self.name.encode_utf16().chain(Some(0)).collect();
@@ -270,7 +312,7 @@ impl ReservedWriterJob {
                 self.origin_host_epoch,
             )?;
             verify_creation_original(host, intent, &self.original)?;
-            recheck_peer(&self.original, peer, pipe)?;
+            check(&self.original)?;
             Ok(job)
         };
         match attempt() {
@@ -354,6 +396,26 @@ impl PendingWriterJob {
         pipe: &Pipe,
         intent: &ProtectedAdmissionIntent<'_>,
     ) -> std::result::Result<WriterJob, WriterJobAssignmentFailure> {
+        self.assign_checked(host, intent, |original| recheck_peer(original, peer, pipe))
+    }
+    pub(super) fn assign_spawned(
+        self,
+        host: &StartedServiceContext,
+        child: &super::cli_spawn::SuspendedCli,
+        peer: &Peer,
+        pipe: &Pipe,
+        intent: &ProtectedAdmissionIntent<'_>,
+    ) -> std::result::Result<WriterJob, WriterJobAssignmentFailure> {
+        self.assign_checked(host, intent, |original| {
+            recheck_spawned(host, original, child, peer, pipe)
+        })
+    }
+    fn assign_checked(
+        self,
+        host: &StartedServiceContext,
+        intent: &ProtectedAdmissionIntent<'_>,
+        check: impl Fn(&RetainedProcess) -> Result<()>,
+    ) -> std::result::Result<WriterJob, WriterJobAssignmentFailure> {
         let attempt = || -> Result<()> {
             self.core.recheck(host)?;
             verify_intent(
@@ -367,7 +429,7 @@ impl PendingWriterJob {
                 self.core.origin_host_epoch,
             )?;
             verify_creation_original(host, intent, &self.core.original)?;
-            recheck_peer(&self.core.original, peer, pipe)?;
+            check(&self.core.original)?;
             // A retry keeps the same job and original handles. A previous
             // Assign may already have succeeded before a later query failed.
             if !member(&self.core.job, &self.core.original)? {
@@ -375,7 +437,7 @@ impl PendingWriterJob {
             }
             // Assignment is irreversible for this process lifetime. Any later
             // error is withheld admission, never proof of no side effect.
-            peer.recheck(pipe)?;
+            check(&self.core.original)?;
             self.core.recheck(host)?;
             verify_intent(
                 host,
@@ -400,9 +462,26 @@ impl PendingWriterJob {
 }
 
 #[allow(unsafe_code)]
+fn recheck_spawned(
+    host: &StartedServiceContext,
+    original: &RetainedProcess,
+    child: &super::cli_spawn::SuspendedCli,
+    peer: &Peer,
+    pipe: &Pipe,
+) -> Result<()> {
+    child.recheck(host, peer, pipe)?;
+    if unsafe { CompareObjectHandles(original.raw(), child.original().raw()) } == 0
+        || original.exited()?
+    {
+        return Err(Error::PeerRefused);
+    }
+    Ok(())
+}
+
+#[allow(unsafe_code)]
 fn recheck_peer(original: &RetainedProcess, peer: &Peer, pipe: &Pipe) -> Result<()> {
     peer.recheck(pipe)?;
-    if peer.role != Role::App
+    if !peer.role.is_writer()
         || unsafe { CompareObjectHandles(original.raw(), peer.process.raw()) } == 0
         || original.exited()?
     {

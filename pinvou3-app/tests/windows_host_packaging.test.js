@@ -10,7 +10,7 @@ const { relativeName, inventorySources, buildInstallationManifest, hashFile } = 
 const { writeNativeInventory } = require("../scripts/tauri/windows-host-native-inventory.js");
 const { buildAppInventory } = require("../scripts/tauri/windows-host-inventory.js");
 const { prepareHostBuild } = require("../scripts/tauri/windows-host-build.js");
-const { TEMPLATE, nsisFileVersion, renderInclude, nativeTool, runBuildTool, verifyInstallerCRC, packageHostNSIS } = require("../scripts/tauri/windows-host-nsis.js");
+const { TEMPLATE, nsisFileVersion, renderInclude, nativeTool, runBuildTool, verifyInstallerCRC, packageHostNSIS, validateCompiledProfile } = require("../scripts/tauri/windows-host-nsis.js");
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = path.dirname(appRoot);
 
@@ -42,6 +42,20 @@ async function profileFixture() {
     approvedInitialPublisherPolicy: { policyId: "isolated-test-only", signerCertificateSha256: "c".repeat(64) } };
   return { seed, rootBytes, seedBytes: await canonicalBytes(seed) };
 }
+
+test("compiled CLI profile must match the entire selected public host identity", async () => {
+  const fixture = await profileFixture();
+  fixture.seedSha256 = sha256(fixture.seedBytes);
+  const seed = fixture.seed;
+  const actual = { hostProfileVersion: 1, enabled: true, profileKind: seed.profileKind,
+    profileId: seed.profileId, product: seed.product, component: seed.component, targetKey: seed.targetKey,
+    buildId: seed.buildId, layoutId: seed.layoutId, seedSha256: fixture.seedSha256, originalRoot: seed.originalRoot };
+  await validateCompiledProfile(await canonicalBytes(actual), fixture);
+  for (const changed of [{ ...actual, enabled: false }, { ...actual, seedSha256: "0".repeat(64) },
+    { ...actual, originalRoot: { ...actual.originalRoot, sha256: "0".repeat(64) } }, { ...actual, extra: true }]) {
+    await assert.rejects(validateCompiledProfile(await canonicalBytes(changed), fixture), /HOST_BUILD_COMPILED_PROFILE_INVALID/u);
+  }
+});
 
 test("public Seed is canonical, closed, pinned and has an explicit host kind", async (t) => {
   const fixture = await profileFixture();
@@ -290,8 +304,8 @@ test("NSIS numeric versions map canonical uint16 words before native build effec
   const input = { profile: fixture, entries: [{ relativeName: "pinvou3-tauri.exe" }],
     installer: path.resolve("installer.exe"), manifestPath: path.resolve("manifest.json"), stubPath: path.resolve("stub.tmp") };
   const include = renderInclude(input);
-  assert.ok(include.includes('!define HOST_APP_VERSION "0.10.13"'));
-  assert.ok(include.includes('!define HOST_FILE_VERSION "0.10.13.0"'));
+  assert.ok(include.includes(`!define HOST_APP_VERSION "${fixture.seed.appVersion}"`));
+  assert.ok(include.includes(`!define HOST_FILE_VERSION "${fixture.seed.appVersion}.0"`));
   assert.throws(() => renderInclude({ ...input, profile: { seed: { ...fixture.seed, appVersion: "65536.0.0" } } }), /HOST_BUILD_NSIS_VERSION_UNSUPPORTED/u);
   // The shared Seed grammar remains unchanged; this adapter's narrower physical
   // bound must reject before it looks for helper/compiler/signer inputs.

@@ -28,6 +28,80 @@ const STAGE_FLAGS: u32 = JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_KILL
 pub(in crate::platform::windows) struct StagingJob {
     job: Handle,
 }
+/// A reduced-access native lease for a process-creation JOB_LIST. It keeps the
+/// exact job alive but cannot detach it or authorize a process to resume.
+pub(in crate::platform::windows) struct StagingLease(Handle);
+impl StagingLease {
+    pub(in crate::platform::windows) fn raw(&self) -> HANDLE {
+        self.0.raw()
+    }
+}
+
+/// A JOB_LIST built from the retained native stage handle. The caller must
+/// keep this value alive until process creation returns. It grants no resume
+/// or custody authority and includes no inherited handles.
+pub(in crate::platform::windows) struct JobOnlyAttributes {
+    storage: Vec<usize>,
+    handle: Box<HANDLE>,
+    _lease: StagingLease,
+    initialized: bool,
+}
+impl JobOnlyAttributes {
+    #[allow(unsafe_code)]
+    pub(in crate::platform::windows) fn new(job: &StagingJob) -> Result<Self> {
+        let lease = job.creation_lease()?;
+        let mut needed = 0usize;
+        if unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut needed) } != 0
+            || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
+            || needed == 0
+            || needed > 65_536
+        {
+            return Err(Error::SecurityRefused);
+        }
+        let mut value = Self {
+            storage: vec![0usize; needed.div_ceil(size_of::<usize>())],
+            handle: Box::new(lease.raw()),
+            _lease: lease,
+            initialized: false,
+        };
+        if unsafe { InitializeProcThreadAttributeList(value.raw(), 1, 0, &mut needed) } == 0 {
+            return Err(Error::SecurityRefused);
+        }
+        value.initialized = true;
+        set_job_attribute(value.raw(), &mut value.handle)?;
+        Ok(value)
+    }
+    pub(in crate::platform::windows) fn raw(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+        self.storage.as_ptr().cast_mut().cast()
+    }
+}
+impl Drop for JobOnlyAttributes {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe { DeleteProcThreadAttributeList(self.raw()) };
+        }
+    }
+}
+
+#[allow(unsafe_code)]
+fn set_job_attribute(list: LPPROC_THREAD_ATTRIBUTE_LIST, handle: &mut Box<HANDLE>) -> Result<()> {
+    if unsafe {
+        UpdateProcThreadAttribute(
+            list,
+            0,
+            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+            (&mut **handle as *mut HANDLE).cast(),
+            size_of::<HANDLE>(),
+            ptr::null_mut(),
+            ptr::null(),
+        )
+    } == 0
+    {
+        return Err(Error::SecurityRefused);
+    }
+    Ok(())
+}
 struct Descriptor(*mut std::ffi::c_void);
 impl Drop for Descriptor {
     #[allow(unsafe_code)]
@@ -39,7 +113,7 @@ impl Drop for Descriptor {
 }
 impl StagingJob {
     #[allow(unsafe_code)]
-    pub(super) fn create() -> Result<Self> {
+    pub(in crate::platform::windows) fn create() -> Result<Self> {
         // No name, inherited handle or untrusted access. Explicit OWNER RIGHTS
         // removes implicit owner WRITE_DAC. Only the full service's SY access
         // can assign/set/query; restricting BU+IU grants no staging-job access.
@@ -130,16 +204,100 @@ impl StagingJob {
         Ok(())
     }
     #[allow(unsafe_code)]
-    pub(super) fn verify_member(&self, process: &Handle) -> Result<()> {
+    pub(in crate::platform::windows) fn verify_member(&self, process: &Handle) -> Result<()> {
+        self.verify_member_raw(process.raw())
+    }
+    #[allow(unsafe_code)]
+    fn verify_member_raw(&self, process: HANDLE) -> Result<()> {
         let mut member = 0;
-        if unsafe { IsProcessInJob(process.raw(), self.job.raw(), &mut member) } == 0 || member == 0
-        {
+        if unsafe { IsProcessInJob(process, self.job.raw(), &mut member) } == 0 || member == 0 {
             return Err(Error::SecurityRefused);
         }
         Ok(())
     }
-    pub(super) fn verify_staged(&self) -> Result<()> {
+    pub(in crate::platform::windows) fn verify_staged(&self) -> Result<()> {
         self.verify_limits()
+    }
+    #[allow(unsafe_code)]
+    pub(in crate::platform::windows) fn creation_lease(&self) -> Result<StagingLease> {
+        self.verify_limits()?;
+        self.duplicate_creation_lease()
+    }
+    #[allow(unsafe_code)]
+    fn duplicate_creation_lease(&self) -> Result<StagingLease> {
+        let mut raw = ptr::null_mut();
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                self.job.raw(),
+                GetCurrentProcess(),
+                &mut raw,
+                0x00020005,
+                0,
+                0,
+            )
+        } == 0
+        {
+            return Err(Error::HandoffOutcomeUnknown);
+        }
+        Ok(StagingLease(Handle::owned(raw)?))
+    }
+    /// CLI keeps KILL_ON_JOB_CLOSE for its entire lifetime. Only the exact
+    /// durably admitted writer and live keeper acknowledgement may remove the
+    /// staging-only one-process limit; the creator cannot provide a boolean.
+    #[allow(unsafe_code)]
+    pub(in crate::platform::windows) fn allow_admitted_cli_children(
+        &self,
+        process: &Handle,
+        published: &super::super::registry::writers::PublishedAdmission<'_, '_>,
+        writer: &super::super::writer_job::WriterJob,
+        ack: &super::super::writer_keeper::KeeperJobAck,
+        keeper: &mut super::KeeperPeer<'_>,
+    ) -> Result<()> {
+        published.recheck(writer, ack, keeper)?;
+        if unsafe { CompareObjectHandles(process.raw(), writer.original().raw()) } == 0 {
+            return Err(Error::PeerRefused);
+        }
+        self.verify_member(process)?;
+        if self.verify_cli_guarded().is_err() {
+            self.verify_limits()?;
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if unsafe {
+                SetInformationJobObject(
+                    self.job.raw(),
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            } == 0
+            {
+                return Err(Error::HandoffOutcomeUnknown);
+            }
+        }
+        self.verify_cli_guarded()?;
+        self.verify_member(process)?;
+        published.recheck(writer, ack, keeper)
+    }
+    #[allow(unsafe_code)]
+    pub(in crate::platform::windows) fn verify_cli_guarded(&self) -> Result<()> {
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        let mut written = 0;
+        if unsafe {
+            QueryInformationJobObject(
+                self.job.raw(),
+                JobObjectExtendedLimitInformation,
+                (&mut limits as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                &mut written,
+            )
+        } == 0
+            || written != size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32
+            || limits.BasicLimitInformation.LimitFlags != JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        {
+            return Err(Error::SecurityRefused);
+        }
+        Ok(())
     }
     #[allow(unsafe_code)]
     pub(super) fn verify_detached(&self) -> Result<()> {
@@ -219,32 +377,16 @@ pub(super) struct CreationAttributes<'a> {
     storage: Vec<usize>,
     handle: Box<HANDLE>,
     listener_handle: Box<HANDLE>,
-    _job_lease: Handle,
+    _job_lease: StagingLease,
     _listener: &'a super::InheritedListenerLease,
     initialized: bool,
 }
 impl<'a> CreationAttributes<'a> {
     #[allow(unsafe_code)]
     fn new(job: &StagingJob, listener: &'a super::InheritedListenerLease) -> Result<Self> {
-        job.verify_limits()?;
         // Owned native lease lets every error return the original staging
         // custody without a Rust self-borrow. It never enters HANDLE_LIST.
-        let mut raw = ptr::null_mut();
-        if unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                job.job.raw(),
-                GetCurrentProcess(),
-                &mut raw,
-                0x00020005,
-                0,
-                0,
-            )
-        } == 0
-        {
-            return Err(Error::HandoffOutcomeUnknown);
-        }
-        let job_lease = Handle::owned(raw)?;
+        let job_lease = job.creation_lease()?;
         let mut needed = 0usize;
         if unsafe { InitializeProcThreadAttributeList(ptr::null_mut(), 2, 0, &mut needed) } != 0
             || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
@@ -266,20 +408,7 @@ impl<'a> CreationAttributes<'a> {
             return Err(Error::SecurityRefused);
         }
         value.initialized = true;
-        if unsafe {
-            UpdateProcThreadAttribute(
-                value.raw(),
-                0,
-                PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
-                (&mut *value.handle as *mut HANDLE).cast(),
-                size_of::<HANDLE>(),
-                ptr::null_mut(),
-                ptr::null(),
-            )
-        } == 0
-        {
-            return Err(Error::SecurityRefused);
-        }
+        set_job_attribute(value.raw(), &mut value.handle)?;
         if unsafe {
             UpdateProcThreadAttribute(
                 value.raw(),

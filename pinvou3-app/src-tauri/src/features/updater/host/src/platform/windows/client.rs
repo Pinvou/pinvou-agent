@@ -34,8 +34,29 @@ pub(super) struct Client {
     pub(super) instance: String,
     sequence: u64,
 }
+pub(super) enum CliConnectionKind {
+    Requester,
+    Worker,
+}
 impl Client {
     pub(super) fn connect(role: Role) -> Result<Self> {
+        Self::connect_inner(role, false).map(|(client, _)| client)
+    }
+    /// One authenticated hello distinguishes an untrusted requester from a
+    /// service-created worker. The answer comes from server-side native proof.
+    pub(super) fn connect_cli_entry() -> Result<(Self, CliConnectionKind)> {
+        Self::connect_inner(Role::CliRequester, true).map(|(client, worker)| {
+            (
+                client,
+                if worker {
+                    CliConnectionKind::Worker
+                } else {
+                    CliConnectionKind::Requester
+                },
+            )
+        })
+    }
+    fn connect_inner(role: Role, classify_cli: bool) -> Result<(Self, bool)> {
         if role == Role::SourceInstaller {
             return Err(Error::PeerRefused);
         }
@@ -51,8 +72,8 @@ impl Client {
             .as_deref()
             .ok_or(Error::ServiceIdentityRefused)?;
         let current = RetainedProcess::current()?;
-        if !current.token.interactive
-            || current.token.user.session_id == 0
+        if (!matches!(role, Role::Cli | Role::CliRequester)
+            && (!current.token.interactive || current.token.user.session_id == 0))
             || current.token.user.sid == "S-1-5-18"
             || current.token.app_container
             || current.token.network
@@ -60,15 +81,22 @@ impl Client {
         {
             return Err(Error::PeerRefused);
         }
-        let expected = if role == Role::App {
-            layout.app_path()
-        } else {
-            layout.launcher_path()
+        let expected = match role {
+            Role::App => layout.app_path(),
+            Role::Cli => layout.app.join("pinvou.exe"),
+            Role::Launcher => layout.launcher_path(),
+            Role::CliRequester => layout.app.join("pinvou.exe"),
+            Role::SourceInstaller => return Err(Error::PeerRefused),
         };
         if !ordinal_equal(
             current.image.to_str().ok_or(Error::ImageRefused)?,
             expected.to_str().ok_or(Error::ImageRefused)?,
-        )? {
+        )? && !(role == Role::CliRequester
+            && ordinal_equal(
+                current.image.to_str().ok_or(Error::ImageRefused)?,
+                layout.launcher_path().to_str().ok_or(Error::ImageRefused)?,
+            )?)
+        {
             return Err(Error::PeerRefused);
         }
         let (code, app_root) = layout.client_roots(sid)?;
@@ -118,10 +146,18 @@ impl Client {
             || reply.client_nonce != challenge
             || !json::digest(&reply.server_nonce)
             || !json::digest(&reply.host_instance_nonce)
-            || !reply.capabilities.is_exact(true, true)
+            || if role == Role::Cli {
+                !reply.capabilities.is_writer_only()
+            } else if role == Role::CliRequester {
+                !(reply.capabilities.is_exact(false, false)
+                    || (classify_cli && reply.capabilities.is_writer_only()))
+            } else {
+                !reply.capabilities.is_exact(true, true)
+            }
         {
             return Err(Error::ServiceIdentityRefused);
         }
+        let worker = reply.capabilities.is_writer_only();
         let value = Self {
             seed,
             layout,
@@ -141,7 +177,7 @@ impl Client {
             sequence: 1,
         };
         value.recheck()?;
-        Ok(value)
+        Ok((value, worker))
     }
     pub(super) fn recheck(&self) -> Result<()> {
         if self.server.exited()?
@@ -169,6 +205,28 @@ impl Client {
         self.code.recheck()?;
         self.app_root.recheck()?;
         Ok(())
+    }
+    /// Only the fixed sensitive-transfer state may call this on its already
+    /// authenticated connection; no UTF-8 or JSON copy is made.
+    pub(super) fn send_sensitive_units(&self, units: &[u16]) -> Result<()> {
+        self.recheck()?;
+        self.pipe
+            .write_sensitive_units(units, &self.stop, self.server.raw())?;
+        self.recheck()
+    }
+    /// The caller must first complete its fixed attach RPC. These adapters
+    /// retain this same authenticated service object and connection.
+    pub(super) fn stream_reader(&self) -> super::pipe::StreamReader<'_> {
+        self.pipe.stream_reader(&self.stop, &self.server)
+    }
+    pub(super) fn stream_writer(&self) -> super::pipe::StreamWriter<'_> {
+        self.pipe.stream_writer(&self.stop, &self.server)
+    }
+    pub(super) fn cancel_stream(&self) -> Result<()> {
+        self.stop.set()
+    }
+    pub(super) fn stream_stopped(&self) -> Result<bool> {
+        Ok(self.stop.is_set()? || self.server.exited()?)
     }
     pub(super) fn request<B: Serialize, T: DeserializeOwned>(
         &mut self,

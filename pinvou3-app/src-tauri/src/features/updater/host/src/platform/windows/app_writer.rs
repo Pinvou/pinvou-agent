@@ -14,6 +14,11 @@ pub(crate) struct AppWriterAdmission {
     _client: Client,
     _reply: ipc::WriterAdmissionReply,
 }
+impl AppWriterAdmission {
+    pub(crate) fn recheck(&self) -> Result<()> {
+        self._client.recheck()
+    }
+}
 
 fn validate_reply(
     reply: &ipc::WriterAdmissionReply,
@@ -34,7 +39,21 @@ fn validate_reply(
 }
 
 pub(crate) fn admit_current_app_writer() -> Result<AppWriterAdmission> {
-    let mut client = Client::connect(Role::App)?;
+    admit_current_writer(Role::App)
+}
+
+pub(crate) fn admit_current_cli_writer() -> Result<AppWriterAdmission> {
+    admit_current_writer(Role::Cli)
+}
+/// Classify only through the authenticated service's native child proof.
+/// This is not itself a writer admission or a fallback authorization.
+pub(crate) fn is_current_cli_worker() -> Result<bool> {
+    let (_client, kind) = Client::connect_cli_entry()?;
+    Ok(matches!(kind, super::client::CliConnectionKind::Worker))
+}
+
+fn admit_current_writer(role: Role) -> Result<AppWriterAdmission> {
+    let mut client = Client::connect(role)?;
     // No external PID, path, user, role, write scope or source facts enter this
     // command. The service observes the actual pipe/process/token itself.
     let reply: ipc::WriterAdmissionReply = client.request("writer-admit", &ipc::Empty {})?;

@@ -24,8 +24,15 @@ impl PeerKey {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Role {
     App,
+    Cli,
+    CliRequester,
     Launcher,
     SourceInstaller,
+}
+impl Role {
+    pub(crate) fn is_writer(self) -> bool {
+        matches!(self, Self::App | Self::Cli)
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum State {

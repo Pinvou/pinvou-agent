@@ -42,7 +42,7 @@ impl Drop for SuspendedChild {
         }
     }
 }
-fn quote(value: &str) -> String {
+pub(super) fn quote(value: &str) -> String {
     let mut out = String::from("\"");
     let mut slashes = 0;
     for c in value.chars() {
