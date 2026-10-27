@@ -97,6 +97,14 @@
   const accessToken = fragment.get("token") || "";
   const relayOverride = fragment.get("relay") || "";
   const protocolVersion = 2;
+  // Liveness watchdog. Protocol-level Relay pings are invisible to JS, so a
+  // healthy-but-idle socket is silent by design; pure silence is therefore
+  // only a suspicion, not proof of a dead connection. Silence past the
+  // threshold is resolved with a speculative reconnect: the durable cursor
+  // makes replay idempotent and RPCs replay by design, so an occasional
+  // extra reconnect is cheap and invisible to the UI.
+  const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;
+  const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;
 
   function relayWebSocketUrl() {
     if (relayOverride) return relayOverride;
@@ -136,6 +144,8 @@
       this.closedPermanently = false;
       this.reconnectAttempt = 0;
       this.reconnectTimer = null;
+      this.lastInboundAt = 0;
+      this.livenessTimer = null;
       this.pending = new Map();
       this.listeners = new Map();
       this.subscribed = new Set();
@@ -185,6 +195,8 @@
       }
       this.streamEpoch = typeof cursor.stream_epoch === "string" ? cursor.stream_epoch : "";
       this.lastSeq = Number.isFinite(Number(cursor.after_seq)) ? Number(cursor.after_seq) : 0;
+      this.startLivenessWatchdog();
+      this.bindNetworkListeners();
       if (endpointId && accessToken) this.connect();
       else queueMicrotask(() => this.setConnection("credentials_missing", "远程控制链接缺少访问凭证。"));
     }
@@ -210,6 +222,9 @@
       try { socket = new WebSocket(this.url); }
       catch (error) { this.scheduleReconnect(String(error)); return; }
       this.socket = socket;
+      // Every new socket gets a full silence window to deliver its join ack
+      // before the liveness watchdog may judge it.
+      this.lastInboundAt = Date.now();
       socket.addEventListener("open", () => {
         this.sendRaw({
           v: protocolVersion,
@@ -246,6 +261,68 @@
       }, delay);
     }
 
+    startLivenessWatchdog() {
+      if (this.livenessTimer) return;
+      if (typeof window.setInterval !== "function" || typeof window.clearInterval !== "function") return;
+      this.livenessTimer = window.setInterval(() => this._livenessCheck(), LIVENESS_WATCHDOG_INTERVAL_MS);
+      // Node-based embedders return a Timeout object; never hold their process open.
+      if (typeof this.livenessTimer.unref === "function") this.livenessTimer.unref();
+    }
+
+    // Watchdog body (also the test hook). An OPEN socket that has received no
+    // inbound frame for LIVENESS_SILENCE_TIMEOUT_MS is probably half-open
+    // (phone sleep, network switch): RPCs would hang until their timeout and
+    // the close event would never fire. Closing routes recovery through the
+    // ordinary close -> backoff -> rejoin path, where the durable cursor makes
+    // the replay idempotent. See the LIVENESS_SILENCE_TIMEOUT_MS note above.
+    _livenessCheck() {
+      if (this.closedPermanently || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - this.lastInboundAt <= LIVENESS_SILENCE_TIMEOUT_MS) return;
+      try { this.socket.close(); } catch { /* socket already closed */ }
+    }
+
+    // OS-level connectivity change: neither the old socket nor the old
+    // backoff is trustworthy across it.
+    handleNetworkBecomeOnline() {
+      if (this.closedPermanently) return;
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        // The socket looks alive, but the OS just said connectivity changed;
+        // treat it as the same suspicion as the liveness watchdog.
+        try { this.socket.close(); } catch { /* socket already closed */ }
+        return;
+      }
+      this.reconnectAttempt = 0;
+      if (this.reconnectTimer) {
+        window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.connect();
+    }
+
+    // Waking tab: reconnect immediately when no socket is live. Do NOT
+    // speculatively drop an OPEN socket here — backgrounded tabs throttle
+    // timers, so liveness state is stale on wake; the watchdog and the online
+    // event cover that case.
+    handlePageVisible() {
+      if (this.closedPermanently) return;
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) return;
+      this.reconnectAttempt = 0;
+      if (this.reconnectTimer) {
+        window.clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.connect();
+    }
+
+    bindNetworkListeners() {
+      if (typeof window.addEventListener !== "function") return;
+      window.addEventListener("online", () => this.handleNetworkBecomeOnline());
+      window.addEventListener("visibilitychange", () => {
+        if (document.visibilityState !== "visible") return;
+        this.handlePageVisible();
+      });
+    }
+
     sendRaw(value) {
       if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
       this.socket.send(JSON.stringify(value));
@@ -262,6 +339,8 @@
       if (typeof raw !== "string") return;
       let message;
       try { message = JSON.parse(raw); } catch { return; }
+      // Any parseable inbound frame counts as liveness evidence.
+      this.lastInboundAt = Date.now();
       switch (message.type) {
         case "web_client_joined":
           // A TCP/WebSocket open only proves that the Relay is reachable. The
@@ -270,6 +349,7 @@
           // to increase the retry delay.
           this.reconnectAttempt = 0;
           this.joined = true;
+          this.lastInboundAt = Date.now();
           this.desktopOnline = message.desktop_connected !== false;
           this.desktopCapabilitiesReady = false;
           this.awaitingCapabilitySnapshot = this.desktopOnline;
@@ -309,7 +389,10 @@
           break;
         case "desktop_snapshot":
           if (message.stream_epoch) this.streamEpoch = String(message.stream_epoch);
-          if (Number.isFinite(Number(message.seq))) this.lastSeq = Number(message.seq);
+          // Number(null) and Number("") are 0: a snapshot missing seq must not
+          // reset the cursor to 0 (that would trigger a full replay next join).
+          if (message.seq !== null && message.seq !== undefined && message.seq !== ""
+            && Number.isFinite(Number(message.seq))) this.lastSeq = Number(message.seq);
           this.persistCursor();
           this.applyDesktopCapabilities(message.snapshot && message.snapshot.capabilities);
           break;
@@ -317,7 +400,18 @@
           this.closePermanently("replaced", "此远程控制链接已在另一台浏览器中打开。");
           break;
         case "endpoint_revoked":
-          this.closePermanently("revoked", "此远程控制链接已失效。");
+          // TTL expiry shares this message type but is NOT a revoke
+          // (PROTOCOL.md): the desktop may recreate the endpoint with its
+          // persistent credentials, so the tab must wait and rejoin instead of
+          // showing a permanent dead end. Only any other reason (or none) is a
+          // real revoke.
+          if (message.reason === "desktop_offline_ttl_expired") {
+            this.desktopOnline = false;
+            this.setConnection("desktop_offline", "桌面端离线，等待重新连接…");
+            try { this.socket && this.socket.close(); } catch { /* socket already closed */ }
+          } else {
+            this.closePermanently("revoked", "此远程控制链接已失效。");
+          }
           break;
         case "error":
           if (message.code === "invalid_token") {
@@ -349,6 +443,10 @@
       this.negotiatedEvents.clear();
       if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+      if (this.livenessTimer) {
+        window.clearInterval(this.livenessTimer);
+        this.livenessTimer = null;
+      }
       try { this.socket && this.socket.close(); } catch { /* socket already closed */ }
       this.socket = null;
       const error = new Error(message);
