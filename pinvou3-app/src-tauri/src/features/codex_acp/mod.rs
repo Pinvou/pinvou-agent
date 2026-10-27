@@ -72,7 +72,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, MutexGuard, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wait_timeout::ChildExt;
 
@@ -494,9 +494,12 @@ fn stall_guard_owns_turn(current_turn_id: Option<&str>, expected_turn_id: &str) 
 /// (trivially idle — nothing to reclaim, eviction counts as done) from
 /// "busy" (in-flight prompt/config sync — the caller must not evict and
 /// reports the session as post-busy). `take_session_if_still_idle`'s bare
-/// `Option` cannot express that difference.
-enum RebindEvictTake<T> {
-    Reclaimed(T),
+/// `Option` cannot express that difference. The `Reclaimed` arm hands back
+/// the sessions lock still held, so the caller can settle the keyed
+/// retirement bookkeeping and flush the journal inside the take's critical
+/// section (same contract as `take_session_if_still_idle`).
+enum RebindEvictTake<'a, T> {
+    Reclaimed(T, MutexGuard<'a, HashMap<String, T>>),
     Busy,
     NoRuntime,
 }
@@ -509,11 +512,11 @@ enum RebindEvictTake<T> {
 /// the snapshot (busy set) or that is mid config-sync is kept untouched and
 /// reported by the command layer as post-busy — an in-flight prompt is never
 /// killed as a rebind side effect.
-async fn take_session_for_rebind<T>(
-    sessions: &Mutex<HashMap<String, T>>,
+async fn take_session_for_rebind<'a, T>(
+    sessions: &'a Mutex<HashMap<String, T>>,
     session_id: &str,
     is_rebind_evictable: impl Fn(&T) -> bool,
-) -> RebindEvictTake<T> {
+) -> RebindEvictTake<'a, T> {
     // The lock wait is bounded (review #463 round-10 T13): a timeout is
     // treated as busy, so a concurrent cold spawn cannot hang the rebind.
     // Cancelling a `Mutex::lock` future never leaves the lock held — no
@@ -528,9 +531,10 @@ async fn take_session_for_rebind<T>(
     if !is_rebind_evictable(entry) {
         return RebindEvictTake::Busy;
     }
-    sessions
-        .remove(session_id)
-        .map_or(RebindEvictTake::NoRuntime, RebindEvictTake::Reclaimed)
+    match sessions.remove(session_id) {
+        Some(taken) => RebindEvictTake::Reclaimed(taken, sessions),
+        None => RebindEvictTake::NoRuntime,
+    }
 }
 
 /// The fence decision of [`AcpPool::rebind_blocking_sessions`], extracted as
@@ -3572,35 +3576,33 @@ impl AcpPool {
                 .filter(|session_id| self.agents.backend(session_id) == backend)
                 .cloned()
                 .collect::<Vec<_>>();
-            session_ids
-                .iter()
-                .filter_map(|session_id| {
-                    let runtime = sessions.remove(session_id)?;
-                    // A completed install/upgrade restart is not a crash: the
-                    // rebuilt runtime must start with a clean crash budget.
-                    // Cleared right after the take, before any await (see
-                    // `evict_if_idle`) — the loop below awaits per runtime, so
-                    // a clear there would leave a window where a concurrent
-                    // `get_or_spawn` throttles against the discarded runtime.
-                    self.runtime_crash_budgets.lock().remove(session_id);
-                    self.runtime_restart_disclosures.lock().remove(session_id);
-                    Some((session_id.clone(), runtime))
-                })
-                .collect::<Vec<_>>()
+            let mut runtimes = Vec::with_capacity(session_ids.len());
+            for session_id in session_ids {
+                let Some(runtime) = sessions.remove(&session_id) else {
+                    continue;
+                };
+                // A completed install/upgrade restart is not a crash: the
+                // rebuilt runtime must start with a clean crash budget.
+                // The clears, the card settlement and the journal flush all
+                // stay inside this take's critical section: they are keyed
+                // by session id, and the sessions lock is what orders them
+                // against a concurrent `get_or_spawn` — a clear (or a
+                // buffered drop-flush) running after that call re-seeded the
+                // session could erase the successor's fresh crash state or
+                // regress its journal sequence.
+                self.clear_retirement_bookkeeping(&session_id);
+                self.cancel_runtime_pending_cards(&session_id, Some(&runtime.bridge))
+                    .await;
+                // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
+                // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
+                // 状态同时收口。
+                runtime.bridge.flush_journal();
+                runtimes.push((session_id, runtime));
+            }
+            runtimes
         };
-        for (session_id, runtime) in runtimes {
-            // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
-            // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
-            // 状态同时收口。
-            self.cancel_runtime_pending_cards(&session_id, Some(&runtime.bridge))
-                .await;
+        for (_session_id, runtime) in runtimes {
             runtime.shutdown().await;
-            // The teardown events (card settlement, shutdown side) must be
-            // durable before a replacement EventBridge seeds its sequence
-            // from the journal — same invariant as the get_or_spawn Dead
-            // arm: a concurrent get_or_spawn can republish this session
-            // while the loop is still walking its tail.
-            runtime.bridge.flush_journal();
         }
     }
 
@@ -4452,6 +4454,24 @@ impl AcpPool {
         });
     }
 
+    /// Drop a session's crash budget and any parked restart disclosure
+    /// together. Callers MUST hold the pool sessions lock: both maps are
+    /// keyed by session id, so taking them inside the same critical section
+    /// as the runtime removal is what orders them against a concurrent
+    /// `get_or_spawn` — that call performs every one of its own budget and
+    /// disclosure accesses while holding the lock, so a clear outside it
+    /// could interleave with a successor's spawn and erase freshly recorded
+    /// crash throttling or a parked replacement notice (a no-await span does
+    /// not: on the multi-thread runtime another worker can hold the lock and
+    /// run a full spawn while this task is descheduled between two
+    /// statements). `restart_agent_sessions`, `shutdown_all` and the
+    /// `get_or_spawn` arms hold the lock across their own map accesses for
+    /// the same reason.
+    fn clear_retirement_bookkeeping(&self, session_id: &str) {
+        self.runtime_crash_budgets.lock().remove(session_id);
+        self.runtime_restart_disclosures.lock().remove(session_id);
+    }
+
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
@@ -4464,23 +4484,24 @@ impl AcpPool {
         // probes) self-heal on the next list(); idle eviction goes through
         // `evict_if_idle`, never through this path, so its map entries stay.
         self.acp_metadata_backends.write().remove(session_id);
-        let taken = self.sessions.lock().await.remove(session_id);
-        // A deliberate eviction is not a crash: drop the session's crash
-        // budget together with the runtime so the next spawn starts clean.
-        // Cleared right after the take, before any await (see
-        // `evict_if_idle`): clearing before the removal would let a
-        // concurrent `get_or_spawn` record a crash and spawn a replacement
-        // that this eviction then removes, leaving a stale budget on the
-        // fresh runtime.
-        self.runtime_crash_budgets.lock().remove(session_id);
-        self.runtime_restart_disclosures.lock().remove(session_id);
+        let taken = {
+            let mut sessions = self.sessions.lock().await;
+            let taken = sessions.remove(session_id);
+            // A deliberate eviction is not a crash: drop the session's crash
+            // budget together with the runtime so the next spawn starts
+            // clean. Cleared inside the take's critical section (see
+            // [`Self::clear_retirement_bookkeeping`]); the journal flush is
+            // under the same section so the card settlements cancelled above
+            // are durable before any concurrent `get_or_spawn` can seed a
+            // replacement's EventBridge sequence from this journal.
+            self.clear_retirement_bookkeeping(session_id);
+            if let Some(runtime) = &taken {
+                runtime.bridge.flush_journal();
+            }
+            taken
+        };
         if let Some(runtime) = taken {
             runtime.shutdown().await;
-            // Same flush-before-reseed invariant as the restart teardown: the
-            // card settlements above emit through this bridge's buffered
-            // writer, and a later buffered drop-flush must not regress a
-            // replacement's journal sequence.
-            runtime.bridge.flush_journal();
         }
     }
 
@@ -4494,24 +4515,41 @@ impl AcpPool {
     /// 升级等其他路径仍走 `evict`，语义不变。
     async fn evict_if_idle(&self, session_id: &str) -> bool {
         let active_id = self.session_store.active_id();
-        let Some(runtime) = take_session_if_still_idle(&self.sessions, session_id, |runtime| {
-            should_reap_idle(
-                runtime.busy.load(Ordering::Acquire),
-                runtime.configuring.load(Ordering::Acquire),
-                active_id.as_deref() == Some(session_id),
-                runtime.idle_for(),
-            )
-        })
-        .await
+        // The take hands back the sessions lock still held: every keyed
+        // settle step below (budget/disclosure clear, card settlement,
+        // journal flush) must stay inside the take's critical section so a
+        // concurrent `get_or_spawn` can neither read the retired budget nor
+        // have a replacement's fresh state erased, and can only seed a
+        // replacement bridge after these settlements are durable.
+        let Some((runtime, sessions)) =
+            take_session_if_still_idle(&self.sessions, session_id, |runtime| {
+                should_reap_idle(
+                    runtime.busy.load(Ordering::Acquire),
+                    runtime.configuring.load(Ordering::Acquire),
+                    active_id.as_deref() == Some(session_id),
+                    runtime.idle_for(),
+                )
+            })
+            .await
         else {
             return false;
         };
         // Idle reaping is deliberate retirement, not a crash: the budget must
-        // not survive the runtime it was tracking. Clear it right after the
-        // take, before any await, so a concurrent `get_or_spawn` for the same
-        // session neither reads the stale budget nor has a fresh crash wiped.
-        self.runtime_crash_budgets.lock().remove(session_id);
-        self.runtime_restart_disclosures.lock().remove(session_id);
+        // not survive the runtime it was tracked by.
+        self.clear_retirement_bookkeeping(session_id);
+        // A reap can still land on a runtime that died unexpectedly and was
+        // never accessed again (its crash would otherwise only feed the
+        // budget through the Dead arm). Re-parking the disclosure keeps the
+        // next spawn honest — the user's agent context was lost, so the
+        // rebuild surfaces the restarted notice. The budget itself stays
+        // cleared: the 30-minute idle gate means no tight respawn loop can
+        // route through this path, and the crash instant is unrecoverable
+        // here, so a slot recorded now would mis-anchor the 60 s window.
+        if runtime.lifecycle.take_uncounted_crash() {
+            self.runtime_restart_disclosures
+                .lock()
+                .insert(session_id.to_string(), RuntimeRestart::Crash);
+        }
         // Same F3 contract as `evict_if_idle_for_rebind`: the take already
         // removed the runtime from the map, so the pending-request cancels
         // must go through the reclaimed runtime's own bridge — a map lookup
@@ -4520,9 +4558,10 @@ impl AcpPool {
             .await;
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
-        runtime.shutdown().await;
         // Same flush-before-reseed invariant as `evict`.
         runtime.bridge.flush_journal();
+        drop(sessions);
+        runtime.shutdown().await;
         true
     }
 
@@ -4555,7 +4594,7 @@ impl AcpPool {
             )
         })
         .await;
-        let RebindEvictTake::Reclaimed(runtime) = taken else {
+        let RebindEvictTake::Reclaimed(runtime, sessions) = taken else {
             // A session without a resident runtime (NoRuntime) has no pending
             // permission/elicitation to answer either, so only the Busy arm
             // skips cleanup. The lock-free `_with_bridge(_, None)` variants
@@ -4578,11 +4617,13 @@ impl AcpPool {
             return matches!(taken, RebindEvictTake::NoRuntime);
         };
         self.acp_metadata_backends.write().remove(session_id);
-        // Rebind eviction is deliberate retirement, not a crash. Clear the
-        // budget and any pending restart disclosure right after the take,
-        // before any await (see `evict_if_idle`).
-        self.runtime_crash_budgets.lock().remove(session_id);
-        self.runtime_restart_disclosures.lock().remove(session_id);
+        // Rebind eviction is deliberate retirement, not a crash. The clears,
+        // the card settlement and the journal flush stay inside the take's
+        // critical section (see [`Self::clear_retirement_bookkeeping`]) —
+        // a replacement seeded by a concurrent `get_or_spawn` must not have
+        // its fresh state erased, and must only seed after these settlements
+        // are durable.
+        self.clear_retirement_bookkeeping(session_id);
         // Cancel before shutdown, through the RECLAIMED runtime's own bridge
         // (review #463 F3): the take already removed the session from the map,
         // so the plain `cancel_pending_permissions` lookup would resolve
@@ -4595,9 +4636,10 @@ impl AcpPool {
             .await;
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
-        runtime.shutdown().await;
         // Same flush-before-reseed invariant as `evict`.
         runtime.bridge.flush_journal();
+        drop(sessions);
+        runtime.shutdown().await;
         true
     }
 
@@ -6561,8 +6603,10 @@ mod tests {
         let guard = sessions.lock().await;
         let reaper_sessions = sessions.clone();
         let reaper = tokio::spawn(async move {
+            // 该用例只关心复核结果；take 交还的锁在任务内释放。
             take_session_if_still_idle(&reaper_sessions, "acp-session", FakeIdleEntry::still_idle)
                 .await
+                .map(|(entry, _sessions)| entry)
         });
         tokio::task::yield_now().await;
 
@@ -6588,9 +6632,13 @@ mod tests {
             FakeIdleEntry::idle_since(Duration::from_secs(IDLE_EVICT_AFTER_SECS)),
         )]));
 
-        let taken =
-            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle).await;
-        assert!(taken.is_some(), "保持空闲的会话必须照常回收");
+        let Some((_entry, guard)) =
+            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle).await
+        else {
+            panic!("保持空闲的会话必须照常回收");
+        };
+        // take 交还的锁在断言前释放：守卫若仍存活，当前线程运行时上取锁会死锁。
+        drop(guard);
         assert!(sessions.lock().await.is_empty());
         // 已被移除 / 从未存在的会话：取回 None，不二次回收。
         assert!(
@@ -6783,7 +6831,7 @@ mod tests {
         // which is what makes the user's retry converge.
         let taken =
             take_session_for_rebind(&sessions, "idle-session", FakeRebindEntry::evictable).await;
-        assert!(matches!(taken, RebindEvictTake::Reclaimed(_)));
+        assert!(matches!(taken, RebindEvictTake::Reclaimed(..)));
     }
 
     #[tokio::test(start_paused = true)]
@@ -6853,10 +6901,10 @@ mod tests {
 
         let taken =
             take_session_for_rebind(&sessions, "idle-session", FakeRebindEntry::evictable).await;
-        assert!(
-            matches!(taken, RebindEvictTake::Reclaimed(_)),
-            "idle runtime must be atomically taken"
-        );
+        let RebindEvictTake::Reclaimed(_entry, guard) = taken else {
+            panic!("idle runtime must be atomically taken");
+        };
+        drop(guard);
         assert!(
             !sessions.lock().await.contains_key("idle-session"),
             "taken runtime is removed from the pool"
@@ -6894,8 +6942,16 @@ mod tests {
         let guard = sessions.lock().await;
         let rebind_sessions = sessions.clone();
         let eviction = tokio::spawn(async move {
-            take_session_for_rebind(&rebind_sessions, "acp-session", FakeRebindEntry::evictable)
-                .await
+            // 该用例只关心复核结果；take 交还的锁在任务内随临时值释放。
+            matches!(
+                take_session_for_rebind(
+                    &rebind_sessions,
+                    "acp-session",
+                    FakeRebindEntry::evictable
+                )
+                .await,
+                RebindEvictTake::Busy
+            )
         });
         tokio::task::yield_now().await;
 
@@ -6907,9 +6963,9 @@ mod tests {
             .store(true, Ordering::Release);
         drop(guard);
 
-        let taken = eviction.await.expect("eviction task joins");
+        let busy = eviction.await.expect("eviction task joins");
         assert!(
-            matches!(taken, RebindEvictTake::Busy),
+            busy,
             "a turn that starts before the eviction must survive it"
         );
         assert!(sessions.lock().await.contains_key("acp-session"));
