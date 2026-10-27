@@ -5,7 +5,7 @@ import {
   isSubagentPanelPublicationCurrent,
 } from './subagent-panel-publication.mjs';
 import { sceneStatusKey } from './scene_status_key.js';
-import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
+import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Trash2, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { boundDraftNoticeMode as boundDraftNoticeModeOf } from './bound-draft-mode.js';
@@ -1286,6 +1286,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       }, [setInputText]);
       const handleComposerInputChange = useCallback((value) => {
         setInputText(value);
+        // Emptying the composer cancels a pending voice result: the transcription must
+        // not land later in a draft the user already cleared.
+        if (!String(value || '').trim() && bridge.voice && typeof bridge.voice.abandonVoiceResult === 'function') {
+          bridge.voice.abandonVoiceResult();
+        }
         const currentTemplate = getPersonalWorkbenchTemplateById(personalWorkbenchTemplateIdRef.current);
         if (!currentTemplate) return;
         if (!isPersonalWorkbenchTemplateDraftForTemplate(value, currentTemplate)) {
@@ -2617,6 +2622,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             variant="timeline"
           />
         : undefined), [activeSessionId, t]);
+      const retryLastTurn = useCallback((turn) => {
+        // Regenerate: re-send the last user turn verbatim. The timeline only
+        // hands us the newest turn; skip while a reply is streaming.
+        if (!busy && turn && turn.userText && bridge.available) {
+          bridge.interaction.editLastTurn(turn.userText);
+        }
+      }, [busy]);
       const timelineAssistantAvatar = useMemo(() => (
         <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center">
           <PinvouLogo className="h-5 w-5" title={chatViewCopy.agentName} />
@@ -3441,6 +3453,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         });
       }
 
+      // One-click draft clear: hidden while the composer is empty, disabled while a
+      // voice capture/rewrite is in flight or an edit rewrite preview is armed
+      // (clearing mid-capture would race the write-back; clearing with a pending
+      // preview would strand a stale card). Declared after the voice hook so the
+      // preview flag is in scope.
+      const canClearInput = hasDraftText && !voiceActive && !chatVoice.editPreview;
+      function handleClearInput() {
+        if (!canClearInput) return;
+        handleComposerInputChange('');
+        composerRef.current?.focus();
+      }
+
       function resolveVoiceShortcutIntro(value) {
         const resolve = voiceIntroResolveRef.current;
         voiceIntroResolveRef.current = null;
@@ -3717,6 +3741,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     busy={busy}
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
+                    onRetry={isMultiAgentReadOnly ? undefined : retryLastTurn}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}
@@ -4268,6 +4293,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
+                {hasDraftText && (
+                  <button type="button" data-testid="chat-clear-input" onClick={handleClearInput} disabled={!canClearInput} aria-label={t.clearInput} title={t.clearInput}
+                    className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                      canClearInput
+                        ? 'text-[#5F6368] hover:bg-black/5 dark:text-[#C4C7C5] dark:hover:bg-white/10'
+                        : 'text-gray-400 cursor-not-allowed opacity-60'
+                    }`}>
+                    <Trash2 size={18} />
+                  </button>
+                )}
                 <VoiceComposerButton
                   refProp={voiceAsrPopoverRef}
                   voiceInput={voiceInput}

@@ -300,7 +300,7 @@ const jaBase = {
         modelContextWindow: 'コンテキスト長（tokens）',
         
         
-                clearSearch: '検索をクリア',  sendMsg: '送信', apiKeyGateTitle: 'API Key の設定が必要です', apiKeyGateDesc: '現在のモデルはクラウドモデルです。チャットを開始するには API Key を設定してください。', apiKeyGateBtn: '設定する',
+                clearSearch: '検索をクリア', clearInput: '入力をクリア', sendMsg: '送信', apiKeyGateTitle: 'API Key の設定が必要です', apiKeyGateDesc: '現在のモデルはクラウドモデルです。チャットを開始するには API Key を設定してください。', apiKeyGateBtn: '設定する',
         
         detectingLocalVllm: '検出中…',
         
@@ -781,6 +781,7 @@ dictJa.uiKnowledge = {
 };
 
 Object.assign(dictJa.uiConversation, {
+  retryReply: '再生成',
   callingTool: name => `${name} を呼び出し中`,
   copyCode: 'コードをコピー',
   inputPlaceholder: '入力してください',

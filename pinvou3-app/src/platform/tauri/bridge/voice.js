@@ -98,6 +98,10 @@ function completeVoiceSubmission(operationId, sessionId, accepted) { return pinv
     const current = state.voiceInput || {};
     const operation = voiceOperations.get(current.operationId);
     if (!operation || operation.telemetryTerminal) return;
+    // Clearing the viewed session's composer must not terminate a result
+    // recorded for another materialized session: its notice and adoption
+    // provenance would silently vanish on return.
+    if (operation.sessionId && operation.sessionId !== state.activeSessionId) return;
     trackVoiceTerminal("voice_cancelled", operation);
     state.voiceInput = Object.assign({}, current, {
       telemetryTerminal: operation.telemetryTerminal,
@@ -783,6 +787,13 @@ function encodeWav(samples, sampleRate) { return pinvouSharedtauriVoice().encode
       };
       logVoicePipeline(diagnostic);
       if (activeVoiceInput !== session) return;
+      if (session.telemetryTerminal) {
+        // Abandoned mid-pipeline (the composer draft was cleared): the result
+        // must neither land in the cleared draft nor leave the UI stuck on an
+        // active status until the next recording.
+        setVoiceInputStatus("idle", { message: "", operationId: null });
+        return;
+      }
       session.voiceResultReady = !!finalText && !editUnchanged;
       if (finalText && !editUnchanged && typeof session.writeback === "function") {
         await session.writeback(finalText, session.draftBeforeStart, {
@@ -796,7 +807,13 @@ function encodeWav(samples, sampleRate) { return pinvouSharedtauriVoice().encode
         // state with completed here.
         if (activeVoiceInput !== session) return;
       }
-      if (session.telemetryTerminal) return;
+      if (session.telemetryTerminal) {
+        // Terminalized during the writeback await: the text has landed, but
+        // the completed notice must not revive an abandoned operation's UI
+        // state.
+        setVoiceInputStatus("idle", { message: "", operationId: null });
+        return;
+      }
       setVoiceInputStatus("completed", {
         message: finalText
           ? editUnchanged

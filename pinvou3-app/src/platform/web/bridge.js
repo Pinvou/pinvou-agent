@@ -5874,6 +5874,10 @@ function completeVoiceSubmission(operationId, sessionId, accepted) { return pinv
     const current = state.voiceInput || {};
     const operation = voiceOperations.get(current.operationId);
     if (!operation || operation.telemetryTerminal) return;
+    // Clearing the viewed session's composer must not terminate a result
+    // recorded for another materialized session: its notice and adoption
+    // provenance would silently vanish on return.
+    if (operation.sessionId && operation.sessionId !== state.activeSessionId) return;
     trackVoiceTerminal("voice_cancelled", operation, { stage: stage || "recognition" });
     state.voiceInput = Object.assign({}, current, {
       telemetryTerminal: operation.telemetryTerminal,
@@ -5957,6 +5961,13 @@ function encodeWav(samples, sampleRate) { return pinvouSharedweb().encodeWav(sam
       if (session.ownerKind === "chat" && state.activeSessionId !== session.sessionId) {
         throw voiceFlowError("context_mismatch", "writeback", "voice result discarded because active session changed");
       }
+      if (session.telemetryTerminal) {
+        // Abandoned mid-pipeline (the composer draft was cleared): the result
+        // must neither land in the cleared draft nor leave the UI stuck on an
+        // active status until the next recording.
+        setVoiceInputStatus("idle", { message: "", operationId: null });
+        return;
+      }
       session.voiceResultReady = true;
       if (typeof session.writeback === "function") {
         await session.writeback(text, session.draftBeforeStart, {
@@ -5991,7 +6002,10 @@ function encodeWav(samples, sampleRate) { return pinvouSharedweb().encodeWav(sam
       // Same as desktop: an operation terminalized during the writeback await
       // (e.g. accepted through another lane's settle) must not have its idle
       // reset overwritten by the completed notice.
-      if (session.telemetryTerminal) return;
+      if (session.telemetryTerminal) {
+        setVoiceInputStatus("idle", { message: "", operationId: null });
+        return;
+      }
       setVoiceInputStatus("completed", {
         message: mode === "task" ? (bt("voiceTaskSent") || bt("voiceWritten")) : bt("voiceWritten"),
         completedAt: Date.now(),

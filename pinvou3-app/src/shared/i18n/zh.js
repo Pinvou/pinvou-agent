@@ -300,7 +300,7 @@ export const dictZh = {
         modelContextWindow: '上下文窗口（tokens）',
 
 
-        clearSearch: '清除搜索',  sendMsg: '发送', apiKeyGateTitle: '需要配置 API Key', apiKeyGateDesc: '当前模型为云端模型，需要先配置 API Key 才能开始对话。', apiKeyGateBtn: '去配置',
+        clearSearch: '清除搜索', clearInput: '清除输入', sendMsg: '发送', apiKeyGateTitle: '需要配置 API Key', apiKeyGateDesc: '当前模型为云端模型，需要先配置 API Key 才能开始对话。', apiKeyGateBtn: '去配置',
 
         detectingLocalVllm: '检测中…',
 
@@ -804,6 +804,7 @@ dictZh.uiKnowledge = {
 
 // features/conversation 追加词条（uiConversation 已存在，合并而非覆盖）
 Object.assign(dictZh.uiConversation, {
+  retryReply: '重新生成',
   callingTool: name => `正在调用 ${name}`,
   copyCode: '复制代码',
   inputPlaceholder: '请输入',

@@ -8,6 +8,7 @@ import {
   Download,
   FileText,
   MessageCircle,
+  RotateCcw,
   Share2,
   X,
 } from '../../components/icons.jsx';
@@ -45,7 +46,7 @@ export function AssistantMessageFooter({ children }) {
   );
 }
 
-export function AssistantMessageActions({ resolveText, copy }) {
+export function AssistantMessageActions({ resolveText, copy, onRetry }) {
   const instanceId = useId().replaceAll(':', '');
   const [copyStatus, setCopyStatus] = useState('idle');
   const [menu, setMenu] = useState(null);
@@ -279,6 +280,13 @@ export function AssistantMessageActions({ resolveText, copy }) {
               : <Copy size={14} />}
           {copyStatus !== 'idle' && <span aria-live="polite">{copyLabel}</span>}
         </button>
+        {/* Regenerate the turn: the consumer decides eligibility (last turn only) and
+            re-sends it, so the button renders only when an onRetry handler is supplied. */}
+        {typeof onRetry === 'function' && (
+          <button type="button" data-testid="assistant-message-retry" onClick={onRetry} title={copy.retryReply} aria-label={copy.retryReply} className={actionClass}>
+            <RotateCcw size={14} />
+          </button>
+        )}
         <button
           ref={exportTriggerRef}
           id={triggerIds.export}
