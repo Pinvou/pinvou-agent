@@ -37,3 +37,15 @@ assert.doesNotMatch(chatSource, /\bfloatingVoice[A-Z]/, 'floating voice state an
 assert.equal(packageJson.scripts['test:floating-voice-drag'], undefined, 'obsolete floating voice drag test script must stay removed');
 
 console.log('voice_entry_policy: ok');
+
+// Abandon-on-clear: emptying a composer must sever the lane's pending voice
+// result — in-flight through the live voice state, completed-but-adoptable
+// through the operation registry — so a late transcription can neither land
+// in the cleared draft nor be adopted by an unrelated send. The registry
+// lookup must use the lane's real ownerKind: an ownerKind the bridge never
+// books silently disables the whole branch.
+assert.match(chatSource, /!String\(value \|\| ''\)\.trim\(\) && bridge\.voice && typeof bridge\.voice\.abandonVoiceResult === 'function'/, 'chat composer must abandon its pending voice result when emptied');
+assert.match(codexSource, /const pendingOperationId = \(nativeVoiceActive && nativeVoiceInput\.operationId\)/, 'codex composer must reach the in-flight operation through the live voice state');
+assert.match(codexSource, /bridge\.voice\.getVoiceOperationId\(activeId \|\| null, 'codex'\)/, 'codex composer must look up adoptable results under the codex ownerKind');
+assert.doesNotMatch(codexSource, /getVoiceOperationId\([^)]*'native'/, 'codex composer must not query an ownerKind the bridge never books');
+assert.doesNotMatch(codexSource, /getVoiceOperationId\([^)]*'acp'/, 'codex composer must not query an ownerKind the bridge never books');

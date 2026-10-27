@@ -157,9 +157,13 @@ jobs:
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # Hosted runners are single-disk (/ and /mnt share one ext4; the x64 image boots
-      # with only ~13-14G free); a cold release build (700+ crates, dep-level O2) once
-      # filled the disk (ENOSPC). Remove unused preinstalled SDKs before any toolchain, cache, or dependency lands.
+      # Hosted runners are single-disk (/ and /mnt share one ext4). The ENOSPC
+      # record (2026-09-13): with the then-16G /mnt swapfile in place, x64
+      # builds had only ~13-14G free and a cold release build (700+ crates,
+      # dep-level O2) filled the disk. The 2026-10-01 image probe measured
+      # 79-102G free at job start on x64/arm (see ci-memory-setup.sh); the
+      # 24G floor below is the fail-loud guard if the image regresses.
+      # Remove unused preinstalled SDKs before any toolchain, cache, or dependency lands.
       - name: Prepare disk space for the release build
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
@@ -328,9 +332,10 @@ jobs:
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # The ARM64 image has ample headroom (~34G free), so the base tier
-      # already clears the 24G floor; deleting the tool cache would buy
-      # little and only force setup-node to re-download Node afterwards.
+      # The ARM64 image has ample headroom (72G-era ~34G; the 2026-10-01
+      # probe measured 79-102G free at job start on x64/arm), so the base
+      # tier already clears the 24G floor; deleting the tool cache would
+      # buy little and only force setup-node to re-download Node afterwards.
       - name: Prepare disk space for the release build
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
@@ -485,8 +490,9 @@ jobs:
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # 同 build-linux-x64:x86_64 镜像只有 ~13-14G 空闲,交叉构建的工具链 +
-      # sysroot + 两个 cargo target 目录全部落在工作区内,先腾空间。
+      # 同 build-linux-x64:ENOSPC 事故(2026-09-13)时旧 16G swapfile 下仅
+      # ~13-14G 空闲(2026-10-01 探针:启动空闲 79-102G,见 ci-memory-setup.sh);
+      # 交叉构建的工具链 + sysroot + 两个 cargo target 目录全部落在工作区内,先腾空间。
       - name: Prepare disk space for the release build
         run: |
           sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \

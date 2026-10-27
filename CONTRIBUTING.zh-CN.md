@@ -38,7 +38,7 @@ git submodule update --init --recursive
 git commit -s
 ```
 
-修改或 rebase 已有提交时使用 `--signoff`。详情见 [DCO.md](DCO.md)。未签署的人工提交会被 CI 拦截；受信任的 Dependabot 和 GitHub Actions bot 提交，以及合并提交（多于一个父提交）除外。
+修改或 rebase 已有提交时使用 `--signoff`。详情见 [DCO.md](DCO.md)。`DCO` workflow 在 pull request 上校验每个人工提交的 `Signed-off-by` 尾部；受信任的 Dependabot 和 GitHub Actions bot 提交，以及合并提交（多于一个父提交）除外。该 workflow 只在 pull request 上运行，直推 `main` 不经过 DCO 校验，请坚持本地 `git commit -s`。另一条 commit-message 检查（`scripts/validate-commit-msg.py`）只校验提交信息格式，不检查签署。
 
 ## 改动应放在哪里
 

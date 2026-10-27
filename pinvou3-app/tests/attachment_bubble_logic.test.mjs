@@ -146,11 +146,10 @@ assert.match(
   'UserBubble must render the lazy SessionMessageCard for delivered messages, WITH the jump wiring — dropping knownSessionIds/onOpenSession silently degrades every card to its non-interactive arm while "attributed, jumpable sender card" stays claimed (round-19 MAJOR-4, mutation-verified)',
 );
 // Round-19 minor 17: the card is deferred out of the main entry so the relay
-// web build stays under its enforced entry budget (MAIN_ENTRY_BUDGET_BYTES,
-// 502 kB — see vite.config.mjs; deliberately above Vite's informational
-// 500 kB chunk warning, which fires and is expected) — a future static
-// re-import would only fail at build time (CI), never in this suite; the
-// tripwire keeps the lazy loader honest locally.
+// web build stays under its enforced entry budget (the per-mode ceilings in
+// vite.config.mjs) — a future static re-import would only fail at build time
+// (CI), never in this suite; the tripwire keeps the lazy loader honest
+// locally.
 assert.doesNotMatch(
   chatViewSource,
   /import\s*\{[^}]*SessionMessageCard[^}]*\}\s*from\s*'\.\/SessionMessageCard\.jsx'/,

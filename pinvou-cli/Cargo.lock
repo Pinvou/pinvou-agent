@@ -6918,7 +6918,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou-cli"
-version = "0.10.15"
+version = "0.10.16"
 dependencies = [
  "adapter-gaia",
  "adapter-smoke",
@@ -6941,7 +6941,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.10.15"
+version = "0.10.16"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7127,7 +7127,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.10.15"
+version = "0.10.16"
 dependencies = [
  "age",
  "agent-backend-api",

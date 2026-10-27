@@ -1232,15 +1232,15 @@ fn bundle_store_on_disconnected(id: &str) {
 /// package and clear `degraded` (reconnect repairs the record). Mirror-write
 /// failures never fail the main operation (the GUI only logs them).
 fn bundle_store_on_connected(id: &str) {
-    // Byte-for-byte the app's own write: `installed_now` with
-    // `source=Builtin` and NO asset pins. The GUI never writes `assets` on a
-    // connect — pins only exist via the first-boot import path
-    // (`store::legacy_cli_records`), which reads the real files on disk
-    // rather than trusting a record — and `upsert_preserving` keeps an
-    // existing record's `assets` verbatim, so pins written here would (a)
-    // create first-connect records the GUI would never create and (b) be
-    // silently dropped on every reconnect anyway. Content integrity on this
-    // lane is the download's own SHA-256 verification, same as the GUI.
+    // `installed_now` with `source=Builtin` and deliberately NO asset pins:
+    // the desktop connect path records a pin only after hashing the on-disk
+    // binary against the lock table (marketplace `verified_cli_asset`,
+    // crate-private to the app lib), and re-implementing that hash-and-compare
+    // here would duplicate it for no integrity gain — this lane's content
+    // guarantee is the download's own SHA-256 verification, same as the GUI.
+    // `upsert_preserving` keeps an existing record's `assets` verbatim when
+    // this writer carries none, so a GUI-recorded pin survives headless
+    // connects; consumers must tolerate records with an empty `assets` list.
     let record = BundleRecord::installed_now(id, BundleSource::Builtin);
     // Same disclose-don't-swallow rule as the disconnected mirror above.
     if let Err(error) = BundleStore::new().upsert_preserving(record) {

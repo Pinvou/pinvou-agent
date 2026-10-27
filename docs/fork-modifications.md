@@ -179,6 +179,7 @@
 | `0bc868ff0` | T4 修复 | drain-cap 测试的四个名字（`drain_pipe`/`DRAIN_CAPTURE_CAP`/`DRAIN_CAP_TRUNCATED_NOTE`/`Arc`/`Mutex`）不再经 tests mod 的 unix 门控 glob（#77 同形）解析，改为显式导入：测试本身平台无关（tokio duplex），Windows lib test 编译此前 7 处 E0425/E0433（#95） |
 | `906ffa979` | T5 修复 | Windows 硬链接计数改走稳定句柄 API：`number_of_links` 仍 unstable（`windows_by_handle`），父仓 Windows 腿 E0658；以 `GetFileInformationByHandle` 读取（与 Runtime store 身份检查同机制），无法打开/查询按单链接放行、由归档写入端的流式读取大声暴露真实问题；unix/fallback 臂仅增加未用 path 参数保持单一调用点（#94） |
 | `7624cd3db` | T4 特性 | human-wait 墙钟暂停（自主 #75 剥离，按 12-agent 对抗复审重建）：可交付决策面（runtime API 的 `decide_approval`/`submit_user_input`）上的审批/用户输入等待窗暂停任务墙钟并让 idle 时钟窗闭后全新重计，TUI 私有任务运行时无投递通道故不武装该窗、墙钟照常到期；聚合 24h fail-safe 上限跨整任务求和，超限以 `HumanWaitTimeout` 终态；parked 轮询自 200ms 捕获节奏倍退至 2s 上限、决策到达广播提前唤醒；逐 claim 突变验证红绿互钉（#78） |
+| `f27672935` | T1 修复 | 同 wire model/protocol 的 model-aware 请求及 subagent/fleet rebind 保留宿主冻结 route limits，避免无宿主 overrides 的静态重解析将声明输出额度降回未知模型 8192 默认钳制；跨模型/协议继续重建（#107，公开提交未含 DCO trailer） |
 | `7d2636993` | T2 fix | Preserve shell defaults when task environment overlays are merged; explicit Windows names override case-insensitively. CodeWhale#115 adds generic overlay and Windows foreground/background Python stdio regressions; child-env sanitization and public signatures are unchanged. |
 | `e9a7f48da` | T2 fix | Preserve failed tool results as `is_error:true` during history recording. Existing upstream round-trip regression covers HTTP/tool errors, success and schema-loaded non-execution. CodeWhale#116; no public signature/dependency change. |
 | `ea9fdc90f` | T2 help/contract | Document the already supported Web JSONPath subset; one schema-description string changes, with a resultful parser-contract regression. No execution/parser/API/dependency change (CodeWhale#117). |
@@ -196,6 +197,7 @@
 
 - 对宿主公开 `AppMode`、`ApprovalMode`、Automation、Task、route 和 worker ledger API。当前兼容 facade 还包含 18 个 `pub mod`，父仓全部 Rust 源码中有 61 个文件、340 处直接引用；这些模块作为不稳定下游兼容桥刻意不进入生成 API 文档。这是已登记的收窄债务，不在本次热修中做破坏性改名。
 - `resolve_runtime_route_with_limits` 保留 wire model、context/output 上限与 embedding alias。
+- #107 的 `client.rs` 保留同模型请求及同 wire model/protocol rebind 的冻结宿主额度；跨模型仍重解析，协议改变仍走既有重建路径。本轮随集成分支继承已合入的底座修复，gitlink 无独有增量，不修改底座源码、配置或依赖；保留已有下列两条结果式测试和对应指纹，不新增底座测试。
 - `EngineConfig.session_id` 在 Engine spawn 前绑定，所有子智能体/工作流事件带 owner session 并由宿主按 owner 过滤。
 - `EngineHandle::steer` 返回 opaque id；`withdraw_steer` 区分已撤回与非 pending；中断、停止、压缩、换会话和 Engine drop 都使每个 id 恰好进入 committed/dropped 终态。
 - `CancelSubAgents` 对当前 session 的子智能体做幂等批量取消。
@@ -206,6 +208,8 @@
 ### 关键测试
 
 - `forkguard_embedding_route_limits_preserve_wire_alias`
+- `client::tests::model_aware_same_model_request_keeps_host_declared_route_limits`
+- `client::tests::rebinding_the_same_model_keeps_host_declared_route_limits`
 - `forkguard_steer_lifecycle_withdrawal_is_bounded_and_prevents_commit`
 - `forkguard_steer_lifecycle_late_withdraw_reconciles_committed_state`
 - `forkguard_steer_channel_commits_live_and_drops_withdrawn_input_in_turn_loop`
@@ -422,3 +426,13 @@ The public maintenance branch advanced by five reviewed squashes — #118 `a96fd
 - #122 (deps) fixes RUSTSEC-2026-0381/0382/0383 via an in-range lock refresh, drops oauth2's bundled reqwest client from `codewhale-tui` (`default-features = false`; all HTTP still goes through the tui's own client), and migrates `codewhale-secrets` from keyring 3 to keyring 4.2. The v1 `Entry`/`Error` API is unchanged, so no parent adapter is needed; on Linux the keyutils-persistent write-through cache is dropped and the Secret Service collection becomes the single durable store (keyring 4's zbus Secret Service store enables secret-service's crypto-rust feature itself, so session encryption stays RustCrypto with no direct secret-service dependency in the crate). The parent `Cargo.lock` is regenerated in the same PR because the oauth2 feature set and the keyring major both move inside the parent's dependency graph.
 
 Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f27672935` and #116 `e9a7f48da1` remain the only missing-footer exceptions. Measured drift at this head: 520 files, +89901/-39349, net +50552; 253 distinct `forkguard_*` names (floor 64). The immutable r3 closure tag remains `61cb769be`. CodeWhale-side review receipts for #118/#119/#122 live in their CodeWhale PRs; this register records the consumed public state and does not re-claim those execution boundaries for the parent tree beyond the parent gates run in this PR.
+
+### #118 已集成输出恢复的范围与守护（#757）
+
+- 本节描述父仓 #796 已消费的公开 #118 squash `a96fdec8e`（由当前 `6e1ee88ee` 包含），不是候选引用升级。只恢复到达引擎的返回正文；生产端上限继续保留：`git.rs`/`git_history.rs` 各为 40,000 字符，`test_runner.rs` 每流 40,000 字符，`verifier.rs` 每 gate 的 stdout/stderr 各为 16,000 字符，`shell_output.rs` 的 `MAX_OUTPUT_SIZE` 为 30,000 字节；`tasks.rs` 构造 gate DTO 前将每流 summary 限制为 900 字符。无 active task 时 `log_path` 为空，不保存完整命令日志；引擎 artifact 只保全返回 DTO，不能恢复生产端此前丢弃的尾部。有 `log_path` 时，该路径才是单独的命令日志。
+- 已集成的不可变 artifact 私有创建覆盖全引擎保全路径，不限于 Web：Unix 临时 inode 在写入正文和通过硬链接发布之前以 `0600` 创建（umask 仍可进一步收紧）；不追溯修改既有文件权限，Windows 沿用继承 ACL。本 PR 记录现有行为，不新增权限变更。
+- 已集成实现有意保留的上游差异：`evidence_available` 预览仅在当前路由预算内原样透传，超限时复用原引用重新缩放，上游 `3e39820f5` 为无条件透传；子代理逐行摘要（含 route/handle 投影）保留固定边界；`run_verifiers` 最多保留 12 项 gate、每项 600 字符 detail，不采用上游缩放，也不输出 parsed 级或逐 gate 的 `log_path`；`run_tests` 按剩余预算分配输出流，不设上游逐流 600 字符下限。既有 `task_gate_run` 的 `log_path` 保留。
+- 原生搜索回答链仍为 2,048/4,096 token 上限，本切片未增加 provider length-stop 标记。Responses 新执行使用引擎视图，但没有新增旧历史 wire 兜底；Chat Completions 旧历史兜底与路由无关。历史 `tool_result_max_bytes` 配置在内联预算中按 Unicode 标量解释，不是 UTF-8 字节上限；兼容迁移尚未完成。
+- 后续边界分别由 #769（可选检索摘要校验）、#770（极小预算尾行、字符/字节及恢复后 route/wire）、#771（artifact 配额、transcript 重复、保留/七天检索到期）、#772（生产端上限、planner 可达性、上游差异，以及 composer-bang 保存失败、相对路径大小观测、旧行数回退和 /status 指标）跟踪；没有把这些后续项冒称已完成。native_memory、handle、lsp 和子代理协调在引擎前丢弃的尾部也不能恢复；完整首次 fetch 信封不保证后续路由缩小时所有 Web 信封重新发布引用。
+- 本 PR 只在父仓 main 已有指纹之外补充 24 项 T2 检查；旧候选新增的 26 项中已有两项进入父仓 main，其余仍能匹配当前公开树。它们覆盖结构化结果遗漏、恢复提示、真实 gate/子代理 DTO、完整 fetch 信封、不可变 artifact、检索激活及串行/并行/聚合派发合同；不改生产代码、gitlink、维护计数、已有谓词或执行层。既有底座原生测试/变异证据仍只属于其原提交；本轮指纹检查不等于重新执行这些原生测试，也不构成发布验证。
+- 历史变异验证工作流保留在 CodeWhale 的验证专用分支 `validation/returned-result-20261024`，提交为 `b4eb108335a99556429b11191b9a2dabadbd23c8`（六项指定测试 × 正常分支及三个反例）。它相对当时源码提交只改验证工作流，不属于已合入的生产 CI，也不在本 PR 引入；本次核实该公开分支仍指向此提交，不将旧执行回执扩展为当前底座重新执行。

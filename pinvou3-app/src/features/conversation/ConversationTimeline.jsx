@@ -5,6 +5,7 @@ import { StatusDot } from '../../components/StatusDot.jsx';
 import { zhDict } from '../../shared/i18n.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
+import { splitAttachmentLine } from '../attachments/attachment-message.js';
 import { useThrottledValue } from './useThrottledValue.js';
 import { useConversationSecondClock } from '../../hooks/useConversationSecondClock.js';
 import {
@@ -871,6 +872,17 @@ function isEqualConversationValue(left, right) {
   return true;
 }
 
+// Regenerate re-sends the raw turn text through editLastTurn, which has no
+// attachments surface: a turn carrying an attachment marker line would drop
+// its files and resend the marker as literal body text, and empty text has
+// nothing to re-send. Neither renders a retry control.
+function retryHandlerForTurn(onRetry, turn) {
+  const userText = String(turn.userText || '');
+  const retryable = typeof onRetry === 'function' && !!userText.trim()
+    && splitAttachmentLine(userText).attachments.length === 0;
+  return retryable ? () => onRetry(turn) : undefined;
+}
+
 /**
  * @param {Record<string, unknown>} prev - previous props
  * @param {Record<string, unknown>} next - next props
@@ -913,6 +925,7 @@ function ConversationUserQuotes({ quotes, hasBody }) {
 function ConversationTurnView({
   turn,
   virtualized = false,
+  onRetry,
   now,
   pendingByTool = EMPTY_PENDING_BY_TOOL,
   onRespond = noopOnRespond,
@@ -961,6 +974,7 @@ function ConversationTurnView({
   const assistantFooterVisible = !running
     && (assistantAvailable || turn.lifecycleKnown || turn.completedAt || turn.error);
   const assistantRowVisible = running || presentation.length > 0 || assistantFooterVisible;
+  const retryHandler = retryHandlerForTurn(onRetry, turn);
   const userContent = renderUser && turn.userItem
     ? renderUser(turn.userItem, turn)
     : (turn.userText || userAttachments.length || userQuotes.length)
@@ -1032,7 +1046,11 @@ function ConversationTurnView({
           })}
           {assistantFooterVisible && <AssistantMessageFooter>
             {assistantAvailable && (
-              <AssistantMessageActions resolveText={() => assistantResponseText(turn)} copy={c} />
+              <AssistantMessageActions
+                resolveText={() => assistantResponseText(turn)}
+                copy={c}
+                onRetry={retryHandler}
+              />
             )}
             {(turn.lifecycleKnown || turn.completedAt || turn.error) && <>
               <ConversationStatusBadge status={turn.status} copy={c} />
@@ -1245,7 +1263,13 @@ export function ConversationTimeline({
         {turns.map((turn, index) => (
           <React.Fragment key={turn.id}>
             {renderBeforeTurn?.(turn, index)}
-            <ConversationTurn turn={turn} {...props} virtualized={false} />
+            {/* Regenerate targets the newest turn only, so older turns never render a retry control. */}
+            <ConversationTurn
+              turn={turn}
+              {...props}
+              virtualized={false}
+              onRetry={index === turns.length - 1 ? props.onRetry : undefined}
+            />
           </React.Fragment>
         ))}
       </>
@@ -1272,7 +1296,12 @@ export function ConversationTimeline({
         }}
       >
         {beforeTurn}
-        <ConversationTurn turn={turn} {...props} virtualized />
+        <ConversationTurn
+          turn={turn}
+          {...props}
+          virtualized
+          onRetry={virtualRow.index === turns.length - 1 ? props.onRetry : undefined}
+        />
       </div>
     );
   });
@@ -1289,7 +1318,12 @@ export function ConversationTimeline({
         }}
       >
         {renderBeforeTurn?.(liveTurn, liveTurnIndex)}
-        <ConversationTurn turn={liveTurn} {...props} virtualized />
+        <ConversationTurn
+          turn={liveTurn}
+          {...props}
+          virtualized
+          onRetry={liveTurnIndex === turns.length - 1 ? props.onRetry : undefined}
+        />
       </div>,
     );
   }

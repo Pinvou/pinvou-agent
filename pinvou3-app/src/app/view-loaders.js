@@ -1,19 +1,20 @@
 // Lazy loading for low-frequency views and overlays: the typical user path is
 // chat, so the Settings / Codex / card pool / tool store / scheduled /
-// knowledge / monitor / search views, the search overlay, the project dialogs
-// and the rare global dialogs load only when used (rolldown splits dynamic
-// imports automatically). VIEW_LOADERS is the single dynamic-import exit:
-// main.jsx's React.lazy and the hover / focus / pre-open prefetches share the
-// same factories so they hit the same module cache, and DetachedShell reuses
-// the view factories for torn-off windows. This module must not statically
-// import any of these components, or they would be pinned back into the main
-// chunk.
+// browser / knowledge / monitor / search views, the search overlay, the
+// project dialogs and the rare global dialogs load only when used (rolldown
+// splits dynamic imports automatically). VIEW_LOADERS is the single
+// dynamic-import exit: main.jsx's React.lazy and the hover / focus / pre-open
+// prefetches share the same factories so they hit the same module cache, and
+// DetachedShell reuses the view factories for torn-off windows. This module
+// must not statically import any of these components, or they would be pinned
+// back into the main chunk.
 export const VIEW_LOADERS = {
   settings: () => import('../features/settings/SettingsView.jsx'),
   codex: () => import('../features/codex/CodexAcpView.jsx'),
   cardpool: () => import('../features/personas/Personas.jsx'),
   toolStore: () => import('../features/tools/ToolStoreView.jsx'),
   scheduled: () => import('../features/scheduled/ScheduledTasksView.jsx'),
+  browser: () => import('../features/browser/BrowserView.jsx'),
   knowledge: () => import('../features/knowledge/KnowledgeView.jsx'),
   monitor: () => import('../features/monitor/MonitorView.jsx'),
   search: () => import('../features/search/SearchView.jsx'),

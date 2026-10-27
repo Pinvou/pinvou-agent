@@ -3,7 +3,7 @@
 //! 职责边界——本模块只管「向 upstream 探一次模型健康 + 拉本地 vLLM `/metrics`」，
 //! 不涉及系统自指标采集（CPU/GPU/内存见 [`super::self_metrics`]）。
 //! Entrypoints: [`active_model_snapshot`] / [`snapshot_for_model_config`].
-//! 对外类型：[`VllmSnapshot`] / [`VllmStatus`]。
+//! 对外类型：[`VllmSnapshot`] / [`VllmStatus`] / [`HealthStatus`] / [`MonitorDiagnostic`]。
 
 use std::time::Duration;
 
@@ -13,8 +13,15 @@ use crate::core::model_endpoint::{is_anthropic_endpoint, models_probe_url, strip
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
 use crate::platform::prefs::{ModelPreset, SavedModel, UserPrefs};
 
+/// Upper bound on a buffered `/metrics` body. The poll runs at ~1 Hz and
+/// reqwest buffers the whole response in `text()`, so a misbehaving local
+/// endpoint must not balloon memory; a real vLLM export is tens to a few
+/// hundred KiB. Applies to the declared `Content-Length` only — chunked
+/// responses are bounded by the 3 s request timeout instead.
+const MAX_METRICS_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
 /// 当前模型运行态 + 本地 vLLM 指标。字段名暂保留 vllm 兼容前端。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct VllmSnapshot {
     pub status: VllmStatus,
     /// vLLM `/v1/models` 返回的真实模型名。
@@ -27,9 +34,35 @@ pub struct VllmSnapshot {
     pub target_kind: String,
     /// vLLM Prometheus 指标是否适用(= `target_kind == "local"`);云端 API 无 /metrics。
     pub metrics_applicable: bool,
-    /// `verified` / `unverified` / `missing_api_key` / `auth_failed` / `offline` / `mismatch`。
-    pub health_status: String,
+    /// The authoritative health verdict. The enum renders through serde to
+    /// the established snake_case wire strings (the values the frontend and
+    /// CLI already consume, unchanged); an enum rather than a `String` so the
+    /// producer and its consumers cannot drift on a literal (round-2 review:
+    /// a one-letter typo silently dropped a diagnostic with zero red tests).
+    pub health_status: HealthStatus,
+    /// Refinement of `health_status`, with the invariant
+    /// `diagnostic.is_some() == (health_status == HealthStatus::Offline)`:
+    /// `offline` refines to `models_http_error` (with `http_status`) or
+    /// `models_unreachable` (with `transport` / `endpoint`); every other
+    /// verdict is self-describing and carries `None`. Entries hold only
+    /// machine-decidable fields, never prose — UI copy maps `code` through
+    /// `shared/i18n.js` (see `MonitorDiagnostic`).
+    pub diagnostic: Option<MonitorDiagnostic>,
+    /// Non-fatal notices with stable codes, independent of the health verdict:
+    /// `metrics_unavailable` when a local `/metrics` is unreachable or its
+    /// body parses to no vLLM series (an all-`None` metric set is never left
+    /// silently readable as "no traffic"); `context_window_inferred` when the
+    /// display window came from model-name / preset inference — this one
+    /// fires for remote targets too (`metrics_applicable == false`), so never
+    /// gate rendering of this vec on metrics applicability.
+    pub notices: Vec<MonitorDiagnostic>,
     pub max_model_len: Option<u32>,
+    /// vLLM queue-depth gauges (the Busy source for `status`; the CLI human
+    /// line renders them as `queue=R/W`). Summed across every series of the
+    /// metric, so under data-parallel (`engine="0"/"1"`) this is the fleet
+    /// total in flight, not engine 0's queue.
+    pub num_requests_running: Option<f64>,
+    pub num_requests_waiting: Option<f64>,
     /// prefix cache 原始计数器（hits_total / queries_total）。前端「清除统计」
     /// 用基准点对各累计 counter 做减法重算命中率,必须拿到原始分子/分母,
     /// 只给百分比无法做区间重算。
@@ -42,9 +75,10 @@ pub struct VllmSnapshot {
     pub ttft_count: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VllmStatus {
+    #[default]
     Offline,
     Ready,
     Busy,
@@ -52,42 +86,68 @@ pub enum VllmStatus {
     Mismatch,
 }
 
+/// Health verdict. The serde rendering (`rename_all = "snake_case"`) is
+/// byte-identical to the pre-existing wire strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    Verified,
+    AuthFailed,
+    #[default]
+    Offline,
+    MissingApiKey,
+    Unverified,
+    Mismatch,
+}
+
+impl HealthStatus {
+    /// Human label, byte-identical to the serde rendering (the CLI human line
+    /// uses it). Pinned by the CLI's
+    /// `health_label_matches_the_serde_rendering_of_every_variant` together
+    /// with explicit literal asserts, so a `rename_all` change cannot move the
+    /// wire silently.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HealthStatus::Verified => "verified",
+            HealthStatus::AuthFailed => "auth_failed",
+            HealthStatus::Offline => "offline",
+            HealthStatus::MissingApiKey => "missing_api_key",
+            HealthStatus::Unverified => "unverified",
+            HealthStatus::Mismatch => "mismatch",
+        }
+    }
+}
+
+/// A structured diagnostic entry: machine-decidable facts only. `code` is the
+/// stable classification and UI copy must map it through `shared/i18n.js`;
+/// the snapshot carries no prose — reqwest's `Display` embeds the full
+/// request URL (a user base_url may carry userinfo, a token-shaped query, or
+/// a token path segment), so every entry is built from parsed fields and
+/// never from error text.
+#[derive(Debug, Clone, Serialize)]
+pub struct MonitorDiagnostic {
+    pub code: String,
+    /// Status code when the failure is an HTTP error.
+    pub http_status: Option<u16>,
+    /// Transport class when the failure is a transport error. Same vocabulary
+    /// as `core::model_endpoint::model_probe_transport_code` (`timeout` /
+    /// `dns_failed` / `connection_refused` / `network_error`), but decided
+    /// from reqwest's structured flags: a real reqwest error's `Display`
+    /// omits the source chain, so that helper's string arms are dead for it.
+    pub transport: Option<&'static str>,
+    /// The `scheme://host:port` subset of the target — the credential-safe
+    /// part of the URL: userinfo is stripped by reqwest at request build, and
+    /// the path and query are dropped here by construction.
+    pub endpoint: Option<String>,
+}
+
 impl VllmSnapshot {
     /// 后端在线判定(live dot / CLI `monitor status` 的 `vllm_online` 共用):
     /// 健康态 `verified` 且进程 Ready/Busy。原先该谓词在 GUI command 与
     /// CLI status_payload 各自手写一遍字面量匹配,单点收口避免字符串漂移。
     pub fn is_online(&self) -> bool {
-        self.health_status == "verified"
+        self.health_status == HealthStatus::Verified
             && matches!(self.status, VllmStatus::Ready | VllmStatus::Busy)
-    }
-
-    /// 构造一份带核心标识字段的快照,所有 vLLM `/metrics` 派生字段(`prefix_cache_*` /
-    /// `ttft_*` / `max_model_len`)缺省 None。调用方(健康探测的各早退分支 +
-    /// happy-path 起点)共享同一组「指标缺失」默认值,happy-path 再逐项覆盖真实解析值。
-    ///
-    /// 这是原来散落在 `snapshot_for_model_config` 中的「离线 / 早退」构造块与
-    /// `base_model_snapshot` helper 的收敛入口——行为保持:字段值与原三处构造完全一致。
-    fn with_base(
-        status: VllmStatus,
-        model: Option<String>,
-        configured_model: Option<String>,
-        target_kind: &str,
-        metrics_applicable: bool,
-        health_status: &str,
-    ) -> Self {
-        VllmSnapshot {
-            status,
-            model,
-            configured_model,
-            target_kind: target_kind.to_string(),
-            metrics_applicable,
-            health_status: health_status.to_string(),
-            max_model_len: None,
-            prefix_cache_hits: None,
-            prefix_cache_queries: None,
-            ttft_sum_s: None,
-            ttft_count: None,
-        }
     }
 }
 
@@ -210,51 +270,67 @@ async fn snapshot_for_model_config(
             if r.status() == reqwest::StatusCode::UNAUTHORIZED
                 || r.status() == reqwest::StatusCode::FORBIDDEN =>
         {
-            return Some(VllmSnapshot::with_base(
-                VllmStatus::Offline,
-                configured_model.clone(),
+            // auth_failed is the verdict itself; no refinement diagnostic.
+            return Some(VllmSnapshot {
+                status: VllmStatus::Offline,
+                model: configured_model.clone(),
                 configured_model,
-                target_kind,
+                target_kind: target_kind.to_string(),
                 metrics_applicable,
-                "auth_failed",
-            ));
+                health_status: HealthStatus::AuthFailed,
+                ..VllmSnapshot::default()
+            });
         }
-        Some(Ok(_)) => {
+        Some(Ok(r)) => {
             if target_kind == "local" {
-                return Some(VllmSnapshot::with_base(
-                    VllmStatus::Offline,
-                    configured_model.clone(),
+                return Some(VllmSnapshot {
+                    status: VllmStatus::Offline,
+                    model: configured_model.clone(),
                     configured_model,
-                    target_kind,
+                    target_kind: target_kind.to_string(),
                     metrics_applicable,
-                    "offline",
-                ));
+                    health_status: HealthStatus::Offline,
+                    diagnostic: Some(MonitorDiagnostic {
+                        code: "models_http_error".to_string(),
+                        http_status: Some(r.status().as_u16()),
+                        transport: None,
+                        endpoint: endpoint_root(Some(r.url())),
+                    }),
+                    ..VllmSnapshot::default()
+                });
             }
             None
         }
-        Some(Err(_)) => {
+        Some(Err(err)) => {
             if target_kind == "local" {
-                return Some(VllmSnapshot::with_base(
-                    VllmStatus::Offline,
-                    configured_model.clone(),
+                // Structured detail instead of reqwest's `Display`: the Display
+                // embeds the full request URL (a user base_url may carry
+                // userinfo, a token-shaped query, or a token path segment, and
+                // the generic scrub misses digit-free values), so the
+                // diagnostic is built from parsed fields only — `endpoint` is
+                // the scheme/host/port subset of `err.url()`; no error text
+                // ever enters the snapshot.
+                return Some(VllmSnapshot {
+                    status: VllmStatus::Offline,
+                    model: configured_model.clone(),
                     configured_model,
-                    target_kind,
+                    target_kind: target_kind.to_string(),
                     metrics_applicable,
-                    "offline",
-                ));
+                    health_status: HealthStatus::Offline,
+                    diagnostic: Some(MonitorDiagnostic {
+                        code: "models_unreachable".to_string(),
+                        http_status: None,
+                        transport: Some(transport_class(&err)),
+                        endpoint: endpoint_root(err.url()),
+                    }),
+                    ..VllmSnapshot::default()
+                });
             }
             None
         }
-        None if target_kind == "local" => {
-            return Some(VllmSnapshot::with_base(
-                VllmStatus::Offline,
-                None,
-                configured_model,
-                target_kind,
-                metrics_applicable,
-                "offline",
-            ));
-        }
+        // `None` only happens for remote targets with no API key (the probe
+        // is skipped for them); local targets always probe above, so no
+        // local arm is needed here.
         None => None,
     };
 
@@ -311,23 +387,12 @@ async fn snapshot_for_model_config(
         None => None,
     };
     let metrics_text = match metrics_resp {
-        Some(r) if r.status().is_success() => r.text().await.ok(),
+        Some(r) if r.status().is_success() => match r.content_length() {
+            Some(n) if n > MAX_METRICS_BODY_BYTES => None,
+            _ => r.text().await.ok(),
+        },
         _ => None,
     };
-    // The display window goes through the unified precedence (see
-    // display_context_window): an explicit user declaration wins first, a local
-    // deployment's probe value min-clamps; a cloud probe value (usually a list
-    // entry from a proxy/gateway, unrelated to or stale for the configured
-    // model) must not override the user declaration, otherwise saving 1M gets
-    // the progress bar knocked back to 131K. Probe and catalog/preset fallbacks
-    // only fill in when no declaration exists.
-    let inferred = infer_context_window(
-        preset,
-        configured_model.as_deref().or(served_model.as_deref()),
-    );
-    let (max_model_len, _window_from_inference) =
-        display_context_window(configured_context, target_kind, max_model_len, inferred);
-
     let running = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:num_requests_running"));
@@ -342,11 +407,50 @@ async fn snapshot_for_model_config(
     let prefix_cache_queries = metrics_text
         .as_deref()
         .and_then(|t| parse_prom_metric(t, "vllm:prefix_cache_queries_total"));
-
     let perf = metrics_text
         .as_deref()
         .map(parse_perf_metrics)
         .unwrap_or_default();
+
+    // An unreachable /metrics and a /metrics that answers 200 with a body no
+    // vLLM series parses leave every metric field None alike; flag both so an
+    // all-None snapshot is never silently read as "no traffic".
+    let mut notices = Vec::new();
+    if metrics_applicable
+        && running.is_none()
+        && waiting.is_none()
+        && prefix_cache_hits.is_none()
+        && prefix_cache_queries.is_none()
+        && perf == PerfMetrics::default()
+    {
+        notices.push(MonitorDiagnostic {
+            code: "metrics_unavailable".to_string(),
+            http_status: None,
+            transport: None,
+            endpoint: None,
+        });
+    }
+    // The display window goes through the unified precedence (see
+    // display_context_window): an explicit user declaration wins first, a local
+    // deployment's probe value min-clamps; a cloud probe value (usually a list
+    // entry from a proxy/gateway, unrelated to or stale for the configured
+    // model) must not override the user declaration, otherwise saving 1M gets
+    // the progress bar knocked back to 131K. Probe and catalog/preset fallbacks
+    // only fill in when no declaration exists.
+    let inferred = infer_context_window(
+        preset,
+        configured_model.as_deref().or(served_model.as_deref()),
+    );
+    let (max_model_len, window_from_inference) =
+        display_context_window(configured_context, target_kind, max_model_len, inferred);
+    if window_from_inference {
+        notices.push(MonitorDiagnostic {
+            code: "context_window_inferred".to_string(),
+            http_status: None,
+            transport: None,
+            endpoint: None,
+        });
+    }
 
     let mut status = match (running, waiting) {
         (Some(r), _) if r > 0.0 => VllmStatus::Busy,
@@ -363,38 +467,79 @@ async fn snapshot_for_model_config(
         );
     }
     let health_status = match status {
-        VllmStatus::Mismatch => "mismatch",
+        VllmStatus::Mismatch => HealthStatus::Mismatch,
+        // No `Offline` arm: `status` is only ever Ready/Busy here (built from
+        // the queue gauges, then possibly downgraded to Mismatch); every
+        // Offline snapshot exits through the early returns above, which carry
+        // the offline refinement diagnostic themselves.
         _ if target_kind == "remote"
             && api_key
                 .map(str::trim)
                 .filter(|key| !key.is_empty())
                 .is_none() =>
         {
-            "missing_api_key"
+            HealthStatus::MissingApiKey
         }
-        _ if target_kind == "remote" && served_model.is_none() => "unverified",
-        _ => "verified",
+        _ if target_kind == "remote" && served_model.is_none() => HealthStatus::Unverified,
+        _ => HealthStatus::Verified,
     };
 
-    // happy-path:从带默认值的 base 起步,再逐项覆盖真实解析值。
-    let mut snapshot = VllmSnapshot::with_base(
+    // Happy path: a full literal with no `..default()`, so adding a field to
+    // the struct fails to compile here (the early exits use struct-update and
+    // stay quiet; the CLI key-set pin catches the widening on that side).
+    Some(VllmSnapshot {
         status,
-        if target_kind == "remote" {
+        model: if target_kind == "remote" {
             configured_model.clone().or(served_model)
         } else {
             served_model
         },
         configured_model,
-        target_kind,
+        target_kind: target_kind.to_string(),
         metrics_applicable,
         health_status,
-    );
-    snapshot.max_model_len = max_model_len;
-    snapshot.prefix_cache_hits = prefix_cache_hits;
-    snapshot.prefix_cache_queries = prefix_cache_queries;
-    snapshot.ttft_sum_s = perf.ttft_sum_s;
-    snapshot.ttft_count = perf.ttft_count;
-    Some(snapshot)
+        diagnostic: None,
+        notices,
+        max_model_len,
+        num_requests_running: running,
+        num_requests_waiting: waiting,
+        prefix_cache_hits,
+        prefix_cache_queries,
+        ttft_sum_s: perf.ttft_sum_s,
+        ttft_count: perf.ttft_count,
+    })
+}
+
+/// The `scheme://host:port` subset of a URL — the part that may safely enter
+/// the snapshot: reqwest strips userinfo at request build, and the path and
+/// query are dropped here by construction, so a base_url carrying credentials
+/// in any of those positions cannot leak into a diagnostic.
+fn endpoint_root(url: Option<&reqwest::Url>) -> Option<String> {
+    let url = url?;
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(port) => format!("{}://{host}:{port}", url.scheme()),
+        None => format!("{}://{host}", url.scheme()),
+    })
+}
+
+/// Transport class of a failed request, from reqwest's structured flags
+/// rather than its `Display` text (a real reqwest error's Display omits the
+/// source chain, so `model_probe_transport_code`'s string arms are dead for
+/// it). Vocabulary kept in step with that helper.
+fn transport_class(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timeout"
+    } else if err.is_dns() {
+        // Must precede `is_connect()`: hyper-util files resolver failures
+        // under its Connect kind too, so the DNS check only classifies if it
+        // runs first.
+        "dns_failed"
+    } else if err.is_connect() {
+        "connection_refused"
+    } else {
+        "network_error"
+    }
 }
 
 fn parse_models_response(
@@ -631,7 +776,7 @@ fn infer_context_window(preset: ModelPreset, model: Option<&str>) -> Option<u32>
 }
 
 /// 推理性能相关的累计指标（TTFT 直方图），统一解析、统一缺省 None。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 struct PerfMetrics {
     ttft_sum_s: Option<f64>,
     ttft_count: Option<f64>,
@@ -644,28 +789,70 @@ fn parse_perf_metrics(text: &str) -> PerfMetrics {
     }
 }
 
-/// 从 Prometheus 文本里抽某个指标的第一个数值，例如：
-/// `vllm:num_requests_running{engine="0",model_name="/model"} 0.0` → 0.0
+/// Sum a metric across every one of its series in the Prometheus text, e.g.
+/// `vllm:num_requests_running{engine="0"} 3` plus `{engine="1"} 2` → `5.0`.
+/// vLLM with `data_parallel_size > 1` exports one series per `engine` label,
+/// and every metric consumed here is additive (queue gauges, monotonic
+/// counters, histogram `_sum`/`_count`), so the engine-wide total is the
+/// honest published number — returning the first series would silently
+/// report engine 0 only. `None` when no finite series exists.
+///
+/// Per-line robustness: comment lines are skipped; the metric name must end
+/// at a boundary (space, tab, `{`, or end of line), so same-prefix longer
+/// names (`_created` siblings, `vllm:num_requests_waiting_by_reason`) never
+/// match; a truncated labels block or a non-numeric sample skips only that
+/// line; `NaN` / `±Inf` samples (which `f64::from_str` accepts) are skipped
+/// rather than summed.
 fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
+    let mut total: Option<f64> = None;
     for line in text.lines() {
         let line = line.trim();
-        if line.starts_with('#') {
+        if line.starts_with('#') || !line.starts_with(name) {
             continue;
         }
-        if !line.starts_with(name) {
-            continue;
-        }
-        // 跳过指标名称 + 可选 `{labels}`，找最后一个空格后的数字
         let after_name = &line[name.len()..];
-        let value_part = if after_name.starts_with('{') {
-            let close = after_name.find('}')?;
-            after_name[close + 1..].trim()
+        match after_name.chars().next() {
+            None | Some('{') | Some(' ') | Some('\t') => {}
+            _ => continue,
+        }
+        let value_part = if let Some(rest) = after_name.strip_prefix('{') {
+            match closing_label_brace(rest) {
+                Some(close) => rest[close + 1..].trim(),
+                // Truncated labels block: this line only.
+                None => continue,
+            }
         } else {
             after_name.trim()
         };
-        let token = value_part.split_whitespace().next()?;
+        let Some(token) = value_part.split_whitespace().next() else {
+            continue;
+        };
         if let Ok(v) = token.parse::<f64>() {
-            return Some(v);
+            if v.is_finite() {
+                *total.get_or_insert(0.0) += v;
+            }
+        }
+    }
+    total
+}
+
+/// Offset of the labels-block closing `}` in `rest` (the text after the
+/// opening `{`), honoring quoted label values — a `}` inside quotes is part
+/// of the value (vLLM's `--served-model-name` is arbitrary text), not the
+/// block end. `None` means the block never closes.
+fn closing_label_brace(rest: &str) -> Option<usize> {
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for (i, ch) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+        } else {
+            match ch {
+                '\\' if in_quotes => escaped = true,
+                '"' => in_quotes = !in_quotes,
+                '}' if !in_quotes => return Some(i),
+                _ => {}
+            }
         }
     }
     None
@@ -1009,6 +1196,344 @@ mod tests {
             "keyless servers must not receive an Authorization header"
         );
         assert_eq!(snap.status, VllmStatus::Busy);
+    }
+
+    /// The happy-path snapshot surfaces the parsed queue gauges under the
+    /// verified health with no diagnostic and no notice. Red arms: swapping
+    /// the two queue assignments, hardwiring either gauge to `None`, or
+    /// inventing a diagnostic/notice on the verified path must all go red
+    /// here.
+    #[tokio::test]
+    async fn snapshot_happy_path_surfaces_queue_gauges_without_diagnostics() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"data":[{"id":"happy-model","max_model_len":131072}]}"#.into(),
+            ),
+            (
+                "/metrics",
+                200,
+                "vllm:num_requests_running 2\n\
+                 vllm:num_requests_waiting 1\n\
+                 vllm:prefix_cache_hits_total 30\n\
+                 vllm:prefix_cache_queries_total 40\n"
+                    .into(),
+            ),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("happy-model".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot");
+        assert_eq!(snap.status, VllmStatus::Busy, "running=2 is Busy");
+        assert_eq!(snap.num_requests_running, Some(2.0));
+        assert_eq!(snap.num_requests_waiting, Some(1.0));
+        assert_eq!(snap.health_status, HealthStatus::Verified);
+        assert!(snap.diagnostic.is_none(), "verified carries no diagnostic");
+        assert!(
+            snap.notices.is_empty(),
+            "a listed window over a served /metrics must carry no notices: {:?}",
+            snap.notices
+        );
+    }
+
+    /// The snapshot wiring sums multi-engine `/metrics` series: a
+    /// `data_parallel_size > 1` export must publish the engine-wide queue
+    /// depth and cache counters, not engine 0's series — and the Busy state
+    /// follows the fleet total.
+    #[tokio::test]
+    async fn snapshot_sums_multi_engine_metrics() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"dp-model"}]}"#.into()),
+            (
+                "/metrics",
+                200,
+                "vllm:num_requests_running{engine=\"0\"} 0\n\
+                 vllm:num_requests_running{engine=\"1\"} 2\n\
+                 vllm:num_requests_waiting{engine=\"0\"} 1\n\
+                 vllm:num_requests_waiting{engine=\"1\"} 1\n\
+                 vllm:prefix_cache_hits_total{engine=\"0\"} 10\n\
+                 vllm:prefix_cache_hits_total{engine=\"1\"} 20\n\
+                 vllm:prefix_cache_queries_total{engine=\"0\"} 40\n\
+                 vllm:prefix_cache_queries_total{engine=\"1\"} 60\n"
+                    .into(),
+            ),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("dp-model".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(
+            snap.status,
+            VllmStatus::Busy,
+            "engine 0 idle + engine 1 busy is Busy for the fleet"
+        );
+        assert_eq!(snap.num_requests_running, Some(2.0));
+        assert_eq!(snap.num_requests_waiting, Some(2.0));
+        assert_eq!(snap.prefix_cache_hits, Some(30.0));
+        assert_eq!(snap.prefix_cache_queries, Some(100.0));
+    }
+
+    /// A /metrics that answers HTTP 200 with a body no vLLM series parses
+    /// must flag itself: the resulting all-None snapshot must not be silently
+    /// readable as "no traffic". (Transport failure and non-200 are pinned by
+    /// the per-branch test below.)
+    #[tokio::test]
+    async fn snapshot_flags_a_metrics_body_with_no_parseable_series() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"m"}]}"#.into()),
+            ("/metrics", 200, "<html>not prometheus</html>".into()),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(snap.status, VllmStatus::Ready);
+        assert!(snap.num_requests_running.is_none());
+        let codes: Vec<_> = snap.notices.iter().map(|d| d.code.as_str()).collect();
+        assert!(
+            codes.contains(&"metrics_unavailable"),
+            "an HTTP 200 body with no parseable series must flag itself: {codes:?}"
+        );
+    }
+
+    /// A hostname that cannot resolve classifies as `dns_failed`, not
+    /// `connection_refused`: hyper-util wraps resolver failures in its
+    /// Connect kind, so `is_connect()` alone mislabels them (round-2
+    /// adjudication finding). `.invalid` is reserved by RFC 6761 to never
+    /// resolve.
+    #[tokio::test]
+    async fn snapshot_classifies_dns_failures_as_dns_failed() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let snap = snapshot_for_model_config(
+            "http://pinvou-monitor-probe.invalid:1",
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local-preset target yields a snapshot even when unresolvable");
+        let diagnostic = snap.diagnostic.expect("offline carries a diagnostic");
+        assert_eq!(diagnostic.code, "models_unreachable");
+        assert_eq!(diagnostic.transport, Some("dns_failed"));
+        assert_eq!(
+            diagnostic.endpoint.as_deref(),
+            Some("http://pinvou-monitor-probe.invalid:1")
+        );
+    }
+
+    /// Every branch carries the right structured diagnostic. The offline
+    /// refinement is built from parsed fields, never from reqwest's
+    /// `Display` (which embeds the full request URL): a token-shaped query
+    /// on the base_url must stay out of the snapshot entirely, so replacing
+    /// the endpoint construction with the raw error Display must go red
+    /// here. The other health verdicts (`auth_failed` / `missing_api_key` /
+    /// `unverified` / `mismatch`) are self-describing and carry
+    /// `diagnostic: None` — their producer strings are enum variants now,
+    /// so a typo is a compile error rather than a silent drift (round-2
+    /// audit: the stringly-typed producer could drop the diagnostic with
+    /// zero red tests).
+    #[tokio::test]
+    async fn snapshot_carries_structured_diagnostics_per_health_branch() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+
+        // Transport error → models_unreachable with the transport class and
+        // the scheme/host/port endpoint; the query never leaks.
+        let refused = snapshot_for_model_config(
+            "http://127.0.0.1:1?token=secret5",
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("a local target yields a snapshot even when unreachable");
+        assert_eq!(refused.status, VllmStatus::Offline);
+        assert_eq!(refused.health_status, HealthStatus::Offline);
+        let unreachable = refused.diagnostic.expect("offline carries a diagnostic");
+        assert_eq!(unreachable.code, "models_unreachable");
+        assert_eq!(
+            unreachable.transport,
+            Some("connection_refused"),
+            "a refused loopback connect classifies as connection_refused"
+        );
+        assert!(
+            unreachable.http_status.is_none(),
+            "a transport failure carries no HTTP status"
+        );
+        assert_eq!(
+            unreachable.endpoint.as_deref(),
+            Some("http://127.0.0.1:1"),
+            "the endpoint keeps scheme/host/port for diagnosis"
+        );
+        let rendered = format!("{unreachable:?}");
+        assert!(
+            !rendered.contains("secret5") && !rendered.contains("token="),
+            "the diagnostic must not echo the request URL or its query: {rendered}"
+        );
+
+        // Non-success HTTP (not 401/403) → models_http_error with the status.
+        let mock = models_mock::spawn(&[("/models", 500, "boom".into())]);
+        let http_err = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(http_err.health_status, HealthStatus::Offline);
+        let http_diag = http_err
+            .diagnostic
+            .expect("http error carries a diagnostic");
+        assert_eq!(http_diag.code, "models_http_error");
+        assert_eq!(http_diag.http_status, Some(500));
+        assert!(http_diag.transport.is_none());
+
+        // 401 with a key → auth_failed; the verdict is the answer, so no
+        // refinement diagnostic rides along.
+        let mock = models_mock::spawn(&[("/models", 401, "{}".into())]);
+        let auth = snapshot_for_model_config(
+            &mock.base_url,
+            Some("m".to_string()),
+            ModelPreset::LocalVllm,
+            Some("secret"),
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(auth.health_status, HealthStatus::AuthFailed);
+        assert!(
+            auth.diagnostic.is_none(),
+            "auth_failed is self-describing and carries no refinement: {:?}",
+            auth.diagnostic
+        );
+
+        // /metrics missing → metrics_unavailable (a local target classifies
+        // any loopback base, so this fires for a Deepseek-preset model too).
+        let mock = models_mock::spawn(&[(
+            "/models",
+            200,
+            r#"{"data":[{"id":"windowless-model","max_model_len":8192}]}"#.into(),
+        )]);
+        let no_metrics = snapshot_for_model_config(
+            &mock.base_url,
+            Some("windowless-model".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(
+            no_metrics
+                .notices
+                .iter()
+                .map(|d| d.code.as_str())
+                .collect::<Vec<_>>(),
+            ["metrics_unavailable"]
+        );
+
+        // Mismatch → the verdict itself; no refinement diagnostic.
+        let mock = models_mock::spawn(&[
+            ("/models", 200, r#"{"data":[{"id":"served-other"}]}"#.into()),
+            ("/metrics", 200, "".into()),
+        ]);
+        let mismatch = snapshot_for_model_config(
+            &mock.base_url,
+            Some("configured-name".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(mismatch.health_status, HealthStatus::Mismatch);
+        assert!(
+            mismatch.diagnostic.is_none(),
+            "mismatch is self-describing and carries no refinement"
+        );
+    }
+
+    /// The inferred-window notice fires for local targets too (a listing
+    /// without a window whose native follow-up fails, with a recognizable
+    /// model name) — the message must stay endpoint-neutral. Pins that
+    /// stripping the push or the code must go red.
+    #[tokio::test]
+    async fn snapshot_reports_context_window_inferred_on_local_targets() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"data":[{"id":"deepseek-v4-pro"}]}"#.into(),
+            ),
+            // Non-Ollama local: the native follow-up stops with the 404.
+            ("/api/ps", 404, "{}".into()),
+            ("/metrics", 200, "".into()),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("deepseek-v4-pro".to_string()),
+            ModelPreset::Deepseek,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot");
+        assert_eq!(
+            snap.max_model_len,
+            Some(1_000_000),
+            "the inferred v4 window must reach the display scale"
+        );
+        // The mock's empty 200 /metrics body parses to no series, so the
+        // metrics notice rides alongside; the inferred-window notice is the
+        // second entry (index pinned — a copy of the first notice's code would
+        // pass a `contains` check).
+        let codes: Vec<_> = snap.notices.iter().map(|d| d.code.as_str()).collect();
+        assert_eq!(codes, ["metrics_unavailable", "context_window_inferred"]);
+        let inferred = &snap.notices[1];
+        assert!(
+            inferred.http_status.is_none() && inferred.transport.is_none(),
+            "an inferred-window notice is a plain code, no transport/http detail: {inferred:?}"
+        );
     }
 
     /// The display follow-up on a local Ollama endpoint: /api/ps effective
@@ -1693,6 +2218,111 @@ mod tests {
     fn prom_metric_returns_none_for_missing() {
         let text = "some_other_metric 1.0";
         assert!(parse_prom_metric(text, "vllm:num_requests_running").is_none());
+    }
+
+    /// Prometheus exports `NaN` / `+Inf` for degenerate series and Rust's
+    /// f64 FromStr accepts both spellings; they are not measurements. The
+    /// parser must skip them and keep scanning — a later finite series of
+    /// the same name wins, an all-degenerate family yields None.
+    #[test]
+    fn prom_metric_skips_non_finite_values() {
+        let text = "vllm:prefix_cache_hits_total NaN\n\
+                    vllm:prefix_cache_hits_total{engine=\"0\"} 5.0\n";
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
+            Some(5.0)
+        );
+        let text = "vllm:prefix_cache_hits_total{engine=\"0\"} +Inf\n";
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
+            None
+        );
+    }
+
+    /// With `data_parallel_size > 1` vLLM exports one series per `engine`
+    /// label; every metric consumed here is additive, so the parser must sum
+    /// the series — returning the first would publish engine 0 only. Also
+    /// pins that a `_created` sibling never joins a sum and that a non-finite
+    /// series is skipped, not summed and not fatal.
+    #[test]
+    fn prom_metric_sums_series_across_engine_labels() {
+        let text = "vllm:num_requests_running{engine=\"0\",model_name=\"m\"} 3\n\
+                    vllm:num_requests_running{engine=\"1\",model_name=\"m\"} 2\n\
+                    vllm:num_requests_waiting{engine=\"0\"} 0\n\
+                    vllm:num_requests_waiting{engine=\"1\"} 4\n\
+                    vllm:prefix_cache_hits_total_created 1.7e9\n\
+                    vllm:prefix_cache_hits_total{engine=\"0\"} 30\n\
+                    vllm:prefix_cache_hits_total{engine=\"1\"} 10\n\
+                    vllm:prefix_cache_queries_total{engine=\"0\"} NaN\n\
+                    vllm:prefix_cache_queries_total{engine=\"1\"} 7\n";
+        assert_eq!(
+            parse_prom_metric(text, "vllm:num_requests_running"),
+            Some(5.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:num_requests_waiting"),
+            Some(4.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
+            Some(40.0),
+            "the _created sibling must never join the sum"
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_queries_total"),
+            Some(7.0),
+            "a non-finite series is skipped, not summed"
+        );
+    }
+
+    /// A labels block that never closes (truncated body) must cost only its
+    /// own line, and a `}` inside a quoted label value must not be mistaken
+    /// for the block end.
+    #[test]
+    fn prom_metric_skips_malformed_lines_without_aborting_the_scan() {
+        let truncated = "vllm:num_requests_running{engine=\"0\" 3\n\
+             vllm:num_requests_running{engine=\"1\"} 2\n";
+        assert_eq!(
+            parse_prom_metric(truncated, "vllm:num_requests_running"),
+            Some(2.0),
+            "one malformed line must not void the later series"
+        );
+        let quoted = "vllm:num_requests_running{model_name=\"a}b\"} 4\n\
+                      vllm:num_requests_running{model_name=\"c\"} 1\n";
+        assert_eq!(
+            parse_prom_metric(quoted, "vllm:num_requests_running"),
+            Some(5.0),
+            "a quoted '}}' is part of the label value, not the block end"
+        );
+    }
+
+    /// Name boundary: a longer metric sharing the prefix must never pass as
+    /// this metric's reading. Real vLLM exports carry
+    /// `vllm:num_requests_waiting_by_reason` (gauge, >= v0.20) and a
+    /// `<name>_created` timestamp series for every counter; both labeled and
+    /// labelless shapes are pinned. Removing the boundary check together with
+    /// taking the last token instead of the first must go red here (the
+    /// timestamp token would be summed as a counter value).
+    #[test]
+    fn prom_metric_name_boundary_rejects_prefix_extensions() {
+        let text = "vllm:num_requests_waiting_by_reason{engine=\"0\",reason=\"capacity\"} 7.0\n\
+                    vllm:num_requests_waiting{engine=\"0\"} 3.0\n\
+                    vllm:prefix_cache_hits_total_created{engine=\"0\"} 1.7654321e+09\n\
+                    vllm:prefix_cache_hits_total{engine=\"0\"} 30.0\n\
+                    vllm:prefix_cache_queries_total_created 1.7654321e+09\n\
+                    vllm:prefix_cache_queries_total 40.0\n";
+        assert_eq!(
+            parse_prom_metric(text, "vllm:num_requests_waiting"),
+            Some(3.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_hits_total"),
+            Some(30.0)
+        );
+        assert_eq!(
+            parse_prom_metric(text, "vllm:prefix_cache_queries_total"),
+            Some(40.0)
+        );
     }
 
     /// 2026-06-10 本机 vLLM nightly(NVFP4) /metrics 实抓片段（TTFT 相关行）。
