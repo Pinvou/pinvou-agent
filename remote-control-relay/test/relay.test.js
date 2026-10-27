@@ -343,7 +343,8 @@ test("registers a persistent endpoint and blind-forwards only v2 message types",
   assert.deepEqual(await webConnected, {
     v: 2,
     type: "web_client_connected",
-    endpoint_id: endpointId,
+
+    web_rejoining: false,    endpoint_id: endpointId,
     lease_id: web.joined.lease_id,
     stream_epoch: "epoch-a",
     after_seq: 41,
@@ -479,7 +480,8 @@ test("desktop can reconnect to the same endpoint within the offline TTL", async 
   assert.deepEqual(await connected, {
     v: 2,
     type: "web_client_connected",
-    endpoint_id: endpointId,
+
+    web_rejoining: false,    endpoint_id: endpointId,
     lease_id: web.joined.lease_id,
     stream_epoch: "epoch-r",
     after_seq: 77,
@@ -1495,4 +1497,36 @@ test("destroys an upgrade request with a hostile Host header without killing the
   const ws = await openSocket();
   assert.equal(ws.readyState, ws.OPEN);
   closeSocket(ws);
+});
+
+test("marks a rejoin after the web socket died, but not a takeover", async (t) => {
+  const endpointId = `endpoint_rejoin_flag_${Date.now()}`;
+  const accessToken = "access-token-rejoin-flag-00000001";
+  const desktopSecret = "desktop-secret-rejoin-flag-000001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const firstJoin = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  const first = await firstJoin;
+  assert.equal(first.web_rejoining, false);
+  t.after(() => closeSocket(desktop.ws));
+
+  // Watchdog-style recovery: the previous socket dies, then the same token
+  // holder rejoins. The desktop must see web_rejoining=true so it can keep
+  // lease-scoped state instead of wiping it.
+  const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(web.ws);
+  await disconnected;
+  const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");
+  const rejoined = await joinWeb(endpointId, accessToken);
+  const rejoin = await rejoinNotice;
+  assert.equal(rejoin.web_rejoining, true);
+  assert.notEqual(rejoin.lease_id, first.lease_id);
+
+  // A join that replaces a live client is a takeover, not a rejoin.
+  const takeoverNotice = nextMessage(desktop.ws, "web_client_connected");
+  const second = await joinWeb(endpointId, accessToken);
+  const takeover = await takeoverNotice;
+  assert.equal(takeover.web_rejoining, false);
+  assert.notEqual(takeover.lease_id, rejoin.lease_id);
+  closeSocket(second.ws);
 });

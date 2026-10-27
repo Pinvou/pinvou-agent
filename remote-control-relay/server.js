@@ -533,7 +533,7 @@ function desktopStatus(endpoint, status) {
   });
 }
 
-function notifyDesktopOfWeb(endpoint) {
+function notifyDesktopOfWeb(endpoint, rejoining = false) {
   if (!socketOpen(endpoint.desktop) || !socketOpen(endpoint.web)) return;
   send(endpoint.desktop, {
     v: 2,
@@ -542,6 +542,7 @@ function notifyDesktopOfWeb(endpoint) {
     lease_id: endpoint.lease_id,
     stream_epoch: endpoint.web.streamEpoch || null,
     after_seq: endpoint.web.afterSeq,
+    web_rejoining: rejoining === true,
   });
 }
 
@@ -831,7 +832,9 @@ function registerDesktop(ws, msg) {
   });
   if (socketOpen(endpoint.web)) {
     desktopStatus(endpoint, "connected");
-    notifyDesktopOfWeb(endpoint);
+    // The incumbent web client did not rejoin; its lease is unchanged, so
+    // the rejoin flag stays false.
+    notifyDesktopOfWeb(endpoint, false);
   }
 }
 
@@ -864,6 +867,14 @@ function joinWebClient(ws, msg) {
     });
   }
 
+  // A join that arrives while the previous web socket is already gone is a
+  // rejoin (watchdog or network recovery by the same token holder), not a
+  // takeover: flag it so the desktop keeps lease-scoped state (staged
+  // attachments, in-flight uploads, session downloads) instead of wiping it
+  // on every idle reconnect.
+  const rejoining = !previousWeb && Boolean(endpoint.had_web_client);
+  endpoint.had_web_client = true;
+
   ws.streamEpoch = typeof msg.stream_epoch === "string" ? msg.stream_epoch.slice(0, 256) : null;
   ws.afterSeq = Math.max(0, Number.isSafeInteger(msg.after_seq) ? msg.after_seq : 0);
   endpoint.web = ws;
@@ -876,7 +887,7 @@ function joinWebClient(ws, msg) {
     lease_id: leaseId,
     desktop_connected: socketOpen(endpoint.desktop),
   });
-  notifyDesktopOfWeb(endpoint);
+  notifyDesktopOfWeb(endpoint, rejoining);
 
   if (previousWeb) closeSocket(previousWeb, 4001, "endpoint replaced");
 }

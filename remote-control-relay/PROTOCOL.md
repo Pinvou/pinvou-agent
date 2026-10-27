@@ -150,7 +150,13 @@ When the desktop disconnects, the active Web client receives:
 
 The same message with `status: "connected"` is sent after desktop reconnection.
 The desktop receives `web_client_connected` and `web_client_disconnected` with
-the corresponding lease.
+the corresponding lease. The `web_client_connected` frame carries
+`web_rejoining: true` when the join arrived after the previous web socket had
+already died (watchdog or network recovery by the same token holder) and
+`web_rejoining: false` on a first join or a live takeover (`endpoint_replaced`).
+The desktop uses the flag to keep lease-scoped state (staged attachments,
+in-flight uploads, session downloads) across a rejoin while still discarding it
+on a takeover.
 
 The desktop invalidates a link with:
 
