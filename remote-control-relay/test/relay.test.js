@@ -38,13 +38,12 @@ function waitForOutput(child, pattern, timeoutMs = 5000) {
     let stderr = "";
     const timer = setTimeout(() => reject(new Error(`relay startup timeout: ${pattern}`)), timeoutMs);
     const onData = (chunk) => {
-      const text = String(chunk);
-      stdout += text;
-      if (!pattern.test(text)) return;
+      stdout += String(chunk);
+      if (!pattern.test(stdout)) return;
       clearTimeout(timer);
       child.stdout.off("data", onData);
       child.stderr.off("data", onErr);
-      resolve(text);
+      resolve(stdout);
     };
     const onErr = (chunk) => { stderr += String(chunk); };
     child.stdout.on("data", onData);
@@ -1189,6 +1188,7 @@ test("rejects malformed Host headers instead of crashing", async () => {
       + "Connection: close\r\n\r\n",
     );
     assert.match(httpBanner, /400 Bad Request/u);
+    assert.match(httpBanner, /bad request/u);
     const upgradeBanner = await rawRequest(
       isolated.port,
       "GET /pinvou3/remote/ws HTTP/1.1\r\n"
@@ -1198,6 +1198,7 @@ test("rejects malformed Host headers instead of crashing", async () => {
       + "Sec-WebSocket-Version: 13\r\n\r\n",
     );
     assert.match(upgradeBanner, /400 Bad Request/u);
+    assert.match(upgradeBanner, /malformed host header/u);
     const follower = await openSocket(isolated.wsUrl);
     closeSocket(follower);
     assert.equal(isolated.child.exitCode, null);
@@ -1268,18 +1269,53 @@ test("matches proxy and forwarded addresses case-insensitively", async () => {
   }
 });
 
-test("shuts down with exit code 0 on SIGTERM and does not log the bind address", async () => {
-  const isolated = await spawnRelay({});
-  const ws = await openSocket(isolated.wsUrl);
+test("the forwarded-header cap is exact at 4096 characters", async () => {
+  const isolated = await spawnRelay({
+    WS_CONNECT_LIMIT: "1",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "127.0.0.1",
+  });
+  let plain;
+  let atCap;
   try {
-    isolated.child.kill("SIGTERM");
-    await waitForExit(isolated.child, 5000);
-    assert.equal(isolated.child.exitCode, 0);
-    assert.equal(isolated.child.signalCode, null);
-    assert.doesNotMatch(isolated.output(), /listening on /u);
+    plain = await openSocket(isolated.wsUrl);
+    // Exactly at the cap the final item still attributes.
+    const atCapHeader = `${"a".repeat(4087)}, 1.2.3.4`;
+    assert.equal(atCapHeader.length, 4096);
+    atCap = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": atCapHeader } });
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": atCapHeader },
+    }), 429);
+    // One character past the cap collapses onto the peer, whose bucket is
+    // already full: the request must be refused even though its final item
+    // names a fresh address.
+    const overCapHeader = `${"a".repeat(4088)}, 1.2.3.5`;
+    assert.equal(overCapHeader.length, 4097);
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": overCapHeader },
+    }), 429);
   } finally {
-    closeSocket(ws);
+    closeSocket(plain);
+    closeSocket(atCap);
     await stopRelay(isolated.child);
+  }
+});
+
+test("shuts down with exit code 0 on repeated SIGTERM and on SIGINT", async () => {
+  for (const [signal, repeats] of [["SIGTERM", 2], ["SIGINT", 3]]) {
+    const isolated = await spawnRelay({});
+    const ws = await openSocket(isolated.wsUrl);
+    try {
+      // A repeat inside the exit window must be absorbed, not converted into
+      // signal death.
+      for (let i = 0; i < repeats; i += 1) isolated.child.kill(signal);
+      await waitForExit(isolated.child, 5000);
+      assert.equal(isolated.child.exitCode, 0);
+      assert.equal(isolated.child.signalCode, null);
+      assert.doesNotMatch(isolated.output(), /listening on /u);
+    } finally {
+      closeSocket(ws);
+      await stopRelay(isolated.child);
+    }
   }
 });
 
@@ -1353,10 +1389,29 @@ test("accepts frames nested exactly to the wire depth cap", async (t) => {
   const ws = await openSocket();
   t.after(() => closeSocket(ws));
   const error = nextMessage(ws, "error");
-  // One envelope level plus 127 containers is the deepest frame the desktop
-  // can produce (serde_json's parse limit). It must clear the wire guard and
-  // reach the protocol layer, which rejects it only for lacking authentication.
+  // Well inside the cap, with a scalar at the bottom. It must clear the wire
+  // guard and reach the protocol layer, which rejects it only for lacking
+  // authentication.
   ws.send(`{"v":2,"payload":${"[".repeat(127)}0${"]".repeat(127)}}`);
+  assert.equal((await error).code, "authentication_required");
+  // The cap counts enclosing containers, so a container as the deepest value
+  // is accepted one level deeper than a scalar would be. A fresh socket: the
+  // first rejection already closed this one.
+  const ws2 = await openSocket();
+  t.after(() => closeSocket(ws2));
+  const inner = nextMessage(ws2, "error");
+  ws2.send(`{"v":2,"payload":${"[".repeat(128)}${"]".repeat(128)}}`);
+  assert.equal((await inner).code, "authentication_required");
+});
+
+test("scans strings with escaped quotes and backslashes without false rejects", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+  const error = nextMessage(ws, "error");
+  // Backslash parity in the scanner's string skipping: escapes inside string
+  // values must scan as plain string content and reach the protocol layer,
+  // never a false duplicate-key or malformed verdict.
+  ws.send('{"v":2,"payload":["say \\"hi\\"", "a\\\\b", "\u0076"]}');
   assert.equal((await error).code, "authentication_required");
 });
 
@@ -1382,12 +1437,14 @@ test("a blank trusted proxy list is empty while an unset one inherits the allowl
     inherited.sockets.forEach(closeSocket);
     await stopRelay(inherited.isolated.child);
   }
-  const blank = await spawnWithPeerBucketFull({ PINVOU_REMOTE_TRUSTED_PROXY_IPS: "" });
-  try {
-    assert.equal(await rejectedUpgrade(blank.isolated.wsUrl, forwarded), 429);
-  } finally {
-    blank.sockets.forEach(closeSocket);
-    await stopRelay(blank.isolated.child);
+  for (const value of ["", "   "]) {
+    const blank = await spawnWithPeerBucketFull({ PINVOU_REMOTE_TRUSTED_PROXY_IPS: value });
+    try {
+      assert.equal(await rejectedUpgrade(blank.isolated.wsUrl, forwarded), 429);
+    } finally {
+      blank.sockets.forEach(closeSocket);
+      await stopRelay(blank.isolated.child);
+    }
   }
 });
 
@@ -1452,6 +1509,31 @@ test("consults X-Real-IP only when X-Forwarded-For is entirely absent", async ()
   }
 });
 
+test("state validation failures name their own reason", async () => {
+  const cases = [
+    ["definitely not json", "relay_state_load_failed: invalid JSON"],
+    [`{"version":1,"revoked_endpoints":[{"endpoint_id":"ab","revoked_at":"2026-01-01T00:00:00.000Z"}]}`,
+      "relay_state_load_failed: malformed revoked endpoint"],
+    [`{"version":1,"revoked_endpoints":"not-an-array"}`,
+      "relay_state_load_failed: unsupported or malformed state"],
+  ];
+  for (const [contents, message] of cases) {
+    const statePath = join(testRoot, `state-shape-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+    await writeFile(statePath, contents);
+    const isolated = await spawnRelay(
+      { PINVOU_REMOTE_STATE_PATH: statePath },
+      { awaitListening: false },
+    );
+    try {
+      await waitForExit(isolated.child, 10000);
+      assert.notEqual(isolated.child.exitCode, 0);
+      assert.equal(isolated.errors().trim(), `[relay-error] ${message}`);
+    } finally {
+      await stopRelay(isolated.child);
+    }
+  }
+});
+
 test("relay state exceeding the configured maximum names the limit", async () => {
   const statePath = join(testRoot, `oversize-state-${Date.now()}.json`);
   await writeFile(statePath, "0".repeat(2048));
@@ -1496,4 +1578,8 @@ test("rejects frames nested beyond the wire depth cap as bad_json", async (t) =>
   // this frame and fail later with a less specific rejection.
   ws.send(`{"payload":${"[".repeat(200)}${"]".repeat(200)}}`);
   assert.equal((await error).code, "bad_json");
+  // One container past the scalar boundary in the accepts test.
+  const inner = nextMessage(ws, "error");
+  ws.send(`{"v":2,"payload":${"[".repeat(129)}${"]".repeat(129)}}`);
+  assert.equal((await inner).code, "bad_json");
 });
