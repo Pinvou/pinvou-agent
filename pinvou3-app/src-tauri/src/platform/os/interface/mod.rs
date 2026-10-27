@@ -8,7 +8,8 @@ pub use clipboard::read_clipboard_image;
 pub use path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
     external_application_path, file_url_from_path, filesystem_path_identity_key, kill_pid_tree,
-    null_device, obsidian_config_path, path_component_eq, path_identity_is_same_or_nested,
+    null_device, obsidian_config_path, path_component_eq, path_component_prefix,
+    path_identity_is_same_or_nested,
     path_relative_suffix_under, platform_compat_path, python_command, user_home_dir,
     validate_upload_location,
 };

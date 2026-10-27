@@ -18,6 +18,10 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     super::super::platform::path_component_eq(component, expected)
 }
 
+pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
+    super::super::platform::path_component_prefix(component, prefix)
+}
+
 /// Stable identity key for paths already stored by the application. The platform adapter
 /// applies only equivalences guaranteed by that OS (for example Windows separators and case).
 pub fn filesystem_path_identity_key(path: &str) -> String {
@@ -182,6 +186,20 @@ mod tests {
                 filesystem_path_identity_key(r"folder\file.md"),
                 filesystem_path_identity_key("folder/file.md"),
             );
+        }
+    }
+
+    #[test]
+    fn path_component_prefix_semantics_follow_platform() {
+        // The `.env.` component-prefix blocklist routes through the same
+        // platform-aware compare as path_component_eq: folded where the
+        // default volume folds case, byte-exact where it does not.
+        assert!(path_component_prefix(OsStr::new(".env.production"), ".env."));
+        assert!(!path_component_prefix(OsStr::new(".environment"), ".env."));
+        if cfg!(target_os = "macos") || std::path::MAIN_SEPARATOR == '\\' {
+            assert!(path_component_prefix(OsStr::new(".ENV.PRODUCTION"), ".env."));
+        } else {
+            assert!(!path_component_prefix(OsStr::new(".ENV.PRODUCTION"), ".env."));
         }
     }
 

@@ -83,6 +83,22 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
 }
 
+/// 比较路径组件是否以预期前缀开头(`.env.` 系黑名单用)。与
+/// `path_component_eq` 同一平台语义:macOS 默认卷大小写不敏感,ASCII 折叠;
+/// 其余平台字节精确。
+#[cfg(target_os = "macos")]
+pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
+    component
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .starts_with(&prefix.to_ascii_lowercase())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
+    component.to_string_lossy().starts_with(prefix)
+}
+
 /// Unix 文件系统路径的稳定标识 key(按原串字节)。大小写不敏感卷上同一文件
 /// 可被多种拼写引用,grant 身份匹配按「不同 key」失败闭合(宁可重新授权,
 /// 不凭拼写放宽),故刻意不折叠。

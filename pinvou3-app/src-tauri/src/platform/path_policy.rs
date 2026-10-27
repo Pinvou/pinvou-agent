@@ -33,7 +33,21 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
     "id_dsa",
     "credentials.json",
     ".env",
+    // 与 `.env` 同类的本地凭据/密钥文件,逐一枚举的黑名单此前漏掉的常見
+    // 命名(direnv 的 .envrc 常含导出的密钥;.git-credentials/.netrc/
+    // .pgpass/.npmrc 是各工具的默认凭据存储)。
+    ".envrc",
+    ".git-credentials",
+    ".netrc",
+    ".pgpass",
+    ".npmrc",
 ];
+
+/// 组件前缀黑名单:`.env.` 系命名(`.env.local`、`.env.production`、
+/// `.env.development`……)与 `.env` 同为本地环境凭据文件,环境变体命名
+/// 无法逐一枚举,按前缀判定。匹配经由平台感知的 `path_component_prefix`
+/// (macOS/Windows ASCII 折叠,与 `path_component_eq` 同语义)。
+pub const BLOCKED_COMPONENT_PREFIXES: &[&str] = &[".env."];
 
 /// 系统敏感前缀黑名单——Unix 系统文件/虚拟文件系统路径。
 pub const BLOCKED_PREFIXES: &[&str] = &[
@@ -61,6 +75,19 @@ pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String>
                 "path {} crosses sensitive component {}",
                 canonical.display(),
                 blocked
+            ));
+        }
+    }
+
+    for prefix in BLOCKED_COMPONENT_PREFIXES {
+        if canonical
+            .components()
+            .any(|component| crate::platform::os::path_component_prefix(component.as_os_str(), prefix))
+        {
+            return Err(format!(
+                "path {} crosses sensitive component prefix {}",
+                canonical.display(),
+                prefix
             ));
         }
     }
@@ -194,6 +221,50 @@ mod tests {
                 check_sensitive_components(&path).is_err(),
                 "原样拼写 {lower} 应被拦"
             );
+        }
+    }
+
+    #[test]
+    fn env_variants_and_credential_files_are_blocked() {
+        // `.env.` 系环境变体逐一枚举追不全,按前缀拦截;.envrc 与各工具的
+        // 默认凭据文件按精确组件拦截。
+        let blocked = [
+            ".env.local",
+            ".env.production",
+            ".env.development",
+            ".envrc",
+            ".git-credentials",
+            ".netrc",
+            ".pgpass",
+            ".npmrc",
+        ];
+        for raw in blocked {
+            let path = std::env::temp_dir().join("app").join(raw);
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "{raw} 必须被拦"
+            );
+        }
+        // 前缀仅按组件边界生效:同名前缀的普通文件不受影响。
+        for benign in ["environment.md", "envelope.txt", ".environment"] {
+            let path = std::env::temp_dir().join("app").join(benign);
+            assert!(
+                check_sensitive_components(&path).is_ok(),
+                "{benign} 不是凭据文件,不应被拦"
+            );
+        }
+    }
+
+    #[test]
+    fn env_variant_case_semantics_follow_platform() {
+        // 与 uppercase_credential_variants_follow_platform 同判据:.ENV.LOCAL
+        // 这类大写变体在大小写不敏感卷(macOS/Windows)上解析到同一文件,
+        // 词法前缀判定必须同样折叠;Linux 上是不同文件,不拦。
+        let path = std::env::temp_dir().join("app").join(".ENV.LOCAL");
+        if cfg!(windows) || cfg!(target_os = "macos") {
+            assert!(check_sensitive_components(&path).is_err());
+        } else {
+            assert!(check_sensitive_components(&path).is_ok());
         }
     }
 }

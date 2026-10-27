@@ -56,6 +56,7 @@ pub use os::path_identity_is_same_or_nested;
 // actually resolve; `canonicalize` output is disk-spelled and needs no fold)
 // instead of a drifting `cfg!(windows)` re-copy.
 pub use os::path_component_eq;
+pub use os::path_component_prefix;
 // Same crate-boundary shape as the re-exports above: the headless CLI's
 // file-persisting lanes (`artifacts write`, `feedback submit`) were the last
 // holders of a drifting local stage-then-rename copy; they now consume the
