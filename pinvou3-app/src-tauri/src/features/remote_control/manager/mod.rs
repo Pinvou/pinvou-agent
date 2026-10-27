@@ -229,6 +229,22 @@ fn should_filter_code_session_event(
 /// 转发的 rpc_request 必须指向当前活跃的 Web lease(与 `client_ready` 的
 /// 校验一致)。无活跃 lease 时不过滤:此时主准入路径本就没有可回复的
 /// endpoint,行为与校验加入前一致。
+/// A changed lease always invalidates subscriptions: they belong to a
+/// concrete Web lease and must rebuild before `client_ready` requests a
+/// replay, otherwise old subscriptions can advance the new client's event
+/// cursor before it is ready. Staged transfers are only discarded on a
+/// takeover — the relay marks a join that arrives after the previous Web
+/// socket already died (`web_rejoining`); that client holds the same
+/// endpoint token, so a watchdog- or network-driven rejoin must keep its
+/// staged attachments, in-flight uploads, and session downloads instead of
+/// destroying them on every idle reconnect.
+fn apply_web_lease_change(inner: &mut Inner, web_rejoining: bool) {
+    inner.subscriptions.clear();
+    if !web_rejoining {
+        clear_web_attachments(inner);
+    }
+}
+
 fn rpc_request_targets_active_lease(inner: &Inner, lease_id: &str) -> bool {
     inner
         .endpoint
@@ -2037,9 +2053,12 @@ impl RemoteControlManager {
                     .as_ref()
                     .and_then(|endpoint| endpoint.last_lease_id.as_ref())
                     != lease_id.as_ref();
+            let web_rejoining = value
+                .get("web_rejoining")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if lease_changed {
-                inner.subscriptions.clear();
-                clear_web_attachments(&mut inner);
+                apply_web_lease_change(&mut inner, web_rejoining);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
                 return;
@@ -2084,13 +2103,12 @@ impl RemoteControlManager {
                 .as_ref()
                 .and_then(|endpoint| endpoint.last_lease_id.as_deref())
                 != Some(lease_id.as_str());
+            let web_rejoining = value
+                .get("web_rejoining")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if lease_changed {
-                // Subscriptions belong to a concrete Web lease. A takeover or
-                // reload must rebuild them before `client_ready` requests a
-                // replay, otherwise old subscriptions can advance the new
-                // client's event cursor before it is ready.
-                inner.subscriptions.clear();
-                clear_web_attachments(&mut inner);
+                apply_web_lease_change(&mut inner, web_rejoining);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
                 return;
@@ -4675,6 +4693,51 @@ mod tests {
         // 无活跃 lease(client 已断开)时保持原行为:不在此处过滤。
         inner.endpoint = Some(test_active_endpoint(None));
         assert!(rpc_request_targets_active_lease(&inner, TEST_LEASE_ID));
+    }
+
+    #[test]
+    fn web_rejoins_keep_staged_transfers_but_takeovers_do_not() {
+        let staging = std::env::temp_dir().join(format!(
+            "pinvou-webrejoin-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(8)
+        ));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("notes.txt"), b"abc").unwrap();
+
+        let mut inner = Inner::default();
+        inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
+        inner.subscriptions.insert("session_a".into());
+        let cached = cached_upload_for_test(&staging, None);
+        inner
+            .web_attachment_order
+            .push_back("attachment_a".into());
+        inner
+            .web_attachments
+            .insert("attachment_a".into(), cached);
+        inner.web_attachment_bytes = 64;
+
+        // Rejoin (same token holder, previous socket already gone): the
+        // staged transfer survives an idle-watchdog reconnect; only the
+        // lease-bound subscriptions rebuild.
+        apply_web_lease_change(&mut inner, true);
+        assert!(
+            inner.subscriptions.is_empty(),
+            "a changed lease must always rebuild subscriptions"
+        );
+        assert!(
+            inner.web_attachments.contains_key("attachment_a"),
+            "a rejoin must keep staged attachments"
+        );
+
+        // Takeover (fresh client replaces a live one): the wipe must stay so
+        // the replacing client cannot touch the previous lease's transfers.
+        apply_web_lease_change(&mut inner, false);
+        assert!(inner.web_attachments.is_empty());
+        assert!(inner.web_attachment_uploads.is_empty());
+        assert!(inner.web_session_downloads.is_empty());
+
+        std::fs::remove_dir_all(&staging).ok();
     }
 
     #[test]

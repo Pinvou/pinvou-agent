@@ -150,7 +150,8 @@ When the desktop disconnects, the active Web client receives:
 
 The same message with `status: "connected"` is sent after desktop reconnection.
 The desktop receives `web_client_connected` and `web_client_disconnected` with
-the corresponding lease. The `web_client_connected` frame carries
+the corresponding lease. The `web_client_connected` frame (and the
+`desktop_endpoint_registered` frame, for the incumbent client) carries
 `web_rejoining: true` when the join arrived after the previous web socket had
 already died (watchdog or network recovery by the same token holder) and
 `web_rejoining: false` on a first join or a live takeover (`endpoint_replaced`).

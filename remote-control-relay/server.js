@@ -829,12 +829,14 @@ function registerDesktop(ws, msg) {
     endpoint_id: endpointId,
     web_client_connected: socketOpen(endpoint.web),
     lease_id: socketOpen(endpoint.web) ? endpoint.lease_id : null,
+    // The incumbent web client keeps the flag from its own join: a client
+    // that rejoined while the desktop was away must not trigger the
+    // takeover wipe when the desktop re-registers.
+    web_rejoining: endpoint.web_rejoined === true,
   });
   if (socketOpen(endpoint.web)) {
     desktopStatus(endpoint, "connected");
-    // The incumbent web client did not rejoin; its lease is unchanged, so
-    // the rejoin flag stays false.
-    notifyDesktopOfWeb(endpoint, false);
+    notifyDesktopOfWeb(endpoint, endpoint.web_rejoined === true);
   }
 }
 
@@ -874,6 +876,7 @@ function joinWebClient(ws, msg) {
   // on every idle reconnect.
   const rejoining = !previousWeb && Boolean(endpoint.had_web_client);
   endpoint.had_web_client = true;
+  endpoint.web_rejoined = rejoining;
 
   ws.streamEpoch = typeof msg.stream_epoch === "string" ? msg.stream_epoch.slice(0, 256) : null;
   ws.afterSeq = Math.max(0, Number.isSafeInteger(msg.after_seq) ? msg.after_seq : 0);
