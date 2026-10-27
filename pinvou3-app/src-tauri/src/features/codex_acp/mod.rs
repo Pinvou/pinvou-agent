@@ -6414,6 +6414,20 @@ mod tests {
              dropping the pending_restart term silently loses the throttled \
              replacement's restart notice (round-3 MAJOR-1)"
         );
+        let reuse_start = missing
+            .find("RuntimeLookup::Reusable(runtime) => {")
+            .expect("the Reusable arm must exist");
+        let dead_start = missing
+            .find("RuntimeLookup::Dead(runtime) => {")
+            .expect("the Dead arm must exist");
+        let reuse_arm = &missing[reuse_start..dead_start];
+        assert!(
+            reuse_arm.contains("runtime_is_stable(&runtime.lifecycle)")
+                && reuse_arm.contains("runtime_crash_budgets.lock().remove(session_id)"),
+            "a two-minute-stable reuse must clear the session's crash \
+             budget; without the clear, a runtime that only fails every few \
+             minutes stays throttled forever"
+        );
         let restart = production_body(src, "async fn restart_agent_sessions");
         assert!(
             restart.contains("flush_journal()"),

@@ -87,9 +87,16 @@ pub(super) fn resolve_runtime<T: Clone>(
 
 impl RuntimeLifecycle {
     pub(super) fn new(generation: u64) -> Self {
+        Self::with_started_at(generation, Instant::now())
+    }
+
+    /// The stability clock is wall time from spawn start, so tests reach the
+    /// two-minute boundary by constructing a lifecycle that started in the
+    /// past.
+    pub(super) fn with_started_at(generation: u64, started_at: Instant) -> Self {
         Self {
             generation,
-            started_at: Instant::now(),
+            started_at,
             running: AtomicBool::new(true),
             expected_shutdown: AtomicBool::new(false),
             unexpected_exit: AtomicBool::new(false),
@@ -323,6 +330,25 @@ mod tests {
     }
 
     #[test]
+    fn stability_gate_measures_from_spawn_start_while_running() {
+        let stable = RuntimeLifecycle::with_started_at(9, Instant::now() - STABLE_RESET_AFTER);
+        assert!(runtime_is_stable(&stable));
+
+        // One second short of the boundary: not yet stable, so a reuse does
+        // not clear the session's crash budget.
+        let young = RuntimeLifecycle::with_started_at(
+            10,
+            Instant::now() - STABLE_RESET_AFTER + Duration::from_secs(1),
+        );
+        assert!(!runtime_is_stable(&young));
+
+        // A dead generation never counts as stable, however long it lived.
+        let dead = RuntimeLifecycle::with_started_at(11, Instant::now() - STABLE_RESET_AFTER);
+        dead.mark_connection_closed();
+        assert!(!runtime_is_stable(&dead));
+    }
+
+    #[test]
     fn admission_prunes_expired_crashes_before_judging_the_window() {
         let start = Instant::now();
         let mut budget = RuntimeCrashBudget::default();
@@ -330,13 +356,17 @@ mod tests {
         let late = start + CRASH_WINDOW - Duration::from_millis(100);
         budget.record_crash_at(late);
         budget.record_crash_at(late);
-        assert!(matches!(
+        // The exhausted pause is anchored to the OLDEST crash: the delay is
+        // the time left until the first crash leaves the window (100 ms
+        // here). Anchoring to the latest crash instead would report the full
+        // 60 s window, silently doubling the wait.
+        assert_eq!(
             budget.admission_at(late),
             SpawnAdmission::RetryAfter {
+                delay: Duration::from_millis(100),
                 budget_exhausted: true,
-                ..
-            }
-        ));
+            },
+        );
 
         // The instant the first crash leaves the window only two remain: the
         // pause must lift into the short backoff (measured from the latest
