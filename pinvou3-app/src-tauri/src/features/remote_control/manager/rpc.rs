@@ -33,27 +33,86 @@ pub(super) enum RpcRequestAction {
 }
 
 pub(super) enum NewRpcAdmission {
-    Rejected(RpcCompletion),
+    Rejected(RpcRejection),
     Durable(RpcLedger),
 }
 
+/// An admission rejection plus its cache classification. Deterministic
+/// rejections depend only on the request's own args and the access policy, so
+/// replaying the cached completion forever is always correct. Transient
+/// rejections (`too_many_in_flight_requests`, an unavailable Session store or
+/// ledger) describe desktop-side state at admission time: they are answered
+/// once, never cached, so a retry of the same `client_request_id` re-runs
+/// admission instead of replaying the stale rejection until FIFO eviction.
+#[derive(Clone)]
+pub(super) struct RpcRejection {
+    pub(super) completion: RpcCompletion,
+    pub(super) cacheable: bool,
+}
+
+impl RpcRejection {
+    pub(super) fn deterministic(completion: RpcCompletion) -> Self {
+        Self {
+            completion,
+            cacheable: true,
+        }
+    }
+
+    fn transient(completion: RpcCompletion) -> Self {
+        Self {
+            completion,
+            cacheable: false,
+        }
+    }
+}
+
+/// Session-scope validation outcome. `Deterministic` violations follow from
+/// the request args or policy alone; `Transient` ones (Session store not
+/// ready, Session temporarily unreadable) may resolve on a later retry and
+/// must therefore never be cached as terminal completions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum WebScopeRejection {
+    Deterministic(String),
+    Transient(String),
+}
+
+impl WebScopeRejection {
+    fn message(self) -> String {
+        match self {
+            Self::Deterministic(message) | Self::Transient(message) => message,
+        }
+    }
+
+    fn cacheable(&self) -> bool {
+        matches!(self, Self::Deterministic(_))
+    }
+
+    pub(super) fn into_rpc_rejection(self) -> RpcRejection {
+        let cacheable = self.cacheable();
+        RpcRejection {
+            completion: rpc_error_completion("invalid_session_scope", self.message()),
+            cacheable,
+        }
+    }
+}
+
 pub(super) fn rpc_admission_rejection(
-    preflight_completion: Option<&RpcCompletion>,
+    preflight_rejection: Option<&RpcRejection>,
     allowed: bool,
     in_flight_count: usize,
-) -> Option<RpcCompletion> {
-    if let Some(completion) = preflight_completion {
-        Some(completion.clone())
+) -> Option<RpcRejection> {
+    if let Some(rejection) = preflight_rejection {
+        Some(rejection.clone())
     } else if !allowed {
-        Some(rpc_error_completion(
+        Some(RpcRejection::deterministic(rpc_error_completion(
             "command_not_allowed",
             "远程控制不允许调用该命令",
-        ))
+        )))
     } else if in_flight_count >= super::MAX_RPC_IN_FLIGHT {
-        Some(rpc_error_completion(
+        Some(RpcRejection::transient(rpc_error_completion(
             "too_many_in_flight_requests",
             "正在运行的远程控制请求过多",
-        ))
+        )))
     } else {
         None
     }
@@ -63,17 +122,17 @@ pub(super) fn prepare_new_rpc_admission(
     ledger: &RpcLedger,
     request_id: &str,
     fingerprint: &str,
-    preflight_completion: Option<&RpcCompletion>,
+    preflight_rejection: Option<&RpcRejection>,
     allowed: bool,
     in_flight_count: usize,
 ) -> Result<NewRpcAdmission, String> {
-    if let Some(completion) =
-        rpc_admission_rejection(preflight_completion, allowed, in_flight_count)
+    if let Some(rejection) = rpc_admission_rejection(preflight_rejection, allowed, in_flight_count)
     {
-        // Rejections are deterministic and side-effect free. Keep them only in
-        // the bounded in-memory response cache; they must never consume a
-        // durable idempotency slot or evict an acknowledged request tombstone.
-        return Ok(NewRpcAdmission::Rejected(completion));
+        // Deterministic rejections are side-effect free and may be replayed
+        // from the bounded in-memory cache; transient ones must not (see
+        // `RpcRejection`). Neither kind ever consumes a durable idempotency
+        // slot or evicts an acknowledged request tombstone.
+        return Ok(NewRpcAdmission::Rejected(rejection));
     }
     let mut next_ledger = ledger.clone();
     next_ledger.remember(request_id, fingerprint)?;
@@ -284,6 +343,18 @@ pub(super) fn tombstone_completion(tombstone: &RpcTombstone, fingerprint: &str) 
     }
 }
 
+/// Whether a ledger-tombstone replay completion may enter the bounded response
+/// cache. Only the acknowledged outcome for the tombstone's own fingerprint is
+/// terminal-and-cacheable. A fingerprint conflict must be recomputed on every
+/// attempt: cached under the tombstone fingerprint it would replay the probe's
+/// conflict to the legitimate owner after restart, and cached under the
+/// incoming fingerprint the `Complete`-mismatch arm would preempt the owner's
+/// re-dispatch. The conflict stays deterministic because the tombstone is
+/// durable, so recomputing it per attempt is exact.
+pub(super) fn tombstone_completion_cacheable(tombstone: &RpcTombstone, fingerprint: &str) -> bool {
+    tombstone.fingerprint == fingerprint && tombstone.acknowledged
+}
+
 pub(super) fn rpc_fingerprint(command: &str, args: &Value) -> Result<String, String> {
     let canonical = canonicalize_json(args);
     let encoded = serde_json::to_vec(&(command, canonical))
@@ -366,6 +437,46 @@ fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), String>
 pub(super) enum WebSessionScope {
     Required(&'static str),
     Optional(&'static str),
+}
+
+/// Web lane path validation for the knowledge-base family. Unlike every
+/// other web-reachable file entry point, `kb_collection_add_sources` and
+/// `kb_start_scan` take raw host paths that the desktop UI sources from its
+/// own picker, but a paired phone supplies them directly — without this
+/// gate the token holder could index (and then read out via kb_documents)
+/// arbitrary disk trees. Every path must clear the same browsable policy as
+/// `web_access_list_host_files`: $HOME subtree minus credential components.
+/// Rejection messages stay path-free; the native detail is log-only.
+fn validate_web_kb_paths(command: &str, args: &Value) -> Result<(), String> {
+    let paths_field = match command {
+        "kb_collection_add_sources" => "paths",
+        "kb_start_scan" => "roots",
+        _ => return Ok(()),
+    };
+    let Some(paths) = args.get(paths_field).filter(|value| !value.is_null()) else {
+        // kb_start_scan without roots (absent or null — Tauri maps both to
+        // Option::None) scans the home default — the same dataset the
+        // desktop's own auto-scan covers.
+        if command == "kb_start_scan" {
+            return Ok(());
+        }
+        return Err(format!("{command} requires {paths_field}"));
+    };
+    let Some(paths) = paths.as_array() else {
+        return Err(format!("{paths_field} must be an array of paths"));
+    };
+    for path in paths {
+        let Some(path) = path.as_str() else {
+            return Err(format!("{paths_field} entries must be strings"));
+        };
+        if crate::features::files::file_ingest::validate_browsable_path(path).is_err() {
+            log::warn!("[remote_control] rejected non-browsable kb path over Web");
+            return Err(format!(
+                "{command} may only index browsable paths under the home directory"
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn web_session_scope(command: &str) -> Option<WebSessionScope> {
@@ -472,8 +583,10 @@ pub(super) fn validate_web_rpc_scope(
     app: &AppHandle,
     command: &str,
     args: &Value,
-) -> Result<(), String> {
-    validate_web_workspace_rpc(command, args)?;
+) -> Result<(), WebScopeRejection> {
+    validate_web_workspace_rpc(command, args)
+        .map_err(|error| WebScopeRejection::Deterministic(error))?;
+    validate_web_kb_paths(command, args).map_err(WebScopeRejection::Deterministic)?;
     let Some(scope) = web_session_scope(command) else {
         return Ok(());
     };
@@ -488,16 +601,21 @@ pub(super) fn validate_web_rpc_scope(
         .filter(|value| !value.is_empty());
     let Some(session_id) = session_id else {
         return if required {
-            Err(format!("{command} requires an explicit {field}"))
+            Err(WebScopeRejection::Deterministic(format!(
+                "{command} requires an explicit {field}"
+            )))
         } else {
             Ok(())
         };
     };
-    crate::features::sessions::validate_session_id(session_id).map_err(|error| {
+    if let Err(error) = crate::features::sessions::validate_session_id(session_id) {
         log::warn!("[remote_control] rejected invalid Web Session id: {error:#}");
-        "invalid_web_session_id".to_string()
-    })?;
-    super::validate_multi_agent_session_web_scope(app, command, session_id)?;
+        return Err(WebScopeRejection::Deterministic(
+            "invalid_web_session_id".to_string(),
+        ));
+    }
+    super::validate_multi_agent_session_web_scope(app, command, session_id)
+        .map_err(WebScopeRejection::Deterministic)?;
     if command == "web_access_cancel_session_download"
         || (command == "web_access_load_session_chunk"
             && args
@@ -512,10 +630,12 @@ pub(super) fn validate_web_rpc_scope(
     }
     let store = app
         .try_state::<SessionStore>()
-        .ok_or_else(|| "Session store is not ready".to_string())?;
+        .ok_or_else(|| WebScopeRejection::Transient("Session store is not ready".to_string()))?;
     store.load(session_id).map_err(|error| {
+        // 读取失败可能是暂时的(存储尚未就绪/文件暂时不可读):拒绝必须能被
+        // 同一 client_request_id 重试,所以归类为 Transient 而非确定性非法。
         log::warn!("[remote_control] Web Session scope lookup failed: {error:#}");
-        "web_session_unavailable".to_string()
+        WebScopeRejection::Transient("web_session_unavailable".to_string())
     })?;
     Ok(())
 }
@@ -677,4 +797,170 @@ pub(super) fn snapshot_message(
             },
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::MAX_RPC_IN_FLIGHT;
+    use super::*;
+
+    #[test]
+    fn in_flight_saturation_is_a_transient_uncacheable_rejection() {
+        let rejection = rpc_admission_rejection(None, true, MAX_RPC_IN_FLIGHT)
+            .expect("a saturated in-flight count must reject");
+        assert_eq!(
+            rejection.completion.error_code.as_deref(),
+            Some("too_many_in_flight_requests")
+        );
+        assert!(
+            !rejection.cacheable,
+            "an in-flight rejection depends on desktop congestion, not on the \
+             request; caching it would replay the stale rejection for every \
+             retry of the same client_request_id"
+        );
+        // 槽位空出来后,同样的请求必须能重新准入而不是命中缓存拒绝。
+        assert!(rpc_admission_rejection(None, true, MAX_RPC_IN_FLIGHT - 1).is_none());
+    }
+
+    #[test]
+    fn deterministic_rejections_remain_cacheable() {
+        let too_large =
+            RpcRejection::deterministic(rpc_error_completion("request_too_large", "too large"));
+        assert!(too_large.cacheable);
+
+        let not_allowed =
+            rpc_admission_rejection(None, false, 0).expect("a disallowed command must reject");
+        assert_eq!(
+            not_allowed.completion.error_code.as_deref(),
+            Some("command_not_allowed")
+        );
+        assert!(not_allowed.cacheable);
+    }
+
+    #[test]
+    fn web_kb_paths_require_browsable_home_paths() {
+        // 无路径字段的知识库命令不受影响;kb_start_scan 缺省 roots 扫描
+        // 主目录(桌面自动扫描同一数据集),放行。
+        assert!(validate_web_kb_paths("kb_search", &json!({ "query": "x" })).is_ok());
+        assert!(validate_web_kb_paths("kb_start_scan", &json!({})).is_ok());
+        assert!(validate_web_kb_paths("kb_start_scan", &json!({ "roots": null })).is_ok());
+
+        // add_sources 必须携带 paths,且每个条目都要过可浏览策略。
+        assert!(validate_web_kb_paths("kb_collection_add_sources", &json!({})).is_err());
+        assert!(
+            validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": "x" })).is_err()
+        );
+        assert!(
+            validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": [42] })).is_err()
+        );
+        assert!(
+            validate_web_kb_paths("kb_start_scan", &json!({ "roots": ["relative/path"] })).is_err()
+        );
+        // 绝对但越出 $HOME(且真实存在)的路径必须拒绝;拒绝消息不得回显路径。
+        // 两种平台拼写都测:任一平台上,另一平台的绝对路径都无法落在 $HOME 下。
+        for outside in ["/etc/hosts", r"C:\Windows\notepad.exe"] {
+            let rejection =
+                validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": [outside] }))
+                    .expect_err("a path outside $HOME must not be indexable over Web");
+            assert!(
+                !rejection.contains(outside),
+                "rejection must not echo the path: {rejection}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_scope_rejections_split_deterministic_from_transient() {
+        assert!(
+            WebScopeRejection::Deterministic(
+                "web_access_chat requires an explicit sessionId".into()
+            )
+            .cacheable()
+        );
+        assert!(!WebScopeRejection::Transient("Session store is not ready".into()).cacheable());
+
+        let deterministic =
+            WebScopeRejection::Deterministic("missing sessionId".into()).into_rpc_rejection();
+        assert_eq!(
+            deterministic.completion.error_code.as_deref(),
+            Some("invalid_session_scope")
+        );
+        assert!(deterministic.cacheable);
+
+        let transient =
+            WebScopeRejection::Transient("web_session_unavailable".into()).into_rpc_rejection();
+        assert_eq!(
+            transient.completion.error_code.as_deref(),
+            Some("invalid_session_scope")
+        );
+        assert!(
+            !transient.cacheable,
+            "a store-not-ready rejection must reach the browser but never the \
+             idempotency cache"
+        );
+    }
+
+    #[test]
+    fn transient_rejections_never_consume_durable_tombstone_capacity() {
+        let ledger = RpcLedger::for_endpoint("ep_test");
+        let fingerprint = rpc_fingerprint("chat", &json!({ "sessionId": "s1" })).unwrap();
+        let rejection =
+            rpc_admission_rejection(None, true, MAX_RPC_IN_FLIGHT).expect("saturated admission");
+        let admission = prepare_new_rpc_admission(
+            &ledger,
+            "request-transient",
+            &fingerprint,
+            Some(&rejection),
+            true,
+            MAX_RPC_IN_FLIGHT,
+        )
+        .expect("classify the saturated admission");
+        let NewRpcAdmission::Rejected(rejection) = admission else {
+            panic!("a saturated admission must reject");
+        };
+        assert!(!rejection.cacheable);
+        assert!(
+            ledger.get("request-transient").is_none(),
+            "transient rejections must not consume a durable tombstone"
+        );
+    }
+
+    #[test]
+    fn tombstone_conflicts_are_answered_but_never_cached() {
+        let owner_fingerprint = rpc_fingerprint("chat", &json!({ "sessionId": "s1" })).unwrap();
+        let probe_fingerprint = rpc_fingerprint("chat", &json!({ "sessionId": "s2" })).unwrap();
+        let mut tombstone = RpcTombstone {
+            request_id: "request-1".into(),
+            fingerprint: owner_fingerprint.clone(),
+            acknowledged: false,
+        };
+        // 指纹一致且未确认 → 走重建 pending 的重派发路径,不是终态完成。
+        assert!(!tombstone_completion_cacheable(
+            &tombstone,
+            &owner_fingerprint
+        ));
+        // 指纹冲突 → 回复冲突完成,但不可缓存:缓存到墓碑指纹下会在重启后
+        // 把探针的冲突重放给合法指纹,缓存到来方指纹下又会经 Complete 分支
+        // 抢占合法指纹的重派发。
+        assert!(!tombstone_completion_cacheable(
+            &tombstone,
+            &probe_fingerprint
+        ));
+        assert_eq!(
+            tombstone_completion(&tombstone, &probe_fingerprint)
+                .error_code
+                .as_deref(),
+            Some("request_id_conflict"),
+            "the conflict completion stays deterministic because the tombstone is durable"
+        );
+        tombstone.acknowledged = true;
+        assert!(tombstone_completion_cacheable(
+            &tombstone,
+            &owner_fingerprint
+        ));
+        assert!(!tombstone_completion_cacheable(
+            &tombstone,
+            &probe_fingerprint
+        ));
+    }
 }

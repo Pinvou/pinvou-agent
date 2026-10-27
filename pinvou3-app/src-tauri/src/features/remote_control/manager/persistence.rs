@@ -49,6 +49,28 @@ fn validate_ws_url(url: &str, invalid_message: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// http(s) 页面基址统一校验，与 `validate_ws_url` 同一基线。
+fn validate_http_base_url(url: &str, invalid_message: &str) -> Result<(), String> {
+    if url.len() > 2_048
+        || !(url.starts_with("http://") || url.starts_with("https://"))
+        || url.chars().any(char::is_whitespace)
+    {
+        return Err(invalid_message.to_string());
+    }
+    Ok(())
+}
+
+pub(super) fn validate_relay_settings(settings: &RelaySettings) -> Result<(), String> {
+    validate_ws_url(
+        &settings.relay_url,
+        "relay address does not normalize to a valid ws(s) URL",
+    )?;
+    validate_http_base_url(
+        &settings.public_base_url,
+        "relay address does not normalize to a valid http(s) base",
+    )
+}
+
 pub(super) fn validate_config(config: &WebAccessConfig) -> Result<(), String> {
     validate_ws_url(&config.relay_url, "Web access relay_url is invalid")?;
     if config.endpoint_id.len() < 8
@@ -162,6 +184,13 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
     let config: WebAccessConfig = serde_json::from_str(&text)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
     validate_config(&config)?;
+    // 读取即修复:备份恢复或外部工具可能把私有凭据文件改成组/全员可读。
+    // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛,避免把一个
+    // 已经放宽权限的凭据文件继续当作可信配置。(take() 消耗了读句柄,这里
+    // 重新打开;Windows/fallback 平台该调用是显式 no-op。)
+    let handle = File::open(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    platform::enforce_private_permissions(&handle, path)
+        .map_err(|error| format!("restrict {}: {error}", path.display()))?;
     Ok(Some(config))
 }
 
@@ -196,21 +225,6 @@ pub struct RelaySettingsInfo {
 
 pub(super) fn relay_settings_path() -> PathBuf {
     paths::pinvou3_home().join("web-relay.json")
-}
-
-pub(super) fn validate_relay_settings(settings: &RelaySettings) -> Result<(), String> {
-    validate_ws_url(
-        &settings.relay_url,
-        "relay address does not normalize to a valid ws(s) URL",
-    )?;
-    if settings.public_base_url.len() > 2_048
-        || !(settings.public_base_url.starts_with("http://")
-            || settings.public_base_url.starts_with("https://"))
-        || settings.public_base_url.chars().any(char::is_whitespace)
-    {
-        return Err("relay address does not normalize to a valid http(s) base".to_string());
-    }
-    Ok(())
 }
 
 /// 读取失败（不存在/损坏/非法）一律回落默认 relay：设置文件不是凭据，宁可
@@ -288,13 +302,19 @@ pub(super) fn load_pending_revocations() -> Result<PendingRevocationLedger, Stri
 pub(super) fn load_pending_revocations_from(
     path: &Path,
 ) -> Result<PendingRevocationLedger, String> {
-    let data = match std::fs::read(path) {
-        Ok(data) => data,
+    // 与 config 读取相同的 take() 有界读取:先按上限截断再检查,损坏/超大
+    // 文件不能触发无界分配。
+    let file = match File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(PendingRevocationLedger::default());
         }
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
+    let mut data = Vec::new();
+    file.take((super::MAX_PENDING_REVOCATIONS_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut data)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
     if data.len() > super::MAX_PENDING_REVOCATIONS_FILE_BYTES {
         return Err(format!(
             "pending Web revocation file is larger than {} KiB: {}",
@@ -387,9 +407,20 @@ pub(super) fn eligible_pending_revocations(
 }
 
 pub(super) fn load_or_initialize_rpc_ledger(endpoint_id: &str) -> Result<RpcLedger, String> {
-    let path = rpc_ledger_path();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+    load_or_initialize_rpc_ledger_at(&rpc_ledger_path(), endpoint_id)
+}
+
+/// Path-injected variant for tests; the initialization branches still persist
+/// through the global `persist_rpc_ledger`, so tests only exercise the
+/// read/validation paths against injected paths.
+pub(super) fn load_or_initialize_rpc_ledger_at(
+    path: &Path,
+    endpoint_id: &str,
+) -> Result<RpcLedger, String> {
+    // take() 有界读取:512 条墓碑的账本远小于 1 MiB,超大文件必然损坏,
+    // 不能在解析前无界读入内存。
+    let file = match File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let ledger = RpcLedger::for_endpoint(endpoint_id);
             persist_rpc_ledger(&ledger)?;
@@ -397,6 +428,17 @@ pub(super) fn load_or_initialize_rpc_ledger(endpoint_id: &str) -> Result<RpcLedg
         }
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
+    let mut text = String::new();
+    file.take((super::MAX_RPC_LEDGER_FILE_BYTES + 1) as u64)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if text.len() > super::MAX_RPC_LEDGER_FILE_BYTES {
+        return Err(format!(
+            "Web RPC ledger is larger than {} KiB: {}",
+            super::MAX_RPC_LEDGER_FILE_BYTES / 1024,
+            path.display()
+        ));
+    }
     let mut ledger: RpcLedger = serde_json::from_str(&text)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
     if ledger.endpoint_id != endpoint_id {
@@ -490,8 +532,25 @@ pub(super) fn remove_private_file(path: &Path) -> Result<(), String> {
     }
 }
 
+/// 环境变量覆盖的统一入口：trim 后为空或不通过校验一律返回 None（回落存储
+/// 值/内置默认），不报错——env 只是覆盖手段，宁可降级也不能因非法覆盖把
+/// Web 访问卡死。纯函数便于无环境变量的测试。
+fn normalized_env_url(
+    raw: Option<String>,
+    validate: impl Fn(&str) -> Result<(), String>,
+) -> Option<String> {
+    let value = raw?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() || validate(trimmed).is_err() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 pub(super) fn remote_public_base_url() -> String {
-    if let Ok(url) = std::env::var("PINVOU_REMOTE_PUBLIC_URL") {
+    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_PUBLIC_URL").ok(), |url| {
+        validate_http_base_url(url, "PINVOU_REMOTE_PUBLIC_URL is invalid")
+    }) {
         return url;
     }
     if let Some(settings) = load_relay_settings() {
@@ -513,11 +572,13 @@ pub(super) fn remote_relay_ws_url() -> String {
 /// Development/manual-test override for the active connection only. Unlike
 /// `PINVOU_REMOTE_RELAY_WS_URL`, this value is never written to the persistent
 /// Web access config, so testing a local relay cannot strand the normal link.
+/// 非法（含空白、非 ws(s)、超长、trim 后为空）的覆盖被忽略并回落存储值。
 pub(super) fn apply_runtime_relay_override(mut config: WebAccessConfig) -> WebAccessConfig {
-    if let Ok(relay_url) = std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL") {
-        if !relay_url.trim().is_empty() {
-            config.relay_url = relay_url;
-        }
+    if let Some(relay_url) = normalized_env_url(
+        std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL").ok(),
+        |url| validate_ws_url(url, "PINVOU_REMOTE_RUNTIME_RELAY_WS_URL is invalid"),
+    ) {
+        config.relay_url = relay_url;
     }
     config
 }
@@ -553,4 +614,46 @@ pub(super) fn percent_encode(value: &str) -> String {
 /// parent module, so it stays `pub(super)`.
 pub(super) fn new_stream_epoch() -> String {
     format!("epoch_{}", crate::features::remote_control::short_token(24))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_url_overrides_are_trimmed_and_fail_safe() {
+        // 覆盖只在通过与设置文件相同校验时生效;非法/空值一律回落(None),
+        // 不上抛——env 覆盖宁可降级,不能卡死 Web 访问。
+        let http = |url: &str| validate_http_base_url(url, "invalid");
+        assert_eq!(
+            normalized_env_url(
+                Some("  https://relay.example.test/pinvou3/remote \n".into()),
+                http
+            ),
+            Some("https://relay.example.test/pinvou3/remote".into())
+        );
+        assert_eq!(
+            normalized_env_url(Some("ftp://not-http".into()), http),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(Some("https://has space".into()), http),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(Some(format!("https://{}", "a".repeat(2_049))), http),
+            None,
+            "the length cap matches the relay settings validation"
+        );
+        assert_eq!(normalized_env_url(Some("   ".into()), http), None);
+        assert_eq!(normalized_env_url(None, http), None);
+
+        let ws = |url: &str| validate_ws_url(url, "invalid");
+        assert_eq!(
+            normalized_env_url(Some(" ws://127.0.0.1:8787/ws ".into()), ws),
+            Some("ws://127.0.0.1:8787/ws".into())
+        );
+        assert_eq!(normalized_env_url(Some("http://not-ws".into()), ws), None);
+        assert_eq!(normalized_env_url(Some("".into()), ws), None);
+    }
 }
