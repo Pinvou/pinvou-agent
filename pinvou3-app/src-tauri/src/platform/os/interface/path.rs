@@ -159,11 +159,13 @@ mod tests {
     #[test]
     fn path_identity_case_behavior_matches_component_comparison() {
         // On macOS the identity key stays case-sensitive on purpose: APFS's
-        // default volume folds case, so canonicalize preserves the caller's
-        // spelling and two casings of one directory must fail the grant
+        // default volume folds case, and canonicalize preserves the caller's
+        // spelling there, so two casings of one directory must fail the grant
         // identity match closed rather than alias. Component comparison folds
         // there (credential blocklist must survive `.AWS`-style spellings),
-        // so the two predicates deliberately diverge on darwin.
+        // so the two predicates deliberately diverge on darwin. Note the
+        // canonicalize spelling is a platform detail no check may rely on:
+        // every component compare goes through the folded predicate.
         if cfg!(target_os = "macos") {
             assert_ne!(
                 filesystem_path_identity_key("A.md"),
