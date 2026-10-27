@@ -582,7 +582,8 @@ for (const f of [...docs, ...scripts]) {
 
 // 13) 本地安全/完整性硬约束在场钉（2026-10-27 review 补：dws NOTICE 压缩为修改
 // 摘要后，这些无上游原文的本地新增若在 sync 中丢失会静默弱化，故反向钉「必须存在」；
-// 本地调整措辞时同步改钉并在 NOTICE 登记一句）。
+// 本地调整措辞时同步改钉并在 NOTICE 登记一句）。回读钉锚定「必须」措辞:
+// 软化成「建议」同样算约束丢失。
 const dwsPresencePins = [
   {
     parts: ["dingtalk-skills", "dws", "references", "products", "doc.md"],
@@ -596,13 +597,23 @@ const dwsPresencePins = [
   },
   {
     parts: ["dingtalk-skills", "dws", "references", "products", "doc.md"],
-    needle: "主动回读确认",
-    why: "write-pipeline read-back is a hard constraint, not a suggestion",
+    needle: "写入完成后必须主动回读确认",
+    why: "write-pipeline read-back is a hard constraint — the needle anchors 必须, so softening to 建议 fails",
+  },
+  {
+    parts: ["dingtalk-skills", "dws", "references", "products", "doc.md"],
+    needle: "必须在文档写入完成后主动回读确认",
+    why: "second mandatory read-back site in doc.md (内容完整性验证)",
   },
   {
     parts: ["dingtalk-skills", "dws", "references", "products", "doc", "doc-update.md"],
-    needle: "主动回读确认",
+    needle: "写入完成后必须主动回读确认",
     why: "read-back hard constraint on the update path",
+  },
+  {
+    parts: ["dingtalk-skills", "dws", "references", "products", "doc", "doc-update.md"],
+    needle: "必须在文档写入完成后主动回读确认",
+    why: "second mandatory read-back site in doc-update.md (内容完整性验证)",
   },
   {
     parts: ["dingtalk-skills", "dws", "references", "products", "todo.md"],
