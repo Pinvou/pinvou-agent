@@ -1024,11 +1024,17 @@ try {
   // all existed — only the manifest entry was missing).
   const laneSource = readFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), 'utf8');
   const acpViewSource = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
-  const handledEvents = [...laneSource.matchAll(/case '(chat:[a-z_]+)':/g)].map(match => match[1]);
+  // The class is [^']+ (not [a-z_]+) so a digit/hyphen/uppercase-named event
+  // cannot slip past BOTH sides at once — with a restrictive class shared by
+  // the two regexes, such a name is invisible on the handler side and the
+  // manifest side simultaneously and the drift escapes the pin. A stray
+  // quoted 'chat:...' string inside either window makes the two sets diverge
+  // and fails loudly, so over-capture is safe.
+  const handledEvents = [...laneSource.matchAll(/case '(chat:[^']+)':/g)].map(match => match[1]);
   const listStart = acpViewSource.indexOf('const NATIVE_CHAT_EVENTS = [');
   const listEnd = acpViewSource.indexOf('];', listStart);
   assert.ok(listStart >= 0 && listEnd > listStart, 'NATIVE_CHAT_EVENTS must stay declared in CodexAcpView');
-  const listedEvents = [...acpViewSource.slice(listStart, listEnd).matchAll(/'(chat:[a-z_]+)'/g)].map(match => match[1]);
+  const listedEvents = [...acpViewSource.slice(listStart, listEnd).matchAll(/'(chat:[^']+)'/g)].map(match => match[1]);
   assert.ok(handledEvents.length >= 20, 'the native lane must keep handling the full chat event set');
   assert.deepEqual(
     [...new Set(handledEvents)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations

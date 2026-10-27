@@ -23,8 +23,11 @@ const docs = files.filter(
   (f) => path.basename(f).toLowerCase().endsWith(".md") && !path.basename(f).startsWith("NOTICE"),
 );
 const read = (f) => fs.readFileSync(f, "utf8");
-// Windows checkouts produce backslash separators from path.relative; the
-// assertion messages embed these paths, so normalize them to repository form.
+// Windows checkouts produce backslash separators from path.relative. The
+// load-bearing consumers compare against repository-form ('/') literals —
+// rule 10's dws `endsWith` self-check and rule 6's `binsByPack` prefixes —
+// so every path.relative result must be normalized before use; assertion
+// messages merely benefit from the same.
 const repositoryRelative = (relative) => relative.replace(/\\/g, "/");
 const rel = (f) => repositoryRelative(path.relative(root, f));
 for (const relative of ["dingtalk-skills/dws/scripts/calendar_schedule_meeting.py",
@@ -300,7 +303,7 @@ const binsByPack = {
   "tmeet-skills/tmeet-skill": "tmeet",
 };
 for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
-  const relPath = path.relative(bundle(), f);
+  const relPath = repositoryRelative(path.relative(bundle(), f));
   const match = Object.keys(binsByPack).find((prefix) => relPath.startsWith(prefix));
   if (!match) continue; // visual-design 等本地技能不适用
   const text = read(f);
