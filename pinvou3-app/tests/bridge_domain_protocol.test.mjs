@@ -285,7 +285,10 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the zero-caller
   // getWebRelaySettings wrapper (web_access_relay_settings invoke) was
   // removed — desktop SettingsView reads the webAccess state slice instead.
-  remoteControl: '5138c9579824d93de124bb291d665adad6544ad6ae722a76ab00b6e75ac08f96',
+  // Recomputed for the folder-consent revoke: the desktop-only
+  // web_access_revoke_host_workspace invoke joined remote-control.js
+  // (main-WebView gated, absent from the Web access policy).
+  remoteControl: '13375be842a5dd9a595f120c8b078573d061329d5b44cff7e1eaa271e7d39b0d',
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the lane-merge wave 3: createScheduledTask
   // (create_scheduled_task), autoCreateScheduledTaskDraft,
