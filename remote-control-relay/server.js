@@ -274,6 +274,8 @@ function send(ws, value) {
     ws.send(encoded, (error) => {
       if (!error) return;
       ws.policyClosing = true;
+      clearTimeout(ws.authTimer);
+      ws.authTimer = null;
       try { ws.terminate(); } catch {}
     });
     return true;
@@ -1042,6 +1044,9 @@ const server = http.createServer(async (req, res) => {
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   } catch {
+    // A hostile Host header (out-of-range port) or an absolute-form request
+    // target makes the URL constructor throw. Like any other poisoned input
+    // this must terminate only this exchange, never the process.
     res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
     res.end("bad request");
     return;
@@ -1075,6 +1080,9 @@ server.on("upgrade", (req, socket, head) => {
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   } catch {
+    // Same poisoned-input class as the request handler: answer the upgrade
+    // with the fixed 400 banner, then destroy only this socket and keep the
+    // process alive.
     rejectUpgrade(socket, "400 Bad Request", "malformed host header");
     return;
   }
