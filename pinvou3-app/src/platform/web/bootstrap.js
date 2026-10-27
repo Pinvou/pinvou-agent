@@ -160,6 +160,8 @@
       this.desktopGoneRetries = 0;
       this.reconnectForDesktopGone = false;
       this.lastInboundAt = 0;
+      // Set on every connect(): wedge-window start for the liveness watchdog.
+      this.connectStartedAt = 0;
       this.livenessTimer = null;
       this.pending = new Map();
       this.listeners = new Map();

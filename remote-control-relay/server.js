@@ -191,6 +191,8 @@ function send(ws, value) {
     ws.send(encoded, (error) => {
       if (!error) return;
       ws.policyClosing = true;
+      clearTimeout(ws.authTimer);
+      ws.authTimer = null;
       try { ws.terminate(); } catch {}
     });
     return true;
@@ -685,7 +687,17 @@ const server = http.createServer(async (req, res) => {
     res.end("forbidden");
     return;
   }
-  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  } catch {
+    // A hostile Host header (out-of-range port) or an absolute-form request
+    // target makes the URL constructor throw. Like any other poisoned input
+    // this must terminate only this exchange, never the process.
+    res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+    res.end("bad request");
+    return;
+  }
   const routePath = stripPublicBasePath(url.pathname);
   if (isWithinPublicBasePath(url.pathname) && routePath === "/healthz") {
     res.writeHead(200, {
@@ -711,7 +723,15 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  } catch {
+    // Same poisoned-input class as the request handler: destroy only this
+    // socket and keep the process alive.
+    socket.destroy();
+    return;
+  }
   if (!isWithinPublicBasePath(url.pathname) || stripPublicBasePath(url.pathname) !== "/ws") {
     socket.destroy();
     return;

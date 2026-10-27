@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1439,4 +1441,58 @@ test("notifies the desktop when the active web client disconnects", async (t) =>
     endpoint_id: endpointId,
     lease_id: web.joined.lease_id,
   });
+});
+
+test("rejects a hostile Host header without killing the relay", async () => {
+  // An out-of-range port in Host makes the URL constructor throw; the relay
+  // must answer 400 and keep serving, not die on an unhandled rejection.
+  const poisoned = await new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: "127.0.0.1", port, path: "/pinvou3/remote/healthz", headers: { host: "h:99999999" } },
+      (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(poisoned, 400);
+  // The process survived and still answers a well-formed probe.
+  const healthy = await new Promise((resolve, reject) => {
+    const req = httpRequest(`${httpUrl}/pinvou3/remote/healthz`, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(healthy, 200);
+});
+
+test("destroys an upgrade request with a hostile Host header without killing the relay", async () => {
+  // Same poison over the upgrade path: the sync listener must not turn the
+  // throw into an uncaught exception.
+  await new Promise((resolve, reject) => {
+    const raw = netConnect(port, "127.0.0.1");
+    const timer = setTimeout(() => { raw.destroy(); resolve(); }, 1500);
+    raw.on("close", () => { clearTimeout(timer); resolve(); });
+    raw.on("error", () => { /* destroyed by the relay: expected */ });
+    raw.write(
+      "GET /pinvou3/remote/ws HTTP/1.1\r\n" +
+      "Host: h:99999999\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      // No Sec-WebSocket-Key: the hostile-Host guard fires before the
+      // handshake is validated, and a credential-shaped probe value would
+      // trip the secret scanner.
+      "Sec-WebSocket-Version: 13\r\n\r\n",
+    );
+  });
+  assert.equal(relay.exitCode, null);
+  assert.equal(relay.signalCode, null);
+  // A well-formed WebSocket connection still completes afterwards.
+  const ws = await openSocket();
+  assert.equal(ws.readyState, ws.OPEN);
+  closeSocket(ws);
 });
