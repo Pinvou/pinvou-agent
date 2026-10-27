@@ -240,11 +240,12 @@ connection open.
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` is unset does it fall back to
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting, the client address is
   the rightmost `X-Forwarded-For` item when the direct peer is a trusted proxy;
-  `X-Real-IP` is consulted only when `X-Forwarded-For` is entirely absent, and
-  empty, malformed, non-IP, or oversized (>4096 chars) forwarded headers fall
-  back to the direct peer address. Repeated `X-Forwarded-For` lines are joined
-  into one list by the runtime, so the rightmost item of the joined list is
-  used; they are not a fallback case.
+  `X-Real-IP` is consulted only when `X-Forwarded-For` is entirely absent. The
+  forwarded header falls back to the direct peer address when its rightmost
+  item is empty or not an IP (an entirely empty header included), when it is
+  malformed, or when it exceeds 4096 characters. Repeated `X-Forwarded-For`
+  lines are joined into one list by the runtime, so the rightmost item of the
+  joined list is used; they are not a fallback case.
 - Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
   all WebSocket clients without a close handshake (peers observe an abnormal
   closure) and exit the process with code 0; in-flight HTTP responses are not

@@ -1,9 +1,11 @@
 [Service]
 # Replace these loopback defaults with your reverse proxy addresses.
 # Entries must be literal IPs; anything else aborts startup
-# (proxy_ip_configuration_invalid). A blank value means an empty list: no
-# source restriction for ALLOWED, no trusted proxy for TRUSTED. Only an unset
-# TRUSTED line falls back to the ALLOWED list.
+# (proxy_ip_configuration_invalid). A blank or whitespace-only value means an
+# empty list: no source restriction for ALLOWED, no trusted proxy for
+# TRUSTED. Only an unset TRUSTED line falls back to the ALLOWED list. IPv6
+# zone-id spellings (fe80::1%eth0) parse only on runtimes whose isIP accepts
+# them (Node 22+); elsewhere such an entry aborts startup.
 Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
 Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000
