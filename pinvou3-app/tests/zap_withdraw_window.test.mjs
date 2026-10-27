@@ -48,6 +48,10 @@ function loadChatApi() {
     bt(key) { return key; },
     runSyncOnSession(sid, fn) {
       if (sid === state.activeSessionId) return fn();
+      // Production returns early when the background buffer is missing (the
+      // session was evicted); mirror that so the stub can never run fn
+      // against the active working set under a foreign session id.
+      if (!buffers[sid]) return;
       const original = { ...state };
       Object.assign(state, buffers[sid], { activeSessionId: sid });
       try { return fn(); } finally {
@@ -232,7 +236,9 @@ test('a background-session drop restores its own draft and leaves the active ses
     assert.equal(state.activeSessionId, 'A');
     assert.equal(state.chatItems.length, 0);
     assert.deepEqual([...notices(buffer)], ['⚠️ steerFailed']);
-    assert.ok(!calls.includes('send_message'), 'an uncertain withdrawal must never resend');
+    // The resend goes out as invoke('chat', ...); 'send_message' is not a
+    // real command on this path, so pin the live command name.
+    assert.ok(!calls.includes('chat'), 'an uncertain withdrawal must never resend');
   } finally {
     api.clearOutcomeReconcileWatchdog('B', 'st-bg');
   }
