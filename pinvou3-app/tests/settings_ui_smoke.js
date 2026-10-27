@@ -592,6 +592,15 @@ async function modalWidth(page, headingText) {
   // saves the authoritative color_scheme plus the legacy theme mirror, and an
   // explicit dark pick overrides a light OS.
   await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
+  // The .dark class is toggled from a passive useEffect on the media query,
+  // so an absence assertion needs the media change to be observed and one
+  // render committed first — otherwise the check can read the pre-effect DOM
+  // and vacuously pass exactly when explicit light wrongly follows the OS.
+  await page.waitForFunction(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
+  await page.evaluate(() => new Promise(resolve => {
+    requestAnimationFrame(() => { requestAnimationFrame(resolve); });
+  }));
+  await sleep(200);
   rec('① 旧显式浅色偏好不随系统变深', await page.evaluate(() => !document.documentElement.classList.contains('dark')));
   await clickExact(page, '跟随系统');
   await page.waitForFunction(() => document.documentElement.classList.contains('dark')
