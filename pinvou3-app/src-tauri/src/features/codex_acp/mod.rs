@@ -1604,6 +1604,15 @@ fn code_native_workspace_info(
 /// 文案子串匹配（复审低危 5）。
 pub(crate) static INSTALL_CANCELLED_MARKER: &str = "install_cancelled:";
 
+/// Which kind of reclaim is awaiting its replacement notice for a session.
+/// The notice kind itself derives from `resumed_session` at publish time;
+/// this only records that a disclosure is still owed.
+#[derive(Clone, Copy)]
+enum RuntimeRestart {
+    Stall,
+    Crash,
+}
+
 #[derive(Clone)]
 pub struct AcpPool {
     app: AppHandle,
@@ -1636,6 +1645,15 @@ pub struct AcpPool {
     /// window clears. Cleared whenever a runtime is deliberately discarded
     /// (evict / rebind / idle reap / stable reuse).
     runtime_crash_budgets: Arc<parking_lot::Mutex<HashMap<String, RuntimeCrashBudget>>>,
+    /// Restart disclosures awaiting publication: sessions whose runtime was
+    /// reclaimed (stall or crash) whose replacement has not yet emitted the
+    /// `agent_session_restarted[_fresh]` notice. The throttled replacement is
+    /// published by a later `get_or_spawn` call — the crash budget bails
+    /// before spawning — so the disclosure must live in the pool, not in one
+    /// call frame (round-3 review MAJOR-1). Cleared by the same deliberate
+    /// retirements that clear the crash budget, and consumed at the publish
+    /// site together with the call-local restart flags.
+    runtime_restart_disclosures: Arc<parking_lot::Mutex<HashMap<String, RuntimeRestart>>>,
     login_states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
     login_inputs: Arc<Mutex<HashMap<AgentBackend, ChildStdin>>>,
     codex_upgrade_required: Arc<AtomicBool>,
@@ -2058,6 +2076,7 @@ impl AcpPool {
             install_cancelled: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             runtime_generation: Arc::new(AtomicU64::new(0)),
             runtime_crash_budgets: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            runtime_restart_disclosures: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             login_states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             login_inputs: Arc::new(Mutex::new(HashMap::new())),
             codex_upgrade_required: Arc::new(AtomicBool::new(false)),
@@ -5001,6 +5020,12 @@ impl AcpPool {
                     // it never feeds the crash budget and clears what the
                     // session had accumulated.
                     self.runtime_crash_budgets.lock().remove(session_id);
+                    // The replacement may be published by a later call if the
+                    // budget throttles this one, so park the disclosure in the
+                    // pool instead of relying on the call-local flag.
+                    self.runtime_restart_disclosures
+                        .lock()
+                        .insert(session_id.to_string(), RuntimeRestart::Stall);
                     runtime.shutdown().await;
                     diagnostics::write(
                         &operation_id,
@@ -5031,6 +5056,10 @@ impl AcpPool {
                         ),
                     );
                     restarted_after_crash = true;
+                    // Parked for the same reason as the stall branch above.
+                    self.runtime_restart_disclosures
+                        .lock()
+                        .insert(session_id.to_string(), RuntimeRestart::Crash);
                 }
                 // Card settlement and shutdown-side events must be durable
                 // before the replacement EventBridge seeds its sequence from
@@ -5159,7 +5188,13 @@ impl AcpPool {
             bail!("ACP runtime exited right after initialization; please retry");
         }
         sessions.insert(session_id.to_string(), runtime.clone());
-        if restarted_after_stall || restarted_after_crash {
+        // Consume any disclosure parked by an earlier reclaim invocation:
+        // after a throttled crash replacement both call-local flags are
+        // false here, and the notice must still fire (round-3 review
+        // MAJOR-1). The only insert site into the pool map is the line
+        // above, so a parked disclosure can only be consumed here.
+        let pending_restart = self.runtime_restart_disclosures.lock().remove(session_id);
+        if restarted_after_stall || restarted_after_crash || pending_restart.is_some() {
             // Promise retained history only after a real resume. Without
             // `load_session`, or when loading fails, spawn creates a fresh session.
             // A crash replacement discloses the same way as a stall
