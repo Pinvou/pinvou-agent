@@ -2047,10 +2047,7 @@ impl RemoteControlManager {
                 // 路径,并且该原因必须保持粘性(run_loop 终止路径不再发送
                 // Connection 事件,last_error 不会被「relay connection lost」
                 // 覆盖)。
-                self.set_endpoint_error(relay_registration_error_reason(
-                    error_code,
-                    relay_message,
-                ));
+                self.set_endpoint_error(relay_registration_error_reason(error_code, relay_message));
             }
             _ => {}
         }
@@ -4457,7 +4454,10 @@ mod tests {
                 .read_dir()
                 .unwrap()
                 .filter_map(Result::ok)
-                .any(|entry| entry.file_name().to_string_lossy().contains("pending.json.corrupt-")),
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("pending.json.corrupt-")),
             "the original invalid ledger must be quarantined for inspection"
         );
         std::fs::remove_dir_all(directory).ok();
@@ -4482,7 +4482,10 @@ mod tests {
                 .read_dir()
                 .unwrap()
                 .filter_map(Result::ok)
-                .any(|entry| entry.file_name().to_string_lossy().contains("pending.json.corrupt-")),
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("pending.json.corrupt-")),
             "the unparseable ledger must be quarantined, not silently overwritten"
         );
         let restored = load_pending_revocations_from(&path).unwrap();
@@ -4812,12 +4815,8 @@ mod tests {
         inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
         inner.subscriptions.insert("session_a".into());
         let cached = cached_upload_for_test(&staging, None);
-        inner
-            .web_attachment_order
-            .push_back("attachment_a".into());
-        inner
-            .web_attachments
-            .insert("attachment_a".into(), cached);
+        inner.web_attachment_order.push_back("attachment_a".into());
+        inner.web_attachments.insert("attachment_a".into(), cached);
         inner.web_attachment_bytes = 64;
 
         // Rejoin (same token holder, previous socket already gone): the
@@ -4854,12 +4853,7 @@ mod tests {
 
         let mut inner = Inner::default();
         inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
-        inner
-            .endpoint
-            .as_mut()
-            .unwrap()
-            .config
-            .allow_host_workspace = true;
+        inner.endpoint.as_mut().unwrap().config.allow_host_workspace = true;
         let identity = WebWorkspaceIdentity::capture(&staging).unwrap();
         inner.web_workspace_grants.issue(
             "workspace_test_handle".into(),
@@ -4872,12 +4866,7 @@ mod tests {
 
         revoke_host_workspace_state(&mut inner);
         assert!(
-            !inner
-                .endpoint
-                .as_ref()
-                .unwrap()
-                .config
-                .allow_host_workspace,
+            !inner.endpoint.as_ref().unwrap().config.allow_host_workspace,
             "the live endpoint must reflect the revoked consent"
         );
         assert!(
@@ -4891,12 +4880,18 @@ mod tests {
     fn registration_error_reasons_are_actionable() {
         // 凭据被拒 → 轮换;配置不可用 → 轮换恢复;版本不匹配 → 更新桌面端
         // (轮换无济于事);其余码原样保留 relay 文本。
-        assert!(relay_registration_error_reason("invalid_access_token", "denied")
-            .contains("rotate Web access"));
-        assert!(relay_registration_error_reason("invalid_desktop_secret", "denied")
-            .contains("rotate Web access"));
-        assert!(relay_registration_error_reason("bad_desktop_endpoint_register", "rejected")
-            .contains("rotate Web access"));
+        assert!(
+            relay_registration_error_reason("invalid_access_token", "denied")
+                .contains("rotate Web access")
+        );
+        assert!(
+            relay_registration_error_reason("invalid_desktop_secret", "denied")
+                .contains("rotate Web access")
+        );
+        assert!(
+            relay_registration_error_reason("bad_desktop_endpoint_register", "rejected")
+                .contains("rotate Web access")
+        );
         let version = relay_registration_error_reason(
             "unsupported_protocol_version",
             "protocol version 2 is required",

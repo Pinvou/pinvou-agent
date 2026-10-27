@@ -913,22 +913,28 @@ mod tests {
         }
         // 恰在上限内、缺省、null、非本命令一律放行。
         let at_cap: Vec<String> = (0..128).map(|index| format!("file-{index}.md")).collect();
-        assert!(validate_web_prompt_references(
-            "web_access_codex_acp_prompt",
-            &json!({ "workspaceReferences": at_cap })
-        )
-        .is_ok());
-        assert!(validate_web_prompt_references(
-            "web_access_codex_acp_prompt",
-            &json!({})
-        )
-        .is_ok());
-        assert!(validate_web_prompt_references(
-            "web_access_codex_acp_prompt",
-            &json!({ "workspaceReferences": null })
-        )
-        .is_ok());
-        assert!(validate_web_prompt_references("web_access_chat", &json!({ "workspaceReferences": many })).is_ok());
+        assert!(
+            validate_web_prompt_references(
+                "web_access_codex_acp_prompt",
+                &json!({ "workspaceReferences": at_cap })
+            )
+            .is_ok()
+        );
+        assert!(validate_web_prompt_references("web_access_codex_acp_prompt", &json!({})).is_ok());
+        assert!(
+            validate_web_prompt_references(
+                "web_access_codex_acp_prompt",
+                &json!({ "workspaceReferences": null })
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_web_prompt_references(
+                "web_access_chat",
+                &json!({ "workspaceReferences": many })
+            )
+            .is_ok()
+        );
         // 非数组条目也是确定性形状拒绝。
         assert!(matches!(
             validate_web_prompt_references(
