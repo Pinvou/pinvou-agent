@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -180,38 +180,26 @@ async function stopRelay(child) {
   await waitForExit(child);
 }
 
-async function spawnRelay(env = {}) {
+// Sends one hand-built HTTP request and returns the raw response text; used
+// where the WebSocket and fetch clients refuse to send malformed headers.
+function rawRequest(hostPort, requestText) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(hostPort, "127.0.0.1", () => {
+      socket.end(requestText);
+    });
+    let text = "";
+    socket.on("data", (chunk) => { text += String(chunk); });
+    socket.once("error", reject);
+    socket.once("close", () => resolve(text));
+  });
+}
+
+// Captures stdout/stderr for assertions. Children expected NOT to come up
+// (configuration failures) are spawned with awaitListening: false.
+async function spawnRelay(env = {}, { awaitListening = true } = {}) {
   const isolatedPort = await getFreePort();
   const statePath = env.PINVOU_REMOTE_STATE_PATH
     || join(testRoot, `relay-state-${isolatedPort}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
-  const child = spawn(process.execPath, [join(relayDir, "server.js")], {
-    cwd: relayDir,
-    env: {
-      ...process.env,
-      PORT: String(isolatedPort),
-      PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
-      PINVOU_REMOTE_WEB_DIR: webDir,
-      HEARTBEAT_INTERVAL_MS: "5000",
-      PINVOU_REMOTE_STATE_PATH: statePath,
-      ...env,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  await waitForOutput(child, /pinvou remote relay listening/);
-  return {
-    child,
-    port: isolatedPort,
-    httpUrl: `http://127.0.0.1:${isolatedPort}`,
-    wsUrl: `ws://127.0.0.1:${isolatedPort}/pinvou3/remote/ws`,
-    statePath,
-  };
-}
-
-// Like spawnRelay but keeps capturing stdout/stderr for assertions, and can
-// spawn children that are expected NOT to come up (configuration failures).
-async function spawnRelayCapture(env = {}, { awaitListening = true } = {}) {
-  const isolatedPort = await getFreePort();
-  const statePath = join(testRoot, `relay-capture-${isolatedPort}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   const child = spawn(process.execPath, [join(relayDir, "server.js")], {
     cwd: relayDir,
     env: {
@@ -740,7 +728,7 @@ test("revoke tombstone survives Relay restart and permits a fresh endpoint id", 
 test("revoke fails closed without ACK when the tombstone cannot be persisted", async () => {
   const blockedParent = join(testRoot, `blocked-state-parent-${Date.now()}`);
   const statePath = join(blockedParent, "relay-state.json");
-  const isolated = await spawnRelayCapture({ PINVOU_REMOTE_STATE_PATH: statePath });
+  const isolated = await spawnRelay({ PINVOU_REMOTE_STATE_PATH: statePath });
   const endpointId = `endpoint_revoke_failure_${Date.now()}`;
   const accessToken = "access-token-revoke-failure-000000001";
   const desktopSecret = "desktop-secret-revoke-failure-00000001";
@@ -762,11 +750,10 @@ test("revoke fails closed without ACK when the tombstone cannot be persisted", a
     assert.equal((await persistenceError).code, "revoke_persistence_failed");
     await waitForClose(desktop.ws);
 
-    // Persistence failures log the fixed event code only: never the endpoint
-    // id (a persistent device identifier) nor raw fs error text (paths).
-    assert.match(isolated.errors(), /\[relay-error\] revocation_persist_failed/u);
-    assert.ok(!isolated.errors().includes(endpointId), "endpoint id leaked into stderr");
-    assert.doesNotMatch(isolated.errors(), /ENOTDIR|EACCES|ENOSPC/u);
+    // Persistence failures log the fixed event code and the errno name only:
+    // never the endpoint id (a persistent device identifier) nor raw fs error
+    // text (which embeds paths). This is the relay's only stderr output.
+    assert.equal(isolated.errors().trim(), "[relay-error] revocation_persist_failed code=EEXIST");
 
     await rm(blockedParent, { force: true });
     const reconnect = await registerDesktop(
@@ -1066,17 +1053,26 @@ test("proxy allowlist keeps local health checks available", async () => {
 test("rejects a duplicate version key before JSON.parse collapses it", async (t) => {
   const ws = await openSocket();
   t.after(() => closeSocket(ws));
-  const error = nextMessage(ws, "error");
-  // Last-wins parsing would turn this frame into a v2 frame; the wire-level
-  // guard must reject it as bad_json instead.
-  ws.send('{"v":1,"v":2,"type":"web_client_join"}');
-  assert.equal((await error).code, "bad_json");
+  // Last-wins parsing would turn each of these into a v2 frame; the wire-level
+  // guard must reject them as bad_json instead, whether the repeated key is
+  // spelled plainly, escaped, or sits in a nested object.
+  for (const frame of [
+    '{"v":1,"v":2,"type":"web_client_join"}',
+    '{"\\u0076":1,"v":2,"type":"web_client_join"}',
+    '{"v":2,"type":"web_client_join","args":[{"v":1,"v":2}]}',
+  ]) {
+    const error = nextMessage(ws, "error");
+    ws.send(frame);
+    assert.equal((await error).code, "bad_json", frame);
+  }
 });
 
 test("invalid or partially invalid proxy IP configuration fails startup instead of opening the allowlist", async () => {
   for (const variable of ["PINVOU_REMOTE_ALLOWED_PROXY_IPS", "PINVOU_REMOTE_TRUSTED_PROXY_IPS"]) {
-    for (const value of ["not-an-ip", "127.0.0.1,not-an-ip", ",,,"]) {
-      const isolated = await spawnRelayCapture({ [variable]: value }, { awaitListening: false });
+    // The last value is a valid address padded past the IP text cap: length is
+    // checked before trimming, so it must be rejected like any other garbage.
+    for (const value of ["not-an-ip", "127.0.0.1,not-an-ip", ",,,", `1.2.3.4${" ".repeat(140)}`]) {
+      const isolated = await spawnRelay({ [variable]: value }, { awaitListening: false });
       try {
         await waitForExit(isolated.child, 10000);
         assert.notEqual(isolated.child.exitCode, 0);
@@ -1090,7 +1086,7 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
 });
 
 test("survives a websocket protocol violation that emits an error event", async () => {
-  const isolated = await spawnRelayCapture({});
+  const isolated = await spawnRelay({});
   let ws;
   try {
     ws = await openSocket(isolated.wsUrl);
@@ -1107,20 +1103,8 @@ test("survives a websocket protocol violation that emits an error event", async 
   }
 });
 
-function rawRequest(hostPort, requestText) {
-  return new Promise((resolve, reject) => {
-    const socket = connect(hostPort, "127.0.0.1", () => {
-      socket.end(requestText);
-    });
-    let text = "";
-    socket.on("data", (chunk) => { text += String(chunk); });
-    socket.once("error", reject);
-    socket.once("close", () => resolve(text));
-  });
-}
-
 test("rejects malformed Host headers instead of crashing", async () => {
-  const isolated = await spawnRelayCapture({});
+  const isolated = await spawnRelay({});
   try {
     const httpBanner = await rawRequest(
       isolated.port,
@@ -1147,33 +1131,46 @@ test("rejects malformed Host headers instead of crashing", async () => {
 });
 
 test("attributes trusted-proxy connections to the rightmost forwarded address", async () => {
-  const isolated = await spawnRelayCapture({
+  const isolated = await spawnRelay({
     WS_CONNECT_LIMIT: "2",
     WS_CONNECT_WINDOW_MS: "60000",
     PINVOU_REMOTE_TRUSTED_PROXY_IPS: "127.0.0.1",
   });
   let first;
   let second;
+  let own;
+  let mapped;
   try {
-    // A mapped prefix whose remainder is not an IP, an over-long final item,
-    // and a garbage final item all normalize to nothing: the connection must
-    // collapse onto the peer address instead of attacker-chosen junk.
+    // A garbage mapped prefix and a valid item followed by a junk final item
+    // both normalize to nothing: the connection must collapse onto the peer
+    // address instead of attacker-chosen junk.
     first = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "::ffff:not-an-ip" } });
     second = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": `1.2.3.4, ${"a".repeat(200)}` } });
     // The peer bucket is now full, so a connection with no XFF is rejected...
     assert.equal(await rejectedUpgrade(isolated.wsUrl), 429);
-    // ...while a valid forwarded address still gets its own bucket.
-    const own = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "198.51.100.7" } });
-    closeSocket(own);
+    // ...and so is one whose header exceeds the forwarded-header cap, even
+    // though its final item is a perfectly valid address.
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": `${"a".repeat(4200)}, 1.2.3.4` },
+    }), 429);
+    // ...while a valid forwarded address still gets its own bucket, which the
+    // IPv4-mapped spelling of the same address shares.
+    own = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "198.51.100.7" } });
+    mapped = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "::ffff:198.51.100.7" } });
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "198.51.100.7" },
+    }), 429);
   } finally {
     closeSocket(first);
     closeSocket(second);
+    closeSocket(own);
+    closeSocket(mapped);
     await stopRelay(isolated.child);
   }
 });
 
 test("shuts down with exit code 0 on SIGTERM and does not log the bind address", async () => {
-  const isolated = await spawnRelayCapture({});
+  const isolated = await spawnRelay({});
   const ws = await openSocket(isolated.wsUrl);
   try {
     isolated.child.kill("SIGTERM");
@@ -1188,7 +1185,7 @@ test("shuts down with exit code 0 on SIGTERM and does not log the bind address",
 });
 
 test("configuration errors do not echo the offending value", async () => {
-  const isolated = await spawnRelayCapture(
+  const isolated = await spawnRelay(
     { PINVOU_REMOTE_ALLOWED_WEB_ORIGINS: "https://good.example, ftp://evil.example" },
     { awaitListening: false },
   );
@@ -1203,18 +1200,89 @@ test("configuration errors do not echo the offending value", async () => {
 });
 
 test("relay state load failures surface a fixed message without paths", async () => {
-  const stateDirectory = join(testRoot, `state-as-dir-${Date.now()}`);
-  await mkdir(stateDirectory, { recursive: true });
-  const isolated = await spawnRelayCapture(
-    { PINVOU_REMOTE_STATE_PATH: stateDirectory },
+  // A regular file where a directory is expected makes stat() fail with
+  // ENOTDIR, whose message and `path` property both carry the full state path;
+  // only a fixed code plus the errno name may reach stderr.
+  const blocker = join(testRoot, `state-blocker-${Date.now()}`);
+  await writeFile(blocker, "not-a-directory");
+  const statePath = join(blocker, "relay-state.json");
+  const isolated = await spawnRelay(
+    { PINVOU_REMOTE_STATE_PATH: statePath },
     { awaitListening: false },
   );
   try {
     await waitForExit(isolated.child, 10000);
     assert.notEqual(isolated.child.exitCode, 0);
-    assert.match(isolated.errors(), /relay_state_load_failed/u);
-    assert.ok(!isolated.errors().includes(stateDirectory), "state path leaked into stderr");
+    assert.equal(isolated.errors().trim(), "[relay-error] relay_state_load_failed code=ENOTDIR");
   } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("accepts frames nested exactly to the wire depth cap", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+  const error = nextMessage(ws, "error");
+  // One envelope level plus 127 containers is the deepest frame the desktop
+  // can produce (serde_json's parse limit). It must clear the wire guard and
+  // reach the protocol layer, which rejects it only for lacking authentication.
+  ws.send(`{"v":2,"payload":${"[".repeat(127)}0${"]".repeat(127)}}`);
+  assert.equal((await error).code, "authentication_required");
+});
+
+test("a blank trusted proxy list is empty while an unset one inherits the allowlist", async () => {
+  const spawnWithPeerBucketFull = async (env) => {
+    const isolated = await spawnRelay({
+      WS_CONNECT_LIMIT: "2",
+      WS_CONNECT_WINDOW_MS: "60000",
+      PINVOU_REMOTE_ALLOWED_PROXY_IPS: "127.0.0.1",
+      ...env,
+    });
+    const sockets = [await openSocket(isolated.wsUrl), await openSocket(isolated.wsUrl)];
+    return { isolated, sockets };
+  };
+  // With the loopback peer's bucket full, a forwarded address opens a fresh
+  // bucket only if the peer is a trusted proxy.
+  const forwarded = { headers: { "x-forwarded-for": "198.51.100.7" } };
+  const inherited = await spawnWithPeerBucketFull({});
+  try {
+    const own = await openSocket(inherited.isolated.wsUrl, forwarded);
+    closeSocket(own);
+  } finally {
+    inherited.sockets.forEach(closeSocket);
+    await stopRelay(inherited.isolated.child);
+  }
+  const blank = await spawnWithPeerBucketFull({ PINVOU_REMOTE_TRUSTED_PROXY_IPS: "" });
+  try {
+    assert.equal(await rejectedUpgrade(blank.isolated.wsUrl, forwarded), 429);
+  } finally {
+    blank.sockets.forEach(closeSocket);
+    await stopRelay(blank.isolated.child);
+  }
+});
+
+test("serves 503 instead of crashing when a web asset becomes unreadable", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("file modes do not restrict root");
+    return;
+  }
+  const unreadableWebDir = join(testRoot, `web-unreadable-${Date.now()}`);
+  await mkdir(unreadableWebDir, { recursive: true });
+  const indexPath = join(unreadableWebDir, "index.html");
+  await writeFile(indexPath, "<html></html>");
+  await chmod(indexPath, 0o000);
+  const isolated = await spawnRelay({ PINVOU_REMOTE_WEB_DIR: unreadableWebDir });
+  try {
+    // stat() still succeeds on a mode-000 file, so only the read fails: the
+    // same shape as a redeploy replacing files under a request.
+    const response = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
+    assert.equal(response.status, 503);
+    assert.equal(await response.text(), "WebUI build is not available");
+    const follower = await openSocket(isolated.wsUrl);
+    closeSocket(follower);
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await chmod(indexPath, 0o600).catch(() => {});
     await stopRelay(isolated.child);
   }
 });
