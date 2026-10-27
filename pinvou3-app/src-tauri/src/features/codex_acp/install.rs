@@ -736,12 +736,18 @@ async fn run_managed_install(
             let status = result.context(stage.wait_context)?;
             // Reaped: settle before any further await or fallible step, so
             // a panic in between can never drop the guard armed on a pid
-            // the OS may already have handed to another process. The cost:
-            // an abort in the output-reader tail drops the guard disarmed
-            // and skips a unix group reclaim that would still be ESRCH-safe
-            // — accepted, because the alternative keeps a kill by a
-            // possibly recycled pid armed across that tail.
+            // the OS may already have handed to another process.
             child_guard.settle_reaped();
+            if !status.success() {
+                // A failed leader's group survivors are reclaimed here, not
+                // after the output tail: the tail idles up to IDLE_TIMEOUT
+                // when a descendant holds the pipes — exactly the case that
+                // has survivors — and a kill deferred behind it would fire on
+                // a pid the OS may meanwhile have handed to an unrelated
+                // group leader. An idempotent-ok run normally leaves an
+                // empty group, which the reclaim treats as ESRCH.
+                child_guard.reclaim_group_survivors();
+            }
             status
         }
         Err(_) => {
@@ -786,14 +792,12 @@ async fn run_managed_install(
             .idempotent_ok
             .is_some_and(|is_done| is_done(&stdout, &stderr))
     {
-        // An (idempotent) success needs no reclaim: the installer wound down
-        // its own children, and the guard already settled at the wait site.
+        // An (idempotent) success needs no further reclaim: the guard
+        // settled at the wait site, and a nonzero exit already ran the
+        // group reclaim there — for a wound-down installer it found an
+        // empty group (ESRCH-safe).
         return Ok(());
     }
-    // The leader exited with a failure status and has been reaped (settled
-    // at the wait site): reclaim unix group survivors once, so descendants
-    // that outlived the leader are not orphaned.
-    child_guard.reclaim_group_survivors();
     // The process was cancelled by the user (taskkill/kill) and reaches here with a failure status: rewrite to cancelled semantics.
     if install_cancelled.lock().remove(&backend) {
         bail!(
