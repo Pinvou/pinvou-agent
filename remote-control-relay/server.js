@@ -27,6 +27,10 @@ const MAX_PAYLOAD_BYTES = boundedInteger(
   4 * MIB,
   16 * MIB,
 );
+// Deepest frame a desktop can produce: serde_json parses at most 127 nested
+// containers, plus one wire envelope level. Deeper frames are rejected before
+// JSON.parse, which alone would accept them.
+const MAX_WIRE_NESTING_DEPTH = 128;
 const MAX_ENDPOINTS = boundedInteger(
   process.env.MAX_ENDPOINTS ?? process.env.MAX_ROOMS,
   2000,
@@ -389,58 +393,80 @@ function hasLegacyTokenAlias(message) {
 // {"v":1,"v":2} would be treated as a v2 frame even though it was written as
 // a v1 frame first. Scan the raw wire text before parsing and reject any
 // object whose version key appears twice, including escaped spellings.
+//
+// This runs on every inbound frame ahead of JSON.parse, so it must stay cheap:
+// string values are skipped without decoding, and a key is decoded only when
+// its raw text could possibly spell "v" (it is exactly "v" or contains an
+// escape). Anything the scanner lets through that is not valid JSON is still
+// rejected by the JSON.parse that follows.
 function assertNoDuplicateVersionKey(text) {
   let cursor = 0;
+  const isWs = (c) => c === 32 || c === 9 || c === 10 || c === 13;
   const skipWhitespace = () => {
-    while (cursor < text.length && /\s/u.test(text[cursor])) cursor += 1;
+    while (cursor < text.length && isWs(text.charCodeAt(cursor))) cursor += 1;
   };
-  const readString = () => {
+  // Jump to the next quote and treat it as the terminator unless it is
+  // preceded by an odd run of backslashes (an escaped quote).
+  const readString = (decodeKey) => {
     const start = cursor;
-    cursor += 1;
-    while (cursor < text.length) {
-      if (text[cursor] === "\\") { cursor += 2; continue; }
-      if (text[cursor++] === "\"") return JSON.parse(text.slice(start, cursor));
+    let from = cursor + 1;
+    for (;;) {
+      const quote = text.indexOf("\"", from);
+      if (quote === -1) throw new Error("unterminated string");
+      let j = quote - 1;
+      let backslashes = 0;
+      while (j > start && text.charCodeAt(j) === 92) { backslashes += 1; j -= 1; }
+      if (backslashes & 1) { from = quote + 1; continue; }
+      cursor = quote + 1;
+      if (!decodeKey) return null;
+      const raw = text.slice(start, cursor);
+      if (raw.includes("\\")) return JSON.parse(raw);
+      return raw === "\"v\"" ? "v" : null;
     }
-    throw new Error("unterminated string");
   };
   const scanValue = (depth = 0) => {
-    if (depth > 128) throw new Error("nesting too deep");
+    if (depth > MAX_WIRE_NESTING_DEPTH) throw new Error("nesting too deep");
     skipWhitespace();
-    const head = text[cursor];
-    if (head === "\"") { readString(); return; }
-    if (head === "{") {
+    const head = text.charCodeAt(cursor);
+    if (head === 34) { readString(false); return; }
+    if (head === 123) {
       cursor += 1;
-      const keys = new Set();
+      let seenVersionKey = false;
       skipWhitespace();
-      if (text[cursor] === "}") { cursor += 1; return; }
+      if (text.charCodeAt(cursor) === 125) { cursor += 1; return; }
       for (;;) {
         skipWhitespace();
-        if (text[cursor] !== "\"") throw new Error("malformed object");
-        const key = readString();
-        if (key === "v" && keys.has("v")) throw new Error("duplicate version key");
-        keys.add(key);
+        if (text.charCodeAt(cursor) !== 34) throw new Error("malformed object");
+        if (readString(true) === "v") {
+          if (seenVersionKey) throw new Error("duplicate version key");
+          seenVersionKey = true;
+        }
         skipWhitespace();
-        if (text[cursor++] !== ":") throw new Error("malformed object");
+        if (text.charCodeAt(cursor++) !== 58) throw new Error("malformed object");
         scanValue(depth + 1);
         skipWhitespace();
-        const delimiter = text[cursor++];
-        if (delimiter === "}") return;
-        if (delimiter !== ",") throw new Error("malformed object");
+        const delimiter = text.charCodeAt(cursor++);
+        if (delimiter === 125) return;
+        if (delimiter !== 44) throw new Error("malformed object");
       }
     }
-    if (head === "[") {
+    if (head === 91) {
       cursor += 1;
       skipWhitespace();
-      if (text[cursor] === "]") { cursor += 1; return; }
+      if (text.charCodeAt(cursor) === 93) { cursor += 1; return; }
       for (;;) {
         scanValue(depth + 1);
         skipWhitespace();
-        const delimiter = text[cursor++];
-        if (delimiter === "]") return;
-        if (delimiter !== ",") throw new Error("malformed array");
+        const delimiter = text.charCodeAt(cursor++);
+        if (delimiter === 93) return;
+        if (delimiter !== 44) throw new Error("malformed array");
       }
     }
-    while (cursor < text.length && !/[\s,}\]]/u.test(text[cursor])) cursor += 1;
+    while (cursor < text.length) {
+      const c = text.charCodeAt(cursor);
+      if (c === 44 || c === 125 || c === 93 || isWs(c)) break;
+      cursor += 1;
+    }
   };
   scanValue();
   skipWhitespace();
