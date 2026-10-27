@@ -5653,6 +5653,18 @@ mod tests {
             Some(second_workspace.as_path())
         );
         assert!(!after_retry.mode.is_code());
+        // ...and the retry reaches the durable file too, not just memory.
+        let durable_after_retry: AgentStoreFile =
+            serde_json::from_slice(&fs::read(store.path()).expect("read binding after retry"))
+                .expect("parse binding after retry");
+        let retried_record = &durable_after_retry.sessions["session-atomic"];
+        assert_eq!(retried_record.backend, AgentBackend::CodexAcp);
+        assert_eq!(retried_record.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(
+            retried_record.workspace_path.as_deref(),
+            Some(second_workspace.as_path())
+        );
+        assert!(!retried_record.mode.is_code());
         assert!(read_code_session_sidecar(store.path(), "session-atomic").is_none());
 
         let _ = fs::remove_dir_all(&root);

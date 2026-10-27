@@ -2333,15 +2333,18 @@ mod tests {
             // The live stop path tags the envelope with the busy turn: that
             // shape must neither close the turn nor open a second one.
             event(6, Some("turn-orphan-2"), "cancel_requested"),
+            // A cancel for a turn that never started must not fabricate an
+            // orphaned turn either.
+            event(7, Some("turn-ghost"), "cancel_requested"),
         ];
         assert_eq!(
             orphaned_turn_ids(&events),
             vec!["turn-orphan-1", "turn-orphan-2"],
-            "cancel events, global or turn-tagged, must not close a persisted turn"
+            "cancel events must neither close a persisted turn nor open a new one"
         );
 
-        events.push(event(7, Some("turn-orphan-1"), "turn_completed"));
-        events.push(event(8, Some("turn-orphan-2"), "turn_completed"));
+        events.push(event(8, Some("turn-orphan-1"), "turn_completed"));
+        events.push(event(9, Some("turn-orphan-2"), "turn_completed"));
         assert!(
             orphaned_turn_ids(&events).is_empty(),
             "re-running recovery after terminal events must be a no-op"
