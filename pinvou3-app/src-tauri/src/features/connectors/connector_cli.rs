@@ -467,8 +467,7 @@ pub fn png_data_url(bytes: &[u8]) -> Option<String> {
 /// [`safe_auth_log_line`] 脱敏 + 截断)供连接器收进失败原因环形缓冲。
 /// `redact_bare_token` 透传给 [`safe_auth_log_line`]:飞书/企微传 `false`(CLI 的
 /// 正常输出行可能含含 token 字样的字段名,开启会把非敏感行整体吞成占位符,
-/// 失败原因就没了),tmeet 传 `true`(其输出含裸 token 字样需兜底;dingtalk
-/// 走私有 drain 且不开兜底)。
+/// 失败原因就没了),tmeet 传 `true`(与 dingtalk 同款取舍)。
 pub fn drain_for_url<R: std::io::Read + Send + 'static>(
     ctx: CliCtx,
     redact_bare_token: bool,
@@ -696,10 +695,25 @@ pub struct ConnectorAuthGateRefresh {
 /// 不占 Tauri setup 主线程；各自只修改互不重叠的技能目录。四连接器的探测 + 刷新
 /// 同一形状,按 [`skill_gate::GATES`] 表驱动。
 pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, String> {
+    refresh_gates(&skill_gate::GATES).await
+}
+
+/// The table-driven aggregate behind [`refresh_connector_auth_gates`],
+/// parameterized over the gate table so tests can drive a mixed
+/// successful/failing aggregate without the real CLI probes. Structural
+/// contract (pinned by
+/// `aggregate_keeps_successful_sibling_mutations_while_reporting_failure`):
+/// every gate runs to completion and a sibling's error never rolls back the
+/// mutations a successful gate already persisted — the first error is only
+/// reported AFTER all gates finished, so the caller's delivery step must run
+/// on the error path too.
+pub(crate) async fn refresh_gates(
+    gates: &'static [&'static skill_gate::ConnectorGate],
+) -> Result<ConnectorAuthGateRefresh, String> {
     let started = Instant::now();
     crate::platform::startup::mark("connector_auth_refresh:start");
 
-    let tasks: Vec<_> = skill_gate::GATES
+    let tasks: Vec<_> = gates
         .iter()
         .map(|gate| {
             let gate: &'static skill_gate::ConnectorGate = *gate;
@@ -716,7 +730,7 @@ pub async fn refresh_connector_auth_gates() -> Result<ConnectorAuthGateRefresh, 
     // every outcome, the `done` mark is always emitted, and the first gate
     // error is returned after the bookkeeping.
     let mut outcomes = Vec::with_capacity(tasks.len());
-    for (gate, task) in skill_gate::GATES.iter().zip(tasks) {
+    for (gate, task) in gates.iter().zip(tasks) {
         let result = task
             .await
             .map_err(|e| format!("{}鉴权探测任务失败: {e}", gate.display_name));
@@ -902,6 +916,72 @@ mod tests {
             Some("刷新企微技能门控失败: boom"),
             "the first gate error wins, after the marks are recorded"
         );
+    }
+
+    /// Marker "materialization" for the successful aggregate sibling: the
+    /// closure cannot capture, so it touches the (env-isolated) PINVOU3_HOME.
+    fn aggregate_sibling_apply_ok(visible: bool) -> std::io::Result<()> {
+        let marker = crate::platform::paths::pinvou3_home().join("aggregate-ok-skills");
+        if visible {
+            std::fs::create_dir_all(marker)
+        } else {
+            let _ = std::fs::remove_dir_all(&marker);
+            Ok(())
+        }
+    }
+
+    fn aggregate_sibling_apply_fail(_visible: bool) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "aggregate sibling failure",
+        ))
+    }
+
+    /// Review P2 (aggregate delivery): a failing sibling must not erase (or
+    /// stand in front of) a successful sibling's persisted mutations. The
+    /// aggregate runs every gate to completion and reports only the first
+    /// error — the caller's live-session wrap-up runs on the error path too,
+    /// and this pins the precondition that fix relies on: the successful
+    /// gate's grant + materialization are durable even though the aggregate
+    /// returns Err.
+    #[test]
+    fn aggregate_keeps_successful_sibling_mutations_while_reporting_failure() {
+        use crate::features::connectors::skill_gate::ConnectorGate;
+        use crate::platform::test_support::with_temp_home;
+        with_temp_home("pinvou3-aggregate-siblings", || {
+            let ok_gate: &'static ConnectorGate = Box::leak(Box::new(ConnectorGate {
+                id: "aggtestok",
+                disabled_filename: Box::leak("aggtestok_disabled".into()),
+                display_name: "聚合测试成功侧",
+                ready_probe: || true,
+                apply_bundle_skills: aggregate_sibling_apply_ok,
+            }));
+            let bad_gate: &'static ConnectorGate = Box::leak(Box::new(ConnectorGate {
+                id: "aggtestbad",
+                disabled_filename: Box::leak("aggtestbad_disabled".into()),
+                display_name: "聚合测试失败侧",
+                ready_probe: || true,
+                apply_bundle_skills: aggregate_sibling_apply_fail,
+            }));
+            let gates: &'static [&'static ConnectorGate] =
+                Box::leak(vec![ok_gate, bad_gate].into_boxed_slice());
+            let err = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(refresh_gates(gates))
+                .unwrap_err();
+            assert!(
+                err.contains("聚合测试失败侧"),
+                "the failing sibling's error is the aggregate verdict: {err}"
+            );
+            assert!(
+                crate::platform::paths::pinvou3_home()
+                    .join("aggregate-ok-skills")
+                    .exists(),
+                "the successful sibling's materialization must survive the sibling's error"
+            );
+        });
     }
 
     const TEST_CTX: CliCtx = CliCtx {
