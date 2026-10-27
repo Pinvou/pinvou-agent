@@ -190,6 +190,9 @@ pub fn search_workspace(root: &Path, query: &str) -> Result<Vec<WorkspaceEntry>>
 
 pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<WorkspacePreview> {
     let relative = normalize_relative_path(relative_path)?;
+    if relative_path_crosses_blocked_component(&relative) {
+        bail!("工作区路径途经凭据文件，拒绝读取: {relative}");
+    }
     let path = resolve_existing_path(root, &relative, false)?;
     let metadata = path
         .metadata()
@@ -833,6 +836,11 @@ fn diff_cache_put(session_id: &str, root: &Path, relative: &str, text: String, t
 pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Result<WorkspaceDiff> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
+    // 未跟踪文件的合成差异与 git diff（含已暂存）都包含文件内容；凭据组件
+    // 文件拒绝进入差异车道，与 preview_workspace_file 同策略。
+    if relative_path_crosses_blocked_component(&relative) {
+        bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
+    }
     let path = root.join(&relative);
     ensure_path_within_workspace(&root, &path)?;
 
@@ -989,6 +997,13 @@ fn workspace_entry(root: &Path, path: PathBuf) -> Result<Option<WorkspaceEntry>>
     if name.is_empty() || (metadata.is_dir() && is_ignored_directory(&name)) {
         return Ok(None);
     }
+    let relative_path = relative_text(root, &path)?;
+    // 凭据组件条目静默跳过（同 file_access::list_host_files 的模式）：列表与
+    // 搜索不外泄其存在；读取与差异车道另行显式拒绝。相对路径以工作区根为
+    // 基准，被列入的目录本身在黑名单内时其子项同样被跳过。
+    if relative_path_crosses_blocked_component(&relative_path) {
+        return Ok(None);
+    }
     let kind = if metadata.is_dir() {
         "directory"
     } else if metadata.is_file() {
@@ -1002,7 +1017,7 @@ fn workspace_entry(root: &Path, path: PathBuf) -> Result<Option<WorkspaceEntry>>
             .is_some_and(|mut entries| entries.any(|entry| entry.is_ok()));
     Ok(Some(WorkspaceEntry {
         name,
-        relative_path: relative_text(root, &path)?,
+        relative_path,
         kind: kind.to_string(),
         size: if metadata.is_file() {
             metadata.len()
@@ -1039,6 +1054,17 @@ fn normalize_relative_path(raw: &str) -> Result<String> {
         }
     }
     Ok(parts.join("/"))
+}
+
+/// 相对路径是否途经凭据黑名单组件（`.env`、`.aws`、`id_rsa`、
+/// `credentials.json` 等，逐组件精确匹配——`.env.production` 是不同组件，
+/// 不在黑名单内）。判定复用 `path_policy::check_sensitive_components`（内部
+/// 经平台感知 `path_component_eq`，macOS 默认卷大小写不敏感）；其系统前缀
+/// 黑名单均以 `/` 开头，相对路径不可能命中，这里等价于纯组件判定。
+/// 策略意图见 file_ingest::validate_browsable_path：凭据内容不得进入外部
+/// 模型上下文——codex workspace 车道与附件摄入同约束。
+fn relative_path_crosses_blocked_component(relative: &str) -> bool {
+    crate::platform::path_policy::check_sensitive_components(Path::new(relative)).is_err()
 }
 
 fn resource_path_from_uri(raw: &str) -> Result<PathBuf> {
@@ -2197,6 +2223,94 @@ mod tests {
         let preview = preview_workspace_file(root.path(), "src/main.rs").unwrap();
         assert_eq!(preview.kind, "text");
         assert_eq!(preview.text.as_deref(), Some("fn main() {}"));
+    }
+
+    /// 凭据黑名单逐组件精确匹配：`.env`、`.aws/credentials`、`sub/.ssh/id_rsa`
+    /// 命中；`.env.production` / `.environment` 是不同组件、放行（黑名单语义
+    /// 与 path_policy 一致，不做子串/前缀匹配）。
+    #[test]
+    fn blocked_component_detection_is_exact_per_component() {
+        assert!(relative_path_crosses_blocked_component(".env"));
+        assert!(relative_path_crosses_blocked_component(".aws/credentials"));
+        assert!(relative_path_crosses_blocked_component("sub/.ssh/id_rsa"));
+        assert!(!relative_path_crosses_blocked_component(".env.production"));
+        assert!(!relative_path_crosses_blocked_component(".environment"));
+        assert!(!relative_path_crosses_blocked_component("notes.md"));
+    }
+
+    /// workspace 车道此前没有任何凭据策略：phone 端铸造的工作区 grant 把
+    /// preview 变成授区内凭据文件的自由读取口。preview 必须显式拒绝。
+    #[test]
+    fn preview_workspace_file_rejects_credential_components() {
+        let root = TestDir::new("credential-preview");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::write(root.path().join(".aws/credentials"), "aws_key=1\n").unwrap();
+
+        let error = preview_workspace_file(root.path(), ".env")
+            .err()
+            .expect("credential file preview must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        assert!(preview_workspace_file(root.path(), ".aws/credentials").is_err());
+        // 普通文件不受影响。
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+        assert!(preview_workspace_file(root.path(), "notes.md").is_ok());
+    }
+
+    /// 列表与搜索静默跳过凭据组件条目（同 file_access::list_host_files 的
+    /// 模式）；被列入的目录本身在黑名单内时其子项同样不可见。
+    #[test]
+    fn list_and_search_skip_credential_components() {
+        let root = TestDir::new("credential-listing");
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        fs::write(root.path().join(".aws/credentials"), "aws_key=1\n").unwrap();
+        fs::create_dir_all(root.path().join("sub/.ssh")).unwrap();
+        fs::write(root.path().join("sub/.ssh/id_rsa"), "key\n").unwrap();
+
+        let listing = list_workspace(root.path(), None).unwrap();
+        assert!(listing.entries.iter().any(|entry| entry.name == "notes.md"));
+        assert!(
+            !listing
+                .entries
+                .iter()
+                .any(|entry| entry.name == ".env" || entry.name == ".aws"),
+            "credential entries must be skipped, got: {:?}",
+            listing.entries
+        );
+        let aws_listing = list_workspace(root.path(), Some(".aws")).unwrap();
+        assert!(
+            aws_listing.entries.is_empty(),
+            "listing inside a blocked directory must leak nothing, got: {:?}",
+            aws_listing.entries
+        );
+        let sub_listing = list_workspace(root.path(), Some("sub")).unwrap();
+        assert!(!sub_listing.entries.iter().any(|entry| entry.name == ".ssh"));
+
+        let hit = search_workspace(root.path(), "id_rsa").unwrap();
+        assert!(
+            hit.is_empty(),
+            "search must not return credential paths, got: {hit:?}"
+        );
+        let hit = search_workspace(root.path(), "notes").unwrap();
+        assert!(hit.iter().any(|entry| entry.relative_path == "notes.md"));
+    }
+
+    /// 未跟踪差异与 git diff 都携带文件内容，凭据组件文件必须拒绝进入差异
+    /// 车道（非 git 工作区的未跟踪 `.env` 即可复现）。
+    #[test]
+    fn workspace_diff_rejects_credential_components() {
+        let root = TestDir::new("credential-diff");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::create_dir_all(root.path().join("sub/.ssh")).unwrap();
+        fs::write(root.path().join("sub/.ssh/id_rsa"), "key\n").unwrap();
+
+        let error = workspace_diff("s-cred", root.path(), ".env")
+            .err()
+            .expect("credential file diff must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        assert!(workspace_diff("s-cred", root.path(), "sub/.ssh/id_rsa").is_err());
     }
 
     #[test]

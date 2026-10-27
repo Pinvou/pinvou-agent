@@ -154,10 +154,24 @@ mod tests {
 
     #[test]
     fn path_identity_case_behavior_matches_component_comparison() {
-        assert_eq!(
-            filesystem_path_identity_key("A.md") == filesystem_path_identity_key("a.md"),
-            path_component_eq(OsStr::new("A"), "a"),
-        );
+        // On macOS the identity key stays case-sensitive on purpose: APFS's
+        // default volume folds case, so canonicalize preserves the caller's
+        // spelling and two casings of one directory must fail the grant
+        // identity match closed rather than alias. Component comparison folds
+        // there (credential blocklist must survive `.AWS`-style spellings),
+        // so the two predicates deliberately diverge on darwin.
+        if cfg!(target_os = "macos") {
+            assert_ne!(
+                filesystem_path_identity_key("A.md"),
+                filesystem_path_identity_key("a.md"),
+            );
+            assert!(path_component_eq(OsStr::new("A"), "a"));
+        } else {
+            assert_eq!(
+                filesystem_path_identity_key("A.md") == filesystem_path_identity_key("a.md"),
+                path_component_eq(OsStr::new("A"), "a"),
+            );
+        }
         if std::path::MAIN_SEPARATOR == '\\' {
             assert_eq!(
                 filesystem_path_identity_key(r"folder\file.md"),

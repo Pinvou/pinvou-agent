@@ -65,13 +65,26 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-/// 比较路径组件是否等于预期字符串。
-/// Unix 上大小写敏感，linux 与 macOS 实现相同。
+/// 比较路径组件是否等于预期字符串。Linux 文件系统大小写敏感，字节精确比较；
+/// macOS 默认 APFS 卷大小写不敏感，且 `std::fs::canonicalize`（realpath）保留
+/// 调用方传入的大小写——`/Users/u/.AWS/credentials` 不会改写成磁盘上的 `.aws`
+/// 拼写，字节比较会让大写变体绕过凭据黑名单，因此与 windows_path.rs 同用
+/// ASCII 折叠。
+#[cfg(target_os = "macos")]
+pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
+    component.to_string_lossy().eq_ignore_ascii_case(expected)
+}
+
+/// 比较路径组件是否等于预期字符串（Linux 大小写敏感，字节精确）。
+#[cfg(not(target_os = "macos"))]
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
 }
 
 /// Unix 文件系统路径的稳定标识 key(大小写敏感,直接用原串)。
+/// 注意 macOS 的 canonicalize 保留调用方拼写，同一文件可有多种大小写 key；
+/// grant 身份匹配按「不同 key」失败闭合（宁可重新授权，不凭拼写放宽），故
+/// 刻意不折叠。
 pub fn filesystem_path_identity_key(path: &str) -> String {
     path.to_string()
 }
@@ -315,9 +328,17 @@ mod tests {
     }
 
     #[test]
-    fn path_component_eq_is_case_sensitive() {
+    fn path_component_eq_case_semantics_follow_platform() {
         assert!(path_component_eq(OsStr::new("home"), "home"));
-        assert!(!path_component_eq(OsStr::new("Home"), "home"));
+        if cfg!(target_os = "macos") {
+            // macOS 默认 APFS 卷大小写不敏感且 canonicalize 保留传入拼写；
+            // 大写变体必须命中，否则凭据黑名单被 `.AWS` 之类拼写绕过。
+            assert!(path_component_eq(OsStr::new("Home"), "home"));
+            assert!(path_component_eq(OsStr::new("HOME"), "home"));
+        } else {
+            // Linux 文件系统大小写敏感，大写变体是不同组件。
+            assert!(!path_component_eq(OsStr::new("Home"), "home"));
+        }
     }
 
     #[test]
