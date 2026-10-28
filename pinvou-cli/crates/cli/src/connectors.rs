@@ -7,7 +7,9 @@
 //! below mirrors the exact GUI feature function over the public
 //! `pinvou3_lib` building blocks the feature itself uses:
 //! - the connector switch → the plain-scope `load_disabled_bundles_for` /
-//!   `save_disabled_bundles_for` pair the GUI toggle uses, and
+//!   `save_disabled_bundles_for_with_toggled_ids` pair the GUI toggle uses
+//!   (an enable names its target as the write's toggle intent, committing
+//!   the standing connect grant it accepts), and
 //!   `deny_first_register_connector` after a connect
 //!   (feat/connector-connect-grants-enable: the connect gesture is itself the
 //!   consent, so the connector lands ENABLED in every DenyAll scope — CLI and
@@ -1618,14 +1620,31 @@ fn set_enabled(
     } else if !ids.iter().any(|id| id == &package_id) {
         ids.push(package_id.clone());
     }
-    pinvou3_lib::features::marketplace::save_disabled_bundles_for(scope, &ids).map_err(
-        |error| {
-            CliError::failed(format!(
-                "connectors {}: could not update the plain-scope disabled set: {error}",
-                spec.id
-            ))
-        },
-    )?;
+    // An enable is an explicit verdict for THIS id, so it names its target as
+    // the write's toggle intent (the composer click's `toggledIds`): inside
+    // the same locked write the writer commits the standing connect grant's
+    // ownership token, and an older in-flight connect's compensating revoke —
+    // which matches only while its token still stands — can no longer undo
+    // the decision this command just persisted. A disable stays intent-less:
+    // entering the disabled list is the whole-list write's own explicit-OFF
+    // strip (the grant-consumed predicate), and the compensation legs are
+    // pinned in the scope layer's tests.
+    let toggled_ids: &[String] = if enabled {
+        std::slice::from_ref(&package_id)
+    } else {
+        &[]
+    };
+    pinvou3_lib::features::marketplace::save_disabled_bundles_for_with_toggled_ids(
+        scope,
+        &ids,
+        toggled_ids,
+    )
+    .map_err(|error| {
+        CliError::failed(format!(
+            "connectors {}: could not update the plain-scope disabled set: {error}",
+            spec.id
+        ))
+    })?;
     // Round-43 review: same post-save read-back verification as the plugins
     // sibling (there over the normalized projection) — storage errors
     // already surfaced through the `?`, so this is only reachable if the
@@ -5529,6 +5548,94 @@ mod tests {
         assert!(
             !redacted.contains("sk-live-pasted-literal-987654"),
             "a secret-shaped value must not survive either: {redacted}"
+        );
+    }
+
+    /// The CLI arm of the composer toggle's P2: an explicit `connectors
+    /// enable` names its target as the write's toggle intent, so the same
+    /// locked write commits the standing connect grant's ownership token.
+    /// The reachable cohort is the stale-snapshot shape — the store already
+    /// agrees with the enable (connect A's gesture grant lifted the
+    /// no-ledger row), so no row delta exists to carry the decision and only
+    /// the declared intent distinguishes this verdict from an unrelated
+    /// write. Without the commit, A's materialization failure revokes
+    /// through the still-standing token (its ownership predicate, pinned in
+    /// the scope layer's tests) and restores the lifted row over the ON this
+    /// command just persisted.
+    #[test]
+    fn connectors_enable_commits_the_standing_connect_grant_it_accepts() {
+        // Lock first, fixture second: the fixture's Drop restores the
+        // previous PINVOU3_HOME while the lock is still held.
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::support::test_support::TempHome::new("connectors-enable-grant");
+        let store = home.join("disabled_bundles.json");
+        std::fs::write(
+            &store,
+            r#"{"scopes":{"plain":["feishu"]},"initialized":["plain"]}"#,
+        )
+        .unwrap();
+
+        // Connect A's gesture grant through the same gated entry the CLI
+        // connect drives: it lifts plain's explicit row and lands grant +
+        // ownership token; A's materialization is now in flight.
+        let grant_a =
+            pinvou3_lib::features::marketplace::deny_first_register_connector("feishu", true)
+                .unwrap();
+        assert!(
+            grant_a.granted && grant_a.lifted_scopes.iter().any(|key| key == "plain"),
+            "fixture: the gesture grants and lifts plain's row: {grant_a:?}"
+        );
+
+        // The CLI enable through the real command writer; the probe, gate,
+        // and skill lanes behind the save are report-only for an enable and
+        // write nothing.
+        set_enabled(ConnectorKind::Feishu, true, OutputMode::Json)
+            .expect("the enable must succeed");
+        let persisted = pinvou3_lib::features::marketplace::load_disabled_bundles_for(
+            pinvou3_lib::features::marketplace::ConnectorScope::Plain,
+        );
+        assert!(
+            !persisted.iter().any(|id| id == "feishu"),
+            "the enable must read back ON: {persisted:?}"
+        );
+
+        // The verdict is defended: the ownership token is consumed in the
+        // same write, so A's compensating revoke — which matches only while
+        // its token still stands — has nothing left to match. The commit is
+        // token-only: the grant itself stays standing behind the accepted ON
+        // and the lifted row stays absent.
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+        assert!(
+            file["connect_grant_tokens"].get("feishu").is_none(),
+            "the CLI enable must commit the standing ownership token: {file}"
+        );
+        assert!(
+            file["connect_granted"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+            "the commit is token-only: the grant stands behind the accepted ON: {file}"
+        );
+        assert!(
+            !file["scopes"]["plain"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+            "the lifted row must stay absent behind the accepted ON: {file}"
+        );
+        // The production ownership predicate the compensating revoke
+        // evaluates, driven through the pub commit entry (the bare revoke is
+        // deliberately crate-internal): the older connect's pending
+        // compensation no longer matches the state the enable left behind.
+        assert_eq!(
+            pinvou3_lib::features::marketplace::commit_relied_connect_grant(
+                "feishu",
+                &grant_a.grant_token
+            )
+            .unwrap(),
+            pinvou3_lib::features::marketplace::ReliedGrantCommit::Superseded,
+            "the older connect's compensation must no longer match the token the enable committed"
         );
     }
 }
