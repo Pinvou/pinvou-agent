@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
 import { createServer } from "node:net";
@@ -307,6 +307,34 @@ test("serves the built WebUI SPA at the public base path", async () => {
   assert.equal(missingAsset.status, 404);
   const outside = await fetch(`${httpUrl}/not-the-webui`);
   assert.equal(outside.status, 404);
+});
+
+// stat→read 之间的换出(部署替换 web/dist):readFile 失败必须以 503 应答,
+// 不得成为 async handler 的 unhandled rejection 杀死整个 relay(与 Host 头
+// 守卫同一中毒输入纪律)。用不可读的 index.html 确定性触发 read 失败
+// (root 与 Windows 忽略该权限位,场景不成立时跳过)。
+const unreadableFileScenario =
+  process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() !== 0;
+test("answers 503 when the web dist file fails between stat and read", { skip: !unreadableFileScenario }, async () => {
+  const isolatedWeb = await mkdtemp(join(tmpdir(), "pinvou-relay-webout-"));
+  await writeFile(join(isolatedWeb, "index.html"), "<!doctype html><title>temp</title>");
+  const isolated = await spawnRelay({ PINVOU_REMOTE_WEB_DIR: isolatedWeb });
+  try {
+    await chmod(join(isolatedWeb, "index.html"), 0o000);
+    const unreadable = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
+    assert.equal(unreadable.status, 503);
+    assert.equal(unreadable.headers.get("cache-control"), "no-store");
+    assert.equal(isolated.child.exitCode, null, "the relay must survive the read failure");
+
+    await chmod(join(isolatedWeb, "index.html"), 0o644);
+    const restored = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
+    assert.equal(restored.status, 200);
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await chmod(join(isolatedWeb, "index.html"), 0o644);
+    await stopRelay(isolated.child);
+    await rm(isolatedWeb, { recursive: true, force: true });
+  }
 });
 
 test("healthz exposes aggregate endpoint counters and no identifiers", async () => {
@@ -1209,16 +1237,13 @@ test("a newer desktop registration replaces the old socket and keeps the web lea
   assert.equal(second.registered.lease_id, web.joined.lease_id);
   assert.deepEqual(await replacedClose, { code: 4001, reason: "desktop endpoint replaced" });
 
-  // A late frame from the replaced desktop socket must not cross the endpoint.
-  first.ws.send(JSON.stringify({
-    v: 2,
-    type: "rpc_request",
-    id: "from-replaced",
-    client_request_id: "from-replaced",
-    command: "list_sessions",
-    args: {},
-  }));
-  await expectNoMessage(second.ws, "rpc_request");
+  // NOTE(no deterministic late-frame pin): the relay closes the replaced
+  // socket with 4001 before any deterministic send can land in the CLOSING
+  // window — a client-side send here is dropped locally by the ws client and
+  // would pass even with the server-side `endpoint.desktop !== ws` guard
+  // deleted. The observable contract (replaced notice, 4001 close, untouched
+  // lease round-trip below) is the deterministic part; the replacement guard
+  // itself remains defense-in-depth for the replacement race.
 
   // The untouched lease still round-trips through the replacement desktop.
   const forwarded = nextMessage(second.ws, "rpc_request");
@@ -1297,15 +1322,11 @@ test("a web client keeps its lease while the desktop is offline and loses it on 
   assert.equal((await replaced).lease_id, web.joined.lease_id);
   assert.deepEqual(await replacedClose, { code: 4001, reason: "endpoint replaced" });
 
-  web.ws.send(JSON.stringify({
-    v: 2,
-    type: "rpc_request",
-    id: "stale-after-takeover",
-    client_request_id: "stale-after-takeover",
-    command: "list_sessions",
-    args: {},
-  }));
-  await expectNoMessage(secondDesktop.ws, "rpc_request");
+  // NOTE(no deterministic late-frame pin): same as the desktop-replacement
+  // test — the takeover closes the replaced web socket before a deterministic
+  // send can land, so a client-side send would pass even without the
+  // server-side stale-lease/replacement guards. The deterministic contract is
+  // the 4001 close plus the replacement lease round-trip below.
 
   // The replacement lease still round-trips.
   const forwardedAgain = nextMessage(secondDesktop.ws, "rpc_request");
