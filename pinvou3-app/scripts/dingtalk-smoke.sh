@@ -13,6 +13,12 @@ pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
 no(){ echo "  [FAIL] $1"; fail=$((fail+1)); }
 sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
+# 失败回显脱敏:任何 *token* 字段值 / authorization 头 / bearer 方案先打码再截断
+# (与 host 侧 connector_cli.rs safe_auth_log_line 同族口径)。dws auth status 的
+# 正常输出不含凭证,这是纵深防御——防未来 CLI 输出形状变化把密钥带进 FAIL 行。
+redact(){ sed -E 's/[A-Za-z_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g
+s/[Aa]uthorization"?:[[:space:]]*"?[^",}]+/authorization=[REDACTED]/g
+s/[Bb]earer[[:space:]][A-Za-z0-9._~+/=-]+/bearer [REDACTED]/g'; }
 
 # --- 定位 dws ---
 # 应用按 connectors.lock.json 把 dws 落到版本目录 ~/.pinvou3/assets/cli/dws/<version>/
@@ -89,8 +95,8 @@ echo
 MIN_TRI="1.0.64"  # dws SKILL.md cli_version floor;connector_online_install_contract.test.js 与 SKILL.md、connectors.lock.json 三方钉扎,漂移即红
 echo "[1] --version runs and is >= ${MIN_TRI} (dws SKILL.md cli_version floor; lock pins 1.0.65)"
 # stdout/stderr 都收(与 [2] auth 同口径,个别发行把版本打在 stderr)。只认点分版本号
-# (与 connector_cli.rs parse_semver3 同口径):裸数字串如构建日期 20261027 会被
-# 逐段比较误当 2026.10.27 放行,点分要求天然排除。不足三段补 0,不用 sort -V。
+# (比 connector_cli.rs parse_semver3 更严:那边按任意非数字切分,裸数字串如构建日期
+# 20261027 会读成 20261027.0.0 放行;此处点分要求天然排除,不足三段补 0,不用 sort -V)。
 VER="$(dws_run --version 2>&1 || true)"
 TRI="$(printf '%s\n' "$VER" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 | awk -F. '{printf "%d.%d.%d", $1, $2+0, $3+0}')"
 # 逐段数值比较(与上面目录排序同键;加权 1*10000+... 会把 0.99.164 误判 >= 1.0.64):
@@ -99,12 +105,12 @@ GE="$(printf '%s\n%s\n' "$TRI" "$MIN_TRI" | sort -t. -k1,1n -k2,2n -k3,3n | head
 if [ -n "$TRI" ]; then
   ok "--version 可执行: $(echo "$VER" | tr -d '\r' | head -1)"
   if [ "$GE" = yes ]; then
-    ok "version >= 1.0.64: $TRI"
+    ok "version >= ${MIN_TRI}: $TRI"
   else
-    no "version below 1.0.64 (below the SKILL.md cli_version floor): $TRI"
+    no "version below ${MIN_TRI} (below the SKILL.md cli_version floor): $TRI"
   fi
 else
-  no "--version 失败或无法解析: $(echo "$VER" | tr -d '\n' | head -c 120)"
+  no "--version 失败或无法解析: $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
 fi
 
 echo "[2] 连接状态(auth status --format json 的 authenticated=true = 已授权)"
@@ -117,7 +123,7 @@ if echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]
   && ! echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*false'; then
   ok "已连接(auth status authenticated=true)"
 else
-  no "未连接/未授权(先扫码): $(echo "$AUTH" | tr -d '\n' | head -c 160)"
+  no "未连接/未授权(先扫码): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 160)"
 fi
 
 echo "[3] 服务域抽样探测(代表性子集,只读 --help;存在的服务 exit 0,不存在则 exit 1)"
@@ -142,7 +148,7 @@ if [ -n "${DINGTALK_TEST_DOC_ID:-}" ]; then
     && ! echo "$R" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false|错误|失败|权限'; then
     ok "读到文档内容($(printf '%s' "$R" | wc -c | tr -d ' ') 字节)"
   else
-    no "读文档失败(exit $r_rc): $(echo "$R" | tr -d '\n' | head -c 160)"
+    no "读文档失败(exit $r_rc): $(printf '%s' "$R" | redact | tr -d '\n' | head -c 160)"
   fi
 else
   sk "未设 DINGTALK_TEST_DOC_ID,跳过真实读文档(避免无谓副作用)"
