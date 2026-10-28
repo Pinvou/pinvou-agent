@@ -517,6 +517,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       voiceAudioStartBlocked: "The browser did not allow audio capture to start. Click the microphone again.",
       voiceRecording: "Recording… press again to stop",
       webChatFailed: "The desktop could not admit this turn. Reopen the conversation and try again.",
+      webSessionCreateFailed: "The desktop could not create this chat. Reopen the conversation list and try again.",
       editStaleRevision: "This conversation changed on the desktop since it was loaded. Reopen the conversation, then edit again.",
       editRevisionUnavailable: "The conversation state could not be verified for this edit. Reopen the conversation and try again.",
       artifactTooLarge: "This artifact is too large to preview over remote control. Download it instead.",
@@ -649,6 +650,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       voiceAudioStartBlocked: "ブラウザーが音声キャプチャの開始を許可しませんでした。マイクをもう一度クリックしてください。",
       voiceRecording: "録音中です。もう一度押すと終了します",
       webChatFailed: "デスクトップがこのターンを受理できませんでした。会話を開き直してから再試行してください。",
+      webSessionCreateFailed: "デスクトップでこのチャットを作成できませんでした。会話一覧を開き直してから再試行してください。",
       editStaleRevision: "この会話は読み込み後にデスクトップで更新されています。会話を開き直してから編集してください。",
       editRevisionUnavailable: "この編集では会話の状態を検証できませんでした。会話を開き直してから再試行してください。",
       artifactTooLarge: "この成果物はリモートコントロールのプレビュー上限を超えています。代わりにダウンロードしてください。",
@@ -781,6 +783,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       voiceAudioStartBlocked: "浏览器未允许启动音频采集，请再次点击麦克风。",
       voiceRecording: "正在录音，再按一次结束",
       webChatFailed: "桌面端未能受理这一轮消息，请重新打开会话后重试。",
+      webSessionCreateFailed: "桌面端未能创建这个对话，请重新打开会话列表后重试。",
       editStaleRevision: "该会话在桌面端已有更新，当前视图已过期。请重新打开会话后再编辑重发。",
       editRevisionUnavailable: "无法校验会话当前状态，编辑未执行。请重新打开会话后重试。",
       artifactTooLarge: "产物过大，无法在远程控制中预览，请改为下载。",
@@ -2730,7 +2733,9 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // 脱敏兜底。码表与 Rust 侧 stable_web_error_codes_are_locked 同步演进。
   const WEB_TURN_ERROR_KEYS = {
     web_session_chat_failed: "webChatFailed",
-    web_session_create_session_failed: "newChatFailed",
+    // 专属完整句文案:复用 newChatFailed(供 wireLaneError 拼接细节的前缀串)
+    // 会渲染成悬空冒号。码表与 Rust 侧 stable_web_error_codes_are_locked 同步演进。
+    web_session_create_session_failed: "webSessionCreateFailed",
     web_session_turn_in_progress: "turnAlreadyInProgress",
     session_revision_conflict: "editStaleRevision",
     session_revision_unavailable: "editRevisionUnavailable",

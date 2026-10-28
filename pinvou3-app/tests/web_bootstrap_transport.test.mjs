@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
 
-function bootClient(policy) {
+function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test' } = {}) {
   const storage = new Map();
   const dispatched = [];
   const timers = [];
@@ -71,7 +71,7 @@ function bootClient(policy) {
   const window = {
     location: {
       href: 'https://relay.test/pinvou3/remote/',
-      hash: '#endpoint=endpoint_test&token=access_test',
+      hash,
       reload() {},
     },
     crypto: {
@@ -559,9 +559,14 @@ async function connectWithCapabilities(events, listener) {
     event.type === 'pinvou:web-connection' && event.detail.status === 'desktop_offline'
   )), 'TTL expiry must surface the desktop-offline state');
   assert.equal(socket.closeCalled, true, 'the expired socket must be closed normally');
-  assert.equal(client.connectionState.status, 'connecting',
-    'the ordinary reconnect path must take over after TTL expiry');
+  // 退避窗口内保持 desktop_offline 专属文案(「桌面端离线,保持页面打开」):
+  // 紧随其后的 close→scheduleReconnect 不得把该状态覆盖成「连接中」,
+  // 否则在最长 60s 的退避里用户看到的是误导性的转圈。
+  assert.equal(client.connectionState.status, 'desktop_offline',
+    'the dedicated desktop-offline copy must survive the close/reconnect clobber');
   takeReconnectTimer(timers).callback();
+  assert.equal(client.connectionState.status, 'connecting',
+    'the ordinary reconnect path takes over when the retry actually fires');
   const rejoined = MockWebSocket.instances[1];
   rejoined.open();
   assert.ok(rejoined.sent.some(message => message.type === 'web_client_join'),
@@ -873,3 +878,23 @@ async function connectWithCapabilities(events, listener) {
 }
 
 console.log('web bootstrap transport tests passed');
+
+// 缺凭证的截断链接必须停在阻断卡:online/visibilitychange 看门狗等恢复路径
+// 不得绕过凭证 gate,把 credentials_missing 转成注定失败的 join 重试循环
+// (非阻断小转圈覆盖阻断卡,永远连不上却一直在重试)。
+{
+  const harness = bootClient(undefined, { hash: '#endpoint=endpoint_test' });
+  const client = harness.window.PinvouWebClient;
+  await client.policyPromise;
+  assert.equal(client.connectionState.status, 'credentials_missing');
+  assert.equal(harness.MockWebSocket.instances.length, 0,
+    'a truncated link must not open a socket');
+  harness.window.emit('online');
+  await new Promise(resolve => { setImmediate(resolve); });
+  harness.window.emit('visibilitychange');
+  await new Promise(resolve => { setImmediate(resolve); });
+  assert.equal(harness.MockWebSocket.instances.length, 0,
+    'online/visible recovery must not bypass the credentials gate');
+  assert.equal(client.connectionState.status, 'credentials_missing',
+    'the truncated link must stay parked on the blocking card');
+}
