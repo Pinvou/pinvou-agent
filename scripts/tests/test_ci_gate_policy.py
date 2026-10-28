@@ -160,6 +160,16 @@ def _extract_consent_marker_read_targets(consent_test):
     return sorted(targets)
 
 
+def _extract_readme_claims_read_targets(claims_test):
+    """从 readme_connector_claims.test.js 源码派生全部仓库根 README 读取目标。
+
+    claims 表的 `file: "README*.md"` 字符串字面量即一个仓库根读取目标
+    (测试经 repoRoot 拼接读取)。未来新增 README 读取自动纳入路由锁,
+    不会 fail-open。
+    """
+    return sorted(set(re.findall(r'file: "([^"]+)"', claims_test)))
+
+
 def _frontend_filter_entries(workflow_text):
     """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
     changes = _changes_block(workflow_text)
@@ -835,6 +845,32 @@ class CiGatePolicyTests(unittest.TestCase):
                 _is_covered_by_trigger(target, frontend_paths),
                 f"consent marker 契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
+            )
+
+    def test_readme_claims_reads_fully_routed(self):
+        # readme_connector_claims.test.js 读取仓库根 README*.md 做连接器宣示
+        # 锚定——README-only PR 若不在 frontend filter 中,frontend-test 被
+        # 静默跳过,高亮清单漂移(删名/宣示占位卡)在该 node 门禁不可见。
+        # 从测试源码派生全部 README 读取目标逐一断言 frontend filter 覆盖;
+        # 新增读取而未路由、或已路由 README 被挪走,都会在这里失败(本套件
+        # 在 fast-gate 每个 PR 必跑)。
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
+        claims_test = (
+            ROOT / "pinvou3-app/tests/readme_connector_claims.test.js"
+        ).read_text(encoding="utf-8")
+
+        targets = _extract_readme_claims_read_targets(claims_test)
+
+        self.assertTrue(
+            targets,
+            "未能从 readme_connector_claims.test.js 解析出 README 读取目标"
+            "(claims 表 file: \"…\" 形态变更须同步 _extract_readme_claims_read_targets)",
+        )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(target, frontend_paths),
+                f"readme claims 测试读取的 {target} 未被 frontend filter 覆盖,"
+                "README-only 改动会静默跳过该 node 门禁",
             )
 
     def test_contract_target_derivation_covers_double_quoted_reads(self):
