@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mock } from 'node:test';
 
 import domino from '@mixmark-io/domino';
 
@@ -186,6 +187,37 @@ function spanDelays(container) {
 }
 
 setStreamFadePreference(true);
+// Keep callbacks and span ages on the same controlled clock without relying
+// on experimental timer APIs on the project's supported Node 22 runtime: the
+// exact UNWRAP_MIN_AGE_MS boundary (199 must not unwrap, +1 must) can only be
+// pinned against a fake clock, not a real sleep.
+function createFadeClock() {
+  let now = 1_700_000_000_000;
+  const timers = new Map();
+  mock.method(Date, 'now', () => now);
+  mock.method(globalThis, 'setTimeout', (callback, delay) => {
+    const timer = {};
+    timers.set(timer, { callback, due: now + delay });
+    return timer;
+  });
+  mock.method(globalThis, 'clearTimeout', (timer) => { timers.delete(timer); });
+  return {
+    tick(milliseconds) {
+      const end = now + milliseconds;
+      for (;;) {
+        const next = [...timers].filter(([, timer]) => timer.due <= end)
+          .sort(([, left], [, right]) => left.due - right.due)[0];
+        if (!next) break;
+        const [id, timer] = next;
+        now = timer.due;
+        timers.delete(id);
+        timer.callback();
+      }
+      now = end;
+    },
+  };
+}
+const clock = createFadeClock();
 try {
   // First pass is a hydration baseline: nothing wrapped, state committed.
   {
@@ -240,10 +272,11 @@ try {
       applyStreamFade(skipContainer, { streaming: false });
       assert.equal(skipContainer.querySelectorAll('.stream-fade-seg').length, freshCount, 'young spans survive completion unwrapped-in-place');
       assert.equal(skipContainer.textContent, 'grow tail', 'deferral preserves text');
-      // One age floor later the deferred reap unwraps them.
-      await new Promise((resolve) => {
-        setTimeout(resolve, 280);
-      });
+      // Preserve the span until the exact age floor, then run its real callback.
+      clock.tick(199);
+      assert.equal(skipContainer.querySelectorAll('.stream-fade-seg').length, freshCount,
+        'deferred reap must not unwrap before the age floor');
+      clock.tick(1);
       assert.equal(skipContainer.querySelectorAll('.stream-fade-seg').length, 0, 'deferred reap unwraps spans past the age floor');
       assert.equal(skipContainer.textContent, 'grow tail', 'deferred reap preserves text');
     }
@@ -272,9 +305,10 @@ try {
       }
       applyStreamFade(stuckContainer, { streaming: false });
       assert.ok(stuckContainer.querySelectorAll('.stream-fade-seg').length > 0, 'precondition: never-aging spans survive the first completion');
-      await new Promise((resolve) => {
-        setTimeout(resolve, 700);
-      });
+      clock.tick(200);
+      assert.ok(stuckContainer.querySelectorAll('.stream-fade-seg').length > 0,
+        'the first deferred pass must preserve never-aging spans');
+      clock.tick(200);
       assert.equal(stuckContainer.querySelectorAll('.stream-fade-seg').length, 0, 'never-aging stamps are force-reaped, not looped');
       assert.equal(stuckContainer.textContent, 'grow tail', 'force reap preserves text');
     }
@@ -411,6 +445,7 @@ try {
     assert.equal(container.querySelectorAll('.stream-fade-seg').length, 0, 're-enable re-baselines; disabled-era text never re-fades');
   }
 } finally {
+  mock.restoreAll();
   // Leave the module default (enabled) for any later blocks/tests.
   setStreamFadePreference(true);
 }

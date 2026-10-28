@@ -19,7 +19,7 @@ import { isNeutralEndingStatus } from './overlay-model.mjs';
 // timeline: subagents call the same model API, so billing/auth failures must
 // not put raw provider bodies (potentially credential-bearing) on screen.
 import { timelineDisplayError, timelineUserError } from '../conversation/deepseek-conversation.js';
-import { isInternalUserMessage } from '../../shared/internal-message.mjs';
+import { isInternalUserMessage, visibleUserMessageBlocks } from '../../shared/internal-message.mjs';
 
 const FILE_CHANGE_TOOLS = new Set([
   'write',
@@ -120,7 +120,7 @@ export function projectSubagentTranscript({ messages, agent, options = {} }) {
       // 供模型上下文，但不得渲染为任务指令气泡（与主聊天展示层同一判定）。
       if (isInternalUserMessage(blocks)) continue;
       if (isTaskInstruction(message, blocks)) {
-        const text = textBlocksOf(blocks);
+        const text = textBlocksOf(visibleUserMessageBlocks(blocks));
         userText = userText == null ? text : `${userText}\n\n${text}`;
         continue;
       }

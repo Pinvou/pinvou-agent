@@ -284,7 +284,6 @@ function pinvouSharedtauriChatEvents() {
   // onSessionEvent 按 session_id 把同步逻辑路由到对应 session 的工作集:active 直接跑,
   // 后台临时切工作集跑完再切回。下面每个监听器的 body 与旧单 session 版逐字一致,
   // 只是包了一层路由,所以 active session 行为零变化。
-  const isInternalRuntimeUserMessage = context.isInternalRuntimeUserMessage;
 
   function applyRemoteUserMessageEvent(e, force) {
     const payload = e && e.payload || {};
@@ -297,7 +296,8 @@ function pinvouSharedtauriChatEvents() {
       return false;
     }
     const content = String(payload.content || "");
-    const hideInternalRuntimeMessage = isInternalRuntimeUserMessage(content);
+    // This event contains admitted user text, not a trusted runtime identity.
+    const hideInternalRuntimeMessage = false;
     const operation = String(payload.operation || "append");
     const action = String(payload.action || "");
     const actionPlanId = String(payload.plan_id || payload.planId || "").trim();

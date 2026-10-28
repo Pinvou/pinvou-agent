@@ -130,11 +130,89 @@ assert.ok(Object.isFrozen(combinedSnapshots[2]), 'the rebuilt combined snapshot 
 assert.equal(combinedSnapshots[2].settings, combinedSnapshots[1].settings,
   'the unchanged settings slice must keep its identity inside the rebuilt combined snapshot');
 
+// Single-revision publication semantics: every publication advances the same
+// revision and re-materializes each domain slice together (host snapshot per
+// publication); identity stability is guaranteed by subscriptionStateValue's
+// structural comparison, not per-domain cache hits. A monitor-only
+// publication therefore still reads the unchanged models source, but must
+// keep two contracts: callbacks fire on every publication, and the combined
+// snapshot identity stays unchanged when the content did not change (React
+// skips unrelated renders via Object.is). (Open's shared-bridge refactor made
+// the whole-list models reload a startup-internal loader, so the baseline is
+// taken after draining the bridge's load-time auto-init publications — the
+// coherent notify plus its fire-and-forget status/persona/scheduled loaders;
+// the earlier model APIs publish synchronously and start nothing deferred.)
+for (let attempt = 0; attempt < 5; attempt += 1) {
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+}
+const combinedSnapshotBeforeMonitor = combinedSnapshots.at(-1);
+const combinedCallbackCountBeforeMonitor = combinedSnapshots.length;
+
+const monitorSnapshot = {
+  app: null,
+  cpu: null,
+  gpu: null,
+  ram: null,
+  self_perf: null,
+  vllm: null,
+};
+invokeResponse = async command => command === 'get_monitor_snapshot' ? monitorSnapshot : {};
+const monitorSnapshots = [];
+const unsubscribeMonitor = api.state.subscribe('monitor', snapshot => {
+  monitorSnapshots.push(snapshot);
+});
+api.monitor.startMonitorPolling();
+for (let attempt = 0; attempt < 20
+  && !monitorSnapshots.some(snapshot => snapshot.monitor?._fmt); attempt += 1) {
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+}
+assert.ok(monitorSnapshots.some(snapshot => snapshot.monitor?._fmt),
+  'monitor polling must publish its first snapshot');
+assert.equal(combinedSnapshots.length, combinedCallbackCountBeforeMonitor + 1,
+  'monitor-only publication must preserve the every-publication callback contract');
+assert.equal(combinedSnapshots.at(-1), combinedSnapshotBeforeMonitor,
+  'monitor-only publication must preserve the unrelated models snapshot identity');
+
+// Monitor owns the displayed snapshot, but a newly discovered context window
+// also updates chat.tokens.max. The precise publication must invalidate both
+// domains so the token progress denominator cannot become stale.
+const chatSnapshots = [];
+const unsubscribeChat = api.state.subscribe('chat', snapshot => {
+  chatSnapshots.push(snapshot);
+});
+const monitorWithContextLimit = {
+  ...monitorSnapshot,
+  vllm: {
+    configured_model: 'model-two',
+    health_status: 'verified',
+    max_model_len: 77777,
+    metrics_applicable: false,
+    model: 'model-two',
+    status: 'ready',
+    target_kind: 'local',
+  },
+};
+invokeResponse = async command => command === 'get_monitor_snapshot' ? monitorWithContextLimit : {};
+// Re-polls immediately (not via the interval): the vm's setInterval stub
+// returns falsy 0, so startMonitorPolling's poller-dedupe guard never trips
+// and each call runs its one synchronous pollMonitor().
+api.monitor.startMonitorPolling();
+for (let attempt = 0; attempt < 20
+  && !chatSnapshots.some(snapshot => snapshot.tokens?.max === 77777); attempt += 1) {
+  await new Promise(resolve => { setTimeout(resolve, 0); });
+}
+assert.ok(chatSnapshots.some(snapshot => snapshot.tokens?.max === 77777),
+  'monitor context discovery must invalidate the chat token slice');
+
+unsubscribeChat();
+unsubscribeMonitor();
+const combinedCountBeforeUnsubscribe = combinedSnapshots.length;
+const settingsCountBeforeUnsubscribe = settingsSnapshots.length;
 unsubscribeCombined();
 unsubscribeSettings();
 api.chat.prefillComposer('draft-3');
-assert.equal(combinedSnapshots.length, 3, 'unsubscribe must stop subscribeMany deliveries');
-assert.equal(settingsSnapshots.length, 3, 'unsubscribe must stop subscribe deliveries');
+assert.equal(combinedSnapshots.length, combinedCountBeforeUnsubscribe, 'unsubscribe must stop subscribeMany deliveries');
+assert.equal(settingsSnapshots.length, settingsCountBeforeUnsubscribe, 'unsubscribe must stop subscribe deliveries');
 
 // Exercise the desktop public cold-load path with real replay and immutable
 // subscriptions, including duplicate IDs and the cached return to that history.

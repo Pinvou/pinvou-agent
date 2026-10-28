@@ -1672,13 +1672,10 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856()
       // A mid-turn steer injection is no admission (no timing record):
       // the conversation projection must not let it consume a lifecycle
       // record (phantom "interrupted"). New sessions mark it via the
-      // steered-messages sidecar (pos + text verified); the envelope
-      // check stays as the fallback for pre-alignment persisted sessions.
-      markSteered: function (uitem2, mi, utext, blocks) {
-        if (isSteeredMessagePos(mi, utext) || (Array.isArray(blocks) ? blocks : []).some(function (b) {
-          const t = String(b && b.type === "text" ? b.text : "").trim();
-          return (t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) || t === "<turn_meta_unchanged />";
-        })) uitem2.steeredMidTurn = true;
+      // steered-messages sidecar (pos + text verified). A text-shaped
+      // envelope alone cannot identify old messages as steer events.
+      markSteered: function (uitem2, mi, utext) {
+        if (isSteeredMessagePos(mi, utext)) uitem2.steeredMidTurn = true;
       },
       carefulBlockedItem: function (c, tm, blockedMd) {
         return { type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" };

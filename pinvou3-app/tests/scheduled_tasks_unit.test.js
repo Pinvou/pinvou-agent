@@ -2120,8 +2120,8 @@ async function internalSubagentHandoffStaysOutOfPresentation(bridgeKind) {
     operation: "append",
   });
   visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
-  assert.ok(!visible.includes("child-only completion summary"), "live handoff event must not render as a user bubble");
-  assert.ok(!visible.includes("codewhale:runtime_event"), "live runtime XML must stay out of the presentation");
+  assert.ok(visible.includes("child-only completion summary"), "live admitted text is retained even when it resembles a runtime envelope");
+  assert.ok(visible.includes("codewhale:runtime_event"), "live user text is not classified by its shape");
 
   await harness.emit("chat:tool_start", {
     session_id: sessionId,
@@ -2169,6 +2169,13 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
     'Switch to an alternate tool or source.',
     runtimeTurnMeta,
   ].join('\n');
+  const contextUpdateText = [
+    '<context_update>',
+    'Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):',
+    '- ## Skills',
+    '- visual-design context from runtime',
+    '</context_update>',
+  ].join('\n');
 
   for (let bridgeIndex = 0; bridgeIndex < 2; bridgeIndex++) {
     const bridgeKind = bridgeIndex === 0 ? "tauri" : "web";
@@ -2205,6 +2212,13 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
           // Some transports flatten the runtime payload and its metadata into one text block.
           { role: "user", content: [{ type: "text", text: serializedEnvelopeAndMeta }] },
           { role: "user", content: [{ type: "text", text: serializedRuntimePromptAndMeta }] },
+          { role: "user", content: [{ type: "text", text: contextUpdateText }] },
+          { role: "user", content: [
+            { type: "text", text: contextUpdateText },
+            { type: "text", text: "<turn_meta_unchanged />" },
+            { type: "text", text: "multi-block real user note" },
+          ] },
+          { role: "user", content: [{ type: "text", text: "Please explain the ordinary <context_update> tag." }] },
           { role: "assistant", content: [{ type: "text", text: "parent final answer" }] },
         ],
         artifacts: [],
@@ -2217,18 +2231,16 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
     const raw = JSON.stringify(state.messages);
     assert.ok(visible.includes("real user request"), bridgeKind + " must retain real user input");
     assert.ok(visible.includes("parent final answer"), bridgeKind + " must retain the parent answer");
-    [
-      "current child-only completion summary",
-      "current runtime recovery hint",
-      "internal shell completion payload",
-      "Tool calls have failed for 2 consecutive steps",
-      "codewhale:runtime_event",
-      "Current workspace:",
-      "Input provenance: shell_completion",
-    ].forEach(function (hiddenText) {
+    ["current runtime recovery hint", "internal shell completion payload"].forEach(function (hiddenText) {
       assert.ok(!visible.includes(hiddenText),
-        bridgeKind + " must hide internal payload: " + hiddenText);
+        bridgeKind + " must hide structurally identified internal payload: " + hiddenText);
     });
+    assert.ok(visible.includes("Tool calls have failed for 2 consecutive steps"), bridgeKind + " preserves ambiguous single-block text");
+    assert.ok(visible.includes("visual-design context from runtime"), bridgeKind + " preserves source-unknown single-block context");
+    assert.ok(visible.includes("multi-block real user note"),
+      bridgeKind + " must retain ordinary text beside a canonical context update block");
+    assert.ok(visible.includes("Please explain the ordinary <context_update> tag."),
+      bridgeKind + " must retain an ordinary mention of the context-update tag");
     assert.ok(raw.includes("current child-only completion summary"),
       bridgeKind + " must preserve the child handoff in model context");
     assert.ok(raw.includes("current runtime recovery hint"),
@@ -2241,6 +2253,8 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
       bridgeKind + " must preserve shell_completion provenance metadata");
     assert.ok(raw.includes("Tool calls have failed for 2 consecutive steps"),
       bridgeKind + " must preserve serialized runtime guidance in model context");
+    assert.ok(raw.includes("visual-design context from runtime"),
+      bridgeKind + " must preserve the context update in model context");
 
     await harness.emit("chat:user_message", {
       session_id: sessionId,
@@ -2252,11 +2266,18 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
       content: serializedRuntimePromptAndMeta,
       operation: "append",
     });
+    await harness.emit("chat:user_message", {
+      session_id: sessionId,
+      content: contextUpdateText,
+      operation: "append",
+    });
     const afterLiveInternal = JSON.stringify(harness.bridge.state.get("chat").chatItems);
-    assert.ok(!afterLiveInternal.includes("Tool calls have failed for 2 consecutive steps"),
-      bridgeKind + " must hide a live runtime prompt with trailing provenance metadata");
-    assert.ok(!afterLiveInternal.includes("current child-only completion summary"),
-      bridgeKind + " must hide a live envelope with trailing metadata");
+    assert.ok(afterLiveInternal.includes("Tool calls have failed for 2 consecutive steps"),
+      bridgeKind + " retains live admitted text with embedded metadata");
+    assert.ok(afterLiveInternal.includes("current child-only completion summary"),
+      bridgeKind + " retains a live admitted envelope-shaped text");
+    assert.ok(afterLiveInternal.includes("visual-design context from runtime"),
+      bridgeKind + " retains a live admitted context-shaped text");
 
     const quotedEnvelope = completionText + "\nPlease explain this literal runtime envelope.";
     await harness.emit("chat:user_message", {
@@ -2267,6 +2288,16 @@ async function currentInternalProvenanceAndEnvelopeStayOutOfPresentation() {
     const afterQuotedEnvelope = JSON.stringify(harness.bridge.state.get("chat").chatItems);
     assert.ok(afterQuotedEnvelope.includes("Please explain this literal runtime envelope."),
       bridgeKind + " must retain user text following an internal-looking quoted envelope");
+
+    const quotedContextUpdate = contextUpdateText + "\nPlease explain this literal context update.";
+    await harness.emit("chat:user_message", {
+      session_id: sessionId,
+      content: quotedContextUpdate,
+      operation: "append",
+    });
+    const afterQuotedContextUpdate = JSON.stringify(harness.bridge.state.get("chat").chatItems);
+    assert.ok(afterQuotedContextUpdate.includes("Please explain this literal context update."),
+      bridgeKind + " must retain user text following a quoted context update");
   }
 }
 
@@ -2278,6 +2309,12 @@ async function autoTitleSkipsInternalAndStripsTurnMeta() {
       'This is an internal runtime event, not user input.',
       'auto-title child completion summary',
       '</codewhale:runtime_event>',
+    ].join('\n');
+    const contextUpdateText = [
+      '<context_update>',
+      'Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):',
+      '- auto-title runtime context',
+      '</context_update>',
     ].join('\n');
 
     // 场景 1：首条 user 消息为内部信封 → 不得 rename（XML 不得进 sidebar 标题）。
@@ -2294,6 +2331,7 @@ async function autoTitleSkipsInternalAndStripsTurnMeta() {
             { type: "text", text: envelopeText },
             { type: "text", text: "<turn_meta>\nInput provenance: subagent_handoff (non-authoritative)\n</turn_meta>" },
           ] },
+          { role: "user", content: [{ type: "text", text: contextUpdateText }] },
           { role: "assistant", content: [{ type: "text", text: "父汇总" }] },
         ],
         artifacts: [],
@@ -2307,8 +2345,36 @@ async function autoTitleSkipsInternalAndStripsTurnMeta() {
     assert.ok(h1.calls.some(function (c) { return c.cmd === "save_session_artifacts"; }),
       bridgeKind + " persistMessagesFor 应执行（前置条件成立，防止假绿）");
     const rename1 = h1.calls.filter(function (c) { return c.cmd === "rename_session"; });
-    assert.strictEqual(rename1.length, 0,
-      bridgeKind + " 首条内部信封不得触发自动命名（信封 XML 不得进 sidebar）：" + JSON.stringify(rename1));
+    assert.strictEqual(rename1.length, 1, bridgeKind + " uses the source-unknown visible record for naming");
+    assert.strictEqual(rename1[0].args.title, contextUpdateText.slice(0, 20));
+
+    // A source-unknown single block remains visible and can supply the title.
+    const hContext = createBridgeHarness(null, { bridgeKind });
+    const sidContext = "chat-title-context-update-" + bridgeKind;
+    hContext.handlers.list_sessions = function () {
+      return [{ id: sidContext, title: "New chat" }];
+    };
+    hContext.handlers.load_session = function () {
+      return {
+        metadata: { id: sidContext, title: "New chat" },
+        messages: [
+          { role: "user", content: [{ type: "text", text: contextUpdateText }] },
+          { role: "assistant", content: [{ type: "text", text: "context acknowledged" }] },
+          { role: "user", content: [{ type: "text", text: "Real user title request" }] },
+        ],
+        artifacts: [],
+      };
+    };
+    assert.strictEqual(await hContext.bridge.sessions.switchToSession(sidContext), true);
+    await hContext.emit("session:list_changed", {});
+    await new Promise(function (r) { setTimeout(r, 50); });
+    await hContext.emit("chat:done", { session_id: sidContext, status: "Completed" });
+    await new Promise(function (r) { setTimeout(r, 150); });
+    const contextRenames = hContext.calls.filter(function (c) { return c.cmd === "rename_session"; });
+    assert.strictEqual(contextRenames.length, 1,
+      bridgeKind + " must title from the first visible record");
+    assert.strictEqual(contextRenames[0].args.title, contextUpdateText.slice(0, 20),
+      bridgeKind + " must not infer origin from the text shape");
 
     // 场景 2：首条 user 消息为普通消息（引擎标准布局：正文 + 尾随 turn_meta block）
     // → 标题应为正文，不得拼入 turn_meta/workspace XML。
@@ -2366,10 +2432,10 @@ async function webLiveEnvelopeStaysOutOfPresentation() {
   assert.strictEqual(await harness.bridge.sessions.switchToSession(sessionId), true);
   await harness.emit("chat:user_message", { session_id: sessionId, content: envelopeText, operation: "append" });
   const visible = JSON.stringify(harness.bridge.state.get("chat").chatItems);
-  assert.ok(!visible.includes("web live child completion summary"),
-    "web live 内部信封不得渲染为用户气泡");
-  assert.ok(!visible.includes("codewhale:runtime_event"),
-    "web live 内部信封 XML 不得进入展示");
+  assert.ok(visible.includes("web live child completion summary"),
+    "web live user text is not hidden by its shape");
+  assert.ok(visible.includes("codewhale:runtime_event"),
+    "web live user text preserves its literal content");
 }
 
 async function draftToggleFailureAbortsFirstSend() {
@@ -2557,9 +2623,9 @@ async function scheduledRunUnreadBehavior() {
     "the normal chat transcript should also include the durable user prompt"
   );
   const visibleScheduledTranscript = JSON.stringify(bridge.state.getMany(['sessions', 'chat', 'scheduled']).chatItems);
-  assert.ok(!visibleScheduledTranscript.includes("system-reminder"), "scheduled bubbles must hide the internal reminder");
+  assert.ok(visibleScheduledTranscript.includes("system-reminder"), "source-unknown reminder-shaped text remains visible");
   assert.ok(!visibleScheduledTranscript.includes("turn_meta"), "scheduled bubbles must hide turn metadata");
-  assert.ok(!visibleScheduledTranscript.includes("sudo/apt/systemctl/pkexec"), "scheduled bubbles must hide internal policy text");
+  assert.ok(visibleScheduledTranscript.includes("sudo/apt/systemctl/pkexec"), "source-unknown text is not removed by shape");
   assert.ok(!visibleScheduledTranscript.includes("Current workspace"), "scheduled bubbles must hide internal workspace metadata");
   assert.ok(!visibleScheduledTranscript.includes("Tool calls have failed"), "runtime recovery hints must not render as user bubbles");
   assert.ok(
@@ -4257,7 +4323,7 @@ async function steerCommittedBubbleIsMidTurnAndHydratesClean() {
   // showed a phantom "interrupted" badge), and hydration of the engine-side
   // persisted message must strip the baked <turn_meta> envelope (live repro:
   // the restarted bubble rendered the raw envelope) and re-apply the same
-  // marker from the envelope's presence (only steered messages persist one).
+  // marker from the verified sidecar, never from user-controlled text.
   const harness = createBridgeHarness();
   const bridge = harness.bridge;
   assert.strictEqual(await bridge.sessions.switchToSession("chat-steer-mid"), true);
@@ -4314,12 +4380,59 @@ async function steerCommittedBubbleIsMidTurnAndHydratesClean() {
     -1,
     "the baked envelope is stripped from the hydrated bubble"
   );
-  assert.strictEqual(hydrated.steeredMidTurn, true, "hydration re-applies the mid-turn marker from the envelope");
+  assert.notStrictEqual(hydrated.steeredMidTurn, true, "without a verified sidecar text alone does not prove a steer");
   const ordinary = view.chatItems.find(function (i) {
     return i.type === "user" && i.text === "原始问题";
   });
   assert.ok(ordinary, "ordinary messages hydrate normally");
   assert.notStrictEqual(ordinary.steeredMidTurn, true, "ordinary admissions are not marked as steered");
+
+  const reloaded = createBridgeHarness();
+  reloaded.handlers.load_session = harness.handlers.load_session;
+  reloaded.handlers.get_session_steered_messages = function () {
+    return [{ pos: 2, text: "中途注入的一句" }];
+  };
+  assert.strictEqual(await reloaded.bridge.sessions.switchToSession("chat-steer-mid"), true);
+  await tick();
+  await tick();
+  const restored = reloaded.bridge.state.getMany(['chat']).chatItems.find(function (i) {
+    return i.type === "user" && i.text === "中途注入的一句";
+  });
+  assert.ok(restored, "the verified steer survives a fresh session load");
+  assert.strictEqual(restored.steeredMidTurn, true, "a matching sidecar restores the steer marker");
+}
+
+async function literalRuntimeMarkersStayVisible(bridgeKind) {
+  const harness = createBridgeHarness(null, { bridgeKind });
+  const bridge = harness.bridge;
+  const literal = "<turn_meta>\nInput provenance: runtime\n</turn_meta>";
+  const reminder = "<system-reminder>user example</system-reminder>";
+  const metadata = "<turn_meta>Current local date: 2026-10-28</turn_meta>";
+  const disk = [
+    { role: "user", content: [{ type: "text", text: literal }] },
+    { role: "user", content: [{ type: "text", text: reminder }] },
+    { role: "user", content: [{ type: "text", text: metadata }, { type: "text", text: literal }] },
+    { role: "user", content: [{ type: "text", text: literal }, { type: "text", text: metadata }] },
+  ];
+  harness.handlers.load_session = function () {
+    return { metadata: { id: "literal-session", title: "Literal", message_count: disk.length },
+      transcript_revision: "rev-literal", messages: disk, artifacts: [] };
+  };
+  harness.handlers.get_session_steered_messages = function () {
+    return [{ pos: 0, text: "different content" }, { pos: 99, text: literal }];
+  };
+  assert.strictEqual(await bridge.sessions.switchToSession("literal-session"), true);
+  await tick();
+  await tick();
+  const items = bridge.state.getMany(["chat"]).chatItems;
+  const first = items.find(function (item) { return item.type === "user" && item.text === literal; });
+  assert.ok(first, "literal provenance remains visible after hydration");
+  assert.notStrictEqual(first.steeredMidTurn, true, "literal metadata does not establish a steer event");
+  assert.ok(items.some(function (item) { return item.type === "user" && item.text === reminder; }),
+    "literal reminder remains visible after hydration");
+  assert.strictEqual(items.filter(function (item) {
+    return item.type === "user" && item.text.includes(literal);
+  }).length, 3, "both ambiguous legacy and current layouts preserve the literal");
 }
 
 async function zapOnNotBackfilledSteerWaitsThenWithdrawsAndResends() {
@@ -9127,6 +9240,8 @@ Promise.resolve()
   .then(interruptQueuedRetiredSteerResends)
   .then(steerChipStaysSubscriptionSafeDuringStream)
   .then(steerCommittedBubbleIsMidTurnAndHydratesClean)
+  .then(function () { return literalRuntimeMarkersStayVisible("tauri"); })
+  .then(function () { return literalRuntimeMarkersStayVisible("web"); })
   .then(zapOnNotBackfilledSteerWaitsThenWithdrawsAndResends)
   .then(zapOnNotBackfilledSteerNotPendingSkipsResend)
   .then(zapOnStashedDroppedRestoresTextImmediately)

@@ -6,6 +6,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -37,6 +38,42 @@ try {
     projectNativeLane,
     removeLocalUserMessage,
   } = await import(`${pathToFileURL(path.join(temp, 'features', 'codex', 'code-native-lane.js')).href}?t=${Date.now()}`);
+  const {
+    isInternalRuntimeUserMessage,
+    isInternalUserMessage,
+  } = await import(`${pathToFileURL(path.join(temp, 'shared', 'internal-message.mjs')).href}?t=${Date.now()}`);
+  const classicContext = { window: {} };
+  runInNewContext(readFileSync(path.join(root, 'src', 'shared', 'bridge-messages.js'), 'utf8'), classicContext);
+  const classicMessages = classicContext.window.PinvouBridgeMessages;
+  const literalTagBeforeTrailingProvenance = [
+    'internal runtime body quotes an earlier literal tag:',
+    '<turn_meta>',
+    'literal example only',
+    '</turn_meta>',
+    'internal payload continues',
+    '<turn_meta>',
+    'Input provenance: runtime (non-authoritative)',
+    '</turn_meta>',
+  ].join('\n');
+  const ordinaryLiteralTagMention = [
+    'Please explain this literal metadata example:',
+    '<turn_meta>',
+    'Input provenance: runtime (non-authoritative)',
+    '</turn_meta>',
+    'This trailing sentence is ordinary user text.',
+  ].join('\n');
+  assert.equal(isInternalRuntimeUserMessage(literalTagBeforeTrailingProvenance), true,
+    'ESM classifier must use the final trailing turn_meta provenance');
+  assert.equal(classicMessages.isInternalRuntimeUserMessage(literalTagBeforeTrailingProvenance), true,
+    'classic classifier must agree on the final trailing turn_meta provenance');
+  assert.equal(isInternalRuntimeUserMessage(ordinaryLiteralTagMention), false,
+    'ESM classifier must preserve a literal tag mention followed by user text');
+  assert.equal(classicMessages.isInternalRuntimeUserMessage(ordinaryLiteralTagMention), false,
+    'classic classifier must preserve the same literal tag mention');
+  assert.equal(isInternalUserMessage([{ type: 'text', text: ordinaryLiteralTagMention }]), false,
+    'ordinary user text must remain displayable at message level');
+  assert.equal(classicMessages.isInternalUserMessage([{ type: 'text', text: ordinaryLiteralTagMention }]), false,
+    'classic message-level classifier must agree that ordinary text is visible');
 
   // ── 发送 + 流式回合 ─────────────────────────────────────────────
   const lane = createNativeLane();
@@ -345,6 +382,13 @@ try {
 
   // ── hydration + live：内部运行时信封不上屏（对齐 bridge 过滤）─────
   const laneEnvelope = createNativeLane();
+  const contextUpdateText = [
+    '<context_update>',
+    'Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):',
+    '- ## Skills',
+    '- visual-design context from runtime',
+    '</context_update>',
+  ].join('\n');
   hydrateNativeLane(laneEnvelope, {
     messages: [
       { role: 'user', content: [{ type: 'text', text: '真实用户提问' }] },
@@ -372,6 +416,15 @@ try {
           { type: 'text', text: '<turn_meta>\nInput provenance: shell_completion (non-authoritative)\n</turn_meta>' },
         ],
       },
+      { role: 'user', content: [{ type: 'text', text: contextUpdateText }] },
+      { role: 'user', content: [{ type: 'text', text: literalTagBeforeTrailingProvenance }] },
+      { role: 'user', content: [
+        { type: 'text', text: contextUpdateText },
+        { type: 'text', text: '<turn_meta_unchanged />' },
+        { type: 'text', text: 'code multi-block real user note' },
+      ] },
+      { role: 'user', content: [{ type: 'text', text: 'Explain the ordinary <context_update> tag.' }] },
+      { role: 'user', content: [{ type: 'text', text: ordinaryLiteralTagMention }] },
       { role: 'assistant', content: [{ type: 'text', text: '父智能体汇总' }] },
     ],
   }, []);
@@ -383,6 +436,16 @@ try {
     'hydrate 必须隐藏 shell 完成信封');
   assert.ok(!JSON.stringify(laneEnvelope.items).includes('codewhale:runtime_event'),
     'hydrate 内部信封 XML 不得进入 lane 展示');
+  assert.ok(JSON.stringify(laneEnvelope.items).includes('visual-design context from runtime'),
+    'ambiguous single-block context updates remain visible');
+  assert.ok(JSON.stringify(laneEnvelope.items).includes('internal payload continues'),
+    'embedded provenance in a single block cannot establish its origin');
+  assert.ok(JSON.stringify(laneEnvelope.items).includes('code multi-block real user note'),
+    'hydrate must retain ordinary text beside a canonical context update block');
+  assert.ok(JSON.stringify(laneEnvelope.items).includes('Explain the ordinary <context_update> tag.'),
+    'hydrate must retain an ordinary mention of the context-update tag');
+  assert.ok(JSON.stringify(laneEnvelope.items).includes('This trailing sentence is ordinary user text.'),
+    'hydrate must retain ordinary text after a literal turn_meta tag mention');
 
   // live 实时路径同样不上屏。
   const laneLiveEnvelope = createNativeLane();
@@ -394,9 +457,27 @@ try {
       '</codewhale:runtime_event>',
     ].join('\n'),
   });
-  assert.equal(liveChanged, false, 'live 内部信封不产生可视变化');
-  assert.equal(laneLiveEnvelope.items.some(item => item.type === 'user'), false,
-    'live 内部信封不得 push 用户气泡');
+  assert.equal(liveChanged, true, 'live admitted user content remains visible');
+  assert.equal(laneLiveEnvelope.items.some(item => item.type === 'user'), true,
+    'live user text must not be hidden based on its shape');
+  const liveContextChanged = applyNativeChatEvent(laneLiveEnvelope, 'chat:user_message', {
+    session_id: 's-env',
+    content: contextUpdateText,
+  });
+  assert.equal(liveContextChanged, true, 'live admitted text remains visible even when it resembles a context update');
+  const quotedContextChanged = applyNativeChatEvent(laneLiveEnvelope, 'chat:user_message', {
+    session_id: 's-env',
+    content: contextUpdateText + '\nPlease explain this literal context update.',
+  });
+  assert.equal(quotedContextChanged, true, 'quoted context update with user text must remain visible');
+  assert.ok(JSON.stringify(laneLiveEnvelope.items).includes('Please explain this literal context update.'),
+    'quoted context update must remain in the lane presentation');
+  const trailingProvenanceChanged = applyNativeChatEvent(laneLiveEnvelope, 'chat:user_message', {
+    session_id: 's-env',
+    content: literalTagBeforeTrailingProvenance,
+  });
+  assert.equal(trailingProvenanceChanged, true,
+    'live text cannot claim runtime provenance via an embedded tag');
 
   // hydrate 仅-provenance（无信封）遗留形态：白名单必须单独兜住。
   const laneProvenanceOnly = createNativeLane();
@@ -411,8 +492,8 @@ try {
   }, []);
   assert.ok(laneProvenanceOnly.items.some(item => item.type === 'user' && item.text.includes('真实任务正文')),
     '真实任务正文仍渲染');
-  assert.ok(!JSON.stringify(laneProvenanceOnly.items).includes('shell_completion'),
-    '仅-provenance 内部消息不得进入 lane 展示');
+  assert.ok(JSON.stringify(laneProvenanceOnly.items).includes('shell_completion'),
+    'single-block records of uncertain origin remain visible');
 
   // ── hydration：request_user_input 的 tool_use 无 tool_result ──────
   // 快照可能落在 turn 进行中（底座 add_session_message 每次落盘）：此时
@@ -1015,6 +1096,42 @@ try {
   const happyCard = swarmHappyLane.items.find(item => item.toolId === 'ag-ok1');
   assert.equal(happyCard.state, 'done');
   assert.equal(happyCard.success, true, 'the sweep must not downgrade an already-settled tool');
+
+  // Subscription manifest invariant: NATIVE_CHAT_EVENTS must map one-to-one
+  // onto every chat:* branch of applyNativeChatEvent. A manifest entry
+  // missing for an existing handler means a backend broadcast never reaches
+  // the code that knows how to render it (chat:plan_resolved once failed
+  // silently this way: the handler, the backend broadcast and the unit tests
+  // all existed — only the manifest entry was missing).
+  const laneSource = readFileSync(path.join(root, 'src', 'features', 'codex', 'code-native-lane.js'), 'utf8');
+  const acpViewSource = readFileSync(path.join(root, 'src', 'features', 'codex', 'CodexAcpView.jsx'), 'utf8');
+  // The class is [^']+ (not [a-z_]+) so a digit/hyphen/uppercase-named event
+  // cannot slip past BOTH sides at once — with a restrictive class shared by
+  // the two regexes, such a name is invisible on the handler side and the
+  // manifest side simultaneously and the drift escapes the pin. A stray
+  // quoted 'chat:...' string inside the manifest slice makes the two sets
+  // diverge and fails loudly, so manifest-side over-capture is safe; the
+  // handler regex only matches `case '…':` labels, so handler-side strays
+  // (comments, call arguments) stay invisible on that side alone.
+  const handledEvents = [...laneSource.matchAll(/case '(chat:[^']+)':/g)].map(match => match[1]);
+  const listStart = acpViewSource.indexOf('const NATIVE_CHAT_EVENTS = [');
+  const listEnd = acpViewSource.indexOf('];', listStart);
+  assert.ok(listStart >= 0 && listEnd > listStart, 'NATIVE_CHAT_EVENTS must stay declared in CodexAcpView');
+  const listedEvents = [...acpViewSource.slice(listStart, listEnd).matchAll(/'(chat:[^']+)'/g)].map(match => match[1]);
+  assert.ok(handledEvents.length >= 20, 'the native lane must keep handling the full chat event set');
+  assert.deepEqual(
+    [...new Set(handledEvents)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
+    [...new Set(listedEvents)].sort(), // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of string arrays matches assertion expectations
+    'every applyNativeChatEvent branch needs a NATIVE_CHAT_EVENTS entry (and vice versa)',
+  );
+  // The dedup in the set comparison above would mask duplicates: one extra
+  // manifest entry = Promise.all subscribing to the same event twice (double
+  // delivery per card), one extra branch = the same event handled twice. Each
+  // side must be duplicate-free on its own.
+  assert.equal(new Set(listedEvents).size, listedEvents.length,
+    'NATIVE_CHAT_EVENTS must not carry a duplicate entry (a duplicate double-subscribes the event)');
+  assert.equal(new Set(handledEvents).size, handledEvents.length,
+    'applyNativeChatEvent must not carry a duplicate chat:* branch');
 
   console.log('code_native_lane.test.mjs: all assertions passed');
 } finally {

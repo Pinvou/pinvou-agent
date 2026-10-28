@@ -120,23 +120,75 @@
   }
 
   function userMessageInputProvenance(blocks) {
-    const textBlocks = Array.isArray(blocks) ? blocks : [];
-    for (let i = 0; i < textBlocks.length; i++) {
-      const block = textBlocks[i];
-      if (!block || block.type !== "text") continue;
-      const provenance = inputProvenanceFromText(block.text);
-      if (provenance) return provenance;
-    }
-    return "";
+    const input = Array.isArray(blocks) ? blocks : [];
+    const index = userMetadataIndex(input);
+    return index < 0 ? "" : inputProvenanceFromText(input[index].text);
+  }
+
+  // CodeWhale may persist a prompt-cache delta as a user-role message so the
+  // model keeps the effective session context. It is runtime metadata, not a
+  // user turn. Match the complete canonical shape only: a user's mention or
+  // quotation of the tag must remain visible.
+  function isContextUpdateRuntimeMessage(value) {
+    const text = String(value || "").trim().replaceAll("\r\n", "\n");
+    const prefix = [
+      "<context_update>",
+      "Session context changed since it was pinned; the pinned system prompt is unchanged. Delta (+ added, - removed):",
+      "",
+    ].join("\n");
+    return text.startsWith(prefix) && text.endsWith("\n</context_update>");
   }
 
   function isInternalRuntimeUserMessage(value) {
-    return containsOnlyInternalRuntimeMetadata(value) ||
+    return isContextUpdateRuntimeMessage(value) ||
+      containsOnlyInternalRuntimeMetadata(value) ||
       isInternalUserMessageProvenance(inputProvenanceFromText(value));
+  }
+
+  function isKnownInternalMetadataBlock(value) {
+    return isInternalRuntimeUserMessage(value);
+  }
+
+  function isTurnMetadata(value) {
+    const text = String(value || "").trim().toLowerCase();
+    return /^<turn_meta_unchanged\s*\/>$/.test(text) ||
+      (text.startsWith("<turn_meta>") && text.endsWith("</turn_meta>"));
+  }
+
+  // Preserve standalone user text and the leading user block in the current
+  // metadata-tail format; retain non-text blocks for tool-result handling.
+  function visibleUserMessageBlocks(blocks) {
+    const input = Array.isArray(blocks) ? blocks : [];
+    const index = userMetadataIndex(input);
+    return input.filter(function (_, position) { return position !== index; });
+  }
+
+  function userMetadataIndex(input) {
+    if (input.length < 2) return -1;
+    const first = input[0];
+    const last = input[input.length - 1];
+    if (first && first.type === "text" && isTurnMetadata(first.text) &&
+        last && last.type === "text" && isTurnMetadata(last.text)) return -1;
+    if (last && last.type === "text" && isTurnMetadata(last.text)) return input.length - 1;
+    if (first && first.type === "text" && isTurnMetadata(first.text) &&
+        last && last.type === "text" && !isTurnMetadata(last.text)) return 0;
+    return -1;
+  }
+
+  // A persisted user message is internal only when every non-empty text block
+  // is known runtime metadata. A canonical context update may be accompanied
+  // by other internal metadata, but any ordinary text keeps the user turn.
+  function isInternalUserMessage(blocks) {
+    const textBlocks = Array.isArray(blocks) ? blocks : [];
+    if (textBlocks.some(function (block) { return block && block.type === "tool_result"; })) return false;
+    return isInternalUserMessageProvenance(userMessageInputProvenance(textBlocks));
   }
 
   window.PinvouBridgeMessages = Object.freeze({
     isInternalRuntimeUserMessage,
+    isInternalUserMessage,
+    isKnownInternalMetadataBlock,
+    visibleUserMessageBlocks,
     isInternalUserMessageProvenance,
     userMessageInputProvenance,
     computerUseKnownErrorText,

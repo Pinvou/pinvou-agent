@@ -543,7 +543,20 @@ function enforceLazyChunks() {
 // the last two recorded CI (node 24) vs local (node 22) comparisons differed
 // by 0–17 B, but round-43 above recorded ~0.9 kB; a recurrence of that
 // delta exceeds this headroom and forces a re-cut per policy.
-export const MAIN_ENTRY_BUDGET_BYTES = 485_000;
+//
+// 485_000 → 486_000 desktop only (PR #782, measured per policy): the
+// internal-runtime user-message classification (canonical context-update
+// and turn-meta envelopes) joins the shared startup graph so the CodeX
+// native lane and the bridge lanes classify persisted role=user messages
+// with one parser; same-base build against main@1e9cdd225 measures
+// 484,699 → 485,800 B desktop and 127,596 → 127,596 B web (byte count
+// unchanged — on web the classification rides the chat-view group, not
+// the entry file). The desktop ceiling takes the next thousand step,
+// leaving 200 B headroom at the local node 24 measurement; the web
+// ceiling already sits the next thousand step above the unchanged web
+// entry and stays 128_000. This cap does not promise headroom for
+// unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 486_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {

@@ -1672,11 +1672,14 @@
     try {
       try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, arts.map(function (a) { return a.path; })) }); } catch { /* disk-write failure must not block session switching */ }
       if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles.value[sid]) {
-        const firstUser = msgs.find(function (m) { return m.role === "user"; });
-        // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与
-        // 命名；hideInternalEnvelope=true 同时剥离 turn_meta/system-reminder 元数据
-        // 块，避免 XML 痕迹进 sidebar 标题。
-        let titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        // Auto-titling uses the display-layer projection, including the
+        // conservative treatment of records with unknown provenance.
+        let titleText = "";
+        msgs.some(function (message) {
+          if (!message || message.role !== "user") return false;
+          titleText = userMessageDisplayText(message.content || [], true);
+          return !!titleText;
+        });
         // The session-mention injection block (the ## Referenced chats contract
         // at the head of a message) is not user body text and never feeds
         // auto-titling; the single source of the contract parsing is
@@ -2169,27 +2172,27 @@
     return window.PinvouBridgeMessages.isInternalUserMessageProvenance(provenance);
   }
 
+  // web+tauriMain shared
+  function isInternalUserMessage(blocks) {
+    return window.PinvouBridgeMessages.isInternalUserMessage(blocks);
+  }
+
+  function isKnownInternalMetadataBlock(value) {
+    return window.PinvouBridgeMessages.isKnownInternalMetadataBlock(value);
+  }
+
   // web+tauriMain 共享（FE14 残余批：原 tauri bridge.js / web bridge.js 逐字镜像；
   // 信封判定直接取 window.PinvouBridgeMessages.isInternalRuntimeUserMessage——
   // 两侧原别名 isInternalRuntimeEnvelopeText / isInternalRuntimeUserMessage 同指此判定）
   // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
-    const textParts = (Array.isArray(blocks) ? blocks : [])
+    const textParts = window.PinvouBridgeMessages.visibleUserMessageBlocks(blocks)
       .filter(function (block) { return block && block.type === "text"; })
       .map(function (block) { return String(block.text || ""); });
-    if (textParts.some(function (value) { return window.PinvouBridgeMessages.isInternalRuntimeUserMessage(value); })) return "";
-    if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
-    if (!hideInternalEnvelope) return textParts.join("");
-
-    return textParts.filter(function (text) {
-      const trimmed = text.trim();
-      return !(
-        (trimmed.indexOf("<turn_meta>") === 0 && trimmed.endsWith("</turn_meta>")) ||
-        trimmed === "<turn_meta_unchanged />"
-      );
-    }).map(function (text) {
-      return text.replace(/^\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*/, "");
-    }).join("");
+    if (isInternalUserMessage(blocks)) return "";
+    // Only structurally identified metadata is removed; an ambiguous single
+    // text block remains visible even if it resembles runtime content.
+    return textParts.join("");
   }
 
   // web+tauriTerminal 共享
