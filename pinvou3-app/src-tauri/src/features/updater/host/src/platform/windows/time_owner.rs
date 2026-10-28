@@ -16,9 +16,7 @@ use crate::{
 };
 use pinvou_upgrade_codec::{Document, InputKind};
 use pinvou_upgrade_control_http::RootGetResult;
-use pinvou_upgrade_verifier::{
-    SuppliedTimeObservation, TimeVerificationInputs, verify_time_response,
-};
+use pinvou_upgrade_verifier::{SuppliedTimeObservation, verify_time_response_source};
 
 pub(super) struct TimeOwner {
     snapshot: TimeSnapshot,
@@ -165,10 +163,7 @@ impl TimeOwner {
             if let Ok(response) = response {
                 let received = host.sample_monotonic()?;
                 received.elapsed_since(&sent)?;
-                let refs: Vec<&[u8]> = roots[base_root_count..]
-                    .iter()
-                    .map(|s| s.as_bytes())
-                    .collect();
+                let successors = &roots[base_root_count..];
                 let observation = SuppliedTimeObservation {
                     sent_monotonic_millis: sent.counters().suspend_inclusive().floor_millis()?,
                     received_monotonic_millis: received
@@ -179,15 +174,14 @@ impl TimeOwner {
                     max_uncertainty_millis: policy.policy.max_uncertainty_ms,
                     trusted_time_floor_millis: floor,
                 };
-                if verify_time_response(
+                if verify_time_response_source(
                     &response,
-                    TimeVerificationInputs::new(
-                        &trusted_root,
-                        &refs,
-                        &request_shape,
-                        observation,
-                        &denied,
-                    ),
+                    &trusted_root,
+                    successors.len(),
+                    |index| Ok(std::borrow::Cow::Borrowed(successors[index].as_bytes())),
+                    &request_shape,
+                    observation,
+                    &denied,
                 )
                 .is_ok()
                 {
@@ -195,21 +189,20 @@ impl TimeOwner {
                     // receive/verification bracket, retaining original send.
                     let verified_at = host.sample_monotonic()?;
                     verified_at.elapsed_since(&sent)?;
-                    let checked = verify_time_response(
+                    let checked = verify_time_response_source(
                         &response,
-                        TimeVerificationInputs::new(
-                            &trusted_root,
-                            &refs,
-                            &request_shape,
-                            SuppliedTimeObservation {
-                                received_monotonic_millis: verified_at
-                                    .counters()
-                                    .suspend_inclusive()
-                                    .ceil_millis()?,
-                                ..observation
-                            },
-                            &denied,
-                        ),
+                        &trusted_root,
+                        successors.len(),
+                        |index| Ok(std::borrow::Cow::Borrowed(successors[index].as_bytes())),
+                        &request_shape,
+                        SuppliedTimeObservation {
+                            received_monotonic_millis: verified_at
+                                .counters()
+                                .suspend_inclusive()
+                                .ceil_millis()?,
+                            ..observation
+                        },
+                        &denied,
                     )
                     .map_err(|_| Error::SourceUnavailable)?;
                     let evidence = Evidence {
