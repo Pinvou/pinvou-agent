@@ -461,14 +461,16 @@ function hasLegacyTokenAlias(message) {
 //
 // This runs on every inbound frame ahead of JSON.parse, so it must stay cheap:
 // the scan allocates nothing for keys that cannot spell "v", and string values
-// are skipped without decoding. Anything the scanner lets through that is not
-// valid JSON is still rejected by the JSON.parse that follows.
-function isWsCharCode(code) {
+// are skipped without decoding. Trailing content after the root value is
+// rejected by the scan itself; the rest of the grammar that the walk ignores
+// stays JSON.parse's backstop. Char codes below: 34 " 123 { 91 [ 125 } 93 ]
+// 44 , 58 : 92 \ 118 v.
+function isJsonSpaceCharCode(code) {
   return code === 32 || code === 9 || code === 10 || code === 13;
 }
 
 function skipWireWhitespace(text, cursor) {
-  while (cursor < text.length && isWsCharCode(text.charCodeAt(cursor))) cursor += 1;
+  while (cursor < text.length && isJsonSpaceCharCode(text.charCodeAt(cursor))) cursor += 1;
   return cursor;
 }
 
@@ -540,7 +542,7 @@ function scanWireValue(text, state, depth) {
   }
   while (state.cursor < text.length) {
     const code = text.charCodeAt(state.cursor);
-    if (code === 44 || code === 125 || code === 93 || isWsCharCode(code)) break;
+    if (code === 44 || code === 125 || code === 93 || isJsonSpaceCharCode(code)) break;
     state.cursor += 1;
   }
 }
