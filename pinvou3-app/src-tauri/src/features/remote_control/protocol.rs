@@ -70,6 +70,11 @@ pub struct WebAccessStatus {
     pub web_client_connected: bool,
     pub host_workspace_authorized: bool,
     pub last_error: Option<String>,
+    /// 注册终结码对应的稳定恢复码(`rotate_credentials` / `rotate_recover_config`
+    /// / `update_desktop`):SettingsView 据此映射三语恢复文案,缺失时回退展示
+    /// 原样 `last_error`。可缺省:旧配置/旧状态快照反序列化不受影响。
+    #[serde(default)]
+    pub last_error_code: Option<String>,
 }
 
 impl std::fmt::Debug for WebAccessStatus {
@@ -85,6 +90,7 @@ impl std::fmt::Debug for WebAccessStatus {
             .field("web_client_connected", &self.web_client_connected)
             .field("host_workspace_authorized", &self.host_workspace_authorized)
             .field("last_error", &self.last_error)
+            .field("last_error_code", &self.last_error_code)
             .finish()
     }
 }
@@ -184,6 +190,7 @@ mod tests {
             web_client_connected: false,
             host_workspace_authorized: true,
             last_error: None,
+            last_error_code: None,
         };
         let rendered = format!("{status:?}");
         assert!(

@@ -25,6 +25,17 @@ pub fn pinvou3_home() -> PathBuf {
     user_home_dir().join(".pinvou3")
 }
 
+/// 折叠任意文本(通常是 io::Error 的 Display,内嵌 `create /home/u/.pinvou3/…`
+/// 一类绝对路径)中的存储根前缀为 `~/.pinvou3`,供随成功载荷出站的错误文本
+/// 使用:绝对路径不得跨 relay。非前缀文本原样返回。
+pub fn redact_storage_prefix(text: &str) -> String {
+    let prefix = pinvou3_home().display().to_string();
+    if prefix.is_empty() {
+        return text.to_string();
+    }
+    text.replace(&prefix, "~/.pinvou3")
+}
+
 pub fn settings_path() -> PathBuf {
     pinvou3_home().join("settings.json")
 }

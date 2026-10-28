@@ -19,6 +19,7 @@ use super::protocol::{
     PROTOCOL_VERSION, WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
+use crate::platform::paths;
 
 // Host filesystem browsing (`list_host_files` / `read_artifact_chunk` /
 // `ArtifactChunk` / `HostFileListing`) lives in `super::file_access`, extracted
@@ -274,6 +275,18 @@ fn relay_registration_error_reason(error_code: &str, relay_message: &str) -> Str
     }
 }
 
+/// 注册终结码的稳定恢复码:`last_error` 原文是英文(渲染进桌面状态行),
+/// SettingsView 据本码映射三语恢复文案,缺失时回退原文。分支必须与
+/// [`relay_registration_error_reason`] 一致,双方由同一测试钉住。
+fn relay_registration_error_code(error_code: &str) -> Option<&'static str> {
+    match error_code {
+        "invalid_access_token" | "invalid_desktop_secret" => Some("rotate_credentials"),
+        "bad_desktop_endpoint_register" => Some("rotate_recover_config"),
+        "unsupported_protocol_version" => Some("update_desktop"),
+        _ => None,
+    }
+}
+
 fn rpc_request_targets_active_lease(inner: &Inner, lease_id: &str) -> bool {
     inner
         .endpoint
@@ -495,6 +508,9 @@ struct ActiveEndpoint {
     /// the later `client_ready` instant.
     fresh_baseline_seq: Option<u64>,
     last_error: Option<String>,
+    /// 与 `last_error` 成对的稳定恢复码;任何不携带码的错误写入都必须把它
+    /// 清掉,防止旧码被映射到新错误文本上。
+    last_error_code: Option<String>,
     sender: RelaySender,
 }
 
@@ -1720,6 +1736,7 @@ impl RemoteControlManager {
                 web_client_connected: endpoint.web_client_connected,
                 host_workspace_authorized: endpoint.config.allow_host_workspace,
                 last_error: endpoint.last_error.clone(),
+                last_error_code: endpoint.last_error_code.clone(),
             }
         } else {
             WebAccessStatus {
@@ -1735,6 +1752,7 @@ impl RemoteControlManager {
                     .idle_error
                     .clone()
                     .or_else(|| self.policy_error.clone()),
+                last_error_code: None,
             }
         }
     }
@@ -1837,31 +1855,11 @@ impl RemoteControlManager {
         let mut next_ledger = inner.rpc_ledger.clone();
         next_ledger.acknowledge(request_id, &fingerprint)?;
         if let Err(error) = persist_rpc_ledger(&next_ledger) {
-            // Never leave this generation in a dispatched-but-unacknowledged
-            // limbo. Return a deterministic terminal response without running
-            // the application command when the durable side-effect barrier
-            // cannot be committed.
-            let completion = rpc_error_completion(
-                "rpc_ledger_unavailable",
-                format!("cannot durably begin Web RPC: {error}"),
-            );
-            inner.rpc_cache.insert(
-                request_id.to_string(),
-                RpcCacheEntry::Complete {
-                    fingerprint,
-                    completion: completion.clone(),
-                },
-            );
-            prune_rpc_cache(&mut inner);
-            if let Some(endpoint) = inner.endpoint.as_ref() {
-                let response = rpc_response(
-                    &endpoint.config.endpoint_id,
-                    &lease_id,
-                    request_id,
-                    &completion,
-                );
-                let _ = endpoint.sender.try_send(RelayOutbound::Message(response));
-            }
+            // 持久化失败是瞬时的(磁盘满/EACCES 等),与 handle_rpc_request
+            // 的准入路径同一裁决:响应但不写 Complete 缓存。命令尚未执行,
+            // 同一 client_request_id 的重试会重新走完整准入与 begin;缓存成
+            // Complete 会把这次瞬时失败永久重放给手机(replay poisoning)。
+            Self::settle_begin_persist_failure(&mut inner, request_id, &lease_id, &error);
             return Ok(false);
         }
         inner.rpc_ledger = next_ledger;
@@ -1954,6 +1952,7 @@ impl RemoteControlManager {
                 last_lease_id: None,
                 fresh_baseline_seq: None,
                 last_error: None,
+                last_error_code: None,
                 sender,
             });
         }
@@ -1992,6 +1991,7 @@ impl RemoteControlManager {
             endpoint.status = WebAccessStatusKind::ConnectingRelay;
             if connected {
                 endpoint.last_error = None;
+                endpoint.last_error_code = None;
             } else {
                 endpoint.web_client_connected = false;
                 endpoint.lease_id = None;
@@ -2069,7 +2069,10 @@ impl RemoteControlManager {
                 // 路径,并且该原因必须保持粘性(run_loop 终止路径不再发送
                 // Connection 事件,last_error 不会被「relay connection lost」
                 // 覆盖)。
-                self.set_endpoint_error(relay_registration_error_reason(error_code, relay_message));
+                self.set_endpoint_error_with_code(
+                    relay_registration_error_code(error_code),
+                    relay_registration_error_reason(error_code, relay_message),
+                );
             }
             _ => {}
         }
@@ -2117,6 +2120,7 @@ impl RemoteControlManager {
                 WebAccessStatusKind::WaitingWebClient
             };
             endpoint.last_error = None;
+            endpoint.last_error_code = None;
         }
         self.emit_status();
     }
@@ -2159,6 +2163,7 @@ impl RemoteControlManager {
             endpoint.fresh_baseline_seq = fresh_baseline_seq;
             endpoint.status = WebAccessStatusKind::WebClientConnected;
             endpoint.last_error = None;
+            endpoint.last_error_code = None;
             // A pending request may finish just after a reconnect. Route that
             // first completion to the new valid lease; a completed request is
             // still replayed from cache if the browser resends it.
@@ -2238,6 +2243,7 @@ impl RemoteControlManager {
                 "this endpoint is active in another desktop process; rotate Web access to take a new endpoint"
                     .to_string(),
             );
+            endpoint.last_error_code = None;
             reset_web_state(&mut inner);
         }
         self.emit_status();
@@ -2362,6 +2368,36 @@ impl RemoteControlManager {
             Self::settle_complete(inner, request_id, fingerprint, rejection.completion.clone());
         }
         rejection.completion.clone()
+    }
+
+    /// begin(副作用屏障)分支的结算收口:账本持久化失败是瞬时的,响应但不
+    /// 进 Complete 缓存——命令尚未执行,重试会重新走准入与 begin;缓存会把
+    /// 这一次失败永久重放(与准入路径曾有的 replay poisoning 同类)。错误
+    /// 文本在这里折叠存储根前缀:它会作为 rpc_response.error 到达手机。
+    /// 收口理由同 [`Self::settle_tombstone_outcome`]。
+    fn settle_begin_persist_failure(
+        inner: &mut Inner,
+        request_id: &str,
+        lease_id: &str,
+        error: &str,
+    ) -> RpcCompletion {
+        let completion = rpc_error_completion(
+            "rpc_ledger_unavailable",
+            format!(
+                "cannot durably begin Web RPC: {}",
+                paths::redact_storage_prefix(error)
+            ),
+        );
+        if let Some(endpoint) = inner.endpoint.as_ref() {
+            let response = rpc_response(
+                &endpoint.config.endpoint_id,
+                lease_id,
+                request_id,
+                &completion,
+            );
+            let _ = endpoint.sender.try_send(RelayOutbound::Message(response));
+        }
+        completion
     }
 
     fn handle_rpc_request(&self, value: &Value) {
@@ -2604,7 +2640,10 @@ impl RemoteControlManager {
                                     // 而不是永远重放这一次失败。
                                     let completion = rpc_error_completion(
                                         "rpc_ledger_unavailable",
-                                        format!("cannot durably accept Web RPC: {error}"),
+                                        format!(
+                                            "cannot durably accept Web RPC: {}",
+                                            paths::redact_storage_prefix(&error)
+                                        ),
                                     );
                                     RpcRequestAction::Respond(
                                         sender,
@@ -2632,7 +2671,10 @@ impl RemoteControlManager {
                                 // 同上:账本不可用是瞬时状态,不缓存该拒绝。
                                 let completion = rpc_error_completion(
                                     "rpc_ledger_unavailable",
-                                    format!("cannot durably accept Web RPC: {error}"),
+                                    format!(
+                                        "cannot durably accept Web RPC: {}",
+                                        paths::redact_storage_prefix(&error)
+                                    ),
                                 );
                                 RpcRequestAction::Respond(
                                     sender,
@@ -3038,11 +3080,18 @@ impl RemoteControlManager {
     }
 
     fn set_endpoint_error(&self, error: String) {
+        self.set_endpoint_error_with_code(None, error);
+    }
+
+    /// 错误文本 + 可选稳定恢复码成对写入;不携带码的错误必须清掉旧码,
+    /// 防止旧恢复文案被映射到新错误上。
+    fn set_endpoint_error_with_code(&self, code: Option<&'static str>, error: String) {
         {
             let mut inner = self.inner.lock();
             if let Some(endpoint) = inner.endpoint.as_mut() {
                 endpoint.status = WebAccessStatusKind::Error;
                 endpoint.last_error = Some(error);
+                endpoint.last_error_code = code.map(str::to_string);
             }
         }
         self.emit_status();
@@ -3964,6 +4013,80 @@ mod tests {
         );
     }
 
+    /// 接线钉:begin(副作用屏障)的账本持久化失败走 settle 收口——应答但
+    /// 绝不进 Complete 缓存(命令尚未执行,重试安全);回退成无条件缓存
+    /// (准入路径曾有过的 replay poisoning 同类)即红。错误文本还会折叠
+    /// 存储根前缀:它会作为 rpc_response.error 到达手机。
+    #[test]
+    fn begin_persist_failure_responds_without_caching() {
+        let mut inner = Inner::default();
+        inner.rpc_cache.insert(
+            "begin-req".to_string(),
+            RpcCacheEntry::Pending(PendingRpc {
+                lease_id: "lease-1".to_string(),
+                command: "get_memory_overview".to_string(),
+                args: Value::Null,
+                fingerprint: "fp-begin".to_string(),
+                dispatched_generation: Some("gen-1".to_string()),
+                acknowledged_generation: None,
+                dispatched_at: Instant::now(),
+            }),
+        );
+
+        let raw_error = format!(
+            "create {}: disk full",
+            paths::pinvou3_home()
+                .join("web-access-rpc-ledger.json")
+                .display()
+        );
+        let completion = RemoteControlManager::settle_begin_persist_failure(
+            &mut inner,
+            "begin-req",
+            "lease-1",
+            &raw_error,
+        );
+        assert_eq!(
+            completion.error_code.as_deref(),
+            Some("rpc_ledger_unavailable")
+        );
+        assert!(
+            !completion
+                .error
+                .as_deref()
+                .is_some_and(|text| text.contains(&paths::pinvou3_home().display().to_string())),
+            "the phone-visible error must not carry the absolute home path: {:?}",
+            completion.error
+        );
+        assert!(
+            matches!(
+                inner.rpc_cache.get("begin-req"),
+                Some(RpcCacheEntry::Pending(pending))
+                    if pending.acknowledged_generation.is_none(),
+            ),
+            "the pending entry must survive untouched: a retry re-runs admission + begin"
+        );
+
+        // 源码契约(同 revoke 死锁钉形态):begin_rpc 必须经 settle 收口应答
+        // 持久化失败,且失败分支不得再引入 Complete 缓存(旧实现的
+        // prune_rpc_cache 只在缓存路径出现)——绕过收口即红。
+        let source = include_str!("mod.rs");
+        let begin_start = source
+            .find("pub fn begin_rpc(&self, request_id: &str, generation: &str)")
+            .expect("begin_rpc must exist");
+        let begin_tail = &source[begin_start..];
+        let begin_body = &begin_tail[..begin_tail
+            .find("\n    pub fn ")
+            .expect("begin_rpc body must be terminated by the next fn")];
+        assert!(
+            begin_body.contains("settle_begin_persist_failure"),
+            "begin_rpc must route the persist failure through the settle funnel"
+        );
+        assert!(
+            !begin_body.contains("prune_rpc_cache"),
+            "begin_rpc must not cache a completion on the persist-failure path"
+        );
+    }
+
     #[test]
     fn rpc_command_and_error_envelopes_are_bounded() {
         assert!(validate_rpc_command("web_access_chat").is_ok());
@@ -4456,6 +4579,31 @@ mod tests {
         });
         std::fs::write(&path, serde_json::to_vec(&body).unwrap()).unwrap();
 
+        // 抢救即落盘:裸 load 之后,磁盘上的账本必须已经是抢救后的合法
+        // 条目(隔离副本只留证据,不会被自动重放)——否则进程崩溃在
+        // worker ack 之前会永久丢掉这批待吊销记录。
+        let salvaged = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(
+            salvaged.entries.len(),
+            2,
+            "the two valid entries must be salvaged in memory"
+        );
+        let persisted: PendingRevocationLedger =
+            serde_json::from_slice(&std::fs::read(&path).unwrap())
+                .expect("the salvaged ledger must have been persisted as valid JSON");
+        assert_eq!(
+            persisted.entries.len(),
+            2,
+            "salvaged entries must be persisted immediately, not only in memory"
+        );
+        let persisted_keys: Vec<_> = persisted
+            .entries
+            .iter()
+            .map(pending_revocation_key)
+            .collect();
+        assert!(persisted_keys.contains(&pending_revocation_key(&valid_a)));
+        assert!(persisted_keys.contains(&pending_revocation_key(&valid_b)));
+
         let fresh = PendingRevocation::from(&test_web_config("ep_salv_c"));
         queue_pending_revocation_at(&path, fresh)
             .expect("queue must salvage the valid entries and continue");
@@ -4812,6 +4960,7 @@ mod tests {
             last_lease_id: lease_id.map(ToOwned::to_owned),
             fresh_baseline_seq: None,
             last_error: None,
+            last_error_code: None,
             sender,
         }
     }
@@ -4833,6 +4982,36 @@ mod tests {
         // 无活跃 lease(client 已断开)时保持原行为:不在此处过滤。
         inner.endpoint = Some(test_active_endpoint(None));
         assert!(rpc_request_targets_active_lease(&inner, TEST_LEASE_ID));
+    }
+
+    /// 接线钉(源码契约,同 revoke 死锁钉的形态):lease 校验必须留在准入
+    /// 锁的作用域内、且先于缓存查询——helper 级测试钉不住「接线点被删除」
+    /// (round-4 复审实测:删除调用后 helper 测试仍全绿)。删除校验、或把
+    /// 校验挪出 `inner.lock()` 之后再查询缓存,都会让本钉变红。
+    #[test]
+    fn rpc_request_lease_gate_is_wired_inside_the_admission_lock() {
+        let source = include_str!("mod.rs");
+        let handle_start = source
+            .find("fn handle_rpc_request(&self, value: &Value)")
+            .expect("handle_rpc_request must exist");
+        let body = &source[handle_start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_rpc_request body must be terminated by the next fn")];
+        let lock = body
+            .find("let mut inner = self.inner.lock()")
+            .expect("handle_rpc_request must take the admission lock");
+        let gate = body
+            .find("rpc_request_targets_active_lease(&inner, &lease_id)")
+            .expect("handle_rpc_request must consult the lease gate inside the admission lock");
+        let cache = body
+            .find("match inner.rpc_cache")
+            .expect("handle_rpc_request must consult the idempotency cache");
+        assert!(
+            lock < gate && gate < cache,
+            "the lease gate must run inside the admission lock and before the cache match \
+             (lock at {lock}, gate at {gate}, cache at {cache})"
+        );
     }
 
     #[test]
@@ -4948,7 +5127,8 @@ mod tests {
     #[test]
     fn registration_error_reasons_are_actionable() {
         // 凭据被拒 → 轮换;配置不可用 → 轮换恢复;版本不匹配 → 更新桌面端
-        // (轮换无济于事);其余码原样保留 relay 文本。
+        // (轮换无济于事);其余码原样保留 relay 文本。恢复码与原文分支必须
+        // 一致:SettingsView 据码映射三语文案,原文是回退。
         assert!(
             relay_registration_error_reason("invalid_access_token", "denied")
                 .contains("rotate Web access")
@@ -4974,6 +5154,27 @@ mod tests {
             relay_registration_error_reason("endpoint_capacity_reached", "capacity"),
             "capacity"
         );
+
+        assert_eq!(
+            relay_registration_error_code("invalid_access_token"),
+            Some("rotate_credentials")
+        );
+        assert_eq!(
+            relay_registration_error_code("invalid_desktop_secret"),
+            Some("rotate_credentials")
+        );
+        assert_eq!(
+            relay_registration_error_code("bad_desktop_endpoint_register"),
+            Some("rotate_recover_config")
+        );
+        assert_eq!(
+            relay_registration_error_code("unsupported_protocol_version"),
+            Some("update_desktop")
+        );
+        assert_eq!(
+            relay_registration_error_code("endpoint_capacity_reached"),
+            None
+        );
     }
 
     #[test]
@@ -4987,7 +5188,7 @@ mod tests {
     }
 
     #[test]
-    fn oversize_private_ledgers_fail_closed_without_reading_the_whole_file() {
+    fn oversize_private_ledgers_fail_closed_with_a_size_error() {
         let directory = std::env::temp_dir().join(format!(
             "pinvou-ledger-bounds-test-{}-{}",
             std::process::id(),
