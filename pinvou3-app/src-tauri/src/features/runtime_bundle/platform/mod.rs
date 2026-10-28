@@ -200,8 +200,11 @@ pub(crate) use crate::platform::connector_skills::{
 /// skill), upstream anti-injection "安全提示" sections adopted, shared
 /// version-gate text raised to 1.3.4. tmeet skills re-verified against
 /// upstream v1.0.18 (still latest; only registered local modifications
-/// differ). All replayed local normalizations are registered in the four
-/// NOTICE files. Next free slot after 0.33.
+/// differ). All replayed local normalizations are registered in the
+/// NOTICE files (lark/wecom/tmeet keep full sync ledgers; the dws
+/// NOTICE carries a modifications summary plus a git-history pointer
+/// to its pre-trim ledger — see the 2026-10 hygiene trim). Next free
+/// slot after 0.33.
 pub const BUNDLE_VERSION: &str = concat!("0.34-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
