@@ -289,7 +289,7 @@ fn render_memory_snapshot_document(
     let _ = writeln!(
         &mut doc,
         "- 来源目录：{}",
-        paths::user_memory_dir().display()
+        io::display_redacted(&paths::user_memory_dir())
     );
     let _ = writeln!(
         &mut doc,
@@ -435,20 +435,22 @@ fn render_memory_snapshot_document(
         }
     }
 
+    // 与上方来源目录行同口径:落盘诊断件里的路径一律折叠存储根前缀
+    // (~/.pinvou3/…),防止该文档经未来的同步/回显通道把绝对路径带出本机。
     let raw = serde_json::json!({
         "schema": "pinvou-memory-snapshot/v1",
         "generated_at": generated_at,
-        "source_dir": paths::user_memory_dir().display().to_string(),
+        "source_dir": io::display_redacted(&paths::user_memory_dir()),
         "files": {
-            "profile": io::profile_path().display().to_string(),
-            "preferences": paths::user_memory_preferences_dir().display().to_string(),
-            "work_context": io::work_context_dir().display().to_string(),
-            "current_focus": io::current_focus_path().display().to_string(),
-            "recent_activity": io::recent_activity_path().display().to_string(),
-            "recent_work": io::recent_work_path().display().to_string(),
-            "pending": io::pending_memory_path().display().to_string(),
-            "never": io::never_memory_path().display().to_string(),
-            "runtime_dir": paths::user_memory_runtime_dir().display().to_string()
+            "profile": io::display_redacted(&io::profile_path()),
+            "preferences": io::display_redacted(&paths::user_memory_preferences_dir()),
+            "work_context": io::display_redacted(&io::work_context_dir()),
+            "current_focus": io::display_redacted(&io::current_focus_path()),
+            "recent_activity": io::display_redacted(&io::recent_activity_path()),
+            "recent_work": io::display_redacted(&io::recent_work_path()),
+            "pending": io::display_redacted(&io::pending_memory_path()),
+            "never": io::display_redacted(&io::never_memory_path()),
+            "runtime_dir": io::display_redacted(&paths::user_memory_runtime_dir())
         },
         "profile": profile,
         "preferences": preferences,

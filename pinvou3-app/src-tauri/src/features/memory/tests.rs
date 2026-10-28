@@ -537,6 +537,18 @@ fn topic_migration_preference_pending_cleanup_stays_available_and_hides_stale_id
     for _ in 0..2 {
         let read = list_preferences_with_cleanup().unwrap();
         assert!(read.cleanup_warning.is_some());
+        // 撤权面回归钉:cleanup 警告会经 get/update 成功载荷到达手机,
+        // 路径必须已折叠存储根前缀——回退成裸 display() 会把
+        // $HOME/.pinvou3 绝对路径带过 relay,此断言即红。
+        let warning = read.cleanup_warning.unwrap();
+        assert!(
+            !warning.contains(&home.path().display().to_string()),
+            "cleanup warning must not carry the absolute home path: {warning}"
+        );
+        assert!(
+            warning.starts_with("~/.pinvou3/"),
+            "cleanup warning must use the redacted storage-root prefix: {warning}"
+        );
         assert_eq!(read.value.len(), 1);
         assert_eq!(read.value[0].id, new_id);
         assert_ne!(read.value[0].id, old_id);

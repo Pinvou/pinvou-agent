@@ -2586,18 +2586,33 @@ pub(crate) fn reserved_target_is_unchanged(_file: &File, path: &Path) -> bool {
 /// destroy each other's evidence. Returns the quarantine path; the caller
 /// owns the refuse/log semantics.
 pub(crate) fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
+    let quarantine = quarantine_destination(path);
+    std::fs::rename(path, &quarantine)?;
+    Ok(quarantine)
+}
+
+/// Rename-free fallback for callers whose fresh-start path would otherwise
+/// overwrite or delete the corrupt original: when `rename` fails (Windows
+/// AV/backup locks, transiently immutable directories), the in-memory bytes
+/// are written to the same timestamped quarantine name so the evidence
+/// survives the caller's destructive rewrite of the original path.
+pub(crate) fn quarantine_corrupt_file_bytes(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+    let quarantine = quarantine_destination(path);
+    atomic_write_private(&quarantine, bytes)?;
+    Ok(quarantine)
+}
+
+fn quarantine_destination(path: &Path) -> PathBuf {
     let now = chrono::Utc::now();
     let stem = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file");
-    let quarantine = path.with_file_name(format!(
+    path.with_file_name(format!(
         "{stem}.corrupt-{}.{:09}",
         now.format("%Y%m%dT%H%M%S"),
         now.timestamp_subsec_nanos(),
-    ));
-    std::fs::rename(path, &quarantine)?;
-    Ok(quarantine)
+    ))
 }
 
 /// Append-only log/diary rotation: when `path` exceeds `max_bytes`, either
