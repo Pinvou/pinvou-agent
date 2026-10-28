@@ -8,6 +8,8 @@
 # 退出码:有硬性检查(版本/连接/可选读文档)失败则非 0,可挂 CI(但需先扫码授权,故默认手动跑);
 # 全部域探测被跳过时 exit 3 —— 「没验证到」不等于「验证通过」。
 set -u
+# set -u 下 HOME 未设置会直接炸成 unbound variable;这里给可行动的退出码 2。
+if [ -z "${HOME:-}" ]; then echo "HOME 未设置,无法定位 dws"; exit 2; fi
 
 pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
@@ -55,6 +57,12 @@ if [ -z "$CLI" ]; then
   for d in "$HOME"/.pinvou3/assets/cli/dws/*/; do
     db="${d%/}"; db="${db##*/}"
     case "$db" in *[!0-9.]*) continue ;; esac
+    # 还须含点:裸日期目录(如 20261027)不是版本号,选它会遮住旁边的健康安装
+    # (下游版本探测虽会 FAIL,但报错指向错误目录,排查费劲)。
+    case "$db" in *.*) : ;; *) continue ;; esac
+    # -f 排除「名字恰好叫 dws 的目录」:[ -x ] 对目录也为真,选中后 [1] 会把
+    # shell 报错文本里的路径当版本号误报 PASS。
+    [ -f "$d$EXE" ] || continue
     [ -x "$d$EXE" ] || continue
     ver="$ver$db
 "
@@ -62,7 +70,7 @@ if [ -z "$CLI" ]; then
   ver="$(printf '%s' "$ver" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
   [ -n "$ver" ] && CLI="$HOME/.pinvou3/assets/cli/dws/$ver/$EXE"
 fi
-[ -z "$CLI" ] && [ -n "$PLAT" ] && [ -x "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && CLI="$HOME/.pinvou3/connectors/$PLAT/bin/$EXE"
+[ -z "$CLI" ] && [ -n "$PLAT" ] && [ -f "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && [ -x "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && CLI="$HOME/.pinvou3/connectors/$PLAT/bin/$EXE"
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/dws.cmd" ] && CLI="$APPDATA/npm/dws.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/dws.cmd" ] && CLI="$HOME/AppData/Roaming/npm/dws.cmd"
 if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连接钉钉,应用会在线下载并校验)"; exit 2; fi
@@ -99,7 +107,7 @@ echo "[1] --version runs and is >= ${MIN_TRI} (dws SKILL.md cli_version floor; l
 # stdout/stderr 都收(与 [2] auth 同口径,个别发行把版本打在 stderr)。只认点分版本号
 # (比 connector_cli.rs parse_semver3 更严:那边按任意非数字切分,裸数字串如构建日期
 # 20261027 会读成 20261027.0.0 放行;此处点分要求天然排除,不足三段补 0,不用 sort -V)。
-VER="$(dws_run --version 2>&1 || true)"
+VER="$(dws_run --version 2>&1)"; v_rc=$?
 TRI="$(printf '%s\n' "$VER" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 | awk -F. '{printf "%d.%d.%d", $1, $2+0, $3+0}')"
 # 逐段数值比较(与上面目录排序同键;加权 1*10000+... 会把 0.99.164 误判 >= 1.0.64):
 # TRI >= MIN_TRI 当且仅当两行升序排序后的首行就是 MIN_TRI。
@@ -112,12 +120,18 @@ if [ -n "$TRI" ]; then
     no "version below ${MIN_TRI} (below the SKILL.md cli_version floor): $TRI"
   fi
 else
-  no "--version 失败或无法解析: $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+  # 超时(124)与「跑不动/解析不了」的处置不同:前者是这一族 CLI 已知的挂起形态
+  # (见下方 DWS_TIMEOUT 注释),提示重跑/查代理,不是「先扫码」。
+  if [ "$v_rc" -eq 124 ]; then
+    no "--version 探测超时(${DWS_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示): $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+  else
+    no "--version 失败或无法解析: $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+  fi
 fi
 
 echo "[2] 连接状态(auth status --format json 的 authenticated=true = 已授权)"
 # 与 dingtalk.rs 同口径:只认官方 JSON 的 authenticated:true,stdout/stderr 都看;剥 \r。
-AUTH="$(dws_run auth status --format json 2>&1 || true)"
+AUTH="$(dws_run auth status --format json 2>&1)"; a_rc=$?
 # dingtalk.rs 同口径是「顶层 authenticated == true」;grep 没有树的概念,加一条
 # 「不得同时出现 authenticated:false」排除嵌套假真(如 {"authenticated":false,
 # "detail":{"authenticated":true}})。
@@ -125,7 +139,11 @@ if echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]
   && ! echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*false'; then
   ok "已连接(auth status authenticated=true)"
 else
-  no "未连接/未授权(先扫码): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 160)"
+  if [ "$a_rc" -eq 124 ]; then
+    no "auth 探测超时(${DWS_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 160)"
+  else
+    no "未连接/未授权(先扫码): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 160)"
+  fi
 fi
 
 echo "[3] 服务域抽样探测(代表性子集,只读 --help;存在的服务 exit 0,不存在则 exit 1)"
@@ -145,9 +163,10 @@ if [ -n "${DINGTALK_TEST_DOC_ID:-}" ]; then
   # PASS 以退出码 0 为前提:flag 漂移时 Cobra 打 usage 走非零退出,
   # 不能因输出里没有错误字样就把 usage 误判成读成功。--format json 下成功读取
   # 必含 JSON 对象(dingtalk.rs 取首个 { 到末个 } 同口径),exit 0 的 usage/help
-  # 倾倒不含 {,同样不判读成功。
+  # 倾倒不含 {,同样不判读成功。只查结构化错误键("error"/"success":false),
+  # 不再扫正文错误词——正文是用户文档,主题恰好是「错误/权限」的合法文档会误红。
   if [ "$r_rc" -eq 0 ] && [ -n "$R" ] && echo "$R" | grep -q '{' \
-    && ! echo "$R" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false|错误|失败|权限'; then
+    && ! echo "$R" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false'; then
     ok "读到文档内容($(printf '%s' "$R" | wc -c | tr -d ' ') 字节)"
   else
     no "读文档失败(exit $r_rc): $(printf '%s' "$R" | redact | tr -d '\n' | head -c 160)"
