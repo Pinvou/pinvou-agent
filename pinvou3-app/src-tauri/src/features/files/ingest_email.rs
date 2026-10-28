@@ -425,8 +425,11 @@ fn collapse_text(value: &str) -> String {
 }
 
 /// 用 python 标准库 email 模块把 .eml 解析成可读文本（收发件人/主题/日期/正文/
-/// 附件名）。脚本走 argv[1] 取邮件路径、argv[2] 取正文落盘路径，正文优先纯
-/// 文本、回退 HTML。
+/// 附件名）。脚本走 argv[1] 取邮件路径、argv[2] 取正文落盘路径、argv[3] 取
+/// 附件段落盘路径，正文优先纯文本、回退 HTML。正文单独落盘（可能涨到
+/// 20 MiB 输入量级，超 4 MiB 捕获上限）；附件段也走文件而非 stdout，让
+/// Rust 侧能按「表头 → 正文 → 附件」的原始顺序拼装——正文若直接拼在
+/// stdout 之后，附件名单会跑到正文前面（评审 Jensen P3）。
 fn parse_eml_via_python(path: &Path) -> Result<String, String> {
     const SCRIPT: &str = r#"
 import sys, email
@@ -452,7 +455,8 @@ except Exception as e:
     print('\n(正文解析失败:', e, ')')
 atts = [p.get_filename() for p in msg.iter_attachments() if p.get_filename()]
 if atts:
-    print('\n附件:', ', '.join(atts))
+    with open(sys.argv[3], 'w', encoding='utf-8') as tail:
+        tail.write('\n附件: ' + ', '.join(atts) + '\n')
 "#;
     let program = crate::platform::paths::python_command();
     // 本地纯解析脚本，正常毫秒级返回；卡死（损坏的 .eml、杀软占用）按超时
@@ -461,8 +465,14 @@ if atts:
     // （32 MiB 上限，同 pdftotext/pandoc），不走 stdout。
     let body_dir = tempfile::tempdir().map_err(|e| format!("创建临时目录失败: {e}"))?;
     let body_path = body_dir.path().join("body.txt");
+    let tail_path = body_dir.path().join("tail.txt");
     let mut command = crate::platform::process::HiddenCommand::new(&program);
-    command.arg("-c").arg(SCRIPT).arg(path).arg(&body_path);
+    command
+        .arg("-c")
+        .arg(SCRIPT)
+        .arg(path)
+        .arg(&body_path)
+        .arg(&tail_path);
     let out = crate::platform::process::output_with_timeout_and_kill_tree(
         command,
         std::time::Duration::from_secs(60),
@@ -470,10 +480,15 @@ if atts:
     .map_err(|e| format!("Python 调用失败({program}): {e}"))?;
     if out.status.success() {
         let mut markdown = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-        // 脚本仅在成功提取正文时写 argv[2]；解析失败分支只留 stdout 提示。
+        // 脚本仅在成功提取正文时写 argv[2]，仅有附件时写 argv[3]；解析
+        // 失败分支只留 stdout 提示。拼装顺序 = 原始 stdout 顺序。
         if body_path.exists() {
             markdown.push('\n');
             markdown.push_str(&read_capped_text(&body_path)?);
+        }
+        if tail_path.exists() {
+            markdown.push('\n');
+            markdown.push_str(&read_capped_text(&tail_path)?);
         }
         Ok(markdown.trim_end().to_string())
     } else {
@@ -572,6 +587,25 @@ mod tests {
         assert!(parsed.contains("Thu, 25 Jun 2026 10:00:00 +0800"));
         assert!(parsed.contains("This is email body"));
         assert!(parsed.contains("note.txt"));
+        // 顺序合同：表头 → 正文 → 附件名单。正文落盘后曾把整段正文追加在
+        // stdout 末尾，附件名单因此跑到正文前面（评审 Jensen P3）——拼装
+        // 必须还原原始顺序。
+        let label_at = parsed.find("正文:").unwrap();
+        let body_at = parsed.find("This is email body").unwrap();
+        let attachment_label_at = parsed.find("附件:").unwrap();
+        let attachment_name_at = parsed.find("note.txt").unwrap();
+        assert!(
+            label_at < body_at,
+            "body label must precede the body: {parsed}"
+        );
+        assert!(
+            body_at < attachment_label_at,
+            "the body must come before the attachment list: {parsed}"
+        );
+        assert!(
+            attachment_label_at < attachment_name_at,
+            "attachment names follow their label: {parsed}"
+        );
     }
 
     #[test]
