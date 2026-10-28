@@ -141,7 +141,7 @@ export function useModelReasoningTierState({ model, storedEffort = null, baseUrl
   // Highlight fallback: the display maps a stored tier missing from the (possibly
   // probed-narrowed) table to the nearest tier (think:true is equivalent to high), while
   // click/save comparison keeps the caller's original value.
-  const reasoningEffortDisplay = reasoningEffortDisplayForTiers(storedEffort, reasoningEffortTiers);
+  const reasoningEffortDisplay = reasoningEffortDisplayForTiers(storedEffort, reasoningEffortTiers, model?.model, probeKindForRoute);
   return { isLocalCompatible, probedKind, probePending, reasoningEffortTiers, noControlThinking, reasoningEffortDisplay };
 }
 
@@ -175,6 +175,7 @@ export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noC
   const tierLabels = variant === 'form'
     ? ((t && t.uiSettingsDetail && t.uiSettingsDetail.reasoningEffortTiers) || {})
     : ((t && t.thinkingDepthTiers) || {});
+  const toggleOnly = tiers.length === 2 && tiers[0] === 'off' && tiers[1] === 'high';
   return (
     <div className={variant === 'form' ? 'ml-auto flex flex-wrap justify-end gap-1' : 'flex flex-wrap gap-1'}>
       {tiers.map(tier => (
@@ -190,7 +191,7 @@ export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noC
               ? 'h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
               : 'h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]')
           }
-        >{tierLabels[tier] || tier}</button>
+        >{(toggleOnly && tier === 'high' && t?.uiSettingsDetail?.reasoningThinkingEnabled) || tierLabels[tier] || tier}</button>
       ))}
     </div>
   );
