@@ -307,14 +307,20 @@ pub async fn feishu_apply_skills(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<Value, String> {
-    let result = feishu_domain::feishu_apply_skills().await?;
     // Round-9 review P2: connect enables skills, so an already-composed
     // session must receive them — the send path's ensure only rebuilds an
     // ABSENT dir, and the composer notify refreshes the menu only. Full
     // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
-    // delivery step the manual enable runs.
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
+    let result = feishu_domain::feishu_apply_skills().await;
     refresh_tools_and_broadcast(&app, pool.inner()).await;
-    Ok(result)
+    Ok(result?)
 }
 async_command_passthrough!(feishu_domain, feishu_skills_state() -> Result<Value, String>);
 
@@ -335,14 +341,20 @@ pub async fn wecom_apply_skills(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<Value, String> {
-    let result = wecom_domain::wecom_apply_skills().await?;
+    let result = wecom_domain::wecom_apply_skills().await;
     // Round-9 review P2: connect enables skills, so an already-composed
     // session must receive them — the send path's ensure only rebuilds an
     // ABSENT dir, and the composer notify refreshes the menu only. Full
     // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
-    // delivery step the manual enable runs.
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
     refresh_tools_and_broadcast(&app, pool.inner()).await;
-    Ok(result)
+    Ok(result?)
 }
 async_command_passthrough!(wecom_domain, wecom_skills_state() -> Result<Value, String>);
 
@@ -363,14 +375,20 @@ pub async fn dingtalk_apply_skills(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<Value, String> {
-    let result = dingtalk_domain::dingtalk_apply_skills().await?;
+    let result = dingtalk_domain::dingtalk_apply_skills().await;
     // Round-9 review P2: connect enables skills, so an already-composed
     // session must receive them — the send path's ensure only rebuilds an
     // ABSENT dir, and the composer notify refreshes the menu only. Full
     // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
-    // delivery step the manual enable runs.
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
     refresh_tools_and_broadcast(&app, pool.inner()).await;
-    Ok(result)
+    Ok(result?)
 }
 async_command_passthrough!(dingtalk_domain, dingtalk_skills_state() -> Result<Value, String>);
 
@@ -391,14 +409,20 @@ pub async fn tmeet_apply_skills(
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<Value, String> {
-    let result = tmeet_domain::tmeet_apply_skills().await?;
+    let result = tmeet_domain::tmeet_apply_skills().await;
     // Round-9 review P2: connect enables skills, so an already-composed
     // session must receive them — the send path's ensure only rebuilds an
     // ABSENT dir, and the composer notify refreshes the menu only. Full
     // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
-    // delivery step the manual enable runs.
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
     refresh_tools_and_broadcast(&app, pool.inner()).await;
-    Ok(result)
+    Ok(result?)
 }
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
 
