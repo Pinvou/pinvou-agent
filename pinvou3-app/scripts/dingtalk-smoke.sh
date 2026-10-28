@@ -77,43 +77,55 @@ if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连�
 
 # 探测必须限时:connector_cli.rs run_probe 对同一族命令用 30s kill-tree——npm-shim
 # CLI 曾实测卡在网络/代理/无 TTY 提示上无限挂起,冒烟脚本挂着不退出比红更糟。
-# 有 coreutils timeout 用之;macOS 裸机退化为 bash 看门狗。看门格子壳必须重定向
+# 有 coreutils timeout 用之;macOS 裸机退化为 bash 看门狗。看门狗子壳必须重定向
 # 到 /dev/null:本函数总在 $( ) 里被调用,子壳及其内层 sleep 会继承命令替换的
 # 管道写端,快探针结束后孤儿 sleep 仍握着管道,$() 要等它睡满 30s 才见到 EOF
-# (实测健康路径被拖满 9×30s);指向 /dev/null 后快探针即刻返回(孤儿 sleep
-# ≤30s 自行退出)。kill 只打直接子进程:对「native 二进制 / exec node 的 npm
-# shim」即全杀;若 CLI 是 fork 孙进程再 wait 的 wrapper,孙进程可能存活到自行
-# 退出(本脚本现有发现形态均非该类;coreutils timeout 分支无此问题)。
+# (实测健康路径被拖满 9×30s);指向 /dev/null 后快探针即刻返回。
+# CLI 输出先落临时文件再回放,不直接写 $( ) 管道:两个分支的 kill 都只打得到
+# 直接子进程(GNU timeout 默认也只杀子进程),若 CLI 是 spawn 孙进程再 wait 的
+# wrapper(@wecom/cli 的 npm 包装器就是 execFileSync 形态),孙进程会握着管道
+# 写端把整段脚本拖到它自行退出(实测 45s+ 乃至 >3min);落盘后孙进程只握临时
+# 文件,管道随 cat 结束即 EOF,脚本在时限内返回。
 DWS_TIMEOUT=30
-if command -v timeout >/dev/null 2>&1; then
-  dws_run() { timeout "$DWS_TIMEOUT" "$CLI" "$@"; }
-else
-  dws_run() {
-    "$CLI" "$@" &
+TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
+dws_run() {
+  local t rc
+  t="$(mktemp "${TMPDIR:-/tmp}/dws-smoke.XXXXXX")"
+  if [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" "$DWS_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
+  else
+    "$CLI" "$@" >"$t" 2>&1 &
     local pid=$!
     ( sleep "$DWS_TIMEOUT" && kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
-    wait "$pid" 2>/dev/null; local rc=$?
+    wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
     [ "$rc" -eq 143 ] && rc=124
-    return "$rc"
-  }
-fi
+  fi
+  cat "$t"; rm -f "$t"
+  return "$rc"
+}
 echo "dws = $CLI"
 echo
 
 MIN_TRI="1.0.64"  # dws SKILL.md cli_version floor;connector_online_install_contract.test.js 与 SKILL.md、connectors.lock.json 三方钉扎,漂移即红
 echo "[1] --version runs and is >= ${MIN_TRI} (dws SKILL.md cli_version floor; lock pins 1.0.65)"
-# stdout/stderr 都收(与 [2] auth 同口径,个别发行把版本打在 stderr)。只认点分版本号
-# (比 connector_cli.rs parse_semver3 更严:那边按任意非数字切分,裸数字串如构建日期
-# 20261027 会读成 20261027.0.0 放行;此处点分要求天然排除,不足三段补 0,不用 sort -V)。
+# stdout/stderr 都收(与 [2] auth 同口径,个别发行把版本打在 stderr)。版本号只从
+# 含 CLI 名字的那一行、且位于名字之后取:同族 lark-cli 实测会在版本行*之前*打
+# 「a new version 1.0.96 is available」(feishu.rs 钉有该夹具),dws 的自动更新检查
+# 也写 stderr——「全文首个点分数字」会把更新号/代理 URL 里的 IP 读成本机版本,
+# 让低于下限的 CLI 误 PASS。上游文档的 DWS_NO_UPDATE_CHECK=1 顺手关掉更新检查
+# (CLI 不认该变量时无副作用)。只认点分版本号(比 connector_cli.rs parse_semver3
+# 更严:那边按任意非数字切分,裸数字串如构建日期 20261027 会读成 20261027.0.0
+# 放行;此处点分要求天然排除),不足三段补 0,不用 sort -V。
+export DWS_NO_UPDATE_CHECK=1
 VER="$(dws_run --version 2>&1)"; v_rc=$?
-TRI="$(printf '%s\n' "$VER" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 | awk -F. '{printf "%d.%d.%d", $1, $2+0, $3+0}')"
+TRI="$(printf '%s\n' "$VER" | awk 'tolower($0) ~ /dws/ { for (i = 1; i <= NF; i++) { if (seen && $i ~ /^[0-9]+(\.[0-9]+)+$/) { print $i; exit } if (tolower($i) ~ /dws/) seen = 1 } }' | awk -F. '{printf "%d.%d.%d", $1, $2+0, $3+0}')"
 # 逐段数值比较(与上面目录排序同键;加权 1*10000+... 会把 0.99.164 误判 >= 1.0.64):
 # TRI >= MIN_TRI 当且仅当两行升序排序后的首行就是 MIN_TRI。
 GE="$(printf '%s\n%s\n' "$TRI" "$MIN_TRI" | sort -t. -k1,1n -k2,2n -k3,3n | head -1 | grep -qxF "$MIN_TRI" && echo yes || echo no)"
 if [ -n "$TRI" ]; then
-  ok "--version 可执行: $(echo "$VER" | tr -d '\r' | head -1)"
+  ok "--version 可执行: $(printf '%s\n' "$VER" | redact | tr -d '\r' | head -1)"
   if [ "$GE" = yes ]; then
     ok "version >= ${MIN_TRI}: $TRI"
   else
@@ -154,7 +166,9 @@ for d in doc drive calendar todo chat sheet aitable; do
   OUT="$(dws_run "$d" --help 2>&1)"; d_rc=$?
   if [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
   elif echo "$OUT" | grep -Eqi 'unknown command|not found|不存在|未知'; then no "$d 域不存在(CLI 无此服务)"
-  else sk "$d 域结果未知(exit $d_rc): $(echo "$OUT" | tr -d '\n' | head -c 60)"; fi
+  elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${DWS_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
+  # SKIP 回显同样过 redact:未知退出码正是 CLI 重试/报错时可能把凭证带进输出的路径。
+  else sk "$d 域结果未知(exit $d_rc): $(printf '%s' "$OUT" | redact | tr -d '\n' | head -c 60)"; fi
 done
 
 echo "[4] 真实读文档(可选,需 DINGTALK_TEST_DOC_ID)"
