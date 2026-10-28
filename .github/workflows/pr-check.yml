@@ -1216,6 +1216,15 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
 
+      - name: Check upgrade public metadata verification
+        working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/verify
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --test public_chain
+
       - name: Check isolated durable metadata acceptance QA
         working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/acceptance
         env:

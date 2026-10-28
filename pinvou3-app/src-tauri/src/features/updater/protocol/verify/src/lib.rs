@@ -37,7 +37,8 @@ pub use download::{
 };
 pub use error::VerificationError;
 pub use graph::{
-    PublicChainError, PublicChainInputs, SignatureCheckedPublicChain, verify_public_chain,
+    PublicChainError, PublicChainInputs, SignatureCheckedPublicChain,
+    SignatureCheckedPublicInterval, verify_public_chain, verify_public_chain_interval,
 };
 pub use package::{
     PackageBindingInputs, PackageBindingVerificationError, SignatureCheckedPackageBinding,

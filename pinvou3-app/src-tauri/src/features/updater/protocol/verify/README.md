@@ -148,6 +148,14 @@ duration cap is added.
 
 ## Complete public metadata chain
 
+`verify_public_chain_interval` verifies the same original graph at both bounds
+of a caller-supplied inclusive interval and rejects reversed bounds. Root and
+non-Package metadata require `issuedAt <= now < expiresAt`; Package has no
+time window, and graph membership and signatures do not depend on time. Both
+endpoint checks therefore cover every time within the interval under the current
+rules. The caller must provide and recheck actual trusted time, current denial,
+watermarks and protected storage; this function establishes none of them.
+
 `verify_public_chain` composes the frozen complete public-chain operation under
 caller-supplied existing Root, independent product/component context, safe time
 and global/exact-role denied keys. Every Timestamp, Snapshot and referenced

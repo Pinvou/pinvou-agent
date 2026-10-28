@@ -1,6 +1,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use pinvou_upgrade_codec::{Document, InputKind};
-use pinvou_upgrade_verifier::{PublicChainInputs, verify_public_chain};
+use pinvou_upgrade_verifier::{
+    PublicChainError, PublicChainInputs, verify_public_chain, verify_public_chain_interval,
+};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::Path, process::Command, sync::OnceLock};
 
@@ -114,6 +116,170 @@ fn actual_thresholds_all_extras_and_unsigned_changes() {
 #[test]
 fn fresh_root_and_body_windows_are_required() {
     check_group("time", 3);
+}
+
+#[test]
+fn interval_requires_every_instant_to_be_inside_all_fresh_windows() {
+    let case = cases()
+        .iter()
+        .find(|case| case["name"] == "strong-signed-complete-positive")
+        .unwrap();
+    let root = document(&case["trustedRoot"]).root_policy_shape().unwrap();
+    let context = document(&case["context"]);
+    let timestamp = STANDARD
+        .decode(case["timestamp"].as_str().unwrap())
+        .unwrap();
+    let snapshot = STANDARD.decode(case["snapshot"].as_str().unwrap()).unwrap();
+    let members: Vec<_> = case["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| STANDARD.decode(item.as_str().unwrap()).unwrap())
+        .collect();
+    let borrowed: Vec<_> = members.iter().map(Vec::as_slice).collect();
+    let mut claims = vec![case["trustedRoot"].clone()];
+    claims.extend(
+        [&timestamp, &snapshot]
+            .into_iter()
+            .chain(members.iter())
+            .map(|bytes| serde_json::from_slice::<Value>(bytes).unwrap()["signed"].clone()),
+    );
+    let lower = claims
+        .iter()
+        .filter_map(|v| v["issuedAt"].as_i64())
+        .max()
+        .unwrap();
+    let upper = claims
+        .iter()
+        .filter_map(|v| v["expiresAt"].as_i64())
+        .min()
+        .unwrap();
+    assert!(lower > 0 && upper > lower);
+    let time = |value| document(&Value::from(value)).protocol_time_shape().unwrap();
+    let earliest = time(lower);
+    let latest = time(upper - 1);
+    let checked = verify_public_chain_interval(
+        &timestamp,
+        &snapshot,
+        &borrowed,
+        PublicChainInputs::new(&root, &context, &earliest),
+        &latest,
+    )
+    .unwrap();
+    assert_eq!(checked.earliest_millis(), lower as f64);
+    assert_eq!(checked.latest_millis(), (upper - 1) as f64);
+    assert_eq!(
+        checked.chain().timestamp().envelope().raw_bytes(),
+        timestamp
+    );
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed,
+            PublicChainInputs::new(&root, &context, &earliest),
+            &earliest
+        )
+        .is_ok()
+    );
+    let too_early = time(lower - 1);
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed,
+            PublicChainInputs::new(&root, &context, &too_early),
+            &latest
+        )
+        .is_err()
+    );
+    let expired = time(upper);
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed,
+            PublicChainInputs::new(&root, &context, &earliest),
+            &expired
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed,
+            PublicChainInputs::new(&root, &context, &latest),
+            &earliest
+        ),
+        Err(PublicChainError::InvalidInterval)
+    ));
+    let denied = vec![
+        case["trustedRoot"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|role| role["role"] == "timestamp")
+            .unwrap()["keyIds"][0]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    ];
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed,
+            PublicChainInputs::new(&root, &context, &earliest).with_denied_key_ids(&denied),
+            &latest
+        )
+        .is_err()
+    );
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed,
+            PublicChainInputs::new(&root, &context, &earliest)
+                .with_role_denied_key_ids("timestamp", &denied),
+            &latest
+        )
+        .is_err()
+    );
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed,
+            PublicChainInputs::new(&root, &context, &earliest)
+                .with_role_denied_key_ids("download", &denied),
+            &latest
+        )
+        .is_ok()
+    );
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &borrowed[..borrowed.len() - 1],
+            PublicChainInputs::new(&root, &context, &earliest),
+            &latest
+        )
+        .is_err()
+    );
+    let mut altered = members.clone();
+    altered[0].push(b' ');
+    let altered_refs: Vec<_> = altered.iter().map(Vec::as_slice).collect();
+    assert!(
+        verify_public_chain_interval(
+            &timestamp,
+            &snapshot,
+            &altered_refs,
+            PublicChainInputs::new(&root, &context, &earliest),
+            &latest
+        )
+        .is_err()
+    );
 }
 #[test]
 fn exact_policy_original_wire_and_production_package_rules() {

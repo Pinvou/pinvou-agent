@@ -11,14 +11,69 @@ use std::collections::BTreeMap;
 pub enum PublicChainError {
     Verification(VerificationError),
     Graph(PublicGraphError),
+    InvalidInterval,
 }
 impl std::fmt::Display for PublicChainError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Verification(error) => error.fmt(f),
             Self::Graph(error) => error.fmt(f),
+            Self::InvalidInterval => f.write_str("PUBLIC_CHAIN_INTERVAL_INVALID"),
         }
     }
+}
+
+/// A complete chain checked over caller-supplied inclusive time bounds. These
+/// bounds are DATA, not an attested clock, persistence or upgrade authority.
+pub struct SignatureCheckedPublicInterval<'a> {
+    chain: SignatureCheckedPublicChain<'a>,
+    earliest: f64,
+    latest: f64,
+}
+impl<'a> SignatureCheckedPublicInterval<'a> {
+    pub fn chain(&self) -> &SignatureCheckedPublicChain<'a> {
+        &self.chain
+    }
+    pub fn earliest_millis(&self) -> f64 {
+        self.earliest
+    }
+    pub fn latest_millis(&self) -> f64 {
+        self.latest
+    }
+}
+
+/// Verify the same bytes, Root, scope and denials at both inclusive bounds.
+/// The current complete public-chain rules only compare time to each Root or
+/// non-Package object's single [issuedAt, expiresAt) window. All other checks
+/// are time-independent, so success at both endpoints covers the whole interval.
+/// Callers must separately obtain and freshly recheck a trusted interval,
+/// denial state, high waters, protected persistence and online qualification.
+pub fn verify_public_chain_interval<'a>(
+    timestamp_bytes: &[u8],
+    snapshot_bytes: &[u8],
+    member_bytes: &[&[u8]],
+    inputs: PublicChainInputs<'a>,
+    latest: &'a SuppliedProtocolTime,
+) -> Result<SignatureCheckedPublicInterval<'a>, PublicChainError> {
+    let earliest = inputs.now.as_millis();
+    let latest_millis = latest.as_millis();
+    if earliest > latest_millis {
+        return Err(PublicChainError::InvalidInterval);
+    }
+    let latest_inputs = PublicChainInputs {
+        root: inputs.root,
+        context: inputs.context,
+        now: latest,
+        denied: inputs.denied,
+        denied_by_role: inputs.denied_by_role.clone(),
+    };
+    verify_public_chain(timestamp_bytes, snapshot_bytes, member_bytes, inputs)?;
+    let chain = verify_public_chain(timestamp_bytes, snapshot_bytes, member_bytes, latest_inputs)?;
+    Ok(SignatureCheckedPublicInterval {
+        chain,
+        earliest,
+        latest: latest_millis,
+    })
 }
 impl std::error::Error for PublicChainError {}
 
