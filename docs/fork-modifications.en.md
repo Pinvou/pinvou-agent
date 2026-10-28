@@ -72,6 +72,10 @@
 
 ## Current state (2026-10-28)
 
+- Public maintenance remains `6e1ee88ee8f8ea28eec7be3d8add3a591468412a`, including #118–#122. The parent review gitlink is `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6` ([CodeWhale#125](https://github.com/Pinvou/CodeWhale/pull/125)), not a merged maintenance head. Keep the application PR draft until the foundation merges and repin its actual squash commit. No protected branch or tag is updated.
+- Candidate history: 87 commits above upstream v0.9.12 `dcd4c200f`, 72 above r1 `1fafee7e2`; 85 carry DCO sign-offs. Published maintenance remains 84/69/82. The only missing-footer squashes remain #107 `f27672935` and #116 `e9a7f48da1`; published history is not rewritten.
+- Immutable r3 remains `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. Public verification still requires gitlink equality with maintenance and the frozen r3 tag. It is expected to fail for this review candidate; no predicate is relaxed.
+- Candidate drift: 522 files, +90147/-39279, net +50868; 255 distinct `forkguard_*` names using the guard regex across all crates (floor 64). Earlier native Windows evidence does not cover this candidate; final CI and integrated-tree review remain separate requirements.
 - Public maintenance and parent gitlink: `f1eb10efcfe2468fde42d1724d7f5f19d54b904c` (2026-10-28). #114 merged as `fe90f72f9`, #125 as `f1eb10efc`. This follow-up changes parent references only; it does not advance maintenance.
 - Measured history: 86 commits above upstream v0.9.12 `dcd4c200f`, 71 above r1 `1fafee7e2`; 84 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
@@ -360,7 +364,7 @@ Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 
 ## 2026-10-27 review revision R1 (T3; CodeWhale#125)
 
-Current review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance stays `6e1ee88ee`.
+R1 review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance stays `6e1ee88ee`.
 The two review commits total 17 files, +296/-49. Candidate topology is 86 commits
 above v0.9.12, 71 above r1, 84 signed; only the two registered historical squashes
 lack a footer. Drift: 522 files, +90219/-39420, net +50799; 255 distinct guard names.
@@ -381,6 +385,38 @@ remains the immutable pre-review V2.4.5 measurement, not a score for R1. See
 [review verification](prompt-optimization-evaluation/review-r1-verification.json).
 The app PR remains draft; public-head verification is unchanged and still must
 pass after the foundation's actual maintenance squash is repinned.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+
+## 2026-10-28 review revision R2 (T3; CodeWhale#125)
+
+Current review gitlink: `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6`; public maintenance remains
+`6e1ee88ee`. The three review commits total 18 files, +376/-60. Recounted
+candidate history: 87 commits above v0.9.12, 72 above r1, 85 signed; only
+the registered #107/#116 squashes lack a footer. Drift: 522 files,
++90147/-39279, net +50868; 255 distinct guard names.
+
+The bundled discovery Skill now applies discovery, one permitted exact-name
+probe, and schema-receipt/refusal rules in steps 1, 3 and 4. Shell and Registry
+result guidance agree. A receipt with `retry_required: true` explicitly licenses
+one retry with its schema; it is not execution or transcript evidence. The
+primary instruction restores must-call wording, local/custom/manual execution
+coverage, scored snapshot and full-catalog boundaries. The tool description
+now agrees with exact-name-first Skill loading. Goal-family wording remains
+outside this alignment and is disclosed without claiming the new probe bounds.
+
+The denial regression removes only the two deferred targets and verifies eager
+`read` remains permitted and active. Existing Skill/Registry/shell pins cover the
+restored guidance. The unreleased generation stays 12, and the exact generation-11
+fixture/digest and customized-body protections are unchanged. Historical R1 and
+V2.4.5 sources/measurements remain frozen; no fresh live-model score is claimed.
+
+Fresh checks and source boundaries are recorded in
+[review-r2-verification.json](prompt-optimization-evaluation/review-r2-verification.json)
+and [source-manifest-review-r2.json](prompt-optimization-evaluation/source-manifest-review-r2.json).
+The public verifier is unchanged and must pass after the actual maintenance
+squash is repinned. Keep PR799 draft until then.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 ## 2026-10-28 consumed baseline: streaming tool-input reuse and discovery-guidance alignment (T2/T3)

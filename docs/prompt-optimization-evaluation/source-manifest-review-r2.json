@@ -1,0 +1,18 @@
+{
+  "revision": "V2.4.5-review-r2",
+  "scope": "Current review guidance only; historical V2.4.5 and R1 manifests are preserved. No fresh live-model scores.",
+  "sources": {
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md": "f21e20fa0a806827b4b025a9ffa8246bd6866a7e5b048b0ba47d74b22c72feb4",
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md": "90dc22115d06c03a041748acf1bf298b9a49627dbe1534e6fec454fa975d2dcf",
+    "pinvou3-app/src-tauri/src/features/assistant/engine.rs": "1736e2c92807690b30de4867e430c7baa1bd4b871093482e0d8482bb97c8ac24",
+    "pinvou3-app/src-tauri/src/features/assistant/session_policy.rs": "1d1a427807b48b2f18d38a71069e5805437ebd84f95994d9f88f28413a3e2f66",
+    "pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs": "32e04572c5334d0377f581efbbea310cb1529f8289f1f1fe5b3368941196b7f2",
+    "CodeWhale/crates/tui/src/core/engine.rs": "205fc4c05e9956b6d2729d8ac79e796308bde441b8d1f6d2a84963f1e077eeac",
+    "CodeWhale/crates/tui/src/core/engine/tool_catalog.rs": "bd3dc47545e0ec163127228e26008f3b977421a37550456daacfda4fbcfa498b",
+    "CodeWhale/crates/tui/src/skills/mod.rs": "56c56b1865c796e3059f2f2ad52fb7d558ec96d2b195404fcc7b6610406dcc0b",
+    "CodeWhale/crates/tui/src/tools/subagent/mod.rs": "4d88ac994baf82f21a7f49338d8020dcc50b2b1d99b212566f39be4acb05fcbd",
+    "CodeWhale/crates/tui/src/tools/mcp_registry.rs": "6c394ed7878aa1c567564f1aef8d33d1cbfed0caf2bf8d54d0848a74bf897277",
+    "CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md": "174236855afa50e585ada12bbc8ee1893f10b1fdeebf81ef627ff2493dd2dcaa",
+    "CodeWhale/crates/tui/src/tools/skill.rs": "c03763bfb0a792b4fcaafe979d19b4b75b475fb4a511d070737db422a244b46b"
+  }
+}
