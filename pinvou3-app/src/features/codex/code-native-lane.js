@@ -14,7 +14,7 @@
 
 import { projectDeepSeekConversation, conversationItemsForMode, timelineDisplayError } from '../conversation/deepseek-conversation.js';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
-import { isCompactionCarrierBlocks, isInternalRuntimeEnvelopeText, isInternalUserMessage, isKnownInternalMetadataBlock, isStepBudgetNoticeText, isToolResultCarrierBlocks } from '../../shared/internal-message.mjs';
+import { isCompactionCarrierBlocks, isInternalUserMessage, isKnownInternalMetadataBlock, isStepBudgetNoticeText, isToolResultCarrierBlocks } from '../../shared/internal-message.mjs';
 
 // Native controls are session-owned; bridge state belongs to the separate
 // chat workspace. Only a loaded model whose controls belong to this very
