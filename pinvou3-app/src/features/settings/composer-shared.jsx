@@ -560,7 +560,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         if (bridge.available) {
           const generation = writeGateRef.current.begin(id);
           invokeTauri('set_disabled_connectors',
-            { connectorIds: [...next], scope: toolScope })
+            { connectorIds: [...next], scope: toolScope, toggledIds: [id] })
             .catch((error) => {
               // Only the control's latest write may roll back or report: with rapid
               // toggles an earlier write can fail after a newer write succeeded
