@@ -33,13 +33,13 @@ pub use persistence::RelaySettingsInfo;
 // are pure and stateless; the facade calls them by name.
 #[cfg(test)]
 use persistence::atomic_write_private_json;
-use persistence::{ load_pending_revocations_for_replay, 
+use persistence::{
     acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
     config_path, eligible_pending_revocations, fresh_config, load_config, load_config_from,
-    load_or_initialize_rpc_ledger, load_relay_settings, new_stream_epoch,
-    pairing_info, pending_revocation_key, persist_config, persist_rpc_ledger, process_lock_path,
-    public_url, queue_pending_revocation, remote_public_base_url, remote_relay_ws_url,
-    remove_config, remove_rpc_ledger, validate_config,
+    load_or_initialize_rpc_ledger, load_pending_revocations_for_replay, load_relay_settings,
+    new_stream_epoch, pairing_info, pending_revocation_key, persist_config, persist_rpc_ledger,
+    process_lock_path, public_url, queue_pending_revocation, remote_public_base_url,
+    remote_relay_ws_url, remove_config, remove_rpc_ledger, validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event

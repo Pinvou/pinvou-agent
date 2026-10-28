@@ -1003,11 +1003,9 @@ mod tests {
         }
 
         // 相对路径是纯形状违规:按确定性(可缓存)拒绝,不归入瞬时类。
-        let rejection = validate_web_kb_paths(
-            "kb_start_scan",
-            &json!({ "roots": ["relative/path"] }),
-        )
-        .expect_err("relative roots must be rejected");
+        let rejection =
+            validate_web_kb_paths("kb_start_scan", &json!({ "roots": ["relative/path"] }))
+                .expect_err("relative roots must be rejected");
         assert!(
             matches!(rejection, WebScopeRejection::Deterministic(_)),
             "arg-shape violations must stay deterministic, got {rejection:?}"
