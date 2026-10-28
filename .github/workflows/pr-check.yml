@@ -2343,6 +2343,7 @@ jobs:
             'platform::process::tests::completed_parent_does_not_wait_for_descendant_capture_handles' \
             'platform::process::tests::plain_output_limit_also_terminates_the_process_tree' \
             'platform::process::tests::read_capture_' \
+            'platform::process::tests::writing_descendant_' \
             'features::browser::platform::windows::tests::' \
             'features::monitor::platform::windows_cpu::tests::' \
             'features::monitor::platform::windows_memory::tests::' \
