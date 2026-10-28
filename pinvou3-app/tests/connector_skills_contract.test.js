@@ -550,7 +550,10 @@ for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
 const hostAliasForms =
   /悟空(?:运行|环境|平台|脚本|应用|宿主|智能体|\s*Agent)|(?:与|由|在)悟空(?!相关|无关|有关)|Wukong\s*Agent|悟空内部产品|开源版(?:未引入|不支持|不提供)/i;
 const scripts = files.filter(
-  (f) => f.endsWith(".py") && !path.basename(f).startsWith("NOTICE"),
+  // 与上方 .md 过滤同口径:扩展名大小写不敏感(.PY/.Md 一并扫),NOTICE* 仍豁免。
+  (f) =>
+    path.basename(f).toLowerCase().endsWith(".py") &&
+    !path.basename(f).startsWith("NOTICE"),
 );
 for (const f of [...docs, ...scripts]) {
   let hit = null;
@@ -580,6 +583,7 @@ for (const f of [...docs, ...scripts]) {
     ["由悟空代管安装", "由悟空"],
     ["在悟空上运行", "在悟空"],
     ["Wukong Agent attendance report helper", "Wukong\\s*Agent"],
+    ["WUKONG AGENT attendance report helper", "i 标志(大写形态)"],
     ["该能力属悟空内部产品", "悟空内部产品"],
     ["高级模式（开源版未引入）", "开源版未引入"],
     ['不要以"开源版不支持"为由拒答', "开源版不支持"],
@@ -591,6 +595,7 @@ for (const f of [...docs, ...scripts]) {
     '示例："查一下和悟空相关的听记"',
     '示例："查一下与悟空相关的听记"',
     '跳过与悟空无关的条目',
+    '标记与悟空有关的条目',
     '把"付工"改成"悟空"',
     "--agentCode string       Agent 标识，默认 wukong",
     "开源版默认 `normal` 模式只需要用户 token 和 AppKey",
