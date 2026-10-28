@@ -219,7 +219,13 @@
       this.startLivenessWatchdog();
       this.bindNetworkListeners();
       if (endpointId && accessToken) this.connect();
-      else queueMicrotask(() => this.setConnection("credentials_missing", "远程控制链接缺少访问凭证。"));
+      else this.parkCredentialsMissing();
+    }
+
+    // 缺凭证的阻断终态:online/visible/看门狗等任何重连路径都不得把它
+    // 转成注定失败的 join 重试循环(小转圈覆盖阻断卡),一律停回这张卡。
+    parkCredentialsMissing() {
+      queueMicrotask(() => this.setConnection("credentials_missing", "远程控制链接缺少访问凭证。"));
     }
 
     setConnection(status, message) {
@@ -238,6 +244,10 @@
 
     connect() {
       if (this.closedPermanently || this.socket) return;
+      if (!this.endpointId || !this.accessToken) {
+        this.parkCredentialsMissing();
+        return;
+      }
       // A speculative reconnect keeps the UI on "connected" until verification
       // fails; see the LIVENESS_SILENCE_TIMEOUT_MS note above.
       if (!this.speculativeReconnect) this.setConnection("connecting", "正在连接桌面端…");
@@ -283,7 +293,13 @@
 
     scheduleReconnect(message) {
       if (this.closedPermanently || this.reconnectTimer) return;
-      if (!this.speculativeReconnect) this.setConnection("connecting", message);
+      // desktop_offline 的专属文案(「桌面端离线,保持页面打开」)会被紧随
+      // 其后的 close→scheduleReconnect 的 connecting 覆盖,用户在最长 60s
+      // 的退避窗口里只看得到「连接中」。桌面离线类失败保持该状态度过整个
+      // 退避窗口,由重连发起(connect)或 join ack 推进。
+      if (!this.speculativeReconnect && this.connectionState.status !== "desktop_offline") {
+        this.setConnection("connecting", message);
+      }
       // Desktop-gone failures keep the fast pace only for the first attempts;
       // any other failure class resets the streak (a successful join resets it
       // in the join handler).
