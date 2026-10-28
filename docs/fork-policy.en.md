@@ -2,8 +2,8 @@
 
 ## Local template reasoning candidate (2026-10-28)
 
-Review candidate `60150219d603b24cc6b35099c59f0ed94291e9bf` adds five signed
-commits above public maintenance `f1eb10efc` (91 commits above upstream v0.9.12).
+Review candidate `2ed7b03b5a87559f84172cfb00100efa2b06af7b` adds six signed
+commits above public maintenance `f1eb10efc` (92 commits above upstream v0.9.12).
 It extends T10 with generic, revision-sourced vLLM template effort facts, with
 [upstream contribution #7125](https://github.com/codewhale-hq/Codewhale/pull/7125)
 and [compatible backport #128](https://github.com/Pinvou/CodeWhale/pull/128).
