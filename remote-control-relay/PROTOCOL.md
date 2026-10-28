@@ -186,17 +186,22 @@ hits the tombstone capacity is refused before any write with
 `MAX_RELAY_STATE_BYTES` (which raises the derived capacity) makes room.
 
 The state file contains only schema version, endpoint IDs, and revoke times; it
-does not contain access tokens, desktop secrets, or their hashes. Tombstones are
-bounded by `MAX_REVOKED_ENDPOINTS` and `MAX_RELAY_STATE_BYTES`. Back up the state
-file with the deployment's durable data. Deleting it deliberately re-enables old
-endpoint IDs.
+does not contain access tokens, desktop secrets, or their hashes. New revocations
+are bounded by `MAX_REVOKED_ENDPOINTS`, which is clamped to what
+`MAX_RELAY_STATE_BYTES` can hold; a state file holding more tombstones than
+today's derivation still loads in full and every loaded tombstone stays
+enforced. Back up the state file with the deployment's durable data. Deleting it
+deliberately re-enables old endpoint IDs. A state file that is not a regular
+file, that exceeds `MAX_RELAY_STATE_BYTES`, or that is not valid schema-v1 JSON
+aborts startup with a fixed `[relay-error]` line.
 
 ## Error codes
 
 The Relay reports rejects with a `type: "error"` message carrying a `code`.
 Codes enforced by the reject helper also close the socket with WebSocket close
-code 1008; the remaining codes are informational errors that leave the
-connection open.
+code 1008. Five informational codes leave the connection open:
+`bad_json`, `bad_message`, `binary_unsupported`, `unsupported_message_type`,
+and `desktop_offline`.
 
 | Code | Trigger |
 | --- | --- |
@@ -247,7 +252,10 @@ connection open.
   expanded to its full form, and IPv4-mapped spellings reduced to the embedded
   IPv4, so any valid spelling of an address matches regardless of the form the
   runtime reports a peer in. A zone-id entry such as `fe80::1%eth0` matches
-  only a peer reporting the identical zone string. A blank value means an
+  only a peer whose reported address carries the identical suffix, compared
+  verbatim — the suffix is the relay host's own interface name for that
+  connection, so use the spelling the runtime reports; an IPv4-mapped
+  spelling never carries a zone. A blank value means an
   empty set: an empty
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. A direct peer on
@@ -273,14 +281,25 @@ connection open.
   allowlist admits. Set it to `127.0.0.1` to keep the relay local; the
   startup banner reports no address, so check the deployment configuration
   rather than the logs.
+- Every startup failure exits with code 1 and one fixed `[relay-error]` line:
+  configuration problems (`proxy_ip_configuration_invalid` naming the
+  variable, an invalid `PORT`, invalid browser origin entries), state-file
+  problems (`relay_state_load_failed ...`, the over-size line, or the
+  non-regular-file line), and bind failures (`listen_failed code=<errno>`).
+  No startup report echoes a filesystem path, the offending value, or the
+  bind address.
 - Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
   all WebSocket clients without a close handshake (peers observe an abnormal
   closure) and exit the process with code 0; in-flight HTTP responses are not
   drained. A signal that arrives during startup state loading takes the
   default action instead.
-- Protocol v2 requires `MAX_PAYLOAD_BYTES` to be at least 4 MiB. Desktop-originated
-  frames are bounded by the complete serialized WebSocket message, not just the
-  event payload, and stay at or below `4 MiB - 64 KiB`.
+- The Relay rejects any frame whose complete serialized WebSocket message
+  exceeds `MAX_PAYLOAD_BYTES` (protocol v2 requires at least 4 MiB), counting
+  the whole envelope rather than just the event payload. The desktop keeps its
+  own frames at or below `4 MiB - 64 KiB` so they fit inside that bound.
+  Scan and parse costs are linear in frame size, so raising
+  `MAX_PAYLOAD_BYTES` above the 4 MiB default trades per-frame event-loop
+  latency: a maximal frame briefly blocks the Relay.
 - The desktop replay journal retains at most 1,024 complete event frames and
   16 MiB. When either boundary evicts the requested cursor, the desktop rotates
   the stream epoch and sends `stream_reset`; the Relay never fabricates a gap.

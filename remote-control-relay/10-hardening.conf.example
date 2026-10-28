@@ -7,8 +7,10 @@
 # are canonicalized before matching (lowercased, IPv6 expanded to its full
 # form, IPv4-mapped spellings reduced to the embedded IPv4), so any valid
 # spelling of an address matches, whatever form the runtime reports the peer
-# in. An IPv6 zone-id suffix (fe80::1%eth0) is matched verbatim: only peers
-# reporting the identical zone string compare equal. A trusted proxy must set
+# in. An IPv6 zone-id suffix (fe80::1%eth0) is matched verbatim against the
+# suffix the peer's own address reports — the suffix is this host's interface
+# name for the connection, so use the spelling the runtime reports; an
+# IPv4-mapped spelling never carries a zone. A trusted proxy must set
 # these forwarding headers itself; a proxy that forwards client-supplied
 # values lets senders pick their own rate-limit identity.
 #
@@ -27,6 +29,10 @@ Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000
 Environment=ENDPOINT_CREATE_LIMIT=20
 Environment=ENDPOINT_CREATE_WINDOW_MS=60000
+# Keep the 4 MiB payload default: scan and parse are linear in frame size,
+# so raising MAX_PAYLOAD_BYTES makes each frame block the event loop
+# proportionally longer (a maximal frame at 16 MiB stalls liveness probes
+# for roughly half a second).
 Environment=MAX_PAYLOAD_BYTES=4194304
 Environment=MAX_WS_CONNECTIONS=5000
 Environment=WS_CONNECT_LIMIT=120
