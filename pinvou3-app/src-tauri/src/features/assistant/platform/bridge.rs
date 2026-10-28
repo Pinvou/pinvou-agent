@@ -1550,6 +1550,22 @@ impl Pinvou3Bridge {
     /// [`Self::request_reasoning_effort`] 的档位推导主体；Tachyon 的
     /// high→medium 归一在公共入口统一收口，这里不做 provider 特判。
     fn request_reasoning_effort_for_provider(&self, provider: &str) -> Option<String> {
+        // Local template facts are shared with the UI and the foundation's
+        // final Chat shaper. Keep provider/credential/probe routing unchanged.
+        if provider == "vllm"
+            && let Some(spec) =
+                codewhale_config::local_reasoning::local_reasoning_spec(&self.model())
+        {
+            let stored = self
+                .effective_model()
+                .and_then(|model| model.reasoning_effort.as_deref());
+            return Some(
+                stored
+                    .and_then(|effort| spec.normalize(effort))
+                    .unwrap_or(&spec.default)
+                    .to_string(),
+            );
+        }
         // "Local route": the vllm/ollama/tachyon providers. When the openai
         // wire points at a local/private endpoint (LM Studio/generic server),
         // the engine treats reasoning_effort as a no-op, so knowledge-table
@@ -10689,6 +10705,53 @@ mod tests {
                 providers.vllm.reasoning_stream_style.as_deref(),
                 Some(SEPARATE_REASONING_FIELD),
                 "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reviewed_local_reasoning_keeps_route_and_credentials() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        for (model, stored, expected) in [
+            ("Qwen3.8-27B-NVFP4", "high", "max"),
+            ("Qwen3.8-Flash-Next-NVFP4", "max", "max"),
+            ("Ornith-1.5-35B-A3B-NVFP4", "medium", "high"),
+            ("Qwen3.6-35B-A3B-NVFP4-Fast", "low", "high"),
+            ("GLM-5.3-Flash-NVFP4", "medium", "high"),
+            ("DeepSeek-V4-Flash-Vision-Exp", "medium", "high"),
+        ] {
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                model,
+                "http://127.0.0.1:8000/v1",
+                "fixture-local-key",
+            );
+            bridge.probed_local_kind = Some(LocalServerKind::Sglang);
+            bridge.prefs.advanced.saved_models[0].reasoning_effort = Some(stored.to_string());
+            let config = bridge.build_dt_config();
+            assert_eq!(
+                config.reasoning_effort.as_deref(),
+                Some(expected),
+                "{model}"
+            );
+            assert_eq!(bridge.provider(), "vllm");
+            assert_eq!(bridge.base_url(), "http://127.0.0.1:8000/v1");
+            assert_eq!(
+                config.providers.as_ref().unwrap().vllm.api_key.as_deref(),
+                Some("fixture-local-key")
+            );
+            assert_eq!(
+                bridge.prefs.advanced.saved_models[0]
+                    .reasoning_effort
+                    .as_deref(),
+                Some(stored)
             );
         }
     }

@@ -11,11 +11,12 @@ code = code.replace(/\bexport\s+\{[^}]+\};?/g, '').replace(/\bexport\s+/g, '');
 // 剥离 asset 导入(SVG/PNG)与副作用导入(Node 无法解析,函数体不依赖它们)
 code = code.replace(/import\s+[^;]*from\s+['"][^'"]*\/brand-icons\/[^'"]+['"];?/g, '');
 code = code.replace(/import\s+['"]\.\/settings-i18n\.js['"];?/g, '');
+code = code.replace(/import LOCAL_REASONING_SPECS from [^;]+;/, '');
 // 剥离模块级图标映射(BRAND_ICON_BY_PRESET/VENDOR):其 import 已剥离,但对象字面量仍在模块顶层
 // 引用这些标识符,会在 vm 求值时抛 "deepseekIcon is not defined"。被测函数不依赖图标映射。
 code = code.replace(/const\s+BRAND_ICON_BY_(?:PRESET|VENDOR)\s*=\s*\{[\s\S]*?\};?/g, '');
 
-const ctx = { console, URL };
+const ctx = { console, URL, LOCAL_REASONING_SPECS: JSON.parse(fs.readFileSync(path.join(__dirname, '../../CodeWhale/crates/config/src/local_reasoning.json'), 'utf8')) };
 vm.createContext(ctx);
 vm.runInContext(
   `${code}\n` +
@@ -1367,6 +1368,40 @@ test('OpenAI Responses wire 谓词的前缀集跨语言一致（bridge.rs ↔ mo
 
   assert.ok(rustPrefixes.length >= 4, `rust prefixes parsed: ${rustPrefixes.join(', ')}`);
   assert.deepStrictEqual(jsPrefixes, rustPrefixes);
+});
+
+test('reviewed local template ladders match the shared wire facts', () => {
+  const rows = [
+    ['Qwen3.8-27B-NVFP4', ['off', 'low', 'medium', 'max'], 'high', 'max'],
+    ['nvidia/Qwen3.8-Flash-Next-NVFP4', ['off', 'low', 'medium', 'max'], 'high', 'max'],
+    ['Ornith-1.5-35B-A3B-NVFP4', ['off', 'high'], 'medium', 'high'],
+    ['Qwen3.6-35B-A3B-NVFP4-Fast', ['off', 'high'], 'low', 'high'],
+    ['GLM-5.3-Flash-NVFP4', ['low', 'high', 'max'], 'medium', 'high'],
+    ['DeepSeek-V4-Flash-Vision-Exp', ['low', 'high', 'max'], 'medium', 'high'],
+  ];
+  for (const [name, tiers, stored, effective] of rows) {
+    const model = { preset: 'local_vllm', model: name, base_url: 'http://localhost:8000/v1' };
+    assert.deepStrictEqual([...reasoningEffortTiersForModel(model)], tiers, name);
+    for (const kind of ['vllm', 'sglang', null]) assert.deepStrictEqual([...localReasoningTiers(name, kind)], tiers, `${name}/${kind}`);
+    assert.strictEqual(normalizeStoredReasoningEffort(model, stored), stored, name);
+    assert.strictEqual(reasoningEffortDisplayForTiers(stored, tiers, name, 'vllm'), effective, name);
+    assert.strictEqual(model.model, name);
+  }
+});
+
+test('reviewed facts do not change unknown families or alternate local wires', () => {
+  assert.deepStrictEqual([...localReasoningTiers('Qwen3.8-27B2', 'vllm')], ['off', 'low', 'medium', 'high']);
+  assert.deepStrictEqual([...localReasoningTiers('DeepSeek-V4.1-Flash-1017', 'vllm')], ['off', 'low', 'medium', 'high']);
+  assert.strictEqual(localReasoningTiers('Qwen3.8-27B-NVFP4', 'generic'), null);
+  assert.strictEqual(localReasoningTiers('Qwen3.6-35B-A3B-Thinking', 'vllm'), null);
+  assert.deepStrictEqual([...localReasoningTiers('Qwen3.8-27B-NVFP4', 'ollama')], ['off', 'high']);
+  assert.strictEqual(reasoningEffortDisplayForTiers('high', ['off', 'low', 'medium', 'max'], 'Qwen3.8-27B-NVFP4', 'tachyon'), 'medium');
+  const legacy = { preset:'local_vllm', model:'Qwen3.8-27B-NVFP4', base_url:'http://localhost:8000/v1' };
+  assert.strictEqual(reasoningEffortDisplayForTiers(normalizeStoredReasoningEffort(legacy, 'high'), ['off','low','medium','max'], legacy.model, 'tachyon'), 'medium');
+  for (const saved of ['maximum', 'xhigh', 'ultra', 'ultracode']) {
+    const normalized = normalizeStoredReasoningEffort(legacy, saved);
+    assert.strictEqual(reasoningEffortDisplayForTiers(normalized, ['off','low','medium','max'], legacy.model, 'vllm'), 'max');
+  }
 });
 
 console.log(`\nmodel_catalog_grouping: ${pass} passed, ${fail} failed`);

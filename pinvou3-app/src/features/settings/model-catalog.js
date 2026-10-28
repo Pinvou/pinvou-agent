@@ -3,6 +3,8 @@
 // 目录条目的三语文案已按语言并入 shared/i18n/{zh,en,ja}.js(原 settings-i18n.js 拆分),
 // 随 i18n.js 聚合/惰性装载一体维护,此处不再需要副作用 import。
 import deepseekIcon from '../../brand-icons/deepseek.svg';
+// The same reviewed facts shape the foundation's actual vLLM requests.
+import LOCAL_REASONING_SPECS from '../../../../CodeWhale/crates/config/src/local_reasoning.json';
 import doubaoIcon from '../../brand-icons/doubao.svg';
 import claudeIcon from '../../brand-icons/claude.png';
 import geminiIcon from '../../brand-icons/gemini.svg';
@@ -1728,6 +1730,27 @@ function reasoningProviderForModel(model) {
 // GLM-5.3 scope note: this table applies to local routes only; the cloud exact
 // route (z.ai first-party) deliberately keeps its own ['off','high','max'] tiers
 // from the hosted API contract.
+function reviewedLocalReasoningSpec(modelId) {
+  const name = String(modelId || '').trim().toLowerCase().replaceAll(/[ _]/g, '-').split('/').at(-1);
+  if (name.includes('thinking')) return null;
+  return LOCAL_REASONING_SPECS.find((spec) => spec.prefixes.some((prefix) => {
+    if (!name.startsWith(prefix)) return false;
+    const suffix = name.slice(prefix.length);
+    return !suffix || suffix.startsWith('-') || suffix.startsWith(':');
+  })) || null;
+}
+
+function normalizedLocalEffort(spec, effort) {
+  const canonical = REASONING_EFFORT_CANONICAL[String(effort || '').trim().toLowerCase()];
+  return (spec.tiers.includes(canonical) ? canonical : spec.aliases[canonical]) || spec.default;
+}
+
+function localReasoningSpecForRoute(model, provider) {
+  return ['vllm', 'local'].includes(provider)
+    ? (reviewedLocalReasoningSpec(model && model.model) || alwaysThinkingSpecForModel(model && model.model))
+    : null;
+}
+
 function alwaysThinkingSpecForModel(modelId) {
   const normalized = String(modelId || '').trim().toLowerCase().replaceAll(/[\s_]+/g, '-');
   if (!normalized) return null;
@@ -1793,9 +1816,7 @@ function reasoningEffortTiersForModel(model) {
   // unaffected. (Probed ollama does not go through here: tiers for local
   // compatible endpoints are issued by localReasoningTiers, which overlays the
   // knowledge table on the probed kind.)
-  const localSpec = ['vllm', 'local'].includes(provider)
-    ? alwaysThinkingSpecForModel(model && model.model)
-    : null;
+  const localSpec = localReasoningSpecForRoute(model, provider);
   if (localSpec) return localSpec.noControl ? null : localSpec.tiers;
   if (provider === 'zai') {
     if (!isExactZaiChatBaseUrl(baseUrl)) return null;
@@ -1855,6 +1876,8 @@ function isAlwaysThinkingK3Route(model) {
 function defaultReasoningEffortForModel(model) {
   const provider = reasoningProviderForModel(model);
   if (provider === 'vllm' || provider === 'local') {
+    const reviewed = reviewedLocalReasoningSpec(model && model.model);
+    if (reviewed) return reviewed.default;
     // Always-thinking models with controllable tiers (knowledge table):
     // tiers[0] is the lowest tier the model allows.
     const spec = alwaysThinkingSpecForModel(model && model.model);
@@ -1894,6 +1917,15 @@ const REASONING_EFFORT_CANONICAL = {
 function normalizeStoredReasoningEffort(model, stored) {
   const tiers = reasoningEffortTiersForModel(model) || [];
   if (!tiers.length) return null;
+  if (['vllm', 'local'].includes(reasoningProviderForModel(model))) {
+    const reviewed = reviewedLocalReasoningSpec(model && model.model);
+    if (reviewed) {
+      // Keep a saved choice until the real wire is known. In particular a
+      // Tachyon probe must retain its existing legacy high -> medium mapping.
+      const saved = REASONING_EFFORT_CANONICAL[String(stored || '').trim().toLowerCase()];
+      return (reviewed.tiers.includes(saved) || reviewed.aliases[saved]) ? saved : reviewed.default;
+    }
+  }
   let canonical = stored
     ? (REASONING_EFFORT_CANONICAL[String(stored).trim().toLowerCase()] || null)
     : null;
@@ -1981,6 +2013,10 @@ function localProbeTiersForKind(kind) {
 // change nothing — fall back to the probe result (null), no switching offered.
 // On a miss, tiers are issued per the probe result.
 function localReasoningTiers(modelId, probedKind) {
+  if (!['tachyon', 'ollama', 'lmstudio', 'generic'].includes(probedKind)) {
+    const reviewed = reviewedLocalReasoningSpec(modelId);
+    if (reviewed) return reviewed.tiers;
+  }
   const spec = alwaysThinkingSpecForModel(modelId);
   if (spec) {
     if (spec.noControl) return null;
@@ -2013,8 +2049,10 @@ function localReasoningTiers(modelId, probedKind) {
 // Tachyon's ladder replaces high with max; its wire clamps a legacy high to
 // medium, so show that effective tier while preserving the stored value.
 // Returns null when there is no selection or no equivalent tier.
-function reasoningEffortDisplayForTiers(effort, tiers) {
+function reasoningEffortDisplayForTiers(effort, tiers, modelId = null, probedKind = null) {
   if (!effort || !Array.isArray(tiers) || !tiers.length) return null;
+  const reviewed = !['tachyon', 'ollama', 'lmstudio', 'generic'].includes(probedKind) && reviewedLocalReasoningSpec(modelId);
+  if (reviewed && JSON.stringify(tiers) === JSON.stringify(reviewed.tiers)) return normalizedLocalEffort(reviewed, effort);
   if (tiers.includes(effort)) return effort;
   if (effort === 'high' && tiers.includes('medium') && tiers.includes('max') && !tiers.includes('high')) return 'medium';
   return tiers.includes('high') ? 'high' : null;

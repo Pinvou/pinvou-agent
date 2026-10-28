@@ -1065,6 +1065,7 @@ Object.assign(dictJa.uiSettingsDetail, {
   reasoningEffort:'思考の深さ', reasoningEffortTiers:{ off:'オフ', low:'低', medium:'中', high:'高', max:'最大' },
   reasoningProbePending:'サーバータイプを検出中…', reasoningProbeUnsupported:'このエンドポイントは思考の深さの調整をサポートしていません',
   reasoningThinkingAlwaysOn:'このモデルは常に思考を行い、オフにできません',
+  reasoningThinkingEnabled:'オン',
   saving:'保存中', localDetectionTargets:'vLLM、Ollama、LM Studio などのローカルサービスを検出',
   redetect:'再検出', detect:'検出', noRunningLocalModel:'実行中のローカルモデルが見つかりません', localPortLabel:'ポート', localPortPlaceholder:'例: 8080', localPortInvalid:'ポートが無効です：1〜65535 の数値を入力してください', modelNotLoadedTag:'未読み込み', modelNotLoadedHint:'メモリ未読み込み。初回使用時に自動でロードされます',
   add:'追加', manualLocalModel:'ローカルモデルを手動追加',

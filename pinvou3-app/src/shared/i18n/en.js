@@ -1060,6 +1060,7 @@ Object.assign(dictEn.uiSettingsDetail, {
   reasoningEffort:'Thinking depth', reasoningEffortTiers:{ off:'Off', low:'Low', medium:'Medium', high:'High', max:'Max' },
   reasoningProbePending:'Detecting server type…', reasoningProbeUnsupported:'This endpoint does not support thinking-depth control',
   reasoningThinkingAlwaysOn:'This model always thinks and cannot be turned off',
+  reasoningThinkingEnabled:'On',
   saving:'Saving', localDetectionTargets:'Detect vLLM, Ollama, LM Studio, and other local servers',
   redetect:'Check again', detect:'Detect', noRunningLocalModel:'No running local model detected', localPortLabel:'Port', localPortPlaceholder:'e.g. 8080', localPortInvalid:'Invalid port: enter a number between 1 and 65535', modelNotLoadedTag:'Not loaded', modelNotLoadedHint:'Not in memory yet; it will load automatically on first use',
   add:'Add', manualLocalModel:'Add a local model manually',

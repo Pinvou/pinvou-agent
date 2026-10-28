@@ -6,9 +6,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#114 and #125 merged.
-EXPECTED_HEAD="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
-EXPECTED_COMMITS=86
+# Local reasoning review candidate (Pinvou/CodeWhale#128 rebased onto f1eb10efc);
+# public maintenance is checked separately.
+EXPECTED_HEAD="60150219d603b24cc6b35099c59f0ed94291e9bf"
+EXPECTED_COMMITS=91
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -70,6 +71,9 @@ fi
 bold "── 第 1 层：登记主题与父仓适配指纹 ──"
 # 格式：主题|说明|文件（相对父仓根）|grep -F 固定串
 fingerprints=(
+  "T10|Reviewed local template ladders own final vLLM shaping|CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_vllm_model_template_effort_survives_route_shaping"
+  "T10|Local template facts validate all wire values|CodeWhale/crates/config/src/local_reasoning.rs|fn registry_tiers_aliases_and_defaults_all_have_wire_contracts"
+  "T10|Host shares template facts without changing route credentials|pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn reviewed_local_reasoning_keeps_route_and_credentials"
   "T2|Test metadata summary loss requests recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_run_tests_metadata_summary_cut_requests_recovery"
   "T2|Child report artifact retains exact bytes and ids|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_report_artifact_keeps_exact_bytes"
   "T2|Deferred subagent report names explicit activation fallback|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn stamp_subagent_summary_truncates_when_over_budget"
