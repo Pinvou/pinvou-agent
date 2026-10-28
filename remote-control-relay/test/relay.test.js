@@ -909,6 +909,46 @@ test("forwards payloads larger than the previous 1 MiB limit", async (t) => {
   assert.equal((await snapshot).payload.text.length, 1_200_000);
 });
 
+test("terminates a stalled web client at the outbound high-water mark", async (t) => {
+  // send() must track the accumulated outbound backlog: a recipient that
+  // stops reading lets frames queue in the socket and ws sender, and once
+  // bufferedAmount plus the next frame crosses WS_MAX_BUFFERED_BYTES that
+  // destination is terminated instead of the relay queueing without bound.
+  const endpointId = `endpoint_high_water_${Date.now()}`;
+  const accessToken = "access-token-high-water-00000000001";
+  const desktopSecret = "desktop-secret-high-water-000000001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+  t.after(() => { closeSocket(web.ws); closeSocket(desktop.ws); });
+  // Stop the web client from reading so the relay's writes back up; paused
+  // sockets still learn about an abrupt server-side termination through the
+  // socket's own close/error events.
+  web.ws._socket.pause();
+  const terminated = new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("stalled web client was not terminated at the high-water mark")),
+      15000,
+    );
+    const done = () => { clearTimeout(timer); resolve(); };
+    web.ws.once("close", done);
+    web.ws.once("error", done);
+  });
+  const frame = JSON.stringify({ v: 2, type: "event", payload: { text: "x".repeat(512 * 1024) } });
+  for (let i = 0; i < 40; i += 1) desktop.ws.send(frame);
+  // A paused socket cannot observe the abrupt termination while frames sit
+  // queued ahead of it (the reset lands behind the unread data), so resume
+  // reading before waiting for the close.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  web.ws._socket.resume();
+  await terminated;
+  // The relay is unharmed and the desktop link is unaffected.
+  const health = await (await fetch(`${httpUrl}/pinvou3/remote/healthz`)).json();
+  assert.ok(health.ok);
+  assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+});
+
 test("closes a websocket that does not authenticate in time", async () => {
   const isolated = await spawnRelay({ WS_AUTH_TIMEOUT_MS: "1000" });
   try {
@@ -998,6 +1038,39 @@ test("a non-numeric heartbeat falls back instead of a 1 ms NaN tick", async () =
     assert.ok(!isolated.errors().includes("TimeoutNaNWarning"), "NaN heartbeat reached setInterval");
     const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
     assert.equal(health.endpoint_count, 0);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("clamps a sub-floor heartbeat to the five second floor", async (t) => {
+  // A finite value below the floor must be clamped, not passed through or
+  // replaced by the fallback: measure the cadence between two pings, which
+  // is phase-independent (the first ping can land anywhere in the cycle).
+  const isolated = await spawnRelay({ HEARTBEAT_INTERVAL_MS: "1000" });
+  try {
+    const ws = await openSocket(isolated.wsUrl);
+    t.after(() => closeSocket(ws));
+    const pings = [];
+    ws.on("ping", () => pings.push(performance.now()));
+    await new Promise((resolve, reject) => {
+      // Both timers must clear on either exit path: an interval left running
+      // would hold the test process open after a rejection.
+      const timer = setTimeout(() => {
+        clearInterval(poll);
+        reject(new Error("heartbeat pings never arrived"));
+      }, 15000);
+      const poll = setInterval(() => {
+        if (pings.length >= 2) {
+          clearInterval(poll);
+          clearTimeout(timer);
+          resolve();
+        }
+      }, 100);
+    });
+    const cadence = pings[1] - pings[0];
+    assert.ok(cadence >= 4500 && cadence <= 9000,
+      `heartbeat cadence ${Math.round(cadence)} ms — expected the 5 s floor`);
   } finally {
     await stopRelay(isolated.child);
   }
