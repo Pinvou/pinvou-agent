@@ -235,8 +235,32 @@ function relayEnvironment() {
       delete inherited[name];
     }
   }
+  // Node itself reads these, not the relay: a runner-exported NODE_OPTIONS
+  // could --require code into every spawned child, and NODE_PATH could
+  // reroute module resolution.
+  delete inherited.NODE_OPTIONS;
+  delete inherited.NODE_PATH;
   return inherited;
 }
+
+test("spawned relay environments strip node injection vectors", () => {
+  const savedOptions = process.env.NODE_OPTIONS;
+  const savedPath = process.env.NODE_PATH;
+  process.env.NODE_OPTIONS = "--require=/tmp/pinvou-injected.cjs";
+  process.env.NODE_PATH = "/tmp/pinvou-injected-modules";
+  try {
+    const env = relayEnvironment();
+    assert.ok(!("NODE_OPTIONS" in env), "NODE_OPTIONS reached the spawned relay");
+    assert.ok(!("NODE_PATH" in env), "NODE_PATH reached the spawned relay");
+    assert.ok(!("PINVOU_REMOTE_STATE_PATH" in env), "prefix stripping regressed");
+    assert.ok(!("PORT" in env), "knob stripping regressed");
+  } finally {
+    if (savedOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = savedOptions;
+    if (savedPath === undefined) delete process.env.NODE_PATH;
+    else process.env.NODE_PATH = savedPath;
+  }
+});
 
 async function spawnRelay(env = {}, { awaitListening = true } = {}) {
   const isolatedPort = await getFreePort();
