@@ -43,6 +43,7 @@ and any active Web lease are unchanged.
   "type": "desktop_endpoint_registered",
   "endpoint_id": "endpoint_...",
   "web_client_connected": false,
+  "web_rejoining": false,
   "lease_id": null
 }
 ```
@@ -233,7 +234,9 @@ when the revoke requester is acknowledged with a normal close ("endpoint
 revoked"), `4001` when a replaced desktop or Web client is closed ("desktop
 endpoint replaced" or "endpoint replaced"), and `4003` when revoke or TTL
 expiry tears down the affected client ("endpoint revoked" or "endpoint
-expired").
+expired"). A client whose socket the Relay terminates abruptly (frame high-
+water mark, unserializable frame, hostile upgrade, heartbeat liveness kill)
+observes the implicit `1006` abnormal-closure code on its side.
 
 ## HTTP and operational behavior
 
