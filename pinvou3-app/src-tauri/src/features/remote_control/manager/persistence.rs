@@ -368,17 +368,27 @@ fn quarantine_pending_ledger(path: &Path, data: &[u8]) {
         }
         Err(rename_error) => {
             // rename 失败(Windows AV/备份锁等)不能默许证据被后续的
-            // fresh-start 写入原地覆盖/删除:把已在内存中的字节写到同一个
-            // 时间戳隔离名,字节写入也失败才降级为仅日志。
-            match crate::platform::filesystem::quarantine_corrupt_file_bytes(path, data) {
+            // fresh-start 写入原地覆盖/删除。先整文件复制(oversize 场景
+            // 内存中的 `data` 只有截断前缀,完整证据在盘上);复制也失败
+            // 再退回内存字节;两者皆败才降级为仅日志。
+            match crate::platform::filesystem::quarantine_corrupt_file_copy(path) {
                 Ok(quarantined) => eprintln!(
                     "[web-access] rename failed ({rename_error}); copied corrupt pending-revocation ledger to {}",
                     quarantined.display()
                 ),
-                Err(error) => eprintln!(
-                    "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
-                    path.display()
-                ),
+                Err(copy_error) => {
+                    match crate::platform::filesystem::quarantine_corrupt_file_bytes(path, data) {
+                        Ok(quarantined) => eprintln!(
+                            "[web-access] rename failed ({rename_error}, copy failed: {copy_error}); \
+                             wrote in-memory bytes of corrupt pending-revocation ledger to {}",
+                            quarantined.display()
+                        ),
+                        Err(error) => eprintln!(
+                            "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
+                            path.display()
+                        ),
+                    }
+                }
             }
         }
     }
@@ -444,6 +454,16 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
             ledger.entries.len()
         );
         quarantine_pending_ledger(path, &data);
+        // 抢救出的条目必须立刻落盘:进程崩溃在 worker ack 之前会丢掉这批
+        // 待吊销记录(隔离副本只留证据,不会被自动重放),旧 endpoint 将在
+        // relay 侧保持可加入——正是本分支要避免的结局。空抢救集按空账本
+        // 语义移除已隔离的路径,避免下一次 load 重复走隔离。落盘失败则
+        // 降级为内存态(与原行为一致),由后续 queue/ack 的写入自愈。
+        if let Err(persist_error) = persist_pending_revocations_to(path, &salvaged) {
+            eprintln!(
+                "[web-access] failed to persist salvaged pending revocations: {persist_error}"
+            );
+        }
         return RevocationLedgerLoad::Ledger(salvaged);
     }
     RevocationLedgerLoad::Ledger(ledger)
