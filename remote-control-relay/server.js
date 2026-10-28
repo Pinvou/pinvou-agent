@@ -868,14 +868,15 @@ function pruneExpiredEndpoints(now = Date.now()) {
 function healthSummary() {
   pruneExpiredEndpoints();
   const values = [...endpoints.values()];
+  const desktopOpenCount = values.filter((endpoint) => socketOpen(endpoint.desktop)).length;
   return {
     ok: true,
     endpoint_count: values.length,
     // Keep the aggregate-only key consumed by the current deployment probe.
     room_count: values.length,
-    connected_endpoint_count: values.filter((endpoint) => socketOpen(endpoint.desktop)).length,
-    desktop_open_count: values.filter((endpoint) => socketOpen(endpoint.desktop)).length,
-    desktop_offline_count: values.filter((endpoint) => !socketOpen(endpoint.desktop)).length,
+    connected_endpoint_count: desktopOpenCount,
+    desktop_open_count: desktopOpenCount,
+    desktop_offline_count: values.length - desktopOpenCount,
     web_client_open_count: values.filter((endpoint) => socketOpen(endpoint.web)).length,
     ws_connection_count: wss.clients.size,
     unauthenticated_connection_count: [...wss.clients]
