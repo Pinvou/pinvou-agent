@@ -218,6 +218,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                         onSelect={setReasoningEffortForCurrent}
                         pending={currentProbePending}
                         noControlThinking={currentNoControlThinking}
+                        localRoute={isLocalCompatible || current?.preset === 'local_vllm'}
                       />
                       {effortSaveError && (
                         <div className="mt-1.5 text-[11px] leading-4 text-[#FF3B30] dark:text-[#FF6B6B]">{effortSaveError}</div>

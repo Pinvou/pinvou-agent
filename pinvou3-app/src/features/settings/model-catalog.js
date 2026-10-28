@@ -1745,12 +1745,6 @@ function normalizedLocalEffort(spec, effort) {
   return (spec.tiers.includes(canonical) ? canonical : spec.aliases[canonical]) || spec.default;
 }
 
-function localReasoningSpecForRoute(model, provider) {
-  return ['vllm', 'local'].includes(provider)
-    ? (reviewedLocalReasoningSpec(model && model.model) || alwaysThinkingSpecForModel(model && model.model))
-    : null;
-}
-
 function alwaysThinkingSpecForModel(modelId) {
   const normalized = String(modelId || '').trim().toLowerCase().replaceAll(/[\s_]+/g, '-');
   if (!normalized) return null;
@@ -1816,7 +1810,9 @@ function reasoningEffortTiersForModel(model) {
   // unaffected. (Probed ollama does not go through here: tiers for local
   // compatible endpoints are issued by localReasoningTiers, which overlays the
   // knowledge table on the probed kind.)
-  const localSpec = localReasoningSpecForRoute(model, provider);
+  const localSpec = ['vllm', 'local'].includes(provider)
+    ? (reviewedLocalReasoningSpec(modelName) ?? alwaysThinkingSpecForModel(model?.model))
+    : null;
   if (localSpec) return localSpec.noControl ? null : localSpec.tiers;
   if (provider === 'zai') {
     if (!isExactZaiChatBaseUrl(baseUrl)) return null;
