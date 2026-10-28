@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { execFile, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -877,6 +877,23 @@ test("expires offline endpoints after TTL and releases endpoint capacity", async
   } finally {
     closeSocket(web?.ws);
     closeSocket(first?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("sweeps stranded state temp files at startup", async () => {
+  const stateDirectory = join(testRoot, `tmp-sweep-${Date.now()}`);
+  await mkdir(stateDirectory, { recursive: true });
+  await writeFile(join(stateDirectory, "relay-state.json.999.deadbeef.tmp"), "partial write");
+  await writeFile(join(stateDirectory, "unrelated.tmp"), "keep me");
+  const isolated = await spawnRelay({
+    PINVOU_REMOTE_STATE_PATH: join(stateDirectory, "relay-state.json"),
+  });
+  try {
+    const survivors = new Set(await readdir(stateDirectory));
+    assert.ok(!survivors.has("relay-state.json.999.deadbeef.tmp"), "stranded temp file not swept");
+    assert.ok(survivors.has("unrelated.tmp"), "sweep removed an unrelated file");
+  } finally {
     await stopRelay(isolated.child);
   }
 });

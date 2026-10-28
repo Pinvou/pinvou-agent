@@ -1,8 +1,8 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { isIP } from "node:net";
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import { dirname, extname, relative, resolve } from "node:path";
+import { chmod, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
@@ -221,6 +221,21 @@ try {
   console.error(`[relay-error] ${error.message}${code ? ` code=${code}` : ""}`);
   process.exit(1);
 }
+
+// A signal during a revocation write can strand a relay-state.json.*.tmp
+// sibling; the rename design means none of them is ever the live state, so
+// last boot's leftovers are swept before this process writes anything.
+// Failures are ignored on purpose: persistence renames over the live path
+// regardless, and a sweep that cannot run must not block startup.
+try {
+  const stateDirectory = dirname(RELAY_STATE_PATH);
+  const prefix = `${basename(RELAY_STATE_PATH)}.`;
+  for (const entry of await readdir(stateDirectory)) {
+    if (entry.startsWith(prefix) && entry.endsWith(".tmp")) {
+      await rm(join(stateDirectory, entry), { force: true }).catch(() => {});
+    }
+  }
+} catch {}
 
 function send(ws, value) {
   if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
