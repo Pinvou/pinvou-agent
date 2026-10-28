@@ -235,9 +235,11 @@ connection open.
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` or `PINVOU_REMOTE_TRUSTED_PROXY_IPS` aborts
   startup with `proxy_ip_configuration_invalid` instead of being ignored; a
   value with content that contains no address (for example `,,,`) is also
-  rejected. Entries are lowercased before matching, so an uppercase or
-  expanded IPv6 spelling is accepted at startup yet never matches a peer; use
-  the spelling the runtime reports. A blank value means an empty set: an empty
+  rejected. Entries are lowercased before matching, so case never matters,
+  and an IPv4-mapped spelling of the form `::ffff:a.b.c.d` is equivalent to
+  the plain IPv4 address for both matching and rate-limit keys; any other
+  spelling difference (an expanded form, a zone id) starts up but never
+  matches a peer, so use the spelling the runtime reports. A blank value means an empty set: an empty
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. Only when
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` is unset does it fall back to

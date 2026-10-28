@@ -4,13 +4,20 @@
 # (proxy_ip_configuration_invalid). A blank or whitespace-only value means an
 # empty list: no source restriction for ALLOWED, no trusted proxy for
 # TRUSTED. Only an unset TRUSTED line falls back to the ALLOWED list. Entries
-# are lowercased before matching, so spell them the way the runtime reports
-# the peer address: an uppercase or expanded IPv6 form starts up but never
-# matches. IPv6 zone-id suffixes (fe80::1%eth0) are accepted on every
+# are lowercased before matching, so case never matters, and ::ffff:a.b.c.d
+# counts as the plain IPv4 address; any other spelling difference (an
+# expanded form, a zone id) starts up but never matches, so spell them the
+# way the runtime reports the peer address. IPv6 zone-id suffixes (fe80::1%eth0) are accepted on every
 # supported Node version and match only peers reporting the identical zone
 # string. A trusted proxy must set these forwarding headers itself; a proxy
 # that forwards client-supplied values lets senders pick their own
 # rate-limit identity.
+#
+# MAX_REVOKED_ENDPOINTS is clamped to what MAX_RELAY_STATE_BYTES can hold
+# (at most one tombstone per ~256 bytes). A state file holding more
+# tombstones than the clamp is rejected at startup
+# (relay_state_load_failed: unsupported or malformed state), so prune the
+# state file before lowering either limit.
 Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
 Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000
