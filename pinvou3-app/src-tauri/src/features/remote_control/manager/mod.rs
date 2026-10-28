@@ -1044,8 +1044,12 @@ impl RemoteControlManager {
         if config.allow_host_workspace {
             config.allow_host_workspace = false;
             persist_config(&config)?;
-            let mut inner = self.inner.lock();
-            revoke_host_workspace_state(&mut inner);
+            {
+                let mut inner = self.inner.lock();
+                revoke_host_workspace_state(&mut inner);
+            }
+            // emit_status→status 会再次锁 inner;guard 必须先出作用域,
+            // 否则 parking_lot 不可重入锁在同线程自锁(撤销即死锁)。
             self.emit_status();
         }
         let inner = self.inner.lock();
@@ -4874,6 +4878,41 @@ mod tests {
             "an already-minted grant must not stay redeemable after revoke"
         );
         std::fs::remove_dir_all(staging).ok();
+    }
+
+    #[test]
+    fn revoke_host_workspace_never_holds_inner_across_emit_status() {
+        // B1 回归钉:emit_status→status 会再次锁 inner(parking_lot 不可重入),
+        // 持 guard 调用 = 同线程自锁,撤销路径必死锁。仓库没有 mock_app 先例
+        // (见 engine_pool 同注),单测无法真构造 Manager 走命令入口,这里按
+        // web_access_contract 的做法以源码契约钉死不变量:emit_status 的括号
+        // 深度必须浅于取 inner guard 的位置——即 guard 已先出作用域。pre-fix
+        // 的「guard 与 emit_status 同块」两处同深,断言失败。
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        let open = body.find('{').expect("function body braces");
+        let lock = body.find("self.inner.lock()").expect("inner lock site");
+        let emit = body.find("self.emit_status()").expect("emit_status site");
+        let depth_at = |pos: usize| {
+            body[open..pos]
+                .chars()
+                .filter(|c| *c == '{')
+                .count()
+                .checked_sub(body[open..pos].chars().filter(|c| *c == '}').count())
+                .expect("brace depth cannot go negative in valid Rust")
+        };
+        assert!(
+            depth_at(emit) < depth_at(lock),
+            "emit_status (depth {}) must run outside the scope that took the inner \
+             guard (depth {}); holding the guard across it re-locks the same \
+             non-reentrant mutex and deadlocks the revoke path",
+            depth_at(emit),
+            depth_at(lock)
+        );
     }
 
     #[test]
