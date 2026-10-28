@@ -37,6 +37,19 @@ const TIMELINE_APPEND_BUFFER_BYTES: usize = 64 * 1024;
 /// (see `load_timeline_last_seq`).
 const TIMELINE_TAIL_BYTES: u64 = 256 * 1024;
 
+/// The journal's crash-recovery anchors flush synchronously: resume and
+/// orphan-turn recovery read them after a crash, so they must never depend
+/// on buffered chunk bytes. `cancel_requested` flushes too: it exists to
+/// record that the user asked to stop a turn the agent may never answer,
+/// which is exactly the window an app crash would otherwise erase it from.
+/// Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
+fn flushes_timeline_synchronously(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "turn_started" | "turn_completed" | "cancel_requested"
+    )
+}
+
 /// Codex ACP 页面唯一消费的事件合同。
 ///
 /// 该合同刻意不复用 `chat:*`：ACP 的 reasoning、tool update、permission、
@@ -976,7 +989,7 @@ impl EventBridge {
         self.emit_with_turn(self.current_turn.read().clone(), event_type, data)
     }
 
-    fn emit_with_turn(
+    pub(super) fn emit_with_turn(
         &self,
         turn_id: Option<String>,
         event_type: &str,
@@ -1004,11 +1017,7 @@ impl EventBridge {
                     data,
                 },
             };
-            // Turn boundaries are the journal's crash-recovery anchors: they
-            // flush synchronously so resume and orphan-turn recovery never
-            // depend on buffered chunk bytes.
-            // Everything else rides the TIMELINE_APPEND_BUFFER_BYTES window.
-            let flush_timeline = matches!(event_type, "turn_started" | "turn_completed");
+            let flush_timeline = flushes_timeline_synchronously(event_type);
             if let Err(error) = self.append_timeline(&envelope, flush_timeline) {
                 eprintln!(
                     "[pinvou3-app] append Codex ACP timeline failed for {}: {error:#}",
@@ -1073,9 +1082,16 @@ impl EventBridge {
     /// emit path (`AcpPool::timeline` / `AcpPool::web_timeline_page`) never
     /// observe a pre-buffer view of an active turn. Turn boundaries already
     /// flush synchronously; this only drains the buffered chunk window.
-    /// Failures are swallowed: the reader falls back to whatever is durable.
+    /// Retirement paths additionally lean on this flush for their
+    /// flush-before-reseed invariant, so a failure is logged (never fatal —
+    /// the reader falls back to whatever is durable) rather than swallowed
+    /// silently.
     pub fn flush_journal(&self) {
-        let _ = self.timeline_writer.lock().flush();
+        if let Err(error) = self.timeline_writer.lock().flush() {
+            // Log hygiene (CodeQL cleartext-logging convention): the IO error
+            // never carries session ids or paths.
+            eprintln!("[codex-acp] timeline journal flush failed: {error}");
+        }
     }
 }
 
@@ -2321,15 +2337,21 @@ mod tests {
             event(3, Some("turn-completed"), "turn_completed"),
             event(4, None, "cancel_requested"),
             event(5, Some("turn-orphan-2"), "turn_started"),
+            // The live stop path tags the envelope with the busy turn: that
+            // shape must neither close the turn nor open a second one.
+            event(6, Some("turn-orphan-2"), "cancel_requested"),
+            // A cancel for a turn that never started must not fabricate an
+            // orphaned turn either.
+            event(7, Some("turn-ghost"), "cancel_requested"),
         ];
         assert_eq!(
             orphaned_turn_ids(&events),
             vec!["turn-orphan-1", "turn-orphan-2"],
-            "global cancel events must not accidentally close a persisted turn"
+            "cancel events must neither close a persisted turn nor open a new one"
         );
 
-        events.push(event(6, Some("turn-orphan-1"), "turn_completed"));
-        events.push(event(7, Some("turn-orphan-2"), "turn_completed"));
+        events.push(event(8, Some("turn-orphan-1"), "turn_completed"));
+        events.push(event(9, Some("turn-orphan-2"), "turn_completed"));
         assert!(
             orphaned_turn_ids(&events).is_empty(),
             "re-running recovery after terminal events must be a no-op"
@@ -2529,6 +2551,31 @@ mod tests {
         let second: AcpEventEnvelope = serde_json::from_str(&lines[1]).unwrap();
         assert_eq!(first.seq, 1);
         assert_eq!(second.event.event_type, "turn_started");
+    }
+
+    #[test]
+    fn timeline_flush_set_is_exactly_the_crash_anchors() {
+        // The emit path consults this predicate to decide the synchronous
+        // flush, so membership drift here silently moves an event into (or
+        // out of) the crash-durable window.
+        for event_type in ["turn_started", "turn_completed", "cancel_requested"] {
+            assert!(
+                flushes_timeline_synchronously(event_type),
+                "{event_type} must flush the journal synchronously"
+            );
+        }
+        for event_type in [
+            "agent_message_chunk",
+            "permission_requested",
+            "permission_resolved",
+            "elicitation_resolved",
+            "runtime_notice",
+        ] {
+            assert!(
+                !flushes_timeline_synchronously(event_type),
+                "{event_type} must ride the buffered append window"
+            );
+        }
     }
 
     #[test]

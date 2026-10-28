@@ -638,7 +638,11 @@ struct ManagedInstallStage {
     diag_stage: &'static str,
     /// Command line shown in progress events.
     command_line: String,
-    /// Whether to make the child a process-group leader (npm and brew need it; the script process does not).
+    /// Whether to make the child a process-group leader at this layer (npm and
+    /// brew need it; the script channel instead gets its group from
+    /// `install_script_command`'s unix branch, which sets one itself). Every
+    /// installer channel ends up a group leader either way — the armed guard's
+    /// group kill relies on that invariant.
     process_group: bool,
     spawn_context: String,
     stdout_context: &'static str,
@@ -681,9 +685,10 @@ fn brew_install_failure(
 
 /// Shared execution skeleton for managed installs. Differences are injected only via [`ManagedInstallStage`]:
 /// InstallChildGuard::register → post-spawn cancel recheck → emit_install_progress →
-/// InstallOutputReaders::spawn → 600s tokio timeout (diagnostics `<stage>:timeout`) →
-/// finish → diagnostics `<stage>:output` (output tail) → idempotent early success →
-/// cancel rewrite and the [`ManagedInstallStage::failure_detail`] bail on the failure exits.
+/// InstallOutputReaders::spawn → 600s tokio timeout (diagnostics `<stage>:timeout`, tree kill,
+/// guard settled after the reap) → finish → diagnostics `<stage>:output` (output tail) →
+/// idempotent early success (guard disarmed) → guard settled after the reap → cancel rewrite
+/// and the [`ManagedInstallStage::failure_detail`] bail on the failure exits.
 #[allow(clippy::too_many_arguments)]
 async fn run_managed_install(
     app: &AppHandle,
@@ -706,12 +711,20 @@ async fn run_managed_install(
     let mut child = command
         .spawn()
         .with_context(|| stage.spawn_context.clone())?;
-    // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
-    let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
+    // Register the pid after spawn so the cancel command can kill the tree; the
+    // guard unregisters on every exit of this function. While the direct child
+    // has not been reaped by a wait (panic, wait error, early error return) the
+    // armed Drop reclaims the whole tree by pid; once a wait reaps it, the
+    // guard settles at the wait site so the Drop never kills by the freed pid.
+    let mut child_guard = InstallChildGuard::register(install_children, backend, child.id());
     // A cancel may land between spawn and pid registration: recheck once
-    // right after registering.
+    // right after registering. The Windows tree kill is a bounded (2 s)
+    // taskkill; the blocking pool keeps it off the async worker (unix is a
+    // single kill(2) syscall either way).
     if install_cancelled.lock().contains(&backend) {
-        let _ = child.kill().await;
+        if let Some(pid) = child.id() {
+            let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
+        }
     }
     emit_install_progress(app, backend, "command", &stage.command_line);
     let stdout = child.stdout.take().context(stage.stdout_context)?;
@@ -719,15 +732,54 @@ async fn run_managed_install(
     let output_readers = InstallOutputReaders::spawn(app, backend, stdout, stderr);
     const TIMEOUT: Duration = Duration::from_secs(600);
     let status = match tokio::time::timeout(TIMEOUT, child.wait()).await {
-        Ok(result) => result.context(stage.wait_context)?,
+        Ok(result) => {
+            let status = result.context(stage.wait_context)?;
+            // Reaped: settle before any further await or fallible step, so
+            // a panic in between can never drop the guard armed on a pid
+            // the OS may already have handed to another process.
+            child_guard.settle_reaped();
+            if !status.success() {
+                // A failed leader's group survivors are reclaimed here, not
+                // after the output tail: the tail idles up to IDLE_TIMEOUT
+                // when a descendant holds the pipes — exactly the case that
+                // has survivors — and a kill deferred behind it would fire on
+                // a pid the OS may meanwhile have handed to an unrelated
+                // group leader. An idempotent-ok run normally leaves an
+                // empty group, which the reclaim treats as ESRCH.
+                child_guard.reclaim_group_survivors();
+            }
+            status
+        }
         Err(_) => {
             diagnostics::write(
                 operation_id,
                 &format!("{}:timeout", stage.diag_stage),
                 format!("timeout_seconds={}", TIMEOUT.as_secs()),
             );
-            let _ = child.kill().await;
+            // The direct kill would orphan npm/brew descendants; reclaim the
+            // whole tree while the pid is still live, then let the wait
+            // observe the exit. After that wait the pid is reaped: settle so
+            // the Drop never re-kills, then reclaim group survivors once for
+            // descendants that outlived the leader. Like the cancel recheck,
+            // the (Windows-bounded) tree kill runs on the blocking pool.
+            // The wait itself is unbounded by design, with one trigger per
+            // platform: a stalled taskkill may leave the direct child alive
+            // (Windows), and on unix a child in uninterruptible kernel sleep
+            // (D state, e.g. NFS/FUSE mid-download) never observes SIGKILL at
+            // all — either way this parks the install task, and the install
+            // mutex with it, until the child exits on its own or the app
+            // restarts. The codebase's bounded REAP_GRACE reap is not used
+            // here because abandoning the wait early would have to settle an
+            // unreaped child to make progress, re-arming exactly the
+            // recycled-pid hazard this order exists to avoid; user cancel
+            // still reaches the tree through the registry entry, which only
+            // the settle below removes.
+            if let Some(pid) = child.id() {
+                let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
+            }
             let _ = child.wait().await;
+            child_guard.settle_reaped();
+            child_guard.reclaim_group_survivors();
             bail!("{}", stage.timeout_message);
         }
     };
@@ -746,6 +798,10 @@ async fn run_managed_install(
             .idempotent_ok
             .is_some_and(|is_done| is_done(&stdout, &stderr))
     {
+        // An (idempotent) success needs no further reclaim: the guard
+        // settled at the wait site, and a nonzero exit already ran the
+        // group reclaim there — for a wound-down installer it found an
+        // empty group (ESRCH-safe).
         return Ok(());
     }
     // The process was cancelled by the user (taskkill/kill) and reaches here with a failure status: rewrite to cancelled semantics.
@@ -1031,6 +1087,185 @@ pub(super) fn node_major_version(version: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plain long-lived fixture standing in for an installer (no real package
+    /// manager involved). Unix makes it its own process-group leader through
+    /// the platform primitive — the same contract the managed install channels
+    /// run under — so the pid-based group kill used by the guard reaches the
+    /// whole tree; Windows relies on `taskkill /T` tree semantics. Two
+    /// boundaries of what this fixture can prove: it is a single process (no
+    /// portable grandchild), so descendant-tree reach itself is delegated to
+    /// the platform kill tests; and the Windows arm executes only in the
+    /// native Windows regression filter — the Linux legs exercise the unix
+    /// arm.
+    fn spawn_install_fixture() -> (std::process::Child, u32) {
+        let (program, args): (&str, &[&str]) = if crate::platform::capabilities::is_windows() {
+            // `ping -n 30` idles ~30 seconds; there is no portable sleep.
+            ("ping", &["-n", "30", "-w", "1000", "127.0.0.1"])
+        } else {
+            ("sleep", &["30"])
+        };
+        let mut command = std::process::Command::new(program);
+        command.args(args);
+        crate::platform::process::std_process_group_leader(&mut command);
+        command.stdin(std::process::Stdio::null());
+        let child = command.spawn().expect("spawn install fixture");
+        let pid = child.id();
+        (child, pid)
+    }
+
+    /// Asserts the fixture survives a full observation window. The kills
+    /// this guards against run on detached threads, so a fixed short sleep
+    /// can false-pass a disarm regression under CI load; poll for the whole
+    /// window instead.
+    fn stay_alive(child: &mut std::process::Child, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            assert!(
+                child.try_wait().expect("poll install fixture").is_none(),
+                "{what} killed the install fixture"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+
+    fn wait_exited(child: &mut std::process::Child, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if child.try_wait().expect("poll install fixture").is_some() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} left the install fixture running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// The failure path must reclaim group survivors BEFORE the output tail:
+    /// the tail idles up to IDLE_TIMEOUT exactly when a descendant holds the
+    /// pipes — the case that has survivors — so a kill deferred behind it
+    /// fires on a pid the OS may have handed to an unrelated group leader.
+    /// `run_managed_install`'s failure arm needs a real installer process
+    /// tree, so pin the ordering in the source (mutation-verified: moving
+    /// the reclaim behind `finish().await` turns this red).
+    #[test]
+    fn failed_install_reclaims_group_before_the_output_tail() {
+        let src = include_str!("install.rs");
+        let production = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("the test module marker must exist")];
+        let fn_start = production
+            .find("async fn run_managed_install")
+            .expect("run_managed_install must exist");
+        let body = &production[fn_start..];
+        let tail = body
+            .find("output_readers.finish().await")
+            .expect("the output tail must exist");
+        // Both wait-exit arms (the failure arm and the timeout arm) reclaim
+        // before the tail; counting rather than slicing keeps the pin honest
+        // about the failure arm specifically, which a range check would
+        // otherwise satisfy via the timeout arm's own call.
+        assert_eq!(
+            body[..tail]
+                .matches("child_guard.reclaim_group_survivors()")
+                .count(),
+            2,
+            "the failure arm must reclaim group survivors before the output \
+             tail; deferring it kills by a possibly recycled pid"
+        );
+    }
+
+    /// Both wait-exit arms must settle the guard at the reap site: settling
+    /// disarms the Drop kill and unregisters the pid, so a settle that
+    /// silently disappears from either arm re-arms the recycled-pid hazard
+    /// on an already-reaped child while every behavioral test stays green
+    /// (the guard fixture settles explicitly, so it cannot observe the
+    /// production call sites).
+    #[test]
+    fn both_install_wait_arms_settle_the_guard_at_the_reap_site() {
+        let src = include_str!("install.rs");
+        let production = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("the test module marker must exist")];
+        let fn_start = production
+            .find("async fn run_managed_install")
+            .expect("run_managed_install must exist");
+        let body = &production[fn_start..];
+        assert_eq!(
+            body.matches("child_guard.settle_reaped()").count(),
+            2,
+            "the Ok arm and the timeout arm must both settle the guard \
+             immediately after their wait; a missing settle leaves the Drop \
+             kill armed on a reaped (recyclable) pid"
+        );
+    }
+
+    #[test]
+    pub(super) fn install_child_guard_drop_reclaims_tree_and_settled_guards_never_rekill() {
+        let children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>> =
+            Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let backend = AgentBackend::ClaudeAcp;
+
+        // Armed Drop (any unsuccessful exit) terminates the fixture and
+        // unregisters the pid.
+        let (mut child, pid) = spawn_install_fixture();
+        let guard = InstallChildGuard::register(&children, backend, Some(pid));
+        assert_eq!(children.lock().get(&backend).copied(), Some(pid));
+        drop(guard);
+        wait_exited(&mut child, "armed guard Drop");
+        assert!(
+            children.lock().get(&backend).is_none(),
+            "guard Drop must unregister the pid"
+        );
+
+        // Settled Drop (the wait returned Ok, success shape): the pid is
+        // freed, so the Drop only unregisters — on either platform it must
+        // not kill. Cleanup is an explicit tree kill, exactly like the
+        // cancel command.
+        let (mut child, pid) = spawn_install_fixture();
+        let mut guard = InstallChildGuard::register(&children, backend, Some(pid));
+        guard.settle_reaped();
+        drop(guard);
+        assert!(
+            children.lock().get(&backend).is_none(),
+            "settled guard Drop must still unregister the pid"
+        );
+        stay_alive(&mut child, "settled guard Drop");
+        kill_install_process_tree(pid);
+        let _ = child.wait();
+
+        // Settled after a reap plus the failure-path reclaim: unix reclaims
+        // the group once (survivors of a failed leader are still members),
+        // Windows must not kill at all — the pid may already belong to
+        // another process. Either way the Drop that follows is disarmed and
+        // only unregisters.
+        let (mut child, pid) = spawn_install_fixture();
+        let mut guard = InstallChildGuard::register(&children, backend, Some(pid));
+        guard.settle_reaped();
+        guard.reclaim_group_survivors();
+        if crate::platform::capabilities::is_windows() {
+            stay_alive(&mut child, "windows post-reap reclaim");
+        } else {
+            wait_exited(&mut child, "unix post-reap group reclaim");
+        }
+        drop(guard);
+        assert!(
+            children.lock().get(&backend).is_none(),
+            "settled guard Drop must still unregister the pid"
+        );
+        if crate::platform::capabilities::is_windows() {
+            stay_alive(&mut child, "windows settled guard Drop");
+            kill_install_process_tree(pid);
+        }
+        let _ = child.wait();
+
+        // A spawn without a pid registers nothing and reclaims nothing.
+        let guard = InstallChildGuard::register(&children, backend, None);
+        drop(guard);
+        assert!(children.lock().get(&backend).is_none());
+    }
 
     #[test]
     pub(super) fn managed_path_is_versioned() {

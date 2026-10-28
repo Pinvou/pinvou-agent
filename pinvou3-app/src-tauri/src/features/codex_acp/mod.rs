@@ -12,6 +12,7 @@ mod events;
 mod install;
 mod introspect;
 mod latest;
+mod lifecycle;
 mod login;
 mod operation_gate;
 mod platform;
@@ -71,7 +72,7 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, MutexGuard, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wait_timeout::ChildExt;
 
@@ -102,6 +103,10 @@ use events::{
     EventBridge, WebAcpTimelineSlice, load_timeline, load_web_timeline_page, persist_acp_state,
 };
 use latest::LatestVersionProbe;
+use lifecycle::{
+    RuntimeCrashBudget, RuntimeLifecycle, RuntimeLookup, SpawnAdmission, resolve_runtime,
+    runtime_is_stable,
+};
 use operation_gate::admit_prompt_turn;
 pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
@@ -446,6 +451,10 @@ fn rebind_evictable(
 /// converges once the spawn settles.
 const REBIND_ACP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Retry hints of at least this many milliseconds are phrased in seconds
+/// instead of raw ms, so long backoffs read as actionable waits.
+const RETRY_HINT_SECONDS_MIN_MS: u128 = 2_000;
+
 /// Complete a claimed turn in the shared order: timing, then admission gate.
 ///
 /// The claim itself is performed by the caller because it also emits the
@@ -485,9 +494,12 @@ fn stall_guard_owns_turn(current_turn_id: Option<&str>, expected_turn_id: &str) 
 /// (trivially idle — nothing to reclaim, eviction counts as done) from
 /// "busy" (in-flight prompt/config sync — the caller must not evict and
 /// reports the session as post-busy). `take_session_if_still_idle`'s bare
-/// `Option` cannot express that difference.
-enum RebindEvictTake<T> {
-    Reclaimed(T),
+/// `Option` cannot express that difference. The `Reclaimed` arm hands back
+/// the sessions lock still held, so the caller can settle the keyed
+/// retirement bookkeeping and flush the journal inside the take's critical
+/// section (same contract as `take_session_if_still_idle`).
+enum RebindEvictTake<'a, T> {
+    Reclaimed(T, MutexGuard<'a, HashMap<String, T>>),
     Busy,
     NoRuntime,
 }
@@ -500,11 +512,11 @@ enum RebindEvictTake<T> {
 /// the snapshot (busy set) or that is mid config-sync is kept untouched and
 /// reported by the command layer as post-busy — an in-flight prompt is never
 /// killed as a rebind side effect.
-async fn take_session_for_rebind<T>(
-    sessions: &Mutex<HashMap<String, T>>,
+async fn take_session_for_rebind<'a, T>(
+    sessions: &'a Mutex<HashMap<String, T>>,
     session_id: &str,
     is_rebind_evictable: impl Fn(&T) -> bool,
-) -> RebindEvictTake<T> {
+) -> RebindEvictTake<'a, T> {
     // The lock wait is bounded (review #463 round-10 T13): a timeout is
     // treated as busy, so a concurrent cold spawn cannot hang the rebind.
     // Cancelling a `Mutex::lock` future never leaves the lock held — no
@@ -519,9 +531,10 @@ async fn take_session_for_rebind<T>(
     if !is_rebind_evictable(entry) {
         return RebindEvictTake::Busy;
     }
-    sessions
-        .remove(session_id)
-        .map_or(RebindEvictTake::NoRuntime, RebindEvictTake::Reclaimed)
+    match sessions.remove(session_id) {
+        Some(taken) => RebindEvictTake::Reclaimed(taken, sessions),
+        None => RebindEvictTake::NoRuntime,
+    }
 }
 
 /// The fence decision of [`AcpPool::rebind_blocking_sessions`], extracted as
@@ -1183,13 +1196,34 @@ struct PendingPermission {
     view: CodexAcpPendingPermission,
     option_ids: Vec<String>,
     activity: stall::ActivityClock,
+    generation: u64,
     response_tx: oneshot::Sender<RequestPermissionResponse>,
 }
 
 struct PendingElicitation {
     view: CodexAcpPendingElicitation,
     activity: stall::ActivityClock,
+    generation: u64,
     response_tx: oneshot::Sender<CreateElicitationResponse>,
+}
+
+/// Whether a card for `session_id` from exactly `generation` awaits the user.
+/// Cards left by an older generation must not count: a dead generation's
+/// handler can still be polled after the cancel sweeps, and its late insert
+/// would otherwise hold the replacement's stall watchdog open until the user
+/// answers a card for a runtime that no longer exists.
+fn generation_awaits_user_decision(
+    generation: u64,
+    session_id: &str,
+    pending_permissions: &HashMap<String, PendingPermission>,
+    pending_elicitations: &HashMap<String, PendingElicitation>,
+) -> bool {
+    pending_permissions
+        .values()
+        .any(|pending| pending.generation == generation && pending.view.session_id == session_id)
+        || pending_elicitations.values().any(|pending| {
+            pending.generation == generation && pending.view.session_id == session_id
+        })
 }
 
 async fn take_pending_permission(
@@ -1250,6 +1284,11 @@ struct AcpSession {
     /// Static agent id (`codex`/`claude`/`kimi`) kept only as the resource
     /// ledger's per-role aggregation label; it carries no process details.
     resource_role: &'static str,
+    /// Lifecycle of this spawned runtime generation (running / expected
+    /// shutdown / unexpected exit). `get_or_spawn` consults it under the pool
+    /// lock so a dead runtime is reclaimed instead of reused blindly, and its
+    /// exit feeds the session's crash budget exactly once.
+    lifecycle: Arc<RuntimeLifecycle>,
     /// 最近一次请求/响应时刻（空闲回收巡检用）。任何直接到达该会话的请求
     /// （发消息、改配置、状态查询复用）与 prompt 响应返回都会刷新。
     last_activity: parking_lot::Mutex<Instant>,
@@ -1463,20 +1502,14 @@ impl AcpSession {
     /// is expected while a human reads the card and must not count as a stall.
     async fn awaiting_user_decision(&self) -> bool {
         let session_id = self.bridge.pinvou_session_id();
-        if self
-            .pending_permissions
-            .lock()
-            .await
-            .values()
-            .any(|pending| pending.view.session_id == session_id)
-        {
-            return true;
-        }
-        self.pending_elicitations
-            .lock()
-            .await
-            .values()
-            .any(|pending| pending.view.session_id == session_id)
+        let permissions = self.pending_permissions.lock().await;
+        let elicitations = self.pending_elicitations.lock().await;
+        generation_awaits_user_decision(
+            self.lifecycle.generation(),
+            session_id,
+            &permissions,
+            &elicitations,
+        )
     }
 
     fn bridge_session_id(&self) -> String {
@@ -1500,6 +1533,9 @@ impl AcpSession {
     }
 
     async fn shutdown(&self) {
+        // An explicit shutdown is expected: the connection task must not
+        // record this completion as an unexpected exit into the crash budget.
+        self.lifecycle.begin_expected_shutdown();
         if let Some(tx) = self.shutdown_tx.lock().await.take() {
             let _ = tx.send(());
         }
@@ -1591,6 +1627,15 @@ fn code_native_workspace_info(
 /// 文案子串匹配（复审低危 5）。
 pub(crate) static INSTALL_CANCELLED_MARKER: &str = "install_cancelled:";
 
+/// Which kind of reclaim is awaiting its replacement notice for a session.
+/// The notice kind itself derives from `resumed_session` at publish time;
+/// this only records that a disclosure is still owed.
+#[derive(Clone, Copy)]
+enum RuntimeRestart {
+    Stall,
+    Crash,
+}
+
 #[derive(Clone)]
 pub struct AcpPool {
     app: AppHandle,
@@ -1614,6 +1659,24 @@ pub struct AcpPool {
     install_children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
     /// 取消标记：取消命令写入，安装等待侧在失败出口消费并以「安装已取消」收尾。
     install_cancelled: Arc<parking_lot::Mutex<HashSet<AgentBackend>>>,
+    /// Monotonic runtime generation counter: every spawned ACP child gets a
+    /// fresh generation so per-instance lifecycle state can never be confused
+    /// with a replacement's.
+    runtime_generation: Arc<AtomicU64>,
+    /// Crash budgets per session: repeated unexpected runtime exits inside the
+    /// window back off respawns and finally pause automatic rebuilds until the
+    /// window clears. Cleared whenever a runtime is deliberately discarded
+    /// (evict / rebind / idle reap / stable reuse).
+    runtime_crash_budgets: Arc<parking_lot::Mutex<HashMap<String, RuntimeCrashBudget>>>,
+    /// Restart disclosures awaiting publication: sessions whose runtime was
+    /// reclaimed (stall or crash) whose replacement has not yet emitted the
+    /// `agent_session_restarted[_fresh]` notice. The throttled replacement is
+    /// published by a later `get_or_spawn` call — the crash budget bails
+    /// before spawning — so the disclosure must live in the pool, not in one
+    /// call frame (round-3 review MAJOR-1). Cleared by the same deliberate
+    /// retirements that clear the crash budget, and consumed at the publish
+    /// site together with the call-local restart flags.
+    runtime_restart_disclosures: Arc<parking_lot::Mutex<HashMap<String, RuntimeRestart>>>,
     login_states: Arc<parking_lot::RwLock<HashMap<AgentBackend, AgentLoginState>>>,
     login_inputs: Arc<Mutex<HashMap<AgentBackend, ChildStdin>>>,
     codex_upgrade_required: Arc<AtomicBool>,
@@ -1716,11 +1779,36 @@ impl Drop for InstallActiveGuard {
     }
 }
 
-/// 安装子进程 pid 登记 guard：spawn 成功后登记，drop 时（完成/失败/超时/取消
-/// 任意出口）统一注销，避免残留 pid 在后续取消时误杀被系统复用的进程。
+/// Registration guard for the install child process: registers the pid after a
+/// successful spawn and unregisters it on every exit path (completion, failure,
+/// timeout, cancel) so a stale pid never kills a process the OS has since reused.
+///
+/// Reclaim semantics follow whether the direct child has been reaped by a wait:
+/// - Not yet reaped (early error return, a panic before the wait, a wait that
+///   returned `Err`): the reap state is unknown — the pid may still name a live
+///   process, or may already have been freed. The armed `Drop` still reclaims
+///   the whole tree by pid as a best effort, because after such an exit nobody
+///   can cancel the descendants spawned by npm / the vendor script. Unix kills
+///   the process group (the installer runs as its own group leader; ESRCH-safe,
+///   at worst a no-op); Windows uses the bounded `taskkill /T`, the same path
+///   the cancel command uses — there a freed-and-recycled pid could hit an
+///   unrelated tree, accepted because this arm only fires on exits that never
+///   reached a terminal wait.
+/// - Reaped (the wait returned `Ok`): settle immediately at the wait site
+///   through [`InstallChildGuard::settle_reaped`] — after a reap the pid may
+///   already be recycled and the `Drop` must never kill by it. The failure and
+///   timeout exits then call [`InstallChildGuard::reclaim_group_survivors`]
+///   once: unix reclaims the process group (survivors of the leader are still
+///   members, an empty group is ESRCH-safe); Windows skips the kill
+///   (`taskkill /T` on a dead root cannot reach its orphans).
+/// - Explicit success (including the idempotent kind): settled at the same
+///   wait site and nothing is reclaimed — the installer wound down its own
+///   children.
 struct InstallChildGuard {
     install_children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
     backend: AgentBackend,
+    pid: Option<u32>,
+    armed: bool,
 }
 
 impl InstallChildGuard {
@@ -1735,6 +1823,36 @@ impl InstallChildGuard {
         Self {
             install_children: install_children.clone(),
             backend,
+            pid,
+            armed: true,
+        }
+    }
+
+    /// The caller's wait returned `Ok`: the direct child has been reaped and
+    /// its pid no longer names a live process. Settle immediately at the wait
+    /// site — before any further await or fallible step — so a panic in
+    /// between can never drop the guard armed on a pid the OS may already
+    /// have handed to another process.
+    fn settle_reaped(&mut self) {
+        self.armed = false;
+        // The reaped pid no longer names a live process: drop the registry
+        // entry now so a user cancel during the post-wait tail cannot
+        // tree-kill by the freed pid (the Drop's removal then finds nothing).
+        self.install_children.lock().remove(&self.backend);
+    }
+
+    /// Best-effort reclaim of process-group survivors after the leader was
+    /// reaped on a failure/timeout exit. Survivors that outlived the leader
+    /// are still group members, so one group kill reaches them; an empty
+    /// group is ESRCH-safe. Windows skips the kill: `taskkill /T` walks the
+    /// parent-child snapshot from the given root, a dead root's orphans are
+    /// re-parented and unreachable, and by a possibly recycled pid the kill
+    /// would hit an unrelated process tree.
+    fn reclaim_group_survivors(&self) {
+        if !crate::platform::capabilities::is_windows() {
+            if let Some(pid) = self.pid {
+                kill_install_process_tree(pid);
+            }
         }
     }
 }
@@ -1742,6 +1860,16 @@ impl InstallChildGuard {
 impl Drop for InstallChildGuard {
     fn drop(&mut self) {
         self.install_children.lock().remove(&self.backend);
+        // Unregistering must not keep the entry alive, but an armed Drop — an
+        // exit that never reached a terminal wait — still reclaims the whole
+        // child tree outside the registry lock. Detached: the Windows kill is
+        // bounded (2 s) but must not stall the runtime worker that is
+        // unwinding this frame.
+        if self.armed {
+            if let Some(pid) = self.pid {
+                std::thread::spawn(move || kill_install_process_tree(pid));
+            }
+        }
     }
 }
 
@@ -1973,6 +2101,9 @@ impl AcpPool {
             install_active: Arc::new(parking_lot::RwLock::new(HashSet::new())),
             install_children: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             install_cancelled: Arc::new(parking_lot::Mutex::new(HashSet::new())),
+            runtime_generation: Arc::new(AtomicU64::new(0)),
+            runtime_crash_budgets: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            runtime_restart_disclosures: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             login_states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             login_inputs: Arc::new(Mutex::new(HashMap::new())),
             codex_upgrade_required: Arc::new(AtomicBool::new(false)),
@@ -3347,8 +3478,16 @@ impl AcpPool {
         }
         self.install_cancelled.lock().insert(backend);
         if guard_held {
-            if let Some(pid) = self.install_children.lock().get(&backend).copied() {
-                kill_install_process_tree(pid);
+            // Bind before awaiting: an `if let` scrutinee temporary (the
+            // parking_lot guard here) lives to the end of the statement, and
+            // a non-Send guard held across the await below would make this
+            // future !Send.
+            let pid = self.install_children.lock().get(&backend).copied();
+            if let Some(pid) = pid {
+                // Same blocking-pool discipline as the install-lane kills:
+                // the Windows taskkill wait is budgeted (2 s) and must not
+                // stall an async runtime worker from the cancel command.
+                let _ = tokio::task::spawn_blocking(move || kill_install_process_tree(pid)).await;
             }
         }
         Ok(self.status_for_async(backend).await)
@@ -3437,23 +3576,32 @@ impl AcpPool {
                 .filter(|session_id| self.agents.backend(session_id) == backend)
                 .cloned()
                 .collect::<Vec<_>>();
-            session_ids
-                .iter()
-                .filter_map(|session_id| {
-                    sessions
-                        .remove(session_id)
-                        .map(|runtime| (session_id.clone(), runtime))
-                })
-                .collect::<Vec<_>>()
+            let mut runtimes = Vec::with_capacity(session_ids.len());
+            for session_id in session_ids {
+                let Some(runtime) = sessions.remove(&session_id) else {
+                    continue;
+                };
+                // A completed install/upgrade restart is not a crash: the
+                // rebuilt runtime must start with a clean crash budget.
+                // The clears, the card settlement and the journal flush all
+                // stay inside this take's critical section: they are keyed
+                // by session id, and the sessions lock is what orders them
+                // against a concurrent `get_or_spawn` — a clear (or a
+                // buffered drop-flush) running after that call re-seeded the
+                // session could erase the successor's fresh crash state or
+                // regress its journal sequence.
+                self.clear_retirement_bookkeeping(&session_id);
+                self.cancel_runtime_pending_cards(&session_id, Some(&runtime.bridge))
+                    .await;
+                // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
+                // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
+                // 状态同时收口。
+                runtime.bridge.flush_journal();
+                runtimes.push((session_id, runtime));
+            }
+            runtimes
         };
-        for (session_id, runtime) in runtimes {
-            // runtime 已从共享表移除，避免新请求继续复用旧账号进程；显式使用旧
-            // runtime 的 bridge 记录取消事件，让 timeline、acp-state 与前端 pending
-            // 状态同时收口。
-            self.cancel_pending_permissions_with_bridge(&session_id, Some(&runtime.bridge))
-                .await;
-            self.cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))
-                .await;
+        for (_session_id, runtime) in runtimes {
             runtime.shutdown().await;
         }
     }
@@ -4199,6 +4347,17 @@ impl AcpPool {
                 if runtime.busy.load(Ordering::Acquire) {
                     let turn_id = runtime.bridge.current_turn_id();
                     runtime.cancel();
+                    // Journal the cancel request before scheduling the settle
+                    // watchdog: the timeline journal then records that the
+                    // stop was requested even when the agent never answers and
+                    // the watchdog has to settle locally. This is a journal
+                    // record only — acp-state `lastStatus` is not patched and
+                    // the UI renders no cancelling state from it.
+                    runtime.bridge.emit_with_turn(
+                        turn_id.clone(),
+                        "cancel_requested",
+                        json!({ "status": "cancelling" }),
+                    );
                     // Stop cannot wait forever for the agent. An upstream adapter
                     // may never answer a dropped or absorbed prompt; field evidence
                     // showed four clicks before its own cancel floor settled it.
@@ -4295,6 +4454,24 @@ impl AcpPool {
         });
     }
 
+    /// Drop a session's crash budget and any parked restart disclosure
+    /// together. Callers MUST hold the pool sessions lock: both maps are
+    /// keyed by session id, so taking them inside the same critical section
+    /// as the runtime removal is what orders them against a concurrent
+    /// `get_or_spawn` — that call performs every one of its own budget and
+    /// disclosure accesses while holding the lock, so a clear outside it
+    /// could interleave with a successor's spawn and erase freshly recorded
+    /// crash throttling or a parked replacement notice (a no-await span does
+    /// not: on the multi-thread runtime another worker can hold the lock and
+    /// run a full spawn while this task is descheduled between two
+    /// statements). `restart_agent_sessions`, `shutdown_all` and the
+    /// `get_or_spawn` arms hold the lock across their own map accesses for
+    /// the same reason.
+    fn clear_retirement_bookkeeping(&self, session_id: &str) {
+        self.runtime_crash_budgets.lock().remove(session_id);
+        self.runtime_restart_disclosures.lock().remove(session_id);
+    }
+
     pub async fn evict(&self, session_id: &str) {
         self.cancel_pending_permissions(session_id).await;
         self.cancel_pending_elicitations(session_id).await;
@@ -4307,7 +4484,23 @@ impl AcpPool {
         // probes) self-heal on the next list(); idle eviction goes through
         // `evict_if_idle`, never through this path, so its map entries stay.
         self.acp_metadata_backends.write().remove(session_id);
-        if let Some(runtime) = self.sessions.lock().await.remove(session_id) {
+        let taken = {
+            let mut sessions = self.sessions.lock().await;
+            let taken = sessions.remove(session_id);
+            // A deliberate eviction is not a crash: drop the session's crash
+            // budget together with the runtime so the next spawn starts
+            // clean. Cleared inside the take's critical section (see
+            // [`Self::clear_retirement_bookkeeping`]); the journal flush is
+            // under the same section so the card settlements cancelled above
+            // are durable before any concurrent `get_or_spawn` can seed a
+            // replacement's EventBridge sequence from this journal.
+            self.clear_retirement_bookkeeping(session_id);
+            if let Some(runtime) = &taken {
+                runtime.bridge.flush_journal();
+            }
+            taken
+        };
+        if let Some(runtime) = taken {
             runtime.shutdown().await;
         }
     }
@@ -4322,18 +4515,41 @@ impl AcpPool {
     /// 升级等其他路径仍走 `evict`，语义不变。
     async fn evict_if_idle(&self, session_id: &str) -> bool {
         let active_id = self.session_store.active_id();
-        let Some(runtime) = take_session_if_still_idle(&self.sessions, session_id, |runtime| {
-            should_reap_idle(
-                runtime.busy.load(Ordering::Acquire),
-                runtime.configuring.load(Ordering::Acquire),
-                active_id.as_deref() == Some(session_id),
-                runtime.idle_for(),
-            )
-        })
-        .await
+        // The take hands back the sessions lock still held: every keyed
+        // settle step below (budget/disclosure clear, card settlement,
+        // journal flush) must stay inside the take's critical section so a
+        // concurrent `get_or_spawn` can neither read the retired budget nor
+        // have a replacement's fresh state erased, and can only seed a
+        // replacement bridge after these settlements are durable.
+        let Some((runtime, sessions)) =
+            take_session_if_still_idle(&self.sessions, session_id, |runtime| {
+                should_reap_idle(
+                    runtime.busy.load(Ordering::Acquire),
+                    runtime.configuring.load(Ordering::Acquire),
+                    active_id.as_deref() == Some(session_id),
+                    runtime.idle_for(),
+                )
+            })
+            .await
         else {
             return false;
         };
+        // Idle reaping is deliberate retirement, not a crash: the budget must
+        // not survive the runtime it was tracked by.
+        self.clear_retirement_bookkeeping(session_id);
+        // A reap can still land on a runtime that died unexpectedly and was
+        // never accessed again (its crash would otherwise only feed the
+        // budget through the Dead arm). Re-parking the disclosure keeps the
+        // next spawn honest — the user's agent context was lost, so the
+        // rebuild surfaces the restarted notice. The budget itself stays
+        // cleared: the 30-minute idle gate means no tight respawn loop can
+        // route through this path, and the crash instant is unrecoverable
+        // here, so a slot recorded now would mis-anchor the 60 s window.
+        if runtime.lifecycle.take_uncounted_crash() {
+            self.runtime_restart_disclosures
+                .lock()
+                .insert(session_id.to_string(), RuntimeRestart::Crash);
+        }
         // Same F3 contract as `evict_if_idle_for_rebind`: the take already
         // removed the runtime from the map, so the pending-request cancels
         // must go through the reclaimed runtime's own bridge — a map lookup
@@ -4342,6 +4558,9 @@ impl AcpPool {
             .await;
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
+        // Same flush-before-reseed invariant as `evict`.
+        runtime.bridge.flush_journal();
+        drop(sessions);
         runtime.shutdown().await;
         true
     }
@@ -4375,7 +4594,7 @@ impl AcpPool {
             )
         })
         .await;
-        let RebindEvictTake::Reclaimed(runtime) = taken else {
+        let RebindEvictTake::Reclaimed(runtime, sessions) = taken else {
             // A session without a resident runtime (NoRuntime) has no pending
             // permission/elicitation to answer either, so only the Busy arm
             // skips cleanup. The lock-free `_with_bridge(_, None)` variants
@@ -4386,14 +4605,25 @@ impl AcpPool {
             // it) far past the documented ceiling; the session was absent at
             // take time, so the lookup could only resolve None anyway.
             if matches!(taken, RebindEvictTake::NoRuntime) {
-                self.cancel_pending_permissions_with_bridge(session_id, None)
-                    .await;
-                self.cancel_pending_elicitations_with_bridge(session_id, None)
-                    .await;
+                self.cancel_runtime_pending_cards(session_id, None).await;
             }
+            // Deliberately no budget/disclosure clear on this arm, unlike
+            // the Reclaimed arm below: there is no runtime to retire, and a
+            // rebind does not repair a broken install, so an accumulated
+            // backoff staying armed is the honest state (and a parked
+            // disclosure still fires when the rebuild eventually succeeds).
+            // Clearing here would let a rebind be used to bypass the
+            // tight-loop throttle.
             return matches!(taken, RebindEvictTake::NoRuntime);
         };
         self.acp_metadata_backends.write().remove(session_id);
+        // Rebind eviction is deliberate retirement, not a crash. The clears,
+        // the card settlement and the journal flush stay inside the take's
+        // critical section (see [`Self::clear_retirement_bookkeeping`]) —
+        // a replacement seeded by a concurrent `get_or_spawn` must not have
+        // its fresh state erased, and must only seed after these settlements
+        // are durable.
+        self.clear_retirement_bookkeeping(session_id);
         // Cancel before shutdown, through the RECLAIMED runtime's own bridge
         // (review #463 F3): the take already removed the session from the map,
         // so the plain `cancel_pending_permissions` lookup would resolve
@@ -4406,6 +4636,9 @@ impl AcpPool {
             .await;
         self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
             .await;
+        // Same flush-before-reseed invariant as `evict`.
+        runtime.bridge.flush_journal();
+        drop(sessions);
         runtime.shutdown().await;
         true
     }
@@ -4513,10 +4746,25 @@ impl AcpPool {
     pub async fn shutdown_all(&self) {
         let runtimes: Vec<Arc<AcpSession>> = {
             let mut sessions = self.sessions.lock().await;
+            // The drain empties the pool, so any crash budget or parked restart
+            // disclosure keyed by those sessions is stale. Clearing inside the
+            // drain's critical section (like `restart_agent_sessions`) denies
+            // a concurrent get_or_spawn the interleaving where it wins the
+            // lock after the drain, spawns a fresh generation, and has that
+            // generation's crash slot or parked disclosure erased by these
+            // clears. This matters because shutdown_all is also reached from
+            // prepare_app_restart — the settings restart command and the
+            // post-update relaunch — where that spawn is reachable.
+            self.runtime_crash_budgets.lock().clear();
+            self.runtime_restart_disclosures.lock().clear();
             sessions.drain().map(|(_, runtime)| runtime).collect()
         };
         for runtime in runtimes {
             runtime.shutdown().await;
+            // Flush any card settlements a racing retirement buffered on this
+            // bridge before the drain, so a later drop-flush cannot regress a
+            // replacement's journal sequence.
+            runtime.bridge.flush_journal();
         }
     }
 
@@ -4524,14 +4772,18 @@ impl AcpPool {
         if !self.is_acp(session_id) {
             bail!("当前会话不是 ACP 会话");
         }
+        // Resolve (and, when needed, reclaim/rebuild) the runtime BEFORE
+        // listing cards: the lists are filtered to the resident generation,
+        // and a poll that itself triggers a Dead/Missing reclaim must not
+        // attach the just-drained dead generation's cards to the
+        // replacement's info (mirrors `apply_config_change`'s list-after-
+        // resolve order). The listing helpers never spawn, so this stays a
+        // single get_or_spawn.
+        let runtime = self.get_or_spawn(session_id).await?;
         let pending_permissions = self.pending_permissions_for(session_id).await;
         let pending_elicitations = self.pending_elicitations_for(session_id).await;
         // provider is already filled from the session record by info(); nothing to add here.
-        Ok(self.get_or_spawn(session_id).await?.info(
-            &self.agents,
-            pending_permissions,
-            pending_elicitations,
-        ))
+        Ok(runtime.info(&self.agents, pending_permissions, pending_elicitations))
     }
 
     /// 一次性模型探针：切换/删除 Provider（或恢复官方）后，草稿态会话本不连接
@@ -4653,28 +4905,58 @@ impl AcpPool {
         }
     }
 
+    /// Cards of the resident generation only. A dead generation's leftovers
+    /// are swept by the Dead arm's drain or a retirement, but between the
+    /// handlers' check-then-insert race and the next sweep a stale card can
+    /// sit in the map; listing it would make the UI prompt for a runtime that
+    /// no longer exists. With no runtime resident every card in the map is a
+    /// ghost, so the listing is empty. Does not spawn: pure listing lanes
+    /// must keep their no-spawn behavior.
     pub async fn pending_permissions_for(
         &self,
         session_id: &str,
     ) -> Vec<CodexAcpPendingPermission> {
+        let resident = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.lifecycle.generation());
+        let Some(generation) = resident else {
+            return Vec::new();
+        };
         self.pending_permissions
             .lock()
             .await
             .values()
-            .filter(|pending| pending.view.session_id == session_id)
+            .filter(|pending| {
+                pending.view.session_id == session_id && pending.generation == generation
+            })
             .map(|pending| pending.view.clone())
             .collect()
     }
 
+    /// Same resident-generation contract as [`Self::pending_permissions_for`].
     pub async fn pending_elicitations_for(
         &self,
         session_id: &str,
     ) -> Vec<CodexAcpPendingElicitation> {
+        let resident = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|session| session.lifecycle.generation());
+        let Some(generation) = resident else {
+            return Vec::new();
+        };
         self.pending_elicitations
             .lock()
             .await
             .values()
-            .filter(|pending| pending.view.session_id == session_id)
+            .filter(|pending| {
+                pending.view.session_id == session_id && pending.generation == generation
+            })
             .map(|pending| pending.view.clone())
             .collect()
     }
@@ -4840,6 +5122,19 @@ impl AcpPool {
         }
     }
 
+    /// Settle both pending-card kinds for `session_id`, emitting the
+    /// cancellation events through `bridge` when one is available (an exit
+    /// path with the runtime still in scope). Callers without a bridge —
+    /// the rebind NoRuntime arm and the Missing arm of `get_or_spawn` —
+    /// pass `None`: the settlement is then only the cancelled response,
+    /// not a journal entry.
+    async fn cancel_runtime_pending_cards(&self, session_id: &str, bridge: Option<&EventBridge>) {
+        self.cancel_pending_permissions_with_bridge(session_id, bridge)
+            .await;
+        self.cancel_pending_elicitations_with_bridge(session_id, bridge)
+            .await;
+    }
+
     async fn get_or_spawn(&self, session_id: &str) -> Result<Arc<AcpSession>> {
         let operation_id = diagnostics::operation_id("session");
         diagnostics::write(
@@ -4848,53 +5143,116 @@ impl AcpPool {
             format!("session_id={session_id}"),
         );
         let mut restarted_after_stall = false;
+        let mut restarted_after_crash = false;
+        // Hold the pool-wide sessions lock until replacement insertion
+        // completes. A gap during shutdown would let concurrent callers spawn
+        // separate children, and the later insert would leak the earlier
+        // runtime. This deliberately blocks ACP entrypoints for every session
+        // during shutdown, the bounded 30-second initialize, and the currently
+        // unbounded session/load and config restoration.
         let mut sessions = self.sessions.lock().await;
-        if let Some(runtime) = sessions.get(session_id).cloned() {
-            if !runtime.restart_requested.load(Ordering::Acquire) {
+        match resolve_runtime(&mut sessions, session_id, |runtime| {
+            runtime.lifecycle.is_running() && !runtime.restart_requested.load(Ordering::Acquire)
+        }) {
+            RuntimeLookup::Reusable(runtime) => {
+                if runtime_is_stable(&runtime.lifecycle) {
+                    self.runtime_crash_budgets.lock().remove(session_id);
+                }
                 diagnostics::write(
                     &operation_id,
                     "session:reused",
-                    format!("session_id={session_id}"),
+                    format!(
+                        "session_id={session_id} generation={}",
+                        runtime.lifecycle.generation()
+                    ),
                 );
                 // Reuse counts as activity. UI polling for a visible session
                 // refreshes the idle clock, matching the conservative no-reap policy.
                 runtime.note_activity();
                 return Ok(runtime);
             }
-            // Repeated stalls in one window indicate that this session may need
-            // replacement. Discard the runtime and let `spawn_session` restore
-            // context through `session/load`; the first stall does not restart
-            // because a wedged query is indistinguishable from long background work.
-            //
-            // Hold the pool-wide sessions lock until replacement insertion
-            // completes. A gap during shutdown would let concurrent callers
-            // spawn separate children, and the later insert would leak the
-            // earlier runtime. This deliberately blocks ACP entrypoints for
-            // every session during shutdown, the bounded 30-second initialize,
-            // and the currently unbounded session/load and config restoration.
-            sessions.remove(session_id);
-            // As in eviction and agent restart, resolve cards left by the old
-            // runtime first. Otherwise shared pending maps make the replacement
-            // watchdog think the user is still deciding and skip every check.
-            self.cancel_pending_permissions_with_bridge(session_id, Some(&runtime.bridge))
-                .await;
-            self.cancel_pending_elicitations_with_bridge(session_id, Some(&runtime.bridge))
-                .await;
-            runtime.shutdown().await;
-            // Card settlement and shutdown-side events must be durable before
-            // the replacement EventBridge seeds its sequence from the journal.
-            runtime.bridge.flush_journal();
-            diagnostics::write(
-                &operation_id,
-                "session:restart_after_stall",
-                format!("session_id={session_id}"),
-            );
-            // Emit the restart notice from the replacement after insertion so
-            // it can distinguish a resumed session from a fresh one.
-            restarted_after_stall = true;
+            RuntimeLookup::Dead(runtime) => {
+                let was_running = runtime.lifecycle.is_running();
+                // Resolve cards from either the stalled or exited generation
+                // before the replacement watchdog observes shared pending maps,
+                // and before the transport goes away so Cancelled responses
+                // still reach a stalled-but-live agent.
+                self.cancel_runtime_pending_cards(session_id, Some(&runtime.bridge))
+                    .await;
+                if was_running {
+                    // Repeated stalls in one window request replacement. The
+                    // first stall stays conservative because long work can
+                    // look wedged; this branch is a deliberate retirement, so
+                    // it never feeds the crash budget and clears what the
+                    // session had accumulated. The clear sits after the
+                    // settlement await above: that is safe only because the
+                    // pool sessions lock is held across this whole arm, so
+                    // the lock — not statement order alone — orders the
+                    // clears after the take.
+                    self.runtime_crash_budgets.lock().remove(session_id);
+                    // The replacement may be published by a later call if the
+                    // budget throttles this one, so park the disclosure in the
+                    // pool instead of relying on the call-local flag.
+                    self.runtime_restart_disclosures
+                        .lock()
+                        .insert(session_id.to_string(), RuntimeRestart::Stall);
+                    runtime.shutdown().await;
+                    diagnostics::write(
+                        &operation_id,
+                        "session:restart_after_stall",
+                        format!(
+                            "session_id={session_id} generation={}",
+                            runtime.lifecycle.generation()
+                        ),
+                    );
+                    restarted_after_stall = true;
+                } else {
+                    if runtime.lifecycle.take_uncounted_crash() {
+                        self.runtime_crash_budgets
+                            .lock()
+                            .entry(session_id.to_string())
+                            .or_default()
+                            .record_crash_at(Instant::now());
+                    }
+                    // The child already exited; this only reaps it and
+                    // releases the per-generation connection task.
+                    runtime.shutdown().await;
+                    diagnostics::write(
+                        &operation_id,
+                        "session:dead_runtime_reclaimed",
+                        format!(
+                            "session_id={session_id} generation={}",
+                            runtime.lifecycle.generation()
+                        ),
+                    );
+                    restarted_after_crash = true;
+                    // Parked for the same reason as the stall branch above.
+                    self.runtime_restart_disclosures
+                        .lock()
+                        .insert(session_id.to_string(), RuntimeRestart::Crash);
+                }
+                // Card settlement and shutdown-side events must be durable
+                // before the replacement EventBridge seeds its sequence from
+                // the journal.
+                runtime.bridge.flush_journal();
+            }
+            RuntimeLookup::Missing => {
+                // No runtime exists for the session, so every pending card
+                // belongs to a generation that is gone — typically one that
+                // exited before publication and whose handler can still be
+                // polled after the exit-path sweep. Settle them so the
+                // replacement starts with clean shared maps; with no bridge
+                // the settlement is only the cancelled response, not a
+                // journal entry.
+                self.cancel_runtime_pending_cards(session_id, None).await;
+            }
         }
+
         // 与 spawn_session 一致走 self.backend()，让辅助索引缺失的会话在
         // acp_record 处得到明确报错，而不是误导性的「当前会话不是 ACP 会话」。
+        // Readiness is judged before the crash budget: a backend that is not
+        // installed must keep surfacing its actionable setup hint instead of
+        // a throttle message once its spawn attempts have exhausted the budget.
         let backend = self.backend(session_id);
         let readiness = match backend {
             AgentBackend::CodexAcp => self.ensure_codex_ready().await.map(|_| ()),
@@ -4922,14 +5280,60 @@ impl AcpPool {
             );
             return Err(error);
         }
+
+        let admission = self
+            .runtime_crash_budgets
+            .lock()
+            .get_mut(session_id)
+            .map(|budget| budget.admission_at(Instant::now()));
+        if let Some(SpawnAdmission::RetryAfter {
+            delay,
+            budget_exhausted,
+        }) = admission
+        {
+            let retry_ms = delay.as_millis().max(1);
+            let reason = if budget_exhausted {
+                "ACP 运行时在短时间窗口内多次退出，已暂停自动重建"
+            } else {
+                "ACP 运行时刚刚退出，正在退避"
+            };
+            let retry_hint = if retry_ms >= RETRY_HINT_SECONDS_MIN_MS {
+                format!("约 {} 秒", retry_ms.div_ceil(1_000))
+            } else {
+                format!("{retry_ms} 毫秒")
+            };
+            diagnostics::write(
+                &operation_id,
+                "session:spawn_throttled",
+                format!(
+                    "session_id={session_id} retry_after_ms={retry_ms} budget_exhausted={budget_exhausted}"
+                ),
+            );
+            bail!("{reason}；{retry_hint}后可重试");
+        }
         diagnostics::write(
             &operation_id,
             "session:spawn_start",
             format!("session_id={session_id}"),
         );
-        let runtime = match self.spawn_session(session_id, &operation_id).await {
+        let generation = self
+            .runtime_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let runtime = match self
+            .spawn_session(session_id, &operation_id, generation)
+            .await
+        {
             Ok(runtime) => Arc::new(runtime),
             Err(error) => {
+                // A failed spawn costs a crash-budget slot too: an adapter that
+                // cannot start (broken install, bad env) must back off like one
+                // that exits immediately after starting.
+                self.runtime_crash_budgets
+                    .lock()
+                    .entry(session_id.to_string())
+                    .or_default()
+                    .record_crash_at(Instant::now());
                 diagnostics::write(
                     &operation_id,
                     "session:spawn_failed",
@@ -4938,10 +5342,40 @@ impl AcpPool {
                 return Err(error);
             }
         };
+        if !runtime.lifecycle.is_running() {
+            if runtime.lifecycle.take_uncounted_crash() {
+                self.runtime_crash_budgets
+                    .lock()
+                    .entry(session_id.to_string())
+                    .or_default()
+                    .record_crash_at(Instant::now());
+            }
+            // Same reclamation duties as the Dead arm: the generation died
+            // between initialize and publication, so cards it registered
+            // during session/load must not linger in the shared maps and its
+            // journal events must be durable before the next bridge seeds.
+            self.cancel_runtime_pending_cards(session_id, Some(&runtime.bridge))
+                .await;
+            runtime.bridge.flush_journal();
+            diagnostics::write(
+                &operation_id,
+                "session:exited_before_publish",
+                format!("session_id={session_id} generation={generation}"),
+            );
+            bail!("ACP 运行时初始化后立即退出，请重试");
+        }
         sessions.insert(session_id.to_string(), runtime.clone());
-        if restarted_after_stall {
+        // Consume any disclosure parked by an earlier reclaim invocation:
+        // after a throttled crash replacement both call-local flags are
+        // false here, and the notice must still fire (round-3 review
+        // MAJOR-1). The only insert site into the pool map is the line
+        // above, so a parked disclosure can only be consumed here.
+        let pending_restart = self.runtime_restart_disclosures.lock().remove(session_id);
+        if restarted_after_stall || restarted_after_crash || pending_restart.is_some() {
             // Promise retained history only after a real resume. Without
             // `load_session`, or when loading fails, spawn creates a fresh session.
+            // A crash replacement discloses the same way as a stall
+            // replacement: the user's agent context was rebuilt either way.
             let kind = if runtime.resumed_session {
                 "agent_session_restarted"
             } else {
@@ -4954,7 +5388,7 @@ impl AcpPool {
         diagnostics::write(
             &operation_id,
             "session:ready",
-            format!("session_id={session_id}"),
+            format!("session_id={session_id} generation={generation}"),
         );
         Ok(runtime)
     }
@@ -4963,6 +5397,7 @@ impl AcpPool {
         &self,
         pinvou_session_id: &str,
         operation_id: &str,
+        generation: u64,
     ) -> Result<AcpSession> {
         let backend = self.backend(pinvou_session_id);
         let (mut command, adapter, package_name, package_version) = match backend {
@@ -5013,6 +5448,7 @@ impl AcpPool {
         let stdin = child.stdin.take().context("ACP stdin 不可用")?;
         let stdout = child.stdout.take().context("ACP stdout 不可用")?;
         let event_bridge = EventBridge::new(self.app.clone(), pinvou_session_id.to_string());
+        let lifecycle = Arc::new(RuntimeLifecycle::new(generation));
         let stderr_tail = Arc::new(parking_lot::Mutex::new(VecDeque::<String>::new()));
         if let Some(stderr) = child.stderr.take() {
             let sid = pinvou_session_id.to_string();
@@ -5078,6 +5514,15 @@ impl AcpPool {
         let pending_for_elicitation = self.pending_elicitations.clone();
         let pinvou_id_for_permission = pinvou_session_id.to_string();
         let pinvou_id_for_elicitation = pinvou_session_id.to_string();
+        let generation_for_handlers = lifecycle.generation();
+        let lifecycle_for_permission = lifecycle.clone();
+        let lifecycle_for_elicitation = lifecycle.clone();
+        // The connection task is the one place that observes the transport
+        // ending. It stamps the lifecycle so the next `get_or_spawn` can tell
+        // an unexpected exit (crash-budget slot) from an expected shutdown.
+        let lifecycle_for_connection = lifecycle.clone();
+        let operation_id_for_connection = operation_id.to_string();
+        let pinvou_id_for_connection = pinvou_session_id.to_string();
 
         tokio::spawn(async move {
             let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
@@ -5096,6 +5541,15 @@ impl AcpPool {
                 )
                 .on_receive_request(
                     async move |request: RequestPermissionRequest, responder, _cx| {
+                        // A dead generation's handler can still be polled
+                        // after the exit-path cancel sweeps have run; deny
+                        // the frame instead of inserting a card no live
+                        // runtime will ever settle.
+                        if !lifecycle_for_permission.is_running() {
+                            return responder.respond(RequestPermissionResponse::new(
+                                RequestPermissionOutcome::Cancelled,
+                            ));
+                        }
                         let tool_call_id = request.tool_call.tool_call_id.to_string();
                         let key = permission_key(&pinvou_id_for_permission, &tool_call_id);
                         let option_ids = request
@@ -5117,6 +5571,7 @@ impl AcpPool {
                                 view,
                                 option_ids,
                                 activity: bridge_for_permission.activity(),
+                                generation: generation_for_handlers,
                                 response_tx,
                             },
                         );
@@ -5144,6 +5599,11 @@ impl AcpPool {
                 )
                 .on_receive_request(
                     async move |request: CreateElicitationRequest, responder, _cx| {
+                        if !lifecycle_for_elicitation.is_running() {
+                            return responder.respond(CreateElicitationResponse::new(
+                                ElicitationAction::Cancel,
+                            ));
+                        }
                         let request_value =
                             serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
                         let elicitation_id = elicitation_id_for(&request_value);
@@ -5160,6 +5620,7 @@ impl AcpPool {
                             PendingElicitation {
                                 view,
                                 activity: bridge_for_elicitation.activity(),
+                                generation: generation_for_handlers,
                                 response_tx,
                             },
                         );
@@ -5216,11 +5677,32 @@ impl AcpPool {
                         let _ = tx.send(initialized.map(|response| (connection.clone(), response)));
                     }
                     if let Some(rx) = shutdown_rx.take() {
-                        let _ = rx.await;
+                        // `connect_with` runs until this closure returns; a
+                        // clean transport EOF (the child exited) does not end
+                        // it on its own and is not an error in this mode
+                        // (agent-client-protocol `connect_with` contract). Wait
+                        // for either our shutdown or the incoming close, so a
+                        // crashed child releases this task and the lifecycle
+                        // stamp below records the generation as dead instead
+                        // of leaving it "running" in the pool forever.
+                        tokio::select! {
+                            _ = rx => {}
+                            () = connection.incoming_closed() => {}
+                        }
                     }
                     Ok(())
                 })
                 .await;
+            let unexpected = lifecycle_for_connection.mark_connection_closed();
+            diagnostics::write(
+                &operation_id_for_connection,
+                "session:connection_closed",
+                format!(
+                    "session_id={pinvou_id_for_connection} generation={} unexpected={unexpected} result={}",
+                    lifecycle_for_connection.generation(),
+                    if result.is_ok() { "ok" } else { "error" }
+                ),
+            );
             if let Err(error) = result {
                 eprintln!("[pinvou3-app] ACP 协议连接结束: {error}");
             }
@@ -5438,6 +5920,7 @@ impl AcpPool {
             child: Mutex::new(child),
             root_pid,
             resource_role,
+            lifecycle,
             last_activity: parking_lot::Mutex::new(Instant::now()),
         })
     }
@@ -5872,6 +6355,219 @@ mod tests {
         assert!(!npm_fallback_available(None, false));
     }
 
+    /// A card from an older generation must not hold the current
+    /// generation's stall watchdog open, even while it still sits in the
+    /// shared pending maps.
+    #[test]
+    fn pending_cards_await_decisions_only_for_their_own_generation() {
+        let session_id = "pinvou-session".to_string();
+        let card = |generation: u64| PendingPermission {
+            view: CodexAcpPendingPermission {
+                session_id: session_id.clone(),
+                tool_call_id: "tool-1".to_string(),
+                request: serde_json::Value::Null,
+            },
+            option_ids: Vec::new(),
+            activity: stall::new_activity_clock(),
+            generation,
+            response_tx: oneshot::channel().0,
+        };
+        let elicitation = |generation: u64| PendingElicitation {
+            view: CodexAcpPendingElicitation {
+                session_id: session_id.clone(),
+                elicitation_id: "elicit-1".to_string(),
+                request: serde_json::Value::Null,
+            },
+            activity: stall::new_activity_clock(),
+            generation,
+            response_tx: oneshot::channel().0,
+        };
+
+        let permissions = HashMap::from([("k".to_string(), card(7))]);
+        assert!(generation_awaits_user_decision(
+            7,
+            "pinvou-session",
+            &permissions,
+            &HashMap::new()
+        ));
+        assert!(!generation_awaits_user_decision(
+            8,
+            "pinvou-session",
+            &permissions,
+            &HashMap::new()
+        ));
+        assert!(!generation_awaits_user_decision(
+            7,
+            "other-session",
+            &permissions,
+            &HashMap::new()
+        ));
+
+        let elicitations = HashMap::from([("e".to_string(), elicitation(9))]);
+        assert!(generation_awaits_user_decision(
+            9,
+            "pinvou-session",
+            &HashMap::new(),
+            &elicitations
+        ));
+        assert!(!generation_awaits_user_decision(
+            10,
+            "pinvou-session",
+            &HashMap::new(),
+            &elicitations
+        ));
+    }
+
+    /// The isolation the lifecycle module doc claims lives in the spawn
+    /// wiring — one fresh [`RuntimeLifecycle`] per spawned generation — and
+    /// in the watchdog consulting only its own generation's cards. Neither
+    /// is constructible without a real child, so pin the source shape the
+    /// same way the rebind probes do.
+    #[test]
+    fn lifecycle_wiring_is_per_spawn_and_generation_scoped() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("the test module marker must exist")];
+        let spawn = production_body(src, "async fn spawn_session");
+        assert!(
+            spawn.contains("RuntimeLifecycle::new("),
+            "every spawn must build a fresh lifecycle; a session-keyed \
+             shared lifecycle would let an old generation's exit mark or \
+             bill its replacement"
+        );
+        let watchdog = production_body(src, "async fn awaiting_user_decision");
+        assert!(
+            watchdog.contains("generation_awaits_user_decision")
+                && watchdog.contains("self.lifecycle.generation()"),
+            "the stall watchdog must consult only the runtime's own \
+             generation's cards"
+        );
+        let handlers = production_body(src, "async fn spawn_session");
+        assert!(
+            handlers.contains("if !lifecycle_for_permission.is_running()")
+                && spawn.contains("if !lifecycle_for_elicitation.is_running()"),
+            "the card handlers must deny frames from a dead generation \
+             instead of inserting cards no runtime will settle"
+        );
+        let missing = production_body(src, "async fn get_or_spawn");
+        assert!(
+            missing.contains("cancel_runtime_pending_cards(session_id, None)"),
+            "the Missing arm must settle leftover cards before spawning \
+             the replacement"
+        );
+        assert!(
+            missing.contains(
+                "restarted_after_stall || restarted_after_crash || pending_restart.is_some()"
+            ),
+            "the publish line must consume the parked restart disclosure; \
+             dropping the pending_restart term silently loses the throttled \
+             replacement's restart notice (round-3 MAJOR-1)"
+        );
+        let reuse_start = missing
+            .find("RuntimeLookup::Reusable(runtime) => {")
+            .expect("the Reusable arm must exist");
+        let dead_start = missing
+            .find("RuntimeLookup::Dead(runtime) => {")
+            .expect("the Dead arm must exist");
+        let reuse_arm = &missing[reuse_start..dead_start];
+        assert!(
+            reuse_arm.contains("runtime_is_stable(&runtime.lifecycle)")
+                && reuse_arm.contains("runtime_crash_budgets.lock().remove(session_id)"),
+            "a two-minute-stable reuse must clear the session's crash \
+             budget; without the clear, a runtime that only fails every few \
+             minutes stays throttled forever"
+        );
+        let restart = production_body(src, "async fn restart_agent_sessions");
+        assert!(
+            restart.contains("flush_journal()"),
+            "the restart teardown must flush before a replacement bridge \
+             seeds its sequence from the journal"
+        );
+        let shutdown = production_body(src, "pub async fn shutdown_all");
+        assert!(
+            shutdown.contains("runtime_crash_budgets.lock().clear()")
+                && shutdown.contains("runtime_restart_disclosures.lock().clear()"),
+            "shutdown_all must clear the retirement state of the pool it \
+             just drained"
+        );
+        for (lane, signature) in [
+            ("evict", "pub async fn evict("),
+            ("idle reap", "async fn evict_if_idle("),
+            ("rebind", "pub async fn evict_if_idle_for_rebind("),
+            ("shutdown_all", "pub async fn shutdown_all"),
+        ] {
+            assert!(
+                production_body(src, signature).contains("flush_journal()"),
+                "the {lane} retirement must flush settled journal events \
+                 before a replacement bridge seeds its sequence"
+            );
+        }
+        // The keyed retirement bookkeeping must be cleared inside the take's
+        // sessions critical section (the helper asserts the pairing; holding
+        // the take guard is what orders it against a concurrent
+        // `get_or_spawn`). shutdown_all clears the whole drained pool and is
+        // pinned above; restart_agent_sessions shares the helper with these.
+        for (lane, signature) in [
+            ("evict", "pub async fn evict("),
+            ("idle reap", "async fn evict_if_idle("),
+            ("rebind", "pub async fn evict_if_idle_for_rebind("),
+            ("account switch", "async fn restart_agent_sessions"),
+        ] {
+            assert!(
+                production_body(src, signature).contains("clear_retirement_bookkeeping("),
+                "the {lane} retirement must clear the crash budget and the \
+                 parked restart disclosure through the paired helper inside \
+                 its sessions critical section"
+            );
+        }
+        // The transport-completion dead stamp is the detection keystone of
+        // the whole reclaim: reverting to waiting on the shutdown channel
+        // alone leaves a crashed child `running` forever and every test in
+        // this module stays green.
+        assert!(
+            spawn.contains("connection.incoming_closed()")
+                && spawn.contains("mark_connection_closed()"),
+            "the connection task must select on transport completion and \
+             stamp the generation dead; without the stamp a crashed runtime \
+             is never reclaimed"
+        );
+        // The cancel_requested producer is the only new journal behavior of
+        // the envelope claim; dropping the emit or the turn tag currently
+        // has no behavioral consumer, so pin the wiring. (The signature is
+        // spelled out because `production_body` matches substrings —
+        // `pub async fn cancel` would find `cancel_agent_install` first.)
+        let cancel = production_body(src, "pub async fn cancel(&self, session_id: &str)");
+        assert!(
+            cancel.contains("emit_with_turn(") && cancel.contains("\"cancel_requested\""),
+            "a user cancel must journal the cancel_requested envelope \
+             through the captured busy turn"
+        );
+        // The idle reap can land on a runtime that died unexpectedly; the
+        // re-parked disclosure is what keeps the next spawn's restart notice
+        // honest for that generation.
+        let reap = production_body(src, "async fn evict_if_idle(");
+        assert!(
+            reap.contains("take_uncounted_crash()") && reap.contains("RuntimeRestart::Crash"),
+            "an idle reap of an unexpectedly dead runtime must re-park the \
+             crash disclosure so the next rebuild discloses the context loss"
+        );
+        // The listing lanes are the resident-generation contract of the
+        // ghost-card containment.
+        for (lane, signature) in [
+            ("permission", "pub async fn pending_permissions_for("),
+            ("elicitation", "pub async fn pending_elicitations_for("),
+        ] {
+            let listing = production_body(src, signature);
+            assert!(
+                listing.contains("let Some(generation) = resident else {")
+                    && listing.contains("pending.generation == generation"),
+                "the {lane} listing lane must filter cards to the resident \
+                 generation and return nothing without a resident runtime"
+            );
+        }
+    }
+
     /// The move-aside check only recognizes "the script path is the resolved
     /// result": resolutions such as the agent SDK bundled with the Claude
     /// bridge, `PINVOU3_*_CLI_PATH` overrides, or PATH hits never land on the
@@ -5974,8 +6670,10 @@ mod tests {
         let guard = sessions.lock().await;
         let reaper_sessions = sessions.clone();
         let reaper = tokio::spawn(async move {
+            // 该用例只关心复核结果；take 交还的锁在任务内释放。
             take_session_if_still_idle(&reaper_sessions, "acp-session", FakeIdleEntry::still_idle)
                 .await
+                .map(|(entry, _sessions)| entry)
         });
         tokio::task::yield_now().await;
 
@@ -6001,9 +6699,13 @@ mod tests {
             FakeIdleEntry::idle_since(Duration::from_secs(IDLE_EVICT_AFTER_SECS)),
         )]));
 
-        let taken =
-            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle).await;
-        assert!(taken.is_some(), "保持空闲的会话必须照常回收");
+        let Some((_entry, guard)) =
+            take_session_if_still_idle(&sessions, "acp-session", FakeIdleEntry::still_idle).await
+        else {
+            panic!("保持空闲的会话必须照常回收");
+        };
+        // take 交还的锁在断言前释放：守卫若仍存活，当前线程运行时上取锁会死锁。
+        drop(guard);
         assert!(sessions.lock().await.is_empty());
         // 已被移除 / 从未存在的会话：取回 None，不二次回收。
         assert!(
@@ -6196,7 +6898,7 @@ mod tests {
         // which is what makes the user's retry converge.
         let taken =
             take_session_for_rebind(&sessions, "idle-session", FakeRebindEntry::evictable).await;
-        assert!(matches!(taken, RebindEvictTake::Reclaimed(_)));
+        assert!(matches!(taken, RebindEvictTake::Reclaimed(..)));
     }
 
     #[tokio::test(start_paused = true)]
@@ -6266,10 +6968,10 @@ mod tests {
 
         let taken =
             take_session_for_rebind(&sessions, "idle-session", FakeRebindEntry::evictable).await;
-        assert!(
-            matches!(taken, RebindEvictTake::Reclaimed(_)),
-            "idle runtime must be atomically taken"
-        );
+        let RebindEvictTake::Reclaimed(_entry, guard) = taken else {
+            panic!("idle runtime must be atomically taken");
+        };
+        drop(guard);
         assert!(
             !sessions.lock().await.contains_key("idle-session"),
             "taken runtime is removed from the pool"
@@ -6307,8 +7009,16 @@ mod tests {
         let guard = sessions.lock().await;
         let rebind_sessions = sessions.clone();
         let eviction = tokio::spawn(async move {
-            take_session_for_rebind(&rebind_sessions, "acp-session", FakeRebindEntry::evictable)
-                .await
+            // 该用例只关心复核结果；take 交还的锁在任务内随临时值释放。
+            matches!(
+                take_session_for_rebind(
+                    &rebind_sessions,
+                    "acp-session",
+                    FakeRebindEntry::evictable
+                )
+                .await,
+                RebindEvictTake::Busy
+            )
         });
         tokio::task::yield_now().await;
 
@@ -6320,9 +7030,9 @@ mod tests {
             .store(true, Ordering::Release);
         drop(guard);
 
-        let taken = eviction.await.expect("eviction task joins");
+        let busy = eviction.await.expect("eviction task joins");
         assert!(
-            matches!(taken, RebindEvictTake::Busy),
+            busy,
             "a turn that starts before the eviction must survive it"
         );
         assert!(sessions.lock().await.contains_key("acp-session"));
@@ -7169,6 +7879,7 @@ mod tests {
                 },
                 option_ids: vec!["allow".to_string()],
                 activity: activity.clone(),
+                generation: 1,
                 response_tx,
             },
         );

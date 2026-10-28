@@ -673,10 +673,17 @@ try {
   assert.ok(runtime.includes('NewSessionRequest::new(workspace)'));
   assert.ok(runtime.includes('会话绑定的项目目录已不可用'), 'missing projects must not silently fall back');
   assert.ok(runtime.includes('apply_saved_mode('), 'saved Full Access mode must be restored after new/load');
-  assert.ok(runtime.includes('cancel_pending_permissions_with_bridge(&session_id, Some(&runtime.bridge))')
+  // Commit 22559510e extracted the repeated permission+elicitation settlement
+  // pair into cancel_runtime_pending_cards; account switching
+  // (restart_agent_sessions) must still settle through the REMOVED runtime's
+  // own bridge, and the helper must forward that bridge to BOTH cancellation
+  // paths so the cancelled outcomes stay persisted to the timeline.
+  assert.ok(runtime.includes('cancel_runtime_pending_cards(&session_id, Some(&runtime.bridge))')
+    && /async fn cancel_runtime_pending_cards\(&self, session_id: &str, bridge: Option<&EventBridge>\) \{\s*self\.cancel_pending_permissions_with_bridge\(session_id, bridge\)\s*\.await;\s*self\.cancel_pending_elicitations_with_bridge\(session_id, bridge\)\s*\.await;\s*\}/.test(runtime)
     && runtime.includes('"outcome": "cancelled"'),
   'account switching must persist permission cancellation through the removed runtime bridge');
-  assert.ok(runtime.includes('cancel_pending_elicitations_with_bridge(&session_id, Some(&runtime.bridge))'),
+  assert.ok(runtime.includes('cancel_runtime_pending_cards(&session_id, Some(&runtime.bridge))')
+    && runtime.includes('"action": "cancel"'),
   'account switching must persist elicitation cancellation through the removed runtime bridge');
   assert.ok(runtime.includes('AgentBackend::ClaudeAcp')
     && runtime.includes('AgentBackend::KimiAcp')

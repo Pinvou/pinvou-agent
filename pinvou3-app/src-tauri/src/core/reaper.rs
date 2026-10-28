@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use tauri::async_runtime::JoinHandle;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
 
 /// 空闲回收阈值：每个空闲条目都占一份活资源（engine 是进程内 task + 专属
@@ -44,17 +44,24 @@ pub(crate) fn should_reap_idle(
 /// 在同一把 sessions 锁内按现值复核回收条件，满足才 remove 并返回；不满足
 /// （快照后到达的 send_message 已置 busy / 刷新活动，或会话正被打开）返回
 /// `None`，调用方不得回收。复核与移除原子完成，消除快照→回收的 TOCTOU。
-pub(crate) async fn take_session_if_still_idle<T>(
-    sessions: &Mutex<HashMap<String, T>>,
+///
+/// 返回时仍持有 sessions 锁（与被移除的条目一起交还调用方）：回收的收尾
+/// 动作（预算/披露清理、卡片结算、flush）都以 session id 为键，必须与移除
+/// 处在同一临界区内，否则多线程调度下并发的 `get_or_spawn` 可在移除之后、
+/// 清理之前重建该会话并被无条件的按 id 清理抹掉新状态。调用方收尾后自行
+/// 释放锁。
+pub(crate) async fn take_session_if_still_idle<'a, T>(
+    sessions: &'a Mutex<HashMap<String, T>>,
     session_id: &str,
     is_still_idle: impl Fn(&T) -> bool,
-) -> Option<T> {
+) -> Option<(T, MutexGuard<'a, HashMap<String, T>>)> {
     let mut sessions = sessions.lock().await;
     let entry = sessions.get(session_id)?;
     if !is_still_idle(entry) {
         return None;
     }
-    sessions.remove(session_id)
+    let taken = sessions.remove(session_id)?;
+    Some((taken, sessions))
 }
 
 /// 后台巡检任务句柄：Drop 时先 cancel 再 abort 双保险停止巡检
