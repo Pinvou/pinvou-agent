@@ -6,7 +6,7 @@
 # TRUSTED. Only an unset TRUSTED line falls back to the ALLOWED list. Entries
 # are lowercased before matching, so case never matters, and ::ffff:a.b.c.d
 # counts as the plain IPv4 address; any other spelling difference (an
-# expanded form, a zone id) starts up but never matches, so spell them the
+# expanded form) starts up but never matches, so spell them the
 # way the runtime reports the peer address. IPv6 zone-id suffixes
 # (fe80::1%eth0) are accepted on every supported Node version and match only
 # peers reporting the identical zone
@@ -21,9 +21,9 @@
 # (revoked_endpoint_capacity_reached) until the file is pruned or the
 # limits are raised.
 #
-# The relay binds every interface by default (0.0.0.0); set
-# PINVOU_REMOTE_HOST=127.0.0.1 to keep it local. Loopback peers are always
-# admitted, whatever the allowlist says.
+# The relay binds every IPv4 interface by default (0.0.0.0); set
+# PINVOU_REMOTE_HOST=127.0.0.1 to keep it local. Loopback peers (127.0.0.1
+# and ::1) are always admitted, whatever the allowlist says.
 Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
 Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000

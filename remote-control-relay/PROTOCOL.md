@@ -242,11 +242,14 @@ connection open.
   rejected. Entries are lowercased before matching, so case never matters,
   and an IPv4-mapped spelling of the form `::ffff:a.b.c.d` is equivalent to
   the plain IPv4 address for both matching and rate-limit keys; any other
-  spelling difference (an expanded form, a zone id) starts up but never
-  matches a peer, so use the spelling the runtime reports. A blank value means an empty set: an empty
+  spelling difference (for example an expanded form such as
+  `0:0:0:0:0:0:0:1`) starts up but never matches a peer. A zone-id entry
+  such as `fe80::1%eth0` matches only a peer reporting the identical zone
+  string, so use the spelling the runtime reports. A blank value means an
+  empty set: an empty
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
-  `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. A direct peer on a
-  loopback address is always admitted, whatever the list says. Only when
+  `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. A direct peer on
+  `127.0.0.1` or `::1` is always admitted, whatever the list says. Only when
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` is unset does it fall back to
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting, the client address is
   the rightmost `X-Forwarded-For` item when the direct peer is a trusted proxy;
@@ -261,7 +264,8 @@ connection open.
   trusted proxy must set these headers itself and strip client-supplied ones;
   a proxy that forwards them lets senders pick their rate-limit identity.
 - The relay listens on `PINVOU_REMOTE_HOST`, by default `0.0.0.0` — every
-  interface, with endpoint registration open to whichever sources the
+  IPv4 interface (set `::` to include IPv6), with endpoint registration open
+  to whichever sources the
   allowlist admits. Set it to `127.0.0.1` to keep the relay local; the
   startup banner reports no address, so check the deployment configuration
   rather than the logs.
