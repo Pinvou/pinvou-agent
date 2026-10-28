@@ -1863,6 +1863,31 @@ fn fold_and_dedup_input_ids(ids: &[String]) -> Vec<String> {
 /// contract is shipped user-visible semantics and this PR does not downgrade
 /// it — the composer caller's retry/rollback UX is #515 rework's to deliver).
 pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Result<(), String> {
+    save_disabled_bundles_for_with_toggled_ids(scope, ids, &[])
+}
+
+/// [`save_disabled_bundles_for`] plus the ids the write's toggle gesture
+/// explicitly acted on (the composer sends the clicked id alongside the
+/// whole list). A toggled id the write leaves OUT of the disabled list is an
+/// explicit ON: it commits the standing connect grant's ownership token —
+/// the same single mutation `commit_relied_connect_grant` performs for
+/// completions and `enable_packages_in_scope` performs for the welcome/scene
+/// opt-in — so an older connect's compensating revoke stops matching the
+/// consent the user's click just re-affirmed. Guarded to the named ids:
+/// the whole-list payload alone says nothing about who switched whom, and
+/// committing every absent id's token would swallow unrelated owners'
+/// in-flight compensations. The commit matters even when the store already
+/// agrees with the click (a stale composer snapshot over a lifted row — no
+/// row delta exists to infer the intent from): the click is the newest
+/// verdict, and a user gesture needs no failure compensation of its own.
+/// Toggled ids that enter the disabled list stay the explicit-OFF strip
+/// above; an intent-less caller passes `&[]` and keeps the legacy
+/// semantics exactly.
+pub fn save_disabled_bundles_for_with_toggled_ids(
+    scope: ConnectorScope,
+    ids: &[String],
+    toggled_ids: &[String],
+) -> Result<(), String> {
     // Builtin plugins cannot be disabled (§3.1): the guard lives on the
     // persistence function itself so every caller inherits it — not only
     // `apply_disabled_connectors_for` — and a future direct writer cannot
@@ -1872,6 +1897,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
     // exclude builtin ids, so legitimate internal callers are unaffected.
     crate::features::marketplace::builtin::reject_builtin_ids(ids)?;
     let normalized = fold_and_dedup_input_ids(ids);
+    let toggled = fold_and_dedup_input_ids(toggled_ids);
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let key = scope.as_str().to_string();
@@ -1927,6 +1953,16 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
         // grant as consumed, not re-discover it through a dangling token.
         file.connect_grant_tokens
             .retain(|id, _| !normalized.contains(id));
+        // An explicitly toggled-ON id commits the standing grant's token
+        // (review P2): the click is the newest verdict, and the token removal
+        // makes the standing consent permanent, nothing else — grant, ledger,
+        // and rows are untouched, exactly like the welcome/scene enable's
+        // commit. Later user verdicts stay supreme.
+        for id in &toggled {
+            if !normalized.contains(id) {
+                file.connect_grant_tokens.remove(id);
+            }
+        }
         // The composer sends the whole list, not a per-id gesture, so this write
         // says nothing about who switched a given entry off. Keep the
         // install-default marker for entries that were already persisted as off
@@ -4503,6 +4539,124 @@ mod tests {
         });
     }
 
+    /// The composer toggle is the welcome-enable fix's third writer (review
+    /// P2): its whole-list ON click carries the clicked id as intent, and the
+    /// intent commits the standing grant's ownership token in the same locked
+    /// transaction. The reachable cohort is the stale-snapshot one no row
+    /// delta can reveal: a mounted composer still shows the connector OFF
+    /// while connect A's gesture grant lifted its no-ledger row and skill
+    /// extraction runs outside the lock — the click's list omits the id and
+    /// the store already agrees, so only the carried intent distinguishes an
+    /// explicit ON from an unrelated write. Without the commit, A's failure
+    /// revoke still matches the token and restores the lifted row over the
+    /// ON the user just accepted.
+    #[test]
+    fn composer_toggle_on_commits_the_pending_connect_grant_it_acknowledges() {
+        with_temp_home("pinvou3-scope-composer-commit", || {
+            // The stale-OFF cohort: an initialized plain scope holding an
+            // explicit (unmarked, unledgered) row for feishu.
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+            std::fs::write(
+                &store,
+                r#"{"scopes":{"plain":["feishu"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+
+            // Connect A's gesture lifts the row and lands grant + token; its
+            // skill extraction is now in flight outside the lock.
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_a.granted && grant_a.lifted_scopes.iter().any(|k| k == "plain"),
+                "fixture: the gesture grants and lifts plain's row: {grant_a:?}"
+            );
+
+            // The composer ON click through the real writer: the whole list
+            // (empty — the store already agrees with the click) plus the
+            // clicked id as the write's toggle intent.
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime
+                .block_on(crate::features::marketplace::apply_disabled_connectors_for(
+                    ConnectorScope::Plain,
+                    Vec::new(),
+                    &["feishu".to_string()],
+                ))
+                .expect("the composer write must succeed");
+            assert!(
+                load_disabled_bundles_file().connect_grant_tokens.is_empty(),
+                "the toggle must commit the standing ownership token"
+            );
+
+            // A's materialization fails; its revoke must not undo the click.
+            revoke_connect_enable(&grant_a).unwrap();
+
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the stale revoke must not strip the consent the toggle committed: {file:?}"
+            );
+            assert!(
+                !file
+                    .scopes
+                    .get("plain")
+                    .is_some_and(|list| list.iter().any(|id| id == "feishu")),
+                "the lifted row must not come back behind the explicit toggle: {file:?}"
+            );
+            assert!(
+                !resolve_scope_disabled_ids(&file, ConnectorScope::Plain)
+                    .contains(&"feishu".to_string()),
+                "plain must keep computing the connector ON"
+            );
+        });
+    }
+
+    /// The negative pin: a whole-list write that declares NO toggle intent
+    /// keeps the legacy semantics — the standing token survives and the
+    /// compensating revoke still matches (restoring the lifted row). The
+    /// commit fires only for a declared click; committing every token absent
+    /// from a whole-list payload would swallow unrelated owners'
+    /// in-flight compensations.
+    #[test]
+    fn composer_write_without_toggle_intent_leaves_the_compensation_standing() {
+        with_temp_home("pinvou3-scope-composer-no-intent", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::create_dir_all(store.parent().unwrap()).unwrap();
+            std::fs::write(
+                &store,
+                r#"{"scopes":{"plain":["feishu"]},"initialized":["plain"]}"#,
+            )
+            .unwrap();
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_a.granted,
+                "fixture: the gesture grants on the no-ledger row: {grant_a:?}"
+            );
+
+            // The same write shape with no intent declared.
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime
+                .block_on(crate::features::marketplace::apply_disabled_connectors_for(
+                    ConnectorScope::Plain,
+                    Vec::new(),
+                    &[],
+                ))
+                .expect("the composer write must succeed");
+
+            revoke_connect_enable(&grant_a).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                !file.connect_granted.iter().any(|id| id == "feishu"),
+                "the revoke must still compensate the intent-less write: {file:?}"
+            );
+            assert!(
+                file.scopes
+                    .get("plain")
+                    .is_some_and(|list| list.iter().any(|id| id == "feishu")),
+                "the lifted row must be restored over the intent-less write: {file:?}"
+            );
+        });
+    }
+
     /// The disclosed global-grant asymmetry, pinned: a composer toggle-off in
     /// ONE scope removes the grant for ALL still-uninitialized scopes
     /// (fail-closed) — plain's computed expansion must re-deny the id even
@@ -6279,6 +6433,7 @@ mod tests {
                 .block_on(crate::features::marketplace::apply_disabled_connectors_for(
                     ConnectorScope::Code,
                     echoed,
+                    &[],
                 ))
                 .expect("echoing the computed default back must pass the builtin guard");
             // Initialized: the persisted list wins from here on, and a later

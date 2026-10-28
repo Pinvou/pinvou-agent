@@ -714,6 +714,7 @@ mod tests {
         let err = crate::features::marketplace::apply_disabled_connectors_for(
             crate::features::marketplace::ConnectorScope::Plain,
             vec!["session-reader".to_string()],
+            &[],
         )
         .await
         .unwrap_err();

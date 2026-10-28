@@ -21,15 +21,23 @@ pub(super) async fn refresh_tools_and_broadcast(app: &AppHandle, pool: &EnginePo
 /// 引擎 → 隐藏这些工具。空 = 全开。
 /// 持久:用户关一次,该 scope 所有新对话/新窗口都继承,直到手动开回。
 /// `scope` = "plain"(普通会话,缺省)或 "code"(原生代码会话);两个 scope 独立。
+/// `toggled_ids` = 本次点击真正操作的 id(composer 一次切换传一个)。声明式
+/// 意图:列表里没有、但被点名的 id 是一次显式「打开」,在同一把锁的事务里提交
+/// 其认可的 standing connect grant 令牌,陈旧连接的失败补偿不再撤销用户的
+/// 新裁决(composer 快照过期时落盘与点击一致、无行差可推断,意图必须随写
+/// 携带)。缺省 None = 旧语义,不提交任何令牌。
 #[tauri::command]
 pub async fn set_disabled_connectors(
     connector_ids: Vec<String>,
+    toggled_ids: Option<Vec<String>>,
     scope: Option<String>,
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids).await?;
+    let toggled_ids = toggled_ids.unwrap_or_default();
+    crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids, &toggled_ids)
+        .await?;
     // 连接器禁用影响其 companion skills 的可见性（组合目录排除集变化）：
     // 重写在线会话组合目录 + 热刷工具白名单 + 热刷 CLI 硬拦截规则集（execpolicy）。
     refresh_tools_and_broadcast(&app, pool.inner()).await;

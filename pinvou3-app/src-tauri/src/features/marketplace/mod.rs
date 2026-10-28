@@ -694,8 +694,8 @@ pub use crate::features::marketplace::scope::{
     ConnectGrantOutcome, RELIED_GRANT_LOST_CAUSE, ReliedGrantCommit, commit_relied_connect_grant,
     deny_first_register_connector, deny_first_register_connector_refresh,
     load_disabled_bundles_for, load_disabled_bundles_startup, load_hidden_bundles_for,
-    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
-    unavailable_bundles_for,
+    save_disabled_bundles_for, save_disabled_bundles_for_with_toggled_ids, save_hidden_bundles_for,
+    sync_deny_all_scopes_after_install, unavailable_bundles_for,
 };
 // The bare grant/revoke/refresh writers stay crate-internal: every connect
 // consent write must reach them through `deny_first_register_connector` /
@@ -723,15 +723,19 @@ pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabl
 pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
+    toggled_ids: &[String],
 ) -> Result<(), String> {
     // Builtin plugins cannot be disabled (docs/builtin-toolset-contract.md
     // §3.1 defense in depth): the write fails loudly instead of silently
     // filtering the id out.
     builtin::reject_builtin_ids(&connector_ids)?;
+    let toggled_ids = toggled_ids.to_vec();
     // The composer whole-list write is fail-loud (main #563's contract, restored by round-19 MAJOR 1: this PR no longer downgrades to fire-and-forget): write failures propagate via `?`.
-    tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
-        .await
-        .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
+    tokio::task::spawn_blocking(move || {
+        save_disabled_bundles_for_with_toggled_ids(scope, &connector_ids, &toggled_ids)
+    })
+    .await
+    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
     Ok(())
 }
 
