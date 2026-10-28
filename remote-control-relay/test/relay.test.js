@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, connect } from "node:net";
 import { dirname, join } from "node:path";
@@ -1346,7 +1346,7 @@ test("configuration errors do not echo the offending value", async () => {
 test("an invalid PORT reports the fixed line instead of a stack", async () => {
   // listen() validates the port synchronously, so an invalid value dies
   // inside the call with a RangeError whose stack prints the module path.
-  for (const value of ["abc", "99999", "-1", "1.5"]) {
+  for (const value of ["abc", "99999", "-1", "1.5", "0"]) {
     const isolated = await spawnRelay({ PORT: value }, { awaitListening: false });
     try {
       await waitForExit(isolated.child, 10000);
@@ -1385,6 +1385,60 @@ test("relay state load failures surface a fixed message without paths", async (t
   }
 });
 
+test("state holding more tombstones than the clamped capacity fails startup", async () => {
+  // The tombstone clamp ties MAX_REVOKED_ENDPOINTS to MAX_RELAY_STATE_BYTES;
+  // a state file accumulated under the configured capacity but above the
+  // clamp must fail startup with the named reason instead of loading.
+  const statePath = join(testRoot, `clamped-state-${Date.now()}.json`);
+  const entries = [];
+  for (let i = 0; i < 9; i += 1) {
+    entries.push({ endpoint_id: `clamp${i}`, revoked_at: "2026-01-01T00:00:00Z" });
+  }
+  await writeFile(statePath, JSON.stringify({ version: 1, revoked_endpoints: entries }));
+  const isolated = await spawnRelay(
+    { PINVOU_REMOTE_STATE_PATH: statePath, MAX_RELAY_STATE_BYTES: "2048" },
+    { awaitListening: false },
+  );
+  try {
+    await waitForExit(isolated.child, 10000);
+    assert.notEqual(isolated.child.exitCode, 0);
+    assert.equal(
+      isolated.errors().trim(),
+      "[relay-error] relay_state_load_failed: unsupported or malformed state",
+    );
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("a fifo at the state path fails startup instead of blocking the read", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows has no mkfifo");
+    return;
+  }
+  // The regular-file check must precede readFile(): a FIFO at the state path
+  // would otherwise block startup forever with no diagnostic and no signal
+  // handlers registered yet.
+  const fifoPath = join(testRoot, `relay-state-fifo-${Date.now()}`);
+  await new Promise((resolve, reject) => {
+    execFile("mkfifo", [fifoPath], (error) => (error ? reject(error) : resolve()));
+  });
+  const isolated = await spawnRelay(
+    { PINVOU_REMOTE_STATE_PATH: fifoPath },
+    { awaitListening: false },
+  );
+  try {
+    await waitForExit(isolated.child, 10000);
+    assert.notEqual(isolated.child.exitCode, 0);
+    assert.equal(
+      isolated.errors().trim(),
+      "[relay-error] relay state path is not a regular file",
+    );
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
 test("accepts frames nested exactly to the wire depth cap", async (t) => {
   const ws = await openSocket();
   t.after(() => closeSocket(ws));
@@ -1413,6 +1467,23 @@ test("scans strings with escaped quotes and backslashes without false rejects", 
   // never a false duplicate-key or malformed verdict.
   ws.send('{"v":2,"payload":["say \\"hi\\"", "a\\\\b", "\u0076"]}');
   assert.equal((await error).code, "authentication_required");
+});
+
+test("scans a many-key frame in bounded time", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+  // The scanner's escape probe must stay bounded by the key text. An
+  // unbounded search to the end of the document made every key pay a scan of
+  // the whole remaining frame, so one unauthenticated many-key frame stalled
+  // the event loop for seconds; this frame scans in milliseconds when
+  // bounded and for many seconds when not.
+  const parts = new Array(220000);
+  for (let i = 0; i < parts.length; i += 1) parts[i] = `"k${String(i).padStart(9, "0")}":1`;
+  const reply = nextMessage(ws, "error", 5000);
+  const started = performance.now();
+  ws.send(`{${parts.join(",")}}`);
+  assert.equal((await reply).code, "unsupported_protocol_version");
+  assert(performance.now() - started < 2000, `scan took ${performance.now() - started} ms`);
 });
 
 test("a blank trusted proxy list is empty while an unset one inherits the allowlist", async () => {
