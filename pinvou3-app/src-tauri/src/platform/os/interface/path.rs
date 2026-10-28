@@ -59,10 +59,7 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
 /// std 没有 case-fold API，显式替换这两个码点后做 Unicode 小写即可覆盖
 /// 「黑名单常量均为纯 ASCII」场景的全部折叠拼写，不引入新依赖。非 ASCII
 /// 拼写是罕见输入：函数体本身只在慢路径分配，热路径见下面两个谓语。
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_spelling(text: &str) -> String {
     text.replace('\u{017F}', "s")
         .replace('\u{212A}', "k")
@@ -71,10 +68,7 @@ pub(crate) fn volume_fold_spelling(text: &str) -> String {
 
 /// `path_component_eq` 的折叠实现：双方皆 ASCII 时零分配快速路径（词法
 /// 判定跑在 workspace 列表/搜索/变更热道上），否则整串折叠后比较。
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_eq(component: &OsStr, expected: &str) -> bool {
     let text = component.to_string_lossy();
     if text.is_ascii() && expected.is_ascii() {
@@ -85,10 +79,7 @@ pub(crate) fn volume_fold_eq(component: &OsStr, expected: &str) -> bool {
 
 /// `path_component_prefix` 的折叠实现，快速路径同上（前缀长度切片上做
 /// ASCII 无关比较，不构造新串）。
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_prefix(component: &OsStr, prefix: &str) -> bool {
     let text = component.to_string_lossy();
     if text.is_ascii() && prefix.is_ascii() {
@@ -305,10 +296,7 @@ mod tests {
             "non-ASCII spellings that fold to non-ASCII must not match ASCII names"
         );
         assert!(volume_fold_prefix(OsStr::new(".env.local"), ".env."));
-        assert!(volume_fold_prefix(
-            OsStr::new(".ENV.\u{212A}ey"),
-            ".env."
-        ));
+        assert!(volume_fold_prefix(OsStr::new(".ENV.\u{212A}ey"), ".env."));
         assert!(!volume_fold_prefix(OsStr::new(".environment"), ".env."));
         assert!(!volume_fold_prefix(OsStr::new("notes.md"), ".env."));
     }
@@ -323,16 +311,19 @@ mod tests {
             path_starts_with_folded(Path::new("/Etc/Sudoers"), "/etc/sudoers"),
             folded
         );
-        assert!(path_starts_with_folded(Path::new("/etc/ssh/host.key"), "/etc/ssh/"));
-        assert!(path_starts_with_folded(Path::new("/etc/sudoers"), "/etc/sudoers"));
+        assert!(path_starts_with_folded(
+            Path::new("/etc/ssh/host.key"),
+            "/etc/ssh/"
+        ));
+        assert!(path_starts_with_folded(
+            Path::new("/etc/sudoers"),
+            "/etc/sudoers"
+        ));
         assert!(!path_starts_with_folded(
             Path::new("/etc/shadowed"),
             "/etc/shadow"
         ));
-        assert!(!path_starts_with_folded(
-            Path::new("/etc"),
-            "/etc/sudoers"
-        ));
+        assert!(!path_starts_with_folded(Path::new("/etc"), "/etc/sudoers"));
         assert!(!path_starts_with_folded(
             Path::new("etc/sudoers"),
             "/etc/sudoers"

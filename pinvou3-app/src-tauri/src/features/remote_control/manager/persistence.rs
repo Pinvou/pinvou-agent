@@ -696,9 +696,11 @@ fn normalized_env_url(
 }
 
 pub(super) fn remote_public_base_url() -> String {
-    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_PUBLIC_URL").ok(), "PINVOU_REMOTE_PUBLIC_URL", |url| {
-        validate_http_base_url(url, "PINVOU_REMOTE_PUBLIC_URL is invalid")
-    }) {
+    if let Some(url) = normalized_env_url(
+        std::env::var("PINVOU_REMOTE_PUBLIC_URL").ok(),
+        "PINVOU_REMOTE_PUBLIC_URL",
+        |url| validate_http_base_url(url, "PINVOU_REMOTE_PUBLIC_URL is invalid"),
+    ) {
         return url;
     }
     if let Some(settings) = load_relay_settings() {
@@ -710,9 +712,11 @@ pub(super) fn remote_public_base_url() -> String {
 pub(super) fn remote_relay_ws_url() -> String {
     // 与另外两个 env 覆盖同规则(trim 后为空/非法一律回落,不报错):非法
     // 覆盖降级到存储值/内置默认,而不是把 enable 卡死在 validate_config。
-    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_RELAY_WS_URL").ok(), "PINVOU_REMOTE_RELAY_WS_URL", |url| {
-        validate_ws_url(url, "PINVOU_REMOTE_RELAY_WS_URL is invalid")
-    }) {
+    if let Some(url) = normalized_env_url(
+        std::env::var("PINVOU_REMOTE_RELAY_WS_URL").ok(),
+        "PINVOU_REMOTE_RELAY_WS_URL",
+        |url| validate_ws_url(url, "PINVOU_REMOTE_RELAY_WS_URL is invalid"),
+    ) {
         return url;
     }
     if let Some(settings) = load_relay_settings() {
@@ -787,27 +791,55 @@ mod tests {
             Some("https://relay.example.test/pinvou3/remote".into())
         );
         assert_eq!(
-            normalized_env_url(Some("ftp://not-http".into()), "PINVOU_REMOTE_TEST_URL", http),
+            normalized_env_url(
+                Some("ftp://not-http".into()),
+                "PINVOU_REMOTE_TEST_URL",
+                http
+            ),
             None
         );
         assert_eq!(
-            normalized_env_url(Some("https://has space".into()), "PINVOU_REMOTE_TEST_URL", http),
+            normalized_env_url(
+                Some("https://has space".into()),
+                "PINVOU_REMOTE_TEST_URL",
+                http
+            ),
             None
         );
         assert_eq!(
-            normalized_env_url(Some(format!("https://{}", "a".repeat(2_049))), "PINVOU_REMOTE_TEST_URL", http),
+            normalized_env_url(
+                Some(format!("https://{}", "a".repeat(2_049))),
+                "PINVOU_REMOTE_TEST_URL",
+                http
+            ),
             None,
             "the length cap matches the relay settings validation"
         );
-        assert_eq!(normalized_env_url(Some("   ".into()), "PINVOU_REMOTE_TEST_URL", http), None);
-        assert_eq!(normalized_env_url(None, "PINVOU_REMOTE_TEST_URL", http), None);
+        assert_eq!(
+            normalized_env_url(Some("   ".into()), "PINVOU_REMOTE_TEST_URL", http),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(None, "PINVOU_REMOTE_TEST_URL", http),
+            None
+        );
 
         let ws = |url: &str| validate_ws_url(url, "invalid");
         assert_eq!(
-            normalized_env_url(Some(" ws://127.0.0.1:8787/ws ".into()), "PINVOU_REMOTE_TEST_URL", ws),
+            normalized_env_url(
+                Some(" ws://127.0.0.1:8787/ws ".into()),
+                "PINVOU_REMOTE_TEST_URL",
+                ws
+            ),
             Some("ws://127.0.0.1:8787/ws".into())
         );
-        assert_eq!(normalized_env_url(Some("http://not-ws".into()), "PINVOU_REMOTE_TEST_URL", ws), None);
-        assert_eq!(normalized_env_url(Some("".into()), "PINVOU_REMOTE_TEST_URL", ws), None);
+        assert_eq!(
+            normalized_env_url(Some("http://not-ws".into()), "PINVOU_REMOTE_TEST_URL", ws),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(Some("".into()), "PINVOU_REMOTE_TEST_URL", ws),
+            None
+        );
     }
 }
