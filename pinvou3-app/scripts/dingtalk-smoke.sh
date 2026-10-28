@@ -39,10 +39,19 @@ case "$(uname -s 2>/dev/null)" in
 esac
 if [ -z "$CLI" ]; then
   # 多版本并存时取最高版本(按数字段排序,不依赖 sort -V);只认纯数字点分目录,
-  # 排除 1.0.99.bak 这类改名残留目录冒充高版本。
-  ver="$(for d in "$HOME"/.pinvou3/assets/cli/dws/*/; do
-           case "$(basename "$d")" in *[!0-9.]*) continue ;; esac
-           [ -x "$d$EXE" ] && basename "$d"; done 2>/dev/null | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+  # 排除 1.0.99.bak 这类改名残留目录冒充高版本。候选在普通循环里累积后再排序:
+  # macOS 自带 bash 3.2 在执行期才解析 $() 内文,解析不了「$() 内嵌 case」
+  # (pattern 的 `)` 会终止命令替换)——文档化用法是 bash scripts/dingtalk-smoke.sh,
+  # 必须兼容 3.2(bash -n 两版都过,只有真跑 3.2 才暴露,已实测)。
+  ver=""
+  for d in "$HOME"/.pinvou3/assets/cli/dws/*/; do
+    db="${d%/}"; db="${db##*/}"
+    case "$db" in *[!0-9.]*) continue ;; esac
+    [ -x "$d$EXE" ] || continue
+    ver="$ver$db
+"
+  done
+  ver="$(printf '%s' "$ver" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
   [ -n "$ver" ] && CLI="$HOME/.pinvou3/assets/cli/dws/$ver/$EXE"
 fi
 [ -z "$CLI" ] && [ -n "$PLAT" ] && [ -x "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && CLI="$HOME/.pinvou3/connectors/$PLAT/bin/$EXE"
@@ -52,8 +61,13 @@ if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连�
 
 # 探测必须限时:connector_cli.rs run_probe 对同一族命令用 30s kill-tree——npm-shim
 # CLI 曾实测卡在网络/代理/无 TTY 提示上无限挂起,冒烟脚本挂着不退出比红更糟。
-# 有 coreutils timeout 用之;macOS 裸机退化为 bash 看门狗(kill 直接子进程已覆盖
-# 本脚本的全部发现形态:native 二进制/带 shebang 的 npm 全局脚本)。
+# 有 coreutils timeout 用之;macOS 裸机退化为 bash 看门狗。看门格子壳必须重定向
+# 到 /dev/null:本函数总在 $( ) 里被调用,子壳及其内层 sleep 会继承命令替换的
+# 管道写端,快探针结束后孤儿 sleep 仍握着管道,$() 要等它睡满 30s 才见到 EOF
+# (实测健康路径被拖满 9×30s);指向 /dev/null 后快探针即刻返回(孤儿 sleep
+# ≤30s 自行退出)。kill 只打直接子进程:对「native 二进制 / exec node 的 npm
+# shim」即全杀;若 CLI 是 fork 孙进程再 wait 的 wrapper,孙进程可能存活到自行
+# 退出(本脚本现有发现形态均非该类;coreutils timeout 分支无此问题)。
 DWS_TIMEOUT=30
 if command -v timeout >/dev/null 2>&1; then
   dws_run() { timeout "$DWS_TIMEOUT" "$CLI" "$@"; }
@@ -61,7 +75,7 @@ else
   dws_run() {
     "$CLI" "$@" &
     local pid=$!
-    ( sleep "$DWS_TIMEOUT" && kill "$pid" 2>/dev/null ) &
+    ( sleep "$DWS_TIMEOUT" && kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; local rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
