@@ -287,7 +287,12 @@
       });
       socket.addEventListener("error", () => {
         this.clearSpeculativeReconnect();
-        this.setConnection("connecting", "连接异常，正在重试…");
+        // 异常断线先于 close 触发 error:desktop_offline 的专属文案同样不得
+        // 被这里的 connecting 覆盖(close→scheduleReconnect 一侧有同款门),
+        // 否则离线窗口内的 TCP reset 会把「桌面端离线」换成误导性转圈。
+        if (!this.closedPermanently && this.connectionState.status !== "desktop_offline") {
+          this.setConnection("connecting", "连接异常，正在重试…");
+        }
       });
     }
 
