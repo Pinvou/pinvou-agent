@@ -157,7 +157,7 @@ export function useModelReasoningTierState({ model, storedEffort = null, baseUrl
 //   pending    - probe in progress (gray "probing service type…" hint line)
 //   noControlThinking - "thinking is always on and cannot be disabled" hint (takes precedence over "unsupported")
 //   variant    - 'composer' | 'form'
-export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noControlThinking, variant = 'composer' }) {
+export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noControlThinking, localRoute = false, variant = 'composer' }) {
   if (!Array.isArray(tiers) || tiers.length === 0) {
     const detail = (t && t.uiSettingsDetail) || {};
     const text = pending
@@ -175,7 +175,7 @@ export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noC
   const tierLabels = variant === 'form'
     ? ((t && t.uiSettingsDetail && t.uiSettingsDetail.reasoningEffortTiers) || {})
     : ((t && t.thinkingDepthTiers) || {});
-  const toggleOnly = tiers.length === 2 && tiers[0] === 'off' && tiers[1] === 'high';
+  const toggleOnly = localRoute && tiers.length === 2 && tiers[0] === 'off' && tiers[1] === 'high';
   return (
     <div className={variant === 'form' ? 'ml-auto flex flex-wrap justify-end gap-1' : 'flex flex-wrap gap-1'}>
       {tiers.map(tier => (
