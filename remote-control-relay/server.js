@@ -260,16 +260,83 @@ function boundedInteger(raw, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
-// Returned lowercase so configuration entries and attributed addresses
-// compare case-insensitively; textual IP case carries no meaning (and the
-// mapped-prefix strip only works on the lowercase spelling). Full IPv6
-// canonicalization stays out of scope: an entry spelled differently from the
-// peer address, for example an expanded form, still never matches.
+// Expands an IPv6 address to eight lowercase zero-padded groups, reducing an
+// IPv4-mapped address to its embedded dotted quad. Returns null when invalid.
+function expandIpv6(address) {
+  let left = address;
+  let right = "";
+  let compressed = false;
+  if (address.includes("::")) {
+    const halves = address.split("::");
+    if (halves.length > 2) return null;
+    [left, right] = halves;
+    compressed = true;
+  }
+  // A stray colon outside the "::" marker (":1:2", "1::2::3" already handled
+  // above) is invalid, as is an empty compression side like "1:::2".
+  if ((left !== "" && (left.startsWith(":") || left.endsWith(":")))
+    || (right !== "" && (right.startsWith(":") || right.endsWith(":")))) {
+    return null;
+  }
+  const leftGroups = left === "" ? [] : left.split(":");
+  const groups = leftGroups.concat(right === "" ? [] : right.split(":"));
+  // An embedded IPv4 tail stands for the final two groups and is only valid
+  // at the very end of the address.
+  if (groups.length && groups[groups.length - 1].includes(".")) {
+    const tail = groups.pop();
+    if (isIP(tail) !== 4) return null;
+    const [o1, o2, o3, o4] = tail.split(".").map(Number);
+    groups.push(
+      (o1 * 256 + o2).toString(16).padStart(4, "0"),
+      (o3 * 256 + o4).toString(16).padStart(4, "0"),
+    );
+  }
+  if (groups.some((group) => !/^[0-9A-Fa-f]{1,4}$/.test(group))) return null;
+  if (compressed) {
+    if (groups.length > 7) return null;
+    groups.splice(leftGroups.length, 0, ...Array(8 - groups.length).fill("0"));
+  } else if (groups.length !== 8) {
+    return null;
+  }
+  const full = groups.map((group) => group.toLowerCase().padStart(4, "0"));
+  // IPv4-mapped spellings name an IPv4 peer, so they reduce to that address
+  // regardless of how much of ::ffff:0:0/96 was written out.
+  if (full.slice(0, 5).every((group) => group === "0000") && full[5] === "ffff") {
+    const high = parseInt(full[6], 16);
+    const low = parseInt(full[7], 16);
+    return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+  }
+  return full.join(":");
+}
+
+// Configuration entries and attributed addresses funnel through this one
+// canonical form - lowercase, IPv6 expanded to eight zero-padded groups,
+// IPv4-mapped spellings reduced to the embedded dotted quad - so any valid
+// spelling of the same address matches. Before canonicalization a valid-but-
+// non-canonical entry (uppercase or expanded) started cleanly yet never
+// matched a peer, silently collapsing clients behind that proxy into one
+// bucket. The zone-id suffix is validated here too, which keeps acceptance
+// independent of the runtime's own zone-id support.
 function normalizeIp(value) {
   if (typeof value !== "string" || value.length > MAX_IP_TEXT_CHARS) return "";
-  const ip = value.trim().toLowerCase();
-  if (!isIP(ip)) return "";
-  return ip.startsWith("::ffff:") && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip;
+  const text = value.trim();
+  if (text === "") return "";
+  const zoneAt = text.indexOf("%");
+  const address = (zoneAt === -1 ? text : text.slice(0, zoneAt)).toLowerCase();
+  const zone = zoneAt === -1 ? "" : text.slice(zoneAt + 1);
+  if (address.includes(":")) {
+    // A zone id is an interface name: never empty, no further %, and matched
+    // verbatim against what the peer reports.
+    if (zoneAt !== -1 && !/^[0-9A-Za-z._-]+$/.test(zone)) return "";
+    const expanded = expandIpv6(address);
+    if (expanded === null) return "";
+    // A mapped spelling already reduced to plain IPv4; an IPv4 peer never
+    // reports a zone, so a suffix there has nothing to match.
+    if (!expanded.includes(":")) return expanded;
+    return expanded + (zone === "" ? "" : `%${zone}`);
+  }
+  if (zone !== "" || isIP(address) !== 4) return "";
+  return address;
 }
 
 function parseIpSet(name, value) {

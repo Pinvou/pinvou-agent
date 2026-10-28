@@ -239,13 +239,11 @@ connection open.
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` or `PINVOU_REMOTE_TRUSTED_PROXY_IPS` aborts
   startup with `proxy_ip_configuration_invalid` instead of being ignored; a
   value with content that contains no address (for example `,,,`) is also
-  rejected. Entries are lowercased before matching, so case never matters,
-  and an IPv4-mapped spelling of the form `::ffff:a.b.c.d` is equivalent to
-  the plain IPv4 address for both matching and rate-limit keys; any other
-  spelling difference (for example an expanded form such as
-  `0:0:0:0:0:0:0:1`) starts up but never matches a peer. A zone-id entry
-  such as `fe80::1%eth0` matches only a peer reporting the identical zone
-  string, so use the spelling the runtime reports. A blank value means an
+  rejected. Entries are canonicalized before matching: lowercased, IPv6
+  expanded to its full form, and IPv4-mapped spellings reduced to the embedded
+  IPv4, so any valid spelling of an address matches regardless of the form the
+  runtime reports a peer in. A zone-id entry such as `fe80::1%eth0` matches
+  only a peer reporting the identical zone string. A blank value means an
   empty set: an empty
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. A direct peer on
@@ -258,7 +256,9 @@ connection open.
   forwarded header falls back to the direct peer address when its rightmost
   item is empty or not a literal IP of at most 128 characters (an entirely
   empty header included), or when the whole header exceeds 4096 characters;
-  there is no separate "malformed header" fallback. Repeated
+  there is no separate "malformed header" fallback. Addresses are compared in
+  canonical form (lowercase, IPv6 expanded, IPv4-mapped spellings reduced), so
+  header spellings and configuration entries match across forms. Repeated
   `X-Forwarded-For` lines are joined into one list by the runtime, so the
   rightmost item of the joined list is used; they are not a fallback case. A
   trusted proxy must set these headers itself and strip client-supplied ones;

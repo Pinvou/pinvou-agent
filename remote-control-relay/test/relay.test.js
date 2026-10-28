@@ -1705,6 +1705,64 @@ test("serves 503 for the site root when the web build is missing entirely", asyn
   }
 });
 
+test("matches expanded and mapped ip spellings canonically", async () => {
+  // The trust entry is spelled in fully expanded form; the loopback peer
+  // reports ::1. Trust must hold so the forwarded connection opens a private
+  // bucket, and the plain connection must then consume the peer bucket.
+  const isolated = await spawnRelay({
+    PINVOU_REMOTE_HOST: "::",
+    WS_CONNECT_LIMIT: "1",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "0:0:0:0:0:0:0:1",
+  });
+  const loopbackUrl = `ws://[::1]:${isolated.port}/pinvou3/remote/ws`;
+  let first;
+  let second;
+  try {
+    first = await openSocket(loopbackUrl, { headers: { "x-forwarded-for": "198.51.100.9" } });
+    assert.equal(await rejectedUpgrade(loopbackUrl, {
+      headers: { "x-forwarded-for": "198.51.100.9" },
+    }), 429);
+    second = await openSocket(loopbackUrl);
+  } finally {
+    closeSocket(first);
+    closeSocket(second);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("a forwarded ipv6 item shares its canonical bucket", async () => {
+  const isolated = await spawnRelay({
+    WS_CONNECT_LIMIT: "1",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "127.0.0.1",
+  });
+  let first;
+  try {
+    first = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "2001:db8::1" } });
+    // The fully expanded, uppercase spelling of the same address must land in
+    // the one bucket instead of opening a fresh one.
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "2001:0DB8:0000:0000:0000:0000:0000:0001" },
+    }), 429);
+  } finally {
+    closeSocket(first);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("zone id entries start on every supported runtime", async () => {
+  // The zone suffix is split off and validated here, so acceptance no longer
+  // depends on the runtime's own zone-id support.
+  const isolated = await spawnRelay({
+    PINVOU_REMOTE_ALLOWED_PROXY_IPS: "FE80::1%wlp9s0",
+  });
+  try {
+    const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
+    assert.equal(health.endpoint_count, 0);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
 test("consults X-Real-IP only when X-Forwarded-For is entirely absent", async () => {
   const isolated = await spawnRelay({
     WS_CONNECT_LIMIT: "1",
