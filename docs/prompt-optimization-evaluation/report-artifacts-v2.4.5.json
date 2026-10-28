@@ -2,7 +2,7 @@
   "version": "V2.4.5",
   "author": "Codex (OpenAI)",
   "model": "GPT-6; exact variant/reasoning level unavailable",
-  "scope": "Current report artifact hashes, including append-only review notes. Model measurements and frozen manifests remain historical V2.4.5; no R1-R3 model run is claimed. Privacy/visual-review entries retain their original inspection boundary; fresh R3 checks are separate.",
+  "scope": "Current report artifact hashes, including append-only review notes. Model measurements and frozen manifests remain historical V2.4.5; no R1-R4 model run is claimed. Privacy/visual-review entries retain their original inspection boundary; fresh R3/R4 checks are separate.",
   "pdf_pages": 8,
   "figures": 4,
   "formats": [
@@ -52,8 +52,8 @@
     },
     {
       "path": "prompt-optimization-evaluation/README.md",
-      "bytes": 4524,
-      "sha256": "4cd6076eb36b93f0e4e52d8cb4c9ec8957f3db2a6bc8d9d7bf15b54312f0bcb2"
+      "bytes": 5129,
+      "sha256": "180b425727e44ad97bfea9ca063d4eb76226a7a194b423822881a911b1ed86d3"
     },
     {
       "path": "prompt-optimization-evaluation/figures/01-results.png",
@@ -123,8 +123,8 @@
     },
     {
       "path": "提示词优化-普通模式与代码模式.md",
-      "bytes": 182141,
-      "sha256": "10661474e8eecd0bfa5c92a2afc21e849547b91db4e2459d8f175acfee6f91d8"
+      "bytes": 184570,
+      "sha256": "10097179a9d996d28b336d043d6387a814fb373e8d19423dc79efbbbab20bfd5"
     },
     {
       "path": "prompt-optimization-evaluation/figures/pinvou-poster-v2.4.5.png",

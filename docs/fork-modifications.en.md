@@ -70,13 +70,8 @@
 - Local native Windows verification: `cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` passed 23 tests (Cargo substring matching selects 19 `sandbox::tests::*` and 4 `repl::sandbox::tests::*`; Linux selects 26 because of cfg differences). Both opt-in tool tests passed with system Python 3.14 and bundled Python 3.13.14 (four executions); the separate Git Bash environment probe passed once. Earlier, restoring the original builders made both native tool tests fail for each interpreter with corrupted Python Chinese and intact PowerShell Chinese. Formatting, architecture guard, and fast fork fingerprints passed.
 - Windows evidence above is prior local author verification, not a claim that later documentation revisions reran native tests. The parent Windows regression step now selects the three deterministic default-merge, constructor-wiring, and case-insensitive-override filters, each with a nonzero-test guard. The actual [Windows regression job at `91e262ba2`](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) ran all three filters successfully. That receipt covers the older head and unchanged foundation, not later revisions. The two Python-dependent opt-in tests remain local author evidence. The maintenance fork's `pinvou3-clean` workflow is Ubuntu-only; Windows-gated tests do not run in that CI lane. The Linux-visible `windows_shell_default_env_forces_python_pipe_stdio_utf8` checks the helper result, not its constructor wiring; the case-insensitive overlay also requires native Windows regression. Upstream PR codewhale-hq/Codewhale#7041 is the contribution path for eventual upstream Windows CI coverage, not evidence that such a lane has run. No customer-device replay, PowerShell 7 verification, or installer release was performed.
 
-## Current state (2026-10-28; review candidate)
 ## Current state (2026-10-28)
 
-- Public maintenance remains `6e1ee88ee8f8ea28eec7be3d8add3a591468412a`, including #118–#122. The parent review gitlink is `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6` ([CodeWhale#125](https://github.com/Pinvou/CodeWhale/pull/125)), not a merged maintenance head. Keep the application PR draft until the foundation merges and repin its actual squash commit. No protected branch or tag is updated.
-- Candidate history: 87 commits above upstream v0.9.12 `dcd4c200f`, 72 above r1 `1fafee7e2`; 85 carry DCO sign-offs. Published maintenance remains 84/69/82. The only missing-footer squashes remain #107 `f27672935` and #116 `e9a7f48da1`; published history is not rewritten.
-- Immutable r3 remains `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. Public verification still requires gitlink equality with maintenance and the frozen r3 tag. It is expected to fail for this review candidate; no predicate is relaxed.
-- Candidate drift: 522 files, +90147/-39279, net +50868; 255 distinct `forkguard_*` names using the guard regex across all crates (floor 64). Earlier native Windows evidence does not cover this candidate; final CI and integrated-tree review remain separate requirements.
 - Public maintenance and parent gitlink: `f1eb10efcfe2468fde42d1724d7f5f19d54b904c` (2026-10-28). #114 merged as `fe90f72f9`, #125 as `f1eb10efc`. This follow-up changes parent references only; it does not advance maintenance.
 - Measured history: 86 commits above upstream v0.9.12 `dcd4c200f`, 71 above r1 `1fafee7e2`; 84 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
@@ -470,6 +465,30 @@ CodeWhale#125 remains open; the app stays draft until its actual maintenance
 squash is repinned and the unchanged public verifier passes.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## 2026-10-28 approval-review follow-up R4 (T3; CodeWhale#125)
+
+The approval [at `643e5e1b3`](https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5677804087)
+confirmed all prior requested changes. The small follow-up candidate is `0af53af6c0648b544e4b79194acc9e4f408ef7a4`;
+public `pinvou3-clean` remains `6e1ee88ee`. It restores the system-level core-capability
+match definition and inspect-before-local ordering, qualifies discovery on availability,
+clarifies shell query/receipt flow, and independently pins host declarations and the
+exact-name-first tool description. The installer is unchanged; its existing regression
+now also covers a preserved custom body beside an unchanged peer whose refresh advances
+the marker. The disclosed historical-body, Goal-wording and strict release-Clippy
+exclusions remain outside this follow-up.
+
+Candidate history: 88 commits above v0.9.12, 73 above r1, 86 signed;
+the same two historical squashes lack footers. Drift: 522 files, +90186/-39279,
+net +50907; 255 distinct guard names. Fresh checks and deletion controls are in
+[R4 verification](prompt-optimization-evaluation/review-r4-verification.json), with a
+separate [R4 source manifest](prompt-optimization-evaluation/source-manifest-review-r4.json).
+No new model result or fresh full application/native-platform regression is claimed.
+Keep the app draft until the foundation is integrated, then repin the actual maintenance
+squash, recount and run the unchanged public verifier.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
 ## 2026-10-28 consumed baseline: streaming tool-input reuse and discovery-guidance alignment (T2/T3)
 
 The public maintenance branch advanced by two reviewed squashes — #114 `fe90f72f9`, #125 `f1eb10efc` — and this parent consumes them with reference and register updates only; it creates no new fork topic and leaves both parent `Cargo.lock` files untouched (neither squash changes the fork's `Cargo.toml`/lock; the crates' public signatures toward the parent are unchanged).

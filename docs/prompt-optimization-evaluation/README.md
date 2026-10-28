@@ -26,7 +26,7 @@ documented-name probes for deferred tools, fixes browser/authority/Plan wording,
 and tightens publication evidence. Its deterministic checks are recorded
 separately. No new 540-task model run is implied.
 
-Current foundation review head: `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6`.
+Current foundation review head: `0af53af6c0648b544e4b79194acc9e4f408ef7a4`.
 Public maintenance `6e1ee88ee` names `pinvou3-clean`, not CodeWhale `main`.
 The parent follows the reviewer's clean replay onto main `ab6ac99e6`;
 all three previous patch identities and their merged tree were verified before R3.
@@ -57,3 +57,13 @@ Supporting receipts: [Git preservation](git-preservation-v2.4.5.json),
 [loaded Skill bodies](loaded-skill-body-audit-v2.4.5.json),
 [third-root command diagnostic](third-root-command-diagnostic-v2.4.5.json),
 and [calibration changes](calibration-changes-v2.4.5.json).
+
+## Approval-review follow-up (R4)
+
+The foundation review approved `643e5e1b3` and suggested nonblocking guidance/pin
+improvements. The follow-up restores match/inspection semantics, aligns discovery
+availability qualifiers and proves mixed peer/custom-body migration. See the
+[R4 verification](review-r4-verification.json) and [R4 source manifest](source-manifest-review-r4.json).
+The earlier approval and all frozen V2.4.5/R1–R3 records retain their own heads;
+this is no new model measurement. The app remains draft until foundation integration
+and the real maintenance-squash repin/public verifier.

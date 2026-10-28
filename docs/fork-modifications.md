@@ -583,6 +583,30 @@ CodeWhale#125 remains open; the app stays draft until its actual maintenance
 squash is repinned and the unchanged public verifier passes.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## 2026-10-28 approval-review follow-up R4 (T3; CodeWhale#125)
+
+The approval [at `643e5e1b3`](https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5677804087)
+confirmed all prior requested changes. The small follow-up candidate is `0af53af6c0648b544e4b79194acc9e4f408ef7a4`;
+public `pinvou3-clean` remains `6e1ee88ee`. It restores the system-level core-capability
+match definition and inspect-before-local ordering, qualifies discovery on availability,
+clarifies shell query/receipt flow, and independently pins host declarations and the
+exact-name-first tool description. The installer is unchanged; its existing regression
+now also covers a preserved custom body beside an unchanged peer whose refresh advances
+the marker. The disclosed historical-body, Goal-wording and strict release-Clippy
+exclusions remain outside this follow-up.
+
+Candidate history: 88 commits above v0.9.12, 73 above r1, 86 signed;
+the same two historical squashes lack footers. Drift: 522 files, +90186/-39279,
+net +50907; 255 distinct guard names. Fresh checks and deletion controls are in
+[R4 verification](prompt-optimization-evaluation/review-r4-verification.json), with a
+separate [R4 source manifest](prompt-optimization-evaluation/source-manifest-review-r4.json).
+No new model result or fresh full application/native-platform regression is claimed.
+Keep the app draft until the foundation is integrated, then repin the actual maintenance
+squash, recount and run the unchanged public verifier.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
 ## 2026-10-28 消费基线：流式工具入参复用与发现指引对齐（T2/T3）
 
 公开维护分支以两次评审 squash 前进——#114 `fe90f72f9`、#125 `f1eb10efc`——父仓仅以引用与登记更新消费；不新增 fork 主题，也不改父仓 `Cargo.lock`（两次 squash 均不改 fork 的 `Cargo.toml`/lock，crates 对父仓公开签名不变）。

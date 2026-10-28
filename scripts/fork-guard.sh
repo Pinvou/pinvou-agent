@@ -208,8 +208,6 @@ fingerprints=(
   # 不可用/被拒即停、不重复探测不猜名。下列 8 条 T3 文案指纹随 #125 的真实措辞重钉；
   # 可执行回归仍由对应 forkguard_* 测试行承载。
   "T3|技能索引 Usage 补 tool_search 激活兜底|CodeWhale/crates/tui/src/skills/mod.rs|activate it via \`tool_search\` if available. If discovery cannot provide it and access was not denied, try \`load_skill\` directly once"
-  "T3|Exact host retains deferred names without search|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_parent_deferred_tools_remain_reachable_without_discovery"
-  "T3|已安装发现技能升级并保留用户修改 |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_skill_upgrade_refreshes_shipped_mcp_discovery_and_preserves_user_edits"
   "T3|技能索引 Usage 回归                 |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_skill_index_usage_names_tool_search_activation"
   "T3|子代理技能段走 tool_search 发现        |CodeWhale/crates/tui/src/tools/subagent/mod.rs|If \`load_skill\` is not in your tool list, activate it via \`tool_search\` if available"
   "T3|子代理技能目录回归                  |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_subagent_skill_catalog_uses_tool_search_discovery"
