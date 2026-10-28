@@ -376,12 +376,15 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
     } else {
         filesystem_changes(&root, baseline.as_ref())?
     };
+    // 凭据过滤必须先于 classify_origin:分类会对 git 工作区的 dirty 文件
+    // 读取内容并做 SHA-256 指纹,黑名单条目(如 .env)不能为了一次注定被
+    // 丢弃的回显先读一遍内容。列表与搜索不外泄凭据文件的存在(见
+    // list_workspace 的过滤注释);changes 车道同约束——名称/状态元数据
+    // 同样不得为黑名单组件回显。
+    changes.retain(|change| !relative_path_crosses_blocked_component(&change.relative_path));
     for change in &mut changes {
         change.origin = classify_origin(&root, baseline.as_ref(), &change.relative_path)?;
     }
-    // 列表与搜索不外泄凭据文件的存在(见 list_workspace 的过滤注释);
-    // changes 车道同约束——名称/状态元数据同样不得为黑名单组件回显。
-    changes.retain(|change| !relative_path_crosses_blocked_component(&change.relative_path));
     changes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(WorkspaceChanges {
         git,
