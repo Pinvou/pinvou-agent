@@ -1288,7 +1288,10 @@ wss.on("connection", (ws, req) => {
   // ws emits "error" on the socket for protocol violations (e.g. a frame over
   // maxPayload). Without a listener, one unauthenticated frame would crash the
   // whole relay process.
-  ws.on("error", () => {
+  ws.on("error", (error) => {
+    // ws closes the offending socket itself; the fixed code keeps contained
+    // protocol violations visible without echoing frame content.
+    console.error(`[relay-error] websocket_protocol_violation code=${error?.code ?? "unknown"}`);
     try { ws.terminate(); } catch {}
   });
 

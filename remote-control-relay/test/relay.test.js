@@ -1226,6 +1226,11 @@ test("survives a websocket protocol violation that emits an error event", async 
     // listener the unhandled event crashed the whole relay process.
     ws.send("x".repeat(4 * 1024 * 1024 + 8));
     await waitForClose(ws);
+    // The containment must stay observable: one fixed line, no frame content.
+    assert.match(
+      isolated.errors(),
+      /\[relay-error\] websocket_protocol_violation code=WS_ERR_UNSUPPORTED_MESSAGE_LENGTH/u,
+    );
     const follower = await openSocket(isolated.wsUrl);
     closeSocket(follower);
     assert.equal(isolated.child.exitCode, null);
