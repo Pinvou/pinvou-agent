@@ -130,19 +130,19 @@ pub(crate) enum ProbeError {
 impl ProbeError {
     /// 在**包装人类可读文案之前**对 platform::process 的原始错误分型。
     /// 分型依据是本仓库自家模块的报错格式(`spawn {program} failed: ` 出自
-    /// platform/process.rs 的 spawn 失败路径,` timed out after ` / `output
-    /// exceeded` 出自超时/溢出路径),由下方测试钉住。分型必须吃原始错误
-    /// ——先包装后分型会让前缀匹配永远落空,降级分支随之失效(本轮修掉的
-    /// 回归)。两个锚点都在 platform 的**固定前缀**里、必然先于内嵌的捕获
-    /// 输出出现,故按首次出现位置取先者——即便子进程自己的输出里也含另一
-    /// 条锚点文本,也不会误报超时。
+    /// platform/process.rs 的 spawn 失败路径,`CAPTURE_TIMEOUT_ANCHOR` /
+    /// `CAPTURE_OVERFLOW_ANCHOR` 两条锚点常量出自超时/溢出路径),由下方测试
+    /// 钉住。分型必须吃原始错误——先包装后分型会让前缀匹配永远落空,降级
+    /// 分支随之失效(本轮修掉的回归)。两个锚点都在 platform 的**固定前缀**
+    /// 里、必然先于内嵌的捕获输出出现,故按首次出现位置取先者——即便子进程
+    /// 自己的输出里也含另一条锚点文本,也不会误报超时。
     fn classify(raw: String) -> Self {
         if raw.starts_with("spawn ") {
             // spawn 失败没有子进程,错误串不含捕获输出,原样保留。
             Self::Spawn(raw)
         } else {
-            let timeout = raw.find(" timed out after ");
-            let overflow = raw.find("output exceeded");
+            let timeout = raw.find(crate::platform::process::CAPTURE_TIMEOUT_ANCHOR);
+            let overflow = raw.find(crate::platform::process::CAPTURE_OVERFLOW_ANCHOR);
             let prefer_timeout = match (timeout, overflow) {
                 (Some(t), Some(o)) => t < o,
                 (Some(_), None) => true,

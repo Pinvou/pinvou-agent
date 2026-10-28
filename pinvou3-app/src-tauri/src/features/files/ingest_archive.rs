@@ -178,22 +178,35 @@ fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
         command,
         std::time::Duration::from_secs(60),
     )
-    .map_err(|e| {
-        // 列表输出本身越过 4 MiB 捕获上限 ≈ 条目数多到无法枚举（每条目
-        // ~400-500 字节）：按「条目过多」报因，而不是把平台层溢出文案（含
-        // 内嵌输出）透传给用户。条目数上限本来就是 50，这里只是让拒绝原
-        // 因可读。
-        if e.contains("output exceeded") {
-            String::from("7z 列表输出超出捕获上限：条目过多，已终止列举进程")
-        } else {
-            format!("7z 调用失败: {e}")
-        }
-    })?;
+    .map_err(map_archive_list_error)?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
     let text = String::from_utf8_lossy(&out.stdout);
     parse_archive_list_stats(&text)
+}
+
+/// 把 `7z l` 的平台层错误映射成面向用户的拒绝原因。列表输出本身越过
+/// 4 MiB 捕获上限 ≈ 条目数多到无法枚举（每条目 ~400-500 字节）：按「条
+/// 目过多」报因，而不是把平台层溢出文案（含内嵌输出）透传给用户。条目
+/// 数上限本来就是 50，这里只是让拒绝原因可读。
+///
+/// 与 connector/pkexec 边界同规则：按锚点首次出现位置取先者——子进程自
+/// 己的输出恰好含另一条锚点文本（如超时 detail 里带 "output exceeded"）
+/// 时不得翻转归因；两条路都拒绝，错的只是拒绝原因。
+fn map_archive_list_error(error: String) -> String {
+    let timeout = error.find(crate::platform::process::CAPTURE_TIMEOUT_ANCHOR);
+    let overflow = error.find(crate::platform::process::CAPTURE_OVERFLOW_ANCHOR);
+    let overflow_first = match (timeout, overflow) {
+        (None, Some(_)) => true,
+        (Some(t), Some(o)) => o < t,
+        _ => false,
+    };
+    if overflow_first {
+        String::from("7z 列表输出超出捕获上限：条目过多，已终止列举进程")
+    } else {
+        format!("7z 调用失败: {error}")
+    }
 }
 
 fn parse_archive_list_stats(text: &str) -> Result<(usize, u64), String> {
@@ -310,6 +323,40 @@ mod tests {
 
     fn is_symlink_permission_error(error: &std::io::Error) -> bool {
         error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314)
+    }
+
+    /// 溢出错误必须映射成「条目过多」，且归因按锚点首次出现位置取先者：
+    /// 超时 detail 里恰好含溢出锚点文本时仍按超时报因（两条路都拒绝，
+    /// 错的只是拒绝原因）。platform 侧格式漂移由 connector/pkexec 同款
+    /// 常量引用兜住，这里钉的是本边界的归因规则本身。
+    #[test]
+    fn archive_list_error_maps_overflow_by_first_anchor_occurrence() {
+        let overflow = map_archive_list_error(String::from(
+            "7z output exceeded 4194304 bytes; subprocess tree termination requested: no subprocess output",
+        ));
+        assert!(
+            overflow.contains("条目过多"),
+            "an overflow must map to the entry-count rejection: {overflow}"
+        );
+        assert!(
+            !overflow.contains("7z output exceeded"),
+            "the platform message with embedded output must not pass through: {overflow}"
+        );
+
+        // 子进程输出里含 "output exceeded" 的超时错误：溢出锚点在后，按
+        // 超时归因（既有行为是原样透传包装，这里只钉归因不翻转）。
+        let spoofed_timeout = map_archive_list_error(String::from(
+            "7z timed out after 60s: stderr:\nlisting stopped: output exceeded quota",
+        ));
+        assert!(
+            !spoofed_timeout.contains("条目过多"),
+            "a timeout whose detail mentions the overflow anchor must not be misattributed: {spoofed_timeout}"
+        );
+        assert!(spoofed_timeout.contains("7z 调用失败"));
+
+        // spawn/wait 等无锚点错误：原样透传包装。
+        let plain = map_archive_list_error(String::from("spawn 7z failed: program not found"));
+        assert_eq!(plain, "7z 调用失败: spawn 7z failed: program not found");
     }
 
     #[test]
