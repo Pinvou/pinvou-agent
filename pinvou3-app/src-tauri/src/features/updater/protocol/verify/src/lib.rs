@@ -18,7 +18,7 @@ use envelope::parse_bound_envelope;
 pub use successor::{ActiveMetadataInput, SignatureCheckedRootSuccessor, verify_root_successor};
 pub use time::{
     SignatureCheckedTimeResponse, SuppliedTimeObservation, TimeVerificationError,
-    TimeVerificationInputs, verify_time_response,
+    TimeVerificationInputs, verify_time_response, verify_time_response_source,
 };
 
 pub use archive::{ArchivedEnvelopeIdentity, verify_archived_package, verify_archived_release};

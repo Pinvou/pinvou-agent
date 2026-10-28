@@ -9,9 +9,7 @@ use crate::{
     registration::HostRegistration,
 };
 use pinvou_upgrade_codec::{Document, InputKind, decode_canonical_envelope};
-use pinvou_upgrade_verifier::{
-    SuppliedTimeObservation, TimeVerificationInputs, verify_time_response,
-};
+use pinvou_upgrade_verifier::{SuppliedTimeObservation, verify_time_response_source};
 pub(crate) use policy_fault::PolicyFault;
 use serde::{Deserialize, Serialize};
 
@@ -235,22 +233,20 @@ impl Evidence {
         if self.base_root_count > roots.len() {
             return Err(Error::StateCorrupt);
         }
-        let references: Vec<&[u8]> = roots.iter().map(|s| s.as_bytes()).collect();
-        let checked = verify_time_response(
+        let checked = verify_time_response_source(
             self.response.as_bytes(),
-            TimeVerificationInputs::new(
-                original,
-                &references,
-                &request,
-                SuppliedTimeObservation {
-                    sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
-                    received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
-                    max_round_trip_millis: policy.max_round_trip_ms,
-                    max_uncertainty_millis: policy.max_uncertainty_ms,
-                    trusted_time_floor_millis: self.floor_before,
-                },
-                &[],
-            ),
+            original,
+            roots.len(),
+            |index| Ok(std::borrow::Cow::Borrowed(roots[index].as_bytes())),
+            &request,
+            SuppliedTimeObservation {
+                sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
+                received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
+                max_round_trip_millis: policy.max_round_trip_ms,
+                max_uncertainty_millis: policy.max_uncertainty_ms,
+                trusted_time_floor_millis: self.floor_before,
+            },
+            &[],
         )
         .map_err(|_| Error::StateCorrupt)?;
         // Authenticate retained lineage without retroactively revoking an
@@ -262,21 +258,21 @@ impl Evidence {
         } else {
             roots[self.base_root_count - 1].as_bytes()
         };
-        verify_time_response(
+        let successors = &roots[self.base_root_count..];
+        verify_time_response_source(
             self.response.as_bytes(),
-            TimeVerificationInputs::new(
-                base,
-                &references[self.base_root_count..],
-                &request,
-                SuppliedTimeObservation {
-                    sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
-                    received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
-                    max_round_trip_millis: policy.max_round_trip_ms,
-                    max_uncertainty_millis: policy.max_uncertainty_ms,
-                    trusted_time_floor_millis: self.floor_before,
-                },
-                &self.denied_key_ids,
-            ),
+            base,
+            successors.len(),
+            |index| Ok(std::borrow::Cow::Borrowed(successors[index].as_bytes())),
+            &request,
+            SuppliedTimeObservation {
+                sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
+                received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
+                max_round_trip_millis: policy.max_round_trip_ms,
+                max_uncertainty_millis: policy.max_uncertainty_ms,
+                trusted_time_floor_millis: self.floor_before,
+            },
+            &self.denied_key_ids,
         )
         .map_err(|_| Error::StateCorrupt)?;
         if checked.earliest_millis() != self.earliest || checked.latest_millis() != self.latest {

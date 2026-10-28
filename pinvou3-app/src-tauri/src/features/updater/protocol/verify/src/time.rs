@@ -6,7 +6,7 @@ use pinvou_upgrade_codec::{
     InputKind, RootPolicyShape, SchemaCheckedEnvelope, TimeContractError, TimeRequestShape,
     decode_canonical_envelope,
 };
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 const MAXIMUM: u64 = 9_007_199_254_740_991;
 const ROOT_LIFETIME: u64 = 365 * 86_400_000;
@@ -138,38 +138,63 @@ pub fn verify_time_response(
     bytes: &[u8],
     inputs: TimeVerificationInputs<'_>,
 ) -> Result<SignatureCheckedTimeResponse, TimeVerificationError> {
-    let observation = inputs.observation;
+    verify_time_response_source(
+        bytes,
+        inputs.trusted_root_bytes,
+        inputs.successors.len(),
+        |index| Ok(Cow::Borrowed(inputs.successors[index])),
+        inputs.request,
+        inputs.observation,
+        inputs.denied_key_ids,
+    )
+}
+
+/// Verify the same time response with one original successor at a time. The
+/// source is caller-owned DATA: it cannot establish protected custody, latest
+/// Root, a trusted clock, or completeness. `count` is the exact batch length;
+/// source errors abort verification and are never interpreted as end-of-chain.
+/// Per-object codec limits and the existing 4096-step batch limit still apply.
+pub fn verify_time_response_source<'a>(
+    bytes: &[u8],
+    trusted_root_bytes: &[u8],
+    count: usize,
+    mut read: impl FnMut(usize) -> Result<Cow<'a, [u8]>, TimeVerificationError>,
+    request: &TimeRequestShape,
+    observation: SuppliedTimeObservation,
+    denied_key_ids: &[String],
+) -> Result<SignatureCheckedTimeResponse, TimeVerificationError> {
     let round_trip = observed_round_trip(observation)?;
-    if inputs.successors.len() > 4096 || inputs.denied_key_ids.len() > 4096 {
+    if count > 4096 || denied_key_ids.len() > 4096 {
         return Err(TimeVerificationError::InvalidObservation);
     }
     let mut denied = BTreeSet::new();
-    for id in inputs.denied_key_ids {
+    for id in denied_key_ids {
         if !hash_shape(id) || !denied.insert(id.as_str()) {
             return Err(TimeVerificationError::InvalidObservation);
         }
     }
     // The initial original is independently protected, not newly self-signed.
-    // A legitimately accepted transition may contain old+new key signatures;
-    // verifying all of them under only its new policy would reject that history.
-    let (_, mut current) = root_candidate(inputs.trusted_root_bytes, inputs.request.product())?;
-    let mut windows = vec![(current.issued, current.expires)];
-    let mut final_bytes = inputs.trusted_root_bytes;
-    for next_bytes in inputs.successors {
-        let (envelope, next) = root_candidate(next_bytes, inputs.request.product())?;
+    // Retain only window facts needed after the response interval is known.
+    let (_, mut current) = root_candidate(trusted_root_bytes, request.product())?;
+    let mut latest_issue = current.issued;
+    let mut invalid_lifetime = current.expires <= current.issued
+        || current.expires.saturating_sub(current.issued) > ROOT_LIFETIME;
+    let mut final_sha = sha256(trusted_root_bytes);
+    for index in 0..count {
+        let next_bytes = read(index)?;
+        let (envelope, next) = root_candidate(&next_bytes, request.product())?;
         if current.root.version() >= MAXIMUM || next.root.version() != current.root.version() + 1 {
             return Err(VerificationError::RootContinuityInvalid.into());
         }
         reject_denied(&envelope, &denied)?;
         signatures::verify_root_transition_signatures(&envelope, &current.root, &next.root)?;
-        windows.push((next.issued, next.expires));
+        latest_issue = latest_issue.max(next.issued);
+        invalid_lifetime |=
+            next.expires <= next.issued || next.expires.saturating_sub(next.issued) > ROOT_LIFETIME;
+        final_sha = sha256(&next_bytes);
         current = next;
-        final_bytes = next_bytes;
     }
-    let final_sha = sha256(final_bytes);
-    if inputs.request.root_version() != current.root.version()
-        || inputs.request.root_sha256() != final_sha
-    {
+    if request.root_version() != current.root.version() || request.root_sha256() != final_sha {
         return Err(TimeVerificationError::RootBinding);
     }
     let envelope = decode_canonical_envelope(bytes, InputKind::Credential)
@@ -181,11 +206,11 @@ pub fn verify_time_response(
         .signed()
         .time_response_shape()
         .map_err(TimeVerificationError::Contract)?;
-    if response.product() != inputs.request.product()
-        || response.component() != inputs.request.component()
-        || response.request_nonce() != inputs.request.request_nonce()
-        || response.root_version() != inputs.request.root_version()
-        || response.root_sha256() != inputs.request.root_sha256()
+    if response.product() != request.product()
+        || response.component() != request.component()
+        || response.request_nonce() != request.request_nonce()
+        || response.root_version() != request.root_version()
+        || response.root_sha256() != request.root_sha256()
     {
         return Err(TimeVerificationError::RootBinding);
     }
@@ -210,10 +235,7 @@ pub fn verify_time_response(
     }
     // Historical Roots may have expired; none may be future-issued or have an
     // invalid original lifetime. Only the final Root must cover both edges.
-    if windows.iter().any(|(issued, expires)| {
-        *issued > earliest || *expires <= *issued || *expires - *issued > ROOT_LIFETIME
-    }) || current.expires <= latest
-    {
+    if latest_issue > earliest || invalid_lifetime || current.expires <= latest {
         return Err(TimeVerificationError::RootWindow);
     }
     Ok(SignatureCheckedTimeResponse {
@@ -224,7 +246,7 @@ pub fn verify_time_response(
         root_version: current.root.version(),
         root_sha256: final_sha,
         signer_ids,
-        checked_steps: inputs.successors.len(),
+        checked_steps: count,
     })
 }
 fn observed_round_trip(o: SuppliedTimeObservation) -> Result<u64, TimeVerificationError> {

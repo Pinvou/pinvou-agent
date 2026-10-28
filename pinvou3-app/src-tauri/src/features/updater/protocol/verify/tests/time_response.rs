@@ -2,7 +2,8 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use pinvou_upgrade_codec::{Document, InputKind};
 use pinvou_upgrade_verifier::{
     SuppliedTimeObservation, TimeVerificationError, TimeVerificationInputs, VerificationError,
-    VerificationInputs, verify_time_response, verify_with_supplied_root,
+    VerificationInputs, verify_time_response, verify_time_response_source,
+    verify_with_supplied_root,
 };
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
@@ -131,17 +132,53 @@ fn check(
     deny: &[String],
 ) -> Result<(), TimeVerificationError> {
     let request = document(&f.request).time_request_shape().unwrap();
-    verify_time_response(
+    let slice_result = verify_time_response(
         response,
         TimeVerificationInputs::new(root, successors, &request, obs, deny),
     )
-    .map(|_| ())
+    .map(|value| {
+        (
+            value.earliest_millis(),
+            value.latest_millis(),
+            value.as_of_monotonic_millis(),
+            value.root_version(),
+            value.root_sha256().to_owned(),
+            value.verified_signer_ids().clone(),
+            value.checked_root_steps(),
+        )
+    });
+    let source_result = verify_time_response_source(
+        response,
+        root,
+        successors.len(),
+        |index| Ok(std::borrow::Cow::Owned(successors[index].to_vec())),
+        &request,
+        obs,
+        deny,
+    )
+    .map(|value| {
+        (
+            value.earliest_millis(),
+            value.latest_millis(),
+            value.as_of_monotonic_millis(),
+            value.root_version(),
+            value.root_sha256().to_owned(),
+            value.verified_signer_ids().clone(),
+            value.checked_root_steps(),
+        )
+    });
+    assert_eq!(
+        slice_result, source_result,
+        "slice and owned-source results must agree"
+    );
+    slice_result.map(|_| ())
 }
 #[test]
 fn dedicated_time_checks_real_rotation_and_preserves_the_complete_final_root_identity() {
     let f = fixture();
     let request = document(&f.request).time_request_shape().unwrap();
     let steps = [f.successor.as_slice()];
+    check(&f, &f.initial, &steps, &f.response, observation(), &[]).unwrap();
     let checked = verify_time_response(
         &f.response,
         TimeVerificationInputs::new(&f.initial, &steps, &request, observation(), &[]),
@@ -445,4 +482,99 @@ fn generated_public_node_vectors_match_the_dedicated_interval_and_rotated_root()
         );
         assert_eq!(checked.verified_signer_ids().len(), 2);
     }
+}
+
+#[test]
+fn source_failure_and_batch_limit_are_not_end_of_chain() {
+    let f = fixture();
+    let request = document(&f.request).time_request_shape().unwrap();
+    let failure = TimeVerificationError::Verification(VerificationError::RootContinuityInvalid);
+    let mut called = 0;
+    let result = verify_time_response_source(
+        &f.response,
+        &f.initial,
+        1,
+        |_| {
+            called += 1;
+            Err(failure)
+        },
+        &request,
+        observation(),
+        &[],
+    );
+    assert!(matches!(result, Err(error) if error == failure));
+    assert_eq!(called, 1);
+    let mut called = 0;
+    let result = verify_time_response_source(
+        &f.response,
+        &f.initial,
+        4097,
+        |_| {
+            called += 1;
+            Ok(std::borrow::Cow::Owned(f.successor.clone()))
+        },
+        &request,
+        observation(),
+        &[],
+    );
+    assert!(matches!(
+        result,
+        Err(TimeVerificationError::InvalidObservation)
+    ));
+    assert_eq!(called, 0);
+}
+
+#[test]
+fn source_checks_multiple_roots_and_stops_on_a_later_failure() {
+    let f = fixture();
+    let mut third_claims = f.final_claims.clone();
+    third_claims["version"] = json!(3);
+    let third = signed(&third_claims, &[&f.new_keys[0], &f.new_keys[1]]);
+    let reference = json!({"version": 3, "sha256": digest(&third)});
+    let mut request_value = f.request.clone();
+    request_value["root"] = reference.clone();
+    let request_doc = document(&request_value);
+    let request = request_doc.time_request_shape().unwrap();
+    let mut response_claims = f.response_claims.clone();
+    response_claims["root"] = reference;
+    let response = signed(&response_claims, &[&f.time_key]);
+    let roots = [f.successor.as_slice(), third.as_slice()];
+    let mut seen = Vec::new();
+    let proof = verify_time_response_source(
+        &response,
+        &f.initial,
+        2,
+        |index| {
+            seen.push(index);
+            Ok(std::borrow::Cow::Borrowed(roots[index]))
+        },
+        &request,
+        observation(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(seen, [0, 1]);
+    assert_eq!(proof.checked_root_steps(), 2);
+    assert_eq!(proof.root_sha256(), digest(&third));
+
+    let failure = TimeVerificationError::Verification(VerificationError::RootContinuityInvalid);
+    let mut seen = Vec::new();
+    let result = verify_time_response_source(
+        &response,
+        &f.initial,
+        3,
+        |index| {
+            seen.push(index);
+            if index == 1 {
+                Err(failure)
+            } else {
+                Ok(std::borrow::Cow::Borrowed(roots[0]))
+            }
+        },
+        &request,
+        observation(),
+        &[],
+    );
+    assert!(matches!(result, Err(error) if error == failure));
+    assert_eq!(seen, [0, 1], "no further source reads after failure");
 }

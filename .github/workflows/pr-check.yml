@@ -1224,6 +1224,7 @@ jobs:
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked --test public_chain
+          cargo test --locked --test time_response
 
       - name: Check isolated durable metadata acceptance QA
         working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/acceptance
