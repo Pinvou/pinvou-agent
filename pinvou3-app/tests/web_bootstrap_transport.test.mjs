@@ -583,6 +583,28 @@ async function connectWithCapabilities(events, listener) {
     'the liveness watchdog must keep running across a TTL-expiry reconnect');
 }
 
+// 异常断线先触发 error 再触发 close:error 监听同样不得把 desktop_offline
+// 的专属文案覆盖成「连接中」——close→scheduleReconnect 有门,round-4 复审
+// 发现 error 监听没有,离线窗口内的 TCP reset 会把诚实文案换成转圈。
+{
+  const { client, socket } = await connectWithCapabilities(['chat:delta'], () => {});
+  socket.message({
+    v: 2,
+    type: 'endpoint_revoked',
+    endpoint_id: 'endpoint_test',
+    reason: 'desktop_offline_ttl_expired',
+  });
+  assert.equal(client.connectionState.status, 'desktop_offline');
+  socket.emit('error', {});
+  assert.equal(client.connectionState.status, 'desktop_offline',
+    'an abnormal socket error during the offline window must keep the dedicated offline copy');
+
+  const healthy = await connectWithCapabilities(['chat:delta'], () => {});
+  healthy.socket.emit('error', {});
+  assert.equal(healthy.client.connectionState.status, 'connecting',
+    'an error on an ordinary socket must still escalate to the connecting state');
+}
+
 // 真正的吊销（其他 reason 或缺失 reason）保持今天的永久关闭行为。
 {
   const revoke = async message => {
