@@ -326,6 +326,21 @@ fn catalog_damage_refuses_profile_read(store: &Store, seed: &Seed) {
     assert!(store.read_in(seed, Some(&tx)).is_err());
     write(&anchor, "Record", &anchor_original).unwrap();
     assert!(store.read_in(seed, Some(&tx)).unwrap().is_some());
+    let product_root = open(product.0, "root-state-v1", true, Some(&tx))
+        .unwrap()
+        .unwrap();
+    let root_head = read(&product_root, "Head").unwrap();
+    write(&product_root, "Head", b"changed").unwrap();
+    assert!(store.read_in(seed, Some(&tx)).is_err());
+    write(&product_root, "Head", &root_head).unwrap();
+    let root_genesis = read(&product_root, "Genesis").unwrap();
+    assert_eq!(
+        unsafe { RegDeleteValueW(product_root.0, wide("Genesis").as_ptr()) },
+        0
+    );
+    assert!(store.read_in(seed, Some(&tx)).is_err());
+    write(&product_root, "Genesis", &root_genesis).unwrap();
+    assert!(store.read_in(seed, Some(&tx)).unwrap().is_some());
 }
 
 /// Exercise the real transacted registry namespace without installing or

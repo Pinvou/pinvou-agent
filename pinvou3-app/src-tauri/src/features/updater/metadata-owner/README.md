@@ -35,6 +35,13 @@ still checks the shared machine catalog before updating both in one transaction.
 The protected per-product enrollment anchor detects a product history changed
 without the corresponding anchor; it is not an independent anti-rollback
 source if both are restored together. It is not the product Root high-water.
+The first installation of a product also creates its protected `root-state-v1`
+genesis, Head and first history record in the same registry transaction. They
+bind the actual signed original Root's product, version, size and digest to the
+first protected product enrollment. Product reads and original-intent recovery
+recompute and check those bytes, and refuse missing or changed state. This is a
+genesis-only owner: no current Root advancement, shared product Root authority,
+metadata acceptance or trusted time is established by this record.
 Current time, deny information and Root transitions must be integrated before
 any accepting writer is exposed.
 

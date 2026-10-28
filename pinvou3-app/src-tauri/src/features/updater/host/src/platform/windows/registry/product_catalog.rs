@@ -1,4 +1,5 @@
 //! Protected, sharded original product/profile enrollment; not current Root authority.
+mod product_root;
 use super::*;
 use crate::product_catalog::{Event, ProductEvent};
 use serde::{Deserialize, Serialize};
@@ -234,6 +235,8 @@ fn validate_product_history(
     }
     let history = entry(product, "history", tx)?;
     exact(&history, true, &[])?;
+    let first_root_binding = product_event_at(&history, 1, tx)?.1;
+    product_root::check_in(product, tx, &first_root_binding, &read(product, "Root")?)?;
     let scopes = entry(product, "scopes", tx)?;
     exact(&scopes, true, &[])?;
     let mut previous: Option<(ProductEvent, Vec<u8>)> = None;
@@ -459,7 +462,11 @@ fn validate(key: &Key, seed: &Seed, tx: Option<&Handle>, head_raw: &[u8]) -> Res
     visit(&products, false, |name| {
         let product = entry(&products, name, tx)?;
         exact(&product, true, &["Record", "Root", "Head"])?;
-        exact(&product, false, &["members", "history", "scopes"])?;
+        exact(
+            &product,
+            false,
+            &["members", "history", "scopes", "root-state-v1"],
+        )?;
         let descriptor = record(&product)?;
         descriptor.check(&product, name)?;
         let anchor = entry(&anchors, name, tx)?;
@@ -606,6 +613,9 @@ pub(super) fn stage(seed: &Seed, host: &HostRegistration, tx: &Handle) -> Result
         &raw,
     )?;
     let product_raw = json::encode(&product_event, false)?;
+    if new_product {
+        product_root::initialize_in(&product, tx, &product_raw, seed.original_root_bytes())?;
+    }
     let anchor = create(anchors.0, &product_hash, tx, false, new_product)?;
     let product_revision = create(
         product_history.0,
@@ -676,7 +686,11 @@ fn check_product(
     head_raw: &[u8],
 ) -> Result<()> {
     exact(product, true, &["Record", "Root", "Head"])?;
-    exact(product, false, &["members", "history", "scopes"])?;
+    exact(
+        product,
+        false,
+        &["members", "history", "scopes", "root-state-v1"],
+    )?;
     let descriptor = record(product)?;
     descriptor.check(product, product_name)?;
     if descriptor.id != seed.product {
@@ -685,6 +699,8 @@ fn check_product(
     let head = ProductEvent::parse(head_raw)?;
     let history = entry(product, "history", tx)?;
     exact(&history, true, &[])?;
+    let first_root_binding = product_event_at(&history, 1, tx)?.1;
+    product_root::check_in(product, tx, &first_root_binding, &read(product, "Root")?)?;
     let members = entry(product, "members", tx)?;
     exact(&members, true, &[])?;
     let scopes = entry(product, "scopes", tx)?;
@@ -788,6 +804,7 @@ pub(super) fn verify_committed(seed: &Seed, host: &HostRegistration) -> Result<(
     let scope = entry(&scopes, &event.scope, None)?;
     let revision = entry(&history, &revision_name(event.revision), None)?;
     let product = entry(&products, &json::sha256(seed.product.as_bytes()), None)?;
+    product_root::flush(&product)?;
     let members = entry(&product, "members", None)?;
     let product_scopes = entry(&product, "scopes", None)?;
     let product_scope = entry(&product_scopes, &event.scope, None)?;
