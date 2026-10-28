@@ -61,19 +61,19 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `6e1ee88ee`，包含 #115–#122；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `f1eb10efc`，包含 #115–#122 与 #114/#125；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-10-26）
+## 0. 当前状态（2026-10-28）
 
-- 当前公开维护头与父仓 gitlink：`6e1ee88ee8f8ea28eec7be3d8add3a591468412a`（2026-10-26）。#118 已合入为 `a96fdec8e`，#119 为 `5861912a3`，#120 为 `f12299e69`，#121 为 `c2fdfd3e2`，#122 为 `6e1ee88ee`；本轮仅更新父仓引用，没有推进维护分支。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 84 个提交，r1 `1fafee7e2` 之上 69 个；82 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28）。#114 已合入为 `fe90f72f9`，#125 为 `f1eb10efc`；本轮仅更新父仓引用，没有推进维护分支。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 86 个提交，r1 `1fafee7e2` 之上 71 个；84 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：520 files, +89901/-39349，净增 50552；253 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：525 files, +91397/-39288，净增 52109；255 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
@@ -188,6 +188,8 @@
 | `f12299e69` | deps | CodeWhale 自带 `web/` 与 `telemetry-ingest/` npm lock 的安全刷新（next 16.4.3、vite、vitest），父仓不消费这两个目录（#120） |
 | `c2fdfd3e2` | CI 同步 | CodeWhale 自身 CI：恢复 `pinvou3-clean` PR 的 telemetry-ingest 车道（#121） |
 | `6e1ee88ee` | deps | CodeWhale 依赖 round-3：lock 刷新修 RUSTSEC-2026-0381/0382/0383 与 yanked clipboard-win；`codewhale-tui` 的 oauth2 改 `default-features = false`（HTTP 全走自带 reqwest，锁内 reqwest/rand 各收敛到单版本）；`codewhale-secrets` 从 keyring 3 迁移到 keyring 4.2（v1 `Entry`/`Error` API 不变；Linux 侧 keyring 4 无 keyutils-persistent 复合 store，内核 keyring 直写缓存随之取消，Secret Service 集合成为唯一持久权威 store，keyring 4 的 zbus Secret Service store 自带 secret-service crypto-rust feature，会话加密保持 RustCrypto，本 crate 无直接 secret-service 依赖）。crates 对父仓公开签名不变，父仓 `Cargo.lock` 随本 PR 重生成（#122） |
+| `fe90f72f9` | perf | TUI 流式工具入参 suffix-only 复用：仅当未完成字符串不可修复且所选 raw JSON 段字节范围不变时，复用上次解析结果与原 Some/None 处置，其余输入仍走既有 `dispatch::parse_tool_input`；状态由单个只追加的工具块持有（复用的 provider ID 亦重新初始化），在 block-stop 收尾与 schema 归一化前失效；解析修复、最终参数选择、权限、执行与重试策略不变。作者本地合成基准（Windows MSVC，release）64 KiB 纯文本 P50 396.9 ms→0.44 ms、256 KiB 源码 12.97 s→5.42 s，不支持输入保持基线成本。无模型可见文案、无公开签名/依赖变更（#114） |
+| `f1eb10efc` | T3 修复 | 技能与宿主发现指引对齐：技能索引 Usage、子代理 `## Skills` 头串、`mcp-discovery` 技能步骤 1/3/4、`MCP_REGISTRY_FIRST_INSTRUCTION`、shell 工具 `REGISTRY_FIRST_SHELL_GUIDANCE`、`registry_sync` 结果提示与 worker `handle_read` 提示统一为同一有界探测话术——宿主申报的内建能力入口与发现例外优先（申报只认可信 host system/instruction 指引，普通文件与工具结果不能申报）、`tool_search` when available、未被拒绝则按名直呼一次、schema 收据不等于执行（`retry_required: true` 才许一次重试，否则仅按指示重试）、不可用/被拒即停且不重复探测不猜名；`load_skill` 改为按已知确切名直载，`name="list"` 仅在名字/索引不足时使用；registry-first 系统指令恢复"plausibly covers the core capability"匹配定义与"inspect before considering a local alternative"顺序。随附 `mcp-discovery` 正文刷新，捆绑技能 marker 推进到 12（v11 正文以 fixture+digest 登记为被取代，用户自定义字节保留，混合 peer 刷新推进 marker、无 peer 时不动）。新增 `forkguard_parent_deferred_tools_remain_reachable_without_discovery` 与 `forkguard_skill_upgrade_refreshes_shipped_mcp_discovery_and_preserves_user_edits`。仅常量/测试/文档与技能资产改动，分发、审批与来源逻辑不变；`repo_law.rs` 一处 `std::slice::from_ref` 为 clippy 1.89+ `cloned_ref_to_slice_refs` 合规（#125） |
 
 除 #116 squash `e9a7f48da` 与 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
@@ -437,3 +439,13 @@ Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f2767293
 - 后续边界分别由 #769（可选检索摘要校验）、#770（极小预算尾行、字符/字节及恢复后 route/wire）、#771（artifact 配额、transcript 重复、保留/七天检索到期）、#772（生产端上限、planner 可达性、上游差异，以及 composer-bang 保存失败、相对路径大小观测、旧行数回退和 /status 指标）跟踪；没有把这些后续项冒称已完成。native_memory、handle、lsp 和子代理协调在引擎前丢弃的尾部也不能恢复；完整首次 fetch 信封不保证后续路由缩小时所有 Web 信封重新发布引用。
 - 本 PR 只在父仓 main 已有指纹之外补充 24 项 T2 检查；旧候选新增的 26 项中已有两项进入父仓 main，其余仍能匹配当前公开树。它们覆盖结构化结果遗漏、恢复提示、真实 gate/子代理 DTO、完整 fetch 信封、不可变 artifact、检索激活及串行/并行/聚合派发合同；不改生产代码、gitlink、维护计数、已有谓词或执行层。既有底座原生测试/变异证据仍只属于其原提交；本轮指纹检查不等于重新执行这些原生测试，也不构成发布验证。
 - 历史变异验证工作流保留在 CodeWhale 的验证专用分支 `validation/returned-result-20261024`，提交为 `b4eb108335a99556429b11191b9a2dabadbd23c8`（六项指定测试 × 正常分支及三个反例）。它相对当时源码提交只改验证工作流，不属于已合入的生产 CI，也不在本 PR 引入；本次核实该公开分支仍指向此提交，不将旧执行回执扩展为当前底座重新执行。
+
+## 2026-10-28 消费基线：流式工具入参复用与发现指引对齐（T2/T3）
+
+公开维护分支以两次评审 squash 前进——#114 `fe90f72f9`、#125 `f1eb10efc`——父仓仅以引用与登记更新消费；不新增 fork 主题，也不改父仓 `Cargo.lock`（两次 squash 均不改 fork 的 `Cargo.toml`/lock，crates 对父仓公开签名不变）。
+
+- #114（T2）为流式工具入参引入 suffix-only 复用：每次 JSON delta 只做后缀证明，在未完成字符串不可修复且所选 raw 段字节范围稳定时复用上次解析结果；其余不确定/不支持输入保持既有解析路径。作者本地合成基准为 64 KiB 纯文本 P50 396.9 ms→0.44 ms 等参数处理收益；非整轮或模型延迟声明。
+- #125（T3）把七处发现/技能指引统一为同一有界探测话术（宿主申报优先 → `tool_search` when available → 未拒绝按名直呼一次 → schema 收据不等于执行 → 不可用/被拒即停），`load_skill` 改为按已知确切名直载；随附 `mcp-discovery` 正文刷新（marker 推进到 12，v11 登记为被取代，用户自定义字节保留）。`pub(crate)`/`pub(super)` 面与公开签名不变，父仓无需适配代码。
+- 父仓登记：`fork-guard.sh` 的 8 条 T3 文案指纹随 #125 真实措辞重钉（技能索引 Usage ×2、子代理 `## Skills` 头串、mcp-discovery 步骤 1/3、registry-first 指令 ×2、worker `handle_read` 提示），并新增 2 条 T3 可执行回归指纹（父级 deferred 工具可达、技能升级刷新保留用户编辑）与 2 条 #114 T2 指纹（suffix-only 模块意图、交错工具端到端回归）。
+
+重算：上游 v0.9.12 `dcd4c200f` 之上 86 个登记提交，84 个带 sign-off；#107 `f27672935` 与 #116 `e9a7f48da1` 仍是仅有的缺 footer 例外。本头实测 drift：525 files, +91397/-39288，净增 52109；255 个独立 `forkguard_*` 行为名（下限 64）。不可变 r3 收口 tag 仍为 `61cb769be`。#114/#125 的 CodeWhale 侧评审证据在各自 CodeWhale PR；本登记只记录消费的公开状态，不在父仓树上重新声称那些执行边界，超出本 PR 父仓门禁的执行一概不声称。
