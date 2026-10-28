@@ -16259,6 +16259,183 @@
           }
         }
       }
+    },
+    "/v1/upgrade/public-metadata/{product}/{component}/{snapshotSha256}/{objectSha256}": {
+      "get": {
+        "operationId": "read-public-metadata",
+        "tags": [
+          "trust-metadata"
+        ],
+        "security": [],
+        "x-owner-task": "T27",
+        "x-maximum-response-bytes": 1048576,
+        "description": "Fixed-origin original canonical public metadata DATA only. The product and component must match the authenticated publication, and snapshotSha256 must match its exact current Snapshot envelope. objectSha256 must match the complete original Timestamp, Snapshot, or one of the authenticated Snapshot.entries in its complete public closure (including public Target, baseline/ordinary/bridge Release and their Package metadata). A private-only object is never returned, even if its hash is known; an object also independently present in the public closure is public. A missing or changed snapshot requires a new check; it never proves absence of an update or grants installation authority. Source failure or inability to establish membership is unavailable, not missing. No redirects, content encoding, or total elapsed download deadline.",
+        "parameters": [
+          {
+            "name": "product",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "not": {
+                "pattern": "[^A-Za-z0-9._:-]"
+              }
+            }
+          },
+          {
+            "name": "component",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "not": {
+                "pattern": "[^A-Za-z0-9._:-]"
+              }
+            }
+          },
+          {
+            "name": "snapshotSha256",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          {
+            "name": "objectSha256",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exact original canonical public Timestamp, Snapshot, Target, Release or Package envelope; no wrapper.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/metadata.timestamp"
+                    },
+                    {
+                      "$ref": "#/components/schemas/metadata.snapshot"
+                    },
+                    {
+                      "$ref": "#/components/schemas/metadata.target"
+                    },
+                    {
+                      "$ref": "#/components/schemas/metadata.release"
+                    },
+                    {
+                      "$ref": "#/components/schemas/metadata.package"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid selector.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "protocolVersion": {
+                      "const": 1
+                    },
+                    "requestId": {
+                      "$ref": "#/components/schemas/common/$defs/identifier"
+                    },
+                    "code": {
+                      "const": "CONTRACT_INVALID"
+                    },
+                    "retryable": {
+                      "const": false
+                    }
+                  },
+                  "required": [
+                    "protocolVersion",
+                    "requestId",
+                    "code",
+                    "retryable"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or non-public DATA, or selected snapshot is no longer current.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "protocolVersion": {
+                      "const": 1
+                    },
+                    "code": {
+                      "const": "PUBLIC_METADATA_NOT_FOUND"
+                    }
+                  },
+                  "required": [
+                    "protocolVersion",
+                    "code"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Protected source unavailable; no missing or freshness inference.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "protocolVersion": {
+                      "const": 1
+                    },
+                    "requestId": {
+                      "$ref": "#/components/schemas/common/$defs/identifier"
+                    },
+                    "code": {
+                      "const": "SERVICE_UNAVAILABLE"
+                    },
+                    "retryable": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "protocolVersion",
+                    "requestId",
+                    "code",
+                    "retryable"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

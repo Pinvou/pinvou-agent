@@ -3,9 +3,13 @@ use pinvou_upgrade_codec::{
     ClientHttpResponseError, ClientRequestError, ClientRequestOperation, Document, Error, InputKind,
 };
 use std::{collections::BTreeMap, sync::OnceLock, time::Duration};
+mod public_metadata;
 mod roots;
 mod routes;
 pub use pinvou_upgrade_codec::ClientRequestOperation as Operation;
+pub use public_metadata::{
+    PublicMetadataError, PublicMetadataResult, ReceivedPublicMetadata, get_public_metadata_once,
+};
 pub use roots::{ReceivedRoot, RootGetError, RootGetResult, get_root_once};
 
 pub const CONTROL_ORIGIN: &str = "https://update.pinvou.com";

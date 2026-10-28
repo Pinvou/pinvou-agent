@@ -7,6 +7,7 @@ import './api-management.mjs';
 import { SCAN_CAPTURE_SECURITY } from './api-scan-captures.mjs';
 import { DRAFT_WORKFLOW_SCHEMAS, DRAFT_WORKFLOW_SECURITY } from './api-draft-workflows.mjs';
 import { ROOT_DISTRIBUTION_PATH, ROOT_DISTRIBUTION_GET } from './api-root-distribution.mjs';
+import { PUBLIC_METADATA_PATH, PUBLIC_METADATA_GET } from './api-public-metadata.mjs';
 
 // Bundle URI references into ordinary OpenAPI-local references for generic
 // consumers. Standalone JSON Schemas retain their versioned resource IDs.
@@ -60,6 +61,7 @@ for (const operation of OPERATIONS) {
 }
 // Root distribution is not a client Command operation or a bootstrap trust grant.
 paths[ROOT_DISTRIBUTION_PATH] = { get: ROOT_DISTRIBUTION_GET };
+paths[PUBLIC_METADATA_PATH] = { get: PUBLIC_METADATA_GET };
 export const openapi = { openapi: '3.1.0', jsonSchemaDialect: 'https://json-schema.org/draft/2020-12/schema',
   info: { title: 'Pinvou Upgrade V1 Control Contract', version: '1.0.0',
     description: 'T02 executable contract. No backend implementation, provider or production deployment is selected.' },
