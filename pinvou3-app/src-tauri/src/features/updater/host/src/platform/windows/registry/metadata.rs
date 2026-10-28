@@ -49,6 +49,7 @@ fn exact_names(actual: &[String], expected: &[&str]) -> Result<()> {
 /// absent or unknown layout is never interpreted as an empty active set.
 /// Once an accepting metadata owner exists this gate must be replaced by a
 /// same-transaction complete active-set and Root-transition check.
+#[cfg(feature = "metadata-component-tests")]
 pub(super) fn require_empty_for_root_transition_in(
     private: &Key,
     seed: &Seed,
@@ -59,7 +60,53 @@ pub(super) fn require_empty_for_root_transition_in(
         return Err(Error::SetupIncomplete);
     }
     let expected = OwnerBootstrap::new(seed, &host.installation_scope_id)?;
-    let initial = genesis(expected.metadata.record_bytes())?;
+    require_genesis_in(private, expected.metadata.record_bytes(), tx)
+}
+
+/// The event and host must come from the protected product member visitor.
+/// Never derive another profile's identity or seed from the requesting seed.
+pub(super) fn require_member_empty_for_root_transition_in(
+    seed: &Seed,
+    event: &crate::product_catalog::Event,
+    host: &HostRegistration,
+    tx: &Handle,
+) -> Result<()> {
+    use pinvou_upgrade_metadata_owner::{BootstrapAnchor, BootstrapBinding};
+    if !crate::bootstrap::initialized(&host.known_owner_namespaces) {
+        return Err(Error::SetupIncomplete);
+    }
+    let path = format!(
+        "Software\\Pinvou\\{}\\{}\\private",
+        seed.updater_leaf(),
+        event.profile_id
+    );
+    let private = open(HKEY_LOCAL_MACHINE, &path, false, Some(tx))?.ok_or(Error::StateCorrupt)?;
+    let original = read(&private, METADATA_BOOTSTRAP_ROOT)?;
+    let binding = BootstrapBinding::new(
+        &event.scope,
+        &event.product,
+        &event.component,
+        &event.target_key,
+        &event.kind,
+        &event.profile_id,
+        &event.seed_sha256,
+    )
+    .map_err(|_| Error::StateCorrupt)?;
+    let anchor = BootstrapAnchor::new(
+        &binding,
+        &original,
+        event.original_root_size,
+        &event.original_root_sha256,
+    )
+    .map_err(|_| Error::StateCorrupt)?;
+    anchor
+        .check_existing(&read(&private, METADATA_BOOTSTRAP)?, &original)
+        .map_err(|_| Error::StateCorrupt)?;
+    require_genesis_in(&private, anchor.record_bytes(), tx)
+}
+
+fn require_genesis_in(private: &Key, anchor: &[u8], tx: &Handle) -> Result<()> {
+    let initial = genesis(anchor)?;
     let key = open(private.0, NAMESPACE, false, Some(tx))?.ok_or(Error::SetupIncomplete)?;
     let first =
         open(key.0, "history\\0000000000000001", false, Some(tx))?.ok_or(Error::StateCorrupt)?;

@@ -59,6 +59,56 @@ impl Drop for MachineGuard {
     }
 }
 
+/// Held after the profile guard and, for enrollment, the machine guard.
+/// Never acquire any other profile guard while holding this product guard.
+pub(super) struct ProductGuard {
+    handle: Handle,
+    _thread: PhantomData<Rc<()>>,
+}
+impl ProductGuard {
+    #[allow(unsafe_code)]
+    pub(super) fn acquire(seed: &Seed) -> Result<Self> {
+        use windows_sys::Win32::Security::Authorization::SE_KERNEL_OBJECT;
+        let name = product_mutex_name(&seed.profile_kind, &seed.product)?;
+        let security = NativeSecurity::mutex()?;
+        let handle = Handle::owned(unsafe {
+            CreateMutexExW(
+                &security.attributes(),
+                wide(&name).as_ptr(),
+                0,
+                MUTEX_MODIFY_STATE | SYNCHRONIZE | 0x00020000,
+            )
+        })?;
+        super::super::security::inspect_kernel(handle.raw(), SE_KERNEL_OBJECT)?;
+        match unsafe { WaitForSingleObject(handle.raw(), 0) } {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(Self {
+                handle,
+                _thread: PhantomData,
+            }),
+            WAIT_TIMEOUT => Err(Error::Busy),
+            _ => Err(Error::Unavailable),
+        }
+    }
+}
+fn product_mutex_name(kind: &str, product: &str) -> Result<String> {
+    if !matches!(kind, "production" | "lab") || !json::identifier(product) {
+        return Err(Error::StateCorrupt);
+    }
+    Ok(format!(
+        r"Global\Pinvou.Upgrade.Product.v1.{}.{}",
+        kind,
+        json::sha256(product.as_bytes())
+    ))
+}
+impl Drop for ProductGuard {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        unsafe {
+            ReleaseMutex(self.handle.raw());
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Product {
@@ -887,6 +937,15 @@ pub(super) fn verify_committed(seed: &Seed, host: &HostRegistration) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn product_locks_are_scoped_by_exact_product_and_profile_kind() {
+        let a = product_mutex_name("production", "product-a").unwrap();
+        assert_eq!(a, product_mutex_name("production", "product-a").unwrap());
+        assert_ne!(a, product_mutex_name("production", "product-b").unwrap());
+        assert_ne!(a, product_mutex_name("lab", "product-a").unwrap());
+        assert!(product_mutex_name("unknown", "product-a").is_err());
+        assert!(product_mutex_name("production", "bad/path").is_err());
+    }
     #[test]
     fn history_names_use_exact_decimal_revision() {
         assert!(history_name_valid("0000000000000010", 10));

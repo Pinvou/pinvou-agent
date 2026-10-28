@@ -944,6 +944,11 @@ impl Store {
         let before = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
         host.authenticate_running(&before)?;
         let _guard = BootstrapGuard::acquire(seed, false)?;
+        let _product_guard = if next.roots != expected.state.roots {
+            Some(super::product_catalog::ProductGuard::acquire(seed)?)
+        } else {
+            None
+        };
         let transaction = Handle::owned(unsafe {
             CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
         })?;
@@ -973,11 +978,18 @@ impl Store {
             .state
             .transition(next, &current.raw, &current.original_root)?;
         if next.roots != current.state.roots {
-            super::metadata::require_empty_for_root_transition_in(
-                &private,
+            super::product_catalog::visit_members_in(
                 seed,
                 &actual,
                 &transaction,
+                |event, member| {
+                    super::metadata::require_member_empty_for_root_transition_in(
+                        seed,
+                        event,
+                        member,
+                        &transaction,
+                    )
+                },
             )
             .map_err(metadata_root_transition_error)?;
         }

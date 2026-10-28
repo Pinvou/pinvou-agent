@@ -544,6 +544,7 @@ impl Store {
             return Err(Error::StateCommitUnknown);
         }
         let _catalog_guard = product_catalog::MachineGuard::acquire(seed)?;
+        let _product_guard = product_catalog::ProductGuard::acquire(seed)?;
         metadata::verify_fresh_in(&key, seed, expected)?;
         product_catalog::verify_committed(seed, expected)?;
         let actual = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
@@ -745,6 +746,11 @@ impl Store {
         }
         let _catalog_guard = if expected.is_none() {
             Some(product_catalog::MachineGuard::acquire(seed)?)
+        } else {
+            None
+        };
+        let _product_guard = if expected.is_none() {
+            Some(product_catalog::ProductGuard::acquire(seed)?)
         } else {
             None
         };

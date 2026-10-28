@@ -380,6 +380,20 @@ fn root_transition_requires_exact_empty_layout(
     let private = store.key(true, Some(&tx)).unwrap().unwrap();
     super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx)
         .expect("original empty layout permits Root transition");
+    let check_members = || {
+        product_catalog::visit_members_in(seed, host, &tx, |event, actual| {
+            super::metadata::require_member_empty_for_root_transition_in(seed, event, actual, &tx)
+        })
+    };
+    check_members().expect("the member's own protected genesis is empty");
+    let original_bootstrap = read(&private, METADATA_BOOTSTRAP).unwrap();
+    write(&private, METADATA_BOOTSTRAP, b"damaged").unwrap();
+    assert!(
+        check_members().is_err(),
+        "damaged member bootstrap must be refused"
+    );
+    write(&private, METADATA_BOOTSTRAP, &original_bootstrap).unwrap();
+    check_members().expect("restored member bootstrap is accepted");
     let metadata = open(private.0, "metadata-state-v1", true, Some(&tx))
         .unwrap()
         .unwrap();
@@ -389,6 +403,7 @@ fn root_transition_requires_exact_empty_layout(
         super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx),
         Err(Error::ScopeConflict)
     );
+    assert_eq!(check_members(), Err(Error::ScopeConflict));
     write(&metadata, "Head", &original_head).unwrap();
     write(&metadata, "Unexpected", b"x").unwrap();
     assert!(
@@ -400,6 +415,7 @@ fn root_transition_requires_exact_empty_layout(
     );
     super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx)
         .expect("restoring exact empty layout permits Root transition");
+    check_members().expect("restored member genesis is accepted");
     let history = open(metadata.0, "history", true, Some(&tx))
         .unwrap()
         .unwrap();
@@ -408,6 +424,7 @@ fn root_transition_requires_exact_empty_layout(
     assert!(
         super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx).is_err()
     );
+    assert!(check_members().is_err());
 }
 
 // Construct the old serialized lab shape under the same test-owned protected
