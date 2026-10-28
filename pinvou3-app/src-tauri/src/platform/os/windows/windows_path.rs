@@ -69,21 +69,20 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// NTFS 默认大小写不敏感,按 Unicode 大小写折叠表解析(含 `ſ`→`s`、
+/// KELVIN SIGN→`k`),与 macOS 同用 interface 层的折叠原语,使词法判定与
+/// 卷的真实解析语义一致。
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
-    component.to_string_lossy().eq_ignore_ascii_case(expected)
+    super::super::interface::volume_fold_eq(component, expected)
 }
 
 pub fn filesystem_path_identity_key(path: &str) -> String {
     path.replace('\\', "/").to_lowercase()
 }
 
-/// NTFS 默认大小写不敏感:组件前缀比较与 `path_component_eq` 同用 ASCII
-/// 折叠,使词法判定与卷的真实解析语义一致。
+/// NTFS 默认大小写不敏感:组件前缀比较与 `path_component_eq` 同用折叠原语。
 pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
-    component
-        .to_string_lossy()
-        .to_ascii_lowercase()
-        .starts_with(&prefix.to_ascii_lowercase())
+    super::super::interface::volume_fold_prefix(component, prefix)
 }
 
 /// Windows 空设备名（git 等外部工具的「读空配置」入参）。

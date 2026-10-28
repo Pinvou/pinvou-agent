@@ -66,17 +66,19 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
 }
 
 /// 比较路径组件是否等于预期字符串。Linux 文件系统大小写敏感，字节精确比较；
-/// macOS 默认 APFS 卷大小写不敏感——文件系统层会把 `.AWS` 解析到磁盘上的
-/// `.aws`，所以按调用方拼写做字节比较的词法检查（canonicalize 之前的相对
-/// 路径判定）会让大写变体绕过凭据黑名单，因此与 windows_path.rs 同用
-/// ASCII 折叠，使词法判定与卷的真实解析语义一致。注意:大小写不敏感卷上
+/// macOS 默认 APFS 卷大小写不敏感——文件系统层按 Unicode 简单大小写折叠表
+/// 解析（`ſ`→`s`、KELVIN SIGN→`k` 也在表内），所以按调用方拼写做字节比较的
+/// 词法检查（canonicalize 之前的相对路径判定）会让 `.AWS`/`id_rſa` 式变体
+/// 绕过凭据黑名单，因此与 windows_path.rs 同用
+/// `super::interface::volume_fold_eq`（ASCII 快速路径 + 非 ASCII 拼写的
+/// 折叠比较），使词法判定与卷的真实解析语义一致。注意:大小写不敏感卷上
 /// `std::fs::canonicalize`(realpath)返回的拼写是平台实现细节(macOS
 /// realpath 保留调用方拼写,不做大小写规范化),任何判定都不得依赖它——
 /// 词法与解析后两次判定都经本折叠比较,折叠是承载语义的判定,不得「简化」
 /// 回字节精确比较。
 #[cfg(target_os = "macos")]
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
-    component.to_string_lossy().eq_ignore_ascii_case(expected)
+    super::interface::volume_fold_eq(component, expected)
 }
 
 /// 比较路径组件是否等于预期字符串（Linux 大小写敏感，字节精确）。
@@ -86,14 +88,11 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
 }
 
 /// 比较路径组件是否以预期前缀开头(`.env.` 系黑名单用)。与
-/// `path_component_eq` 同一平台语义:macOS 默认卷大小写不敏感,ASCII 折叠;
-/// 其余平台字节精确。
+/// `path_component_eq` 同一平台语义:macOS 默认卷大小写不敏感,经
+/// `super::interface::volume_fold_prefix` 折叠;其余平台字节精确。
 #[cfg(target_os = "macos")]
 pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
-    component
-        .to_string_lossy()
-        .to_ascii_lowercase()
-        .starts_with(&prefix.to_ascii_lowercase())
+    super::interface::volume_fold_prefix(component, prefix)
 }
 
 #[cfg(not(target_os = "macos"))]
