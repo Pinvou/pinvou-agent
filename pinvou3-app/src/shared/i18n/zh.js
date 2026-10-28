@@ -466,6 +466,7 @@ export const dictZh = {
           "readStatus": "读取状态",
           "refresh": "重新授时",
           "refreshing": "授时正在进行。",
+          "refreshBusy": "授时未完成：服务忙碌，请稍后手动重新授时。",
           "accepted": "授时请求已接受；这不表示时间已可信或清理核对已完成。",
           "networkNotice": "重新授时会连接配置的升级控制服务。清理核对未完成时，依赖时间的操作仍暂停。",
           "states": {

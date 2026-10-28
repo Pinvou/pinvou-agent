@@ -16,6 +16,11 @@ pub enum TrustedTimeState {
     CleanupComplete,
     IntegrityFault,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustedTimeRefreshFailure {
+    Busy,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrustedTimeStatus {
@@ -23,6 +28,8 @@ pub struct TrustedTimeStatus {
     pub state: TrustedTimeState,
     /// Pending/running activity only, never successful time or upgrade rights.
     pub refreshing: bool,
+    /// Last completed attempt's contention, independent of protected time state.
+    pub refresh_failure: Option<TrustedTimeRefreshFailure>,
 }
 impl TrustedTimeStatus {
     pub(crate) fn new(state: TrustedTimeState, refreshing: bool) -> Self {
@@ -30,6 +37,7 @@ impl TrustedTimeStatus {
             protocol_version: 1,
             state,
             refreshing,
+            refresh_failure: None,
         }
     }
     pub(crate) fn validate(&self) -> Result<()> {
@@ -83,11 +91,12 @@ mod tests {
             let status = TrustedTimeStatus::new(state, true);
             let raw = json::encode(&status, true).unwrap();
             let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-            assert_eq!(value.as_object().unwrap().len(), 3);
+            assert_eq!(value.as_object().unwrap().len(), 4);
             assert!(
                 value.get("protocolVersion").is_some()
                     && value.get("state").is_some()
                     && value.get("refreshing").is_some()
+                    && value.get("refreshFailure").is_some()
             );
             let parsed: TrustedTimeStatus = json::decode(&raw, true).unwrap();
             parsed.validate().unwrap();
@@ -111,6 +120,7 @@ mod tests {
             protocol_version: 2,
             state: TrustedTimeState::Unknown,
             refreshing: false,
+            refresh_failure: None,
         };
         assert!(invalid.validate().is_err());
         assert!(

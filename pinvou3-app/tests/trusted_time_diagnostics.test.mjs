@@ -9,7 +9,7 @@ import {
   parseTrustedTimeStatus, trustedTimeErrorCode,
 } from '../src/features/updater/trusted-time-diagnostics.js';
 
-const status = (state = 'unknown', refreshing = false) => ({ protocolVersion: 1, state, refreshing });
+const status = (state = 'unknown', refreshing = false, refreshFailure = null) => ({ protocolVersion: 1, state, refreshing, refreshFailure });
 function deferred() {
   let resolve;
   const promise = new Promise(done => { resolve = done; });
@@ -19,7 +19,8 @@ function deferred() {
 test('only exact host status DATA is displayed; accepted and Known are not status states', () => {
   for (const state of TRUSTED_TIME_STATES) assert.equal(parseTrustedTimeStatus(status(state)).state, state);
   for (const value of [null, [], {}, { ...status(), extra: true }, { ...status(), refreshing: 1 },
-    { ...status(), protocolVersion: 2 }, status('known'), status('accepted')]) {
+    { ...status(), protocolVersion: 2 }, { ...status(), refreshFailure: 'other' },
+    status('unknown', true, 'busy'), status('known'), status('accepted')]) {
     assert.throws(() => parseTrustedTimeStatus(value));
   }
   assert.equal(canRefreshTrustedTime(status('cleanup_pending')), true);
@@ -27,6 +28,7 @@ test('only exact host status DATA is displayed; accepted and Known are not statu
   assert.equal(canRefreshTrustedTime(status('cleanup_complete')), true);
   assert.equal(canRefreshTrustedTime(status('cleanup_complete', true)), false);
   assert.equal(canRefreshTrustedTime(status('unknown', true)), false);
+  assert.equal(parseTrustedTimeStatus(status('unknown', false, 'busy')).refreshFailure, 'busy');
   assert.equal(canRefreshTrustedTime(status('integrity_fault')), true);
   assert.equal(canRefreshTrustedTime(status('integrity_fault', true)), false);
   for (const state of ['unsupported', 'setup_required', 'missing_policy']) {
@@ -92,6 +94,119 @@ test('explicit refresh accepts only the ACK then rereads actual status without c
   assert.equal(views.at(-1).status.refreshing, true);
   assert.equal(canRefreshTrustedTime(views.at(-1).status), false);
   ui.dispose();
+});
+
+test('background lock contention is observed without automatically retrying refresh', { timeout: 5000 }, async () => {
+  let reads = 0;
+  let refreshes = 0;
+  const complete = deferred();
+  const ui = createTrustedTimeDiagnostics({
+    async requestTrustedTimeRefresh() { refreshes += 1; return { protocolVersion: 1, state: 'accepted' }; },
+    async inspectTrustedTime() { return ++reads === 1 ? status('unknown', true) : status('unknown', false, 'busy'); },
+  }, view => { if (view.status?.refreshFailure === 'busy') complete.resolve(view); });
+  await ui.refresh();
+  const view = await complete.promise;
+  assert.equal(reads, 2);
+  assert.equal(refreshes, 1);
+  assert.equal(canRefreshTrustedTime(view.status), true);
+  ui.dispose();
+});
+
+test('disposing a refreshing view cancels its scheduled observation', { timeout: 5000 }, async () => {
+  let reads = 0;
+  const ui = createTrustedTimeDiagnostics({
+    async inspectTrustedTime() { reads += 1; return status('unknown', true); },
+  }, () => {});
+  await ui.read();
+  ui.dispose();
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  assert.equal(reads, 1);
+});
+
+test('long running refresh remains observable at a reduced rate without another refresh', async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let scheduled;
+  let reads = 0;
+  let refreshes = 0;
+  const views = [];
+  globalThis.setTimeout = (callback, delay) => { scheduled = { callback, delay }; return scheduled; };
+  globalThis.clearTimeout = () => { scheduled = null; };
+  const ui = createTrustedTimeDiagnostics({
+    async requestTrustedTimeRefresh() { refreshes += 1; return { protocolVersion: 1, state: 'accepted' }; },
+    async inspectTrustedTime() { reads += 1; return status('unknown', reads <= 32, reads > 32 ? 'busy' : null); },
+  }, view => views.push(view));
+  try {
+    await ui.refresh();
+    for (let i = 0; i < 32; i += 1) {
+      assert.equal(scheduled.delay, i < 30 ? 1000 : 10000);
+      const callback = scheduled.callback;
+      scheduled = null;
+      callback();
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(views.at(-1).status.refreshFailure, 'busy');
+    assert.equal(refreshes, 1);
+    assert.equal(scheduled, null);
+  } finally {
+    ui.dispose();
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('a busy diagnostic read during observation is retried without refreshing time', async () => {
+  let reads = 0;
+  let refreshes = 0;
+  const done = deferred();
+  const ui = createTrustedTimeDiagnostics({
+    async requestTrustedTimeRefresh() { refreshes += 1; return { protocolVersion: 1, state: 'accepted' }; },
+    async inspectTrustedTime() {
+      reads += 1;
+      if (reads === 2) throw 'HOST_BUSY';
+      return reads === 1 ? status('unknown', true) : status('unknown', false, 'busy');
+    },
+  }, view => { if (view.status?.refreshFailure === 'busy') done.resolve(); });
+  try {
+    await ui.refresh();
+    await done.promise;
+    assert.equal(reads, 3);
+    assert.equal(refreshes, 1);
+  } finally { ui.dispose(); }
+});
+
+test('busy on the first post-acknowledgement read still observes completion', async () => {
+  let reads = 0;
+  let refreshes = 0;
+  const done = deferred();
+  const ui = createTrustedTimeDiagnostics({
+    async requestTrustedTimeRefresh() { refreshes += 1; return { protocolVersion: 1, state: 'accepted' }; },
+    async inspectTrustedTime() {
+      if (++reads === 1) throw 'HOST_BUSY';
+      return status('unknown', false, 'busy');
+    },
+  }, view => { if (view.status?.refreshFailure === 'busy') done.resolve(); });
+  try {
+    await ui.refresh();
+    await done.promise;
+    assert.equal(refreshes, 1);
+    assert.equal(reads, 2);
+  } finally { ui.dispose(); }
+});
+
+test('busy refresh request restores a readable status without resending the request', async () => {
+  let refreshes = 0;
+  const done = deferred();
+  const ui = createTrustedTimeDiagnostics({
+    async requestTrustedTimeRefresh() { refreshes += 1; throw 'HOST_BUSY'; },
+    async inspectTrustedTime() { return status('unknown'); },
+  }, view => { if (view.status && !view.busy) done.resolve(view); });
+  try {
+    await ui.refresh();
+    const view = await done.promise;
+    assert.equal(canRefreshTrustedTime(view.status), true);
+    assert.equal(refreshes, 1);
+  } finally { ui.dispose(); }
 });
 
 test('cleanup_complete is diagnostic DATA; explicit refresh still waits for a new actual status', { timeout: 5000 }, async () => {
@@ -215,7 +330,7 @@ test('all three lazy dictionaries explain every host state, network action and a
     const copy = dict[lang].trustedTime;
     const compare = (left, right) => left.localeCompare(right);
     assert.deepEqual(Object.keys(copy.states).toSorted(compare), [...TRUSTED_TIME_STATES].toSorted(compare));
-    for (const text of [copy.title, copy.readStatus, copy.refresh, copy.networkNotice, copy.accepted,
+    for (const text of [copy.title, copy.readStatus, copy.refresh, copy.networkNotice, copy.accepted, copy.refreshBusy,
       ...Object.values(copy.states), ...Object.values(copy.errors)]) {
       assert.equal(typeof text, 'string');
       assert.ok(text.trim());

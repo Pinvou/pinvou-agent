@@ -39,6 +39,7 @@ export default function TrustedTimeDiagnostics({ copy, supported, updater }) {
           {available && view.busy ? copy.reading : (reason ? copy.states[reason] : copy.notRead)}
           {available && view.status?.refreshing && <p>{copy.refreshing}</p>}
           {available && view.accepted && <p>{copy.accepted}</p>}
+          {available && view.status?.refreshFailure === 'busy' && <p>{copy.refreshBusy}</p>}
         </div>
         {available && view.error && <p role="alert" className="mt-2 text-[12px] leading-5 text-[#EA4335]">{copy.errors[view.error]}</p>}
         <p className="mt-2 text-[12px] leading-5 text-gray-500 dark:text-gray-400">{copy.networkNotice}</p>

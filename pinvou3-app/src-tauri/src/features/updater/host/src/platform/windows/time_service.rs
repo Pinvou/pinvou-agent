@@ -4,6 +4,7 @@ use super::{dispatch::Core, pipe::Event, time_owner::TimeOwner, time_transport::
 use crate::{
     TrustedTimeState, TrustedTimeStatus,
     error::{Error, Result},
+    time_status::TrustedTimeRefreshFailure,
 };
 use std::{
     sync::{
@@ -95,8 +96,14 @@ impl RefreshControl {
         }
         // Poisoning is unavailable in every reader/requester, never Idle.
     }
-    pub(super) fn diagnostic(&self, native: TrustedTimeState) -> Result<TrustedTimeStatus> {
+    pub(super) fn diagnostic_with(
+        &self,
+        read_native: impl FnOnce() -> Result<TrustedTimeState>,
+    ) -> Result<TrustedTimeStatus> {
         let s = self.state.lock().map_err(|_| Error::Unavailable)?;
+        // Keep activity stable across the nonblocking native read. Native lock
+        // contention is returned to the caller, never reported as a time state.
+        let native = read_native()?;
         let refreshing = s.started && matches!(s.phase, Phase::Pending | Phase::Running);
         // Native storage is always read first by Core. Only fixed activity or
         // the last actual failure can refine Unknown/unavailability; successful
@@ -121,7 +128,15 @@ impl RefreshControl {
         } else {
             native
         };
-        Ok(TrustedTimeStatus::new(state, refreshing))
+        let mut status = TrustedTimeStatus::new(state, refreshing);
+        if s.phase == Phase::Idle && s.last_failure == Some(Error::Busy) {
+            status.refresh_failure = Some(TrustedTimeRefreshFailure::Busy);
+        }
+        Ok(status)
+    }
+    #[cfg(test)]
+    fn diagnostic(&self, native: TrustedTimeState) -> Result<TrustedTimeStatus> {
+        self.diagnostic_with(|| Ok(native))
     }
 }
 struct WorkerExit(Arc<RefreshControl>);
@@ -292,6 +307,75 @@ mod tests {
 #[cfg(test)]
 mod activity_tests {
     use super::*;
+    #[test]
+    fn diagnostic_read_contention_is_not_misreported_as_a_time_state() {
+        let c = RefreshControl::new();
+        c.start().unwrap();
+        assert!(c.claim().unwrap());
+        assert_eq!(c.diagnostic_with(|| Err(Error::Busy)), Err(Error::Busy));
+        c.finish(Ok(())).unwrap();
+        let status = c.diagnostic(TrustedTimeState::CleanupComplete).unwrap();
+        assert_eq!(status.state, TrustedTimeState::CleanupComplete);
+        assert!(!status.refreshing);
+    }
+    #[test]
+    fn diagnostic_and_worker_completion_cannot_mix_activity_generations() {
+        let c = Arc::new(RefreshControl::new());
+        c.start().unwrap();
+        assert!(c.claim().unwrap());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reader = Arc::clone(&c);
+        let read = std::thread::spawn(move || {
+            reader
+                .diagnostic_with(|| {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(TrustedTimeState::Unknown)
+                })
+                .unwrap()
+        });
+        entered_rx.recv().unwrap();
+        let finisher = Arc::clone(&c);
+        let finish = std::thread::spawn(move || finisher.finish(Err(Error::Busy)).unwrap());
+        release_tx.send(()).unwrap();
+        let before = read.join().unwrap();
+        finish.join().unwrap();
+        assert!(before.refreshing);
+        assert_eq!(before.refresh_failure, None);
+        let after = c.diagnostic(TrustedTimeState::Unknown).unwrap();
+        assert!(!after.refreshing);
+        assert_eq!(after.refresh_failure, Some(TrustedTimeRefreshFailure::Busy));
+    }
+    #[test]
+    fn contention_is_visible_without_overwriting_native_state_and_manual_retry_clears_it() {
+        let c = RefreshControl::new();
+        c.start().unwrap();
+        assert!(c.claim().unwrap());
+        c.finish(Err(Error::Busy)).unwrap();
+        let status = c.diagnostic(TrustedTimeState::CleanupPending).unwrap();
+        assert_eq!(status.state, TrustedTimeState::CleanupPending);
+        assert_eq!(
+            status.refresh_failure,
+            Some(TrustedTimeRefreshFailure::Busy)
+        );
+        assert!(!status.refreshing);
+        c.request().unwrap();
+        assert_eq!(
+            c.diagnostic(TrustedTimeState::Unknown)
+                .unwrap()
+                .refresh_failure,
+            None
+        );
+        assert!(c.claim().unwrap());
+        c.finish(Ok(())).unwrap();
+        assert_eq!(
+            c.diagnostic(TrustedTimeState::Unknown)
+                .unwrap()
+                .refresh_failure,
+            None
+        );
+    }
     #[test]
     fn startup_and_concurrent_clicks_share_one_pending_running_slot() {
         let c = Arc::new(RefreshControl::new());

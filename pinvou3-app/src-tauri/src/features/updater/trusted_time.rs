@@ -10,6 +10,7 @@ pub struct TrustedTimeStatus {
     protocol_version: u8,
     state: &'static str,
     refreshing: bool,
+    refresh_failure: Option<&'static str>,
 }
 #[cfg(not(any(feature = "upgrade-host-lab", feature = "upgrade-host-production")))]
 #[derive(serde::Serialize)]
@@ -40,6 +41,7 @@ pub(crate) fn inspect() -> Result<TrustedTimeStatus, String> {
             protocol_version: 1,
             state: "unsupported",
             refreshing: false,
+            refresh_failure: None,
         })
     }
 }

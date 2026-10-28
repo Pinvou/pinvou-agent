@@ -4,7 +4,8 @@ use super::{
     installed::StartedServiceContext,
     original_root::ProtectedOriginalRoot,
     registry::{
-        Store,
+        BootstrapGuard, Store,
+        product_catalog::ProductGuard,
         time::{PolicySnapshot, TimeSnapshot},
     },
     time_transport::TimeTransport,
@@ -268,6 +269,12 @@ impl TimeOwner {
         evidence: Evidence,
     ) -> Result<()> {
         self.original.recheck(host)?;
+        // Keep both same-thread recursive mutexes through both native commits
+        // and the final authenticated readback. No network operation occurs
+        // here. Inner publishers acquire/release their own recursive levels.
+        let seed = &host.context.seed;
+        let _profile_guard = BootstrapGuard::acquire(seed, false)?;
+        let _product_guard = ProductGuard::acquire(seed)?;
         let mut next = self
             .snapshot
             .state
@@ -289,7 +296,6 @@ impl TimeOwner {
         // zero-obligation census. Legacy/nonzero custody cannot be guessed empty.
         self.commit_uncertain = true;
         store.complete_zero_retention(host)?;
-        let seed = &host.context.seed;
         let actual = store
             .read(seed)
             .map_err(|_| Error::StateCommitUnknown)?
@@ -322,6 +328,53 @@ fn root_capacity(roots: &[String]) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[allow(unsafe_code)]
+    fn native_mutex_recursion_keeps_other_threads_excluded_until_final_release() {
+        use std::ptr;
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+        use windows_sys::Win32::System::Threading::{
+            CreateMutexExW, MUTEX_MODIFY_STATE, ReleaseMutex, WaitForSingleObject,
+        };
+        struct TestMutex(windows_sys::Win32::Foundation::HANDLE);
+        impl Drop for TestMutex {
+            fn drop(&mut self) {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
+        let mutex = TestMutex(unsafe {
+            CreateMutexExW(
+                ptr::null(),
+                ptr::null(),
+                0,
+                MUTEX_MODIFY_STATE | SYNCHRONIZE,
+            )
+        });
+        assert!(!mutex.0.is_null());
+        assert_eq!(unsafe { WaitForSingleObject(mutex.0, 0) }, WAIT_OBJECT_0);
+        assert_eq!(unsafe { WaitForSingleObject(mutex.0, 0) }, WAIT_OBJECT_0);
+        let observe = || {
+            let raw = mutex.0 as usize;
+            std::thread::spawn(move || {
+                let handle = raw as windows_sys::Win32::Foundation::HANDLE;
+                let result = unsafe { WaitForSingleObject(handle, 0) };
+                if result == WAIT_OBJECT_0 {
+                    assert_ne!(unsafe { ReleaseMutex(handle) }, 0);
+                }
+                result
+            })
+            .join()
+            .unwrap()
+        };
+        assert_eq!(observe(), WAIT_TIMEOUT);
+        assert_ne!(unsafe { ReleaseMutex(mutex.0) }, 0);
+        assert_eq!(observe(), WAIT_TIMEOUT);
+        assert_ne!(unsafe { ReleaseMutex(mutex.0) }, 0);
+        assert_eq!(observe(), WAIT_OBJECT_0);
+    }
     #[test]
     fn successor_capacity_is_checked_before_retaining_more_originals() {
         let full = vec!["x".repeat(json::RECORD_MAX)];

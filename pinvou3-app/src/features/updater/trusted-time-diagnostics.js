@@ -5,8 +5,8 @@ export const TRUSTED_TIME_STATES = Object.freeze([
   'source_unavailable', 'cleanup_pending', 'cleanup_complete', 'integrity_fault',
 ]);
 
-/** @typedef {{title: string, reading: string, notRead: string, readStatus: string, refresh: string, refreshing: string, accepted: string, networkNotice: string, states: Record<string, string>, errors: Record<string, string>}} TrustedTimeCopy */
-/** @typedef {{protocolVersion: number, state: string, refreshing: boolean}} TrustedTimeStatus */
+/** @typedef {{title: string, reading: string, notRead: string, readStatus: string, refresh: string, refreshing: string, accepted: string, refreshBusy: string, networkNotice: string, states: Record<string, string>, errors: Record<string, string>}} TrustedTimeCopy */
+/** @typedef {{protocolVersion: number, state: string, refreshing: boolean, refreshFailure: 'busy'|null}} TrustedTimeStatus */
 /** @typedef {{inspectTrustedTime: () => Promise<unknown>, requestTrustedTimeRefresh: () => Promise<unknown>}} TrustedTimeAdapter */
 /** @typedef {{status: TrustedTimeStatus|null, busy: boolean, accepted: boolean, error: 'busy'|'invalidResponse'|'unavailable'|null}} DiagnosticView */
 
@@ -27,13 +27,15 @@ function exact(value, keys) {
  * @returns {TrustedTimeStatus} Closed diagnostic DATA.
  */
 export function parseTrustedTimeStatus(value) {
-  if (!exact(value, ['protocolVersion', 'state', 'refreshing'])
+  if (!exact(value, ['protocolVersion', 'state', 'refreshing', 'refreshFailure'])
       || value.protocolVersion !== 1 || typeof value.state !== 'string'
       || !TRUSTED_TIME_STATES.includes(value.state)
-      || typeof value.refreshing !== 'boolean') {
+      || typeof value.refreshing !== 'boolean'
+      || (value.refreshFailure !== null && value.refreshFailure !== 'busy')
+      || (value.refreshing && value.refreshFailure !== null)) {
     throw new Error('TRUSTED_TIME_RESPONSE_INVALID');
   }
-  return Object.freeze({ protocolVersion: 1, state: value.state, refreshing: value.refreshing });
+  return Object.freeze({ protocolVersion: 1, state: value.state, refreshing: value.refreshing, refreshFailure: value.refreshFailure });
 }
 
 /** @param {unknown} value - Untrusted refresh acknowledgement. */
@@ -75,6 +77,8 @@ export function createTrustedTimeDiagnostics(adapter, publish) {
   let disposed = false;
   /** @type {Promise<void>|null} */
   let pending = null;
+  let timer = null;
+  let pollsRemaining = 0;
   /** @type {DiagnosticView} */
   let view = { status: null, busy: false, accepted: false, error: null };
   /** @param {Partial<DiagnosticView>} patch - Changes to this mounted view. */
@@ -86,11 +90,14 @@ export function createTrustedTimeDiagnostics(adapter, publish) {
    * @param {boolean} refresh - Whether this explicit action requests fresh time.
    * @returns {Promise<void>} The same in-flight local request lane.
    */
-  const run = refresh => {
+  const run = (refresh, polling = false) => {
     if (disposed) return Promise.resolve();
     if (pending) return pending;
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    if (!polling) pollsRemaining = 30;
     emit({ status: null, busy: true, accepted: false, error: null });
     pending = Promise.resolve().then(async () => {
+      let inspecting = false;
       try {
         if (disposed) return;
         if (refresh) {
@@ -98,6 +105,7 @@ export function createTrustedTimeDiagnostics(adapter, publish) {
           if (disposed) return;
           emit({ accepted: true });
         }
+        inspecting = true;
         const status = parseTrustedTimeStatus(await adapter.inspectTrustedTime());
         emit({ status });
       } catch (error) {
@@ -105,6 +113,13 @@ export function createTrustedTimeDiagnostics(adapter, publish) {
       } finally {
         pending = null;
         emit({ busy: false });
+        // Poll only local diagnostics, never issue another refresh. Keep
+        // observing long operations at a lower rate while this view is open.
+        if (!disposed && (view.status?.refreshing || ((inspecting || refresh) && view.error === 'busy'))) {
+          const delay = pollsRemaining > 0 ? 1000 : 10000;
+          if (pollsRemaining > 0) pollsRemaining -= 1;
+          timer = setTimeout(() => { timer = null; void run(false, true); }, delay);
+        }
       }
     });
     return pending;
@@ -112,6 +127,6 @@ export function createTrustedTimeDiagnostics(adapter, publish) {
   return {
     read: () => run(false),
     refresh: () => run(true),
-    dispose: () => { disposed = true; },
+    dispose: () => { disposed = true; if (timer !== null) clearTimeout(timer); timer = null; },
   };
 }

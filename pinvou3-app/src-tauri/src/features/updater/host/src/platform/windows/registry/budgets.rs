@@ -730,6 +730,7 @@ impl Store {
             return Err(Error::ScopeConflict);
         }
         let _guard = BootstrapGuard::acquire(seed, false)?;
+        let _product_guard = super::product_catalog::ProductGuard::acquire(seed)?;
         let tx = Handle::owned(unsafe {
             CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
         })?;

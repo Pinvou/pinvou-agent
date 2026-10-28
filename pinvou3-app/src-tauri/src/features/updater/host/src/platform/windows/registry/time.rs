@@ -690,6 +690,7 @@ impl Store {
     ) -> Result<()> {
         let seed = &host.context.seed;
         let _guard = BootstrapGuard::acquire(seed, false)?;
+        let _product_guard = super::product_catalog::ProductGuard::acquire(seed)?;
         let tx = Handle::owned(unsafe {
             CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
         })?;
@@ -871,10 +872,11 @@ impl Store {
     pub(in crate::platform::windows) fn diagnostic_time(
         &self,
         host: &StartedServiceContext,
-    ) -> crate::TrustedTimeState {
+    ) -> Result<crate::TrustedTimeState> {
         match self.diagnostic_time_checked(host) {
-            Ok(state) => state,
-            Err(error) => protected_diagnostic_error(error),
+            Ok(state) => Ok(state),
+            Err(Error::Busy) => Err(Error::Busy),
+            Err(error) => Ok(protected_diagnostic_error(error)),
         }
     }
     #[allow(unsafe_code)]
@@ -884,6 +886,7 @@ impl Store {
     ) -> Result<crate::TrustedTimeState> {
         let seed = &host.context.seed;
         let _guard = BootstrapGuard::acquire(seed, false)?;
+        let _product_guard = super::product_catalog::ProductGuard::acquire(seed)?;
         let transaction = Handle::owned(unsafe {
             CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
         })?;

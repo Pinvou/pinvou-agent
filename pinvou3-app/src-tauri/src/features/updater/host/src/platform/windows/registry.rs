@@ -6,7 +6,7 @@ mod metadata;
 #[cfg(feature = "metadata-component-tests")]
 pub(super) mod metadata_component_tests;
 pub(super) mod preparation;
-mod product_catalog;
+pub(super) mod product_catalog;
 pub(super) mod retention;
 pub(super) mod time;
 pub(super) mod writers;

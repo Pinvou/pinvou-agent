@@ -61,13 +61,13 @@ impl Drop for MachineGuard {
 
 /// Held after the profile guard and, for enrollment, the machine guard.
 /// Never acquire any other profile guard while holding this product guard.
-pub(super) struct ProductGuard {
+pub(in crate::platform::windows) struct ProductGuard {
     handle: Handle,
     _thread: PhantomData<Rc<()>>,
 }
 impl ProductGuard {
     #[allow(unsafe_code)]
-    pub(super) fn acquire(seed: &Seed) -> Result<Self> {
+    pub(in crate::platform::windows) fn acquire(seed: &Seed) -> Result<Self> {
         use windows_sys::Win32::Security::Authorization::SE_KERNEL_OBJECT;
         let name = product_mutex_name(&seed.profile_kind, &seed.product)?;
         let security = NativeSecurity::mutex()?;

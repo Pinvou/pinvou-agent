@@ -44,8 +44,8 @@ impl Core {
     fn time_status(&self) -> Result<crate::TrustedTimeStatus> {
         // The native diagnostic always runs, including after worker failure;
         // cached activity/success never substitutes for actual protected state.
-        let native = Store::new(&self.host.context.seed).diagnostic_time(&self.host);
-        self.time.diagnostic(native)
+        self.time
+            .diagnostic_with(|| Store::new(&self.host.context.seed).diagnostic_time(&self.host))
     }
     pub(super) fn record(&self) -> Result<HostRegistration> {
         let record = Store::new(&self.host.context.seed)

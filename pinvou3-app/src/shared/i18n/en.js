@@ -464,6 +464,7 @@ export const dictEn = {
           "readStatus": "Read status",
           "refresh": "Refresh trusted time",
           "refreshing": "A time refresh is in progress.",
+          "refreshBusy": "The time refresh could not finish because the service is busy. Please refresh again later.",
           "accepted": "The refresh request was accepted. This does not confirm trusted time or completed cleanup checks.",
           "networkNotice": "Refreshing connects to the configured upgrade control service. Time-dependent actions remain paused until cleanup checks complete.",
           "states": {
