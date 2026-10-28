@@ -36,7 +36,9 @@ impl std::fmt::Debug for WebAccessConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// url 内嵌 `token=` 片段、qr_data_url 是同一配对 URL 的二维码——与
+/// [`WebAccessConfig`] 同口径手写 Debug,`{:?}` 日志/panic 不得携带它们。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebAccessInfo {
     pub endpoint_id: String,
     pub url: String,
@@ -44,7 +46,20 @@ pub struct WebAccessInfo {
     pub status: WebAccessStatusKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for WebAccessInfo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebAccessInfo")
+            .field("endpoint_id", &self.endpoint_id)
+            .field("url", &"[redacted]")
+            .field("qr_data_url", &"[redacted]")
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
+/// 字段口径同 [`WebAccessInfo`]。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebAccessStatus {
     pub active: bool,
     pub endpoint_id: Option<String>,
@@ -55,6 +70,23 @@ pub struct WebAccessStatus {
     pub web_client_connected: bool,
     pub host_workspace_authorized: bool,
     pub last_error: Option<String>,
+}
+
+impl std::fmt::Debug for WebAccessStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebAccessStatus")
+            .field("active", &self.active)
+            .field("endpoint_id", &self.endpoint_id)
+            .field("url", &"[redacted]")
+            .field("qr_data_url", &"[redacted]")
+            .field("status", &self.status)
+            .field("relay_url", &self.relay_url)
+            .field("web_client_connected", &self.web_client_connected)
+            .field("host_workspace_authorized", &self.host_workspace_authorized)
+            .field("last_error", &self.last_error)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +152,48 @@ mod tests {
         );
         assert!(!rendered.contains("browser-token-secret-value"));
         assert!(!rendered.contains("desktop-secret-value"));
+        assert!(rendered.contains("[redacted]"));
+
+        // status/info 的 url 内嵌 token 片段、qr 是同一 URL 的二维码:
+        // Debug 同口径不得携带,防止下一个 log::debug!("{status:?}") 泄密。
+        let token = "browser-token-secret-value";
+        let info = WebAccessInfo {
+            endpoint_id: "ep_123".into(),
+            url: format!("https://relay.test/pinvou3/remote/#endpoint=ep_123&token={token}"),
+            qr_data_url: Some(format!("data:image/png;base64,{token}")),
+            status: WebAccessStatusKind::WaitingWebClient,
+        };
+        let rendered = format!("{info:?}");
+        assert!(
+            rendered.contains("ep_123"),
+            "non-secret fields stay visible"
+        );
+        assert!(
+            !rendered.contains(token),
+            "info debug must redact url/qr: {rendered}"
+        );
+        assert!(rendered.contains("[redacted]"));
+
+        let status = WebAccessStatus {
+            active: true,
+            endpoint_id: Some("ep_123".into()),
+            url: Some(format!("https://relay.test/pinvou3/remote/#token={token}")),
+            qr_data_url: Some(format!("data:image/png;base64,{token}")),
+            status: WebAccessStatusKind::WaitingWebClient,
+            relay_url: "wss://relay.test/ws".into(),
+            web_client_connected: false,
+            host_workspace_authorized: true,
+            last_error: None,
+        };
+        let rendered = format!("{status:?}");
+        assert!(
+            rendered.contains("ep_123"),
+            "non-secret fields stay visible"
+        );
+        assert!(
+            !rendered.contains(token),
+            "status debug must redact url/qr: {rendered}"
+        );
         assert!(rendered.contains("[redacted]"));
     }
 }
