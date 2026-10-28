@@ -13,12 +13,14 @@ pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
 no(){ echo "  [FAIL] $1"; fail=$((fail+1)); }
 sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
-# 失败回显脱敏:任何 *token* 字段值 / authorization 头 / bearer 方案先打码再截断
-# (与 host 侧 connector_cli.rs safe_auth_log_line 同族口径)。dws auth status 的
-# 正常输出不含凭证,这是纵深防御——防未来 CLI 输出形状变化把密钥带进 FAIL 行。
-redact(){ sed -E 's/[A-Za-z_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g
-s/[Aa]uthorization"?:[[:space:]]*"?[^",}]+/authorization=[REDACTED]/g
-s/[Bb]earer[[:space:]][A-Za-z0-9._~+/=-]+/bearer [REDACTED]/g'; }
+# 失败回显脱敏(host 侧 connector_cli.rs safe_auth_log_line 同口径):凡出现
+# access_token/refresh_token/authorization/bearer(整行小写后匹配,大小写不敏感)
+# 的行整行打码——等号、裸冒号、URL 查询串、大写 scheme 形态一并覆盖(host 对
+# 这些形态就是整行替换);其余行再按 JSON 字段形态打码 token 值。dws auth status
+# 的正常输出不含凭证,这是纵深防御——防未来 CLI 输出形状变化把密钥带进 FAIL 行。
+redact(){ awk '{ l=tolower($0)
+    if (l ~ /access_token|refresh_token|authorization|bearer/) print "[已脱敏:含凭证形状的整行]"
+    else print }' | sed -E 's/[A-Za-z_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
 
 # --- 定位 dws ---
 # 应用按 connectors.lock.json 把 dws 落到版本目录 ~/.pinvou3/assets/cli/dws/<version>/
