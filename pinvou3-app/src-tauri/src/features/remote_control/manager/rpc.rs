@@ -944,6 +944,7 @@ mod tests {
         ));
     }
 
+    #[test]
     fn web_kb_paths_require_browsable_home_paths() {
         // 无路径字段的知识库命令不受影响;kb_start_scan 缺省 roots 扫描
         // 主目录(桌面自动扫描同一数据集),放行。
