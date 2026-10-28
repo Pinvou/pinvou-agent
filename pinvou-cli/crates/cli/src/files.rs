@@ -271,6 +271,14 @@ fn translate_ingest_error(message: &str) -> String {
     }
     // `platform::path_policy::check_sensitive_components`.
     if let Some(rest) = message.strip_prefix("path ") {
+        // 前缀变体的分隔符更长,必须先于精确组件变体尝试,否则会把
+        // "prefix .env." 整体当成组件名回显。
+        if let Some((path, prefix)) = rest.split_once(" crosses sensitive component prefix ") {
+            return format!(
+                "{path} crosses the credential path component prefix `{prefix}`; files under \
+                 credential locations are never read into a model context"
+            );
+        }
         if let Some((path, component)) = rest.split_once(" crosses sensitive component ") {
             return format!(
                 "{path} crosses the credential path component `{component}`; files under \

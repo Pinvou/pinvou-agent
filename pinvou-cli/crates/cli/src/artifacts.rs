@@ -63,7 +63,9 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COM
 /// postprocess --text-file/--draft-file`, and `personas create/update
 /// --file`. See the module docs for the session-storage caveat: targets
 /// already proved inside session storage take the component half
-/// ([`crosses_sensitive_component`]) while the prefix half cannot apply.
+/// ([`crosses_sensitive_component`], now including the `.env.*` component
+/// prefix rule) while the *system*-prefix half
+/// ([`SENSITIVE_PATH_PREFIXES`], unix system areas) cannot apply to them.
 use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
 
 /// The component half of `path_policy::check_sensitive_components`.
@@ -112,15 +114,16 @@ pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
             canonical.display()
         ));
     }
-    let text = canonical.to_string_lossy();
-    if let Some(prefix) = SENSITIVE_PATH_PREFIXES
-        .iter()
-        .find(|prefix| text.starts_with(**prefix))
-    {
-        return Err(format!(
-            "{} is in the system-sensitive area {prefix}",
-            canonical.display()
-        ));
+    for prefix in SENSITIVE_PATH_PREFIXES {
+        // 组件序列比较走平台折叠语义,与上游 path_policy 同一谓语:大小写
+        // 不敏感卷(macOS APFS)会把 `/Etc/Sudoers` 解析到真文件,字节
+        // starts_with 会让大写变体绕过系统区黑名单。
+        if pinvou3_lib::platform::path_starts_with_folded(canonical, prefix) {
+            return Err(format!(
+                "{} is in the system-sensitive area {prefix}",
+                canonical.display()
+            ));
+        }
     }
     Ok(())
 }
