@@ -1638,8 +1638,10 @@ test("scans strings with escaped quotes and backslashes without false rejects", 
   const error = nextMessage(ws, "error");
   // Backslash parity in the scanner's string skipping: escapes inside string
   // values must scan as plain string content and reach the protocol layer,
-  // never a false duplicate-key or malformed verdict.
-  ws.send('{"v":2,"payload":["say \\"hi\\"", "a\\\\b", "\u0076"]}');
+  // never a false duplicate-key or malformed verdict. The "tail\\" element
+  // puts an even run of backslashes immediately before the closing quote —
+  // the shape an any-backslash-means-escaped misreading terminates wrongly.
+  ws.send('{"v":2,"payload":["say \\"hi\\"", "a\\\\b", "\u0076", "tail\\\\"]}');
   assert.equal((await error).code, "authentication_required");
 });
 
@@ -1818,6 +1820,32 @@ test("zone id entries start on every supported runtime", async () => {
     assert.equal(health.endpoint_count, 0);
   } finally {
     await stopRelay(isolated.child);
+  }
+});
+
+test("rejects path traversal outside the web root", async () => {
+  // safeWebPath is the file-read boundary: decode the route, then confine the
+  // result to the web root. Every shape below would escape it (or smuggle a
+  // null byte or a Windows drive prefix) and must be refused as a bad path,
+  // never served — the bait file sits one level above the web root, exactly
+  // where the decoded ".." points.
+  const bait = join(testRoot, "traversal-bait.txt");
+  await writeFile(bait, "outside the web root");
+  const rejected = [
+    "/pinvou3/remote/..%2ftraversal-bait.txt",
+    "/pinvou3/remote/assets%2f..%2f..%2ftraversal-bait.txt",
+    "/pinvou3/remote/%00index.html",
+    "/pinvou3/remote/C:%2ftraversal-bait.txt",
+  ];
+  try {
+    for (const route of rejected) {
+      const response = await fetch(`${httpUrl}${route}`);
+      assert.equal(response.status, 400, route);
+      assert.equal(await response.text(), "bad path", route);
+    }
+    assert.equal((await fetch(`${httpUrl}/pinvou3/remote/app.js`)).status, 200);
+  } finally {
+    await rm(bait, { force: true });
   }
 });
 
