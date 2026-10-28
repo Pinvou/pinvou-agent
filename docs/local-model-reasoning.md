@@ -9,7 +9,8 @@ same ladder. Provider identity and credential lookup are unchanged.
 | --- | --- | --- |
 | Qwen3.8-27B / Flash-Next | Off, Low, Medium, Max | thinking switch; low, medium, xhigh |
 | Ornith-1.5-35B-A3B / Qwen3.6-35B-A3B | Off, On | thinking switch only |
-| GLM-5.3-Flash / DeepSeek-V4-Flash-Vision-Exp | Low, High, Max | low, high, max |
+| GLM-5.3-Flash | Low, High, Max | low, high, max |
+| DeepSeek-V4-Flash-Vision-Exp | Off, Low, High, Max | prior thinking switch; low, high, max |
 
 Old Qwen3.8 High choices remain saved and display as Max on the vLLM wire;
 requests send xhigh in chat_template_kwargs; the top-level effort is omitted
@@ -32,7 +33,7 @@ owners.
 
 Generic contribution: [upstream #7125](https://github.com/codewhale-hq/Codewhale/pull/7125).
 Compatible backport: [Pinvou/CodeWhale #128](https://github.com/Pinvou/CodeWhale/pull/128),
-candidate `60150219d603b24cc6b35099c59f0ed94291e9bf` on public contributor branch
+candidate `2ed7b03b5a87559f84172cfb00100efa2b06af7b` on public contributor branch
 `Pinvou/CodeWhale:pr128-candidate-rebased` (the contributor fork branch is not writable by
 maintainers), based on maintenance `f1eb10efc`.
 No protected maintenance branch or release tag was moved. The independent

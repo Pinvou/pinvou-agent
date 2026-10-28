@@ -1377,7 +1377,7 @@ test('reviewed local template ladders match the shared wire facts', () => {
     ['Ornith-1.5-35B-A3B-NVFP4', ['off', 'high'], 'medium', 'high'],
     ['Qwen3.6-35B-A3B-NVFP4-Fast', ['off', 'high'], 'low', 'high'],
     ['GLM-5.3-Flash-NVFP4', ['low', 'high', 'max'], 'medium', 'high'],
-    ['DeepSeek-V4-Flash-Vision-Exp', ['low', 'high', 'max'], 'medium', 'high'],
+    ['DeepSeek-V4-Flash-Vision-Exp', ['off', 'low', 'high', 'max'], 'medium', 'high'],
   ];
   for (const [name, tiers, stored, effective] of rows) {
     const model = { preset: 'local_vllm', model: name, base_url: 'http://localhost:8000/v1' };

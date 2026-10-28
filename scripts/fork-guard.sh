@@ -8,8 +8,8 @@ APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Local reasoning review candidate (Pinvou/CodeWhale#128 rebased onto f1eb10efc);
 # public maintenance is checked separately.
-EXPECTED_HEAD="60150219d603b24cc6b35099c59f0ed94291e9bf"
-EXPECTED_COMMITS=91
+EXPECTED_HEAD="2ed7b03b5a87559f84172cfb00100efa2b06af7b"
+EXPECTED_COMMITS=92
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
