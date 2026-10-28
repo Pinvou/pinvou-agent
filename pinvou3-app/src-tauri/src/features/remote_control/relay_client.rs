@@ -720,19 +720,16 @@ async fn run_loop(
                                     if registration_acknowledges_endpoint(&value, &config.endpoint_id) {
                                         reconnect_backoff.reset();
                                     }
-                                    // Relay 的注册类 reject 帧不携带 endpoint_id;
-                                    // 补戳本 socket 正在注册的 endpoint,让 manager
-                                    // 侧的显式 endpoint 匹配 gate 生效——否则轮换
-                                    // 竞态中迟到的终结帧无法与帧归属区分,只能对
-                                    // 空 id 一律放行,可能误伤刚接替的新 endpoint。
+                                    // Relay 的注册类 reject 帧不携带(或带空)
+                                    // endpoint_id:补戳本 socket 正在注册的
+                                    // endpoint,让 manager 侧的显式匹配 gate
+                                    // 生效——否则轮换竞态中迟到的终结帧无法与
+                                    // 帧归属区分,可能误伤刚接替的新 endpoint。
                                     let forwarded =
-                                        if registration_error_without_scope(&value) {
-                                            if let Some(obj) = value.as_object_mut() {
-                                                obj.insert(
-                                                    "endpoint_id".to_string(),
-                                                    Value::String(config.endpoint_id.clone()),
-                                                );
-                                            }
+                                        if stamp_unscoped_registration_error(
+                                            &mut value,
+                                            &config.endpoint_id,
+                                        ) {
                                             value.to_string()
                                         } else {
                                             text.to_string()
@@ -896,15 +893,36 @@ pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
 
 /// 注册类终结 error 帧(reject 帧不携带 endpoint_id)且尚未带 scope:这些帧
 /// 在转发给 manager 前补戳本 socket 的 endpoint_id,让显式匹配 gate 生效。
+/// 空串与缺失同等对待——显式匹配 gate 不得把空 id 当作「当前 endpoint」,
+/// 否则轮换竞态中迟到的终结帧仍会误伤刚接替的新 endpoint。
 fn registration_error_without_scope(value: &Value) -> bool {
     value.get("type").and_then(Value::as_str) == Some("error")
-        && value.get("endpoint_id").is_none()
+        && value
+            .get("endpoint_id")
+            .and_then(Value::as_str)
+            .map_or(true, str::is_empty)
         && value
             .get("code")
             .and_then(Value::as_str)
             .is_some_and(|code| {
                 code == "endpoint_revoked" || REGISTER_REJECTED_ERROR_CODES.contains(&code)
             })
+}
+
+/// 转发前的补戳(检测 + 写入一体,循环与测试共同消费):命中
+/// [`registration_error_without_scope`] 的帧补上本 socket 的 endpoint_id。
+/// 返回是否补戳。
+fn stamp_unscoped_registration_error(value: &mut Value, endpoint_id: &str) -> bool {
+    if !registration_error_without_scope(value) {
+        return false;
+    }
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "endpoint_id".to_string(),
+            Value::String(endpoint_id.to_string()),
+        );
+    }
+    true
 }
 
 fn registration_acknowledges_endpoint(value: &Value, endpoint_id: &str) -> bool {
@@ -1392,7 +1410,8 @@ mod tests {
     /// RegisterRejected/Revoked 分类必须互相覆盖——REGISTER 清单里的每个码
     /// 都必须在 manager 清单,manager 清单里的每个码都必须终结;
     /// 无 scope 的注册类终结帧会被 run_loop 补戳本 socket 的 endpoint_id;
-    /// 已带 scope 的帧必须原样放行,非注册类错误码不得误戳。
+    /// 已带 scope 的帧必须原样放行,空串 scope 与缺失同等对待(补戳),
+    /// 非注册类错误码不得误戳;补戳写入的是本 socket 的 endpoint。
     #[test]
     fn unscoped_registration_errors_are_detected_for_stamping() {
         assert!(registration_error_without_scope(&json!({
@@ -1403,6 +1422,11 @@ mod tests {
             "type": "error",
             "code": "invalid_access_token"
         })));
+        assert!(registration_error_without_scope(&json!({
+            "type": "error",
+            "code": "endpoint_revoked",
+            "endpoint_id": ""
+        })));
         assert!(!registration_error_without_scope(&json!({
             "type": "error",
             "code": "endpoint_revoked",
@@ -1412,6 +1436,29 @@ mod tests {
             "type": "desktop_endpoint_revoked",
             "code": "endpoint_revoked"
         })));
+
+        // 补戳一体:命中帧被写入本 socket 的 endpoint,未命中帧保持原样。
+        let mut scoped = json!({
+            "type": "error",
+            "code": "endpoint_revoked",
+            "endpoint_id": ""
+        });
+        assert!(stamp_unscoped_registration_error(&mut scoped, "ep-mine"));
+        assert_eq!(
+            scoped.get("endpoint_id").and_then(Value::as_str),
+            Some("ep-mine")
+        );
+
+        let mut named = json!({
+            "type": "error",
+            "code": "endpoint_revoked",
+            "endpoint_id": "ep_other"
+        });
+        assert!(!stamp_unscoped_registration_error(&mut named, "ep-mine"));
+        assert_eq!(
+            named.get("endpoint_id").and_then(Value::as_str),
+            Some("ep_other")
+        );
     }
 
     /// `endpoint_not_found` 刻意不在 manager 清单(其 reject 帧不带
