@@ -244,6 +244,15 @@ try {
   }
 } catch {}
 
+/// 终结单个目的地 socket 的四步清理,send() 的全部终止路径共用:
+/// stringify 失败 / 高水位 / send 回调错误 / send 同步抛错。
+function terminateDestination(ws) {
+  ws.policyClosing = true;
+  clearTimeout(ws.authTimer);
+  ws.authTimer = null;
+  try { ws.terminate(); } catch {}
+}
+
 function send(ws, value) {
   if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
   // JSON.stringify is recursive and throws RangeError on deeply nested values
@@ -255,33 +264,25 @@ function send(ws, value) {
   try {
     encoded = JSON.stringify(value);
   } catch {
-    ws.policyClosing = true;
-    clearTimeout(ws.authTimer);
-    ws.authTimer = null;
-    try { ws.terminate(); } catch {}
+    terminateDestination(ws);
     return false;
   }
   const bytes = Buffer.byteLength(encoded);
   if (bytes > WS_MAX_BUFFERED_BYTES
     || ws.bufferedAmount + bytes > WS_MAX_BUFFERED_BYTES) {
-    ws.policyClosing = true;
-    clearTimeout(ws.authTimer);
-    ws.authTimer = null;
-    try { ws.terminate(); } catch {}
+    terminateDestination(ws);
     return false;
   }
   try {
     ws.send(encoded, (error) => {
       if (!error) return;
-      ws.policyClosing = true;
-      clearTimeout(ws.authTimer);
-      ws.authTimer = null;
-      try { ws.terminate(); } catch {}
+      terminateDestination(ws);
     });
     return true;
   } catch {
-    ws.policyClosing = true;
-    try { ws.terminate(); } catch {}
+    // 与其余三条终结路径同口径清理 authTimer:close 处理器会兜底,
+    // 但这里先行清理保持四条路径完全一致。
+    terminateDestination(ws);
     return false;
   }
 }
@@ -1472,6 +1473,11 @@ wss.on("connection", (ws, req) => {
       const leaseId = endpoint.lease_id;
       endpoint.web = null;
       endpoint.lease_id = null;
+      // rejoin 旗标描述的是「当前在线的 web 会话是接续会话」;该会话已死,
+      // 旗标随之失效。不重置的话,desktop 在无 web 在线时重新注册会收到
+      // web_client_connected:false + web_rejoining:true 的矛盾帧。
+      // 下一次 join 会按 had_web_client 重新计算,不受此处重置影响。
+      endpoint.web_rejoined = false;
       send(endpoint.desktop, {
         v: 2,
         type: "web_client_disconnected",
