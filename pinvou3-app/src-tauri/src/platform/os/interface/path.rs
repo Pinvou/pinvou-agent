@@ -53,16 +53,18 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
 }
 
 /// 折叠平台（macOS 默认 APFS 卷 / Windows NTFS）共用的卷拼写折叠。词法凭据
-/// 判定必须与卷的真实折叠语义一致：Unicode 简单大小写折叠中，仅有的两个
-/// 折叠为 ASCII 的非 ASCII 码点是 U+017F（ſ→s）与 U+212A（K→k）——大小写
-/// 不敏感卷按同一折叠表把 `id_rſa` 解析到 `id_rsa`，纯 ASCII 折叠会漏过。
-/// std 没有 case-fold API，显式替换这两个码点后做 Unicode 小写即可覆盖
+/// 判定必须与卷的真实折叠语义一致：Unicode 简单大小写折叠中，折叠为 ASCII
+/// 的非 ASCII 码点是 U+017F（ſ→s）与 U+212A（K→k）；NTFS 的 `$UpCase` 表
+/// 按 Unicode 大写映射解析，额外把 U+0131（ı）折叠为 `I`——大小写不敏感卷
+/// 按各自折叠表把 `id_rſa`、`ıd_rsa` 解析到 `id_rsa`，纯 ASCII 折叠会漏过。
+/// std 没有 case-fold API，显式替换这三个码点后做 Unicode 小写即可覆盖
 /// 「黑名单常量均为纯 ASCII」场景的全部折叠拼写，不引入新依赖。非 ASCII
 /// 拼写是罕见输入：函数体本身只在慢路径分配，热路径见下面两个谓语。
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_spelling(text: &str) -> String {
     text.replace('\u{017F}', "s")
         .replace('\u{212A}', "k")
+        .replace('\u{0131}', "i")
         .to_lowercase()
 }
 
@@ -280,15 +282,18 @@ mod tests {
     #[test]
     fn volume_fold_matches_unicode_case_folding_onto_ascii() {
         // 平台无关的纯函数,全平台同语义:Unicode 简单大小写折叠里仅
-        // ſ(U+017F)与 KELVIN SIGN(U+212A)折叠为 ASCII,大小写不敏感卷
-        // (APFS/NTFS)按同一折叠表把 `id_rſa` 解析到 `id_rsa`,折叠平台的
+        // ſ(U+017F)与 KELVIN SIGN(U+212A)折叠为 ASCII,NTFS 的 $UpCase
+        // 大写表则额外把 ı(U+0131)折叠为 `I`;大小写不敏感卷(APFS/NTFS)
+        // 按各自折叠表把 `id_rſa`、`ıd_rsa` 解析到 `id_rsa`,折叠平台的
         // 词法判定必须识别这些拼写,否则凭据黑名单被非 ASCII 拼写绕过。
-        // `std::str::to_lowercase` 不做这个折叠(ſ 已是小写),所以显式替换
-        // 是承载语义的,不得「简化」掉。
+        // `std::str::to_lowercase` 不做这些折叠(ſ/ı 已是小写),所以显式
+        // 替换是承载语义的,不得「简化」掉。
         assert!(volume_fold_eq(OsStr::new("id_r\u{017F}a"), "id_rsa"));
         assert!(volume_fold_eq(OsStr::new("id_R\u{017F}A"), "id_rsa"));
         assert!(volume_fold_eq(OsStr::new(".\u{017F}sh"), ".ssh"));
         assert!(volume_fold_eq(OsStr::new(".\u{212A}ube"), ".kube"));
+        assert!(volume_fold_eq(OsStr::new("\u{0131}d_rsa"), "id_rsa"));
+        assert!(volume_fold_eq(OsStr::new("\u{0131}D_RSA"), "id_rsa"));
         assert!(volume_fold_eq(OsStr::new(".AWS"), ".aws"));
         assert!(!volume_fold_eq(OsStr::new("id_rsa2"), "id_rsa"));
         assert!(
