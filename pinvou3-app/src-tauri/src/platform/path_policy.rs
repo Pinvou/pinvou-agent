@@ -265,4 +265,32 @@ mod tests {
             assert!(check_sensitive_components(&path).is_ok());
         }
     }
+
+    #[test]
+    fn system_prefixes_follow_component_boundaries() {
+        // 系统区前缀按组件序列比较(与 CLI mirror 同一谓语):前缀自身与其
+        // 嵌套路径必须被拒;仅共享前缀字节的同名文件是普通可读文件,必须
+        // 放行——字节 starts_with 会误拒 `/var/log/auth.log` 一类路径。
+        for prefix in BLOCKED_PREFIXES {
+            let base = Path::new(prefix);
+            assert!(check_sensitive_components(base).is_err(), "{prefix}");
+            assert!(
+                check_sensitive_components(&base.join("probe")).is_err(),
+                "{prefix}/probe must be refused"
+            );
+            if !prefix.ends_with('/') {
+                assert!(
+                    check_sensitive_components(&PathBuf::from(format!("{prefix}probe"))).is_ok(),
+                    "{prefix}probe is a different file and must stay readable"
+                );
+            }
+        }
+        // 大小写变体跟随平台折叠语义(纯 ASCII 比较在字节精确平台上不命中)。
+        let folded = cfg!(windows) || cfg!(target_os = "macos");
+        assert_eq!(
+            check_sensitive_components(Path::new("/Etc/Sudoers")).is_err(),
+            folded,
+            "case variants follow the platform's volume folding"
+        );
+    }
 }
