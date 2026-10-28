@@ -197,6 +197,31 @@ function rawRequest(hostPort, requestText) {
 
 // Captures stdout/stderr for assertions. Children expected NOT to come up
 // (configuration failures) are spawned with awaitListening: false.
+// The relay reads a fixed set of environment variables. Strip every one of
+// them from the inherited environment — the whole PINVOU_REMOTE_* family by
+// prefix, plus the unprefixed tuning knobs — so a variable exported in a CI
+// runner cannot silently reconfigure spawned relays. Each spawn then sets
+// exactly what it needs.
+const RELAY_TUNING_ENV_NAMES = new Set([
+  "ENDPOINT_CREATE_LIMIT", "ENDPOINT_CREATE_WINDOW_MS", "ENDPOINT_OFFLINE_TTL_MS",
+  "HEARTBEAT_INTERVAL_MS", "MAX_ENDPOINTS", "MAX_PAYLOAD_BYTES",
+  "MAX_RELAY_STATE_BYTES", "MAX_REVOKED_ENDPOINTS", "MAX_ROOMS",
+  "MAX_WS_CONNECTIONS", "PORT", "ROOM_CREATE_LIMIT", "ROOM_CREATE_WINDOW_MS",
+  "WS_AUTH_TIMEOUT_MS", "WS_CONNECT_LIMIT", "WS_CONNECT_WINDOW_MS",
+  "WS_INGRESS_BYTE_LIMIT", "WS_INGRESS_MESSAGE_LIMIT", "WS_INGRESS_WINDOW_MS",
+  "WS_MAX_BUFFERED_BYTES",
+]);
+
+function relayEnvironment() {
+  const inherited = { ...process.env };
+  for (const name of Object.keys(inherited)) {
+    if (name.startsWith("PINVOU_REMOTE_") || RELAY_TUNING_ENV_NAMES.has(name)) {
+      delete inherited[name];
+    }
+  }
+  return inherited;
+}
+
 async function spawnRelay(env = {}, { awaitListening = true } = {}) {
   const isolatedPort = await getFreePort();
   const statePath = env.PINVOU_REMOTE_STATE_PATH
@@ -204,7 +229,7 @@ async function spawnRelay(env = {}, { awaitListening = true } = {}) {
   const child = spawn(process.execPath, [join(relayDir, "server.js")], {
     cwd: relayDir,
     env: {
-      ...process.env,
+      ...relayEnvironment(),
       PORT: String(isolatedPort),
       PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
       PINVOU_REMOTE_WEB_DIR: webDir,
@@ -247,7 +272,7 @@ before(async () => {
   relay = spawn(process.execPath, [join(relayDir, "server.js")], {
     cwd: relayDir,
     env: {
-      ...process.env,
+      ...relayEnvironment(),
       PORT: String(port),
       PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
       PINVOU_REMOTE_WEB_DIR: webDir,
@@ -257,7 +282,8 @@ before(async () => {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  await waitForOutput(relay, /pinvou remote relay listening/);
+  try { await waitForOutput(relay, /pinvou remote relay listening/); }
+  catch (error) { relay.kill(); throw error; }
 });
 
 after(async () => {
@@ -810,21 +836,23 @@ test("expires offline endpoints after TTL and releases endpoint capacity", async
     ENDPOINT_CREATE_LIMIT: "10",
     ENDPOINT_OFFLINE_TTL_MS: "1000",
   });
-  const first = await registerDesktop(
-    "endpoint_ttl_one",
-    "ttl-token-one-000000000000000000001",
-    "ttl-secret-one-00000000000000000001",
-    isolated.wsUrl,
-  );
-  const connected = nextMessage(first.ws, "web_client_connected");
-  const web = await joinWeb(
-    "endpoint_ttl_one",
-    "ttl-token-one-000000000000000000001",
-    {},
-    isolated.wsUrl,
-  );
-  await connected;
+  let first;
+  let web;
   try {
+    first = await registerDesktop(
+      "endpoint_ttl_one",
+      "ttl-token-one-000000000000000000001",
+      "ttl-secret-one-00000000000000000001",
+      isolated.wsUrl,
+    );
+    const connected = nextMessage(first.ws, "web_client_connected");
+    web = await joinWeb(
+      "endpoint_ttl_one",
+      "ttl-token-one-000000000000000000001",
+      {},
+      isolated.wsUrl,
+    );
+    await connected;
     const offline = nextMessage(web.ws, "desktop_connection_state");
     first.ws.terminate();
     assert.equal((await offline).status, "offline");
@@ -847,8 +875,8 @@ test("expires offline endpoints after TTL and releases endpoint capacity", async
     assert.equal(second.registered.endpoint_id, "endpoint_ttl_two");
     closeSocket(second.ws);
   } finally {
-    closeSocket(web.ws);
-    closeSocket(first.ws);
+    closeSocket(web?.ws);
+    closeSocket(first?.ws);
     await stopRelay(isolated.child);
   }
 });
@@ -948,13 +976,14 @@ test("rate limits websocket ingress by message count", async () => {
     WS_INGRESS_MESSAGE_LIMIT: "2",
     WS_INGRESS_BYTE_LIMIT: "1048576",
   });
-  const desktop = await registerDesktop(
-    "endpoint_ingress_count",
-    "ingress-count-token-0000000000000001",
-    "ingress-count-secret-000000000000001",
-    isolated.wsUrl,
-  );
+  let desktop;
   try {
+    desktop = await registerDesktop(
+      "endpoint_ingress_count",
+      "ingress-count-token-0000000000000001",
+      "ingress-count-secret-000000000000001",
+      isolated.wsUrl,
+    );
     const unsupported = nextMessage(desktop.ws, "error");
     desktop.ws.send(JSON.stringify({ v: 2, type: "unsupported-one" }));
     assert.equal((await unsupported).code, "unsupported_message_type");
@@ -964,7 +993,7 @@ test("rate limits websocket ingress by message count", async () => {
     assert.equal((await limited).code, "ingress_rate_limited");
     await waitForClose(desktop.ws);
   } finally {
-    closeSocket(desktop.ws);
+    closeSocket(desktop?.ws);
     await stopRelay(isolated.child);
   }
 });
@@ -974,13 +1003,14 @@ test("rate limits websocket ingress by byte count", async () => {
     WS_INGRESS_MESSAGE_LIMIT: "100",
     WS_INGRESS_BYTE_LIMIT: "1024",
   });
-  const desktop = await registerDesktop(
-    "endpoint_ingress_bytes",
-    "ingress-bytes-token-0000000000000001",
-    "ingress-bytes-secret-000000000000001",
-    isolated.wsUrl,
-  );
+  let desktop;
   try {
+    desktop = await registerDesktop(
+      "endpoint_ingress_bytes",
+      "ingress-bytes-token-0000000000000001",
+      "ingress-bytes-secret-000000000000001",
+      isolated.wsUrl,
+    );
     const limited = nextMessage(desktop.ws, "error");
     desktop.ws.send(JSON.stringify({
       v: 2,
@@ -990,7 +1020,7 @@ test("rate limits websocket ingress by byte count", async () => {
     assert.equal((await limited).code, "ingress_rate_limited");
     await waitForClose(desktop.ws);
   } finally {
-    closeSocket(desktop.ws);
+    closeSocket(desktop?.ws);
     await stopRelay(isolated.child);
   }
 });
@@ -1000,21 +1030,23 @@ test("clamps payload and buffer floors so a legal 2 MiB response is forwarded", 
     MAX_PAYLOAD_BYTES: "1024",
     WS_MAX_BUFFERED_BYTES: "1024",
   });
-  const desktop = await registerDesktop(
-    "endpoint_buffer_high_water",
-    "buffer-token-0000000000000000000001",
-    "buffer-secret-000000000000000000001",
-    isolated.wsUrl,
-  );
-  const connected = nextMessage(desktop.ws, "web_client_connected");
-  const web = await joinWeb(
-    "endpoint_buffer_high_water",
-    "buffer-token-0000000000000000000001",
-    {},
-    isolated.wsUrl,
-  );
-  await connected;
+  let desktop;
+  let web;
   try {
+    desktop = await registerDesktop(
+      "endpoint_buffer_high_water",
+      "buffer-token-0000000000000000000001",
+      "buffer-secret-000000000000000000001",
+      isolated.wsUrl,
+    );
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(
+      "endpoint_buffer_high_water",
+      "buffer-token-0000000000000000000001",
+      {},
+      isolated.wsUrl,
+    );
+    await connected;
     const snapshot = nextMessage(web.ws, "desktop_snapshot", 5000);
     desktop.ws.send(JSON.stringify({
       v: 2,
@@ -1025,17 +1057,19 @@ test("clamps payload and buffer floors so a legal 2 MiB response is forwarded", 
     assert.equal(web.ws.readyState, web.ws.OPEN);
     assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
   } finally {
-    closeSocket(web.ws);
-    closeSocket(desktop.ws);
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
     await stopRelay(isolated.child);
   }
 });
 
 test("caps concurrent websocket upgrades", async () => {
   const isolated = await spawnRelay({ MAX_WS_CONNECTIONS: "2", WS_CONNECT_LIMIT: "20" });
-  const first = await openSocket(isolated.wsUrl);
-  const second = await openSocket(isolated.wsUrl);
+  let first;
+  let second;
   try {
+    first = await openSocket(isolated.wsUrl);
+    second = await openSocket(isolated.wsUrl);
     assert.equal(await rejectedUpgrade(isolated.wsUrl), 503);
   } finally {
     closeSocket(first);
@@ -1046,8 +1080,9 @@ test("caps concurrent websocket upgrades", async () => {
 
 test("rate limits websocket upgrades per client", async () => {
   const isolated = await spawnRelay({ WS_CONNECT_LIMIT: "1", WS_CONNECT_WINDOW_MS: "60000" });
-  const first = await openSocket(isolated.wsUrl);
+  let first;
   try {
+    first = await openSocket(isolated.wsUrl);
     assert.equal(await rejectedUpgrade(isolated.wsUrl), 429);
   } finally {
     closeSocket(first);
@@ -1057,13 +1092,14 @@ test("rate limits websocket upgrades per client", async () => {
 
 test("caps endpoint creation while allowing an existing endpoint to reconnect", async () => {
   const isolated = await spawnRelay({ MAX_ENDPOINTS: "1", ENDPOINT_CREATE_LIMIT: "10" });
-  const first = await registerDesktop(
-    "endpoint_capacity_one",
-    "capacity-token-one-0000000000000001",
-    "capacity-secret-one-000000000000001",
-    isolated.wsUrl,
-  );
+  let first;
   try {
+    first = await registerDesktop(
+      "endpoint_capacity_one",
+      "capacity-token-one-0000000000000001",
+      "capacity-secret-one-000000000000001",
+      isolated.wsUrl,
+    );
     first.ws.terminate();
     const denied = await openSocket(isolated.wsUrl);
     const deniedError = nextMessage(denied, "error");
@@ -1085,20 +1121,21 @@ test("caps endpoint creation while allowing an existing endpoint to reconnect", 
     assert.equal(reconnect.registered.endpoint_id, "endpoint_capacity_one");
     closeSocket(reconnect.ws);
   } finally {
-    closeSocket(first.ws);
+    closeSocket(first?.ws);
     await stopRelay(isolated.child);
   }
 });
 
 test("rate limits new endpoint creation per client", async () => {
   const isolated = await spawnRelay({ ENDPOINT_CREATE_LIMIT: "1", ENDPOINT_CREATE_WINDOW_MS: "60000" });
-  const first = await registerDesktop(
-    "endpoint_rate_one",
-    "rate-token-one-00000000000000000001",
-    "rate-secret-one-000000000000000001",
-    isolated.wsUrl,
-  );
+  let first;
   try {
+    first = await registerDesktop(
+      "endpoint_rate_one",
+      "rate-token-one-00000000000000000001",
+      "rate-secret-one-000000000000000001",
+      isolated.wsUrl,
+    );
     const denied = await openSocket(isolated.wsUrl);
     const deniedError = nextMessage(denied, "error");
     denied.send(JSON.stringify({
@@ -1110,7 +1147,7 @@ test("rate limits new endpoint creation per client", async () => {
     }));
     assert.equal((await deniedError).code, "endpoint_creation_rate_limited");
   } finally {
-    closeSocket(first.ws);
+    closeSocket(first?.ws);
     await stopRelay(isolated.child);
   }
 });
@@ -1272,6 +1309,26 @@ test("matches proxy and forwarded addresses case-insensitively", async () => {
   }
 });
 
+test("folds case in forwarded address text before bucketing", async () => {
+  // Case folding must cover header-derived text, not only configured
+  // entries: otherwise one uppercase-spelled forwarded address opens a
+  // second bucket for the address its lowercase spelling already filled.
+  const isolated = await spawnRelay({
+    WS_CONNECT_LIMIT: "1",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "127.0.0.1",
+  });
+  let first;
+  try {
+    first = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "2001:DB8::25" } });
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "2001:db8::25" },
+    }), 429);
+  } finally {
+    closeSocket(first);
+    await stopRelay(isolated.child);
+  }
+});
+
 test("the forwarded-header cap is exact at 4096 characters", async () => {
   const isolated = await spawnRelay({
     WS_CONNECT_LIMIT: "1",
@@ -1306,8 +1363,9 @@ test("the forwarded-header cap is exact at 4096 characters", async () => {
 test("shuts down with exit code 0 on repeated SIGTERM and on SIGINT", async () => {
   for (const [signal, repeats] of [["SIGTERM", 2], ["SIGINT", 3]]) {
     const isolated = await spawnRelay({});
-    const ws = await openSocket(isolated.wsUrl);
+    let ws;
     try {
+      ws = await openSocket(isolated.wsUrl);
       // Repeated delivery must still end in exit 0, never in death by
       // signal: the guard makes shutdown idempotent and the handler stays
       // registered.
@@ -1552,8 +1610,16 @@ test("a blank trusted proxy list is empty while an unset one inherits the allowl
       PINVOU_REMOTE_ALLOWED_PROXY_IPS: "127.0.0.1",
       ...env,
     });
-    const sockets = [await openSocket(isolated.wsUrl), await openSocket(isolated.wsUrl)];
-    return { isolated, sockets };
+    const sockets = [];
+    try {
+      sockets.push(await openSocket(isolated.wsUrl));
+      sockets.push(await openSocket(isolated.wsUrl));
+      return { isolated, sockets };
+    } catch (error) {
+      sockets.forEach(closeSocket);
+      await stopRelay(isolated.child);
+      throw error;
+    }
   };
   // With the loopback peer's bucket full, a forwarded address opens a fresh
   // bucket only if the peer is a trusted proxy.
@@ -1622,6 +1688,10 @@ test("serves 503 for the site root when the web build is missing entirely", asyn
     const root = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
     assert.equal(root.status, 503);
     assert.equal(await root.text(), "WebUI build is not available");
+    // HEAD reads the same site entry, so an uptime probe cannot disagree
+    // with the GET that follows it.
+    const rootHead = await fetch(`${isolated.httpUrl}/pinvou3/remote/`, { method: "HEAD" });
+    assert.equal(rootHead.status, 503);
     assert.equal(
       (await fetch(`${isolated.httpUrl}/pinvou3/remote/staleAsset-12345678.js`)).status,
       404,
