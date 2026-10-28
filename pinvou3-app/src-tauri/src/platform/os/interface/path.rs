@@ -52,6 +52,78 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
     key.starts_with(base) && key[base.len()..].starts_with('/')
 }
 
+/// 折叠平台（macOS 默认 APFS 卷 / Windows NTFS）共用的卷拼写折叠。词法凭据
+/// 判定必须与卷的真实折叠语义一致：Unicode 简单大小写折叠中，仅有的两个
+/// 折叠为 ASCII 的非 ASCII 码点是 U+017F（ſ→s）与 U+212A（K→k）——大小写
+/// 不敏感卷按同一折叠表把 `id_rſa` 解析到 `id_rsa`，纯 ASCII 折叠会漏过。
+/// std 没有 case-fold API，显式替换这两个码点后做 Unicode 小写即可覆盖
+/// 「黑名单常量均为纯 ASCII」场景的全部折叠拼写，不引入新依赖。非 ASCII
+/// 拼写是罕见输入：函数体本身只在慢路径分配，热路径见下面两个谓语。
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+pub(crate) fn volume_fold_spelling(text: &str) -> String {
+    text.replace('\u{017F}', "s")
+        .replace('\u{212A}', "k")
+        .to_lowercase()
+}
+
+/// `path_component_eq` 的折叠实现：双方皆 ASCII 时零分配快速路径（词法
+/// 判定跑在 workspace 列表/搜索/变更热道上），否则整串折叠后比较。
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+pub(crate) fn volume_fold_eq(component: &OsStr, expected: &str) -> bool {
+    let text = component.to_string_lossy();
+    if text.is_ascii() && expected.is_ascii() {
+        return text.eq_ignore_ascii_case(expected);
+    }
+    volume_fold_spelling(&text) == volume_fold_spelling(expected)
+}
+
+/// `path_component_prefix` 的折叠实现，快速路径同上（前缀长度切片上做
+/// ASCII 无关比较，不构造新串）。
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+pub(crate) fn volume_fold_prefix(component: &OsStr, prefix: &str) -> bool {
+    let text = component.to_string_lossy();
+    if text.is_ascii() && prefix.is_ascii() {
+        return text
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix));
+    }
+    volume_fold_spelling(&text).starts_with(&volume_fold_spelling(prefix))
+}
+
+/// 组件序列版 `starts_with`：系统区前缀黑名单（`/etc/ssh` 等）按组件对
+/// 组件经 [`path_component_eq`] 比较，走平台折叠语义——大小写不敏感卷会把
+/// `/Etc/Sudoers` 解析到真文件，字节 `starts_with` 会让大写变体绕过系统区。
+/// 组件边界同时比字节版更精确：`/etc/shadowed` 不再命中 `/etc/shadow`。
+/// 前缀用尽即命中（嵌套语义）；被比较路径先耗尽分量则未命中；绝对前缀与
+/// 相对路径在首个分量（RootDir 对普通名）上必然失配，天然 fail-closed。
+pub fn path_starts_with_folded(path: &Path, prefix: &str) -> bool {
+    let mut path_components = path.components();
+    let mut prefix_components = Path::new(prefix).components();
+    loop {
+        match (prefix_components.next(), path_components.next()) {
+            (None, _) => return true,
+            (Some(expected), Some(actual)) => {
+                if !path_component_eq(
+                    actual.as_os_str(),
+                    expected.as_os_str().to_string_lossy().as_ref(),
+                ) {
+                    return false;
+                }
+            }
+            (Some(_), None) => return false,
+        }
+    }
+}
+
 /// The subdirectory content of `path` relative to `base`: containment uses
 /// [`path_identity_is_same_or_nested`] on the folded identity keys, and the
 /// suffix is cut by `base`'s component count so a nested path keeps its
@@ -212,6 +284,60 @@ mod tests {
                 ".env."
             ));
         }
+    }
+
+    #[test]
+    fn volume_fold_matches_unicode_case_folding_onto_ascii() {
+        // 平台无关的纯函数,全平台同语义:Unicode 简单大小写折叠里仅
+        // ſ(U+017F)与 KELVIN SIGN(U+212A)折叠为 ASCII,大小写不敏感卷
+        // (APFS/NTFS)按同一折叠表把 `id_rſa` 解析到 `id_rsa`,折叠平台的
+        // 词法判定必须识别这些拼写,否则凭据黑名单被非 ASCII 拼写绕过。
+        // `std::str::to_lowercase` 不做这个折叠(ſ 已是小写),所以显式替换
+        // 是承载语义的,不得「简化」掉。
+        assert!(volume_fold_eq(OsStr::new("id_r\u{017F}a"), "id_rsa"));
+        assert!(volume_fold_eq(OsStr::new("id_R\u{017F}A"), "id_rsa"));
+        assert!(volume_fold_eq(OsStr::new(".\u{017F}sh"), ".ssh"));
+        assert!(volume_fold_eq(OsStr::new(".\u{212A}ube"), ".kube"));
+        assert!(volume_fold_eq(OsStr::new(".AWS"), ".aws"));
+        assert!(!volume_fold_eq(OsStr::new("id_rsa2"), "id_rsa"));
+        assert!(
+            !volume_fold_eq(OsStr::new("caf\u{e9}"), "cafe"),
+            "non-ASCII spellings that fold to non-ASCII must not match ASCII names"
+        );
+        assert!(volume_fold_prefix(OsStr::new(".env.local"), ".env."));
+        assert!(volume_fold_prefix(
+            OsStr::new(".ENV.\u{212A}ey"),
+            ".env."
+        ));
+        assert!(!volume_fold_prefix(OsStr::new(".environment"), ".env."));
+        assert!(!volume_fold_prefix(OsStr::new("notes.md"), ".env."));
+    }
+
+    #[test]
+    fn path_starts_with_folded_follows_component_folding_and_boundaries() {
+        // 前缀按分量比较走 path_component_eq 的平台语义:折叠平台识别
+        // `/Etc/Sudoers`,字节精确平台(Linux)不识别;组件边界让
+        // `/etc/shadowed` 不命中 `/etc/shadow`(字节 starts_with 会误报)。
+        let folded = cfg!(target_os = "macos") || std::path::MAIN_SEPARATOR == '\\';
+        assert_eq!(
+            path_starts_with_folded(Path::new("/Etc/Sudoers"), "/etc/sudoers"),
+            folded
+        );
+        assert!(path_starts_with_folded(Path::new("/etc/ssh/host.key"), "/etc/ssh/"));
+        assert!(path_starts_with_folded(Path::new("/etc/sudoers"), "/etc/sudoers"));
+        assert!(!path_starts_with_folded(
+            Path::new("/etc/shadowed"),
+            "/etc/shadow"
+        ));
+        assert!(!path_starts_with_folded(
+            Path::new("/etc"),
+            "/etc/sudoers"
+        ));
+        assert!(!path_starts_with_folded(
+            Path::new("etc/sudoers"),
+            "/etc/sudoers"
+        ));
+        assert!(path_starts_with_folded(Path::new("/etc/"), "/etc/"));
     }
 
     #[test]

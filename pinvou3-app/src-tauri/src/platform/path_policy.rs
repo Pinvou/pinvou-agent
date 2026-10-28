@@ -64,8 +64,6 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
 /// 检查已规范化路径是否触及凭据组件或系统敏感前缀。
 /// 供 `validate_user_path` 和 `validate_browsable_path` 共享。
 pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String> {
-    let canonical_text = canonical.to_string_lossy();
-
     for blocked in BLOCKED_COMPONENTS {
         if canonical
             .components()
@@ -92,7 +90,10 @@ pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String>
     }
 
     for prefix in BLOCKED_PREFIXES {
-        if canonical_text.starts_with(prefix) {
+        // 组件序列比较走平台折叠语义(macOS 大小写不敏感卷会把 `/Etc/Sudoers`
+        // 解析到真文件,字节 starts_with 会让大写变体绕过系统区黑名单),
+        // Linux 字节精确语义由 path_component_eq 的平台分支保持。
+        if crate::platform::os::path_starts_with_folded(canonical, prefix) {
             return Err(format!(
                 "path {} is in system-sensitive area",
                 canonical.display()
