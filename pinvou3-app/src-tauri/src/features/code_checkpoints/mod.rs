@@ -56,6 +56,13 @@ const MAX_CHECKPOINTS: usize = 20;
 /// imports it — a speculative `pub` here is how a surface the dead-code
 /// cleanups removed comes back without a reader.
 const DIFF_PATCH_LIMIT: usize = 512 * 1024;
+/// `diff --cached --raw` 清单的完整性捕获上限。这份清单是回滚确认弹窗的
+/// 强制路径（`include_patch=false` 也躲不开，见 [`diff_checkpoint`]），必须
+/// 完整；而登记入口最多放行 200,000 个条目（[`SIZE_WALK_MAX_ENTRIES`]），
+/// 评审实测普通短名 ≈64–96 字节/行——50,000 个条目 ≈4.8 MB，已在平台默认
+/// 4 MiB 捕获上限之上，合法预览会被误杀。此处按 ~330 字节/行预留 64 MiB，
+/// 越界是显式报错而不是截断清单（[`git_raw_status`]），绝不谎称完整。
+const RAW_STATUS_CAPTURE_LIMIT: u64 = 64 * 1024 * 1024;
 /// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
 /// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
 /// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
@@ -482,6 +489,18 @@ fn run_git_with_stale_lock_retry(
     Ok(output)
 }
 
+/// 走平台层哪条捕获路径。
+#[derive(Clone, Copy)]
+enum GitCapture {
+    /// 默认 4 MiB 捕获：本模块绝大多数 git 调用（add/write-tree/commit-tree/
+    /// read-tree/checkout-index/update-ref/clean -q）stdout 为空或只有一个
+    /// 对象名。
+    Default,
+    /// 完整性契约捕获：调用方按行解析 stdout 并把结果当作完整清单，越界与
+    /// 读回失败都必须是显式报错（见 [`git_raw_status`]）。
+    Complete(u64),
+}
+
 /// [`git`] 与 [`git_ref`] 的公共主体：组装 `--git-dir`（及可选 `--work-tree`）
 /// 的隔离 git 命令并以带超时方式执行，交 [`run_git_with_stale_lock_retry`]
 /// 收尾；`run_error` 保留两条调用链各自的失败文案。
@@ -489,6 +508,7 @@ fn git_bounded(
     repo: &Path,
     work_tree: Option<&Path>,
     arguments: &[&str],
+    capture: GitCapture,
     run_error: impl Fn(&str) -> anyhow::Error,
 ) -> Result<std::process::Output> {
     let run_bounded = || {
@@ -498,20 +518,63 @@ fn git_bounded(
             command.arg(format!("--work-tree={}", work_tree.display()));
         }
         command.args(arguments);
-        crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
-            .map_err(|error| run_error(&error))
+        let output = match capture {
+            GitCapture::Default => crate::platform::process::output_with_timeout_and_kill_tree(
+                command,
+                GIT_COMMAND_TIMEOUT,
+            ),
+            GitCapture::Complete(limit) => {
+                crate::platform::process::output_with_timeout_and_kill_tree_complete(
+                    command,
+                    GIT_COMMAND_TIMEOUT,
+                    limit,
+                )
+            }
+        };
+        output.map_err(|error| run_error(&error))
     };
     run_git_with_stale_lock_retry(run_bounded, repo)
 }
 
 fn git(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    git_bounded(repo, Some(work_tree), arguments, |error| {
-        anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" "))
-    })
+    git_bounded(
+        repo,
+        Some(work_tree),
+        arguments,
+        GitCapture::Default,
+        |error| anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" ")),
+    )
 }
 
 fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
-    let output = git(repo, work_tree, arguments)?;
+    stdout_of_ok(git(repo, work_tree, arguments)?, arguments)
+}
+
+/// `diff --cached --raw` 清单专用的 [`git_ok`]：走平台层完整性契约捕获，上限
+/// `capture_limit`（生产值 [`RAW_STATUS_CAPTURE_LIMIT`]）。不能复用默认路径：
+/// [`git_ok`] 只看退出码，[`parse_raw_status`] 又按行过滤非记录行——默认捕获
+/// 下一次跨限截断、或读回失败降级成的截断标记行，混进 stdout 后会被静默滤掉，
+/// 一份部分清单（读回失败时是空清单）就冒充完整清单进了回滚确认弹窗。完整性
+/// 契约下越界是溢出报错、读回失败是读回报错，调用方拿到的字符串要么完整要么
+/// 没有。
+fn git_raw_status(
+    repo: &Path,
+    work_tree: &Path,
+    arguments: &[&str],
+    capture_limit: u64,
+) -> Result<String> {
+    let output = git_bounded(
+        repo,
+        Some(work_tree),
+        arguments,
+        GitCapture::Complete(capture_limit),
+        |error| anyhow::anyhow!("failed to run git {}: {error}", arguments.join(" ")),
+    )?;
+    stdout_of_ok(output, arguments)
+}
+
+/// 退出码非零按「git … 失败」报错（带 stderr），否则返回 stdout 文本。
+fn stdout_of_ok(output: std::process::Output, arguments: &[&str]) -> Result<String> {
     if !output.status.success() {
         bail!(
             "git {} 失败: {}",
@@ -1237,6 +1300,10 @@ fn filter_secret_paths_from_patch(patch: &str) -> String {
 /// unbounded (only the read-back is capped), and the desktop preview renders
 /// only the list — it must pass `false`. The patch surface exists for the
 /// CLI. When `false`, `patch` is empty and `patch_truncated` is `false`.
+/// The list is read through the completeness contract
+/// ([`git_raw_status`] / [`RAW_STATUS_CAPTURE_LIMIT`]): it is the rollback
+/// confirmation's authoritative inventory, so a workspace whose listing
+/// outgrows the bound errors instead of showing a clipped list.
 pub fn diff_checkpoint(
     ledger_root: &Path,
     execution_root: &Path,
@@ -1248,7 +1315,8 @@ pub fn diff_checkpoint(
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // add -A 让影子 index 反映当前执行根，diff --cached <commit> 即「快照→现在」。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
-    let raw_status = git_ok(
+    // 清单走完整性契约读取（[`RAW_STATUS_CAPTURE_LIMIT`]）：见 [`git_raw_status`]。
+    let raw_status = git_raw_status(
         &repo,
         &execution_root,
         // --raw 带文件模式（gitlink 160000 = 嵌套仓库/submodule，清单中如实
@@ -1264,6 +1332,7 @@ pub fn diff_checkpoint(
             "--no-color",
             &meta.commit,
         ],
+        RAW_STATUS_CAPTURE_LIMIT,
     )?;
     // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单剔除命中敏感模式
     // 的条目，预览不谎称「回滚将删除 .env」（restore 实际保留工作区现有同名
@@ -1416,7 +1485,7 @@ const RESTORE_CLEAN_ARGS: &[&str] = &["clean", "-fd", "-q"];
 /// 与写路径共用陈旧锁清扫重试：被超时 kill 的 git 会留下
 /// `refs/checkpoints/*.lock`，无清扫时删 ref 永久失败，ref 与其对象泄漏。
 fn git_ref(repo: &Path, arguments: &[&str]) -> Result<std::process::Output> {
-    git_bounded(repo, None, arguments, |error| {
+    git_bounded(repo, None, arguments, GitCapture::Default, |error| {
         anyhow::anyhow!("执行 git {} 失败: {error}", arguments.join(" "))
     })
 }
@@ -1996,6 +2065,68 @@ mod tests {
             exec.read("kept.txt").is_some(),
             "tracked files must survive the clean"
         );
+    }
+
+    /// 回滚确认弹窗的 `diff --cached --raw` 清单要么完整要么没有：完整性
+    /// 契约下越过上限是显式溢出报错，而不是一份被静默裁掉尾部的清单
+    /// （`parse_raw_status` 把截断标记行当噪音滤掉，部分清单与完整清单在
+    /// 弹窗里长得一模一样）。用一个远小于生产值的上限触发越界，再用生产值
+    /// [`RAW_STATUS_CAPTURE_LIMIT`] 证明同一份清单完整读回并逐条解析——
+    /// 生产规模（20 万条目、十几 MiB）的夹具对 CI 太重，钉的是契约而非数字。
+    #[test]
+    fn raw_status_past_the_complete_bound_errors_instead_of_a_partial_list() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("raw-status-ledger");
+        let exec = TestDir::new("raw-status-exec");
+        exec.write("kept.txt", "v1\n");
+        let meta = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // 快照后新增的长文件名条目：--raw 每行 ≈33 字节固定字段（缩写对象名）
+        // + 路径，200 条 ≈29 KiB。
+        let entries = 200;
+        for index in 0..entries {
+            exec.write(&format!("added-{index:04}-{}.txt", "x".repeat(96)), "n\n");
+        }
+        let repo = repo_dir(ledger.path());
+        git_ok(&repo, exec.path(), &["add", "-A"]).unwrap();
+        let arguments = [
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--cached",
+            "--raw",
+            "-M",
+            "--no-color",
+            meta.commit.as_str(),
+        ];
+
+        let small_bound = 16 * 1024;
+        let error = git_raw_status(&repo, exec.path(), &arguments, small_bound)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(crate::platform::process::CAPTURE_OVERFLOW_ANCHOR),
+            "a listing past the bound must be the overflow error, got: {error}"
+        );
+
+        let listing =
+            git_raw_status(&repo, exec.path(), &arguments, RAW_STATUS_CAPTURE_LIMIT).unwrap();
+        assert!(
+            listing.len() as u64 > small_bound,
+            "fixture must exceed the small bound to prove anything: {} bytes",
+            listing.len()
+        );
+        let changes = parse_raw_status(&listing);
+        assert_eq!(changes.len(), entries, "every entry must be listed");
+        assert!(changes.iter().all(|change| change.status == "added"));
     }
 
     /// 存量仓库一次性迁移：升级前被强制跟踪的敏感文件（含子目录深度）被
