@@ -3279,9 +3279,7 @@ pub fn enable_packages_in_scope(
         // Grant, ledger, and rows are untouched; the token removal makes
         // the standing consent permanent, nothing else.
         for id in ids.iter() {
-            if file.connect_granted.contains(id)
-                && file.connect_grant_tokens.remove(id).is_some()
-            {
+            if file.connect_granted.contains(id) && file.connect_grant_tokens.remove(id).is_some() {
                 changed = true;
             }
         }
