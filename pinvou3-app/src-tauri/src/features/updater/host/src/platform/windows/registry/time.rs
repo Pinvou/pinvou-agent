@@ -508,6 +508,43 @@ fn metadata_root_transition_error(error: Error) -> Error {
     }
 }
 
+/// `event` and `member` are authenticated by the same product visitor.
+/// A missing or invalid policy/state refuses rather than contributing empty data.
+fn check_member_denies_in(
+    seed: &Seed,
+    event: &crate::product_catalog::Event,
+    member: &HostRegistration,
+    next: &State,
+    original: &[u8],
+    tx: &Handle,
+) -> Result<()> {
+    let path = format!(
+        "Software\\Pinvou\\{}\\{}\\private",
+        seed.updater_leaf(),
+        event.profile_id
+    );
+    let private = open(HKEY_LOCAL_MACHINE, &path, false, Some(tx))?.ok_or(Error::StateCorrupt)?;
+    let member_state = state_in(&private, member, Some(tx))?;
+    if member_state
+        .state
+        .policy_fault
+        .as_ref()
+        .is_some_and(PolicyFault::is_active)
+    {
+        return Err(Error::PrerequisiteUnavailable);
+    }
+    let time = open(private.0, NAMESPACE, false, Some(tx))?.ok_or(Error::SetupIncomplete)?;
+    let policy = policy_in(&time, &member_state.state.binding)?;
+    let evidence = next.evidence.as_ref().ok_or(Error::StateCorrupt)?;
+    for denied in [
+        &member_state.state.denied_key_ids,
+        &policy.policy.denied_key_ids,
+    ] {
+        evidence.check_additional_denied(&next.binding, original, &next.roots, denied)?;
+    }
+    Ok(())
+}
+
 fn stage_state_in(
     private: &Key,
     actual: &HostRegistration,
@@ -944,7 +981,12 @@ impl Store {
         let before = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
         host.authenticate_running(&before)?;
         let _guard = BootstrapGuard::acquire(seed, false)?;
-        let _product_guard = if next.roots != expected.state.roots {
+        // Only state changes that can affect another member's Root validation
+        // require the shared product lock. Ordinary time refresh stays local.
+        let _product_guard = if next.roots != expected.state.roots
+            || next.denied_key_ids != expected.state.denied_key_ids
+            || next.policy_fault != expected.state.policy_fault
+        {
             Some(super::product_catalog::ProductGuard::acquire(seed)?)
         } else {
             None
@@ -987,6 +1029,14 @@ impl Store {
                         seed,
                         event,
                         member,
+                        &transaction,
+                    )?;
+                    check_member_denies_in(
+                        seed,
+                        event,
+                        member,
+                        next,
+                        &current.original_root,
                         &transaction,
                     )
                 },

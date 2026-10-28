@@ -199,6 +199,55 @@ pub(crate) struct Evidence {
     pub(crate) latest: u64,
 }
 impl Evidence {
+    /// Check an additional independently protected deny list against this
+    /// batch's successors and signed time response, using the already accepted
+    /// predecessor as the trust anchor without re-denying its old signatures.
+    /// The caller must first verify this evidence and authenticate the list.
+    pub(crate) fn check_additional_denied(
+        &self,
+        binding: &Binding,
+        original: &[u8],
+        roots: &[String],
+        denied: &[String],
+    ) -> Result<()> {
+        check_denied(denied)?;
+        let policy = Policy::parse(self.policy.as_bytes(), binding)?;
+        let sent = self.sent.data()?;
+        let received = self.received.data()?;
+        received
+            .elapsed_since(sent)
+            .map_err(|_| Error::StateCorrupt)?;
+        let request = Document::parse(self.request.as_bytes(), InputKind::Credential)
+            .map_err(|_| Error::StateCorrupt)?
+            .time_request_shape()
+            .map_err(|_| Error::StateCorrupt)?;
+        if self.base_root_count > roots.len() {
+            return Err(Error::StateCorrupt);
+        }
+        let base = if self.base_root_count == 0 {
+            original
+        } else {
+            roots[self.base_root_count - 1].as_bytes()
+        };
+        let successors = &roots[self.base_root_count..];
+        verify_time_response_source(
+            self.response.as_bytes(),
+            base,
+            successors.len(),
+            |index| Ok(std::borrow::Cow::Borrowed(successors[index].as_bytes())),
+            &request,
+            SuppliedTimeObservation {
+                sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
+                received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
+                max_round_trip_millis: policy.max_round_trip_ms,
+                max_uncertainty_millis: policy.max_uncertainty_ms,
+                trusted_time_floor_millis: self.floor_before,
+            },
+            denied,
+        )
+        .map_err(|_| Error::ScopeConflict)?;
+        Ok(())
+    }
     pub(crate) fn verify(
         &self,
         binding: &Binding,
@@ -774,6 +823,50 @@ mod tests {
             initial
                 .anchor_for_live(&raw, state.incarnation.as_ref().unwrap())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn additional_member_denies_apply_to_real_signed_time_and_root_batch() {
+        let (state, _, original) = anchored();
+        let evidence = state.evidence.as_ref().unwrap();
+        evidence
+            .check_additional_denied(&state.binding, &original, &state.roots, &[])
+            .unwrap();
+        let response: serde_json::Value = serde_json::from_str(&evidence.response).unwrap();
+        let signer = response["signatures"][0]["keyId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            evidence.check_additional_denied(&state.binding, &original, &state.roots, &[signer]),
+            Err(Error::ScopeConflict)
+        );
+        {
+            let successor = state
+                .roots
+                .first()
+                .expect("fixture includes a successor Root");
+            let root: serde_json::Value = serde_json::from_str(successor).unwrap();
+            let signer = root["signatures"][0]["keyId"].as_str().unwrap().to_owned();
+            assert_eq!(
+                evidence.check_additional_denied(
+                    &state.binding,
+                    &original,
+                    &state.roots,
+                    &[signer]
+                ),
+                Err(Error::ScopeConflict)
+            );
+        }
+        assert_eq!(
+            evidence.check_additional_denied(
+                &state.binding,
+                &original,
+                &state.roots,
+                &["invalid".into()]
+            ),
+            Err(Error::StateCorrupt)
         );
     }
 

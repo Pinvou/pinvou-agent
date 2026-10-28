@@ -29,6 +29,8 @@ component head 的 rootHeadRevisionAtPublish 可以落后于 current RootPublish
 
 后继Root逐版本同时满足旧Root角色阈值与新Root自身阈值；已可信缓存Root过期仅可验连续后继，只有未过期最终Root及完整当前链恢复新资格，不提供远程重置根/高水位入口。产品轮换复核所有active component当前完整链，退出角色key先双信任、逐组件刷新、再移除旧key。
 
+客户端推进产品共同 Root 时，以该产品所有已登记成员当前可确认的密钥拒用列表的并集验证此次推进；成员集合或任一成员列表缺失、损坏或无法确认时拒绝推进。不同产品的列表不合并；各成员列表及成员集合必须来自受保护状态，并在提交前的同一事务中重新核对。相对验证时变化则拒绝提交并重读重验，或在同一事务中使用变化后的完整集合重新验证。
+
 Root 轮换只使用产品级 PublishRootChange。Release 续签和不改变可选择集合的 Target/Snapshot/Timestamp 续签使用 PublishMetadataRefresh：绑定两级 base head 与完整 current 集合，在同一事务比较 Root head、CAS component head并原子更新 current 指针，不递增 selectionGeneration；如同时改变可选择集合则必须使用 PublishSelectionChange。任一冲突对应的签名集合不得发布或覆盖新 head。
 
 ### 1.1 独立 time 授权角色

@@ -617,3 +617,15 @@ These decisions define the remaining T25/T24 boundary. They do not assert that
 the public read/export composition or release-purpose contribution port has
 already been implemented. Current delivery coverage is recorded in
 [the progress ledger](upgrade-implementation-progress.md).
+
+## 2026-10-28 — Product Root deny policy
+
+For a client advancing a shared product Root, the owner approved verifying the
+advance against the union of the currently confirmable key-deny lists of every
+registered member of that product. A missing, damaged or unconfirmable member
+set or list refuses the advance; another product's lists are not included.
+Membership and each list must be rechecked from protected state in the commit
+transaction. If they changed since verification, refuse and re-read/reverify or
+fully reverify the changed set within that transaction.
+This decision does not assert that the product Root owner or cross-profile deny
+read has been implemented.

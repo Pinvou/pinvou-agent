@@ -223,6 +223,8 @@ SupplyChainApproval 按 `releaseTargetId + channel` 唯一作用域，使用单�
 
 产品级 Root 只通过唯一 RootPublishHead 逐版本轮换；同版本不同字节或两个 component 分叉发布均拒绝。所有扩大资格或改变可选择集合的操作统一使用 `PublishSelectionChange`：绑定产品 Root head与 `product+component` metadata head，在一个提交中比较前者、CAS 后者，并写实体 revision、受影响全部渠道的 selectionGeneration、current Target、完整 Snapshot 和 successor Timestamp。该规则适用于 supportFloor、Deployment、Rollout、BridgeEligibility、SupplyChainApproval、Source Facts Registry 及其他 generation 变化；Registry 跨渠道变化必须全成或全败。安全收紧可以先写即时 deny 和 `metadata_sync_pending`，但同一事务必须登记唯一、持久化的元数据追平任务；元数据追平且 `Target.selectionGeneration` 等于当前 scope generation 前，所有新决定、下载、预安装、安装和激活资格失败关闭。恢复器至少每 30 秒发现待办，以最新完整集合重签并只在发布成功的同一提交清除 pending；失败持续重试，15 分钟未收敛告警，禁止人工直接清标记。
 
+客户端推进同一产品的共同 Root 时，必须读取该产品所有已登记成员当前可确认的密钥拒用列表，并以这些列表的并集验证本次 Root 推进；成员集合或任一成员的列表缺失、损坏或无法确认时，拒绝推进。提交前若成员集合或任一列表相对验证时变化，必须拒绝本次提交并重读重验，或在同一事务中使用变化后的完整集合重新验证。此规则不将不同产品的拒用列表合并。
+
 Root 轮换只 CAS 产品级 RootPublishHead。Release 续签以及不改变可选择集合的 Target/Snapshot/Timestamp 续签绑定产品 Root head 与 `product+component` metadata head：基于最新完整集合重签，在一次提交中比较前者、CAS 后者并切换 current 指针。它们不递增 selectionGeneration，除非同一操作同时改变可选择集合；任一冲突必须重读、重建、重签，不能覆盖并发发布。
 
 暂停、撤回、制品隔离及恢复投放均属于高风险操作，必须记录操作者、原因、时间和审批结果。

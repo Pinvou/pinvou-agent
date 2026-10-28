@@ -367,6 +367,8 @@ TrustedDeadlineProvider 输出已到/未到/不可可信判定，并将受保护
 
 授时协议采用安全要求 §9.7 与 [time 字节契约](../specs/upgrade/v1/contract-profile.md#dedicated-fresh-request-time-response)：固定 `/v1/upgrade/time`、独立 Root time 角色、原活跃 nonce、完整 canonical Root envelope 引用及接收时完整 UTC 区间。客户端先将后继作为私有候选做连续双阈值验证，再核 time 签名和显式 RTT/uncertainty/已保护下界；最终 Root 覆盖整个区间前不产生可信时钟能力，不能循环调用需要 trusted now 的决定验证器。
 
+产品共同 Root 推进的客户端 owner 从受保护来源读取同产品全部已登记成员及其当前密钥拒用列表，使用列表并集进行本次验证；成员集合或任一列表缺失、损坏或无法确认即拒绝推进。提交前在同一事务中重核成员集合和各列表；相对验证时发生变化则拒绝本次提交并重读重验，或在同一事务中使用变化后的完整集合重新验证。不能将缺失列表按空列表处理，也不合并其他产品的列表。
+
 服务端发行 owner 必须从真实 SQL 时间和受保护来源误差取得 sample，读取 actual current Root/deny/issuer/material；TX 外签名后最终重核，禁止 RPC 持 SQL 事务或用普通请求 DTO 代替来源。Root 引用改变时旧请求不转绑，新 nonce 与新发送观测另起新尝试；同一尝试的重试不能刷新首次发送边界。策略未配置或来源/当前 guard 变化即拒绝，不使用旧角色回退。
 
 受保护 host 将通过验证的锚、实际接收单调边界与原 ledger revision 关联提交；跨启动连续性未知仍先持久化暂停/清 secret，并保存原期限与已耗预算。恢复锚先置 cleanup barrier，再由各实际 owner 重读原对象/期限并清理，完整成功后才解除依赖动作的屏障；旧 recovery secret 不重建。参考 JS/Rust 只提供语法、签名和区间 DATA，不提供实际时钟、持久化、备份清理或安装资格。T03 已批准120秒协调／冻结、30分钟备份准备的可配置工程初值；其平台认证仍须真实证据，不把校验／执行上限当准备预算；这些运行时接线未因协议扩展而完成。
