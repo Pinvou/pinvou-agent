@@ -333,13 +333,14 @@ fn privileged_helper<const N: usize>(
 
 fn privileged_helper_execution_error(operation: &str, error: &str) -> String {
     // 注意与 platform::process 的消息格式耦合（锚点子句在固定前缀里，先于
-    // 可能内嵌的捕获输出），格式由 platform 侧测试与本文件 fixture 钉住。
-    // 分型按锚点首次出现位置取先者（同 connector 的 ProbeError::classify），
-    // 助手输出里含另一条锚点文本时不得翻转分型；超时与溢出错误都可能内嵌
-    // 助手原始输出，两者都不把 raw 错误串放进用户文案（spawn/wait 错误无
-    // 捕获输出，raw 文案只留给它们）。
-    let timeout_anchor = error.find(" timed out after ");
-    let overflow_anchor = error.find("output exceeded");
+    // 可能内嵌的捕获输出），格式由 platform 侧测试与本文件 fixture 钉住；
+    // 锚点用 platform 导出的常量匹配，不得私拷贝字面量。分型按锚点首次
+    // 出现位置取先者（同 connector 的 ProbeError::classify），助手输出里
+    // 含另一条锚点文本时不得翻转分型；超时与溢出错误都可能内嵌助手原始
+    // 输出，两者都不把 raw 错误串放进用户文案（spawn/wait 错误无捕获输
+    // 出，raw 文案只留给它们）。
+    let timeout_anchor = error.find(crate::platform::process::CAPTURE_TIMEOUT_ANCHOR);
+    let overflow_anchor = error.find(crate::platform::process::CAPTURE_OVERFLOW_ANCHOR);
     let prefer_timeout = match (timeout_anchor, overflow_anchor) {
         (Some(t), Some(o)) => t < o,
         (Some(_), None) => true,
