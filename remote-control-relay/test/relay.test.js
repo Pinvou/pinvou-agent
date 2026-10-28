@@ -1845,6 +1845,23 @@ test("consults X-Real-IP only when X-Forwarded-For is entirely absent", async ()
       headers: { "x-forwarded-for": "", "x-real-ip": "203.0.113.9" },
     }), 429);
     assert.equal(await rejectedUpgrade(isolated.wsUrl), 429);
+    // Unusable by size is the same rule: a header past the forwarded-header
+    // cap must fall back to the peer (whose bucket is full) even though an
+    // attacker-chosen X-Real-IP names a fresh bucket...
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: {
+        "x-forwarded-for": `1.2.3.4, ${"x".repeat(4200)}`,
+        "x-real-ip": "203.0.113.8",
+      },
+    }), 429);
+    // ...and so must an at-cap header whose final item is junk: only the
+    // entirely-absent case may consult X-Real-IP at all.
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: {
+        "x-forwarded-for": `1.2.3.4, ${"x".repeat(4087)}`,
+        "x-real-ip": "203.0.113.10",
+      },
+    }), 429);
   } finally {
     closeSocket(realIp);
     closeSocket(peer);
