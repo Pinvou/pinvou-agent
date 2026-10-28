@@ -499,6 +499,15 @@ pub(super) fn check_retained_completion_in(
     }
     Ok(())
 }
+// Metadata damage requires repair; it is not evidence of a damaged time
+// policy and must not trigger the policy-incident publisher.
+fn metadata_root_transition_error(error: Error) -> Error {
+    match error {
+        Error::StateCorrupt => Error::RepairRequired,
+        other => other,
+    }
+}
+
 fn stage_state_in(
     private: &Key,
     actual: &HostRegistration,
@@ -506,6 +515,11 @@ fn stage_state_in(
     next: &State,
     tx: &Handle,
 ) -> Result<Vec<u8>> {
+    // This helper is reserved for cleanup-only transitions; it does not own
+    // the metadata census required to accept a changed Root.
+    if next.roots != current.state.roots {
+        return Err(Error::ScopeConflict);
+    }
     current
         .state
         .transition(next, &current.raw, &current.original_root)?;
@@ -958,6 +972,15 @@ impl Store {
         current
             .state
             .transition(next, &current.raw, &current.original_root)?;
+        if next.roots != current.state.roots {
+            super::metadata::require_empty_for_root_transition_in(
+                &private,
+                seed,
+                &actual,
+                &transaction,
+            )
+            .map_err(metadata_root_transition_error)?;
+        }
         let key =
             open(private.0, NAMESPACE, true, Some(&transaction))?.ok_or(Error::SetupIncomplete)?;
         match (next.status, policy) {
@@ -1125,6 +1148,21 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_damage_is_not_a_time_policy_incident() {
+        assert_eq!(
+            metadata_root_transition_error(Error::StateCorrupt),
+            Error::RepairRequired
+        );
+        assert_eq!(
+            metadata_root_transition_error(Error::ScopeConflict),
+            Error::ScopeConflict
+        );
+        assert_eq!(
+            metadata_root_transition_error(Error::StateCommitUnknown),
+            Error::StateCommitUnknown
+        );
+    }
     #[test]
     #[allow(unsafe_code)]
     fn actual_initial_policy_is_written_once_and_missing_reads_never_heal() {

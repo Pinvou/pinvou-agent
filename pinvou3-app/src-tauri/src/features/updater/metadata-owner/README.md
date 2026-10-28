@@ -25,8 +25,26 @@ not acquire this namespace automatically and require a separate migration.
 On retry of a revision-one first-install intent, the installer rechecks the
 committed initial state before resuming or taking over. An old unfinished
 revision-one installation is indistinguishable and also refuses if the state is
-missing. Ready installations and ordinary host registration reads are unchanged.
+missing.
 This initial state has no production metadata acceptance or public read caller;
-it does not change ordinary host registration reads or grant upgrade rights.
+it does not grant upgrade rights. Host registration reads also validate the
+protected product registration catalog and fail if its required state is absent
+or invalid. Ordinary reads verify the current product's protected local history
+and members without reading another product's records; initial registration
+still checks the shared machine catalog before updating both in one transaction.
+The protected per-product enrollment anchor detects a product history changed
+without the corresponding anchor; it is not an independent anti-rollback
+source if both are restored together. It is not the product Root high-water.
 Current time, deny information and Root transitions must be integrated before
 any accepting writer is exposed.
+
+The Windows time publisher may advance its protected Root only after it proves
+the same profile's complete metadata namespace is exactly the original empty
+layout in its held registry transaction. Missing, damaged or unexpected state
+refuses that Root transition; no-Root-change time updates are unaffected. This
+is an initial-state guard, not active metadata acceptance. Before introducing an
+active metadata writer, Root publication must instead authenticate the complete
+active set and atomically coordinate both owners under the same transaction.
+The protocol's Root high-water is product-wide; this per-profile guard does not
+establish a product-wide census. A production writer must establish that wider
+ownership and fail closed whenever it cannot prove the complete set.

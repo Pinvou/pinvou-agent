@@ -25,6 +25,7 @@ fn main() {
     println!("PINVOU_METADATA_COMPONENT_TEST_PASSED");
 }
 mod preparation_policy;
+mod product_catalog;
 mod profile;
 mod registration;
 mod restart;

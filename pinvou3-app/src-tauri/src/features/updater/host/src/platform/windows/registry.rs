@@ -6,6 +6,7 @@ mod metadata;
 #[cfg(feature = "metadata-component-tests")]
 pub(super) mod metadata_component_tests;
 pub(super) mod preparation;
+mod product_catalog;
 pub(super) mod retention;
 pub(super) mod time;
 pub(super) mod writers;
@@ -368,7 +369,12 @@ fn absence_query_status(status: u32) -> Result<()> {
     }
 }
 
-fn owner_bootstrap_in(key: &Key, seed: &Seed, record: &HostRegistration) -> Result<()> {
+fn owner_bootstrap_in(
+    key: &Key,
+    seed: &Seed,
+    record: &HostRegistration,
+    tx: Option<&Handle>,
+) -> Result<()> {
     if !crate::bootstrap::initialized(&record.known_owner_namespaces) {
         for name in [
             METADATA_BOOTSTRAP,
@@ -383,7 +389,8 @@ fn owner_bootstrap_in(key: &Key, seed: &Seed, record: &HostRegistration) -> Resu
         &read(key, METADATA_BOOTSTRAP)?,
         &read(key, METADATA_BOOTSTRAP_ROOT)?,
         &read(key, PREPARATION_BOOTSTRAP)?,
-    )
+    )?;
+    product_catalog::check(seed, record, tx)
 }
 
 fn decode_record(bytes: &[u8], seed: &Seed) -> Result<HostRegistration> {
@@ -536,7 +543,9 @@ impl Store {
         {
             return Err(Error::StateCommitUnknown);
         }
+        let _catalog_guard = product_catalog::MachineGuard::acquire(seed)?;
         metadata::verify_fresh_in(&key, seed, expected)?;
+        product_catalog::verify_committed(seed, expected)?;
         let actual = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
         if actual.digest()? != expected.digest()? {
             return Err(Error::ScopeConflict);
@@ -604,7 +613,7 @@ impl Store {
             return Err(Error::StateCorrupt);
         }
         self.inventory_in(&key, seed, &record)?;
-        owner_bootstrap_in(&key, seed, &record)?;
+        owner_bootstrap_in(&key, seed, &record, transaction)?;
         Ok(Some(record))
     }
     /// Every private read authenticates the SAME complete committed inventory.
@@ -734,6 +743,11 @@ impl Store {
                 return Err(Error::StateCorrupt);
             }
         }
+        let _catalog_guard = if expected.is_none() {
+            Some(product_catalog::MachineGuard::acquire(seed)?)
+        } else {
+            None
+        };
         let transaction = Handle::owned(unsafe {
             CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
         })?;
@@ -778,6 +792,9 @@ impl Store {
                         || next.host_epoch == actual.host_epoch + 1
                             && next.last_transition.kind == "startup-incarnation") => {}
             _ => return Err(Error::ScopeConflict),
+        }
+        if expected.is_none() {
+            product_catalog::stage(seed, next, &transaction)?;
         }
         let mut parent = open(HKEY_LOCAL_MACHINE, "Software", true, Some(&transaction))?
             .ok_or(Error::Unavailable)?;
@@ -835,7 +852,7 @@ impl Store {
                 PREPARATION_BOOTSTRAP,
                 owners.ownership.record_bytes(),
             )?;
-            owner_bootstrap_in(&private, seed, next)?;
+            owner_bootstrap_in(&private, seed, next, Some(&transaction))?;
             metadata::initialize_in(&private, &transaction, seed, next)?;
             time::initialize_in(&private, &transaction, next)?;
             budgets::initialize_in(&private, &transaction, next)?;
@@ -916,6 +933,7 @@ impl Store {
             }
             if expected.is_none() {
                 metadata::verify_fresh_in(&key, seed, &actual)?;
+                product_catalog::verify_committed(seed, &actual)?;
                 // Fresh time genesis is part of the original definitive commit,
                 // not a later best-effort initializer or an adopted empty scope.
                 budgets::verify_fresh_in(&key, &actual)?;

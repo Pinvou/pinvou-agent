@@ -141,6 +141,7 @@ pub(crate) fn run_isolated() {
         HostRegistration::initial(&seed, &manifest, "5".repeat(64), installer, None).unwrap();
     let store = Store::new(&seed);
     assert!(store.read(&seed).unwrap().is_none());
+    catalog_missing_never_adopts_existing_profile(&seed, &record);
     INITIAL_COMMIT_FAULT.store(1, Ordering::SeqCst);
     assert_eq!(
         store.commit(&seed, None, &record, Some(&input)),
@@ -163,6 +164,9 @@ pub(crate) fn run_isolated() {
     Store::new(&seed)
         .verify_initial_metadata(&seed, &reopened)
         .expect("recheck original initial intent");
+    root_transition_requires_exact_empty_layout(&store, &seed, &reopened);
+    catalog_damage_refuses_profile_read(&store, &seed);
+    catalog_other_product_damage_is_isolated(&seed, &reopened);
     assert_eq!(
         store.commit(&seed, None, &record, Some(&input)),
         Err(Error::ScopeConflict),
@@ -195,6 +199,178 @@ pub(crate) fn run_isolated() {
         .verify_initial_metadata(&seed, &committed)
         .expect("normal initial state remains valid");
     _normal_root.finish();
+}
+
+// The shared event chain remains intact while the other product's private
+// projections are absent. This exercises isolation without forging a Seed.
+#[allow(unsafe_code)]
+fn catalog_other_product_damage_is_isolated(seed: &Seed, host: &HostRegistration) {
+    let tx = Handle::owned(unsafe {
+        CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+    })
+    .unwrap();
+    let key = open(
+        HKEY_LOCAL_MACHINE,
+        "Software\\Pinvou\\UpgradeProductCatalogLabV1",
+        true,
+        Some(&tx),
+    )
+    .unwrap()
+    .unwrap();
+    let original = read(&key, "Head").unwrap();
+    let mut foreign = crate::product_catalog::Event::parse(&original).unwrap();
+    foreign.revision = 2;
+    foreign.previous_sha256 = Some(json::sha256(&original));
+    foreign.product = "other-product".into();
+    foreign.profile_id = "other-profile".into();
+    foreign.scope = "b".repeat(64);
+    let raw = json::encode(&foreign, false).unwrap();
+    let history = open(key.0, "history", true, Some(&tx)).unwrap().unwrap();
+    let second = create(history.0, &revision_name(2), &tx, false, true).unwrap();
+    write(&second, "Record", &raw).unwrap();
+    write(&key, "Head", &raw).unwrap();
+    product_catalog::check(seed, host, Some(&tx))
+        .expect("another product's missing projections must not block this product");
+    write(&key, "Head", b"damaged-shared-head").unwrap();
+    product_catalog::check(seed, host, Some(&tx))
+        .expect("ordinary reads use the protected product-local history");
+
+    let products = open(key.0, "products", true, Some(&tx)).unwrap().unwrap();
+    let product = open(
+        products.0,
+        &json::sha256(seed.product.as_bytes()),
+        true,
+        Some(&tx),
+    )
+    .unwrap()
+    .unwrap();
+    let members = open(product.0, "members", true, Some(&tx))
+        .unwrap()
+        .unwrap();
+    let own = open(
+        members.0,
+        &json::sha256(seed.profile_id.as_bytes()),
+        true,
+        Some(&tx),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        unsafe { RegDeleteValueW(own.0, wide("Record").as_ptr()) },
+        0
+    );
+    assert!(
+        product_catalog::check(seed, host, Some(&tx)).is_err(),
+        "the current product's missing member must still be refused"
+    );
+}
+
+#[allow(unsafe_code)]
+fn catalog_missing_never_adopts_existing_profile(seed: &Seed, host: &HostRegistration) {
+    let tx = Handle::owned(unsafe {
+        CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+    })
+    .unwrap();
+    let software = open(HKEY_LOCAL_MACHINE, "Software", true, Some(&tx))
+        .unwrap()
+        .unwrap();
+    let pinvou = create(software.0, "Pinvou", &tx, true, false).unwrap();
+    let profiles = create(pinvou.0, seed.updater_leaf(), &tx, true, false).unwrap();
+    let existing = create(profiles.0, "unregistered-profile", &tx, true, true).unwrap();
+    drop(existing);
+    assert_eq!(
+        product_catalog::stage(seed, host, &tx),
+        Err(Error::SetupIncomplete)
+    );
+}
+
+#[allow(unsafe_code)]
+fn catalog_damage_refuses_profile_read(store: &Store, seed: &Seed) {
+    let tx = Handle::owned(unsafe {
+        CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+    })
+    .unwrap();
+    let key = open(
+        HKEY_LOCAL_MACHINE,
+        "Software\\Pinvou\\UpgradeProductCatalogLabV1",
+        true,
+        Some(&tx),
+    )
+    .unwrap()
+    .unwrap();
+    let products = open(key.0, "products", true, Some(&tx)).unwrap().unwrap();
+    let product = open(
+        products.0,
+        &json::sha256(seed.product.as_bytes()),
+        true,
+        Some(&tx),
+    )
+    .unwrap()
+    .unwrap();
+    let original = read(&product, "Head").unwrap();
+    write(&product, "Head", b"damaged").unwrap();
+    assert!(store.read_in(seed, Some(&tx)).is_err());
+    write(&product, "Head", &original).unwrap();
+    assert!(store.read_in(seed, Some(&tx)).unwrap().is_some());
+    let anchors = open(key.0, "anchors", true, Some(&tx)).unwrap().unwrap();
+    let anchor = open(
+        anchors.0,
+        &json::sha256(seed.product.as_bytes()),
+        true,
+        Some(&tx),
+    )
+    .unwrap()
+    .unwrap();
+    let anchor_original = read(&anchor, "Record").unwrap();
+    write(&anchor, "Record", b"damaged").unwrap();
+    assert!(store.read_in(seed, Some(&tx)).is_err());
+    write(&anchor, "Record", &anchor_original).unwrap();
+    assert!(store.read_in(seed, Some(&tx)).unwrap().is_some());
+}
+
+/// Exercise the real transacted registry namespace without installing or
+/// starting a service. Dropping this test transaction rolls back its mutations.
+#[allow(unsafe_code)]
+fn root_transition_requires_exact_empty_layout(
+    store: &Store,
+    seed: &Seed,
+    host: &HostRegistration,
+) {
+    let tx = Handle::owned(unsafe {
+        CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+    })
+    .unwrap();
+    let private = store.key(true, Some(&tx)).unwrap().unwrap();
+    super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx)
+        .expect("original empty layout permits Root transition");
+    let metadata = open(private.0, "metadata-state-v1", true, Some(&tx))
+        .unwrap()
+        .unwrap();
+    let original_head = read(&metadata, "Head").unwrap();
+    write(&metadata, "Head", b"unknown-new-head").unwrap();
+    assert_eq!(
+        super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx),
+        Err(Error::ScopeConflict)
+    );
+    write(&metadata, "Head", &original_head).unwrap();
+    write(&metadata, "Unexpected", b"x").unwrap();
+    assert!(
+        super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx).is_err()
+    );
+    assert_eq!(
+        unsafe { RegDeleteValueW(metadata.0, wide("Unexpected").as_ptr()) },
+        0
+    );
+    super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx)
+        .expect("restoring exact empty layout permits Root transition");
+    let history = open(metadata.0, "history", true, Some(&tx))
+        .unwrap()
+        .unwrap();
+    let extra = create(history.0, "0000000000000002", &tx, false, true).unwrap();
+    drop(extra);
+    assert!(
+        super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx).is_err()
+    );
 }
 
 // Construct the old serialized lab shape under the same test-owned protected
