@@ -35,6 +35,20 @@ const claims = [
   { file: "README.ja.md", zh: false },
 ];
 
+// 占位卡 title/subtitle + 历史超宣示短语 = 高亮行禁词(见下方循环注释)。
+// 解析器失效(结构变更)由数量下限兜底转红,不静默放行。
+const placeholderTexts = [...toolCommon.matchAll(/\{[^{}]*backendId: null[^{}]*\}/g)]
+  .flatMap((m) => {
+    const title = m[0].match(/title: '([^']+)'/);
+    const subtitle = m[0].match(/subtitle: '([^']+)'/);
+    return [title?.[1], subtitle?.[1]].filter(Boolean);
+  });
+assert.ok(
+  placeholderTexts.length >= 8,
+  `tool-common.jsx 占位卡解析失效(应至少 4 张卡 8 条文案,实得 ${placeholderTexts.length})——卡片结构变更须同步本测试的占位卡抽取`,
+);
+const forbiddenPhrases = [...placeholderTexts, "enterprise knowledge bases", "企业知识库"];
+
 for (const { file, zh } of claims) {
   const text = fs.readFileSync(path.join(repoRoot, file), "utf8");
   const names = connectors.map(([en, cn]) => (zh ? cn : en));
@@ -51,6 +65,17 @@ for (const { file, zh } of claims) {
     assert.ok(
       highlight.includes(name),
       `${file}: 连接器「${name}」已不在 README 高亮清单 —— 清单与 tests/readme_connector_claims.test.js 须一起更新`,
+    );
+  }
+  // 防复发是双向的:上方 containment 只锁「已登记名字被挪走/降级」,历史上
+  // "enterprise knowledge bases" 是往行里加未登记宣示指向占位卡——加的方向
+  // 也必须红。占位卡(backendId: null,均为无嵌套的扁平对象)从 tool-common.jsx
+  // 现场抽取,新增占位卡自动纳入禁词;真有同名连接器上线时先在 connectors 表
+  // 登记并同步放宽本禁词,不得静默。
+  for (const phrase of forbiddenPhrases) {
+    assert.ok(
+      !highlight.includes(phrase),
+      `${file}: 高亮行出现占位卡宣示「${phrase}」——README 不得宣示未上线能力;同名连接器真上线时先在 connectors 表登记并放宽本禁词`,
     );
   }
 }
