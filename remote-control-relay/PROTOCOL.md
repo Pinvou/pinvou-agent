@@ -245,7 +245,8 @@ connection open.
   spelling difference (an expanded form, a zone id) starts up but never
   matches a peer, so use the spelling the runtime reports. A blank value means an empty set: an empty
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
-  `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. Only when
+  `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. A direct peer on a
+  loopback address is always admitted, whatever the list says. Only when
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` is unset does it fall back to
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS`. For rate limiting, the client address is
   the rightmost `X-Forwarded-For` item when the direct peer is a trusted proxy;
@@ -259,6 +260,11 @@ connection open.
   rightmost item of the joined list is used; they are not a fallback case. A
   trusted proxy must set these headers itself and strip client-supplied ones;
   a proxy that forwards them lets senders pick their rate-limit identity.
+- The relay listens on `PINVOU_REMOTE_HOST`, by default `0.0.0.0` — every
+  interface, with endpoint registration open to whichever sources the
+  allowlist admits. Set it to `127.0.0.1` to keep the relay local; the
+  startup banner reports no address, so check the deployment configuration
+  rather than the logs.
 - Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
   all WebSocket clients without a close handshake (peers observe an abnormal
   closure) and exit the process with code 0; in-flight HTTP responses are not
