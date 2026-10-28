@@ -782,11 +782,24 @@ mod tests {
             assert!(check_sensitive_path(&path).is_err(), "{prefix} variant");
         }
         for prefix in SENSITIVE_PATH_PREFIXES {
-            let path = PathBuf::from(format!("{prefix}probe"));
+            // 组件序列语义(与上游 path_starts_with_folded 同一谓语):前缀
+            // 自身与其嵌套路径必须被拒;仅共享前缀字节的同名文件不是系统区
+            // 文件(`/etc/shadowprobe`、`/var/log/auth.log` 是普通可读文件)。
+            let base = Path::new(prefix);
             assert!(
-                check_sensitive_path(&path).is_err(),
+                check_sensitive_path(base).is_err(),
                 "{prefix} must be refused"
             );
+            assert!(
+                check_sensitive_path(&base.join("probe")).is_err(),
+                "{prefix}/probe must be refused"
+            );
+            if !prefix.ends_with('/') {
+                assert!(
+                    check_sensitive_path(&PathBuf::from(format!("{prefix}probe"))).is_ok(),
+                    "{prefix}probe is a different file and must stay readable"
+                );
+            }
         }
         // Names that merely contain a blacklisted string are not components.
         for benign in [
