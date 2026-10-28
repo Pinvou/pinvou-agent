@@ -5,6 +5,10 @@ foundation in `CodeWhale/crates/config/src/local_reasoning.json`. The settings
 form, session model picker, runtime bridge and final request shaper read the
 same ladder. Provider identity and credential lookup are unchanged.
 
+Frontend development and CI need that pinned public checkout. From the project
+root run `git submodule update --init --depth=1 -- CodeWhale` before UI checks;
+the private Windows runtime is not required for this metadata dependency.
+
 | Model | Available controls | Request values |
 | --- | --- | --- |
 | Qwen3.8-27B / Flash-Next | Off, Low, Medium, Max | thinking switch; low, medium, xhigh |
