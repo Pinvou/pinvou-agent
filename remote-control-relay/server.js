@@ -486,9 +486,15 @@ function readWireString(text, state, decodeKey) {
     state.cursor = quote + 1;
     if (!decodeKey) return null;
     if (quote - start === 2 && text.charCodeAt(start + 1) === 118) return "v";
-    const escape = text.indexOf("\\", start + 1);
-    if (escape === -1 || escape >= quote) return null;
-    return JSON.parse(text.slice(start, state.cursor)) === "v" ? "v" : null;
+    // Bound the escape probe to the key text: an unbounded search to the end
+    // of the document makes the scan quadratic in key count whenever the
+    // frame has no later backslash.
+    for (let i = start + 1; i < quote; i += 1) {
+      if (text.charCodeAt(i) === 92) {
+        return JSON.parse(text.slice(start, state.cursor)) === "v" ? "v" : null;
+      }
+    }
+    return null;
   }
 }
 
