@@ -7,9 +7,11 @@ No credentials or network services are used; values below are synthetic.
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -21,9 +23,22 @@ class EvaluationDigestAllowlist(unittest.TestCase):
     def test_only_audited_digest_inside_exact_manifest_path_is_ignored(self):
         known = json.loads((REPO / "docs/prompt-optimization-evaluation/source-manifest-v2.4.5.json").read_text())["evaluation_sources"]["prompt_eval_extra_api.py"]
         synthetic = hashlib.sha256(b"synthetic-negative-control-not-a-real-credential").hexdigest()
+        config = tomllib.loads((REPO / ".gitleaks.toml").read_text())
+        allowlist = next(row for row in config["allowlists"]
+                         if row["description"].startswith("Audited evaluation content digests"))
+        pattern = re.compile(allowlist["paths"][0])
+        paths = sorted(path.relative_to(REPO).as_posix() for path in
+                       (REPO / "docs/prompt-optimization-evaluation").glob("*.json")
+                       if pattern.fullmatch(path.relative_to(REPO).as_posix()))
+        self.assertEqual(len(paths), 8, "all eight audited manifest paths must exist")
+        for manifest_path in paths:
+            with self.subTest(path=manifest_path):
+                self.assert_path_controls(manifest_path, known, synthetic)
+
+    def assert_path_controls(self, manifest_path, known, synthetic):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest = root / "docs/prompt-optimization-evaluation/source-manifest-v2.4.5.json"
+            manifest = root / manifest_path
             manifest.parent.mkdir(parents=True)
             manifest.write_text(json.dumps({"prompt_eval_extra_api.py": known,
                                              "unknown_api.py": synthetic}, indent=2))
@@ -45,7 +60,7 @@ class EvaluationDigestAllowlist(unittest.TestCase):
             self.assertEqual(len(findings), 2)
             self.assertEqual({row["RuleID"] for row in findings}, {"generic-api-key"})
             self.assertEqual({row["File"] for row in findings}, {
-                "docs/prompt-optimization-evaluation/source-manifest-v2.4.5.json", "unrelated.json",
+                manifest_path, "unrelated.json",
             })
             # The real audited value is allowed only at its exact manifest path;
             # the different value at that path and the same value elsewhere fail.

@@ -505,7 +505,7 @@ Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 R1 review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance stays `6e1ee88ee`.
 The two review commits total 17 files, +296/-49. Candidate topology is 86 commits
 above v0.9.12, 71 above r1, 84 signed; only the two registered historical squashes
-lack a footer. Drift: 522 files, +90147/-39279, net +50868; 255 distinct guard names.
+lack a footer. Drift: 522 files, +90219/-39420, net +50799; 255 distinct guard names.
 
 R1 restores a bounded documented-name probe when discovery is unavailable and
 access has not been denied. It preserves the exact-allowlist embedding path and
@@ -555,6 +555,32 @@ Fresh checks and source boundaries are recorded in
 and [source-manifest-review-r2.json](prompt-optimization-evaluation/source-manifest-review-r2.json).
 The public verifier is unchanged and must pass after the actual maintenance
 squash is repinned. Keep PR799 draft until then.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## 2026-10-28 review revision R3 (application guards and evidence)
+
+The foundation review gitlink remains `643e5e1b3`; no foundation behavior or
+inventory changes in this revision. Correct the R1 historical drift to 522 files,
++90219/-39420, net +50799; R2 remains +90147/-39279, net +50868. Restore the
+English historical local-candidate section and synchronize the current-state date.
+
+The parent restores stable read-before-edit, write-verification and foreground
+bash guidance, distinguishes user home from the primary execution root, and pins
+the guidance in bundle/Node contracts. Browser error documentation now requires
+production error constructions rather than test-fixture literals. Symlink-rule
+controls reject both the link and its resolved target and retain a primary-file
+positive control. The opt-in evaluation example rejects empty home configuration
+and malformed mode/root options; its isolation guard is runtime-only. All eight
+exact digest paths receive real positive/negative Gitleaks controls; the allowance
+is unchanged. Report indexes, alias-diagnostic boundaries, current artifact hashes
+and review history are reconciled without changing frozen model data/manifests.
+
+See [R3 verification](prompt-optimization-evaluation/review-r3-verification.json)
+and [R3 source manifest](prompt-optimization-evaluation/source-manifest-review-r3.json)
+for fresh checks and their limits. Prior measured scores are not R3 results.
+CodeWhale#125 remains open; the app stays draft until its actual maintenance
+squash is repinned and the unchanged public verifier passes.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 ## 2026-10-28 消费基线：流式工具入参复用与发现指引对齐（T2/T3）

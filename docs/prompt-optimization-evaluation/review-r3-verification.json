@@ -1,0 +1,422 @@
+{
+  "revision": "V2.4.5-review-r3",
+  "author": "Codex (OpenAI) / GPT-6; exact variant/reasoning level unavailable",
+  "date": "2026-10-28",
+  "review": "https://github.com/Pinvou/pinvou-agent/pull/799#pullrequestreview-5677369334",
+  "parent_before_revision": "15ebae274b3043066fc9b198dd052cdc8f988a96",
+  "foundation_head": "643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6",
+  "measurement_scope": "No new live-model calls or score claim. V2.4.5 measurements and R1/R2 receipts/source manifests remain historical and unchanged. R3 guidance differs from the measured prompts.",
+  "dispositions": {
+    "major_1": "R1 zh drift corrected to +90219/-39420, net +50799; R2 remains +90147/-39279, net +50868. Both have 522 files, independently recomputed against dcd4c200f.",
+    "minor_2": "PR body restores the documented 641-commit pre-final-R1 local scan boundary; final R1 CI remains separately linked. Fresh parent-history scan through the rebased R2 head is recorded here.",
+    "minor_3": "README names current foundation 643e5e1b3 and links independent R2/R3 source and verification records.",
+    "minor_4": "Example described as runtime-guarded opt-in, with no compile gate claimed.",
+    "minor_5": "Stable read-before-edit, write-verification and foreground-bash guidance pinned in Rust and Node, with three deletion controls.",
+    "minor_6": "Current-state dates synchronized; English historical local-candidate section restored.",
+    "minor_7": "User home ($HOME) distinguished from primary execution root in guidance and contract.",
+    "minor_8": "Design header reconciled with implemented draft; append sections 27/R2 and 28/R3 without rewriting earlier history.",
+    "minor_9": "Link correct V2.4.5 alias diagnostic and label earlier community diagnostic as a distinct source boundary.",
+    "minor_10": "Index all four complete summary layers and supporting receipts.",
+    "minor_11": "Browser codes require production error constructions; fixture-only source matches cannot satisfy the guard.",
+    "nits": "Correct runtime_hashes comment; run controls for all eight allowed paths; reject empty home and malformed mode/root options; strengthen symlink assertions and primary-file positive control; hash poster; link supporting receipts; translate JSON-only bullet; clarify pinvou3-clean versus main.",
+    "nonblocking_fingerprint": "Keep the generic eager-read source smoke fingerprint. The dedicated real policy/hydration/denial regression and its R2 execution remain the behavioral authority; no foundation lifecycle or generic guard-framework change."
+  },
+  "foundation_drift": {
+    "baseline": "dcd4c200f72f0c1ffd60d8e7f6850313db879fc5",
+    "R1": {
+      "head": "e4ef5570bc26e73df8b82c4ffca7200da3c8765b",
+      "files": 522,
+      "insertions": 90219,
+      "deletions": 39420,
+      "net": 50799
+    },
+    "R2": {
+      "head": "643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6",
+      "files": 522,
+      "insertions": 90147,
+      "deletions": 39279,
+      "net": 50868
+    }
+  },
+  "rebase_preservation": {
+    "old_head": "81568512261b3d46ff6c30432704af91e39df496",
+    "new_head": "15ebae274b3043066fc9b198dd052cdc8f988a96",
+    "old_base": "a9885b080d36749c62c6216686f1a463f9183b9b",
+    "new_base": "ab6ac99e67907d3909d94b4f839c7a6f70656140",
+    "all_three_patches_identical": true,
+    "remote_tree_equals_clean_merge_of_old_head_and_new_base": true,
+    "remote_tree": "ef052a5ce186cecbe04f172aa71e2d3bdf34f5f4",
+    "old_branch_preserved": "codex/pr-799-followup",
+    "active_branch": "codex/pr799-review-r3"
+  },
+  "gates": [
+    {
+      "name": "node-contracts",
+      "command": [
+        "node",
+        "--test",
+        "pinvou3-app/tests/browser_core_protocol.test.mjs",
+        "pinvou3-app/tests/canonical_tool_contract.test.js"
+      ],
+      "exit_code": 0,
+      "summary": [
+        "# pass 18",
+        "# fail 0"
+      ],
+      "log_sha256": "b9441e3958a5da250943ebc369d5d1c3eeed79edaf84dee7e0370b5d60d2c134"
+    },
+    {
+      "name": "python-guards",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_eval_digest_allowlist",
+        "scripts.tests.test_fork_guard_floor",
+        "scripts.tests.test_fork_guard_ancestry"
+      ],
+      "exit_code": 0,
+      "summary": [
+        "Ran 6 tests in 2.890s",
+        "OK"
+      ],
+      "log_sha256": "ea275d7d9a6671ffed5f8eea39e0ebf70168caa6879c324068b69b5cc5ac494d"
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "summary": [
+        "architecture guard passed: no architecture debt increased"
+      ],
+      "log_sha256": "de5bff130d75700fdd1ec335b56d6149a8f099986718a127dbac577fcb556ea3"
+    },
+    {
+      "name": "fork-fast",
+      "command": [
+        "./scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "summary": [
+        "\u001b[32m指纹层全过 (--fast)\u001b[0m"
+      ],
+      "log_sha256": "a24089b2663d56bddd47e876017e485678757afbd334c44d6d7166a213c8e55b"
+    },
+    {
+      "name": "app-format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "cli-format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou-cli/crates/cli/Cargo.toml",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "version",
+      "command": [
+        "node",
+        "scripts/sync-version.mjs",
+        "--check"
+      ],
+      "exit_code": 0,
+      "summary": [],
+      "log_sha256": "0d0d1f56439f8fca80809d3e04cfb9a3dff635ede42c104c9629cf0dcea6c17b"
+    },
+    {
+      "name": "diff-check",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "node-lint",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "lint:node"
+      ],
+      "exit_code": 0,
+      "environment": "Existing dependency cache linked only for this command; link removed afterward.",
+      "log_sha256": "ca199a1b19f61c861663dbf74f3c5a210ffb03348c6dda0c92f1b8c381115ac2"
+    },
+    {
+      "name": "bundle-platform",
+      "cwd": "pinvou3-app/src-tauri",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "Cargo.toml",
+        "--lib",
+        "--locked",
+        "--no-default-features",
+        "features::runtime_bundle::platform::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "summary": "test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 3720 filtered out; finished in 2.83s",
+      "log_sha256": "a5581c2dc6c888c7fdecd4e97bd1675250e0eb77a984a72128046b0036b945b0"
+    },
+    {
+      "name": "project-rules",
+      "cwd": "pinvou3-app/src-tauri",
+      "command": [
+        "cargo",
+        "test",
+        "--lib",
+        "--locked",
+        "--no-default-features",
+        "project_rules",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.5,
+      "summary": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3760 filtered out; finished in 0.00s"
+      ],
+      "log_sha256": "392331c894576bcb872df3e983577cb1b08ae064541bfa8dcc13ca36972513e0"
+    },
+    {
+      "name": "eval-example-options",
+      "cwd": "pinvou-cli",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "pinvou-cli",
+        "--example",
+        "prompt_eval",
+        "--no-default-features",
+        "--locked",
+        "--config",
+        "profile.dev.debug=\"line-tables-only\"",
+        "--config",
+        "profile.dev.package.\"*\".opt-level=2",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 4.47,
+      "summary": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ],
+      "log_sha256": "2e4aac95248842342506f5f1cef817a46ab8d112460664e5c8b7a5c53a0e6541"
+    },
+    {
+      "name": "eval-example-build",
+      "cwd": "pinvou-cli",
+      "command": [
+        "cargo",
+        "build",
+        "-p",
+        "pinvou-cli",
+        "--example",
+        "prompt_eval",
+        "--no-default-features",
+        "--locked",
+        "--config",
+        "profile.dev.debug=\"line-tables-only\"",
+        "--config",
+        "profile.dev.package.\"*\".opt-level=2"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 14.66,
+      "summary": [],
+      "log_sha256": "133e2747f1b4275141efc71dc480a864fcbd388e6eb1470477b27d4cb25747ef"
+    }
+  ],
+  "validation_environment": {
+    "platform": "Linux aarch64; no Windows/macOS execution or native browser/card visual E2E",
+    "app_features": "no-default-features; targeted platform bundle and project-rule tests only, not full application regression",
+    "compiler_header_repair": "Initial libspa bindgen attempt could not locate stdbool.h; retry uses existing /usr/lib/gcc/aarch64-linux-gnu/13/include via BINDGEN_EXTRA_CLANG_ARGS. No repository dependency/toolchain change.",
+    "example_compile_repair": "Initial derived options struct failed because this example has no direct serde dependency. Replaced it with strict deserialization via existing serde_json; no Cargo metadata or lock changes.",
+    "build_cache": "Serialized builds reuse a local target cache. Initial CLI build was deliberately interrupted to align its dev debug/optimization profile with the app and limit disk use; successful exact commands are above.",
+    "runtime_example": "Six negative process controls stop before product-host initialization; no network/model task was executed."
+  },
+  "mutation_controls": [
+    {
+      "control": "rename-production-browser/host-request-expired",
+      "changed_emissions": 1,
+      "test_module_unchanged": true,
+      "old_substring_guard_would_pass": false,
+      "expected_exit": 1,
+      "exit_code": 1
+    },
+    {
+      "control": "rename-production-browser/host-consumer-unavailable",
+      "changed_emissions": 2,
+      "test_module_unchanged": true,
+      "old_substring_guard_would_pass": true,
+      "expected_exit": 1,
+      "exit_code": 1
+    },
+    {
+      "control": "rename-production-browser/host-caller-not-live",
+      "changed_emissions": 5,
+      "test_module_unchanged": true,
+      "old_substring_guard_would_pass": true,
+      "expected_exit": 1,
+      "exit_code": 1
+    },
+    {
+      "control": "read-discipline",
+      "expected_exit": 1,
+      "exit_code": 1
+    },
+    {
+      "control": "write-discipline",
+      "expected_exit": 1,
+      "exit_code": 1
+    },
+    {
+      "control": "bash-discipline",
+      "expected_exit": 1,
+      "exit_code": 1
+    },
+    {
+      "control": "restored-contracts",
+      "expected_exit": 0,
+      "exit_code": 0
+    }
+  ],
+  "evaluation_runtime_controls": [
+    {
+      "case": "missing-home",
+      "expected_exit": 1,
+      "exit_code": 1,
+      "expected_error": "set an isolated PINVOU3_HOME",
+      "passed": true
+    },
+    {
+      "case": "empty-home",
+      "expected_exit": 1,
+      "exit_code": 1,
+      "expected_error": "set an isolated PINVOU3_HOME",
+      "passed": true
+    },
+    {
+      "case": "string-mode",
+      "expected_exit": 1,
+      "exit_code": 1,
+      "expected_error": "expected a boolean",
+      "passed": true
+    },
+    {
+      "case": "null-mode",
+      "expected_exit": 1,
+      "exit_code": 1,
+      "expected_error": "expected a boolean",
+      "passed": true
+    },
+    {
+      "case": "string-roots",
+      "expected_exit": 1,
+      "exit_code": 1,
+      "expected_error": "expected a sequence",
+      "passed": true
+    },
+    {
+      "case": "numeric-root",
+      "expected_exit": 1,
+      "exit_code": 1,
+      "expected_error": "expected path string",
+      "passed": true
+    }
+  ],
+  "gitleaks": {
+    "version": "8.30.1",
+    "history_command": [
+      "gitleaks",
+      "detect",
+      "--source",
+      ".",
+      "--config",
+      ".gitleaks.toml",
+      "--redact",
+      "--report-format",
+      "json",
+      "--log-opts=deae3ca0141390c06e14aa93610645088b8966d4..HEAD"
+    ],
+    "history_head": "15ebae274b3043066fc9b198dd052cdc8f988a96",
+    "commits_scanned": 653,
+    "findings": 0,
+    "exit_code": 0,
+    "history_log_sha256": "c1a3d5f016070aa0cab33e95c29d3f0671349186321067fdbdd62a35b82e3cf3",
+    "scope": "Same legacy cutoff as repository CI; includes the maintainer replays of R1 and R2. This is a local scan; CI outcomes are separate.",
+    "unbounded_local_ref_attempt": {
+      "commits_scanned": 6292,
+      "findings": 23,
+      "exit_code": 1,
+      "ancestry_triage": {
+        "other_local_ref_only": 4,
+        "legacy_before_CI_cutoff": 19
+      },
+      "action": "No suppression changed. None of these findings is in the current PR/CI range."
+    },
+    "allowlist_controls": {
+      "paths": 8,
+      "allowed_value_at_each_path": true,
+      "different_value_at_each_path_detected": true,
+      "audited_value_elsewhere_detected": true,
+      "command": "PINVOU_GITLEAKS_BINARY=<8.30.1> python3 -m unittest scripts.tests.test_eval_digest_allowlist"
+    },
+    "staged_revision_scan": {
+      "command": [
+        "gitleaks",
+        "protect",
+        "--staged",
+        "--config",
+        ".gitleaks.toml",
+        "--redact"
+      ],
+      "status": "passed",
+      "exit_code": 0,
+      "findings": 0,
+      "scope": "R3 staged patch, including both new review source/verification artifacts; rerun after final receipt update."
+    }
+  },
+  "publication_checks": {
+    "source_manifest": "source-manifest-review-r3.json",
+    "source_manifest_sha256": "efe9e18511ec052ba1adeb66d4afd6b15aa1e9d5cdd6bf0ec10a4fdcff55053b",
+    "current_source_hashes": 26,
+    "current_report_artifact_hashes": 19,
+    "readme_and_report_local_links": {
+      "checked": 41,
+      "missing": 0
+    },
+    "frozen_measurement_files": "unchanged in R3 diff"
+  },
+  "remaining_blocker": "CodeWhale#125 remains open at 643e5e1b3 with green CI, awaiting re-review/integration. App draft keeps this real candidate gitlink; public pinvou3-clean remains 6e1ee88ee. Repin actual maintenance squash, recount inventory/fingerprints and rerun applicable checks after merge. No bypass, merge, queue, protected ref, tag or release."
+}

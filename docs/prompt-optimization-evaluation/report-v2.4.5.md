@@ -83,7 +83,10 @@ positionally correct candidate repair has a newly renamed public parameter.
 All **120** named-Skill turn-zero trials load the exact expected body in both
 versions; both have zero list calls here. This corpus therefore does not show a
 measured reduction in list calls. The separately added tuple/set/bytearray alias
-diagnostic is **4→5/5 for each model**; it is not the frozen JSON-shaped oracle.
+diagnostic is **4→5/5 for each model**, recorded in
+[the V2.4.5 alias diagnostic](extended-code-diagnostic-v2.4.5.json); it is not the frozen JSON-shaped oracle.
+The earlier 20-trial [community diagnostic](extended-code-diagnostic.json) has
+different results and belongs to its earlier source boundary; it is not this receipt.
 One failing baseline explicitly limits its copier's supported types; retain that
 qualification rather than calling the qualified explanation fabricated.
 

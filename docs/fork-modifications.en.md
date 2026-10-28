@@ -70,6 +70,7 @@
 - Local native Windows verification: `cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` passed 23 tests (Cargo substring matching selects 19 `sandbox::tests::*` and 4 `repl::sandbox::tests::*`; Linux selects 26 because of cfg differences). Both opt-in tool tests passed with system Python 3.14 and bundled Python 3.13.14 (four executions); the separate Git Bash environment probe passed once. Earlier, restoring the original builders made both native tool tests fail for each interpreter with corrupted Python Chinese and intact PowerShell Chinese. Formatting, architecture guard, and fast fork fingerprints passed.
 - Windows evidence above is prior local author verification, not a claim that later documentation revisions reran native tests. The parent Windows regression step now selects the three deterministic default-merge, constructor-wiring, and case-insensitive-override filters, each with a nonzero-test guard. The actual [Windows regression job at `91e262ba2`](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) ran all three filters successfully. That receipt covers the older head and unchanged foundation, not later revisions. The two Python-dependent opt-in tests remain local author evidence. The maintenance fork's `pinvou3-clean` workflow is Ubuntu-only; Windows-gated tests do not run in that CI lane. The Linux-visible `windows_shell_default_env_forces_python_pipe_stdio_utf8` checks the helper result, not its constructor wiring; the case-insensitive overlay also requires native Windows regression. Upstream PR codewhale-hq/Codewhale#7041 is the contribution path for eventual upstream Windows CI coverage, not evidence that such a lane has run. No customer-device replay, PowerShell 7 verification, or installer release was performed.
 
+## Current state (2026-10-28; review candidate)
 ## Current state (2026-10-28)
 
 - Public maintenance remains `6e1ee88ee8f8ea28eec7be3d8add3a591468412a`, including #118–#122. The parent review gitlink is `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6` ([CodeWhale#125](https://github.com/Pinvou/CodeWhale/pull/125)), not a merged maintenance head. Keep the application PR draft until the foundation merges and repin its actual squash commit. No protected branch or tag is updated.
@@ -326,6 +327,30 @@ Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f2767293
 - This PR adds 24 T2 checks beyond main's existing fingerprints. Two of the old candidate's 26 additions already landed; the remaining checks still match the current public tree. They cover structured omissions, recovery guidance, real gate/child DTOs, complete fetch envelopes, immutable artifacts, retrieval activation and serial/parallel/aggregate dispatch contracts. Production code, gitlink, maintenance count, existing predicates and execution layers stay unchanged. Earlier foundation native/mutation evidence retains its original commit boundary; this round's fingerprint checks do not rerun those native tests or establish release qualification.
 - The historical mutation-validation workflow remains on CodeWhale validation-only branch `validation/returned-result-20261024` at `b4eb108335a99556429b11191b9a2dabadbd23c8` (six selected tests × baseline and three negative variants). It differs from its then-source commit only in the validation workflow; it was not delivered as production CI and is not introduced by this PR. This round verified that the public branch still names that commit; earlier execution receipts are not transferred to a new run on the current foundation.
 
+## 2026-10-23 local prompt candidate (T3; unpublished)
+
+The prompt-optimization worktree now consumes the registered `6e1ee88ee` gitlink
+and keeps the published topology intact; prior frozen measurements used `ea9fdc90f`. Its local CodeWhale diff updates model guidance only:
+known Skills load by exact name; missing tools require discovery and an honest
+unavailable fallback; transcript hints no longer recommend calling absent tools.
+Registry-first guidance and the bundled discovery Skill now respect a host's
+explicit built-in entry points before applying the Registry default. Ordinary
+repository work and the existing external-capability discovery flow are retained.
+No tool registry, allowlist, approval rule, Skill source validation, or execution
+loop is changed. The existing Skill-index, child-catalog, transcript-hint and
+Registry instruction tests cover the guidance; corresponding fingerprints track
+these contracts. This is a local candidate, not a published fork baseline.
+
+Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
+
+The same candidate advances the bundled Skill catalog from generation 11 to 12
+and records the exact superseded discovery-body digest. Existing unmodified
+installs receive the host-aware discovery guidance; user edits and intentional
+deletions retain the installer's existing protection. A regression fixture and
+upgrade test cover the old shipped body and a user-customized body. This install
+migration does not alter the prompt text used by the frozen fresh-home model
+comparison. Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
+
 ## 2026-10-27 prompt guidance review candidate (T3; CodeWhale#125)
 
 The parent review gitlink is `50a42c38edf81e45019403d33ac05ef87da77555`; public maintenance remains
@@ -417,6 +442,32 @@ Fresh checks and source boundaries are recorded in
 and [source-manifest-review-r2.json](prompt-optimization-evaluation/source-manifest-review-r2.json).
 The public verifier is unchanged and must pass after the actual maintenance
 squash is repinned. Keep PR799 draft until then.
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## 2026-10-28 review revision R3 (application guards and evidence)
+
+The foundation review gitlink remains `643e5e1b3`; no foundation behavior or
+inventory changes in this revision. Correct the R1 historical drift to 522 files,
++90219/-39420, net +50799; R2 remains +90147/-39279, net +50868. Restore the
+English historical local-candidate section and synchronize the current-state date.
+
+The parent restores stable read-before-edit, write-verification and foreground
+bash guidance, distinguishes user home from the primary execution root, and pins
+the guidance in bundle/Node contracts. Browser error documentation now requires
+production error constructions rather than test-fixture literals. Symlink-rule
+controls reject both the link and its resolved target and retain a primary-file
+positive control. The opt-in evaluation example rejects empty home configuration
+and malformed mode/root options; its isolation guard is runtime-only. All eight
+exact digest paths receive real positive/negative Gitleaks controls; the allowance
+is unchanged. Report indexes, alias-diagnostic boundaries, current artifact hashes
+and review history are reconciled without changing frozen model data/manifests.
+
+See [R3 verification](prompt-optimization-evaluation/review-r3-verification.json)
+and [R3 source manifest](prompt-optimization-evaluation/source-manifest-review-r3.json)
+for fresh checks and their limits. Prior measured scores are not R3 results.
+CodeWhale#125 remains open; the app stays draft until its actual maintenance
+squash is repinned and the unchanged public verifier passes.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 ## 2026-10-28 consumed baseline: streaming tool-input reuse and discovery-guidance alignment (T2/T3)

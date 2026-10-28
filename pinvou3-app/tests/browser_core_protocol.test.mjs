@@ -120,9 +120,16 @@ test('work instructions define a durable and verified loopback preview workflow'
   );
   assert.match(instructions, /browser\/host-request-expired.*停止本次流程并说明/);
   const hostSource = readFileSync(new URL('../src-tauri/src/features/browser/mod.rs', import.meta.url), 'utf8');
+  // Exclude the final unit-test module: fixture literals cannot establish a
+  // production emission. Earlier inline cfg(test) hooks do not end production.
+  const testsAt = hostSource.indexOf('#[cfg(test)]\nmod tests {');
+  assert.ok(testsAt >= 0, 'browser unit-test boundary must be explicit');
+  const production = hostSource.slice(0, testsAt);
   for (const code of ['browser/host-request-expired', 'browser/host-consumer-unavailable', 'browser/host-caller-not-live']) {
     assert.ok(instructions.includes(code));
-    assert.ok(hostSource.includes(code), `advertised browser error must exist: ${code}`);
+    const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const emission = new RegExp(`(?:Err|Some)\\(\\s*(?:format!\\(\\s*)?"${escaped}:|map_err\\(\\|[^|]*\\|\\s*format!\\(\\s*"${escaped}:`);
+    assert.match(production, emission, `advertised browser error must be emitted in production: ${code}`);
   }
   assert.doesNotMatch(instructions, /browser\/host-request-timeout/);
   assert.match(instructions, /mcp_browser_list_pages/);
@@ -239,7 +246,7 @@ test('artifact title stays single-sourced and bound workspaces require explicit 
   assert.match(bound, /文件成品仍需按「验证与交付」规则呈现/);
   assert.doesNotMatch(bound, /不会自动追踪|只有.*显式.*卡片/);
   assert.match(work, /写入并核对成品 → 调用 `mcp_pinvou3_present_artifact` 交付文件 → 最终回复/);
-  assert.match(work, /主目录、附加目录和未绑定项目时都适用/);
+  assert.match(work, /主执行目录、附加目录和未绑定项目时都适用/);
   assert.match(work, /`tool_search` 搜索准确名称 `mcp_pinvou3_present_artifact`/);
 });
 

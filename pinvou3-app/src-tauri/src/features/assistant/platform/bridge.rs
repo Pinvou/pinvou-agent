@@ -4604,20 +4604,33 @@ mod tests {
             // The symlinked AGENTS.md must not be injected (the only AGENTS.md
             // in the project directory is that symlink).
             let rules = bridge.code_session_project_rules("sess-code-project");
-            let marker = base.file_name().unwrap().to_string_lossy().into_owned();
+            let normalized_project = normalize_rule_boundary_path(&project).unwrap();
             assert!(
-                !rules.iter().any(|p| p.to_string_lossy().contains(&marker)),
-                "symlink 的 AGENTS.md 不得注入: {rules:?}"
+                !rules.contains(&normalized_project.join("AGENTS.md")),
+                "symlink must not be injected: {rules:?}"
+            );
+            assert!(
+                !rules.contains(&normalize_rule_boundary_path(&outside).unwrap()),
+                "resolved symlink target must not be injected: {rules:?}"
             );
 
             // Selecting an additional root must not inject its rule file
             // into the primary session's instructions either.
             let primary = base.join("primary");
             std::fs::create_dir(&primary).unwrap();
+            let primary_agents = primary.join("AGENTS.md");
+            std::fs::write(&primary_agents, "primary rules").unwrap();
+            let additional = project.clone();
             bridge.set_execution_root_resolver(Arc::new(move |_| Some(primary.clone())));
-            bridge.set_workspace_roots_resolver(Arc::new(move |_| vec![project.clone()]));
+            bridge.set_workspace_roots_resolver(Arc::new(move |_| vec![additional.clone()]));
             let rules = bridge.code_session_project_rules("sess-code-project");
-            assert!(!rules.iter().any(|p| p.to_string_lossy().contains(&marker)));
+            assert!(rules.contains(&normalize_rule_boundary_path(&primary_agents).unwrap()));
+            assert!(
+                !rules
+                    .iter()
+                    .any(|path| path.starts_with(&normalized_project))
+            );
+            assert!(!rules.contains(&normalize_rule_boundary_path(&outside).unwrap()));
 
             let _ = std::fs::remove_dir_all(&base);
         }

@@ -126,7 +126,7 @@ paths = [
 ]
 # Three source/document hashes were recomputed from their exact current bytes.
 # 70db... is the historical credential-CLI executable digest recorded under
-# binary_hashes (the executable is no longer retained on this host).
+# runtime_hashes (the executable is no longer retained on this host).
 regexes = [
   '''^(?:32de7566388daa48cd7c10625c59c6bff98c12a95b9d44388a40cfbdf656b6cd|4ab992b92fa5ac8d2b4862571340651186860f8ce7bb02d2b3e2555db04b7a03|1821d16da48d4d847156cbe3a0fad28a41be4ed922f786403bf065166550d37c|70dbb8b69ae34adc421157c749c0ac4e2a03d1fffe1a36256a4dee5eb049678b)$''',
 ]

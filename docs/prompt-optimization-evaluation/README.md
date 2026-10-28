@@ -26,8 +26,14 @@ documented-name probes for deferred tools, fixes browser/authority/Plan wording,
 and tightens publication evidence. Its deterministic checks are recorded
 separately. No new 540-task model run is implied.
 
-Current foundation review head: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`.
-The parent revision follows the reviewer's clean replay onto main `a9885b080d`.
+Current foundation review head: `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6`.
+Public maintenance `6e1ee88ee` names `pinvou3-clean`, not CodeWhale `main`.
+The parent follows the reviewer's clean replay onto main `ab6ac99e6`;
+all three previous patch identities and their merged tree were verified before R3.
+The [R2 verification](review-r2-verification.json) and [R2 source manifest](source-manifest-review-r2.json)
+record discovery/probe/receipt agreement. The [R3 verification](review-r3-verification.json)
+and [R3 source manifest](source-manifest-review-r3.json) record the register, evidence,
+and guard repairs independently of the frozen measurements.
 See the [R1 verification](review-r1-verification.json) and separate
 [R1 source manifest](source-manifest-review-r1.json). The original submission's
 seven freshly executed namespace/proxy checks are in
@@ -39,3 +45,15 @@ signature. File integrity is recorded by the SHA-256 manifest chain. Cryptograph
 Git signatures, if present, are a separate property; a DCO trailer is also distinct.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## Evidence index
+
+The full 27-family summary layers are [raw](summary-v2.4.5-raw.json),
+[calibrated](summary-v2.4.5-calibrated.json), [reviewed](summary-v2.4.5-reviewed.json),
+and [path-corrected](summary-v2.4.5-path-corrected.json). The figure renderer uses
+the corresponding non-browser `-regression` summaries; these are separate views.
+
+Supporting receipts: [Git preservation](git-preservation-v2.4.5.json),
+[loaded Skill bodies](loaded-skill-body-audit-v2.4.5.json),
+[third-root command diagnostic](third-root-command-diagnostic-v2.4.5.json),
+and [calibration changes](calibration-changes-v2.4.5.json).

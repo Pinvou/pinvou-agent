@@ -69,6 +69,13 @@ test('runtime guidance uses live schemas and canonical app entry points', () => 
   const shared = fs.readFileSync(path.join(BUNDLE, 'instructions-shared.md'), 'utf8');
   assert.match(shared, /本轮真实目录.*准确名称/);
   assert.match(shared, /参数.*实际 schema/);
+  for (const discipline of [
+    '文件内容先用 `read` 核对，再决定修改',
+    '用 `write` 写入后核验实际文件',
+    '`bash` 只执行前台命令，不假定支持后台参数',
+  ]) {
+    assert.ok(shared.includes(discipline), `file/shell discipline missing: ${discipline}`);
+  }
   for (const canonical of ['tool_search', 'terminal/run', 'todo_write']) {
     assert.ok(rendered.includes(canonical), `canonical guidance missing: ${canonical}`);
   }

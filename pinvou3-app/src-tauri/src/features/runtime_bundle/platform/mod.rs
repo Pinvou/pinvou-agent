@@ -727,6 +727,16 @@ mod tests {
                 "canonical guidance missing: {canonical}"
             );
         }
+        for discipline in [
+            "文件内容先用 `read` 核对，再决定修改",
+            "用 `write` 写入后核验实际文件",
+            "`bash` 只执行前台命令，不假定支持后台参数",
+        ] {
+            assert!(
+                rendered.contains(discipline),
+                "file/shell discipline missing: {discipline}"
+            );
+        }
         // The artifact-card rule must teach two-stage activation:
         // `mcp_pinvou3_present_artifact` is a deferred builtin MCP tool, so it
         // is absent from the first-turn tool list even when the server is
