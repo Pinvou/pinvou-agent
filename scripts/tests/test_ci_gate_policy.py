@@ -165,26 +165,41 @@ def _extract_readme_claims_read_targets(claims_test):
 
     claims 表的 `file: "README*.md"` 字符串字面量即一个仓库根读取目标
     (测试经 repoRoot 拼接读取)。未来新增 README 读取自动纳入路由锁,
-    不会 fail-open。
+    不会 fail-open。单引号/双引号、冒号后空白都接受;派生结果为空即红
+    (claims 表形态变更须同步本提取器)——静默空结果会让路由锁整体失效。
     """
-    return sorted(set(re.findall(r'file: "([^"]+)"', claims_test)))
+    targets = sorted(
+        {m[1] for m in re.findall(r"file:\s*(['\"])([^'\"]+)\1", claims_test)}
+    )
+    if not targets:
+        raise AssertionError(
+            "readme claims 表未派生出任何 README 读取目标——读取形态变更须同步本提取器"
+        )
+    return targets
 
 
 def _extract_install_contract_script_reads(contract_test):
     """从 connector_online_install_contract.test.js 源码派生 scripts/ 读取目标。
 
-    `read("scripts", "x.sh")` 单段与 `read("scripts", "a", "b.js")` 多段
-    字面量各成一个 pinvou3-app/scripts/ 读取目标。未来新增 scripts 读取
-    自动纳入路由锁,不会 fail-open。
+    `read("scripts", "x.sh")` 与任意段数的 `read("scripts", "a", "b", …)` 字面量
+    (单双引号、跨行皆可)各成一个 pinvou3-app/scripts/ 读取目标;`read("scripts", …)`
+    调用里解析不出字符串字面量即红——与 _extract_contract_read_targets 同款
+    fail-closed:提取器看不见的读取,路由锁就拦不住删除路由的回归。
     """
-    single = re.findall(r'read\("scripts", "([^"]+)"\)', contract_test)
-    nested = [
-        f"{head}/{tail}"
-        for head, tail in re.findall(
-            r'read\("scripts", "([^"]+)", "([^"]+)"\)', contract_test
+    targets = []
+    for args in re.findall(
+        r"read\(\s*['\"]scripts['\"]\s*,?\s*([^)]*)\)", contract_test, re.S
+    ):
+        parts = re.findall(r"['\"]([^'\"]*)['\"]", args)
+        if not parts:
+            raise AssertionError(f"无法解析的 scripts 读取目标: {args}")
+        targets.append("pinvou3-app/scripts/" + "/".join(parts))
+    if not targets:
+        raise AssertionError(
+            "connector_online_install_contract.test.js 未派生出任何 scripts/ 读取目标"
+            "——读取形态变更须同步本提取器"
         )
-    ]
-    return sorted(set(single + nested))
+    return sorted(set(targets))
 
 
 def _frontend_filter_entries(workflow_text):
@@ -914,13 +929,44 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         for target in targets:
             self.assertTrue(
-                _is_covered_by_trigger(
-                    f"pinvou3-app/scripts/{target}", frontend_paths
-                ),
-                f"install contract 测试读取的 pinvou3-app/scripts/{target}"
+                _is_covered_by_trigger(target, frontend_paths),
+                f"install contract 测试读取的 {target}"
                 " 未被 frontend filter 覆盖,scripts-only 改动会静默跳过该"
                 " node 门禁",
             )
+
+    def test_script_read_derivation_covers_quote_and_shape_variants(self):
+        # 回归锁(round-7 review m4):scripts 派生正则此前只认双引号、单行、
+        # 恰好 1~2 段的 `read("scripts", …)`;单引号 / 跨行 / 三段写法派生出
+        # 零目标,路由锁随之静默失效(经变异验证 fail-open)。喂最小 fixture:
+        # 三种变体都必须派生出来;字面量解析不出(变量参数)必须抛错而不是
+        # 静默跳过;README 派生同样接受单引号。
+        fixture = (
+            "const a = read('scripts', 'future-smoke.sh');\n"
+            "const b = read(\n  \"scripts\",\n  \"tauri\",\n  \"build.js\",\n);\n"
+            "const c = read(\"scripts\", \"deep\", \"nested\", \"tool.mjs\");\n"
+        )
+        targets = _extract_install_contract_script_reads(fixture)
+        self.assertEqual(
+            targets,
+            [
+                "pinvou3-app/scripts/deep/nested/tool.mjs",
+                "pinvou3-app/scripts/future-smoke.sh",
+                "pinvou3-app/scripts/tauri/build.js",
+            ],
+        )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads("read(\"scripts\", scriptName)")
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads("const x = 1;")
+        self.assertEqual(
+            _extract_readme_claims_read_targets(
+                "{ file: 'README.md' }, { file: \"README.ja.md\" }"
+            ),
+            ["README.ja.md", "README.md"],
+        )
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets("const claims = [];")
 
     def test_contract_target_derivation_covers_double_quoted_reads(self):
         # 回归锁:派生正则此前只匹配单引号形式,双引号的
