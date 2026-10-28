@@ -577,10 +577,8 @@ function relayStateContents(entries) {
 
 async function loadRelayState() {
   let metadata;
-  let contents;
   try {
     metadata = await stat(RELAY_STATE_PATH);
-    contents = await readFile(RELAY_STATE_PATH, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT") return;
     // Do not interpolate the failure reason: it can embed filesystem paths.
@@ -588,7 +586,16 @@ async function loadRelayState() {
   }
   // Deliberate validation failures keep their own messages so the startup
   // report distinguishes them from filesystem errors, which stay wrapped.
+  // Checked before reading: a FIFO at the state path would block the read
+  // forever.
   if (!metadata.isFile()) throw new Error("relay state path is not a regular file");
+  let contents;
+  try {
+    contents = await readFile(RELAY_STATE_PATH, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw new Error("relay_state_load_failed", { cause: error });
+  }
   if (metadata.size > MAX_RELAY_STATE_BYTES
     || Buffer.byteLength(contents) > MAX_RELAY_STATE_BYTES) {
     throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
