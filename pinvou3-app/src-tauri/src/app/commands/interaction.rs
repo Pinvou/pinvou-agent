@@ -456,7 +456,7 @@ pub async fn get_pending_user_inputs(
 
 // ===================== Pinvou v4 召唤式检阅 =====================
 
-/// Boss 主动召唤 Pinvou 检阅当前 session 的工作（设计 `docs/品悟v4-常驻检阅助手设计.md`）。
+/// Boss 主动召唤 Pinvou 检阅当前 session 的工作（设计 `docs/品悟v4-召唤式评审设计.md` §1）。
 /// 取该 session 全部 messages → 投影/全喂 → 单次独立 LLM 审查 → 返回 personas/issues。
 /// 纯召唤、不替 Boss 决策；自动触发已彻底移除。
 #[tauri::command]
