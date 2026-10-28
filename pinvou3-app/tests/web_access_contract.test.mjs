@@ -766,6 +766,24 @@ assert.match(bridge, /session_turn_in_progress/);
 assert.match(bridge, /turnAlreadyInProgress/);
 assert.match(bridge, /addSystemItem\(concurrentTurn[\s\S]{0,120}bt\("turnAlreadyInProgress"\)/,
   'turn admission conflicts must show product copy instead of an internal reservation error');
+// The fold must live in the WEB bridge itself: pins scoped to the concatenated
+// `bridge` are satisfied by the desktop twin even with the web mapping deleted
+// (round-4 mutation M7 stayed green).
+assert.match(webBridge, /web_session_turn_in_progress:\s*"turnAlreadyInProgress"/,
+  'the web bridge itself must map the turn-in-progress code to product copy');
+assert.match(webBridge, /addSystemItem\(concurrentTurn[\s\S]{0,120}bt\("turnAlreadyInProgress"\)/,
+  'the web-side turn admission conflict must show product copy');
+// The JS half of the edit_last_turn revision guard: dropping or renaming the
+// arg would silently degrade the stale-view protection to fail-open, and the
+// Rust-side Option param alone cannot catch it (round-4 minor).
+assert.match(webBridge, /expectedTranscriptRevision: expectedRevision \|\| null/,
+  'the web bridge must send its transcript revision with edit_last_turn');
+const memoryCommands = readSource(
+  path.join(root, 'src-tauri', 'src', 'app', 'commands', 'memory.rs'),
+  'utf8',
+);
+assert.match(memoryCommands, /expected_transcript_revision: Option<String>/,
+  'edit_last_turn must keep the optional transcript-revision guard parameter');
 assert.match(bridge, /(?:var|const|let) sid = state\.activeSessionId;/);
 assert.match(bridge, /if \(state\.activeSessionId !== sid\) return;/);
 assert.match(bridge, /remoteAdmissionKeys/);
@@ -991,6 +1009,19 @@ assert.match(settingsView, /\{remoteCopy\.revokeWorkspace\}/,
   'the revoke control must carry explicit trilingual copy');
 assert.doesNotMatch(settingsView, /handleRevokeHostWorkspace[\s\S]{0,200}allowHostWorkspace: true/,
   'revoking folder consent must never re-grant it');
+// Registration rejections must surface trilingual recovery copy through the
+// stable last_error_code; the raw English last_error is fallback only
+// (regression: the actionable hints shipped as English-only raw strings).
+assert.match(settingsView, /webAccess\.last_error_code\s*\?\s*remoteCopy\.registerHints\?\.\[webAccess\.last_error_code\]/,
+  'the settings modal must map the registration error code to localized recovery copy');
+assert.match(settingsView, /registerHint \|\| webAccess\.last_error/,
+  'unmapped errors must fall back to the raw last_error text');
+assert.equal((i18n.match(/rotate_credentials:/g) || []).length, 3,
+  'the rotate-credentials recovery copy must exist in all three languages');
+assert.equal((i18n.match(/rotate_recover_config:/g) || []).length, 3,
+  'the rotate-recover recovery copy must exist in all three languages');
+assert.equal((i18n.match(/update_desktop:/g) || []).length, 3,
+  'the update-desktop recovery copy must exist in all three languages');
 assert.match(desktopRemoteControlBridge, /invoke\("web_access_revoke_host_workspace"\)/,
   'the desktop bridge must call the desktop-only revoke command');
 assert.match(remoteControlCommands, /web_access_revoke_host_workspace\([\s\S]{0,240}require_main_webview\(&window\)\?/,

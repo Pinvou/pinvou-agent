@@ -188,8 +188,13 @@ function hasStoredCredential(record) {
       const remoteCopy = t.uiRemote;
       const statusColors = { idle:'#8A9097', starting:'#F9AB00', connecting_relay:'#F9AB00', waiting_web_client:'#F9AB00', web_client_connected:'#34A853', web_client_disconnected:'#F9AB00', revoked:'#EA4335', stopped:'#8A9097', error:'#EA4335' };
       const statusCopy = remoteCopy.status[statusKey];
+      // 注册终结码的稳定恢复码映射三语文案;缺码(非注册类错误)回退原文。
+      const registerHint = webAccess.last_error_code
+        ? remoteCopy.registerHints?.[webAccess.last_error_code]
+        : null;
+      const webAccessErrorText = registerHint || webAccess.last_error || null;
       const statusMeta = statusCopy
-        ? { label: statusCopy[0], detail: statusKey === 'error' ? (webAccess.last_error || statusCopy[1]) : statusCopy[1], color: statusColors[statusKey] }
+        ? { label: statusCopy[0], detail: statusKey === 'error' ? (webAccessErrorText || statusCopy[1]) : statusCopy[1], color: statusColors[statusKey] }
         : { label: String(statusKey), detail: remoteCopy.updated, color: '#8A9097' };
 
       async function handleRotateWebAccess() {
@@ -305,10 +310,10 @@ function hasStoredCredential(record) {
               </div>
             ) : (
               <div className={`text-[13px] px-3 py-4 rounded-xl bg-[#F1F3F4] text-[#3C4043] dark:bg-white/5 dark:text-[#C4C7C5]`}>
-                {webAccess.starting ? remoteCopy.generating : (webAccess.last_error || remoteCopy.notStarted)}
+                {webAccess.starting ? remoteCopy.generating : (webAccessErrorText || remoteCopy.notStarted)}
               </div>
             )}
-            {webAccess.last_error && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccess.last_error}</div>}
+            {webAccessErrorText && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccessErrorText}</div>}
             {webAccessActive && hostWorkspaceAuthorized && (
               // 授权状态 affirmative 可见 + 可单独撤销:旧版本「开启访问」顺带
               // 写下的 allow_host_workspace 不再只能靠 Stop 整体清除。
