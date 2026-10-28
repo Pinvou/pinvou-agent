@@ -1435,6 +1435,10 @@ server.listen(PORT, HOST, () => {
     + `, endpoint_create_limit=${ENDPOINT_CREATE_LIMIT}/${ENDPOINT_CREATE_WINDOW_MS}ms`
     + `, endpoint_offline_ttl=${ENDPOINT_OFFLINE_TTL_MS}ms`
     + `, revoked_endpoints=${revokedEndpoints.size}`
+    // The effective capacity, after the state-size clamp: an operator setting
+    // MAX_REVOKED_ENDPOINTS above it is silently capped and needs to see the
+    // real value (MAX_RELAY_STATE_BYTES is what raises it).
+    + `, revoked_capacity=${MAX_REVOKED_ENDPOINTS}`
     + `, max_payload=${MAX_PAYLOAD_BYTES})`,
   );
 });

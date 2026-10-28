@@ -1086,6 +1086,10 @@ test("tombstone capacity stays inside what the state limit can hold", async () =
     ENDPOINT_CREATE_LIMIT: "100",
   });
   try {
+    // The banner must expose the effective capacity: the clamp silently caps
+    // a configured 100 down to what 2 KiB of state can hold (8), and an
+    // operator otherwise cannot see the real value.
+    assert.match(isolated.output(), /\brevoked_capacity=8\b/);
     for (let i = 0; i < 8; i += 1) {
       const endpointId = `endpoint_clamp_${String(i).padStart(2, "0")}`;
       const desktop = await registerDesktop(
