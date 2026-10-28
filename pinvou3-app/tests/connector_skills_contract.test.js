@@ -545,31 +545,52 @@ for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
 // 同样剥 URL/行内代码后判定；.py 脚本一并扫（attendance 脚本 docstring 曾写
 // 「Wukong Agent」宿主断言）。本规则按搭配词钉历史原文形态，不覆盖裸「悟空」作
 // 主语、「悟空的运行环境」这类加修饰变体；上游出现新的合法搭配时先补 must-pass
-// 自检再扩正则，不得静默放宽——误伤合法内容时在该行加豁免并写明理由。
+// 自检再扩正则，不得静默放宽——单行豁免的唯一代码形态是把该引用包进反引号
+// （stripAnchors 会剥掉行内代码段），『』/「」引号不豁免。
 const hostAliasForms =
-  /悟空(?:运行|环境|平台|脚本|应用|宿主|智能体|\s*Agent)|(?:与|由|在)悟空(?!相关)|Wukong\s*Agent|悟空内部产品|开源版(?:未引入|不支持|不提供)/i;
+  /悟空(?:运行|环境|平台|脚本|应用|宿主|智能体|\s*Agent)|(?:与|由|在)悟空(?!相关|无关|有关)|Wukong\s*Agent|悟空内部产品|开源版(?:未引入|不支持|不提供)/i;
 const scripts = files.filter(
   (f) => f.endsWith(".py") && !path.basename(f).startsWith("NOTICE"),
 );
 for (const f of [...docs, ...scripts]) {
+  let hit = null;
   for (const line of read(f).split("\n")) {
-    const hit = hostAliasForms.exec(stripAnchors(line));
-    assert.ok(!hit, `${rel(f)}: 上游宿主称谓/版本差异措辞回潮（${hit?.[0]}）: ${line.trim()}`);
+    const m = hostAliasForms.exec(stripAnchors(line));
+    if (m) {
+      hit = `${rel(f)}: 上游宿主称谓/版本差异措辞回潮（${m[0]}）: ${line.trim()}——按品悟口径改写;新的合法搭配先补 must-pass 自检再扩正则`;
+      break;
+    }
   }
+  if (hit) assert.fail(hit);
 }
-// 规则 12 盲点自检：历史原文必须判违例，现行客观引用必须通过。
+// 规则 12 盲点自检：历史原文必须判违例，现行客观引用必须通过。每个正则分支
+// （含分支内每个搭配词）至少被一条 must-fail 单独命中、前瞻豁免被 must-pass
+// 命中——删掉任何分支/搭配词/前瞻都会红，防止「简化」静默收窄保护面。
 {
-  for (const text of [
-    "悟空运行环境可能是 Windows cmd / PowerShell / macOS bash",
-    "与悟空脚本路径并存",
-    "Wukong Agent attendance report helper",
-    "`aisearch`（开源版未引入，悟空内部产品）",
-    '不要以"开源版不支持"为由拒答',
+  for (const [text, covers] of [
+    ["悟空运行环境可能是 Windows cmd / PowerShell / macOS bash", "悟空运行"],
+    ["悟空环境按 Windows 处理", "悟空环境"],
+    ["悟空平台的脚本入口", "悟空平台"],
+    ["悟空脚本的缓存目录", "悟空脚本"],
+    ["悟空应用首页链接", "悟空应用"],
+    ["悟空宿主进程退出码", "悟空宿主"],
+    ["悟空智能体默认开启", "悟空智能体"],
+    ["悟空 Agent 帮你签到", "悟空\\s*Agent"],
+    ["与悟空并列的示例产品", "与悟空"],
+    ["由悟空代管安装", "由悟空"],
+    ["在悟空上运行", "在悟空"],
+    ["Wukong Agent attendance report helper", "Wukong\\s*Agent"],
+    ["该能力属悟空内部产品", "悟空内部产品"],
+    ["高级模式（开源版未引入）", "开源版未引入"],
+    ['不要以"开源版不支持"为由拒答', "开源版不支持"],
+    ["开源版不提供该回调", "开源版不提供"],
   ]) {
-    assert.ok(hostAliasForms.test(stripAnchors(text)), `规则 12 必须判违例: ${text}`);
+    assert.ok(hostAliasForms.test(stripAnchors(text)), `规则 12 必须判违例（应命中 ${covers}）: ${text}`);
   }
   for (const text of [
     '示例："查一下和悟空相关的听记"',
+    '示例："查一下与悟空相关的听记"',
+    '跳过与悟空无关的条目',
     '把"付工"改成"悟空"',
     "--agentCode string       Agent 标识，默认 wukong",
     "开源版默认 `normal` 模式只需要用户 token 和 AppKey",
