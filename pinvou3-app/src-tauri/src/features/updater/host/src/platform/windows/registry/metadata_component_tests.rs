@@ -234,6 +234,19 @@ fn catalog_other_product_damage_is_isolated(seed: &Seed, host: &HostRegistration
     write(&key, "Head", b"damaged-shared-head").unwrap();
     product_catalog::check(seed, host, Some(&tx))
         .expect("ordinary reads use the protected product-local history");
+    let mut visited = 0;
+    product_catalog::visit_members_in(seed, host, &tx, |event, actual| {
+        assert!(event.matches(seed, host));
+        assert_eq!(actual.profile_id, host.profile_id);
+        visited += 1;
+        Ok(())
+    })
+    .expect("visit only authenticated members of this product");
+    assert_eq!(visited, 1);
+    assert!(matches!(
+        product_catalog::visit_members_in(seed, host, &tx, |_, _| Err(Error::Unavailable)),
+        Err(Error::Unavailable)
+    ));
 
     let products = open(key.0, "products", true, Some(&tx)).unwrap().unwrap();
     let product = open(
@@ -263,6 +276,15 @@ fn catalog_other_product_damage_is_isolated(seed: &Seed, host: &HostRegistration
         product_catalog::check(seed, host, Some(&tx)).is_err(),
         "the current product's missing member must still be refused"
     );
+    let mut called = false;
+    assert!(
+        product_catalog::visit_members_in(seed, host, &tx, |_, _| {
+            called = true;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!called, "a member with missing evidence is never delivered");
 }
 
 #[allow(unsafe_code)]

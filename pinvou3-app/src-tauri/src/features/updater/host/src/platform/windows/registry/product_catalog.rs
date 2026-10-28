@@ -311,7 +311,7 @@ fn check_index(index: &Key, event: &Event, raw: &[u8], tx: Option<&Handle>) -> R
 
 /// Check each registered profile's actual protected initial and current
 /// records. Never construct another profile's Seed from this service's Seed.
-fn check_profile(seed: &Seed, event: &Event, tx: Option<&Handle>) -> Result<()> {
+fn check_profile(seed: &Seed, event: &Event, tx: Option<&Handle>) -> Result<HostRegistration> {
     let profile_path = format!(
         "Software\\Pinvou\\{}\\{}\\private",
         seed.updater_leaf(),
@@ -366,7 +366,7 @@ fn check_profile(seed: &Seed, event: &Event, tx: Option<&Handle>) -> Result<()> 
     if tx.is_none() && read(&private, "Head")? != head_raw {
         return Err(Error::ScopeConflict);
     }
-    Ok(())
+    Ok(head)
 }
 
 fn validate(key: &Key, seed: &Seed, tx: Option<&Handle>, head_raw: &[u8]) -> Result<Event> {
@@ -645,6 +645,33 @@ pub(super) fn stage(seed: &Seed, host: &HostRegistration, tx: &Handle) -> Result
     Ok(())
 }
 pub(super) fn check(seed: &Seed, host: &HostRegistration, tx: Option<&Handle>) -> Result<()> {
+    match tx {
+        Some(tx) => visit_members_in(seed, host, tx, |_, _| Ok(())),
+        None => visit_members(seed, host, None, |_, _| Ok(())),
+    }
+}
+
+/// Visit only members of the requesting product, in the caller's transaction.
+/// Visits are provisional until this function succeeds; any changes made by the
+/// callback must be staged in `tx`, and the caller must abort it on any error.
+/// Each provisional record has its protected enrollment identity, original
+/// Root bytes and initial/current history checked. It does not validate every
+/// host field, service readiness, metadata emptiness or upgrade authorization.
+pub(super) fn visit_members_in(
+    seed: &Seed,
+    host: &HostRegistration,
+    tx: &Handle,
+    visit_member: impl FnMut(&Event, &HostRegistration) -> Result<()>,
+) -> Result<()> {
+    visit_members(seed, host, Some(tx), visit_member)
+}
+
+fn visit_members(
+    seed: &Seed,
+    host: &HostRegistration,
+    tx: Option<&Handle>,
+    mut visit_member: impl FnMut(&Event, &HostRegistration) -> Result<()>,
+) -> Result<()> {
     let key = open(HKEY_LOCAL_MACHINE, &path(seed), false, tx)?.ok_or(Error::SetupIncomplete)?;
     let products = entry(&key, "products", tx)?;
     let product_name = json::sha256(seed.product.as_bytes());
@@ -655,13 +682,32 @@ pub(super) fn check(seed: &Seed, host: &HostRegistration, tx: Option<&Handle>) -
     exact(&anchor, false, &[])?;
     let anchor_raw = read(&anchor, "Record")?;
     let head_raw = read(&product, "Head")?;
-    let checked = check_product(&product, &product_name, seed, host, tx, &head_raw);
+    let mut found = false;
+    let checked = visit_product(
+        &product,
+        &product_name,
+        seed,
+        tx,
+        &head_raw,
+        |event, actual| {
+            if event.matches(seed, host) {
+                if found {
+                    return Err(Error::StateCorrupt);
+                }
+                found = true;
+            }
+            visit_member(event, actual)
+        },
+    );
     if tx.is_none()
         && (read(&product, "Head")? != head_raw || read(&anchor, "Record")? != anchor_raw)
     {
         return Err(Error::ScopeConflict);
     }
     checked?;
+    if !found {
+        return Err(Error::StateCorrupt);
+    }
     let expected = json::encode(
         &anchor_for(
             &record(&product)?,
@@ -676,14 +722,16 @@ pub(super) fn check(seed: &Seed, host: &HostRegistration, tx: Option<&Handle>) -
     Ok(())
 }
 
+// Callbacks are provisional until the entire visit and outer anchor check succeed.
+// Callers must keep any changes in the same transaction and never commit on error.
 // Ordinary reads use only this product's protected history and members.
-fn check_product(
+fn visit_product(
     product: &Key,
     product_name: &str,
     seed: &Seed,
-    host: &HostRegistration,
     tx: Option<&Handle>,
     head_raw: &[u8],
+    mut visit_member: impl FnMut(&Event, &HostRegistration) -> Result<()>,
 ) -> Result<()> {
     exact(product, true, &["Record", "Root", "Head"])?;
     exact(
@@ -707,7 +755,6 @@ fn check_product(
     exact(&scopes, true, &[])?;
     let mut previous: Option<(ProductEvent, Vec<u8>)> = None;
     let mut last_global_revision = 0u64;
-    let mut found = false;
     for revision in 1..=head.revision {
         let (local, raw) = product_event_at(&history, revision, tx)?;
         if let Some((old, bytes)) = &previous {
@@ -733,16 +780,11 @@ fn check_product(
         if read(&scope, "Record")? != enrollment {
             return Err(Error::StateCorrupt);
         }
-        check_profile(seed, &event, tx)?;
-        if event.matches(seed, host) {
-            if found {
-                return Err(Error::StateCorrupt);
-            }
-            found = true;
-        }
+        let actual_host = check_profile(seed, &event, tx)?;
+        visit_member(&event, &actual_host)?;
         previous = Some((local, raw));
     }
-    if previous.as_ref().is_none_or(|(_, raw)| raw != head_raw) || !found {
+    if previous.as_ref().is_none_or(|(_, raw)| raw != head_raw) {
         return Err(Error::StateCorrupt);
     }
     let mut history_count = 0u64;
