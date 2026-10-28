@@ -1532,14 +1532,26 @@ test("marks a rejoin after the web socket died, but not a takeover", async (t) =
   assert.equal(takeover.web_rejoining, false);
   assert.notEqual(takeover.lease_id, rejoin.lease_id);
 
-  // After the web session dies, a desktop re-registration must see the
-  // consistent no-web state (web_client_connected:false AND
-  // web_rejoining:false) — the rejoin flag describes the incumbent web
-  // session and dies with it; a stale true here would read as phantom
-  // lease state to preserve.
+  // One more death-and-rejoin cycle: the flag must be recomputed to true
+  // again (the takeover reset it, the fresh rejoin sets it back).
   const disconnectSecond = nextMessage(desktop.ws, "web_client_disconnected");
   closeSocket(second.ws);
   await disconnectSecond;
+  const reRejoinNotice = nextMessage(desktop.ws, "web_client_connected");
+  const third = await joinWeb(endpointId, accessToken);
+  const reRejoin = await reRejoinNotice;
+  assert.equal(reRejoin.web_rejoining, true);
+
+  // After a REJOIN (not a takeover) dies, a desktop re-registration must
+  // see the consistent no-web state (web_client_connected:false AND
+  // web_rejoining:false) — the rejoin flag describes the incumbent web
+  // session and dies with it; a stale true here would read as phantom
+  // lease state to preserve. This is exactly the sequence the takeover
+  // tail above cannot catch: only a death right after a rejoin leaves the
+  // stale true behind without the close-path reset.
+  const disconnectThird = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(third.ws);
+  await disconnectThird;
   closeSocket(desktop.ws);
   const reregistered = await registerDesktop(endpointId, accessToken, desktopSecret);
   t.after(() => closeSocket(reregistered.ws));
