@@ -170,6 +170,23 @@ def _extract_readme_claims_read_targets(claims_test):
     return sorted(set(re.findall(r'file: "([^"]+)"', claims_test)))
 
 
+def _extract_install_contract_script_reads(contract_test):
+    """从 connector_online_install_contract.test.js 源码派生 scripts/ 读取目标。
+
+    `read("scripts", "x.sh")` 单段与 `read("scripts", "a", "b.js")` 多段
+    字面量各成一个 pinvou3-app/scripts/ 读取目标。未来新增 scripts 读取
+    自动纳入路由锁,不会 fail-open。
+    """
+    single = re.findall(r'read\("scripts", "([^"]+)"\)', contract_test)
+    nested = [
+        f"{head}/{tail}"
+        for head, tail in re.findall(
+            r'read\("scripts", "([^"]+)", "([^"]+)"\)', contract_test
+        )
+    ]
+    return sorted(set(single + nested))
+
+
 def _frontend_filter_entries(workflow_text):
     """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
     changes = _changes_block(workflow_text)
@@ -871,6 +888,38 @@ class CiGatePolicyTests(unittest.TestCase):
                 _is_covered_by_trigger(target, frontend_paths),
                 f"readme claims 测试读取的 {target} 未被 frontend filter 覆盖,"
                 "README-only 改动会静默跳过该 node 门禁",
+            )
+
+    def test_install_contract_script_reads_routed(self):
+        # connector_online_install_contract.test.js 读取 pinvou3-app/scripts/
+        # 下的 smoke 脚本与 tauri/build.js 做 floor/HTTPS 钉扎——scripts-only
+        # PR 若不在 frontend filter 中,frontend-test 被静默跳过,smoke floor
+        # 漂移在该 node 门禁不可见(与本 PR 新增 dingtalk-smoke.sh 同批引入,
+        # 路由缺口系 round-6 review 实证)。从测试源码派生全部 scripts/ 读取
+        # 目标逐一断言 frontend filter 覆盖;新增读取而未路由会在这里失败
+        #(本套件在 fast-gate 每个 PR 必跑)。
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
+        contract_test = (
+            ROOT
+            / "pinvou3-app/tests/connector_online_install_contract.test.js"
+        ).read_text(encoding="utf-8")
+
+        targets = _extract_install_contract_script_reads(contract_test)
+
+        self.assertTrue(
+            targets,
+            "未能从 connector_online_install_contract.test.js 解析出 scripts/"
+            " 读取目标(read(\"scripts\", …) 形态变更须同步"
+            " _extract_install_contract_script_reads)",
+        )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(
+                    f"pinvou3-app/scripts/{target}", frontend_paths
+                ),
+                f"install contract 测试读取的 pinvou3-app/scripts/{target}"
+                " 未被 frontend filter 覆盖,scripts-only 改动会静默跳过该"
+                " node 门禁",
             )
 
     def test_contract_target_derivation_covers_double_quoted_reads(self):
