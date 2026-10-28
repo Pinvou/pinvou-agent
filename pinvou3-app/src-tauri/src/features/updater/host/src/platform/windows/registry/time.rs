@@ -508,6 +508,45 @@ fn metadata_root_transition_error(error: Error) -> Error {
     }
 }
 
+// Until the product Root owner and all consumers are joined in one protected
+// transaction, an individual member cannot safely advance the product Root.
+fn require_product_root_ready(current: &[String], next: &[String]) -> Result<()> {
+    if next != current {
+        return Err(Error::SourceUnavailable);
+    }
+    Ok(())
+}
+
+fn require_genesis_roots(roots: &[String]) -> Result<()> {
+    if !roots.is_empty() {
+        return Err(Error::SourceUnavailable);
+    }
+    Ok(())
+}
+
+// The current product Head is genesis-only. An older member may already have
+// advanced independently, so a local genesis alone does not prove safety.
+// The caller holds the product guard and supplies its existing transaction.
+pub(super) fn require_product_members_at_genesis_in(
+    seed: &Seed,
+    host: &HostRegistration,
+    tx: &Handle,
+) -> Result<()> {
+    super::product_catalog::visit_members_in(seed, host, tx, |event, member| {
+        let path = format!(
+            "Software\\Pinvou\\{}\\{}\\private",
+            seed.updater_leaf(),
+            event.profile_id
+        );
+        let private =
+            open(HKEY_LOCAL_MACHINE, &path, false, Some(tx))?.ok_or(Error::SetupIncomplete)?;
+        require_genesis_roots(&state_in(&private, member, Some(tx))?.state.roots)
+    })
+    // Catalog and other members are not this profile's time Policy. Their
+    // damage must not trigger the local policy-fault publisher.
+    .map_err(metadata_root_transition_error)
+}
+
 /// `event` and `member` are authenticated by the same product visitor.
 /// A missing or invalid policy/state refuses rather than contributing empty data.
 fn check_member_denies_in(
@@ -623,6 +662,7 @@ impl LiveTimeReadSet<'_> {
         if actual.digest()? != self.host_digest {
             return Err(Error::ScopeConflict);
         }
+        require_product_members_at_genesis_in(seed, &actual, self.transaction)?;
         let observed = state_in(self.private, &actual, Some(self.transaction))?;
         if observed.raw != self.snapshot.raw
             || observed.original_root != self.snapshot.original_root
@@ -641,9 +681,11 @@ impl LiveTimeReadSet<'_> {
 /// initialize missing state, repair policy or remove the recovery barrier.
 pub(super) fn current_in<'tx>(
     private: &'tx Key,
+    seed: &Seed,
     actual: &HostRegistration,
     transaction: &'tx Handle,
 ) -> Result<LiveTimeReadSet<'tx>> {
+    require_product_members_at_genesis_in(seed, actual, transaction)?;
     let snapshot = state_in(private, actual, Some(transaction))?;
     let time =
         open(private.0, NAMESPACE, false, Some(transaction))?.ok_or(Error::SetupIncomplete)?;
@@ -704,7 +746,7 @@ impl Store {
         if current.state.status != Status::CleanupPending {
             return Err(Error::ScopeConflict);
         }
-        let source = current_in(&private, &actual, &tx)?;
+        let source = current_in(&private, seed, &actual, &tx)?;
         let initial = super::super::live_time::sample_live_time(host, &source)?;
         // The full real census is repeated after initial sampling. There is no
         // nonzero cleanup fallback. Any registered producer forbids this profile.
@@ -909,7 +951,7 @@ impl Store {
             return Ok(crate::TrustedTimeState::IntegrityFault);
         }
         let _floor = budgets::floor_in(&private, &actual, Some(&transaction))?;
-        let source = current_in(&private, &actual, &transaction)?;
+        let source = current_in(&private, seed, &actual, &transaction)?;
         let state = source.state();
         let incarnation = Incarnation::from_host(&actual)?;
         if state.status == Status::Unknown || state.incarnation.as_ref() != Some(&incarnation) {
@@ -984,9 +1026,10 @@ impl Store {
         let before = self.read(seed)?.ok_or(Error::SetupIncomplete)?;
         host.authenticate_running(&before)?;
         let _guard = BootstrapGuard::acquire(seed, false)?;
-        // Only state changes that can affect another member's Root validation
-        // require the shared product lock. Ordinary time refresh stays local.
-        let _product_guard = if next.roots != expected.state.roots
+        // An accepted time observation also needs the product census before
+        // it can be published, even if its local Root has not changed.
+        let _product_guard = if next.status == Status::CleanupPending
+            || next.roots != expected.state.roots
             || next.denied_key_ids != expected.state.denied_key_ids
             || next.policy_fault != expected.state.policy_fault
         {
@@ -1014,6 +1057,10 @@ impl Store {
         if current.raw != expected.raw || current.original_root != expected.original_root {
             return Err(Error::ScopeConflict);
         }
+        require_product_root_ready(&current.state.roots, &next.roots)?;
+        if next.status == Status::CleanupPending {
+            require_product_members_at_genesis_in(seed, &actual, &transaction)?;
+        }
         // Only the positively-observed native fault publisher and the fixed
         // zero-custody completion path can change incident state.
         if next.policy_fault != current.state.policy_fault {
@@ -1022,6 +1069,9 @@ impl Store {
         current
             .state
             .transition(next, &current.raw, &current.original_root)?;
+        // The temporary guard above currently rejects every Root change.
+        // Retain this census for the eventual product Root implementation;
+        // removing the guard requires reviewing this branch with that design.
         if next.roots != current.state.roots {
             super::product_catalog::visit_members_in(
                 seed,
@@ -1213,6 +1263,28 @@ mod diagnostic_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn advanced_member_cannot_authorize_from_genesis_only_product_head() {
+        assert!(require_genesis_roots(&[]).is_ok());
+        assert_eq!(
+            require_genesis_roots(&["previously accepted successor".into()]),
+            Err(Error::SourceUnavailable)
+        );
+    }
+    #[test]
+    fn temporary_guard_allows_unchanged_roots_but_refuses_any_change() {
+        let roots = vec!["already stored".into()];
+        assert!(require_product_root_ready(&[], &[]).is_ok());
+        assert!(require_product_root_ready(&roots, &roots).is_ok());
+        assert_eq!(
+            require_product_root_ready(&[], &roots),
+            Err(Error::SourceUnavailable)
+        );
+        assert_eq!(
+            require_product_root_ready(&roots, &[]),
+            Err(Error::SourceUnavailable)
+        );
+    }
     #[test]
     fn metadata_damage_is_not_a_time_policy_incident() {
         assert_eq!(

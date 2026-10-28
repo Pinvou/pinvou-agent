@@ -45,13 +45,16 @@ metadata acceptance or trusted time is established by this record.
 Current time, deny information and Root transitions must be integrated before
 any accepting writer is exposed.
 
-The Windows time publisher may advance its protected Root only after it proves
-the same profile's complete metadata namespace is exactly the original empty
-layout in its held registry transaction. Missing, damaged or unexpected state
-refuses that Root transition; no-Root-change time updates are unaffected. This
-is an initial-state guard, not active metadata acceptance. Before introducing an
-active metadata writer, Root publication must instead authenticate the complete
-active set and atomically coordinate both owners under the same transaction.
-The protocol's Root high-water is product-wide; this per-profile guard does not
-establish a product-wide census. A production writer must establish that wider
-ownership and fail closed whenever it cannot prove the complete set.
+Until a shared Root history and its consumers are integrated, the Windows time
+publisher refuses Root changes. Before publishing a time observation or issuing a
+live time read set, it checks every protected product member in the product lock
+and the same registry transaction. If any member has an already-advanced Root,
+the source is unavailable; its state is preserved for future recovery. Ordinary
+time observations remain possible when every member is at the original Root.
+This temporary restriction does not implement Root rotation or recovery. The
+product-wide history, authenticated catch-up, metadata census and consumers must
+be integrated together before the restriction can be removed.
+The census reads the complete member catalog and member time state while the
+product lock is held, including on live read-set recheck. Its duration and
+resource use with many members or long histories have not been measured. Lock
+contention can return Busy and requires an explicit retry.

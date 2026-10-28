@@ -165,7 +165,7 @@ pub(crate) fn run_isolated() {
         .verify_initial_metadata(&seed, &reopened)
         .expect("recheck original initial intent");
     root_transition_requires_exact_empty_layout(&store, &seed, &reopened);
-    catalog_damage_refuses_profile_read(&store, &seed);
+    catalog_damage_refuses_profile_read(&store, &seed, &reopened);
     catalog_other_product_damage_is_isolated(&seed, &reopened);
     assert_eq!(
         store.commit(&seed, None, &record, Some(&input)),
@@ -307,7 +307,8 @@ fn catalog_missing_never_adopts_existing_profile(seed: &Seed, host: &HostRegistr
 }
 
 #[allow(unsafe_code)]
-fn catalog_damage_refuses_profile_read(store: &Store, seed: &Seed) {
+fn catalog_damage_refuses_profile_read(store: &Store, seed: &Seed, host: &HostRegistration) {
+    let _guard = product_catalog::ProductGuard::acquire(seed).unwrap();
     let tx = Handle::owned(unsafe {
         CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
     })
@@ -332,6 +333,10 @@ fn catalog_damage_refuses_profile_read(store: &Store, seed: &Seed) {
     let original = read(&product, "Head").unwrap();
     write(&product, "Head", b"damaged").unwrap();
     assert!(store.read_in(seed, Some(&tx)).is_err());
+    assert_eq!(
+        super::time::require_product_members_at_genesis_in(seed, host, &tx),
+        Err(Error::RepairRequired)
+    );
     write(&product, "Head", &original).unwrap();
     assert!(store.read_in(seed, Some(&tx)).unwrap().is_some());
     let anchors = open(key.0, "anchors", true, Some(&tx)).unwrap().unwrap();
@@ -373,11 +378,25 @@ fn root_transition_requires_exact_empty_layout(
     seed: &Seed,
     host: &HostRegistration,
 ) {
+    let _guard = product_catalog::ProductGuard::acquire(seed).unwrap();
     let tx = Handle::owned(unsafe {
         CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
     })
     .unwrap();
     let private = store.key(true, Some(&tx)).unwrap().unwrap();
+    super::time::require_product_members_at_genesis_in(seed, host, &tx)
+        .expect("complete product member census accepts intact genesis");
+    let time = open(private.0, "trusted-time-v1", true, Some(&tx))
+        .unwrap()
+        .unwrap();
+    let time_head = read(&time, "Head").unwrap();
+    write(&time, "Head", b"damaged").unwrap();
+    assert_eq!(
+        super::time::require_product_members_at_genesis_in(seed, host, &tx),
+        Err(Error::RepairRequired)
+    );
+    write(&time, "Head", &time_head).unwrap();
+    super::time::require_product_members_at_genesis_in(seed, host, &tx).unwrap();
     super::metadata::require_empty_for_root_transition_in(&private, seed, host, &tx)
         .expect("original empty layout permits Root transition");
     let check_members = || {

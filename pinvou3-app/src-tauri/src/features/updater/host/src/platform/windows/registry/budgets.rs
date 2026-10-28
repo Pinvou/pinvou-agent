@@ -776,7 +776,7 @@ impl Store {
         let old = read_window(&key, &head, id, Some(tx))?;
         // The time source is constructed here from the exact protected native
         // key and original transaction, never supplied by this method's caller.
-        let source = match time::current_in(private, actual, tx) {
+        let source = match time::current_in(private, &host.context.seed, actual, tx) {
             Ok(s) => Some(s),
             Err(
                 Error::PrerequisiteUnavailable
