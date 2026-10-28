@@ -890,7 +890,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn web_prompt_references_are_capped_deterministically() {
         // 129 条引用超出上限:确定性(可缓存)形状拒绝,消息不回显路径。
         let many: Vec<String> = (0..129).map(|index| format!("file-{index}.md")).collect();
