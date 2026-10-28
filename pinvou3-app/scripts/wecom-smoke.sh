@@ -8,6 +8,8 @@
 # 退出码:有硬性检查(版本/连接)失败则非 0,可挂 CI(但需先扫码授权,故默认手动跑);
 # 全部域探测被跳过(瞬态首调)时 exit 3 —— 「没验证到」不等于「验证通过」。
 set -u
+# set -u 下 HOME 未设置会直接炸成 unbound variable;这里给可行动的退出码 2。
+if [ -z "${HOME:-}" ]; then echo "HOME 未设置,无法定位 wecom-cli"; exit 2; fi
 
 pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
@@ -54,7 +56,7 @@ MIN_WECOM="1.3.4"  # 与 wecom.rs WECOM_MIN_VERSION 一致;connector_online_inst
 echo "[1] --version runs and is >= ${MIN_WECOM} (matches WECOM_MIN_VERSION in wecom.rs)"
 # 只认点分版本号(比 wecom.rs parse_wecom_version 更严:裸数字串如构建日期会被
 # 逐段比较误放行);不足三段补 0(两段 `2.0` → 2.0.0)。不用 sort -V。
-VER="$(wecom_run --version 2>&1 || true)"
+VER="$(wecom_run --version 2>&1)"; v_rc=$?
 TRI="$(printf '%s\n' "$VER" | grep -oE '[0-9]+(\.[0-9]+)+' | head -1 | awk -F. '{printf "%d.%d.%d", $1, $2+0, $3+0}')"
 # 逐段数值比较(与 dingtalk-smoke.sh 同算法;加权 $1*10000+... 会把 1.2.9999
 # 误判 >= 1.3.4):TRI >= MIN_WECOM 当且仅当两行升序排序后的首行就是 MIN_WECOM。
@@ -67,17 +69,26 @@ if [ -n "$TRI" ]; then
     no "version below ${MIN_WECOM} (below the minimum accepted version): $TRI"
   fi
 else
-  no "--version 失败或无法解析: $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+  # 超时(124)与「跑不动/解析不了」的处置不同(与 dingtalk-smoke.sh 同口径)。
+  if [ "$v_rc" -eq 124 ]; then
+    no "--version 探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示): $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+  else
+    no "--version 失败或无法解析: $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+  fi
 fi
 
 echo "[2] 连接状态(auth show --status 输出 authorized = 已授权)"
 # 与 wecom.rs status_is_authorized 同口径:整行、大小写不敏感;保留 stderr、
 # 剥 \r(Windows npm shim 的 CRLF 输出会让大小写敏感的 grep -qx 误报未连接)。
-AUTH="$(wecom_run auth show --status 2>&1 || true)"
+AUTH="$(wecom_run auth show --status 2>&1)"; a_rc=$?
 if echo "$AUTH" | tr -d '\r' | grep -xiq 'authorized'; then
   ok "已连接(auth show --status 返回 authorized)"
 else
-  no "未连接/未授权(先扫码): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
+  if [ "$a_rc" -eq 124 ]; then
+    no "auth 探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
+  else
+    no "未连接/未授权(先扫码): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
+  fi
 fi
 
 echo "[3] 各域授权探测(只读;授权域应响应,未授权域报权限错)"
