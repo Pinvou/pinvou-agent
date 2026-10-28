@@ -91,12 +91,15 @@ const wecomMin = wecom.match(
   /WECOM_MIN_VERSION:\s*\(u64, u64, u64\)\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)/,
 );
 assert.ok(wecomMin, "wecom.rs must declare WECOM_MIN_VERSION as a tuple");
-const wecomMinNumeric =
-  Number(wecomMin[1]) * 10000 + Number(wecomMin[2]) * 100 + Number(wecomMin[3]);
 assert.match(
   wecomSmoke,
-  new RegExp(`>= ${wecomMinNumeric}\\)`),
+  new RegExp(`MIN_WECOM="${wecomMin[1]}\\.${wecomMin[2]}\\.${wecomMin[3]}"`),
   "wecom-smoke.sh version floor must stay in lockstep with WECOM_MIN_VERSION",
+);
+assert.match(
+  wecomSmoke,
+  /grep -qxF "\$MIN_WECOM"/,
+  "wecom-smoke.sh must compare against the pinned MIN_WECOM floor, not a drift copy",
 );
 // The gate itself must also equal the wecom-cli version pinned in the five
 // platform locks (all five are forced identical by the deepEqual above):
