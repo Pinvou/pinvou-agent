@@ -12,6 +12,13 @@ use pinvou_upgrade_codec::{Document, InputKind, decode_canonical_envelope};
 use pinvou_upgrade_verifier::{SuppliedTimeObservation, verify_time_response_source};
 pub(crate) use policy_fault::PolicyFault;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+fn fingerprint_root(hasher: &mut Sha256, index: usize, bytes: &[u8]) {
+    hasher.update((index as u64).to_be_bytes());
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -254,6 +261,23 @@ impl Evidence {
         original: &[u8],
         roots: &[String],
     ) -> Result<()> {
+        self.verify_source(binding, original, roots.len(), |index| {
+            Ok(std::borrow::Cow::Borrowed(roots[index].as_bytes()))
+        })
+    }
+
+    /// Verify one historical evidence batch using original Root objects read
+    /// on demand. The caller owns source identity, transaction/snapshot
+    /// stability and its exact count; this function grants no storage trust.
+    /// The overlapping Root bytes are compared across the two passes.
+    /// Source failures remain failures, never an end-of-history marker.
+    pub(crate) fn verify_source<'a>(
+        &self,
+        binding: &Binding,
+        original: &[u8],
+        count: usize,
+        mut read: impl FnMut(usize) -> Result<std::borrow::Cow<'a, [u8]>>,
+    ) -> Result<()> {
         self.incarnation.validate()?;
         let policy = Policy::parse(self.policy.as_bytes(), binding)?;
         check_denied(&self.denied_key_ids)?;
@@ -279,51 +303,87 @@ impl Evidence {
         {
             return Err(Error::StateCorrupt);
         }
-        if self.base_root_count > roots.len() {
+        if self.base_root_count > count {
             return Err(Error::StateCorrupt);
         }
+        let observation = SuppliedTimeObservation {
+            sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
+            received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
+            max_round_trip_millis: policy.max_round_trip_ms,
+            max_uncertainty_millis: policy.max_uncertainty_ms,
+            trusted_time_floor_millis: self.floor_before,
+        };
+        // Preserve source I/O errors separately from verifier failures. Neither
+        // missing data nor an unavailable source may become an empty chain.
+        let mut source_error = None;
+        let first_checked = self.base_root_count.saturating_sub(1);
+        let mut first_fingerprint = Sha256::new();
         let checked = verify_time_response_source(
             self.response.as_bytes(),
             original,
-            roots.len(),
-            |index| Ok(std::borrow::Cow::Borrowed(roots[index].as_bytes())),
-            &request,
-            SuppliedTimeObservation {
-                sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
-                received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
-                max_round_trip_millis: policy.max_round_trip_ms,
-                max_uncertainty_millis: policy.max_uncertainty_ms,
-                trusted_time_floor_millis: self.floor_before,
+            count,
+            |index| {
+                read(index)
+                    .map(|bytes| {
+                        if index >= first_checked {
+                            fingerprint_root(&mut first_fingerprint, index, &bytes);
+                        }
+                        bytes
+                    })
+                    .map_err(|error| {
+                        source_error = Some(error);
+                        pinvou_upgrade_verifier::TimeVerificationError::InvalidObservation
+                    })
             },
+            &request,
+            observation,
             &[],
-        )
-        .map_err(|_| Error::StateCorrupt)?;
+        );
+        if let Some(error) = source_error {
+            return Err(error);
+        }
+        let checked = checked.map_err(|_| Error::StateCorrupt)?;
         // Authenticate retained lineage without retroactively revoking an
         // already protected historical Root. Apply current known deny to the
         // actual protected predecessor + every newly accepted successor and
         // the time signature. transition() binds this predecessor to old state.
+        let mut second_fingerprint = Sha256::new();
         let base = if self.base_root_count == 0 {
-            original
+            std::borrow::Cow::Borrowed(original)
         } else {
-            roots[self.base_root_count - 1].as_bytes()
+            let index = self.base_root_count - 1;
+            let bytes = read(index)?;
+            fingerprint_root(&mut second_fingerprint, index, &bytes);
+            bytes
         };
-        let successors = &roots[self.base_root_count..];
-        verify_time_response_source(
+        let mut source_error = None;
+        let result = verify_time_response_source(
             self.response.as_bytes(),
-            base,
-            successors.len(),
-            |index| Ok(std::borrow::Cow::Borrowed(successors[index].as_bytes())),
-            &request,
-            SuppliedTimeObservation {
-                sent_monotonic_millis: sent.suspend_inclusive().floor_millis()?,
-                received_monotonic_millis: received.suspend_inclusive().ceil_millis()?,
-                max_round_trip_millis: policy.max_round_trip_ms,
-                max_uncertainty_millis: policy.max_uncertainty_ms,
-                trusted_time_floor_millis: self.floor_before,
+            &base,
+            count - self.base_root_count,
+            |index| {
+                let index = self.base_root_count + index;
+                read(index)
+                    .map(|bytes| {
+                        fingerprint_root(&mut second_fingerprint, index, &bytes);
+                        bytes
+                    })
+                    .map_err(|error| {
+                        source_error = Some(error);
+                        pinvou_upgrade_verifier::TimeVerificationError::InvalidObservation
+                    })
             },
+            &request,
+            observation,
             &self.denied_key_ids,
-        )
-        .map_err(|_| Error::StateCorrupt)?;
+        );
+        if let Some(error) = source_error {
+            return Err(error);
+        }
+        result.map_err(|_| Error::StateCorrupt)?;
+        if first_fingerprint.finalize() != second_fingerprint.finalize() {
+            return Err(Error::StateCorrupt);
+        }
         if checked.earliest_millis() != self.earliest || checked.latest_millis() != self.latest {
             return Err(Error::StateCorrupt);
         }
@@ -822,6 +882,79 @@ mod tests {
         assert!(
             initial
                 .anchor_for_live(&raw, state.incarnation.as_ref().unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn signed_evidence_replay_reads_one_root_at_a_time_and_preserves_source_errors() {
+        let (state, _, original) = anchored();
+        let evidence = state.evidence.as_ref().unwrap();
+        let mut calls = Vec::new();
+        evidence
+            .verify_source(&state.binding, &original, state.roots.len(), |index| {
+                calls.push(index);
+                Ok(std::borrow::Cow::Owned(
+                    state.roots[index].as_bytes().to_vec(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(calls, vec![0, 0]);
+        let mut calls = 0;
+        assert_eq!(
+            evidence.verify_source(&state.binding, &original, state.roots.len(), |index| {
+                calls += 1;
+                if calls == 2 {
+                    Err(Error::Unavailable)
+                } else {
+                    Ok(std::borrow::Cow::Borrowed(state.roots[index].as_bytes()))
+                }
+            }),
+            Err(Error::Unavailable)
+        );
+        let mut with_base = evidence.clone();
+        with_base.base_root_count = 1;
+        let mut calls = 0;
+        assert_eq!(
+            with_base.verify_source(&state.binding, &original, state.roots.len(), |index| {
+                calls += 1;
+                if calls == 2 {
+                    Err(Error::Unavailable)
+                } else {
+                    Ok(std::borrow::Cow::Borrowed(state.roots[index].as_bytes()))
+                }
+            }),
+            Err(Error::Unavailable)
+        );
+        let mut a = Sha256::new();
+        let mut b = Sha256::new();
+        fingerprint_root(&mut a, 0, b"ab");
+        fingerprint_root(&mut a, 1, b"c");
+        fingerprint_root(&mut b, 0, b"a");
+        fingerprint_root(&mut b, 1, b"bc");
+        assert_ne!(a.finalize(), b.finalize());
+        assert_eq!(
+            evidence.verify_source(&state.binding, &original, state.roots.len(), |_| Err(
+                Error::Unavailable
+            )),
+            Err(Error::Unavailable)
+        );
+        assert_eq!(
+            evidence.verify_source(&state.binding, &original, state.roots.len(), |_| Err(
+                Error::StateCorrupt
+            )),
+            Err(Error::StateCorrupt)
+        );
+        assert!(
+            evidence
+                .verify_source(&state.binding, &original, state.roots.len(), |_| {
+                    Ok(std::borrow::Cow::Owned(b"{}".to_vec()))
+                })
+                .is_err()
+        );
+        assert!(
+            evidence
+                .verify_source(&state.binding, &original, 0, |_| unreachable!())
                 .is_err()
         );
     }
