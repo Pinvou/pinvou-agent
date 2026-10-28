@@ -757,6 +757,33 @@ test("desktop revoke invalidates the persistent link", async (t) => {
   await waitForClose(staleDesktop);
 });
 
+test("replaces a live desktop and retires its socket with 4001", async (t) => {
+  const endpointId = `endpoint_replace_${Date.now()}`;
+  const accessToken = "access-token-replace-000000000000001";
+  const desktopSecret = "desktop-secret-replace-0000000000001";
+  const first = await registerDesktop(endpointId, accessToken, desktopSecret);
+  // Attach both listeners before the second registration: the notification
+  // and the close land while it is being processed.
+  const retired = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("retired desktop was not closed")), 3000);
+    first.ws.once("close", (code) => { clearTimeout(timer); resolve(code); });
+  });
+  const replaced = nextMessage(first.ws, "desktop_endpoint_replaced");
+  const second = await registerDesktop(endpointId, accessToken, desktopSecret);
+  t.after(() => { closeSocket(first.ws); closeSocket(second.ws); });
+  // The live predecessor is notified and closed with the replacement code,
+  // and ownership moves: a forwarded Web request reaches the replacement,
+  // never the retired socket.
+  assert.equal((await replaced).endpoint_id, endpointId);
+  assert.equal(await retired, 4001);
+  const web = await joinWeb(endpointId, accessToken);
+  const forwarded = nextMessage(second.ws, "rpc_request");
+  web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", payload: { n: 1 } }));
+  assert.equal((await forwarded).endpoint_id, endpointId);
+  await expectNoMessage(first.ws, "rpc_request");
+  closeSocket(web.ws);
+});
+
 test("revoke tombstone survives Relay restart and permits a fresh endpoint id", async () => {
   const statePath = join(testRoot, `restart-revoke-${Date.now()}.json`);
   const endpointId = `endpoint_restart_revoke_${Date.now()}`;
@@ -1046,9 +1073,30 @@ test("allows native and approved browser origins while rejecting other browser o
     sockets.push(await openSocket(isolated.wsUrl, { origin: "https://trusted.example" }));
     sockets.push(await openSocket(isolated.wsUrl, { origin: isolated.httpUrl }));
     sockets.push(await openSocket(isolated.wsUrl));
+    // A comma-joined Origin (the runtime joins duplicate header lines) is
+    // refused outright rather than parsed.
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      origin: "https://trusted.example,https://evil.example",
+    }), 403);
   } finally {
     sockets.forEach(closeSocket);
     await stopRelay(isolated.child);
+  }
+});
+
+test("rejects malformed browser origins even when the host matches", async () => {
+  // The same-host fallback must not rescue a structurally invalid Origin:
+  // the literal "null" origin (sandboxed documents) and a non-http(s) scheme
+  // are refused before any host comparison, so an ftp URL spelling its own
+  // host cannot ride the fallback into an upgrade.
+  const sockets = [];
+  try {
+    sockets.push(await openSocket(wsUrl, { origin: httpUrl }));
+    assert.equal(await rejectedUpgrade(wsUrl, { origin: "null" }), 403);
+    assert.equal(await rejectedUpgrade(wsUrl, { origin: `ftp://127.0.0.1:${port}` }), 403);
+    assert.equal(await rejectedUpgrade(wsUrl, { origin: "file:///etc/hosts" }), 403);
+  } finally {
+    sockets.forEach(closeSocket);
   }
 });
 
