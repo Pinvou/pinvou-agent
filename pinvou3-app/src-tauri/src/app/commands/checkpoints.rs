@@ -206,6 +206,18 @@ async fn reconcile_pending_rewind(
         checkpoints::clear_pending_rewind(ledger);
         return true;
     }
+    // r35 MAJOR-2：pre_restore_id 必须真实存在于索引——否则 planted pending
+    // 的伪造 id 保证 committed=false → 重放臂无备份破坏性恢复 + 截断。
+    // 真实崩溃暂记的 PreRestore 在 prepare_restore 注册后才写入暂记，此刻
+    // 必然仍在索引中；被 LRU 淘汰则**应阻断**而非重放（模块既有的
+    // fail-closed 方向）。 NotFound 与真实 IO 错误同款区分。
+    if checkpoints::find_checkpoint(ledger, &pending.pre_restore_id).is_err() {
+        log::warn!(
+            "[pinvou3][checkpoints] pending rewind pre_restore_id {} not found in index, blocking sid={session_id}",
+            pending.pre_restore_id
+        );
+        return false;
+    }
     // r23 M1：重放臂破坏性且调用点（快照前奏）不持预约、无任何栅栏——
     // live-abort（ACP 复查失败 / apply / join 失败）留下的 pending 若无门
     // 重放，等于让用户看着失败掉的回退在下一条消息发送时静默完成。
@@ -898,6 +910,12 @@ pub async fn rewind_to_turn(
     // 执行根互斥：check-and-set 置位后同根会话的新 turn 预约（含 scheduled）
     // 全部被拒；另一个回退已在飞时如实拒绝（胜者优先，败者不持 Guard）。
     let _root_guard = pool.begin_execution_root_rewind(&execution)?;
+    // r35 MAJOR-1：将引擎驱逐提前到 restore 之前——否则引擎在 restore/截断
+    // 窗口内的空闲 persist（MCP 启动失败注释等 idle append）会把回退前
+    // transcript 整体写回磁盘（对话复活、工作区仍回退 = 不可接受分叉）。
+    // 驱逐后下次 get_or_spawn 未命中 → lazy respawn → 从截断后的磁盘注入。
+    // 如果 restore/截断失败，引擎已不存在但下次使用时会从磁盘重建（安全）。
+    pool.evict(&session_id).await;
     // 跨会话忙碌门：恢复单位是执行根，同根其它会话在跑时回退会撤销它正在写的
     // 文件，如实拒绝并告知哪个会话在忙。全量枚举（含 scheduled）是阻塞 IO，
     // 移出 async worker。
@@ -1122,10 +1140,7 @@ pub async fn rewind_to_turn(
     {
         eprintln!("[checkpoints] 作废被截分支检查点任务异常（回退已生效，仅清理未做）: {error}");
     }
-    // 3) 回收 engine 实例（复用删除会话的回收路径：cancel + Shutdown + abort
-    //    forwarder）；下次发送时 get_or_spawn 未命中 → lazy respawn → 用截断后
-    //    的磁盘历史 SyncSession 注水（engine_pool.rs 既有链路，设计 §4.2）。
-    pool.evict(&session_id).await;
+    // 引擎已在 restore 前驱逐（r35 MAJOR-1），此处无需重复驱逐。
     drop(reservation);
     Ok(RewindToTurnResult {
         restored_checkpoint,
@@ -3145,6 +3160,65 @@ fn ",
         );
         assert!(!snapshot.is_empty(), "本轮快照登记");
         let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// r35 MAJOR-2 行为 pin：planted pending（伪造 pre_restore_id）必须被
+    /// fail-closed 拒绝——不得触发重放臂的破坏性恢复 + 截断，工作区不动。
+    #[tokio::test]
+    async fn reconcile_rejects_planted_pre_restore_id() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("planted-pending");
+        std::fs::write(execution.join("code.txt"), "v1\n").expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await
+        .expect("turn 1");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed");
+        // 写入伪造 pre_restore_id 的暂记——checkpoint_id 指向真实索引条目
+        // （第一轮快照），但 pre_restore_id "c0-fake" 不在索引中。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        checkpoints::write_pending_rewind(&ledger, &first, 0, "c0-fake", &revision).unwrap();
+        // 对账：pre_restore_id 不在索引 → fail-closed 阻断（快照跳过），
+        // 工作区不动、暂记不清。
+        let snapshot = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+            ReconcileGates::default(),
+        )
+        .await;
+        assert!(
+            snapshot.is_none(),
+            "planted pending 必须 fail-closed 阻断快照"
+        );
+        assert!(
+            checkpoints::live_pending_rewind(&ledger)
+                .expect("pending read")
+                .is_some(),
+            "planted pending 不得被清除（fail-closed 阻断不清暂记）"
+        );
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).unwrap(),
+            "v1\n",
+            "工作区不得被重放破坏"
+        );
     }
 
     /// r24 M1：keep_turns ≥ 当前总轮数（CLI undo 跨进程收缩、带外编辑后）的
