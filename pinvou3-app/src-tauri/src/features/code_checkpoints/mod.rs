@@ -1400,9 +1400,17 @@ pub fn restore_checkpoint(
         .context("清理快照中的敏感文件条目失败")?;
     git_ok(&repo, &execution_root, &["checkout-index", "-f", "-a"])
         .context("写回 checkpoint 文件失败")?;
-    git_ok(&repo, &execution_root, &["clean", "-fd"]).context("清理快照后新建文件失败")?;
+    git_ok(&repo, &execution_root, RESTORE_CLEAN_ARGS).context("清理快照后新建文件失败")?;
     Ok(undo)
 }
+
+/// 恢复收尾的 clean 参数。`-q` 是正确性而不是美观：clean 默认逐文件打印
+/// 「Removing <path>」，一次恢复删掉几万个普通小文件（工作区准入允许
+/// 20 万条目）时列表会越过平台层 4 MiB 捕获上限，而清理发生在
+/// checkout-index 已经重写工作区**之后**——恢复实际完成却报错回滚收据，
+/// 后续调度还可能把半程终止。静默后该站点对捕获上限免疫；`-fd` 的语义
+/// （含目录、不动 ignored）不变。
+const RESTORE_CLEAN_ARGS: &[&str] = &["clean", "-fd", "-q"];
 
 /// 只操作 refs 的 git 调用（update-ref/gc 不需要 work-tree）。
 /// 与写路径共用陈旧锁清扫重试：被超时 kill 的 git 会留下
@@ -1941,6 +1949,52 @@ mod tests {
             exec.read(".ENV").as_deref(),
             Some("SECRET=after\n"),
             "大写秘密文件必须在 restore 后存活且内容不变"
+        );
+    }
+
+    /// 恢复收尾的 `clean` 必须静默（RESTORE_CLEAN_ARGS 带 -q）：clean 默认
+    /// 逐文件打印「Removing <path>」，大工作区（准入允许 20 万条目；评审
+    /// 实锤 2.7 万个 ~160 字符文件名 ≈ 4.4 MiB 列表）会越过平台层 4 MiB
+    /// 捕获上限，而清理发生在 checkout-index 已重写工作区**之后**——恢复
+    /// 实际完成却报错。-q 让该站点对捕获上限免疫；丢掉 -q 会在这里以非空
+    /// stdout 红灯。（4 MiB 规模的夹具对 CI 太重，这里钉 -q 在场与
+    /// stdout 为空。）
+    #[test]
+    fn restore_clean_runs_quiet_so_the_listing_cannot_hit_the_capture_cap() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("quiet-clean-ledger");
+        let exec = TestDir::new("quiet-clean-exec");
+        exec.write("kept.txt", "v1\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // 快照后新建的普通文件：restore 收尾的 clean 会逐个删除它们。
+        exec.write("new-1.txt", "n\n");
+        exec.write("new-2.txt", "n\n");
+        exec.write("new-3.txt", "n\n");
+
+        let repo = repo_dir(ledger.path());
+        let listing = git_ok(&repo, exec.path(), RESTORE_CLEAN_ARGS).unwrap();
+
+        assert!(
+            listing.is_empty(),
+            "quiet clean must print nothing; a per-file listing here overflows \
+             the 4 MiB capture cap on large workspaces: {listing}"
+        );
+        assert!(
+            exec.read("new-1.txt").is_none(),
+            "untracked post-snapshot files must still be removed"
+        );
+        assert!(
+            exec.read("kept.txt").is_some(),
+            "tracked files must survive the clean"
         );
     }
 
