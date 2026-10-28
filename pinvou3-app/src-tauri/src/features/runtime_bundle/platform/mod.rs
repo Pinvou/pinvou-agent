@@ -200,8 +200,11 @@ pub(crate) use crate::platform::connector_skills::{
 /// skill), upstream anti-injection "安全提示" sections adopted, shared
 /// version-gate text raised to 1.3.4. tmeet skills re-verified against
 /// upstream v1.0.18 (still latest; only registered local modifications
-/// differ). All replayed local normalizations are registered in the four
-/// NOTICE files. Next free slot after 0.33.
+/// differ). All replayed local normalizations are registered in the
+/// NOTICE files (lark/wecom/tmeet keep full sync ledgers; the dws
+/// NOTICE carries a modifications summary plus a git-history pointer
+/// to its pre-trim ledger — see the 2026-10 hygiene trim). Next free
+/// slot after 0.33.
 /// 0.35: model-facing text fixes inside the dws and lark skill trees from
 /// the PR #808 stale-comment sweep (no upstream sync, no code change): dws
 /// oa actionerRules count corrected 10 → 11 across oa.md /
@@ -211,9 +214,10 @@ pub(crate) use crate::platform::connector_skills::{
 /// corrected 五大类 → 六大类, sheet-search-replace.md documents the real
 /// `--find`/`--replacement` emptiness contract, and the five
 /// attendance_report_*.py header/state comments aligned with the code;
-/// lark-sheets-workbook.md shortcut count corrected 14 → 16. All entries
-/// are registered in NOTICE-dingtalk.md and lark-skills/NOTICE.md for the
-/// next upstream sync replay. Next free slot after 0.34.
+/// lark-sheets-workbook.md shortcut count corrected 14 → 16. The lark
+/// entry is registered in lark-skills/NOTICE.md for the next upstream
+/// sync replay; the dws-side replay record stays reachable through the
+/// dws NOTICE's git-history pointer. Next free slot after 0.35.
 /// Skill trees are excluded from the content hash, so the semantic bump is
 /// required for connected users to refresh at startup (otherwise the refresh
 /// waits for the post-first-frame refresh_connector_auth_gates backfill).
