@@ -906,13 +906,16 @@ test("tombstone capacity stays inside what the state limit can hold", async () =
       endpoint_id: "endpoint_clamp_over_capacity_x",
     }));
     const refusal = await nextMessage(over.ws, "error");
-    assert.equal(refusal.code, "revoke_persistence_failed");
+    // Capacity exhaustion gets its own code: it is an expected operational
+    // condition, not a persistence failure, and must stay distinguishable
+    // from a broken disk.
+    assert.equal(refusal.code, "revoked_endpoint_capacity_reached");
     await waitForClose(over.ws);
 
     const persisted = JSON.parse(await readFile(isolated.statePath, "utf8"));
     assert.equal(persisted.revoked_endpoints.length, 8);
-    // The refused endpoint stays registered and usable, like any failed
-    // persistence; only the tombstone is missing.
+    // The refused endpoint stays registered and usable; only the tombstone
+    // is missing.
     const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
     assert.equal(health.endpoint_count, 1);
   } finally {
@@ -1305,8 +1308,9 @@ test("shuts down with exit code 0 on repeated SIGTERM and on SIGINT", async () =
     const isolated = await spawnRelay({});
     const ws = await openSocket(isolated.wsUrl);
     try {
-      // A repeat inside the exit window must be absorbed, not converted into
-      // signal death.
+      // Repeated delivery must still end in exit 0, never in death by
+      // signal: the guard makes shutdown idempotent and the handler stays
+      // registered.
       for (let i = 0; i < repeats; i += 1) isolated.child.kill(signal);
       await waitForExit(isolated.child, 5000);
       assert.equal(isolated.child.exitCode, 0);
@@ -1385,27 +1389,81 @@ test("relay state load failures surface a fixed message without paths", async (t
   }
 });
 
-test("state holding more tombstones than the clamped capacity fails startup", async () => {
-  // The tombstone clamp ties MAX_REVOKED_ENDPOINTS to MAX_RELAY_STATE_BYTES;
-  // a state file accumulated under the configured capacity but above the
-  // clamp must fail startup with the named reason instead of loading.
+test("a state above the clamped capacity loads and refuses only new revocations", async () => {
+  // The tombstone clamp ties MAX_REVOKED_ENDPOINTS to MAX_RELAY_STATE_BYTES.
+  // A state file accumulated above the clamp must still load — the size
+  // limit is the real bound, every loaded tombstone stays enforced, and
+  // refusing to start would brick the relay on a valid file. Only new
+  // revocations are refused, with the capacity code instead of a persistence
+  // failure.
   const statePath = join(testRoot, `clamped-state-${Date.now()}.json`);
   const entries = [];
   for (let i = 0; i < 9; i += 1) {
     entries.push({ endpoint_id: `clamp${i}`, revoked_at: "2026-01-01T00:00:00Z" });
   }
   await writeFile(statePath, JSON.stringify({ version: 1, revoked_endpoints: entries }));
-  const isolated = await spawnRelay(
-    { PINVOU_REMOTE_STATE_PATH: statePath, MAX_RELAY_STATE_BYTES: "2048" },
-    { awaitListening: false },
-  );
+  const isolated = await spawnRelay({
+    PINVOU_REMOTE_STATE_PATH: statePath,
+    MAX_RELAY_STATE_BYTES: "2048",
+    ENDPOINT_CREATE_LIMIT: "100",
+  });
   try {
-    await waitForExit(isolated.child, 10000);
-    assert.notEqual(isolated.child.exitCode, 0);
-    assert.equal(
-      isolated.errors().trim(),
-      "[relay-error] relay_state_load_failed: unsupported or malformed state",
+    assert.match(isolated.output(), /revoked_endpoints=9/u);
+    const desktop = await registerDesktop(
+      "endpoint_clamped_capacity_x",
+      "clamped-token-0000000000000000000x",
+      "clamped-secret-000000000000000000x",
+      isolated.wsUrl,
     );
+    desktop.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: "endpoint_clamped_capacity_x",
+    }));
+    const refusal = await nextMessage(desktop.ws, "error");
+    assert.equal(refusal.code, "revoked_endpoint_capacity_reached");
+    await waitForClose(desktop.ws);
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(persisted.revoked_endpoints.length, 9);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("loads a state larger than today's default capacity and refuses only new revocations", async () => {
+  // The upgrade shape of the same rule: an older relay could legitimately
+  // persist more tombstones than today's derivation allows (65,536 at the
+  // defaults; real tombstones are ~96-213 bytes, the old capacity 100,000).
+  // The relay must start and keep every loaded tombstone enforced.
+  const entries = Array.from({ length: 70_000 }, (_, i) => ({
+    endpoint_id: `tomb_${String(i).padStart(8, "0")}_xxxx`,
+    revoked_at: "2026-01-01T00:00:00.000Z",
+  }));
+  const statePath = join(testRoot, `state-over-capacity-${Date.now()}.json`);
+  await writeFile(statePath, JSON.stringify({ version: 1, revoked_endpoints: entries }));
+  const isolated = await spawnRelay({ PINVOU_REMOTE_STATE_PATH: statePath });
+  try {
+    assert.match(isolated.output(), /revoked_endpoints=70000/u);
+    const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
+    assert.equal(health.endpoint_count, 0);
+    // A new revocation is refused by the write-side capacity with its own
+    // code — not as a persistence failure — and the loaded file is untouched.
+    const desktop = await registerDesktop(
+      "endpoint_over_capacity_xxxx",
+      "capacity-token-000000000000000000x",
+      "capacity-secret-00000000000000000x",
+      isolated.wsUrl,
+    );
+    desktop.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: "endpoint_over_capacity_xxxx",
+    }));
+    const refusal = await nextMessage(desktop.ws, "error");
+    assert.equal(refusal.code, "revoked_endpoint_capacity_reached");
+    await waitForClose(desktop.ws);
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(persisted.revoked_endpoints.length, 70_000);
   } finally {
     await stopRelay(isolated.child);
   }
@@ -1540,11 +1598,39 @@ test("serves 503 instead of crashing when a web asset becomes unreadable", async
     const response = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
     assert.equal(response.status, 503);
     assert.equal(await response.text(), "WebUI build is not available");
+    // HEAD reads too, so its status can never disagree with the GET.
+    const head = await fetch(`${isolated.httpUrl}/pinvou3/remote/`, { method: "HEAD" });
+    assert.equal(head.status, 503);
     const follower = await openSocket(isolated.wsUrl);
     closeSocket(follower);
     assert.equal(isolated.child.exitCode, null);
   } finally {
     await chmod(indexPath, 0o600).catch(() => {});
+    await stopRelay(isolated.child);
+  }
+});
+
+test("serves 503 for the site root when the web build is missing entirely", async () => {
+  const emptyWebDir = join(testRoot, `web-empty-${Date.now()}`);
+  await mkdir(emptyWebDir, { recursive: true });
+  const isolated = await spawnRelay({ PINVOU_REMOTE_WEB_DIR: emptyWebDir });
+  try {
+    // The site entry is the build: a missing index.html is "build is not
+    // available" (503), not an ordinary 404. A missing asset with an
+    // extension stays a plain 404 (a stale reference to a replaced build),
+    // and an extensionless SPA route falls back to the same missing entry.
+    const root = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
+    assert.equal(root.status, 503);
+    assert.equal(await root.text(), "WebUI build is not available");
+    assert.equal(
+      (await fetch(`${isolated.httpUrl}/pinvou3/remote/staleAsset-12345678.js`)).status,
+      404,
+    );
+    assert.equal(
+      (await fetch(`${isolated.httpUrl}/pinvou3/remote/some/route`)).status,
+      503,
+    );
+  } finally {
     await stopRelay(isolated.child);
   }
 });

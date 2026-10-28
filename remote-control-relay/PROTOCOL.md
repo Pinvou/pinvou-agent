@@ -178,7 +178,10 @@ The Web client then receives `endpoint_revoked` and is closed. A later Web join
 fails with `endpoint_not_found`; an old desktop registration fails with
 `endpoint_revoked`. If persistence fails, the Relay sends
 `revoke_persistence_failed`, closes the requester, and leaves the endpoint
-usable rather than acknowledging a revoke it cannot preserve.
+usable rather than acknowledging a revoke it cannot preserve. A revoke that
+hits the tombstone capacity is refused before any write with
+`revoked_endpoint_capacity_reached`; the endpoint stays usable and a larger
+`MAX_RELAY_STATE_BYTES` (which raises the derived capacity) makes room.
 
 The state file contains only schema version, endpoint IDs, and revoke times; it
 does not contain access tokens, desktop secrets, or their hashes. Tombstones are
@@ -218,6 +221,7 @@ connection open.
 | `endpoint_revoked` | Desktop registration for a tombstoned endpoint ID. The same name is also the message type delivered to the Web client on revoke or TTL expiry, with `reason` such as `desktop_offline_ttl_expired`. |
 | `revocation_in_progress` | A second revoke arrived while one is already in progress for the endpoint. |
 | `revoke_persistence_failed` | Persisting the revoke tombstone failed; the requester is closed and the endpoint remains usable. |
+| `revoked_endpoint_capacity_reached` | The tombstone capacity is exhausted (nothing was written); the requester is closed and the endpoint remains usable. |
 | `revoke_failed` | An unexpected error occurred while processing a revoke. |
 
 ## HTTP and operational behavior

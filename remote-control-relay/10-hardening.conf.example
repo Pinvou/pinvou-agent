@@ -15,9 +15,10 @@
 #
 # MAX_REVOKED_ENDPOINTS is clamped to what MAX_RELAY_STATE_BYTES can hold
 # (at most one tombstone per ~256 bytes). A state file holding more
-# tombstones than the clamp is rejected at startup
-# (relay_state_load_failed: unsupported or malformed state), so prune the
-# state file before lowering either limit.
+# tombstones than the clamp loads in full and every tombstone stays
+# enforced; only new revocations are refused
+# (revoked_endpoint_capacity_reached) until the file is pruned or the
+# limits are raised.
 Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
 Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000

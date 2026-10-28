@@ -15,6 +15,8 @@ const PUBLIC_BASE_PATH = normalizeBasePath(
   process.env.PINVOU_REMOTE_PUBLIC_BASE_PATH || "/pinvou3/remote",
 );
 const WEB_ROOT = resolve(process.env.PINVOU_REMOTE_WEB_DIR || resolve(__dirname, "web", "dist"));
+// safeWebPath maps the site root to exactly this path.
+const WEB_INDEX_PATH = resolve(WEB_ROOT, "index.html");
 // A non-numeric value used to reach setInterval as NaN, which Node clamps to
 // a 1 ms tick while printing a warning; bound the input like every other
 // numeric env instead.
@@ -605,10 +607,13 @@ async function loadRelayState() {
   try { state = JSON.parse(contents); } catch (error) {
     throw new Error("relay_state_load_failed: invalid JSON", { cause: error });
   }
+  // The size limit above is the real bound on a persisted file. The
+  // MAX_REVOKED_ENDPOINTS clamp only governs new revocations: an older relay
+  // could legitimately persist more tombstones than today's derivation
+  // allows, and refusing to load them would brick startup on a valid file.
   if (!state || typeof state !== "object" || Array.isArray(state)
     || state.version !== RELAY_STATE_VERSION
-    || !Array.isArray(state.revoked_endpoints)
-    || state.revoked_endpoints.length > MAX_REVOKED_ENDPOINTS) {
+    || !Array.isArray(state.revoked_endpoints)) {
     throw new Error("relay_state_load_failed: unsupported or malformed state");
   }
 
@@ -666,7 +671,12 @@ function persistRevocation(endpointId) {
   const operation = relayStateMutation.then(async () => {
     if (revokedEndpoints.has(endpointId)) return revokedEndpoints.get(endpointId);
     if (revokedEndpoints.size >= MAX_REVOKED_ENDPOINTS) {
-      throw new Error("revoked endpoint capacity reached");
+      // Not a persistence failure: nothing was attempted. The code lets the
+      // caller reply with the distinct capacity rejection instead of the
+      // [relay-error] persistence log.
+      const error = new Error("revoked endpoint capacity reached");
+      error.code = "revoked_endpoint_capacity_reached";
+      throw error;
     }
     const revokedAt = new Date().toISOString();
     const nextState = new Map(revokedEndpoints);
@@ -830,12 +840,14 @@ async function serveWebUi(req, res, routePath) {
     return;
   }
   if (!(await regularFile(path))) {
-    if (extname(path)) {
+    // A missing asset is an ordinary 404 (a stale reference to a replaced
+    // build); a missing site entry means the build itself is unavailable.
+    if (path !== WEB_INDEX_PATH && extname(path)) {
       res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       res.end("not found");
       return;
     }
-    path = resolve(WEB_ROOT, "index.html");
+    path = WEB_INDEX_PATH;
   }
   if (!(await regularFile(path))) {
     res.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
@@ -851,20 +863,19 @@ async function serveWebUi(req, res, routePath) {
     : contentHashedAsset
       ? "public, max-age=31536000, immutable"
       : "no-cache";
-  let body = null;
-  if (req.method !== "HEAD") {
-    // The file can vanish or become unreadable between the stat above and this
-    // read (a redeploy in progress); that must not take the relay down.
-    try {
-      body = await readFile(path);
-    } catch {
-      res.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-      res.end("WebUI build is not available");
-      return;
-    }
+  let body;
+  // The file can vanish or become unreadable between the stat above and this
+  // read (a redeploy in progress); that must not take the relay down. HEAD
+  // reads too, so its status can never disagree with the GET that follows it.
+  try {
+    body = await readFile(path);
+  } catch {
+    res.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+    res.end("WebUI build is not available");
+    return;
   }
   res.writeHead(200, webHeaders(MIME_TYPES.get(extension) || "application/octet-stream", cacheControl));
-  res.end(body);
+  res.end(req.method === "HEAD" ? undefined : body);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1092,6 +1103,12 @@ async function revokeFromSocket(ws, msg) {
   } catch (error) {
     endpoint.revoking = false;
     ws.revokePending = false;
+    if (error?.code === "revoked_endpoint_capacity_reached") {
+      // An expected operational condition, not a relay error: the tombstone
+      // write was never attempted, and the endpoint stays registered.
+      rejectSocket(ws, "revoked_endpoint_capacity_reached", "revoked endpoint capacity reached");
+      return;
+    }
     // Fixed event code plus the errno name (never a path); the endpoint id is
     // a persistent device identifier and raw error text embeds fs paths.
     console.error(`[relay-error] revocation_persist_failed${error?.code ? ` code=${error.code}` : ""}`);
@@ -1340,7 +1357,10 @@ function shutdown() {
   process.exit(0);
 }
 
-// on, not once: a repeated signal during the exit window is absorbed by the
-// shuttingDown guard instead of reverting to the default (signal) disposition.
+// shutdown runs synchronously to exit(0), so a repeated signal can only
+// queue behind the first handler run and the shuttingDown guard makes the
+// second run a no-op. on, not once, keeps the handler registered, so
+// re-delivery can never fall back to the default (signal) disposition even
+// if teardown ever grows an asynchronous step.
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
