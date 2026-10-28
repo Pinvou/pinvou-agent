@@ -256,10 +256,12 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   // 非 steer 缺口（如压缩收缩）：r34 MAJOR-4 起尾部边界按快照支撑分类——
   // 尾部无快照（快照失败/缺失）→ 降级为仅对话照常渲染；尾部有快照支撑 →
   // 精确匹配维持拒绝（真实分叉信号不被掩盖）。
+  // r36 M1：尾部降级收紧为恰差 1（busy+1 已有容忍）——更大的缺口（压缩
+  // 漂移、预算禁用累积）维持诚实拒绝，而非渲染不安全的仅对话 chip。
   assert.equal(
     rewindEntriesByTurnId([userTurn('t1'), userTurn('t2'), userTurn('t3')], checkpoints2, 2).size,
-    3,
-    '快照缺失尾部边界降级为仅对话照常渲染（r34 MAJOR-4）',
+    0,
+    '尾部边界有快照支撑时计数缺口仍拒绝（r36 M1 收紧后一致）',
   );
   assert.equal(
     rewindEntriesByTurnId([userTurn('t1'), userTurn('t2'), userTurn('t3')], checkpoints3, 2).size,

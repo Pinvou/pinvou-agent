@@ -118,11 +118,14 @@ export function useRewindController({
   }, [rewindUndoState, setRewindUndoEntry]);
 
   // 打开回退确认弹窗；有快照的目标懒加载 diff 预览（「将撤销的变更」摘要）。
+  // r36 M2：stamp sessionId——confirm 时比对防跨会话截断（depsRef 在渲染期
+  // 重写、rewindTargetRef 在 passive effect 才清空，中间窗口 confirm 可能
+  // 读到新 sessionId + 旧 target）。
   const openRewindDialog = useCallback((entry) => {
     setRewindError('');
-    setRewindTarget(entry);
+    setRewindTarget({ ...entry, sessionId });
     if (entry.checkpoint) previewCheckpointDiff(entry.checkpoint.id);
-  }, [setRewindTarget, previewCheckpointDiff]);
+  }, [setRewindTarget, previewCheckpointDiff, sessionId]);
 
   const cancelRewind = useCallback(() => {
     if (!rewindInFlightRef.current) setRewindTarget(null);
@@ -165,6 +168,10 @@ export function useRewindController({
     const target = rewindTargetRef.current;
     const { sessionId: currentSessionId, copy: currentCopy, invoke: currentInvoke, reload: currentReload, ownsSession: currentOwnsSession, bumpTick: currentBumpTick, appendNotice: currentAppendNotice } = depsRef.current;
     if (!target || !currentSessionId) return;
+    // r36 M2：跨会话截断栅栏——confirm 读取的 sessionId 必须与 open 时 stamp
+    // 的 sessionId 一致，否则弹窗打开期间发生了会话切换、confirm 会对新会话
+    // 的 transcript 执行旧目标的截断（ depsRef 在渲染期重写，一帧窗口）。
+    if (target.sessionId && target.sessionId !== currentSessionId) return;
     // 单 flight（跨操作类型）：本会话/另一会话的回退或撤销任一在途时不静默
     // 吞点击，如实上屏（评审 M9）；两个 ref 分别记账回退与撤销，后端执行根
     // flag 对跨类型并发兜底拒绝（评审 finding：本地门也按跨类型检查，注释
