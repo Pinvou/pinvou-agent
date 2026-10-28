@@ -192,11 +192,18 @@ impl ConnectorGate {
     /// verdict consumed it) or the commit persist fails, a `visible:true`
     /// would stand on consent that computes OFF — the failure surfaces with
     /// the shared reconnect-to-retry copy instead. A NEWER owner's standing
-    /// grant ([`ReliedGrantCommit::Superseded`]) is deliberately tolerated:
-    /// committing over its token would break that operation's own failure
-    /// compensation (round-7 P2), and the newer consent covers this
-    /// connector. The steady state after a commit is token-less, so this is
-    /// a no-op write-wise for plain reconnects over long-standing consent.
+    /// grant WITHOUT a token ([`ReliedGrantCommit::Superseded`]) is
+    /// deliberately tolerated: no compensating revoke can match a tokenless
+    /// grant, so the newer consent is permanent and covers this connector. A
+    /// newer grant under a PENDING token
+    /// ([`ReliedGrantCommit::ReplacementPending`], the round-11 review P2) is
+    /// the opposite: that operation's materialization is still in flight and
+    /// its compensating revoke is still armed, so this completion's success
+    /// is declined — the commit-incomplete copy (it stays enabled, but the
+    /// newer operation could still withdraw it) without the consent-failure
+    /// latch, the same class as a commit persist failure. The steady state
+    /// after a commit is token-less, so this is a no-op write-wise for plain
+    /// reconnects over long-standing consent.
     fn commit_relied_grant_for_completion(
         &self,
         grant: &crate::features::marketplace::ConnectGrantOutcome,
@@ -217,11 +224,23 @@ impl ConnectorGate {
             ) => Ok(()),
             Ok(crate::features::marketplace::ReliedGrantCommit::Superseded) => {
                 log::info!(
-                    "[{}] the relied-upon connect grant was replaced by a newer owner's; leaving the newer consent untouched",
+                    "[{}] the relied-upon connect grant was replaced by a newer owner's committed consent; leaving it untouched",
                     self.id
                 );
                 Ok(())
             }
+            // The standing grant belongs to a still-in-flight newer operation:
+            // its compensation can still strip the grant, so this completion
+            // must not report success. The commit wrote nothing, the newer
+            // consent keeps the connector enabled, and the frontend's
+            // commit-incomplete copy says exactly that without latching the
+            // disabled banner (round-11 review P2).
+            Ok(crate::features::marketplace::ReliedGrantCommit::ReplacementPending) => Err(
+                crate::features::marketplace::scope::connect_grant_commit_failure_message(
+                    &format!("{} connected", self.id),
+                    crate::features::marketplace::RELIED_GRANT_REPLACEMENT_PENDING_CAUSE,
+                ),
+            ),
             Ok(crate::features::marketplace::ReliedGrantCommit::GrantLost) => Err(lost(
                 crate::features::marketplace::RELIED_GRANT_LOST_CAUSE.to_string(),
             )),
@@ -1479,14 +1498,133 @@ mod tests {
         });
     }
 
-    /// Round-7 review P2 negative: the commit must not survive a change of
-    /// owner. Between B's reliance capture and its completion, a teardown +
-    /// fresh reconnect (operation C) lands a NEW grant under the same package
-    /// id; B's commit must then decline (the standing token is C's, not the
-    /// relied-upon one), so C's own failure compensation still strips C's
-    /// grant in full. (Committing unconditionally over the standing token
-    /// fails the decline leg and leaves C's grant standing behind C's
-    /// failure — the fail-open direction.)
+    /// Round-11 review P2, the REAL connect body: the rollback-capable
+    /// replacement. A grants and its materialization fails (its compensating
+    /// revoke strips grant + ledger + token) while B's connect body is in
+    /// flight — B's gate already captured A's token. C then reconnects and
+    /// grants afresh under a NEW still-pending token before B's
+    /// materialization completes. B's commit leg finds the standing entry
+    /// under C's armed token and must DECLINE the success (the pre-fix
+    /// tolerant `Superseded` reported `visible:true`); C's own late failure
+    /// must then still strip everything, proving B's declined success was
+    /// the honest verdict. (Deleting the ReplacementPending arm — or
+    /// reverting the primitive split — turns the decline leg red; clearing
+    /// C's token there turns C's compensation leg red.)
+    #[test]
+    fn connect_body_declines_a_rollback_capable_replacement() {
+        use crate::features::marketplace::{
+            ConnectGrantOutcome, ConnectorScope, deny_first_register_connector,
+            deny_first_register_connector_refresh, load_disabled_bundles_for,
+        };
+        use std::sync::Mutex;
+
+        // fn-pointer hook state (the gate's materializer is a plain fn, not a
+        // closure). Statics are process-global, but every store-touching test
+        // serializes on the with_temp_home env lock, and both slots are
+        // (re)set inside this test only.
+        static REVOKE_A: Mutex<Option<ConnectGrantOutcome>> = Mutex::new(None);
+        static CAUGHT_C: Mutex<Option<ConnectGrantOutcome>> = Mutex::new(None);
+        fn a_fails_c_regrants_mid_materialization(_visible: bool) -> std::io::Result<()> {
+            let grant_a = REVOKE_A.lock().unwrap().take().expect("fixture: A's grant");
+            crate::features::marketplace::revoke_connect_enable(&grant_a).unwrap();
+            let grant_c = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_c.granted && grant_c.grant_token != grant_a.grant_token,
+                "fixture: C re-grants afresh under a new pending token: {grant_c:?}"
+            );
+            *CAUGHT_C.lock().unwrap() = Some(grant_c);
+            Ok(())
+        }
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-commit-replace", || {
+            *REVOKE_A.lock().unwrap() = None;
+            *CAUGHT_C.lock().unwrap() = None;
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            // Operation A: the refresh grant lands; its materialization is in
+            // flight.
+            let grant_a = deny_first_register_connector_refresh("feishu", true).unwrap();
+            assert!(grant_a.granted, "fixture: A's refresh grant lands");
+            *REVOKE_A.lock().unwrap() = Some(grant_a);
+            let gate = Box::leak(Box::new(ConnectorGate {
+                id: "feishu",
+                disabled_filename: "feishu_disabled",
+                display_name: "Feishu",
+                ready_probe: || true,
+                apply_bundle_skills: a_fails_c_regrants_mid_materialization,
+            }));
+            // The env lock is held by with_temp_home for the whole block_on,
+            // so the spawn_blocking consent writes stay under the serialized
+            // env (same shape as app/commands/tests.rs).
+            let err = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(gate.apply_skills_command())
+                .expect_err("the completion must decline a rollback-capable replacement");
+            assert!(
+                err.contains(crate::features::marketplace::RELIED_GRANT_REPLACEMENT_PENDING_CAUSE),
+                "the decline must carry the replacement-pending cause: {err}"
+            );
+
+            // The store stands under C's grant with C's token still armed —
+            // the declined commit wrote nothing, and the connector computes
+            // ON only while C's in-flight grant keeps it covered.
+            let grant_c = CAUGHT_C
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("fixture: the hook re-granted as C");
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu"))
+                    && raw["connect_grant_tokens"]["feishu"] == grant_c.grant_token,
+                "C's grant and pending token must survive B's declined commit: {raw}"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the connector computes ON behind the declined completion (C's standing grant)"
+            );
+
+            // C's own materialization then fails: its compensation strips the
+            // grant, ledger, and token in full — the OFF B's declined success
+            // honestly anticipated.
+            crate::features::marketplace::revoke_connect_enable(&grant_c).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu"))
+                    && raw["connect_grant_tokens"]["feishu"].is_null(),
+                "C's compensation must still strip the consent in full: {raw}"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "C's failed connect must end fail-closed behind B's declined success"
+            );
+        });
+    }
+
+    /// Round-7 review P2 negative, tightened by the round-11 P2: the commit
+    /// must not survive a change of owner, and must not let the completion
+    /// stand on it either. Between B's reliance capture and its completion, a
+    /// teardown + fresh reconnect (operation C) lands a NEW grant under the
+    /// same package id with C's token still PENDING (its materialization in
+    /// flight, its compensating revoke armed); B's commit must then report
+    /// the pending replacement WITHOUT writing (the standing token is C's,
+    /// not the relied-upon one), so the completion declines and C's own
+    /// failure compensation still strips C's grant in full. (Committing
+    /// unconditionally over the standing token fails the decline leg and
+    /// leaves C's grant standing behind C's failure — the fail-open
+    /// direction; tolerating it as a success leaves B's `visible:true` over
+    /// the state C's revoke turns OFF — the round-11 direction.)
     #[test]
     fn stale_commit_leaves_a_replacement_owner_alone() {
         use crate::features::marketplace::{
@@ -1514,7 +1652,9 @@ mod tests {
                 "fixture: distinct operations must own distinct tokens"
             );
             // B completes and tries to commit — against the token it relied
-            // on. The standing entry is C's now, so the commit must decline.
+            // on. The standing entry is C's now, so the commit must report
+            // the pending replacement (the caller declines the success) and
+            // write nothing.
             let committed = crate::features::marketplace::commit_relied_connect_grant(
                 "feishu",
                 &gate_b.relied_grant_token,
@@ -1522,8 +1662,15 @@ mod tests {
             .unwrap();
             assert_eq!(
                 committed,
-                crate::features::marketplace::ReliedGrantCommit::Superseded,
-                "the commit must decline over a replaced owner"
+                crate::features::marketplace::ReliedGrantCommit::ReplacementPending,
+                "the commit must report the rollback-capable replacement, not a secured consent"
+            );
+            let raw_mid: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert_eq!(
+                raw_mid["connect_grant_tokens"]["feishu"],
+                serde_json::json!(grant_c.grant_token),
+                "the declined commit must leave C's pending compensation armed: {raw_mid}"
             );
 
             // C's own failure compensation still works in full.

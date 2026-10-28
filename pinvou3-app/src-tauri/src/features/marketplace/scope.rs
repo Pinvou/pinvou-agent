@@ -2932,13 +2932,15 @@ pub(crate) fn revoke_connect_enable(grant: &ConnectGrantOutcome) -> Result<(), S
 }
 
 /// The outcome of a relied-upon connect grant's COMMIT (round-7 review P2,
-/// three-way since the round-8 review). A completion that ran on top of
-/// standing consent must know which of these happened before it may report
-/// success: only [`ReliedGrantCommit::Committed`] and
-/// [`ReliedGrantCommit::Superseded`] leave standing consent behind the
-/// completion; [`ReliedGrantCommit::GrantLost`] means the consent the
-/// completion relied on no longer exists, so a `visible:true` would compute
-/// OFF behind the success card.
+/// three-way since the round-8 review, four-way since the round-11 review). A
+/// completion that ran on top of standing consent must know which of these
+/// happened before it may report success: only [`ReliedGrantCommit::Committed`]
+/// and [`ReliedGrantCommit::Superseded`] leave standing consent behind the
+/// completion; [`ReliedGrantCommit::ReplacementPending`] means a newer
+/// in-flight operation owns the grant and can still revoke it, and
+/// [`ReliedGrantCommit::GrantLost`] means the consent the completion relied on
+/// no longer exists — either way a `visible:true` would compute OFF behind the
+/// success card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReliedGrantCommit {
     /// The completion relied on nothing (an empty captured token — it
@@ -2949,11 +2951,25 @@ pub enum ReliedGrantCommit {
     /// owner's pending compensating revoke no longer matches, so the
     /// completion's success stands on secured consent.
     Committed,
-    /// A NEWER grant stands under a different token. The commit deliberately
-    /// declines: clearing the newer owner's token would break ITS OWN failure
-    /// compensation (fail-open, the round-7 P2). The newer consent covers
-    /// the connector, so the completion may stand on it — untouched.
+    /// A NEWER grant stands WITHOUT a token. A tokenless grant can never be
+    /// revoked by a compensating revoke (the predicate matches on the token),
+    /// so the consent is permanent — a committed newer owner's consent, or an
+    /// explicit user verdict commit (composer/welcome/scene/CLI enable). The
+    /// newer consent covers the connector, so the completion may stand on it
+    /// — untouched.
     Superseded,
+    /// A NEWER grant stands under a DIFFERENT PENDING token: that operation
+    /// granted fresh and its materialization is still in flight, so its own
+    /// compensating revoke is still armed and can strip the grant (and the
+    /// ledger) this completion stands on (the round-11 P2: A grants, B
+    /// captures A's token; A fails and revokes; C re-grants under a fresh
+    /// pending token; a commit tolerating the replacement reports success,
+    /// and C's late failure computes OFF behind B's success card). Clearing
+    /// C's token would break ITS OWN failure compensation (fail-open, the
+    /// round-7 P2), so the commit declines WITHOUT writing and the caller
+    /// must not report success — a retry stands on C's committed consent or
+    /// re-grants after C's compensation.
+    ReplacementPending,
     /// No standing grant for the package at commit time: the consent this
     /// completion relied on was consumed before it could commit — the owner
     /// operation's compensating revoke won the race, a teardown swept it, or
@@ -2969,6 +2985,15 @@ pub enum ReliedGrantCommit {
 /// cross-crate reason as [`commit_relied_connect_grant`].
 pub const RELIED_GRANT_LOST_CAUSE: &str = "the relied-upon connect grant is no longer standing (an overlapping operation's compensation removed it, or a newer verdict consumed it)";
 
+/// Single source of the cause text for a relied-upon grant now standing under
+/// a newer PENDING token ([`ReliedGrantCommit::ReplacementPending`]), shared
+/// by the GUI tails and the CLI's connect error like
+/// [`RELIED_GRANT_LOST_CAUSE`]. Unlike the lost state the consent still
+/// stands (the newer grant covers the connector), so this rides the
+/// commit-incomplete copy class ("stays enabled — reconnect to secure it"),
+/// not the disabled one.
+pub const RELIED_GRANT_REPLACEMENT_PENDING_CAUSE: &str = "the relied-upon connect grant was replaced by a newer in-flight grant whose failure compensation is still armed";
+
 /// COMMIT of a relied-upon connect grant (round-7 review P2): a completion
 /// whose gate found the consent already recorded (the ledger short-circuit —
 /// it captured the standing token on
@@ -2982,11 +3007,17 @@ pub const RELIED_GRANT_LOST_CAUSE: &str = "the relied-upon connect grant is no l
 /// ledger B's success relied on, disabling a connector a completed connect
 /// just proved usable.
 ///
-/// The result is three-way (round-8 review): the commit fires only while the
+/// The result is four-way (rounds 8 and 11): the commit fires only while the
 /// standing entry still carries the RELIED-UPON token (re-validated under
-/// the write lock); a mismatch means a NEWER live operation owns the state
-/// ([`ReliedGrantCommit::Superseded`] — committing over its token would make
-/// ITS OWN failure compensation a no-op, fail-open), and a vanished grant
+/// the write lock). A standing grant WITHOUT a token is a permanent newer
+/// consent no compensating revoke can match
+/// ([`ReliedGrantCommit::Superseded`] — left untouched), while a standing
+/// grant under a DIFFERENT PENDING token means a newer live operation owns
+/// the state and can still revoke it
+/// ([`ReliedGrantCommit::ReplacementPending`] — committing over its token
+/// would make ITS OWN failure compensation a no-op, fail-open, and
+/// tolerating it lets that revoke strip the consent behind a success, so the
+/// caller declines the success). A vanished grant
 /// means the relied-upon consent is gone entirely
 /// ([`ReliedGrantCommit::GrantLost`] — the caller must surface an
 /// uncompleted completion instead of reporting success). The token is the
@@ -3008,24 +3039,35 @@ pub fn commit_relied_connect_grant(
     }
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
-        // The round-6 ownership pair, reported separately (round-8 review):
+        // The round-6 ownership pair, reported separately (rounds 8 and 11):
         // a grant that no longer stands is a LOST reliance — the completion
-        // would report success over consent that computes OFF — while a
-        // standing grant under a different token is a replacement owner the
-        // commit must leave alone.
+        // would report success over consent that computes OFF; a standing
+        // grant under a pending different token is a replacement owner the
+        // commit must leave alone AND decline to stand on; a tokenless
+        // standing grant is a permanent newer consent that may be stood on.
         if !file.connect_granted.iter().any(|id| id == package_id) {
             return Ok(ReliedGrantCommit::GrantLost);
         }
-        if file
-            .connect_grant_tokens
-            .get(package_id)
-            .is_none_or(|token| token != relied_token)
-        {
-            return Ok(ReliedGrantCommit::Superseded);
+        match file.connect_grant_tokens.get(package_id) {
+            // Tokenless: every token removal leaves the grant standing as
+            // permanent consent (a committed reliance, or an explicit
+            // enable/welcome/composer commit), and no compensating revoke
+            // can match a tokenless grant — the newer consent is stable.
+            None => Ok(ReliedGrantCommit::Superseded),
+            // A different LIVE token: the newer owner's materialization is
+            // still in flight and its compensating revoke is still armed —
+            // the consent this completion relies on can still be stripped
+            // out from under a success. Decline without writing: C's token
+            // must stay armed for C's own failure compensation (round-11
+            // review P2).
+            Some(token) if token != relied_token => Ok(ReliedGrantCommit::ReplacementPending),
+            // The relied-upon token still stands: commit (clear) it.
+            _ => {
+                file.connect_grant_tokens.remove(package_id);
+                try_save_disabled_bundles_file(&file)?;
+                Ok(ReliedGrantCommit::Committed)
+            }
         }
-        file.connect_grant_tokens.remove(package_id);
-        try_save_disabled_bundles_file(&file)?;
-        Ok(ReliedGrantCommit::Committed)
     })
 }
 
@@ -3307,7 +3349,7 @@ pub fn enable_packages_in_scope(
         // same single mutation `commit_relied_connect_grant` performs for
         // completions — and the older operation's revoke stops matching.
         // This deliberately outranks operation ownership: the commit path's
-        // `Superseded` exception protects a newer OWNER's own failure
+        // `ReplacementPending` decline protects a newer OWNER's own failure
         // compensation, while a user gesture needs no failure compensation
         // of its own. Later user verdicts stay supreme — the blocked
         // refusal above returns before this runs, and a composer
@@ -4507,7 +4549,7 @@ mod tests {
 
     /// The commit outranks operation ownership on purpose: the enable is a
     /// USER verdict, not a completion, so it commits even a replacement
-    /// owner's token. The `Superseded` exception on
+    /// owner's token. The `ReplacementPending` decline on
     /// `commit_relied_connect_grant` protects an in-flight operation's own
     /// failure compensation; a user gesture needs no failure compensation,
     /// and a later verdict write still removes the grant whole.
