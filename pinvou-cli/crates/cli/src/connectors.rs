@@ -3328,11 +3328,14 @@ fn finish_connect_side_effects(spec: &VendorSpec, consent_show: bool) -> Result<
     // would strip the grant + ledger this successful connect relied on. The
     // commit re-validates under the write lock: a teardown + regrant
     // mid-window keeps a newer owner's compensation armed
-    // ([`ReliedGrantCommit::Superseded`] — left untouched, the newer consent
-    // covers this connect). REQUIRED (round-8 review): a grant that is GONE
-    // by commit time or a persist that fails means the completed connect's
+    // ([`ReliedGrantCommit::Superseded`] — a tokenless newer grant no revoke
+    // can match, left untouched, the newer consent covers this connect).
+    // REQUIRED (rounds 8 and 11): a grant that is GONE by commit time, a
+    // grant that now stands under a newer PENDING token (that operation's
+    // compensation is still armed and can still strip this connect's
+    // consent), or a persist that fails means the completed connect's
     // consent does not stand — the connect fails instead of reporting a
-    // connection whose consent computes OFF.
+    // connection whose consent computes (or can be computed) OFF.
     if !outcome.granted && !outcome.relied_grant_token.is_empty() {
         use pinvou3_lib::features::marketplace::ReliedGrantCommit;
         match pinvou3_lib::features::marketplace::commit_relied_connect_grant(
@@ -3341,8 +3344,14 @@ fn finish_connect_side_effects(spec: &VendorSpec, consent_show: bool) -> Result<
         ) {
             Ok(ReliedGrantCommit::NotRelied | ReliedGrantCommit::Committed) => {}
             Ok(ReliedGrantCommit::Superseded) => note!(
-                "pinvou: connectors connect: the relied-upon connect grant was replaced by a newer owner's; leaving the newer consent untouched"
+                "pinvou: connectors connect: the relied-upon connect grant was replaced by a newer owner's committed consent; leaving it untouched"
             ),
+            Ok(ReliedGrantCommit::ReplacementPending) => {
+                return Err(CliError::failed(format!(
+                    "pinvou: connectors connect: {} — the completed connect's consent is not secured; reconnect to retry",
+                    pinvou3_lib::features::marketplace::RELIED_GRANT_REPLACEMENT_PENDING_CAUSE
+                )));
+            }
             Ok(ReliedGrantCommit::GrantLost) => {
                 return Err(CliError::failed(format!(
                     "pinvou: connectors connect: {} — the completed connect's consent is gone; reconnect to retry",
@@ -5636,6 +5645,75 @@ mod tests {
             .unwrap(),
             pinvou3_lib::features::marketplace::ReliedGrantCommit::Superseded,
             "the older connect's compensation must no longer match the token the enable committed"
+        );
+    }
+
+    /// Round-11 review P2: a completion that captured A's token must not
+    /// secure (or report) success while the standing grant belongs to a
+    /// newer in-flight operation C. The commit reports ReplacementPending
+    /// without writing, leaving C's pending compensation armed — the CLI
+    /// connect fails instead of reporting a connection whose consent C can
+    /// still strip. (The compensating revoke is deliberately crate-internal
+    /// to pinvou3_lib; the store rewrite below stands in for exactly the
+    /// state A's revoke leaves — grant, ledger, and token gone.)
+    #[test]
+    fn commit_declines_a_rollback_capable_replacement_grant() {
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::support::test_support::TempHome::new("connectors-replacement-pending");
+        let store = home.join("disabled_bundles.json");
+
+        // Connect A grants on the fresh home; B's gate (the same gated entry
+        // the connect drives) captures A's standing token.
+        let grant_a =
+            pinvou3_lib::features::marketplace::deny_first_register_connector("feishu", true)
+                .unwrap();
+        assert!(grant_a.granted, "fixture: A's connect grants");
+        let gate_b =
+            pinvou3_lib::features::marketplace::deny_first_register_connector("feishu", true)
+                .unwrap();
+        assert!(
+            !gate_b.granted && gate_b.relied_grant_token == grant_a.grant_token,
+            "fixture: B relies on A's grant: {gate_b:?}"
+        );
+
+        // A's materialization fails (the store rewrite = the crate-internal
+        // revoke's end state), then C reconnects and grants afresh under a
+        // NEW pending token — its materialization is now the one in flight.
+        std::fs::write(&store, r#"{"scopes":{"plain":[]},"initialized":["plain"]}"#).unwrap();
+        let grant_c =
+            pinvou3_lib::features::marketplace::deny_first_register_connector("feishu", true)
+                .unwrap();
+        assert!(
+            grant_c.granted && grant_c.grant_token != grant_a.grant_token,
+            "fixture: C re-grants afresh under a new pending token: {grant_c:?}"
+        );
+
+        // B's completion commits the token it captured: the commit must
+        // decline without writing — C's compensation stays armed.
+        let commit = pinvou3_lib::features::marketplace::commit_relied_connect_grant(
+            "feishu",
+            &gate_b.relied_grant_token,
+        )
+        .unwrap();
+        assert_eq!(
+            commit,
+            pinvou3_lib::features::marketplace::ReliedGrantCommit::ReplacementPending,
+            "the commit must report the rollback-capable replacement, not secured consent"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+        assert_eq!(
+            file["connect_grant_tokens"]["feishu"],
+            serde_json::json!(grant_c.grant_token),
+            "the declined commit must leave C's pending compensation armed: {file}"
+        );
+        assert!(
+            file["connect_granted"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+            "C's grant stands behind B's declined completion: {file}"
         );
     }
 }
