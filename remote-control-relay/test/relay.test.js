@@ -195,6 +195,22 @@ function rawRequest(hostPort, requestText) {
   });
 }
 
+// Spawns a relay expected to die during startup and asserts that it exits
+// nonzero leaving exactly one fixed [relay-error] line behind. The optional
+// callback sees the child before it is stopped, for assertions beyond the
+// shared three.
+async function expectStartupFailure(env, expectedStderr, also = null) {
+  const isolated = await spawnRelay(env, { awaitListening: false });
+  try {
+    await waitForExit(isolated.child, 10000);
+    assert.notEqual(isolated.child.exitCode, 0);
+    assert.equal(isolated.errors().trim(), expectedStderr);
+    if (also) also(isolated);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+}
+
 // Captures stdout/stderr for assertions. Children expected NOT to come up
 // (configuration failures) are spawned with awaitListening: false.
 // The relay reads a fixed set of environment variables. Strip every one of
@@ -1249,18 +1265,11 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
     // The last value is a valid address padded past the IP text cap: length is
     // checked before trimming, so it must be rejected like any other garbage.
     for (const value of ["not-an-ip", "127.0.0.1,not-an-ip", ",,,", `1.2.3.4${" ".repeat(140)}`]) {
-      const isolated = await spawnRelay({ [variable]: value }, { awaitListening: false });
-      try {
-        await waitForExit(isolated.child, 10000);
-        assert.notEqual(isolated.child.exitCode, 0);
-        assert.equal(
-          isolated.errors().trim(),
-          `[relay-error] proxy_ip_configuration_invalid: ${variable}`,
-        );
-        assert.doesNotMatch(isolated.output(), /pinvou remote relay listening/u);
-      } finally {
-        await stopRelay(isolated.child);
-      }
+      await expectStartupFailure(
+        { [variable]: value },
+        `[relay-error] proxy_ip_configuration_invalid: ${variable}`,
+        (isolated) => assert.doesNotMatch(isolated.output(), /pinvou remote relay listening/u),
+      );
     }
   }
 });
@@ -1460,18 +1469,11 @@ test("configuration errors do not echo the offending value", async () => {
     ["not a url", "invalid PINVOU_REMOTE_ALLOWED_WEB_ORIGINS entry"],
   ];
   for (const [value, message] of cases) {
-    const isolated = await spawnRelay(
+    await expectStartupFailure(
       { PINVOU_REMOTE_ALLOWED_WEB_ORIGINS: value },
-      { awaitListening: false },
+      `[relay-error] ${message}`,
+      (isolated) => assert.ok(!isolated.errors().includes(value), "offending origin echoed into stderr"),
     );
-    try {
-      await waitForExit(isolated.child, 10000);
-      assert.notEqual(isolated.child.exitCode, 0);
-      assert.equal(isolated.errors().trim(), `[relay-error] ${message}`);
-      assert.ok(!isolated.errors().includes(value), "offending origin echoed into stderr");
-    } finally {
-      await stopRelay(isolated.child);
-    }
   }
 });
 
@@ -1479,17 +1481,10 @@ test("an invalid PORT reports the fixed line instead of a stack", async () => {
   // listen() validates the port synchronously, so an invalid value dies
   // inside the call with a RangeError whose stack prints the module path.
   for (const value of ["abc", "99999", "-1", "1.5", "0"]) {
-    const isolated = await spawnRelay({ PORT: value }, { awaitListening: false });
-    try {
-      await waitForExit(isolated.child, 10000);
-      assert.notEqual(isolated.child.exitCode, 0);
-      assert.equal(
-        isolated.errors().trim(),
-        "[relay-error] invalid PORT: use an integer from 1 to 65535",
-      );
-    } finally {
-      await stopRelay(isolated.child);
-    }
+    await expectStartupFailure(
+      { PORT: value },
+      "[relay-error] invalid PORT: use an integer from 1 to 65535",
+    );
   }
 });
 
@@ -1504,17 +1499,10 @@ test("relay state load failures surface a fixed message without paths", async (t
   const blocker = join(testRoot, `state-blocker-${Date.now()}`);
   await writeFile(blocker, "not-a-directory");
   const statePath = join(blocker, "relay-state.json");
-  const isolated = await spawnRelay(
+  await expectStartupFailure(
     { PINVOU_REMOTE_STATE_PATH: statePath },
-    { awaitListening: false },
+    "[relay-error] relay_state_load_failed code=ENOTDIR",
   );
-  try {
-    await waitForExit(isolated.child, 10000);
-    assert.notEqual(isolated.child.exitCode, 0);
-    assert.equal(isolated.errors().trim(), "[relay-error] relay_state_load_failed code=ENOTDIR");
-  } finally {
-    await stopRelay(isolated.child);
-  }
 });
 
 test("a state above the clamped capacity loads and refuses only new revocations", async () => {
@@ -1875,37 +1863,20 @@ test("state validation failures name their own reason", async () => {
   for (const [contents, message] of cases) {
     const statePath = join(testRoot, `state-shape-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
     await writeFile(statePath, contents);
-    const isolated = await spawnRelay(
+    await expectStartupFailure(
       { PINVOU_REMOTE_STATE_PATH: statePath },
-      { awaitListening: false },
+      `[relay-error] ${message}`,
     );
-    try {
-      await waitForExit(isolated.child, 10000);
-      assert.notEqual(isolated.child.exitCode, 0);
-      assert.equal(isolated.errors().trim(), `[relay-error] ${message}`);
-    } finally {
-      await stopRelay(isolated.child);
-    }
   }
 });
 
 test("relay state exceeding the configured maximum names the limit", async () => {
   const statePath = join(testRoot, `oversize-state-${Date.now()}.json`);
   await writeFile(statePath, "0".repeat(2048));
-  const isolated = await spawnRelay(
+  await expectStartupFailure(
     { PINVOU_REMOTE_STATE_PATH: statePath, MAX_RELAY_STATE_BYTES: "1024" },
-    { awaitListening: false },
+    "[relay-error] relay state exceeds MAX_RELAY_STATE_BYTES",
   );
-  try {
-    await waitForExit(isolated.child, 10000);
-    assert.notEqual(isolated.child.exitCode, 0);
-    assert.equal(
-      isolated.errors().trim(),
-      "[relay-error] relay state exceeds MAX_RELAY_STATE_BYTES",
-    );
-  } finally {
-    await stopRelay(isolated.child);
-  }
 });
 
 test("a failed bind reports a fixed error without the bind address", async () => {
