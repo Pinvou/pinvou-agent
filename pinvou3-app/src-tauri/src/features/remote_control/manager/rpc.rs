@@ -467,8 +467,10 @@ fn validate_web_prompt_references(command: &str, args: &Value) -> Result<(), Web
     if command != "web_access_codex_acp_prompt" {
         return Ok(());
     }
-    // 手机侧经 Tauri 参数绑定,两个字段拼写都可能出现;同一请求不会同时
-    // 携带两者,逐一检查即可。
+    // 手机侧经 Tauri 参数绑定,两个字段拼写都可能出现;预算按两种拼写的
+    // 条目总数计——恶意帧可以同时携带两者,独立上限等于把同一请求的
+    // canonicalize 预算翻倍。
+    let mut reference_count = 0usize;
     for field in ["workspaceReferences", "workspace_references"] {
         let Some(references) = args.get(field).filter(|value| !value.is_null()) else {
             continue;
@@ -478,7 +480,8 @@ fn validate_web_prompt_references(command: &str, args: &Value) -> Result<(), Web
                 "{field} must be an array of paths"
             )));
         };
-        if references.len() > MAX_WEB_WORKSPACE_REFERENCES {
+        reference_count += references.len();
+        if reference_count > MAX_WEB_WORKSPACE_REFERENCES {
             return Err(WebScopeRejection::Deterministic(format!(
                 "web_access_codex_acp_prompt accepts at most {MAX_WEB_WORKSPACE_REFERENCES} workspace references"
             )));
@@ -520,6 +523,14 @@ fn validate_web_kb_paths(command: &str, args: &Value) -> Result<(), WebScopeReje
                 "{paths_field} entries must be strings"
             )));
         };
+        // 相对路径与 validate_browsable_path 内部的同语义检查一致地先挡:
+        // 它是只依赖请求本身的形状违规,按确定性(可缓存)拒绝,不必为它
+        // 触盘,也不会被错误地归入瞬时类反复重跑。
+        if !std::path::Path::new(path).is_absolute() {
+            return Err(WebScopeRejection::Deterministic(format!(
+                "{paths_field} entries must be absolute paths"
+            )));
+        }
         if crate::features::files::file_ingest::validate_browsable_path(path).is_err() {
             log::warn!("[remote_control] rejected non-browsable kb path over Web");
             return Err(WebScopeRejection::Transient(format!(
@@ -967,21 +978,40 @@ mod tests {
         // 触盘校验失败归类 Transient(路径尚不存在/卷暂不可用都可能恢复),
         // 不能缓存成终态——否则同 client_request_id 的重试永远重放这次失败,
         // 正是本模块要消灭的毒化类。两种平台拼写都测:任一平台上,另一平台
-        // 的绝对路径都无法落在 $HOME 下。
+        // 的绝对路径都无法落在 $HOME 下;它在本平台按相对形状归类为确定性
+        // 形状拒绝(与文件系统无关),本平台的绝对拼写才走触盘的瞬时类。
         for outside in ["/etc/hosts", r"C:\Windows\notepad.exe"] {
             let rejection =
                 validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": [outside] }))
                     .expect_err("a path outside $HOME must not be indexable over Web");
-            assert!(
-                matches!(rejection, WebScopeRejection::Transient(_)),
-                "filesystem-backed rejections must be transient, got {rejection:?}"
-            );
+            if std::path::Path::new(outside).is_absolute() {
+                assert!(
+                    matches!(rejection, WebScopeRejection::Transient(_)),
+                    "filesystem-backed rejections must be transient, got {rejection:?}"
+                );
+            } else {
+                assert!(
+                    matches!(rejection, WebScopeRejection::Deterministic(_)),
+                    "relative-shaped spellings must stay deterministic, got {rejection:?}"
+                );
+            }
             let message = rejection.message();
             assert!(
                 !message.contains(outside),
                 "rejection must not echo the path: {message}"
             );
         }
+
+        // 相对路径是纯形状违规:按确定性(可缓存)拒绝,不归入瞬时类。
+        let rejection = validate_web_kb_paths(
+            "kb_start_scan",
+            &json!({ "roots": ["relative/path"] }),
+        )
+        .expect_err("relative roots must be rejected");
+        assert!(
+            matches!(rejection, WebScopeRejection::Deterministic(_)),
+            "arg-shape violations must stay deterministic, got {rejection:?}"
+        );
 
         // 形状违规只依赖请求参数,保持确定性(可缓存)。
         for shape in [json!({}), json!({ "paths": "x" }), json!({ "paths": [42] })] {

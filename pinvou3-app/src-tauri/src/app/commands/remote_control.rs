@@ -233,7 +233,13 @@ pub fn web_access_enable(
 }
 
 #[tauri::command]
-pub fn web_access_disable(manager: State<'_, RemoteControlManager>) -> Result<(), String> {
+pub fn web_access_disable(
+    window: WebviewWindow,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<(), String> {
+    // 停链与启用同口径:辅助 WebView(code-reader/宠物等)里的脚本不得
+    // 静默切断用户的远程链接。
+    require_main_webview(&window)?;
     manager.stop_current()
 }
 
@@ -272,10 +278,14 @@ pub fn web_access_revoke_host_workspace(
 }
 
 /// 桌面专属：查询自定义 Relay 地址。不进 Web 命令白名单——Relay 指向
-/// 哪台服务器只能由桌面端决定。
+/// 哪台服务器只能由桌面端决定,辅助 WebView 亦不得探测链路拓扑。
 #[tauri::command]
-pub fn web_access_relay_settings(manager: State<'_, RemoteControlManager>) -> RelaySettingsInfo {
-    manager.relay_settings()
+pub fn web_access_relay_settings(
+    window: WebviewWindow,
+    manager: State<'_, RemoteControlManager>,
+) -> Result<RelaySettingsInfo, String> {
+    require_main_webview(&window)?;
+    Ok(manager.relay_settings())
 }
 
 /// Desktop-only readiness handshake. It is intentionally absent from the Web
@@ -359,8 +369,13 @@ pub struct WebHostFileListing {
 pub fn web_access_list_host_files(
     path: Option<String>,
     issue_workspace_handle: Option<bool>,
+    window: WebviewWindow,
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebHostFileListing, String> {
+    // 手机侧文件选择器经 Web RPC 调度,由主 WebView 的 bridge invoke(标签
+    // 即 main,放行);此 gate 拦截的是桌面辅助 WebView 直接 invoke 浏览
+    // $HOME 的路径。
+    require_main_webview(&window)?;
     let listing = file_access::list_host_files(path)?;
     let workspace_handle = issue_workspace_handle
         .unwrap_or(false)
@@ -1003,7 +1018,10 @@ pub async fn web_access_create_codex_acp_session(
                 workspace_reservation
                     .as_ref()
                     .ok_or_else(|| "Web workspace authorization is missing".to_string())?
-                    .verify_bound_path(path)
+                    .verify_bound_path(path)?;
+                // reserve 与绑定之间用户可能已撤销授权:绑定时点复核旗标,
+                // 不让撤权前的 reservation 在 TTL 窗口内完成绑定。
+                manager.require_host_workspace_authorized()
             };
             let workspace_verifier = workspace_reservation.as_ref().map(|_| {
                 &verify_workspace as &(dyn Fn(&Path) -> Result<(), String> + Send + Sync)

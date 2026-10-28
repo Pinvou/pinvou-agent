@@ -715,15 +715,31 @@ async fn run_loop(
                                 break;
                             }
                             match serde_json::from_str::<Value>(&text) {
-                                Ok(value) => {
+                                Ok(mut value) => {
                                     let terminal = terminal_message(&value, &config.endpoint_id);
                                     if registration_acknowledges_endpoint(&value, &config.endpoint_id) {
                                         reconnect_backoff.reset();
                                     }
-                                    drop(value);
+                                    // Relay 的注册类 reject 帧不携带 endpoint_id;
+                                    // 补戳本 socket 正在注册的 endpoint,让 manager
+                                    // 侧的显式 endpoint 匹配 gate 生效——否则轮换
+                                    // 竞态中迟到的终结帧无法与帧归属区分,只能对
+                                    // 空 id 一律放行,可能误伤刚接替的新 endpoint。
+                                    let forwarded =
+                                        if registration_error_without_scope(&value) {
+                                            if let Some(obj) = value.as_object_mut() {
+                                                obj.insert(
+                                                    "endpoint_id".to_string(),
+                                                    Value::String(config.endpoint_id.clone()),
+                                                );
+                                            }
+                                            value.to_string()
+                                        } else {
+                                            text.to_string()
+                                        };
                                     if !send_inbound_until_shutdown(
                                         &tx_in,
-                                        RelayInbound::Message(text.to_string()),
+                                        RelayInbound::Message(forwarded),
                                         &shutdown,
                                     ).await {
                                         return;
@@ -860,16 +876,35 @@ fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
 pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
     if value.get("type").and_then(Value::as_str) == Some("error")
         && value.get("code").and_then(Value::as_str) == Some("endpoint_not_found")
+        && value
+            .get("endpoint_id")
+            .and_then(Value::as_str)
+            .is_none_or(|framed| framed == endpoint_id)
     {
         // The endpoint is already absent: the pending revocation is
         // trivially confirmed even though the live loop must keep
-        // reconnecting.
+        // reconnecting. Frames naming a foreign endpoint are not proof
+        // about ours; acking on them would delete a durable revocation
+        // entry for an endpoint that may still exist relay-side.
         return true;
     }
     matches!(
         terminal_message(value, endpoint_id),
         Some(RelayTerminal::Revoked | RelayTerminal::Replaced)
     )
+}
+
+/// 注册类终结 error 帧(reject 帧不携带 endpoint_id)且尚未带 scope:这些帧
+/// 在转发给 manager 前补戳本 socket 的 endpoint_id,让显式匹配 gate 生效。
+fn registration_error_without_scope(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("error")
+        && value.get("endpoint_id").is_none()
+        && value
+            .get("code")
+            .and_then(Value::as_str)
+            .is_some_and(|code| {
+                code == "endpoint_revoked" || REGISTER_REJECTED_ERROR_CODES.contains(&code)
+            })
 }
 
 fn registration_acknowledges_endpoint(value: &Value, endpoint_id: &str) -> bool {
@@ -1356,6 +1391,29 @@ mod tests {
     /// 接线钉(双向):manager 的注册终结清单与本模块 `terminal_message` 的
     /// RegisterRejected/Revoked 分类必须互相覆盖——REGISTER 清单里的每个码
     /// 都必须在 manager 清单,manager 清单里的每个码都必须终结;
+    /// 无 scope 的注册类终结帧会被 run_loop 补戳本 socket 的 endpoint_id;
+    /// 已带 scope 的帧必须原样放行,非注册类错误码不得误戳。
+    #[test]
+    fn unscoped_registration_errors_are_detected_for_stamping() {
+        assert!(registration_error_without_scope(&json!({
+            "type": "error",
+            "code": "endpoint_revoked"
+        })));
+        assert!(registration_error_without_scope(&json!({
+            "type": "error",
+            "code": "invalid_access_token"
+        })));
+        assert!(!registration_error_without_scope(&json!({
+            "type": "error",
+            "code": "endpoint_revoked",
+            "endpoint_id": "ep_x"
+        })));
+        assert!(!registration_error_without_scope(&json!({
+            "type": "desktop_endpoint_revoked",
+            "code": "endpoint_revoked"
+        })));
+    }
+
     /// `endpoint_not_found` 刻意不在 manager 清单(其 reject 帧不带
     /// endpoint_id,manager 入口本就丢弃)。清单漂移时 run_loop 无事件返回、
     /// UI 静默冻结在 Connecting,比被修复的 Error↔Connecting 翻转更糟。

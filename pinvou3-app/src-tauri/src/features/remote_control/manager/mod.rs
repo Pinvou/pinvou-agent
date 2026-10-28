@@ -33,10 +33,10 @@ pub use persistence::RelaySettingsInfo;
 // are pure and stateless; the facade calls them by name.
 #[cfg(test)]
 use persistence::atomic_write_private_json;
-use persistence::{
+use persistence::{ load_pending_revocations_for_replay, 
     acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
     config_path, eligible_pending_revocations, fresh_config, load_config, load_config_from,
-    load_or_initialize_rpc_ledger, load_pending_revocations, load_relay_settings, new_stream_epoch,
+    load_or_initialize_rpc_ledger, load_relay_settings, new_stream_epoch,
     pairing_info, pending_revocation_key, persist_config, persist_rpc_ledger, process_lock_path,
     public_url, queue_pending_revocation, remote_public_base_url, remote_relay_ws_url,
     remove_config, remove_rpc_ledger, validate_config,
@@ -1152,7 +1152,7 @@ impl RemoteControlManager {
     /// rotation/stop and must remain dormant. This makes crashes between
     /// queueing and replacing/removing `web-access.json` safe.
     fn replay_pending_revocations(&self) -> Result<(), String> {
-        let ledger = load_pending_revocations()?;
+        let ledger = load_pending_revocations_for_replay()?;
         let current = load_config()?;
         for pending in eligible_pending_revocations(&ledger, current.as_ref()) {
             let key = pending_revocation_key(&pending);
@@ -1287,6 +1287,22 @@ impl RemoteControlManager {
                 .reserve(handle, &endpoint_id, Instant::now())?;
         drop(inner);
         reservation.revalidate()
+    }
+
+    /// 绑定/兑换时点的授权旗标复核:reserve 与 session 创建之间用户可能
+    /// 已撤销授权,一次性句柄的 TTL 窗口内不得让撤权前的 reservation 仍把
+    /// host 目录绑进新 session。
+    pub(crate) fn require_host_workspace_authorized(&self) -> Result<(), String> {
+        let inner = self.inner.lock();
+        let authorized = inner
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.config.allow_host_workspace);
+        if authorized {
+            Ok(())
+        } else {
+            Err("Web workspace authorization was revoked".to_string())
+        }
     }
 
     pub(crate) fn restore_web_workspace_grant(
@@ -2003,10 +2019,12 @@ impl RemoteControlManager {
         } else {
             ""
         };
-        // Relay 的 reject 帧不携带 endpoint_id(作用于本 socket 的注册)。空
-        // endpoint_id 只对终结注册的 error 帧放行(与 relay_client 的
-        // RegisterRejected/Revoked 终结分类一致);其余 error 帧与所有其他
-        // 消息仍要求显式匹配当前 endpoint,防止他端点帧串扰或瞬时错误抖动状态。
+        // Relay 的 reject 帧不携带 endpoint_id(作用于本 socket 的注册);
+        // relay_client 转发前会补戳本 socket 注册的 endpoint,使显式匹配
+        // gate 生效(轮换竞态中迟到的终结帧从此被丢弃,不会误伤新 endpoint)。
+        // 空 endpoint_id 的放行分支仅作为对未戳帧的纵深防御保留;其余 error
+        // 帧与所有其他消息仍要求显式匹配当前 endpoint,防止他端点帧串扰或
+        // 瞬时错误抖动状态。
         let terminal_registration_error =
             endpoint_id.is_empty() && TERMINAL_REGISTRATION_ERROR_CODES.contains(&error_code);
         if !self.is_current_endpoint(endpoint_id) && !terminal_registration_error {
@@ -2368,15 +2386,6 @@ impl RemoteControlManager {
         if request_id.is_empty() || request_id.len() > 256 || lease_id.is_empty() {
             return;
         }
-        // 与 client_ready 相同的 lease 校验:携带已被接替 lease 的 rpc_request
-        // 是接替竞态中的迟到帧(Relay 会在反向丢弃此类目标帧),直接忽略,
-        // 不进入幂等缓存。takeover 时 pending RPC 会先重打新 lease 再被重投,
-        // 因此不会误伤重投路径。无活跃 lease 时保持原行为(主准入路径本来
-        // 就没有可回复的 endpoint)。
-        if !rpc_request_targets_active_lease(&self.inner.lock(), &lease_id) {
-            eprintln!("[web-access] ignored rpc_request targeting a replaced lease");
-            return;
-        }
         let args = value.get("args").cloned().unwrap_or_else(|| json!({}));
         let command_error = validate_rpc_command(&command).err();
         let fingerprint_command = if command_error.is_some() {
@@ -2459,6 +2468,17 @@ impl RemoteControlManager {
                 .values()
                 .filter(|entry| matches!(entry, RpcCacheEntry::Pending(_)))
                 .count();
+            // 与 client_ready 相同的 lease 校验:携带已被接替 lease 的
+            // rpc_request 是接替竞态中的迟到帧,直接忽略,不进入幂等缓存。
+            // 校验必须在准入同一把锁内:先单独验锁再准入会在两锁之间留出
+            // takeover 窗口,迟到帧仍可进入缓存并被分发。takeover 时
+            // pending RPC 会先重打新 lease 再被重投,不会误伤重投路径;
+            // 无活跃 lease 时保持原行为(主准入路径本来就没有可回复的
+            // endpoint)。
+            if !rpc_request_targets_active_lease(&inner, &lease_id) {
+                eprintln!("[web-access] ignored rpc_request targeting a replaced lease");
+                return;
+            }
             match inner.rpc_cache.get_mut(&request_id) {
                 Some(RpcCacheEntry::Pending(pending)) => {
                     if pending.fingerprint != fingerprint {
@@ -4590,6 +4610,16 @@ mod tests {
         ));
         assert!(relay_client::terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_not_found" }),
+            "ep_retired"
+        ));
+        // 指名他端点的 endpoint_not_found 不是本端点消失的证明:在它上面
+        // ack 会删掉仍可能存在于 relay 侧的本端点持久撤销条目。
+        assert!(!relay_client::terminal_relay_message(
+            &json!({
+                "type": "error",
+                "code": "endpoint_not_found",
+                "endpoint_id": "ep_other"
+            }),
             "ep_retired"
         ));
         // endpoint_revoked 错误码证明 endpoint 已墓碑化,等价于撤销成功。

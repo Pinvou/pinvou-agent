@@ -299,6 +299,21 @@ pub(super) fn load_pending_revocations() -> Result<PendingRevocationLedger, Stri
     load_pending_revocations_from(&pending_revocations_path())
 }
 
+/// replay 启动路径专用:Corrupt 的原件已在读取时隔离,按空账本继续——与
+/// queue/acknowledge 的「恢复路径不被坏文件卡死」口径一致,enable/resume/
+/// rotate 不再为一个已经清理掉的文件一次性失败(原文 parse 错误直接抛给
+/// 用户,重试虽能自愈但首因已不存在)。Unavailable 仍是瞬时 IO,照旧上抛。
+pub(super) fn load_pending_revocations_for_replay() -> Result<PendingRevocationLedger, String> {
+    match load_pending_revocations_classified(&pending_revocations_path()) {
+        RevocationLedgerLoad::Ledger(ledger) => Ok(ledger),
+        RevocationLedgerLoad::Corrupt(error) => {
+            eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
+            Ok(PendingRevocationLedger::default())
+        }
+        RevocationLedgerLoad::Unavailable(error) => Err(error),
+    }
+}
+
 pub(super) fn load_pending_revocations_from(
     path: &Path,
 ) -> Result<PendingRevocationLedger, String> {
@@ -343,7 +358,7 @@ fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevoc
     salvaged
 }
 
-fn quarantine_pending_ledger(path: &Path) {
+fn quarantine_pending_ledger(path: &Path, data: &[u8]) {
     match crate::platform::filesystem::quarantine_corrupt_file(path) {
         Ok(quarantined) => {
             eprintln!(
@@ -351,11 +366,20 @@ fn quarantine_pending_ledger(path: &Path) {
                 quarantined.display()
             );
         }
-        Err(error) => {
-            eprintln!(
-                "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
-                path.display()
-            );
+        Err(rename_error) => {
+            // rename 失败(Windows AV/备份锁等)不能默许证据被后续的
+            // fresh-start 写入原地覆盖/删除:把已在内存中的字节写到同一个
+            // 时间戳隔离名,字节写入也失败才降级为仅日志。
+            match crate::platform::filesystem::quarantine_corrupt_file_bytes(path, data) {
+                Ok(quarantined) => eprintln!(
+                    "[web-access] rename failed ({rename_error}); copied corrupt pending-revocation ledger to {}",
+                    quarantined.display()
+                ),
+                Err(error) => eprintln!(
+                    "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
+                    path.display()
+                ),
+            }
         }
     }
 }
@@ -393,7 +417,7 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
         return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
     }
     if data.len() > super::MAX_PENDING_REVOCATIONS_FILE_BYTES {
-        quarantine_pending_ledger(path);
+        quarantine_pending_ledger(path, &data);
         return RevocationLedgerLoad::Corrupt(format!(
             "pending Web revocation file is larger than {} KiB: {}",
             super::MAX_PENDING_REVOCATIONS_FILE_BYTES / 1024,
@@ -405,7 +429,7 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
         Err(error) => {
             // 完全不可解析:没有任何条目可救,隔离原件留证后按损坏处理
             //(queue/acknowledge 会从空账本继续并用合法内容重写)。
-            quarantine_pending_ledger(path);
+            quarantine_pending_ledger(path, &data);
             return RevocationLedgerLoad::Corrupt(format!("parse {}: {error}", path.display()));
         }
     };
@@ -419,7 +443,7 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
             salvaged.entries.len(),
             ledger.entries.len()
         );
-        quarantine_pending_ledger(path);
+        quarantine_pending_ledger(path, &data);
         return RevocationLedgerLoad::Ledger(salvaged);
     }
     RevocationLedgerLoad::Ledger(ledger)
@@ -654,18 +678,25 @@ pub(super) fn remove_private_file(path: &Path) -> Result<(), String> {
 /// Web 访问卡死。纯函数便于无环境变量的测试。
 fn normalized_env_url(
     raw: Option<String>,
+    env_name: &str,
     validate: impl Fn(&str) -> Result<(), String>,
 ) -> Option<String> {
     let value = raw?;
     let trimmed = value.trim();
-    if trimmed.is_empty() || validate(trimmed).is_err() {
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Err(error) = validate(trimmed) {
+        // 运维显式设置的覆盖被丢弃时必须留痕:静默回落会让操作者以为在连
+        // 自己的 relay,实际已在存储值/内置默认上工作。
+        eprintln!("[web-access] ignoring invalid {env_name} override, falling back: {error}");
         return None;
     }
     Some(trimmed.to_string())
 }
 
 pub(super) fn remote_public_base_url() -> String {
-    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_PUBLIC_URL").ok(), |url| {
+    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_PUBLIC_URL").ok(), "PINVOU_REMOTE_PUBLIC_URL", |url| {
         validate_http_base_url(url, "PINVOU_REMOTE_PUBLIC_URL is invalid")
     }) {
         return url;
@@ -679,7 +710,7 @@ pub(super) fn remote_public_base_url() -> String {
 pub(super) fn remote_relay_ws_url() -> String {
     // 与另外两个 env 覆盖同规则(trim 后为空/非法一律回落,不报错):非法
     // 覆盖降级到存储值/内置默认,而不是把 enable 卡死在 validate_config。
-    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_RELAY_WS_URL").ok(), |url| {
+    if let Some(url) = normalized_env_url(std::env::var("PINVOU_REMOTE_RELAY_WS_URL").ok(), "PINVOU_REMOTE_RELAY_WS_URL", |url| {
         validate_ws_url(url, "PINVOU_REMOTE_RELAY_WS_URL is invalid")
     }) {
         return url;
@@ -697,6 +728,7 @@ pub(super) fn remote_relay_ws_url() -> String {
 pub(super) fn apply_runtime_relay_override(mut config: WebAccessConfig) -> WebAccessConfig {
     if let Some(relay_url) = normalized_env_url(
         std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL").ok(),
+        "PINVOU_REMOTE_RUNTIME_RELAY_WS_URL",
         |url| validate_ws_url(url, "PINVOU_REMOTE_RUNTIME_RELAY_WS_URL is invalid"),
     ) {
         config.relay_url = relay_url;
@@ -749,32 +781,33 @@ mod tests {
         assert_eq!(
             normalized_env_url(
                 Some("  https://relay.example.test/pinvou3/remote \n".into()),
+                "PINVOU_REMOTE_TEST_URL",
                 http
             ),
             Some("https://relay.example.test/pinvou3/remote".into())
         );
         assert_eq!(
-            normalized_env_url(Some("ftp://not-http".into()), http),
+            normalized_env_url(Some("ftp://not-http".into()), "PINVOU_REMOTE_TEST_URL", http),
             None
         );
         assert_eq!(
-            normalized_env_url(Some("https://has space".into()), http),
+            normalized_env_url(Some("https://has space".into()), "PINVOU_REMOTE_TEST_URL", http),
             None
         );
         assert_eq!(
-            normalized_env_url(Some(format!("https://{}", "a".repeat(2_049))), http),
+            normalized_env_url(Some(format!("https://{}", "a".repeat(2_049))), "PINVOU_REMOTE_TEST_URL", http),
             None,
             "the length cap matches the relay settings validation"
         );
-        assert_eq!(normalized_env_url(Some("   ".into()), http), None);
-        assert_eq!(normalized_env_url(None, http), None);
+        assert_eq!(normalized_env_url(Some("   ".into()), "PINVOU_REMOTE_TEST_URL", http), None);
+        assert_eq!(normalized_env_url(None, "PINVOU_REMOTE_TEST_URL", http), None);
 
         let ws = |url: &str| validate_ws_url(url, "invalid");
         assert_eq!(
-            normalized_env_url(Some(" ws://127.0.0.1:8787/ws ".into()), ws),
+            normalized_env_url(Some(" ws://127.0.0.1:8787/ws ".into()), "PINVOU_REMOTE_TEST_URL", ws),
             Some("ws://127.0.0.1:8787/ws".into())
         );
-        assert_eq!(normalized_env_url(Some("http://not-ws".into()), ws), None);
-        assert_eq!(normalized_env_url(Some("".into()), ws), None);
+        assert_eq!(normalized_env_url(Some("http://not-ws".into()), "PINVOU_REMOTE_TEST_URL", ws), None);
+        assert_eq!(normalized_env_url(Some("".into()), "PINVOU_REMOTE_TEST_URL", ws), None);
     }
 }
