@@ -643,6 +643,54 @@ test("rejects non-v2 rpc, event, client_ready, and revoke after authentication",
   assert.equal(survivingEndpoint.joined.endpoint_id, endpointId);
 });
 
+test("a cross-endpoint revoker keeps its own session", async () => {
+  const isolated = await spawnRelay({ WS_CONNECT_LIMIT: "20" });
+  let desktopA;
+  let desktopB;
+  try {
+    desktopA = await registerDesktop(
+      "endpoint_revoke_self_a",
+      "revoke-self-token-a-0000000000001",
+      "revoke-self-secret-a-000000000001",
+      isolated.wsUrl,
+    );
+    await desktopA.registered;
+    desktopB = await registerDesktop(
+      "endpoint_revoke_self_b",
+      "revoke-self-token-b-0000000000001",
+      "revoke-self-secret-b-000000000001",
+      isolated.wsUrl,
+    );
+    await desktopB.registered;
+    // A's desktop revokes endpoint B with B's secret.
+    desktopA.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: "endpoint_revoke_self_b",
+      desktop_secret: "revoke-self-secret-b-000000000001",
+    }));
+    await nextMessage(desktopA.ws, "desktop_endpoint_revoked");
+    // A's own endpoint must survive with its desktop still connected.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
+    assert.equal(health.endpoint_count, 1);
+    assert.equal(health.desktop_offline_count, 0);
+    // The surviving session must still work: B is gone, so an rpc from A's
+    // desktop is refused for lack of a web client, not a dead socket.
+    desktopA.ws.send(JSON.stringify({
+      v: 2,
+      type: "rpc_request",
+      request_id: "post-revoke-1",
+      payload: { tool: "ping" },
+    }));
+    await nextMessage(desktopA.ws, "error");
+  } finally {
+    closeSocket(desktopA.ws);
+    closeSocket(desktopB.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
 test("desktop revoke invalidates the persistent link", async (t) => {
   const endpointId = `endpoint_revoke_${Date.now()}`;
   const accessToken = "access-token-revoke-00000000000001";

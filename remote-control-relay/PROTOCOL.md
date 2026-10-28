@@ -176,7 +176,9 @@ The Relay first writes the endpoint tombstone atomically to
 Only after that succeeds does the desktop receive `desktop_endpoint_revoked`.
 The Web client then receives `endpoint_revoked` and is closed. A later Web join
 fails with `endpoint_not_found`; an old desktop registration fails with
-`endpoint_revoked`. If persistence fails, the Relay sends
+`endpoint_revoked`. A requester revoking a different endpoint with that
+endpoint's desktop secret keeps its own session and receives
+`desktop_endpoint_revoked` instead of being closed. If persistence fails, the Relay sends
 `revoke_persistence_failed`, closes the requester, and leaves the endpoint
 usable rather than acknowledging a revoke it cannot preserve. A revoke that
 hits the tombstone capacity is refused before any write with
@@ -227,6 +229,8 @@ connection open.
 ## HTTP and operational behavior
 
 - `GET /pinvou3/remote/healthz` exposes aggregate counters only.
+- The startup banner intentionally omits the bind address; the listening
+  socket is configured entirely by `PORT` and `PINVOU_REMOTE_HOST`.
 - `/pinvou3/remote/` serves `web/dist/index.html`; extensionless paths use the
   same SPA fallback.
 - Hashed `assets/` files are immutable. HTML is never cached and fixed-name

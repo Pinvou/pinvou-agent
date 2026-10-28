@@ -1200,6 +1200,13 @@ async function revokeFromSocket(ws, msg) {
     return;
   }
   revokeEndpoint(endpoint, msg.reason || "revoked", ws);
+  // Only a socket of the revoked endpoint goes down with it. A desktop
+  // revoking a different endpoint with that endpoint's secret keeps its own
+  // session; teardownEndpoint already told it desktop_endpoint_revoked.
+  if (ws.endpointId !== endpointId) {
+    ws.revokePending = false;
+    return;
+  }
   closeSocket(ws, 1000, "endpoint revoked");
 }
 
