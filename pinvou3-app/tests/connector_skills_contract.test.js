@@ -549,16 +549,22 @@ for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
 // （stripAnchors 会剥掉行内代码段），『』/「」引号不豁免。
 const hostAliasForms =
   /悟空(?:运行|环境|平台|脚本|应用|宿主|智能体|\s*Agent)|(?:与|由|在)悟空(?!相关|无关|有关)|Wukong\s*Agent|悟空内部产品|开源版(?:未引入|不支持|不提供)/i;
-const scripts = files.filter(
-  // 与上方 .md 过滤同口径:扩展名大小写不敏感(.PY/.Md 一并扫),NOTICE* 仍豁免。
-  (f) =>
-    path.basename(f).toLowerCase().endsWith(".py") &&
-    !path.basename(f).startsWith("NOTICE"),
-);
-for (const f of [...docs, ...scripts]) {
+// pack 扫描与下方自检共用同一判定函数:stripAnchors 的剥离(反引号行内代码豁免)
+// 只有经同一入口才被自检钉住——若扫描循环单独绕过 stripAnchors,自检仍绿而真实
+// 判定已变(经变异验证)。
+const hostAliasHit = (line) => hostAliasForms.exec(stripAnchors(line));
+// 与上方 .md 过滤同口径:扩展名大小写不敏感(.PY/.Md 一并扫),NOTICE* 仍豁免。
+const isScanScript = (f) =>
+  path.basename(f).toLowerCase().endsWith(".py") &&
+  !path.basename(f).startsWith("NOTICE");
+const scripts = files.filter(isScanScript);
+// 扫描目标列表具名,下方范围自检钉的就是这份被真正迭代的列表(只钉 scripts 数组
+// 会让「循环里悄悄少迭代 ...scripts」仍绿——经变异验证)。
+const hostAliasTargets = [...docs, ...scripts];
+for (const f of hostAliasTargets) {
   let hit = null;
   for (const line of read(f).split("\n")) {
-    const m = hostAliasForms.exec(stripAnchors(line));
+    const m = hostAliasHit(line);
     if (m) {
       hit = `${rel(f)}: 上游宿主称谓/版本差异措辞回潮（${m[0]}）: ${line.trim()}——按品悟口径改写;新的合法搭配先补 must-pass 自检再扩正则`;
       break;
@@ -566,6 +572,21 @@ for (const f of [...docs, ...scripts]) {
   }
   if (hit) assert.fail(hit);
 }
+// 文件范围自检(与规则 10 同款):「Wukong Agent」宿主断言的历史载体是 .py 脚本
+// docstring,.py 一旦被剔出扫描范围,上面的 must-fail 固定装置仍绿而真实防线已死。
+assert.ok(
+  hostAliasTargets.some((f) => rel(f).endsWith("dws/scripts/attendance_report_common.py")),
+  "规则 12 扫描范围必须包含 dws scripts/*.py(宿主断言 docstring 的历史载体)",
+);
+assert.ok(
+  hostAliasTargets.some((f) => rel(f).endsWith("dws/SKILL.md")),
+  "规则 12 扫描范围必须包含 dws 文档",
+);
+// 扩展名过滤自检:大小写不敏感与 NOTICE 豁免本身也要钉住(pack 内今天没有 .PY,
+// 退回大小写敏感时套件仍绿)。
+assert.ok(isScanScript("/pack/dws/scripts/helper.PY"), "规则 12 .py 过滤必须大小写不敏感");
+assert.ok(!isScanScript("/pack/dws/NOTICE-dws.py"), "规则 12 必须豁免 NOTICE*");
+assert.ok(!isScanScript("/pack/dws/scripts/helper.md"), "规则 12 脚本过滤只认 .py");
 // 规则 12 盲点自检：历史原文必须判违例，现行客观引用必须通过。每个正则分支
 // （含分支内每个搭配词）至少被一条 must-fail 单独命中、前瞻豁免被 must-pass
 // 命中——删掉任何分支/搭配词/前瞻都会红，防止「简化」静默收窄保护面。
@@ -589,7 +610,7 @@ for (const f of [...docs, ...scripts]) {
     ['不要以"开源版不支持"为由拒答', "开源版不支持"],
     ["开源版不提供该回调", "开源版不提供"],
   ]) {
-    assert.ok(hostAliasForms.test(stripAnchors(text)), `规则 12 必须判违例（应命中 ${covers}）: ${text}`);
+    assert.ok(hostAliasHit(text) !== null, `规则 12 必须判违例（应命中 ${covers}）: ${text}`);
   }
   for (const text of [
     '示例："查一下和悟空相关的听记"',
@@ -601,8 +622,11 @@ for (const f of [...docs, ...scripts]) {
     "开源版默认 `normal` 模式只需要用户 token 和 AppKey",
     "品悟应用运行在 Windows cmd / PowerShell / macOS bash 等不同 shell 环境",
     "`dws minutes hot-word add --words \"悟空\"`",
+    // 反引号行内代码是唯一的单行豁免形态(stripAnchors 剥掉):引用历史原文作客观
+    // 说明时合法;删掉 stripAnchors 此行即红。
+    "历史文档曾写 `悟空运行环境可能是 Windows cmd`,已按品悟口径改写",
   ]) {
-    assert.equal(hostAliasForms.test(stripAnchors(text)), false, `规则 12 合法形态不得误伤: ${text}`);
+    assert.equal(hostAliasHit(text), null, `规则 12 合法形态不得误伤: ${text}`);
   }
 }
 
@@ -650,6 +674,11 @@ const dwsPresencePins = [
     parts: ["dingtalk-skills", "dws", "references", "best_practices", "02-task.md"],
     needle: "--confirm-digest",
     why: "batch-create-todo recipe must keep the digest gate",
+  },
+  {
+    parts: ["dingtalk-skills", "dws", "references", "best_practices", "07-minutes.md"],
+    needle: "--confirm-digest",
+    why: "meeting-followup recipe batches todos through the same digest gate (third local-addition site)",
   },
 ];
 for (const pin of dwsPresencePins) {
