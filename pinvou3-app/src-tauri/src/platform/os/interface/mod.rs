@@ -13,12 +13,12 @@ pub use path::{
     platform_compat_path, python_command, user_home_dir, validate_upload_location,
 };
 // The folding primitives are consumed by the os adapters through this module
-// path (`super::interface::volume_fold_*`); on byte-exact platforms only
-// their own unit tests reference them, so the aliases would be unused there.
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "windows")),
-    allow(unused_imports)
-)]
+// path (`super::interface::volume_fold_*`); which of the three aliases a
+// given platform references varies (the adapters consume only eq/prefix,
+// spelling is reachable through them and the tests), so keep the allowance
+// unconditional — a per-platform cfg here is what let the wave's E0425 slip
+// past Linux verification in the first place.
+#[allow(unused_imports)]
 pub(crate) use path::{volume_fold_eq, volume_fold_prefix, volume_fold_spelling};
 pub use permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
