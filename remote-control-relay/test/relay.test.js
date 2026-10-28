@@ -343,8 +343,8 @@ test("registers a persistent endpoint and blind-forwards only v2 message types",
   assert.deepEqual(await webConnected, {
     v: 2,
     type: "web_client_connected",
-
-    web_rejoining: false,    endpoint_id: endpointId,
+    web_rejoining: false,
+    endpoint_id: endpointId,
     lease_id: web.joined.lease_id,
     stream_epoch: "epoch-a",
     after_seq: 41,
@@ -480,8 +480,8 @@ test("desktop can reconnect to the same endpoint within the offline TTL", async 
   assert.deepEqual(await connected, {
     v: 2,
     type: "web_client_connected",
-
-    web_rejoining: false,    endpoint_id: endpointId,
+    web_rejoining: false,
+    endpoint_id: endpointId,
     lease_id: web.joined.lease_id,
     stream_epoch: "epoch-r",
     after_seq: 77,
@@ -1400,8 +1400,11 @@ test("rejects a concurrent revoke while the first is still being persisted", asy
       endpoint_id: endpointId,
       reason: "first",
     }));
-    // Let the relay begin persisting the first revoke before racing it.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Let the relay begin persisting the first revoke before racing it:
+    // a macrotask hop lets the first frame enter relayStateMutation (the
+    // in-persistence flag is set synchronously on arrival), so the race is
+    // deterministic instead of trusting a wall-clock sleep to lose.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     web.ws.send(JSON.stringify({
       v: 2,
       type: "desktop_endpoint_revoke",
@@ -1528,5 +1531,18 @@ test("marks a rejoin after the web socket died, but not a takeover", async (t) =
   const takeover = await takeoverNotice;
   assert.equal(takeover.web_rejoining, false);
   assert.notEqual(takeover.lease_id, rejoin.lease_id);
+
+  // After the web session dies, a desktop re-registration must see the
+  // consistent no-web state (web_client_connected:false AND
+  // web_rejoining:false) — the rejoin flag describes the incumbent web
+  // session and dies with it; a stale true here would read as phantom
+  // lease state to preserve.
+  const disconnectSecond = nextMessage(desktop.ws, "web_client_disconnected");
   closeSocket(second.ws);
+  await disconnectSecond;
+  closeSocket(desktop.ws);
+  const reregistered = await registerDesktop(endpointId, accessToken, desktopSecret);
+  t.after(() => closeSocket(reregistered.ws));
+  assert.equal(reregistered.registered.web_client_connected, false);
+  assert.equal(reregistered.registered.web_rejoining, false);
 });

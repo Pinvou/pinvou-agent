@@ -129,6 +129,12 @@ journal. The Relay holds none of that business state.
    `client_ready` with `state_ready: true`. Only then may the desktop replay the
    ready-window events after the negotiated cursor and begin live delivery.
 
+A missing or non-boolean `state_ready` defaults to phase one (fail-closed):
+the client receives the capability snapshot but no business events until a
+`state_ready: true` handshake arrives. Clients that predate the two-phase
+handshake and never send the field will therefore stall at phase one against
+a current desktop; they must update their bundled UI.
+
 Within the forwarded `event` envelope, the authoritative chat-turn allowlist
 includes both `chat:user_message` (including `base_transcript_revision`) and
 `chat:transcript_committed`. They are authoritative round events, not local UI
