@@ -51,8 +51,9 @@ pub use os::path_identity_is_same_or_nested;
 // lane answers its credential blacklist through the same platform-aware
 // compares as the GUI's `path_policy` (byte-exact on Linux; Unicode
 // case-folding-aware on Windows and macOS — on those platforms the default
-// volume folds case at the filesystem layer, including the two non-ASCII
-// code points U+017F/U+212A that fold onto ASCII, so lexical checks that run
+// volume folds case at the filesystem layer, including the non-ASCII code
+// points that fold onto ASCII (U+017F/U+212A by simple case folding, and
+// U+0131 via NTFS's `$UpCase` uppercase table), so lexical checks that run
 // on the caller's spelling must fold to match what the volume will actually
 // resolve). The spelling `canonicalize` returns on a case-insensitive volume
 // is platform-defined (macOS realpath preserves the caller's spelling), so no

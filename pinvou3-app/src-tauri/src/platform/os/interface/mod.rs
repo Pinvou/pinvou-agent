@@ -12,6 +12,14 @@ pub use path::{
     path_identity_is_same_or_nested, path_relative_suffix_under, path_starts_with_folded,
     platform_compat_path, python_command, user_home_dir, validate_upload_location,
 };
+// The folding primitives are consumed by the os adapters through this module
+// path (`super::interface::volume_fold_*`); on byte-exact platforms only
+// their own unit tests reference them, so the aliases would be unused there.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(unused_imports)
+)]
+pub(crate) use path::{volume_fold_eq, volume_fold_prefix, volume_fold_spelling};
 pub use permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
     super_permission_turn_reminder,
