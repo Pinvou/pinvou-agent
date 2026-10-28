@@ -107,6 +107,9 @@ impl TimeOwner {
             self.snapshot = store.time_commit(host, &self.snapshot, &next, None)?;
             self.commit_uncertain = false;
         }
+        // First durably invalidate the previous observation, then refuse to
+        // use this Root until the protected product census permits it.
+        store.time_acquisition_preflight(host, &self.snapshot)?;
         // Policy missing is a safe fixed error, not a default profile. Capture
         // bytes are finally re-read by time_commit in its actual native TX.
         let policy = store.time_policy(seed, &self.snapshot)?;

@@ -1,5 +1,14 @@
 # Upgrade implementation progress
 
+T27 Windows time acquisition now performs a protected product-member census
+before any time or Root request, after invalidating an existing time observation.
+The publication transaction retains its own recheck. This is a temporary
+genesis-only safeguard, not shared Root promotion or member catch-up. Independent
+source review found no remaining in-scope defect. Two existing time-owner tests
+passed, but they do not exercise this preflight; actual SCM-bound zero-network,
+protected registry concurrency and Unknown persistence remain unverified. The
+user permits recording this environment-limited gap; no E2E was run.
+
 T27 check presentation: the current unimplemented application update check now
 returns an explicit unsupported error instead of claiming that the app is up to
 date without a network request. Manual checks show localized unsupported text;

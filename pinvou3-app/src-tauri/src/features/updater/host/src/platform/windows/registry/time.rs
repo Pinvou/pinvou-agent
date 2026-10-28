@@ -722,6 +722,38 @@ pub(super) fn initialize_in(
     Ok(())
 }
 impl Store {
+    /// Before any time or Root request, ensure that the protected product
+    /// still permits this member's current Root. The publisher repeats this
+    /// check in its own transaction after network work; this observation does
+    /// not confer time or Root authority.
+    #[allow(unsafe_code)]
+    pub(in crate::platform::windows) fn time_acquisition_preflight(
+        &self,
+        host: &StartedServiceContext,
+        expected: &TimeSnapshot,
+    ) -> Result<()> {
+        let seed = &host.context.seed;
+        let _guard = BootstrapGuard::acquire(seed, false)?;
+        let _product_guard = super::product_catalog::ProductGuard::acquire(seed)?;
+        let transaction = Handle::owned(unsafe {
+            CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 0, ptr::null())
+        })?;
+        let actual = self
+            .read_in(seed, Some(&transaction))?
+            .ok_or(Error::SetupIncomplete)?;
+        host.authenticate_running(&actual)?;
+        if Binding::from_host(&actual) != expected.state.binding {
+            return Err(Error::ScopeConflict);
+        }
+        let private = self
+            .key(false, Some(&transaction))?
+            .ok_or(Error::SetupIncomplete)?;
+        let observed = state_in(&private, &actual, Some(&transaction))?;
+        if observed.raw != expected.raw || observed.original_root != expected.original_root {
+            return Err(Error::ScopeConflict);
+        }
+        require_product_members_at_genesis_in(seed, &actual, &transaction)
+    }
     /// Complete ONLY fresh authenticated zero-obligation custody. There is no
     /// caller-provided source, numeric time, permission bool or owner callback.
     /// Existing legacy/missing custody remains paused and is never initialized.

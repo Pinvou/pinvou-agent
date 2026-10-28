@@ -620,6 +620,12 @@ already been implemented. Current delivery coverage is recorded in
 
 ## 2026-10-28 — Product Root deny policy
 
+When a product already has a protected shared Root history, a new configuration
+must first verify that history and catch up to the protected shared Root, then
+obtain fresh trusted time under its own policy. Its deny list applies only to new
+Root advances after it joins; it does not retroactively invalidate previously
+accepted history.
+
 For a client advancing a shared product Root, the owner approved verifying the
 advance against the union of the currently confirmable key-deny lists of every
 registered member of that product. A missing, damaged or unconfirmable member
