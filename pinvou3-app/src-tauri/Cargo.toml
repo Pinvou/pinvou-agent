@@ -138,6 +138,12 @@ codewhale-execpolicy = { path = "../../CodeWhale/crates/execpolicy" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking", "stream", "query", "system-proxy"] }
 wait-timeout = "0.2"
 
+# ACP resource ledger: aggregate RSS + process-tree ownership on Linux/macOS/Windows.
+# Pin 0.36.x for the project's MSRV line; newer sysinfo majors require a newer
+# rustc. Disable disk/network/user/component probes because the ledger only
+# samples processes.
+sysinfo = { version = "=0.36.1", default-features = false, features = ["system"] }
+
 # rustls 直依赖:仅为在启动时调 aws_lc_rs::default_provider().install_default()
 # 选定进程级 CryptoProvider(见上方 panic 根因)。只声明 aws-lc-rs;ring 由传递依赖启用。
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
