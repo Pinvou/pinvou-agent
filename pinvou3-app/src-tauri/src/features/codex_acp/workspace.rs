@@ -131,7 +131,19 @@ struct WorkspaceBaseline {
 pub fn list_workspace(root: &Path, relative_path: Option<&str>) -> Result<WorkspaceListing> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path.unwrap_or_default())?;
+    // Round-7 复审:与 preview/diff 同策略,被请求的目录本身途经凭据组件
+    // 时整体拒绝,而不是回一个空列表——「成功空列表 vs 报错」的分叉本身
+    // 会泄露黑名单目录的存在(列表与搜索不外泄其存在,见下方
+    // workspace_entry 的过滤注释;子项过滤挡不住「这个目录可列」的信号)。
+    if relative_path_crosses_blocked_component(&relative) {
+        bail!("工作区路径途经凭据文件，拒绝列出: {relative}");
+    }
     let directory = resolve_existing_path(&root, &relative, true)?;
+    // 解析腿(与 preview 车道同约束):「链接名清白」的符号链接
+    // (notes -> .aws)解析落点在黑名单目录上时同样拒绝。
+    if path_crosses_blocked_component(&directory) {
+        bail!("工作区路径途经凭据文件，拒绝列出: {relative}");
+    }
     let mut entries = Vec::new();
     for entry in fs::read_dir(&directory)
         .with_context(|| format!("读取工作目录失败: {}", directory.display()))?
@@ -2329,7 +2341,9 @@ mod tests {
     }
 
     /// 列表与搜索静默跳过凭据组件条目（同 file_access::list_host_files 的
-    /// 模式）；被列入的目录本身在黑名单内时其子项同样不可见。
+    /// 模式）。Round-7 复审:被点名的黑名单目录从「空列表成功」改为整体
+    /// 拒绝——「成功空列表 vs 报错」的分叉本身会泄露黑名单目录的存在;
+    /// 拒绝在词法腿触发、不触盘,对存在与否无感(与 preview 车道同形)。
     #[test]
     fn list_and_search_skip_credential_components() {
         let root = TestDir::new("credential-listing");
@@ -2350,12 +2364,10 @@ mod tests {
             "credential entries must be skipped, got: {:?}",
             listing.entries
         );
-        let aws_listing = list_workspace(root.path(), Some(".aws")).unwrap();
-        assert!(
-            aws_listing.entries.is_empty(),
-            "listing inside a blocked directory must leak nothing, got: {:?}",
-            aws_listing.entries
-        );
+        let aws_error = list_workspace(root.path(), Some(".aws"))
+            .err()
+            .expect("a blocked directory must be refused, not listed as empty");
+        assert!(aws_error.to_string().contains("凭据"), "got: {aws_error}");
         let sub_listing = list_workspace(root.path(), Some("sub")).unwrap();
         assert!(!sub_listing.entries.iter().any(|entry| entry.name == ".ssh"));
 
@@ -2498,6 +2510,91 @@ mod tests {
         assert!(resolve_workspace_references(root.path(), &["notes.txt".to_string()]).is_err());
     }
 
+    /// Round-7 复审 M2:差异车道解析腿在「已跟踪文件类型变更」场景下是
+    /// 唯一防线——notes.txt 原是已跟踪普通文件,后被替换成指向 .env 的
+    /// 符号链接(脏的类型变更)。词法腿只看得到清白名;untracked 臂不
+    /// 参与(文件已跟踪);preview/untracked 的下游复检也不可达——只有
+    /// workspace_diff 级的 canonicalize 复检能拦住。删除该解析腿此前
+    /// 46/46 全绿(该腿完全无钉),本钉把回归变成红灯。
+    #[test]
+    #[cfg(unix)]
+    fn workspace_diff_resolved_leg_blocks_tracked_typechanged_symlink() {
+        use std::os::unix::fs::symlink;
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping workspace_diff_resolved_leg_blocks_tracked_typechanged_symlink: git binary not available"
+            );
+            return;
+        }
+        let root = TestDir::new("credential-typechange-diff");
+        let repo = root.path();
+        run_git(repo, &["init", "-b", "main", "."]);
+        run_git(repo, &["config", "user.name", "test"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("notes.txt"), "hello\n").unwrap();
+        run_git(repo, &["add", "notes.txt"]);
+        run_git(repo, &["commit", "-m", "init"]);
+        fs::write(repo.join(".env"), "SECRET=1\n").unwrap();
+        fs::remove_file(repo.join("notes.txt")).unwrap();
+        symlink(".env", repo.join("notes.txt")).unwrap();
+
+        let error = workspace_diff("s-typechange", repo, "notes.txt")
+            .err()
+            .expect("a tracked file type-changed onto a credential symlink must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
+    /// Round-7 复审:列表车道对「被请求目录本身」的黑名单判定——目录级
+    /// 请求回空列表 vs 报错的分叉会泄露黑名单目录的存在,词法腿必须整体
+    /// 拒绝;清白目录照常可列,根目录列表的子项过滤保持不变。
+    #[test]
+    fn list_refuses_blocked_directory_requests() {
+        let root = TestDir::new("credential-list-dir");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        fs::write(root.path().join(".aws/credentials"), "k=v\n").unwrap();
+        fs::create_dir_all(root.path().join("docs")).unwrap();
+        fs::write(root.path().join("docs/readme.md"), "hi\n").unwrap();
+
+        let error = list_workspace(root.path(), Some(".aws"))
+            .err()
+            .expect("a blocked directory must be refused, not listed as empty");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        let listing = list_workspace(root.path(), Some("docs"))
+            .expect("an ordinary directory must still list");
+        assert_eq!(listing.entries.len(), 1);
+        let listing = list_workspace(root.path(), None).expect("the root must still list");
+        assert!(
+            listing.entries.iter().all(|entry| entry.name != ".aws"),
+            "blocked children stay filtered from the root listing: {:?}",
+            listing
+                .entries
+                .iter()
+                .map(|entry| &entry.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Round-7 复审:列表车道解析腿——「链接名清白」的符号链接指向凭据
+    /// 目录时同样拒绝(子项过滤挡不住「这个目录可列」的存在信号)。
+    #[test]
+    #[cfg(unix)]
+    fn list_refuses_symlinked_blocked_directories() {
+        use std::os::unix::fs::symlink;
+        let root = TestDir::new("credential-list-symlink");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        symlink(".aws", root.path().join("innocent-link")).unwrap();
+
+        let error = list_workspace(root.path(), Some("innocent-link"))
+            .err()
+            .expect("a clean-named symlink onto a blocked directory must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
     /// changes 车道与列表/搜索同约束:黑名单组件的存在本身(名称/状态
     /// 元数据)不得回显给手机端。
     #[test]
@@ -2524,6 +2621,12 @@ mod tests {
     /// `.env` 不得让整个 changes 调用失败,更不得出现在列表里。上方非 git
     /// 钉只覆盖过滤本身;本钉在真实 git 仓库上锁住排序(EACCES 腿仅
     /// unix;Windows 无 chmod 语义,过滤断言在所有平台都成立)。
+    /// Round-7 复审 M4:排序要真实可观察,必须先采集基线——没有基线时
+    /// `classify_origin` 在任何内容读取之前就短路成 "unknown",chmod 000
+    /// 的 `.env` 根本不会被读到,把 retain 挪到分类之后测试仍然全绿
+    /// (钉住的只是过滤,不是排序)。基线在权限收紧前采集(指纹正常),
+    /// 之后 `classify_origin` 对过滤幸存的清白文件求指纹;一旦排序退化,
+    /// 不可读的 `.env` 被求指纹 → EACCES → 整个调用失败,本测试即红。
     #[test]
     fn workspace_changes_git_arm_filters_credentials_before_content_classification() {
         if std::process::Command::new("git")
@@ -2536,6 +2639,10 @@ mod tests {
             );
             return;
         }
+        // baseline 文件路径派生自 PINVOU3_HOME,与改 home 的测试并发会互相误删目录。
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let root = TestDir::new("credential-changes-git");
         let repo = root.path();
         run_git(repo, &["init", "-b", "main", "."]);
@@ -2547,6 +2654,8 @@ mod tests {
         run_git(repo, &["commit", "-m", "init"]);
         fs::write(repo.join(".env"), "SECRET=2\n").unwrap();
         fs::write(repo.join("notes.md"), "hello v2\n").unwrap();
+        capture_baseline("s-changes-git", repo)
+            .expect("the baseline must be captured while every dirty file is readable");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -2569,6 +2678,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(repo.join(".env"), fs::Permissions::from_mode(0o644)).unwrap();
         }
+        let _ = fs::remove_file(baseline_path("s-changes-git"));
     }
 
     /// 大小写变体经真实入口的端到端钉(macOS 独有意义:APFS 默认卷大小写
