@@ -59,27 +59,33 @@ CodeWhale 路径保护还有两个旁路：用户持久化的 `trusted_external_
 仅适用于公开 GAIA 数据。允许 session workspace 只读和公网检索。搜索 query、请求 URL、
 网页内容及图片可能发送到配置的外部 provider；入口和报告必须披露。
 
-exact allowlist（canonical 家族名，与底座 agent 注册面逐字一致）：
+exact allowlist（canonical 工具名，与 `product_runtime/eval_tool_policy.rs` 的
+`GAIA_PUBLIC_WEB_V1_ALLOWED_TOOLS` 逐字一致）：
 
 ```text
-File
+read
+list_dir
+file_search
+grep_files
 Web
 image_analyze
 ```
 
-`File` 在受限轮启用 read-only dispatch：模型可见 schema 投影为只读
-（read/list/search 类 action），写动作在最终分发前再次拒绝，不依赖审批。
-`Web` 为家族级粒度，受既有 `fetch_url` SSRF 防护约束。
+四个文件工具均为只读工具，不含写动作；`Web` 为家族级粒度，受既有 `fetch_url`
+SSRF 防护约束。已退役的 `File` 名在提示词中明令禁止。
 
 ### `pinvou-gaia-offline/v1`
 
 适用于私人、客户或未公开数据，只允许 session workspace 本地只读：
 
 ```text
-File
+read
+list_dir
+file_search
+grep_files
 ```
 
-同样启用 read-only dispatch。不得暴露 `Web` 或远程 `image_analyze`。只有经验证完全本地执行的
+四个文件工具同样均为只读。不得暴露 `Web` 或远程 `image_analyze`。只有经验证完全本地执行的
 vision backend 才能加入 offline profile，否则图片分析固定返回能力错误。
 
 ### `pinvou-read-only-web/v1`
