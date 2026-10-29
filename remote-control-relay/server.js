@@ -1473,11 +1473,16 @@ server.listen(PORT, HOST, () => {
     + `, ws_buffer_high_water=${WS_MAX_BUFFERED_BYTES}B`
     + `, endpoint_create_limit=${ENDPOINT_CREATE_LIMIT}/${ENDPOINT_CREATE_WINDOW_MS}ms`
     + `, endpoint_offline_ttl=${ENDPOINT_OFFLINE_TTL_MS}ms`
+    // Bounded knobs an operator typo can silently alter (an empty heartbeat
+    // value clamps to the floor, a large MAX_REVOKED_ENDPOINTS clamps to the
+    // state cap); like revoked_capacity below, show the effective values.
+    + `, heartbeat=${HEARTBEAT_INTERVAL_MS}ms`
     + `, revoked_endpoints=${revokedEndpoints.size}`
     // The effective capacity, after the state-size clamp: an operator setting
     // MAX_REVOKED_ENDPOINTS above it is silently capped and needs to see the
     // real value (MAX_RELAY_STATE_BYTES is what raises it).
     + `, revoked_capacity=${MAX_REVOKED_ENDPOINTS}`
+    + `, max_relay_state=${MAX_RELAY_STATE_BYTES}B`
     + `, max_payload=${MAX_PAYLOAD_BYTES})`,
   );
 });
