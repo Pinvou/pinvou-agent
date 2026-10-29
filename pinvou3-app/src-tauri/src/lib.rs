@@ -1392,15 +1392,24 @@ pub fn run() {
                             let sid = session_id.to_string();
                             let messages = messages.to_vec();
                             let store = store.clone();
+                            // r39 minor 1：火时刻截止在钩子触发时（persist 锁内、
+                            // 线程 spawn 前）捕获——异步线程与新一轮快照登记竞速，
+                            // 纯 turn > kept 谓词会把火后合法登记的 kept+1 轮
+                            // 锚点一并作废（入口永久降级、无自愈）。
+                            let fired_at = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|value| value.as_secs() as i64)
+                                .unwrap_or_default();
                             std::thread::spawn(move || {
                                 let Ok(roots) = store.session_roots(&sid) else {
                                     return;
                                 };
                                 let kept = crate::features::code_checkpoints::count_user_turns(&messages);
                                 if let Err(error) =
-                                    crate::features::code_checkpoints::invalidate_turn_checkpoints_after(
+                                    crate::features::code_checkpoints::invalidate_turn_checkpoints_after_created_until(
                                         &roots.ledger,
                                         kept,
+                                        fired_at,
                                     )
                                 {
                                     log::warn!(

@@ -111,9 +111,11 @@ export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { bu
     backendUserTurns >= 0 &&
     ordinal !== backendUserTurns + steeredBeyondBackend
   ) {
-    // r36 M1：尾部降级收紧为恰差 1 个最新缺失边界（busy+1 已有容忍；idle
-    // 只放宽到同款 +1）。更大的缺口（压缩漂移、预算禁用累积）维持诚实拒绝，
-    // 而非渲染不安全的仅对话 chip。
+    // r36 M1：尾部降级收紧为恰差 1 个最新缺失边界——且仅在 busy 在途时容忍
+    // （发送期间的乐观用户气泡尚未落盘，后端计数慢恰一步）。idle 时一律精确
+    // 比对：更大的缺口（压缩漂移、预算禁用累积）维持诚实拒绝，而非渲染
+    // 不安全的仅对话 chip。压缩缺口的自愈不在本门：chat:compaction done 的
+    // 真实收缩臂失效缓存 buffer（r39 M1），下次盘载重注水后两侧计数重新对齐。
     if (busy && ordinal === backendUserTurns + steeredBeyondBackend + 1) {
       return entries;
     }

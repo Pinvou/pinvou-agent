@@ -114,6 +114,9 @@ feat 分支没有的部分，本方案新增：
 | 临时会话（两根相同） | exclude 自递归规则已覆盖（移植自带测试） |
 | 空目录创建 | git 只跟踪文件内容，空目录不进快照、不出现在 diff 预览（固有语义，非 bug）；目录内一旦有文件即正常覆盖，回退时 `clean -fd` 连空目录一并清除，恢复语义完整。不做占位文件 hack（污染用户项目） |
 | shell 后台任务跨 turn 写入 | turn 边界快照只覆盖快照时刻的工作区；exec_shell 后台任务在 turn 结束后的迟到写入不归属任何 turn，回退可能带上它们（best-effort，不承诺） |
+| 消息中继（messaging relay）投递的轮次 | spool watcher 的 idle-target 臂经 `deliver_messaging_turn` 启动原生 turn，不经过两处 `create_turn_checkpoint` 调用点——该类边界永久为「仅回退对话」（conversation-only），序号保持全量口径不失真（r39 minor 7 披露；快照化需同一车道闸，v2 评估） |
+| 撤销回退（undo）后的入口可见性 | undo 还原代码+对话但不重建 Turn 快照：账本末条 Turn 仍停在回退保留的 keep 值，调和门对恢复出的全量时间线维持诚实隐藏（缺口 > busy 容忍），直到下一次发送登记新 Turn 快照后重新对齐——此后对中间轮的再回退按「仅回退对话」降级（快照已被回退作废且 undo 不逆转，见 §8 第 3 条）。诚实隐藏但成因此前未解释（r39 minor 9 披露） |
+| ChatView 归属检查的渲染滞后 | `ownsSession` 读取 render-lagged 的 `activeSessionIdRef`：会话切换的 await 窗口内发起的回退续写可能覆盖用户在途切换（下一次点击自愈；r39 minor 9 披露，v2 随归属检查重构收敛） |
 | LRU 预算共享 | PreRestore 条目与 Turn 快照共享 index 上限 20：频繁回退会加速淘汰可用 Turn 快照，老节点更早退化为「仅回退对话」。v1 接受，不分开计价 |
 
 ## 6. 共享执行根：三道防线

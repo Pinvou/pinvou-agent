@@ -1789,6 +1789,12 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     getBuffer, markRemoteTurn,
     reconcileRemoteTurn, saveWorkingSetTo,
     hydratedMessageKey,
+    // r39 M1：压缩收缩后时间线↔账本计数调和——chat-events 的 chat:compaction
+    // done（真实收缩臂）失效被压缩会话的缓存 buffer（活动会话含 live 投影），
+    // 并对活动会话强制盘载重注水。原语与 rewind 重载共用（见 bridge.sessions
+    // 上的同名字段）；desktop only，chat-events 仅在 tauri 桥装配。
+    invalidateSessionBuffer,
+    switchToSessionInternal,
     thinkingTool: function (...args) { return thinkingTool(...args); },
     thinkingIdle: function (...args) { return thinkingIdle(...args); },
     startThinking: function (...args) { return startThinking(...args); },

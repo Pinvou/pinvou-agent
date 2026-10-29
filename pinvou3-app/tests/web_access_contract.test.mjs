@@ -476,11 +476,11 @@ assert.match(turnsSource,
   'counts_as_user_turn 必须排除步数预算通知——删掉排除条件必须变红（r10-M3 接线锚）');
 
 assert.match(rustCommandBlock(commands, 'chat'),
-  /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{[\s\S]{0,1700}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
-  'chat() must gate the pre-send snapshot on !is_scheduled (scheduled excluded) and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
+  /if !store\.is_scheduled_session\(&sid\)\.unwrap_or\(true\)\s*&& !crate::features::sessions::is_aux_session_id\(&sid\)\s*\{[\s\S]{0,1700}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'chat() must gate the pre-send snapshot on the alias-defeating !is_scheduled_session (r39 minor 6: one predicate with the refusal gates) and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
 assert.match(rustCommandBlock(commands, 'accept_plan'),
-  /if store\.scheduled_profile\(&session_id\)\.is_none\(\)\s*&& !crate::features::sessions::is_aux_session_id\(&session_id\)\s*\{[\s\S]{0,900}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
-  'accept_plan() must gate the pre-send snapshot on scheduled_profile(&session_id).is_none() and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
+  /if !store\.is_scheduled_session\(&session_id\)\.unwrap_or\(true\)\s*&& !crate::features::sessions::is_aux_session_id\(&session_id\)\s*\{[\s\S]{0,900}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'accept_plan() must gate the pre-send snapshot on the alias-defeating !is_scheduled_session (r39 minor 6) and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
 assert.match(rustCommandBlock(commands, 'accept_plan'),
   /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'accept_plan() must reject ACP sessions with the shared lane-rejected literal');

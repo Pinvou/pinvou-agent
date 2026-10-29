@@ -227,6 +227,24 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(rewindEntriesByTurnId(turns, checkpoints, 1, { busy: true }).size, 0, 'busy 但差 2（压缩）→ 仍拒绝');
 }
 
+// r39 M1 compaction→send pin：压缩把账本收缩到 kept M 并作废截断分支 Turn
+// 快照；chat:compaction done 真实收缩臂失效缓存 buffer 后，下次盘载按收缩后
+// transcript 重注水——时间线 M 与账本 M 重新对齐，chips 恢复渲染；重注水后
+// 首轮发送的乐观气泡走 busy 恰差 1 容忍，chips 必须仍在。未失效的陈旧全量
+// 时间线（N vs M，缺口 >1）维持诚实隐藏——那正是失效臂要终结的永久形状
+// （评审 r36/r37/r38/r39 连续四轮的 compaction-hides-chips MAJOR）。
+{
+  const keptTurns = [userTurn('k1'), userTurn('k2')];
+  const keptCheckpoints = [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+  ];
+  assert.equal(rewindEntriesByTurnId(keptTurns, keptCheckpoints, 2).size, 2, '压缩重注水后（时间线 M == 账本 M，idle）→ chips 恢复渲染');
+  assert.equal(rewindEntriesByTurnId(keptTurns, keptCheckpoints, 2, { busy: true }).size, 2, '重注水后首轮发送（busy 恰差 1）→ chips 必须仍在');
+  const staleTurns = [userTurn('t1'), userTurn('t2'), userTurn('t3'), userTurn('t4')];
+  assert.equal(rewindEntriesByTurnId(staleTurns, keptCheckpoints, 2, { busy: true }).size, 0, '未失效的陈旧时间线（N vs M 缺口 >1）→ 诚实隐藏');
+}
+
 // committed-steer 容忍（评审 r24 M4）：steer 提交后是真实用户气泡（durable
 // 重载经 markSteered 重建，时间线序号计入），但后端不打 Turn 快照、ledger
 // 计数要等下一次快照才包含——快照之后提交的 steer（ordinal > backend 的
@@ -256,8 +274,9 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   // 非 steer 缺口（如压缩收缩）：r34 MAJOR-4 起尾部边界按快照支撑分类——
   // 尾部无快照（快照失败/缺失）→ 降级为仅对话照常渲染；尾部有快照支撑 →
   // 精确匹配维持拒绝（真实分叉信号不被掩盖）。
-  // r36 M1：尾部降级收紧为恰差 1（busy+1 已有容忍）——更大的缺口（压缩
-  // 漂移、预算禁用累积）维持诚实拒绝，而非渲染不安全的仅对话 chip。
+  // r36 M1：尾部降级收紧为恰差 1——且恰差 1 的容忍仅在 busy 在途时成立
+  // （发送期间的乐观气泡；idle 一律精确比对）。更大的缺口（压缩漂移、预算
+  // 禁用累积）维持诚实拒绝，而非渲染不安全的仅对话 chip。
   assert.equal(
     rewindEntriesByTurnId([userTurn('t1'), userTurn('t2'), userTurn('t3')], checkpoints2, 2).size,
     0,

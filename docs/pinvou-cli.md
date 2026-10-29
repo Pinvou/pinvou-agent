@@ -163,7 +163,20 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   rewind a session whose GUI Code session may be mid-turn or merely open.
   Deny-drift (r24 M7): work-mode (plain chat) sessions the GUI can now rewind
   are refused by `code checkpoints` (it still gates on native code sessions) —
-  deny-only; a work-mode session has no CLI rewind entry at all.
+  deny-only; a work-mode session has no CLI rewind entry at all. The aux-chat
+  axis (r39 minor 8 wording): aux side-chat sessions are refused the same way
+  (`checkpoints` gates them out everywhere — no snapshot ledger exists for
+  them), so `code checkpoints` refusals name the actual axis (work-mode → GUI
+  only; aux → not checkpointed at all). `checkpoints rewind <turn>` keep-N
+  semantics (r39 minor 8): `<turn>` is the keep count — the number of most
+  recent user turns to keep intact; the working tree and transcript are
+  rewound to the state before turn `keep+1` (so `rewind 0` clears all turns,
+  and the CLI's turn axis is the native-code session's user-turn count, not a
+  UI turn ordinal). A crashed rewind surfaces `pending_rewind_conflict` on a
+  different-boundary retry (r39 M2) and the shared refusal copy names the
+  per-surface remedy: desktop send reconciles automatically; headless has no
+  reconcile-on-send entry, so remove `pending_rewind.json` in the session's
+  checkpoint ledger root before retrying.
   Old-binary skew (r33 minor 25): a pre-PR binary ignores `pending_rewind.json`
   and runs the stale sweep unconditionally mid-pending — the exact r26-M2 wedge;
   upgrade the binary before rewinding a session a newer GUI has touched. Similarly, `agent run

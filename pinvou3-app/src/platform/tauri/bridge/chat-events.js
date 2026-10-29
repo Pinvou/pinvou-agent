@@ -61,6 +61,12 @@ function pinvouSharedtauriChatEvents() {
     const extractArtifactPaths = context.extractArtifactPaths;
     const fileMutationAction = context.fileMutationAction;
     const normalizedPath = context.normalizedPath;
+    // r39 M1：压缩收缩重同步原语（bridge.js 注入；desktop only）。失效原语与
+    // rewind 重载共用（bridge.sessions.invalidateSessionBuffer / 回退重载走的
+    // switchToSessionInternal forceDurableLoad 变体），缺席时（旧桥壳/异常装配）
+    // 退化为现状——不失效、调和门诚实隐藏，不新增崩溃面。
+    const invalidateSessionBuffer = context.invalidateSessionBuffer;
+    const switchToSessionInternal = context.switchToSessionInternal;
 
     // Stream text can arrive much faster than a WebView can paint. Publish at
     // most once per animation frame, with a bounded timer fallback for hidden
@@ -1230,7 +1236,8 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   }); });
 
   listen("chat:compaction", function (e) { onSessionEvent(e, function () {
-    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
+    const compactionSid = e.payload && e.payload.session_id;
+    if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
     const msg = e.payload && e.payload.message || "";
     const auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
@@ -1245,9 +1252,38 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
+    // r39 M1：真实收缩（before≠after；计数缺失按收缩保守处理）后，缓存 buffer
+    // 停留在压缩前快照，而后端收缩钩子已把账本冻结在 kept 并作废截断分支的
+    // Turn 快照——调和门按时间线全量气泡数出的序号与账本计数失配（busy 容忍
+    // 恰差 1 盖不住压缩缺口），所有回退入口被诚实隐藏且无自愈路径。失效该会话
+    // 的缓存 buffer，活动会话立即强制盘载重注水：时间线按收缩后 transcript
+    // 重建，序号与账本计数重新对齐，chips 恢复渲染。done 通知条在重注水完成
+    // 后补挂（盘载会整体重建时间线，先挂会被吞掉）；后台会话先失效再挂——
+    // 事件为无缓存会话重建的空桩 buffer 不被切换快速路径采纳（见
+    // switchToSessionInternal 的 loadedFromDisk 判定），切回自然落盘载。
+    // 压缩多发生在 turn 途中（上下文超限自动触发）：盘载与在途流式并存时，
+    // 未决 token 积累在 pending 缓冲、随消息边界落在新 buffer 上，chat:done
+    // 对账兜底——宁可短暂闪动也不留陈旧全量时间线。
+    const compactionShrank = phase === "done" &&
+      (!Number.isFinite(before) || !Number.isFinite(after) || before !== after);
+    const compactionActive = !!compactionSid && compactionSid === state.activeSessionId;
+    const compactionNotice = bt("compactDone") + auto + " " + msg;
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
-    else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
+    else if (phase === "done") {
+      if (compactionShrank && compactionActive &&
+          typeof invalidateSessionBuffer === "function" && typeof switchToSessionInternal === "function") {
+        invalidateSessionBuffer(compactionSid);
+        Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
+          .then(function () { addSystemItem(compactionNotice); })
+          .catch(function () {});
+      } else if (compactionShrank && !compactionActive && typeof invalidateSessionBuffer === "function") {
+        invalidateSessionBuffer(compactionSid);
+        addSystemItem(compactionNotice);
+      } else {
+        addSystemItem(compactionNotice);
+      }
+    }
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
   }); });
