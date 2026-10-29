@@ -697,6 +697,88 @@ fn reconcile_journal_cleanup_failure_folds_host_paths_before_the_relay() {
     drop(home);
 }
 
+/// Round-7 复审:enabled 车道 `runtime_snapshot` 的 `runtime_path` 字段此前
+/// 只有 disabled 车道的钉（io::tests::runtime_snapshot_payloads_carry_redacted_paths），
+/// 把 render.rs:236 回退成裸 `path.display()` 时没有任何用例变红。本钉走真实
+/// enabled 车道（zh-Hans + memory_enabled，与 organize 用例同款开关），内容级
+/// 断言 `runtime_path` 只带 `~/.pinvou3` 折叠前缀、绝对存储根不出现——该字段
+/// 随成功载荷出站（get_memory_overview / 写命令均在 Web 访问策略内）。
+#[test]
+fn runtime_snapshot_enabled_path_folds_host_paths_in_runtime_path() {
+    let home = IsolatedPinvouHome::new("runtime-redaction-enabled");
+    enable_memory_for_tests();
+    let snapshot = runtime_snapshot("sess-redact-enabled").expect("enabled runtime snapshot");
+    assert!(
+        !snapshot
+            .runtime_path
+            .contains(home.root.to_string_lossy().as_ref()),
+        "runtime_path must not carry the absolute home path: {}",
+        snapshot.runtime_path
+    );
+    assert!(
+        snapshot.runtime_path.starts_with("~/.pinvou3/"),
+        "runtime_path must use the redacted storage-root prefix: {}",
+        snapshot.runtime_path
+    );
+    assert!(
+        snapshot.runtime_path.contains("sess-redact-enabled"),
+        "runtime_path must still point at this session's runtime file: {}",
+        snapshot.runtime_path
+    );
+    drop(home);
+}
+
+/// Round-7 复审:快照文档结构化 JSON 的 `source_dir` 与 `files.*` 路径字段是
+/// 随「同步记忆」落盘的诊断件（render.rs 的 json! 块），未来经同步/回显通道
+/// 出站；此前没有内容级钉，回退成裸 `display()` 时全部用例仍绿。本钉解析真实
+/// `write_memory_snapshot_document` 产物中的结构化块，逐字段断言折叠前缀、
+/// 并断言整份文档不含绝对存储根拼写。
+#[test]
+fn snapshot_document_structured_paths_fold_host_prefixes() {
+    let home = IsolatedPinvouHome::new("snapshot-doc-redaction");
+    let profile = MemoryProfile {
+        version: PROFILE_VERSION,
+        ..MemoryProfile::default()
+    };
+    let path =
+        write_memory_snapshot_document(&profile, &[], &[], &[], &[], &[], &[], &[], None).unwrap();
+    let doc = fs::read_to_string(&path).unwrap();
+    let home_text = home.root.to_string_lossy().to_string();
+    assert!(
+        !doc.contains(home_text.as_str()),
+        "snapshot document must not carry the absolute storage root anywhere"
+    );
+
+    let start = doc.find("~~~json\n").expect("structured snapshot block") + "~~~json\n".len();
+    let end = start
+        + doc[start..]
+            .find("\n~~~")
+            .expect("structured block terminator");
+    let raw: serde_json::Value = serde_json::from_str(&doc[start..end]).unwrap();
+    assert_eq!(
+        raw["source_dir"].as_str().unwrap(),
+        "~/.pinvou3/user/memory",
+        "source_dir must use the redacted storage-root prefix"
+    );
+    let files = raw["files"].as_object().expect("files object");
+    assert!(
+        !files.is_empty(),
+        "the structured snapshot must enumerate the store paths"
+    );
+    for (key, value) in files {
+        let value = value.as_str().expect("file path string");
+        assert!(
+            value.starts_with("~/.pinvou3/"),
+            "files.{key} must use the redacted storage-root prefix: {value}"
+        );
+        assert!(
+            !value.contains(home_text.as_str()),
+            "files.{key} must not carry the absolute home path: {value}"
+        );
+    }
+    drop(home);
+}
+
 #[cfg(windows)]
 #[test]
 fn topic_migration_replacefile_failure_keeps_old_authority() {

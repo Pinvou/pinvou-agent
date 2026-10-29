@@ -995,4 +995,49 @@ mod tests {
         assert_eq!(cleanup["code"], "memory_topic_cleanup_required");
         assert_eq!(cleanup["source"], "preferences");
     }
+
+    /// Round-7 复审:overview 的 `snapshot_path` 展示字段随 Web 访问策略出站
+    /// （get_memory_overview 在允许清单内），回退成裸 `path.display()` 会把
+    /// 存储根绝对路径带过 relay。该字段的脱敏点（write_memory_snapshot_document
+    /// 成功臂）此前没有内容级钉。`State<'_, SessionStore>` 无法在测试中安全
+    /// 构造（tauri 2.12 的 State 字段私有、仓库未启用 tauri "test" 特性、无
+    /// mock_app 先例——checkpoints.rs 测试同款结论），故以单引用字段 newtype
+    /// 的等宽 transmute 装入 State，驱动真实命令体：空 store + 无入参 →
+    /// runtime=None → 写快照 → snapshot_path 必须是 `~/.pinvou3` 折叠形态。
+    #[test]
+    fn overview_snapshot_path_folds_host_paths_before_the_relay() {
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-overview-snapshot-path-redact",
+            || {
+                let root = crate::platform::paths::pinvou3_home();
+                let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                    root.join("scheduled"),
+                )
+                .expect("session store");
+                // SAFETY: State<'r, T> 是单引用字段的 newtype，transmute 两侧
+                // 大小由编译器静态校验一致；引用生命周期随 'r 存续到本闭包
+                // 结束，State 仅在被测命令内经 Deref 只读使用，不引入新的
+                // 别名或对齐约束。
+                let state: State<'_, SessionStore> = unsafe {
+                    std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(&store)
+                };
+                let overview = tauri::async_runtime::block_on(get_memory_overview(None, state))
+                    .expect("overview");
+                assert!(
+                    overview.sources["snapshot"].available,
+                    "a fresh home must produce a written snapshot document"
+                );
+                let home_text = root.to_string_lossy().to_string();
+                assert!(
+                    !overview.snapshot_path.contains(home_text.as_str()),
+                    "snapshot_path must not carry the absolute storage root: {}",
+                    overview.snapshot_path
+                );
+                assert_eq!(
+                    overview.snapshot_path, "~/.pinvou3/user/memory/snapshot.md",
+                    "snapshot_path must use the redacted storage-root prefix"
+                );
+            },
+        );
+    }
 }
