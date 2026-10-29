@@ -195,6 +195,25 @@ function rawRequest(hostPort, requestText) {
   });
 }
 
+// Builds one masked client-to-server frame with an empty payload: data
+// frames carry text, control frames (pong) none. The ws client answers a
+// server close frame automatically, so tests that must withhold the close
+// handshake drive a raw socket with hand-built frames instead.
+function maskedClientFrame(opcode, payload = Buffer.alloc(0)) {
+  const mask = Buffer.from([0x2a, 0x5a, 0x1b, 0x6b]);
+  const masked = Buffer.alloc(payload.length);
+  for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4];
+  const header = Buffer.alloc(payload.length < 126 ? 2 : 4);
+  header[0] = 0x80 | opcode;
+  if (payload.length < 126) {
+    header[1] = 0x80 | payload.length;
+  } else {
+    header[1] = 0x80 | 126;
+    header.writeUInt16BE(payload.length, 2);
+  }
+  return Buffer.concat([header, mask, masked]);
+}
+
 // Spawns a relay expected to die during startup and asserts that it exits
 // nonzero leaving exactly one fixed [relay-error] line behind. The optional
 // callback sees the child before it is stopped, for assertions beyond the
@@ -1048,6 +1067,80 @@ test("closes a websocket that does not authenticate in time", async () => {
     assert.equal((await error).code, "authentication_timeout");
     await waitForClose(ws);
   } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("a policy close terminates a peer that withholds the close handshake", async () => {
+  // ws.close() waits for the peer's half of the close handshake; a hostile
+  // peer that never answers would otherwise keep the socket open — receiving
+  // frames outside ingress accounting — until ws's own 30 s close timeout.
+  // The drain deadline must destroy such a socket far sooner, after the
+  // queued error message has been delivered.
+  const isolated = await spawnRelay({ WS_AUTH_TIMEOUT_MS: "800" });
+  const socket = connect(isolated.port, "127.0.0.1");
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once("error", reject);
+      socket.once("connect", resolve);
+    });
+    const key = Buffer.alloc(16, 7).toString("base64");
+    socket.write(
+      "GET /pinvou3/remote/ws HTTP/1.1\r\n"
+      + `Host: 127.0.0.1:${isolated.port}\r\n`
+      + "Upgrade: websocket\r\n"
+      + "Connection: Upgrade\r\n"
+      + `Sec-WebSocket-Key: ${key}\r\n`
+      + "Sec-WebSocket-Version: 13\r\n\r\n",
+    );
+    let received = Buffer.alloc(0);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no 101 upgrade")), 5000);
+      const onData = (chunk) => {
+        received = Buffer.concat([received, chunk]);
+        if (!received.includes("\r\n\r\n")) return;
+        clearTimeout(timer);
+        socket.off("data", onData);
+        socket.on("data", (more) => { received = Buffer.concat([received, more]); });
+        assert.match(received.toString("latin1"), /^HTTP\/1\.1 101/u);
+        resolve();
+      };
+      socket.on("data", onData);
+    });
+    // Never authenticate: the server closes gracefully with
+    // authentication_timeout at ~800 ms. Keep the socket busy instead of
+    // answering the close handshake: data frames to feed the drain, plus
+    // unsolicited pongs so the heartbeat cannot reap what the drain is
+    // supposed to bound.
+    const keepBusy = setInterval(() => {
+      if (socket.destroyed) return;
+      socket.write(maskedClientFrame(0x1, Buffer.from("x")));
+      socket.write(maskedClientFrame(0xa));
+    }, 200);
+    try {
+      const started = Date.now();
+      await Promise.race([
+        new Promise((resolve) => socket.once("close", resolve)),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error("draining socket outlived the close deadline")),
+          12000,
+        )),
+      ]);
+      const elapsed = Date.now() - started;
+      // Far below ws's own 30 s close timeout, above the 800 ms auth timeout
+      // plus the 5 s drain with margin for slow CI.
+      assert.ok(elapsed < 12000, `close took ${elapsed} ms`);
+      assert.ok(elapsed > 4000, `closed at ${elapsed} ms: not a graceful close`);
+      // The graceful part delivered the queued error before the teardown.
+      assert.ok(
+        received.includes("authentication_timeout"),
+        "error frame was not delivered before the drain terminated the socket",
+      );
+    } finally {
+      clearInterval(keepBusy);
+    }
+  } finally {
+    socket.destroy();
     await stopRelay(isolated.child);
   }
 });
