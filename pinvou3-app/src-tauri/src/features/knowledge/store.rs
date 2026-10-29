@@ -1,7 +1,7 @@
 // architecture-guard: allow-target-cfg -- the probe regression test constructs an "open-read failure" with POSIX permission bits to verify the failure is no longer folded into version 0, which would trigger the store deletion (the OS-metadata check stays inside the most cohesive test per precedent)
 //! L0 元数据存储：SQLite + FTS5(trigram) 做全系统秒搜 + 去重候选查询。
 //!
-//! 设计（见 docs/本地知识底座-产品形态与架构.md §4.0/§5）：
+//! 设计：
 //! - `files` 表只存元数据（名/路径/大小/时间/类型/hash），**不存内容**。L1 内容/向量是后续层。
 //! - `files_fts` 是 external-content FTS5 虚表，trigram 分词 —— 对中文文件名和子串搜索都友好
 //!   （unicode61 会把一串中文当成单 token，搜不到子串；trigram 按 3-字符窗口可子串命中）。
@@ -474,7 +474,7 @@ impl Store {
         Ok(())
     }
 
-    /// 批量 upsert（扫描器用，单事务）。size 变化会让旧 hash 失效。
+    /// 批量 upsert（扫描器用，单事务）。
     pub fn upsert_many(&self, recs: &[FileRecord]) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock();
         let tx = guard.transaction()?;

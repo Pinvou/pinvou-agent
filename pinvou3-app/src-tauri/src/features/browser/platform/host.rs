@@ -84,7 +84,7 @@ impl WebviewBuildError {
 
 fn next_native_page_id() -> Result<u64, String> {
     // Rust 1.99 deprecated fetch_update (renamed to try_update); the MSRV
-    // (1.89) predates the new name, so keep the old call.
+    // (1.90) predates the new name, so keep the old call.
     #[allow(deprecated)]
     let sequence = NEXT_NATIVE_PAGE_SEQUENCE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {

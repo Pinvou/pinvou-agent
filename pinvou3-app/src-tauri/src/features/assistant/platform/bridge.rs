@@ -1094,9 +1094,11 @@ impl Pinvou3Bridge {
     ///   2. restricted project rules: sessions bound to a real directory (native
     ///      code sessions' project directory, or plain chat sessions' bound user
     ///      working directory) inject the `AGENTS.md` files on the bound root →
-    ///      user-home (exclusive) path, in root→cwd order (fork base C5
-    ///      emptied `PROJECT_CONTEXT_FILES` and no longer scans automatically;
-    ///      the app side fills the gap within the security boundary here);
+    ///      user-home (exclusive) path, in root→cwd order (the foundation
+    ///      still enumerates `PROJECT_CONTEXT_FILES`, but its context pack is
+    ///      disabled via `project_context_pack_enabled = false`, so it no
+    ///      longer scans automatically; the app side fills the gap within
+    ///      the security boundary here);
     ///   3. user-custom `~/.codewhale/instructions.md` (optional, still `File`).
     ///
     /// A previous version wrote a `~/.pinvou3/sessions/<sid>/instructions.md`
@@ -1142,9 +1144,10 @@ impl Pinvou3Bridge {
     /// prompt-injection surface for both kinds of bound sessions, so both share the
     /// same injection rules.
     ///
-    /// The C5 fork base emptied `PROJECT_CONTEXT_FILES` (no more automatic
-    /// scanning); the app side fills the gap within the security boundary
-    /// here. Behavioral semantics:
+    /// The foundation still enumerates `PROJECT_CONTEXT_FILES`, but its
+    /// context pack is disabled via `project_context_pack_enabled = false`
+    /// (no more automatic scanning); the app side fills the gap within the
+    /// security boundary here. Behavioral semantics:
     ///   - injection order root→cwd (ancestors first, project root last),
     ///     matching codex/claude convention — the closer a rule is to the
     ///     project root, the later it appears in the prompt;
@@ -3487,9 +3490,6 @@ impl Pinvou3Bridge {
     /// Build the [`Op::SendMessage`] sent to the engine — switch
     /// trust/approval/sandbox by `mode`.
     ///
-    /// Decision source: `docs/Plan-YOLO双模式-设计决策.md` section 4.1 reuses
-    /// the foundation's mode field.
-    ///
     /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | effective behavior |
     /// |------|-------------|------------|--------------|---------------|---------|
     /// | Yolo | self.allow  | true       | true         | Auto          | fully automatic + trust the whole home directory |
@@ -3499,8 +3499,7 @@ impl Pinvou3Bridge {
     /// the user content, generated dynamically per `phase`. The same
     /// mechanism as Claude Code fights long-context forgetting + enforces
     /// state-specific behavior. Qwen3.6 has strong short-term attention, so
-    /// the top of the message has a high hit rate. See the decision document
-    /// V2 §13.1.
+    /// the top of the message has a high hit rate.
     ///
     /// Note: the foundation now makes `auto_approve = true` **bypass**
     /// bypassable Required approvals

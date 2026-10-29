@@ -2597,7 +2597,7 @@ mod review_fix_tests {
     #[test]
     fn postprocess_retry_non_empty_output_wins() {
         // The text is passed through verbatim: trimming/sanitization is the
-        // caller's job (`sanitize_postprocess_output`), not the merge's.
+        // caller's job (`sanitize_voice_postprocess_output`), not the merge's.
         let outcome = postprocess_retry_result(Ok(("corrected text".to_owned(), false)))
             .expect("a non-empty retry succeeds");
         assert_eq!(outcome.text, "corrected text");
@@ -2878,9 +2878,9 @@ content-length: {}\r\n\r\n{}",
     /// variable name plus the value to install — `Some(value)` sets it,
     /// `None` removes it — and every variable's PREVIOUS value is captured
     /// before the set and restored on drop, so a failing assert cannot leak
-    /// a fixture into sibling tests (the same RAII rule as lib.rs's
-    /// `RestoreHomeGuard`), with `ENV_LOCK` held for the guard's whole
-    /// lifetime.
+    /// a fixture into sibling tests (the same RAII rule as the gaia tests in
+    /// lib.rs, which hold `ENV_LOCK` across their `TempHome` fixture), with
+    /// `ENV_LOCK` held for the guard's whole lifetime.
     struct RestoreEnvVars(
         Option<std::sync::MutexGuard<'static, ()>>,
         Vec<(&'static str, Option<std::ffi::OsString>)>,
@@ -3143,8 +3143,8 @@ content-length: {}\r\n\r\n{}",
     /// (`app/commands/voice.rs::voice_reasoning_dialect`). Before this only
     /// vllm/deepseek/qwen were covered, so a Kimi/Doubao/GLM/Minimax user
     /// could get reasoning text past the single leading `<think>` strip
-    /// (`sanitize_postprocess_output`) in CLI output where the GUI suppresses
-    /// it at the source.
+    /// (`sanitize_voice_postprocess_output`) in CLI output where the GUI
+    /// suppresses it at the source.
     #[test]
     fn reasoning_controls_cover_the_deterministic_vendor_presets() {
         use pinvou3_lib::platform::prefs::ModelPreset;

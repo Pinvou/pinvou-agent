@@ -48,10 +48,6 @@ pub(crate) const KIND_SKILL: &str = "skill";
 /// 回收站条目 kind：组合包（mcp/ + skills/）。
 pub(crate) const KIND_BUNDLE: &str = "bundle";
 
-// ---------------------------------------------------------------------------
-// schema
-// ---------------------------------------------------------------------------
-
 /// 清单条目：`record` 是回收时 bundles.json 原记录的快照（恢复重建登记用：
 /// source=Upload、原 installed_at 等一并保留）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,10 +110,6 @@ pub struct RecycledPluginInfo {
 pub struct RestoreRecycledResult {
     pub credentials_required: bool,
 }
-
-// ---------------------------------------------------------------------------
-// RecycleBin
-// ---------------------------------------------------------------------------
 
 pub struct RecycleBin {
     /// 回收站根目录（~/.pinvou3/marketplace/recycle-bin/）
@@ -568,10 +560,6 @@ pub(crate) fn recycle_upload_package(
     let display_name = super::store::upload_display_name(record, id);
     bin.recycle_package(id, kind, &display_name, record.clone())
 }
-
-// ---------------------------------------------------------------------------
-// 恢复管线
-// ---------------------------------------------------------------------------
 
 /// 恢复 = 恢复为已安装状态：
 /// 1. `take_back` 搬回 `bundles/<id>/`（fail-closed：不在清单拒绝）；

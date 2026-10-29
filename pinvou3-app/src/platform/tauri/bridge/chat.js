@@ -296,7 +296,7 @@ function removeCompactionStartItem(compactId) { return pinvouSharedtauriChat().r
 function addOrMergePruneCompaction(compactId) { return pinvouSharedtauriChat().addOrMergePruneCompaction(compactId); }
 function timeStr() { return pinvouSharedtauriChat().timeStr(); }
 
-  // ── Flush helpers (same as main.js) ──────────────────────────────
+  // ── Flush helpers ──────────────────────────────
   function flushPendingTextBlock() {
     if (context.pendingAssistantText) {
       context.pendingAssistantBlocks.push({ type: "text", text: context.pendingAssistantText });
@@ -490,7 +490,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       }).catch(function () {});
       return;
     }
-    if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
+    if (isBusyFor(sid)) return;            // 已在生成中（新一轮已起）→ 留给那轮的 done 再 flush
     const q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
     // The queue head is a steer chip already delivered to the engine (waiting
@@ -665,7 +665,6 @@ function pinvouSharedtauriChatN31666() {
     text = (text || "").trim();
     const readyAttachments = state.attachments.filter(function (a) { return a.status === "ready" && a.result; });
     if (!text && readyAttachments.length === 0) return false;
-    // 还有解析中的附件 → 等
     if (state.attachments.some(function (a) { return a.status === "parsing"; })) {
       addSystemItem(bt("attachStillParsing"));
       return false;

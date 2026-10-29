@@ -1,4 +1,4 @@
-//! 实体存储读写：4 个 JSONL store（recent_work / current_focus / recent_activity /
+//! 实体存储读写：5 个 JSONL store（recent_work / current_focus / recent_activity /
 //! pending / never）+ 2 个目录 store（work_context / preferences）+ profile 单文件。
 //!
 //! 抽离自 `mod.rs`。每个 store 的 load/upsert/archive/delete/normalize/compact/write

@@ -724,7 +724,6 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     const text = e.payload && e.payload.text || "";
     context.pendingAssistantText += text;
     context.currentStreamText += text;
-    // Update the streaming chat item
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     const firstDelta = !item;
     if (item) {
@@ -773,7 +772,6 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     flushPendingTextBlock();
     context.pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
-    // Finalize current streaming bubble
     flushPendingStreamRender(); // synchronously produce the final html before the tool card takes over, and cancel the pending trailing edge
     const streamItem = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (streamItem) {
@@ -802,7 +800,6 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       // 展开看不到 SKILL.md 全文（防设计系统泄露），但保留"加载了技能"的痕迹。
     }
 
-    // Add tool card
     addChatItem({
       type: "tool", toolId: p.id, name: p.name, args: p.args,
       output: null, success: null, state: "running",
@@ -871,7 +868,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
 
     // present_artifact 结束：成功 → 弹成品卡(点击打开);失败 → 落普通工具卡显错误,
     // 让 AI 从 tool_result 看到错误自行重试。成品卡是真工具调用,tool_use 已进
-    // messages(tool_start line 784),rerenderFromMessages 按 name 还原,切会话不丢。
+    // messages(tool_start 时),rerenderFromMessages 按 name 还原,切会话不丢。
     if (meta && isPresentArtifactTool(meta.name)) {
       if (p.success) {
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能

@@ -94,7 +94,7 @@ async function getImageInputCapability(...args) { return pinvouSharedtauriSettin
   let modelsLoadSeq = 0;
 async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
   // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
+  // {id,name,alias,preset,context_window_tokens,max_output_tokens,reasoning_effort,model,base_url,provider_kind,vendor,endpoint_mode,image_capability_override,vision_model_id,api_key,credential_ref,credential_state,has_secret,credential_action}
  async function saveModel(model) {
    await invoke("save_model", { model });
    await loadModels();

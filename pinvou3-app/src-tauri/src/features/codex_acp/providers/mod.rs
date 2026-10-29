@@ -42,7 +42,8 @@ const KIMI_DEFAULT_CONTEXT_SIZE: i64 = 200_000;
 const KIMI_DEFAULT_MODEL: &str = "kimi-k3";
 
 /// 与厂商通信的 wire 协议。写入器按目标 CLI 的配置格式映射
-/// （codex: `chat`/`anthropic`，kimi: `kimi`/`openai`/`anthropic`）。
+/// （codex 恒写 `responses`——v0.138+ 已移除 `chat`，见 codex.rs；
+/// kimi: `kimi`/`openai`/`anthropic`）。
 /// `Kimi` 是 Kimi Code 官方文档定义的专用类型（托管服务与 Kimi Platform
 /// API key 均使用），支持视频等 Kimi 专属能力，仅适用于 Kimi Agent。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

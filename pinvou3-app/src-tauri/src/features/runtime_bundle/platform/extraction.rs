@@ -799,13 +799,7 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 解包内嵌的飞书官方域技能(lark-*)到 `bundles/feishu/skills/`。
-    /// 每次启动防御性重写（immutable bundle 资源）。`LARK_SKILLS_DIR` 的根对应
-    /// 包内 `skills/`,内含 `lark-<域>/SKILL.md` + `references/`,直接铺到目标——
-    /// 引擎 `SkillRegistry` 扫该目录的每个含 `SKILL.md` 的子目录。
-    /// (顶层散落的 NOTICE.md 不含 SKILL.md,会被注册表忽略。)
-    /// 飞书技能门控:`show` → 解包 9 个 lark 技能到包目录;否则**删掉**它们(+ NOTICE.md)。
-    /// 幂等(删不存在的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
+    /// 连接器包技能目录 `bundles/<id>/skills/`：各连接器门控解包/删除的落点（见 [`Self::apply_connector_skills`]）。
     fn connector_package_skills_dir(id: &str) -> std::path::PathBuf {
         paths::bundles_root().join(id).join("skills")
     }

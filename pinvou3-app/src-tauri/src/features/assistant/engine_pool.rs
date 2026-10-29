@@ -2118,8 +2118,7 @@ impl EnginePool {
                 // eprintln, not log: the headless host installs no logger
                 // (`run_windowless_host` builds a bare Tauri app), so a
                 // `log::warn!` here is dropped in exactly the process this
-                // path was hardened for. Every other diagnostic in this file
-                // uses eprintln for the same reason.
+                // path was hardened for.
                 eprintln!(
                     "[engine_pool] session {sid_for_log} skills rewrite join failed: {join_error}"
                 );
@@ -3785,7 +3784,7 @@ impl EnginePool {
                     // reaper: align/eviction consult this same method.
                     guard.remove(session_id);
                     // Round-34 minor 14: log::warn! matches the sibling
-                    // reclaim path (log hygiene, no eprintln in the pool).
+                    // reclaim path.
                     log::warn!(
                         "[engine-pool] compaction latch expired (wedged compaction?); passive self-heal re-enabled"
                     );
@@ -4704,7 +4703,8 @@ impl EnginePool {
     /// the current turn. The foundation's `EngineHandle::steer` already
     /// implements it — the turn loop drains the `rx_steer` channel after each
     /// tool result and before the next model call, appending to
-    /// session.messages automatically (see foundation turn_loop.rs:493-510).
+    /// session.messages automatically (see the `rx_steer` drain between
+    /// steps in foundation turn_loop.rs).
     /// The model sees the message on its next thinking pass, matching Claude
     /// Code's "insert while the main agent is idle" semantics.
     ///

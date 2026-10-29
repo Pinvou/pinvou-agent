@@ -1047,8 +1047,8 @@ fn create_refuses_non_yolo_modes_like_the_app() {
 /// A run record that is valid JSON but wrong-shaped (a required field
 /// missing, typed wrong, or carrying a value the foundation's typed fields
 /// cannot decode) must fail the listing with the malformed-record error
-/// instead of rendering a phantom run — the gate implemented by
-/// `require_object_run_record`.
+/// instead of rendering a phantom run — the typed serde decode in
+/// `run_from_value` is the gate.
 #[test]
 fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
     let _env_guard = env_lock();
@@ -2668,7 +2668,7 @@ fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
 
 #[test]
 fn read_state_with_a_stray_tasks_key_stays_readable() {
-    // The per-registry shape gate (079bf9d43) checks only the keys the
+    // The per-registry shape gate checks only the keys the
     // caller's registry owns: the GUI's serde ignores unknown members, so a
     // read-state file carrying a stray `tasks` key must stay readable and
     // must NOT be quarantined (that would reset the user's viewed-run

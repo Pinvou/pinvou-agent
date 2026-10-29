@@ -22,7 +22,7 @@ const DESKTOP_HF_BASE_URL_ENV: &str = "PINVOU3_KB_HF_BASE_URL";
 /// 展示用：固定清单的下载量 = 实际模型文件占用（同源同值，不含文件系统簇开销）。
 const DISPLAY_DOWNLOAD_BYTES: u64 =
     pinvou_knowledge::model_download::KNOWLEDGE_MODEL_DOWNLOAD_BYTES;
-/// 模型版本标识（前端 `.pkg-ver` 显示）。
+/// 模型版本标识（前端知识库页展示）。
 pub const MODEL_VERSION: &str = "bge-m3";
 
 static DOWNLOADING: AtomicBool = AtomicBool::new(false);

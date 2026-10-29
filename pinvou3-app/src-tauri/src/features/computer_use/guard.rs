@@ -192,11 +192,13 @@ pub const T3_DENYLIST: &[&str] = &[
     "承諾",
 ];
 
-/// The longest [`T3_DENYLIST`] term, in folded characters. The streaming
-/// matcher in `platform::helpers` carries this much context across its window
-/// boundaries, so a term straddling two windows is still found; a longer term
-/// would be silently unmatchable, which `t3_denylist_terms_are_prefolded`
-/// pins.
+/// Upper bound on any [`T3_DENYLIST`] term's folded length: every term must
+/// fit inside the streaming matcher's window (32 leaves headroom above the
+/// longest current term, `placeorder` at 10 folded characters). The matcher
+/// in `platform::helpers` carries this much context across its window
+/// boundaries, so a term straddling two windows is still found; a longer
+/// term would be silently unmatchable, which
+/// `t3_denylist_terms_are_prefolded` pins.
 pub const T3_MATCH_WINDOW_CHARS: usize = 32;
 
 /// Raw characters folded per pass by [`for_each_folded_window`]: large enough

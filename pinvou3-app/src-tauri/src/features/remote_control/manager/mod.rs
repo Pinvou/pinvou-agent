@@ -922,7 +922,6 @@ impl RemoteControlManager {
     }
 
     /// 注入原生代码会话判定闭包；之后带代码会话 id 的事件不再转发到远程 WebUI。
-    /// （含已 manage 进 Tauri 的那份）都能读到。
     pub fn set_code_session_predicate(&self, predicate: CodeSessionPredicate) {
         self.inner.lock().code_session_predicate = Some(predicate);
     }

@@ -603,7 +603,7 @@ fn check_display_value(field_label: &str, v: &str, max_chars: usize) -> Result<(
     Ok(())
 }
 
-/// 展示名/说明的长度/字符预检（`sync_display_meta` 在回写 SKILL.md **之前**
+/// 展示名/说明的长度/字符预检（`update_display_meta` 在回写 SKILL.md **之前**
 /// 调用；`apply_display_meta` 内仍有同口径校验兜底）。回写会先改包内容并重算
 /// 指纹，校验若只留在 `set_display_meta`，超长值会先落盘再报错，留下
 /// 「报错但包内容已变」的中间态——所以必须前置预检。None / trim 后空

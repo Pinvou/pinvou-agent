@@ -5053,8 +5053,6 @@ fn fresh_code_session_default_plan_registers_pending_plan() {
     assert_eq!(registered.pending_plan_id.as_deref(), Some("plan-1"));
 }
 
-/// A workflow run's workspace derives from the run id and does not land
-/// under sessions/.
 #[test]
 fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
     let (store, _guard) = isolated_store();
@@ -7736,13 +7734,6 @@ fn apply_rebind_workspace_bindings_skips_owner_deleted_after_plan() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
-/// Round-6 finding 4: an unreadable legacy table (invalid UTF-8 — `read_to_string`
-/// fails before the JSON pass can) is not "absent", and a rebind must not treat it
-/// as syncable: with an empty merged view the old code would delete a file this
-/// process never parsed, closing the "repair it and retry" door. The per-run
-/// re-parse (review #463 round-13 M2) treats the read failure exactly like the
-/// JSON-parse failure: empty plan proceeds and preserves, non-empty plan aborts
-/// with the CORRUPT marker.
 #[test]
 fn keychain_roots_round_trip_through_the_plain_binding_store() {
     // Review #484 round-2 checklist: write the keychain at bind time,
@@ -7942,6 +7933,13 @@ fn rebind_workspace_bindings_translates_keychain_against_the_prefix_not_the_bind
     let _ = std::fs::remove_dir_all(&elsewhere);
 }
 
+/// Round-6 finding 4: an unreadable legacy table (invalid UTF-8 — `read_to_string`
+/// fails before the JSON pass can) is not "absent", and a rebind must not treat it
+/// as syncable: with an empty merged view the old code would delete a file this
+/// process never parsed, closing the "repair it and retry" door. The per-run
+/// re-parse (review #463 round-13 M2) treats the read failure exactly like the
+/// JSON-parse failure: empty plan proceeds and preserves, non-empty plan aborts
+/// with the CORRUPT marker.
 #[test]
 fn unreadable_legacy_workspaces_file_is_preserved_across_rebind() {
     let (store, _g) = isolated_store();
