@@ -9,7 +9,6 @@ mod submission;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
 
-use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
@@ -108,26 +107,11 @@ impl GaiaAdapter {
     pub fn plan(
         &self,
         dataset: &GaiaDataset,
-        selection: &TaskSelection,
+        _selection: &TaskSelection,
     ) -> BenchmarkResult<BenchmarkPlan> {
-        let requested = selection
-            .task_ids()
-            .iter()
-            .map(String::as_str)
-            .collect::<HashSet<_>>();
-        if requested.len() != selection.task_ids().len()
-            || requested.iter().any(|task_id| {
-                task_id.is_empty() || !dataset.rows().iter().any(|row| row.task_id() == *task_id)
-            })
-        {
-            return Err(BenchmarkError::Contract(
-                "gaia_task_selection_invalid".into(),
-            ));
-        }
         let tasks = dataset
             .rows()
             .iter()
-            .filter(|row| requested.is_empty() || requested.contains(row.task_id()))
             .map(|row| {
                 let task_id = row.task_id();
                 let attachments = row
