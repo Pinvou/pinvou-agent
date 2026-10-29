@@ -121,10 +121,11 @@ const MAX_RELAY_STATE_BYTES = boundedInteger(
 // A tombstone serializes to well under 256 bytes even with the longest legal
 // endpoint id, so clamping the configured capacity to what the state limit
 // can hold keeps revocation persistence possible however the two env values
-// combine; relayStateContents stays the exact backstop.
+// combine; relayStateContents stays the exact backstop. The state limit's
+// own floor (1024) makes the derivation's floor 4, so no extra guard below.
 const MAX_REVOKED_ENDPOINTS = Math.min(
   boundedInteger(process.env.MAX_REVOKED_ENDPOINTS, 100_000, 1, 1_000_000),
-  Math.max(1, Math.floor(MAX_RELAY_STATE_BYTES / 256)),
+  Math.floor(MAX_RELAY_STATE_BYTES / 256),
 );
 const RELAY_STATE_PATH = resolve(
   process.env.PINVOU_REMOTE_STATE_PATH || resolve(__dirname, "data", "relay-state.json"),
@@ -1477,7 +1478,8 @@ function shutdown() {
   for (const ws of wss.clients) {
     try { ws.terminate(); } catch {}
   }
-  try { server.close(); } catch {}
+  // No server.close() and no drain: shutdown is deliberately synchronous to
+  // exit(0), matching the official fork (close's callback could never run).
   process.exit(0);
 }
 
