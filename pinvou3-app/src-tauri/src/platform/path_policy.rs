@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Resolve an artifact path against its execution workspace without imposing
 /// command-layer knowledge on feature code.
@@ -61,6 +61,48 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "/sys/",
 ];
 
+/// macOS 把 `/etc`、`/var`、`/tmp` 符号链接到 `/private/...` 下的真实目录;
+/// `std::fs::canonicalize` 会把调用方的 `/etc/...` 拼写改写成解析后的
+/// `/private/etc/...`,系统前缀黑名单若只比对改写后的路径就会整体失效
+/// (Round-5 复审 M5:`/etc/sudoers` 在 macOS 上永远匹配不到 `/etc/sudoers`,
+/// 折叠修复的 `/Etc/Sudoers` 同理只对不存在的路径生效)。比对前剥掉这层
+/// 别名;仅 macOS 启用——Linux 上 `/private/etc` 是普通目录,必须保持
+/// 字节精确语义,Windows 无此别名。
+fn strip_macos_private_alias(path: &Path) -> Option<PathBuf> {
+    let mut components = path.components();
+    match (components.next(), components.next(), components.next()) {
+        (Some(Component::RootDir), Some(private), Some(target))
+            if crate::platform::os::path_component_eq(private.as_os_str(), "private")
+                && ["etc", "var", "tmp"].iter().any(|name| {
+                    crate::platform::os::path_component_eq(target.as_os_str(), name)
+                }) =>
+        {
+            let mut aliased = PathBuf::from("/");
+            aliased.push(target);
+            aliased.push(components.as_path());
+            Some(aliased)
+        }
+        _ => None,
+    }
+}
+
+/// 系统前缀命中判定,含 macOS 别名展开。`alias_symlinks` 由调用方按平台
+/// 传入(`cfg!(target_os = "macos")`),独立参数让折叠平台语义在所有平台
+/// 上都可被单元测试直接驱动。
+fn canonical_system_prefix_hit(canonical: &Path, alias_symlinks: bool) -> bool {
+    let alias_stripped = if alias_symlinks {
+        strip_macos_private_alias(canonical)
+    } else {
+        None
+    };
+    BLOCKED_PREFIXES.iter().any(|prefix| {
+        crate::platform::os::path_starts_with_folded(canonical, prefix)
+            || alias_stripped.as_deref().is_some_and(|aliased| {
+                crate::platform::os::path_starts_with_folded(aliased, prefix)
+            })
+    })
+}
+
 /// 检查已规范化路径是否触及凭据组件或系统敏感前缀。
 /// 供 `validate_user_path` 和 `validate_browsable_path` 共享。
 pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String> {
@@ -89,16 +131,15 @@ pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String>
         }
     }
 
-    for prefix in BLOCKED_PREFIXES {
-        // 组件序列比较走平台折叠语义(macOS 大小写不敏感卷会把 `/Etc/Sudoers`
-        // 解析到真文件,字节 starts_with 会让大写变体绕过系统区黑名单),
-        // Linux 字节精确语义由 path_component_eq 的平台分支保持。
-        if crate::platform::os::path_starts_with_folded(canonical, prefix) {
-            return Err(format!(
-                "path {} is in system-sensitive area",
-                canonical.display()
-            ));
-        }
+    // 组件序列比较走平台折叠语义(macOS 大小写不敏感卷会把 `/Etc/Sudoers`
+    // 解析到真文件,字节 starts_with 会让大写变体绕过系统区黑名单),
+    // Linux 字节精确语义由 path_component_eq 的平台分支保持;macOS 再叠加
+    // /private 符号链接别名展开(见 strip_macos_private_alias)。
+    if canonical_system_prefix_hit(canonical, cfg!(target_os = "macos")) {
+        return Err(format!(
+            "path {} is in system-sensitive area",
+            canonical.display()
+        ));
     }
 
     Ok(())
@@ -115,7 +156,23 @@ pub(crate) fn validate_user_path(raw: &str) -> Result<PathBuf, String> {
         return Err(format!("path must be absolute: {raw}"));
     }
 
-    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    // Round-5 复审:canonicalize 失败(路径不存在)时保留原拼写前先拒绝
+    // `..`——组件有界的黑名单比对会把 `a/../b` 的 ParentDir 视为普通不匹
+    // 配组件,未规范化拼写在回退分支里不可信,fail-closed。
+    let canonical = match std::fs::canonicalize(&path) {
+        Ok(canonical) => canonical,
+        Err(_) => {
+            if path
+                .components()
+                .any(|component| component == Component::ParentDir)
+            {
+                return Err(format!(
+                    "path must not contain '..' when it cannot be resolved: {raw}"
+                ));
+            }
+            path.clone()
+        }
+    };
     check_sensitive_components(&canonical)?;
     Ok(canonical)
 }
@@ -292,5 +349,59 @@ mod tests {
             folded,
             "case variants follow the platform's volume folding"
         );
+    }
+
+    /// Round-5 复审 M5:macOS 的 canonicalize 把 `/etc/...` 解析成
+    /// `/private/etc/...`(/etc 是符号链接),系统前缀黑名单若只看改写后
+    /// 的路径就整体失效。别名展开用显式平台参数表达,单元测试在所有平台
+    /// 直接驱动,展开被删即红;组件边界语义穿越别名后必须保持
+    /// (`/private/etc/shadowed` 不是凭据文件)。
+    #[test]
+    fn system_prefixes_survive_the_macos_private_alias() {
+        assert!(
+            canonical_system_prefix_hit(Path::new("/private/etc/shadow"), true),
+            "the aliased /etc/shadow spelling must hit on an alias-expanding platform"
+        );
+        assert!(
+            canonical_system_prefix_hit(Path::new("/private/etc/ssh/authorized_keys"), true),
+            "nested paths under the aliased prefix must hit"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/shadowed"), true),
+            "the component boundary must survive alias expansion"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/shadowprobe"), true),
+            "same-name files under the aliased prefix must stay readable"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/shadow"), false),
+            "without alias expansion (non-macOS platforms) the raw spelling is not a hit"
+        );
+        assert!(
+            canonical_system_prefix_hit(Path::new("/etc/shadow"), false),
+            "the direct spelling must keep matching on every platform"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/not-blocked"), true),
+            "unrelated /private/etc files stay readable"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/usr/local/bin/tool"), true),
+            "only the symlinked system roots are aliased"
+        );
+    }
+
+    /// Round-5 复审:canonicalize 失败的回退分支必须拒绝含 `..` 的未规范
+    /// 化拼写——组件有界比对会把 ParentDir 当普通不匹配组件。已存在路径
+    /// 走 canonical 成功分支,不受影响。
+    #[test]
+    fn unresolvable_dotdot_paths_fail_closed() {
+        let nested = std::env::temp_dir().join("pinvou3-path-policy-missing/../etc-shadow-probe");
+        assert!(validate_user_path(&nested.to_string_lossy()).is_err());
+        let existing = std::env::temp_dir();
+        let ok =
+            validate_user_path(&existing.to_string_lossy()).expect("existing path stays valid");
+        assert_eq!(ok, existing);
     }
 }
