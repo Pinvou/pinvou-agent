@@ -6,42 +6,23 @@ use std::time::{Duration, Instant};
 
 use wait_timeout::ChildExt;
 
-/// Default ceiling for captured stdout/stderr per stream. A child (or a
+/// Hard ceiling for captured stdout/stderr per stream. A child (or a
 /// descendant) writing past it gets its whole process tree terminated, so a
-/// runaway writer can neither exhaust memory nor outlive the caller.
-/// Consumers whose legitimate output is larger name their own bound through
-/// [`output_with_timeout_and_kill_tree_complete`].
+/// runaway writer can neither exhaust memory nor outlive the caller. This
+/// is a memory bound, not a tunable: a consumer whose legitimate output can
+/// outgrow it must not capture that output at all but redirect it to a file
+/// it owns and read it from there (the checkpoint diff and change list go
+/// through `git diff --output` for exactly this reason), because no bound
+/// on bytes read back into memory can be made to cover an inventory whose
+/// size the consumer's own admission rules do not bound.
 const MAX_CAPTURE_BYTES: u64 = 4 * 1024 * 1024;
-/// Appended by [`marked_capture_bytes`] when a stream was clipped to its
-/// bound or could not be read back in full, so a truncated capture is never
-/// mistaken for the child's complete output. Only the error-message detail
-/// and the default [`CaptureContract::Marked`] success path carry it; the
-/// complete contract turns both conditions into errors instead.
+/// Appended by [`marked_capture_bytes`] when a stream was clipped to
+/// [`MAX_CAPTURE_BYTES`], so a truncated capture is never mistaken for the
+/// child's complete output. The success path carries it only for a clip;
+/// a capture that could not be read back in full is an error there (see
+/// [`deliver_captures`]) and degrades to the marker alone only inside
+/// error-message detail.
 const CAPTURE_TRUNCATED_MARKER: &[u8] = b"\n[pinvou: subprocess output truncated]\n";
-
-/// How a completed child's captures are delivered to the caller.
-#[derive(Clone, Copy, Debug)]
-enum CaptureContract {
-    /// The default: [`MAX_CAPTURE_BYTES`] per stream, and a capture clipped
-    /// at readback is delivered with [`CAPTURE_TRUNCATED_MARKER`] appended.
-    /// The boundary consumers that cut these outputs into error detail
-    /// accept the marker as the truncation signal.
-    Marked,
-    /// A caller-named bound for consumers that parse the capture as a
-    /// complete inventory (a checkpoint change list): crossing the bound is
-    /// the overflow error even when it is only observed at readback, never
-    /// marker-prefixed bytes a line parser would drop as noise.
-    Complete(u64),
-}
-
-impl CaptureContract {
-    fn limit(self) -> u64 {
-        match self {
-            CaptureContract::Marked => MAX_CAPTURE_BYTES,
-            CaptureContract::Complete(limit) => limit,
-        }
-    }
-}
 
 /// Readback chunk for [`read_capture`]: large enough that any capture
 /// past one block exercises the multi-chunk path the cursor pins rely on.
@@ -261,7 +242,7 @@ pub(crate) fn output_with_timeout(
     timeout: Duration,
 ) -> Result<Output, String> {
     std_process_group_leader(&mut command);
-    output_with_timeout_inner(command, timeout, false, CaptureContract::Marked)
+    output_with_timeout_inner(command, timeout, false)
 }
 
 /// Capture a subprocess with a wall-clock timeout and terminate its process tree
@@ -275,41 +256,16 @@ pub(crate) fn output_with_timeout_and_kill_tree(
     timeout: Duration,
 ) -> Result<Output, String> {
     std_process_group_leader(&mut command);
-    output_with_timeout_inner(command, timeout, true, CaptureContract::Marked)
-}
-
-/// [`output_with_timeout_and_kill_tree`] with a caller-named capture bound
-/// and a completeness contract, for consumers that parse the captured
-/// stream as a complete inventory and whose legitimate output can exceed
-/// the default bound (a checkpoint change list over an admitted workspace).
-/// Crossing `capture_limit` is the overflow error — with the same
-/// tree-termination handling as the default bound — whether it is observed
-/// while polling or only at readback, and a capture that cannot be read
-/// back in full is an error too. Neither can arrive as marker-prefixed
-/// bytes that a line parser would silently drop, turning a partial or
-/// empty list into a reported complete one.
-pub(crate) fn output_with_timeout_and_kill_tree_complete(
-    mut command: Command,
-    timeout: Duration,
-    capture_limit: u64,
-) -> Result<Output, String> {
-    std_process_group_leader(&mut command);
-    output_with_timeout_inner(
-        command,
-        timeout,
-        true,
-        CaptureContract::Complete(capture_limit),
-    )
+    output_with_timeout_inner(command, timeout, true)
 }
 
 fn output_with_timeout_inner(
     mut command: Command,
     timeout: Duration,
     kill_tree_on_timeout: bool,
-    contract: CaptureContract,
 ) -> Result<Output, String> {
     let program = command.get_program().to_string_lossy().into_owned();
-    let limit = contract.limit();
+    let limit = MAX_CAPTURE_BYTES;
     // Regular files cannot fill up and block the child the way a pipe can.
     // They also let a completed parent's output be read back without
     // waiting for a descendant that inherited the same handles to exit, so
@@ -426,7 +382,7 @@ fn output_with_timeout_inner(
         ));
     }
 
-    match deliver_captures(contract, &stdout_file, &stderr_file) {
+    match deliver_captures(&stdout_file, &stderr_file) {
         CaptureDelivery::Output { stdout, stderr } => Ok(Output {
             status,
             stdout,
@@ -435,16 +391,6 @@ fn output_with_timeout_inner(
         CaptureDelivery::ReadbackFailed(error) => Err(format!(
             "{program} subprocess capture readback failed: {error}"
         )),
-        CaptureDelivery::Overflow { stdout, stderr } => {
-            // A write landed between the re-check above and the readback;
-            // the root is reaped, so this is the same reaped-root path as
-            // the re-check.
-            let (tree_claim, kill_note) = overflow_kill_notes(true, child.id());
-            let detail = subprocess_output_detail(&stdout, &stderr);
-            Err(format!(
-                "{program} {CAPTURE_OVERFLOW_ANCHOR} {limit} bytes{tree_claim}: {detail}{kill_note}"
-            ))
-        }
     }
 }
 
@@ -603,11 +549,12 @@ fn read_capture(capture: &tempfile::NamedTempFile, limit: u64) -> CaptureReadbac
     CaptureReadback::Complete(buffer)
 }
 
-/// The capture as bytes for the error-message detail and the default
-/// [`CaptureContract::Marked`] delivery: a clipped capture carries
-/// [`CAPTURE_TRUNCATED_MARKER`], and a capture that could not be read back
-/// in full degrades to the marker alone — on an error path the message is
-/// already the failure, so the detail stays best-effort.
+/// The capture as bytes for the error-message detail and the success-path
+/// delivery: a clipped capture carries [`CAPTURE_TRUNCATED_MARKER`], and a
+/// capture that could not be read back in full degrades to the marker alone
+/// — on an error path the message is already the failure, so the detail
+/// stays best-effort (the success path never gets here with a failed
+/// readback, see [`deliver_captures`]).
 fn marked_capture_bytes(readback: CaptureReadback) -> Vec<u8> {
     match readback {
         CaptureReadback::Complete(bytes) => bytes,
@@ -628,47 +575,29 @@ enum CaptureDelivery {
     },
     /// A capture could not be read back in full.
     ReadbackFailed(std::io::Error),
-    /// Under [`CaptureContract::Complete`], a capture crossed the bound by
-    /// the time it was read back (a write landing between the post-exit
-    /// re-check and the read). The marked bytes serve the error detail.
-    Overflow {
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
-    },
 }
 
-/// Success-path delivery of the two captures under `contract`. A capture
-/// that cannot be read back in full is a failure under either contract,
-/// never bytes: the caller parses `Output` as the child's complete output,
-/// and a marker in place of content is dropped by a line parser as noise
-/// (a checkpoint change list read from a capture that failed to reopen
-/// would come back empty and be reported as "no changes"). Under the
-/// complete contract a clipped capture is the overflow it is; under the
-/// default contract it is delivered marked, as the boundary consumers
-/// expect.
+/// Success-path delivery of the two captures. A capture that cannot be read
+/// back in full is a failure, never bytes: the caller parses `Output` as the
+/// child's complete output, and a marker in place of content is dropped by
+/// a line parser as noise (a list read from a capture that failed to reopen
+/// would come back empty and be reported as "no changes"). A clipped
+/// capture (a write landing between the post-exit re-check and the read) is
+/// delivered marked, as the boundary consumers expect.
 fn deliver_captures(
-    contract: CaptureContract,
     stdout_file: &tempfile::NamedTempFile,
     stderr_file: &tempfile::NamedTempFile,
 ) -> CaptureDelivery {
-    let limit = contract.limit();
-    let stdout = read_capture(stdout_file, limit);
-    let stderr = read_capture(stderr_file, limit);
-    let (stdout, stderr) = match (stdout, stderr) {
+    let stdout = read_capture(stdout_file, MAX_CAPTURE_BYTES);
+    let stderr = read_capture(stderr_file, MAX_CAPTURE_BYTES);
+    match (stdout, stderr) {
         (CaptureReadback::Failed(error), _) | (_, CaptureReadback::Failed(error)) => {
-            return CaptureDelivery::ReadbackFailed(error);
+            CaptureDelivery::ReadbackFailed(error)
         }
-        (stdout, stderr) => (stdout, stderr),
-    };
-    let clipped = matches!(stdout, CaptureReadback::Clipped(_))
-        || matches!(stderr, CaptureReadback::Clipped(_));
-    let stdout = marked_capture_bytes(stdout);
-    let stderr = marked_capture_bytes(stderr);
-    match contract {
-        CaptureContract::Complete(_) if clipped => CaptureDelivery::Overflow { stdout, stderr },
-        CaptureContract::Complete(_) | CaptureContract::Marked => {
-            CaptureDelivery::Output { stdout, stderr }
-        }
+        (stdout, stderr) => CaptureDelivery::Output {
+            stdout: marked_capture_bytes(stdout),
+            stderr: marked_capture_bytes(stderr),
+        },
     }
 }
 
@@ -1635,37 +1564,6 @@ mod tests {
         assert!(!error.contains("kill tree request failed"), "{error}");
     }
 
-    /// The same burst-then-exit writer under the complete contract with a
-    /// bound above its output: the call must succeed with every byte of
-    /// both streams and no truncation marker. The payload is past
-    /// [`MAX_CAPTURE_BYTES`], so this pins that the caller-named bound
-    /// governs the poll-loop check, the post-exit re-check and the
-    /// readback alike — the checkpoint change list's path over an admitted
-    /// workspace whose listing is larger than the default bound.
-    #[test]
-    fn output_capture_honors_the_caller_named_complete_bound() {
-        let _fixture_lock = lock_process_fixture();
-        let output = output_with_timeout_and_kill_tree_complete(
-            output_fixture_command("overflow_exit"),
-            Duration::from_secs(90),
-            2 * MAX_CAPTURE_BYTES,
-        )
-        .unwrap();
-
-        assert!(output.status.success());
-        let payload = MAX_CAPTURE_BYTES as usize + 64 * 1024;
-        assert!(output.stdout.len() >= payload, "{}", output.stdout.len());
-        assert!(output.stderr.len() >= payload, "{}", output.stderr.len());
-        assert!(!contains_slice(&output.stdout, CAPTURE_TRUNCATED_MARKER));
-        assert!(!contains_slice(&output.stderr, CAPTURE_TRUNCATED_MARKER));
-    }
-
-    fn contains_slice(haystack: &[u8], needle: &[u8]) -> bool {
-        haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
-    }
-
     /// Deterministic pin of the reaped-root skip itself: with the root
     /// already observed exited, the Windows overflow path reports neither
     /// a termination claim nor a kill-failure clause — the request is not
@@ -1994,37 +1892,34 @@ mod tests {
     #[test]
     fn read_capture_delivery_fails_instead_of_passing_marker_bytes_as_output() {
         let stderr_file = tempfile::NamedTempFile::new().unwrap();
+        let mut stdout_file = tempfile::NamedTempFile::new().unwrap();
+        stdout_file.write_all(b"record line\n").unwrap();
+        std::fs::remove_file(stdout_file.path()).unwrap();
 
-        for contract in [CaptureContract::Marked, CaptureContract::Complete(1 << 20)] {
-            let mut stdout_file = tempfile::NamedTempFile::new().unwrap();
-            stdout_file.write_all(b"record line\n").unwrap();
-            std::fs::remove_file(stdout_file.path()).unwrap();
-            match deliver_captures(contract, &stdout_file, &stderr_file) {
-                CaptureDelivery::ReadbackFailed(_) => {}
-                CaptureDelivery::Output { stdout, .. } => panic!(
-                    "{contract:?}: a vanished capture must not deliver as output, got {} bytes",
-                    stdout.len()
-                ),
-                CaptureDelivery::Overflow { .. } => {
-                    panic!("{contract:?}: a vanished capture is a readback failure")
-                }
-            }
+        match deliver_captures(&stdout_file, &stderr_file) {
+            CaptureDelivery::ReadbackFailed(_) => {}
+            CaptureDelivery::Output { stdout, .. } => panic!(
+                "a vanished capture must not deliver as output, got {} bytes",
+                stdout.len()
+            ),
         }
     }
 
-    /// Under the default contract the delivery keeps the documented marker
-    /// semantics: a clipped capture is delivered marked, exactly-at-limit
-    /// delivered unmarked.
+    /// The delivery keeps the documented marker semantics: a clipped
+    /// capture is delivered marked, exactly-at-limit delivered in full and
+    /// unmarked.
     #[test]
-    fn read_capture_delivery_marks_a_clipped_capture_under_the_default_contract() {
-        let mut stdout_file = tempfile::NamedTempFile::new().unwrap();
+    fn read_capture_delivery_marks_a_clipped_capture() {
         let stderr_file = tempfile::NamedTempFile::new().unwrap();
-        let payload = vec![b'a'; MAX_CAPTURE_BYTES as usize + 128];
-        stdout_file.write_all(&payload).unwrap();
 
-        let delivery = deliver_captures(CaptureContract::Marked, &stdout_file, &stderr_file);
-        let CaptureDelivery::Output { stdout, stderr } = delivery else {
-            panic!("a clipped capture under the default contract must deliver as output");
+        let mut stdout_file = tempfile::NamedTempFile::new().unwrap();
+        stdout_file
+            .write_all(&vec![b'a'; MAX_CAPTURE_BYTES as usize + 128])
+            .unwrap();
+        let CaptureDelivery::Output { stdout, stderr } =
+            deliver_captures(&stdout_file, &stderr_file)
+        else {
+            panic!("a clipped capture must deliver as output");
         };
         assert_eq!(stderr, b"");
         assert_eq!(
@@ -2032,40 +1927,17 @@ mod tests {
             MAX_CAPTURE_BYTES as usize + CAPTURE_TRUNCATED_MARKER.len()
         );
         assert!(stdout.ends_with(CAPTURE_TRUNCATED_MARKER));
-    }
-
-    /// Under the complete contract the same capture is the overflow it is,
-    /// never a marked success; exactly at the caller-named bound it is
-    /// delivered in full. The bound exercised here is not the module
-    /// default, pinning that the caller's number governs.
-    #[test]
-    fn read_capture_delivery_reports_overflow_under_the_complete_contract() {
-        let stderr_file = tempfile::NamedTempFile::new().unwrap();
-        let bound = 64 * 1024;
-        let payload = vec![b'a'; bound as usize + 128];
 
         let mut stdout_file = tempfile::NamedTempFile::new().unwrap();
-        stdout_file.write_all(&payload).unwrap();
-        let delivery =
-            deliver_captures(CaptureContract::Complete(bound), &stdout_file, &stderr_file);
-        let CaptureDelivery::Overflow { stdout, stderr } = delivery else {
-            panic!("a capture past the complete-contract bound must be the overflow error");
+        stdout_file
+            .write_all(&vec![b'b'; MAX_CAPTURE_BYTES as usize])
+            .unwrap();
+        let CaptureDelivery::Output { stdout, stderr } =
+            deliver_captures(&stdout_file, &stderr_file)
+        else {
+            panic!("exactly-at-limit output must deliver in full");
         };
-        assert!(stdout.ends_with(CAPTURE_TRUNCATED_MARKER));
-        assert_eq!(
-            stdout.len(),
-            bound as usize + CAPTURE_TRUNCATED_MARKER.len()
-        );
-        assert_eq!(stderr, b"");
-
-        let mut stdout_file = tempfile::NamedTempFile::new().unwrap();
-        stdout_file.write_all(&vec![b'b'; bound as usize]).unwrap();
-        let delivery =
-            deliver_captures(CaptureContract::Complete(bound), &stdout_file, &stderr_file);
-        let CaptureDelivery::Output { stdout, stderr } = delivery else {
-            panic!("exactly-at-bound output must deliver in full");
-        };
-        assert_eq!(stdout.len(), bound as usize);
+        assert_eq!(stdout.len(), MAX_CAPTURE_BYTES as usize);
         assert!(!stdout.ends_with(CAPTURE_TRUNCATED_MARKER));
         assert_eq!(stderr, b"");
     }
