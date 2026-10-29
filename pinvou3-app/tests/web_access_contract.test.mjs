@@ -1025,13 +1025,31 @@ assert.equal((i18n.match(/update_desktop:/g) || []).length, 3,
 assert.match(desktopRemoteControlBridge, /invoke\("web_access_revoke_host_workspace"\)/,
   'the desktop bridge must call the desktop-only revoke command');
 // Round-6 复审 M6:round-5 的「乐观合并清码」账必须逐分支成立——错误
-// 写入与码清理成对,refresh 失败、乐观开始、停用失败三个此前漏掉的分支
-// 也必须清码;revoke 合并必须按 url 有无推导 active,不得把非活跃状态
-// 标成在线。删除任一清理行或改回强制 active: true 即红。
+// 写入与码清理成对。remote-control.js 全部十个清码点在此逐点设 pin:
+// refresh 失败、乐观开始、start 成功/失败、stop 成功/失败、rotate
+// 成功/失败、revoke 合并/失败。其中两组字节完全相同的孪生形状——
+// refresh/revoke 失败共用的 { last_error: String(error), ... } 单行,
+// 以及 stop/rotate 失败共用的 status: "error"... 单行——无法按文本
+// 指向单侧,改用全局 count 断言守住两侧,删任一侧即红;其余各点按该
+// merge 对象的唯一形状逐点匹配。revoke 合并另须按 url 有无推导
+// active,不得把非活跃状态标成在线,改回强制 active: true 即红。
 assert.match(desktopRemoteControlBridge, /\{ starting: true, last_error: null, last_error_code: null \}/,
   'the optimistic start merge must clear the stale recovery code');
-assert.match(desktopRemoteControlBridge, /status: "error", last_error: String\(error\), last_error_code: null, starting: false \}/,
-  'the stop failure merge must clear the stale recovery code');
+assert.match(desktopRemoteControlBridge,
+  /active: true, starting: false, last_error: null, last_error_code: null,/,
+  'the start success merge must clear the stale recovery code');
+assert.match(desktopRemoteControlBridge,
+  /active: wasActive, web_client_connected: wasActive && !!state\.webAccess\.web_client_connected, starting: false,\n          status: "error", last_error: String\(error\), last_error_code: null,/,
+  'the start failure merge must clear the stale recovery code');
+assert.equal(
+  (desktopRemoteControlBridge.match(/status: "error", last_error: String\(error\), last_error_code: null, starting: false \}/g) || []).length, 2,
+  'the stop and rotate failure merges are byte-identical twins; both must keep clearing the stale recovery code');
+assert.match(desktopRemoteControlBridge,
+  /status: "stopped", starting: false,\n        last_error: null, last_error_code: null,/,
+  'the stop success merge must clear the stale recovery code');
+assert.match(desktopRemoteControlBridge,
+  /active: true, web_client_connected: false, last_error: null, last_error_code: null, starting: false,/,
+  'the rotate success merge must clear the stale recovery code');
 assert.match(desktopRemoteControlBridge,
   /active: !!\(info && info\.url\), starting: false,\n          host_workspace_authorized: false, last_error: null, last_error_code: null,/,
   'the revoke merge must derive active from the url and clear the stale recovery code');
