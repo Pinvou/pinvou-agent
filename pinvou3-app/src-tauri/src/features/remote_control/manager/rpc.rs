@@ -434,20 +434,26 @@ fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), WebScop
         if handle.is_null() {
             return Ok(());
         }
-        let Some(handle) = handle.as_str() else {
-            return Err(WebScopeRejection::Deterministic(
-                "workspaceHandle must be a string or null".to_string(),
-            ));
-        };
-        // Round-5 复审 minor,措辞按 Round-6 复审修正:`validate_handle` 本
-        // 身是纯词法形状检查(长度/前缀/字符集),不读兑换态——按模块判据
-        // 它本可确定性。这里有意保守:grant 生命周期的拒绝一律瞬时、绝不
-        // 入缓存,任何与句柄相关的重试(修复后的新句柄是不同指纹,旧句柄
-        // 的重放)都拿新鲜裁决;代价只是请求级拒绝少一次缓存命中。
-        return super::workspace_grants::validate_handle(handle)
-            .map_err(WebScopeRejection::Transient);
+        return validate_workspace_grant_handle(handle);
     }
     Ok(())
+}
+
+/// `web_access_create_codex_acp_session` 的 workspaceHandle 腿。独立成纯
+/// 函数直接钉住拒绝分类(Round-7 复审 m4:该分类点原先只能经携带
+/// AppHandle 的整门到达,翻转成 Deterministic 全套测试仍绿):形状违规
+/// 只依赖请求本身,按确定性(可缓存);`validate_handle` 本身是纯词法
+/// 形状检查(长度/前缀/字符集,不读兑换态,措辞按 Round-6 复审修正),
+/// 按模块判据本可确定性——这里有意保守:grant 生命周期的拒绝一律瞬时、
+/// 绝不入缓存,任何与句柄相关的重试(修复后的新句柄是不同指纹,旧句柄
+/// 的重放)都拿新鲜裁决;代价只是请求级拒绝少一次缓存命中。
+fn validate_workspace_grant_handle(handle: &Value) -> Result<(), WebScopeRejection> {
+    let Some(handle) = handle.as_str() else {
+        return Err(WebScopeRejection::Deterministic(
+            "workspaceHandle must be a string or null".to_string(),
+        ));
+    };
+    super::workspace_grants::validate_handle(handle).map_err(WebScopeRejection::Transient)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1032,6 +1038,27 @@ mod tests {
         assert!(
             references < kb,
             "both gates must stay wired ahead of the session-scope work"
+        );
+    }
+
+    #[test]
+    /// Round-7 复审 m4:workspaceHandle 腿的拒绝分类直接钉住——形状违规
+    /// 确定性(可缓存),句柄词法裁决(grant 生命周期)一律瞬时、绝不入
+    /// 缓存。该分类点此前只能经携带 AppHandle 的整门到达,翻转成
+    /// Deterministic 全套测试仍绿;本钉把回归变成红灯。
+    #[test]
+    fn workspace_grant_handle_rejections_split_transient_from_shape() {
+        let shape = validate_workspace_grant_handle(&json!(42))
+            .expect_err("non-string workspace handles must be rejected");
+        assert!(
+            matches!(shape, WebScopeRejection::Deterministic(_)),
+            "a shape violation must stay deterministic, got {shape:?}"
+        );
+        let lexical = validate_workspace_grant_handle(&json!("not-a-valid-grant-handle"))
+            .expect_err("well-shaped but invalid handles must be rejected");
+        assert!(
+            matches!(lexical, WebScopeRejection::Transient(_)),
+            "grant-lifecycle rejections must stay transient, got {lexical:?}"
         );
     }
 
