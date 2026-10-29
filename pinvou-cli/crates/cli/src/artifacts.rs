@@ -110,6 +110,20 @@ fn crosses_sensitive_component_prefix(canonical: &Path) -> Option<&'static str> 
 /// macOS resolve `/etc/...` to `/private/etc/...`, which matches no list
 /// entry, so the GUI refused paths this mirror shipped.
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
+    check_sensitive_canonical(canonical, cfg!(target_os = "macos"))
+}
+
+/// The post-canonicalization decision behind [`check_sensitive_path`], with
+/// the macOS symlink-alias flag as an explicit parameter (Round-7 review
+/// M3). `cfg!(target_os = "macos")` is false on every other platform, under
+/// which the composed system-prefix predicate reduces source-identically to
+/// a plain hand loop over `BLOCKED_PREFIXES` — so the alias arm is only
+/// mutation-detectable if tests can force the flag through this consumer
+/// instead of calling the upstream predicate directly. A regression that
+/// swaps `canonical_system_prefix_hit(canonical, alias_symlinks)` back for
+/// the no-alias hand loop must turn the alias pins here red on every
+/// platform, not just on macOS.
+fn check_sensitive_canonical(canonical: &Path, alias_symlinks: bool) -> Result<(), String> {
     if let Some(blocked) = crosses_sensitive_component(canonical) {
         return Err(format!(
             "{} crosses the credential path component `{blocked}`",
@@ -122,10 +136,7 @@ pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
             canonical.display()
         ));
     }
-    if pinvou3_lib::platform::path_policy::canonical_system_prefix_hit(
-        canonical,
-        cfg!(target_os = "macos"),
-    ) {
+    if pinvou3_lib::platform::path_policy::canonical_system_prefix_hit(canonical, alias_symlinks) {
         return Err(format!(
             "{} is in the system-sensitive area",
             canonical.display()
@@ -858,6 +869,51 @@ mod tests {
             assert_eq!(crosses_sensitive_component_prefix(&path), None, "{benign}");
             assert!(check_sensitive_path(&path).is_ok(), "{benign}");
         }
+    }
+
+    /// Round-7 review M3: the alias arm must be drivable through the CLI
+    /// consumer, not only through the upstream predicate. Pure path-string
+    /// logic (no filesystem), so these run on every platform: with the
+    /// alias flag on, the macOS-aliased spelling is refused; with it off,
+    /// the same spelling is an ordinary path (Linux semantics); and the
+    /// component boundary survives the alias splice. A regression that
+    /// replaces the composed predicate with the no-alias `BLOCKED_PREFIXES`
+    /// hand loop keeps `check_sensitive_path` green on every CI host and
+    /// turns only the first assertion here red.
+    #[test]
+    fn sensitive_canonical_alias_arm_is_driven_through_the_consumer() {
+        assert!(
+            check_sensitive_canonical(Path::new("/private/etc/shadow"), true).is_err(),
+            "the aliased spelling must be refused when alias expansion is on"
+        );
+        assert!(
+            check_sensitive_canonical(Path::new("/private/etc/shadow"), false).is_ok(),
+            "without alias expansion the aliased spelling is an ordinary path"
+        );
+        assert!(
+            check_sensitive_canonical(Path::new("/private/etc/shadowprobe"), true).is_ok(),
+            "the component boundary must survive the alias splice"
+        );
+    }
+
+    /// Round-7 review NIT: the case-variant pin for the component-prefix
+    /// half through the consumer — the `.env.` prefix rule must match
+    /// `.ENV.LOCAL` exactly on the folding platforms (macOS/Windows) and
+    /// stay a different, readable path on byte-exact Linux, mirroring the
+    /// `/Etc/Sudoers` pin above. The benign sibling stays readable on every
+    /// platform.
+    #[test]
+    fn sensitive_canonical_component_prefix_case_variant_follows_platform_folding() {
+        let folded = cfg!(target_os = "macos") || cfg!(target_os = "windows");
+        assert_eq!(
+            check_sensitive_canonical(Path::new("/ws/.ENV.LOCAL"), false).is_err(),
+            folded,
+            "case variants of the `.env.` prefix rule follow the platform's volume folding"
+        );
+        assert!(
+            check_sensitive_canonical(Path::new("/ws/environment.md"), false).is_ok(),
+            "the benign sibling must stay readable on every platform"
+        );
     }
 
     /// The feedback bundle and the persona sidecar hold user-authored text;
