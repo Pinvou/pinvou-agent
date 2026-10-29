@@ -13,13 +13,20 @@ pub use path::{
     platform_compat_path, python_command, user_home_dir, validate_upload_location,
 };
 // The folding primitives are consumed by the os adapters through this module
-// path (`super::interface::volume_fold_*`); which of the three aliases a
-// given platform references varies (the adapters consume only eq/prefix,
-// spelling is reachable through them and the tests), so keep the allowance
-// unconditional — a per-platform cfg here is what let the wave's E0425 slip
-// past Linux verification in the first place.
-#[allow(unused_imports)]
-pub(crate) use path::{volume_fold_eq, volume_fold_prefix, volume_fold_spelling};
+// path (`super::interface::volume_fold_*`). macOS/Windows adapters consume
+// eq/prefix (no allowance needed there — a stopped consumer must resurface as
+// an unused-import tripwire); on the byte-exact platforms none of the aliases
+// is referenced, hence the cfg'd allowance. `volume_fold_spelling` is never
+// consumed through this re-export on any platform (its own module and tests
+// reach it directly), so it stays out of the list (round-5 review: the
+// unconditional blanket allow removed the mac/win tripwire). The E0425 class
+// is about a MISSING re-export, which stays impossible: the two consumed
+// aliases are unconditional in the list.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(unused_imports)
+)]
+pub(crate) use path::{volume_fold_eq, volume_fold_prefix};
 pub use permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
     super_permission_turn_reminder,
