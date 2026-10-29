@@ -21,7 +21,7 @@ sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
 # 这些形态就是整行替换);其余行再按 JSON 字段形态打码 token 值。纵深防御。
 redact(){ awk '{ l=tolower($0)
     if (l ~ /access_token|refresh_token|authorization|bearer/) print "[已脱敏:含凭证形状的整行]"
-    else print }' | sed -E 's/[A-Za-z_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
+    else print }' | sed -E 's/[A-Za-z0-9_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z0-9_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
 
 # --- 定位 wecom-cli(与 dingtalk-smoke.sh 同口径) ---
 # 应用按 connectors.lock.json 把 wecom-cli 落到版本目录 ~/.pinvou3/assets/cli/wecom-cli/<version>/
@@ -76,21 +76,27 @@ if [ -z "$CLI" ]; then echo "找不到 wecom-cli(先在 Pinvou Agent 工具面�
 # execFileSync(spawn+wait)形态,被杀后 native 孙进程会握着管道写端拖住整段脚本;
 # 落盘后孙进程只握临时文件,管道随 cat 结束即 EOF。
 WECOM_TIMEOUT=30
+# 与 dingtalk-smoke.sh 同口径:TERM 不是终点,吞 TERM 的 CLI 不能把探测变成永久
+# 等待。timeout 加 -k、看门狗 KILL_GRACE 后升级 SIGKILL;137(KILL 死)与 143
+# (TERM 死)都归一为 124,超时诊断分支照常生效。
+WECOM_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 wecom_run() {
   local t rc
   t="$(mktemp "${TMPDIR:-/tmp}/wecom-smoke.XXXXXX")"
   if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" "$WECOM_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
+    "$TIMEOUT_BIN" -k "$WECOM_KILL_GRACE" "$WECOM_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
   else
     "$CLI" "$@" >"$t" 2>&1 &
     local pid=$!
-    ( sleep "$WECOM_TIMEOUT" && kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    ( sleep "$WECOM_TIMEOUT" && kill "$pid" 2>/dev/null && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
-    [ "$rc" -eq 143 ] && rc=124
   fi
+  # 超时形态归一:TERM 死(143)与 KILL 死(137)都按 124 上报。
+  [ "$rc" -eq 143 ] && rc=124
+  [ "$rc" -eq 137 ] && rc=124
   cat "$t"; rm -f "$t"
   return "$rc"
 }
@@ -109,7 +115,9 @@ TRI="$(printf '%s\n' "$VER" | awk 'tolower($0) ~ /wecom-cli/ { for (i = 1; i <= 
 # 逐段数值比较(与 dingtalk-smoke.sh 同算法;加权 $1*10000+... 会把 1.2.9999
 # 误判 >= 1.3.4):TRI >= MIN_WECOM 当且仅当两行升序排序后的首行就是 MIN_WECOM。
 GE="$(printf '%s\n%s\n' "$TRI" "$MIN_WECOM" | sort -t. -k1,1n -k2,2n -k3,3n | head -1 | grep -qxF "$MIN_WECOM" && echo yes || echo no)"
-if [ -n "$TRI" ]; then
+# PASS 前提是探测本身成功(v_rc=0,与 dingtalk-smoke.sh 同口径):健康形状的输出 +
+# 非零退出(含超时 124)是「CLI 跑了但失败」,不能因输出像样就发 PASS。
+if [ "$v_rc" -eq 0 ] && [ -n "$TRI" ]; then
   ok "--version 可执行: $(printf '%s\n' "$VER" | redact | tr -d '\r' | head -1)"
   if [ "$GE" = yes ]; then
     ok "version >= ${MIN_WECOM}: $TRI"
@@ -126,14 +134,18 @@ else
 fi
 
 echo "[2] 连接状态(auth show --status 输出 authorized = 已授权)"
+AUTH="$(wecom_run auth show --status 2>&1)"; a_rc=$?
 # 与 wecom.rs status_is_authorized 同口径:整行、大小写不敏感;保留 stderr、
 # 剥 \r(Windows npm shim 的 CRLF 输出会让大小写敏感的 grep -qx 误报未连接)。
-AUTH="$(wecom_run auth show --status 2>&1)"; a_rc=$?
-if echo "$AUTH" | tr -d '\r' | grep -xiq 'authorized'; then
+# 先要求探测退出 0(与 dingtalk-smoke.sh 同口径):exit 7 + authorized 是失败,
+# 不是已连接。
+if [ "$a_rc" -eq 0 ] && echo "$AUTH" | tr -d '\r' | grep -xiq 'authorized'; then
   ok "已连接(auth show --status 返回 authorized)"
 else
   if [ "$a_rc" -eq 124 ]; then
     no "auth 探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
+  elif [ "$a_rc" -ne 0 ]; then
+    no "auth 探测失败(exit $a_rc;CLI 自身报错,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
   else
     no "未连接/未授权(先扫码): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
   fi
@@ -141,16 +153,17 @@ fi
 
 echo "[3] 各域授权探测(只读 --help;存在的子命令 exit 0,未授权/不存在走非零)"
 # 域=CLI 顶层子命令:doc-manage 技能的命令实跑在 doc 域下,chat 有域无技能目录。
-# 先看退出码:--help 不触网,exit 0 即子命令存在、域可用。权限词只在非零退出时才
-# 当作未授权——实测 1.3.4 `doc --help` 的服务描述里就有「权限管理」,先查词会把
-# 健康的 doc 域(文档技能全跑在它上面)永远误报 SKIP 未授权。错误输出也带 Usage
-# 行,grep Usage 会把不存在的域误报可用,故同样以退出码为准。
+# 先看退出码:--help 不触网,exit 0 即子命令存在、域可用。超时(124)检查先于
+# 权限词——超时探测的部分输出可能恰含「权限」,先查词会把超时误标成未授权。
+# 权限词只在非零退出时才当作未授权——实测 1.3.4 `doc --help` 的服务描述里就有
+# 「权限管理」,先查词会把健康的 doc 域(文档技能全跑在它上面)永远误报 SKIP。
+# 错误输出也带 Usage 行,grep Usage 会把不存在的域误报可用,故同样以退出码为准。
 for d in contact doc chat mail disk media message meeting sheet smartpage smartsheet calendar todo slide; do
   OUT="$(wecom_run "$d" --help 2>&1)"; d_rc=$?
   if [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
+  elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
   elif echo "$OUT" | grep -q 'unrecognized subcommand'; then no "$d 域不存在(CLI 无此子命令)"
   elif echo "$OUT" | grep -Eq '权限|暂不支持|未授权'; then sk "$d 域未授权"
-  elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
   # SKIP 回显同样过 redact:未知退出码正是 CLI 重试/报错时可能把凭证带进输出的路径。
   else sk "$d 域结果未知(exit $d_rc): $(printf '%s' "$OUT" | redact | tr -d '\n' | head -c 60)"; fi
 done
