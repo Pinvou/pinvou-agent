@@ -388,6 +388,9 @@ pub(crate) fn write_test_zip(prefix: &str, entries: &[(&str, Vec<u8>)]) -> std::
 /// architecture guard keeps platform selectors in adapter layers), so the
 /// selector lives here and callers skip the mode assertions when this
 /// returns `false` (Windows/fallback have no 0600 semantics to repair).
+/// (Round-6 复审:曾经的读侧伴生 `private_file_mode` 与既有
+/// [`permission_bits`] 语义相同,两个名字只会漂移,已删除——读侧一律用
+/// [`permission_bits`],写侧用本函数。)
 #[cfg(test)]
 pub(crate) fn force_private_file_mode(path: &std::path::Path, mode: u32) -> bool {
     #[cfg(unix)]
@@ -399,21 +402,5 @@ pub(crate) fn force_private_file_mode(path: &std::path::Path, mode: u32) -> bool
     {
         let _ = (path, mode);
         false
-    }
-}
-
-/// Read back the POSIX mode bits (`0o777`) of `path`, or `None` on platforms
-/// without POSIX modes. Companion to [`force_private_file_mode`].
-#[cfg(test)]
-pub(crate) fn private_file_mode(path: &std::path::Path) -> Option<u32> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        Some(std::fs::metadata(path).ok()?.permissions().mode() & 0o777)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        None
     }
 }
