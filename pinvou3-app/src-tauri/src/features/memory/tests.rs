@@ -16,8 +16,8 @@ use super::io::{
     commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
     enqueue_memory_candidate, is_delivery_tool, list_preferences, load_profile,
     pending_item_from_suggestion, recent_activity_path,
-    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
-    topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
+    reconcile_topic_migration_journals_unlocked, reconcile_topic_migration_journals_unlocked_with,
+    summarize_tool_start, topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
 };
@@ -633,6 +633,67 @@ fn reconcile_cleanup_warnings_fold_host_paths_before_the_relay() {
             .to_string_lossy()
             .starts_with(".topic-migration-")
     }));
+    drop(home);
+}
+
+/// Round-5 复审:journal 移除失败这一脱敏点此前没有内容级钉住(stale 两
+/// 个点由上方两钉覆盖;把该分支回退为 `journal_path.display()` 时全部用
+/// 例仍然全绿——PR 正文「four of five」里点名的缺口)。注入闭包让
+/// journal 移除跨平台确定性失败,把 `cleanup_warning` 的脱敏钉到内容级。
+#[test]
+fn reconcile_journal_cleanup_failure_folds_host_paths_before_the_relay() {
+    let home = IsolatedPinvouHome::new("cleanup-journal-redaction");
+    let dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let new_path = dir.join("pref-journal0002.json");
+    let value = preference_fixture(
+        "pref-journal0002",
+        "workflow_preference",
+        "journal preference",
+    );
+    let journal_path = topic_migration_journal_path(&new_path).unwrap();
+    // commit 阶段让 stale 移除失败以留存 journal(commit 自身会在清理全部
+    // 成功时移除 journal),随后清掉 stale 文件,让对账时 stale 车道成功、
+    // 只有 journal 移除在注入闭包处确定性失败。
+    let stale_path = dir.join("pref-stale0003.json");
+    fs::write(&stale_path, b"{}\n").unwrap();
+    commit_topic_migration_unlocked_with(
+        &journal_path,
+        &new_path,
+        &value,
+        std::slice::from_ref(&stale_path),
+        |_| true,
+        write_json_atomic_unlocked,
+        |path: &Path| {
+            if path.as_os_str() == stale_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+    fs::remove_file(&stale_path).unwrap();
+
+    let read = reconcile_topic_migration_journals_unlocked_with::<PreferenceFile, _>(
+        &dir,
+        |path: &Path| {
+            if path.as_os_str() == journal_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+    let warning = read
+        .cleanup_warning
+        .expect("journal cleanup failure must warn");
+    assert_warning_is_folded(&warning, &home, "reconcile journal cleanup warning");
+    assert!(
+        warning.contains(".topic-migration-"),
+        "the failing journal's name must survive redaction: {warning}"
+    );
     drop(home);
 }
 

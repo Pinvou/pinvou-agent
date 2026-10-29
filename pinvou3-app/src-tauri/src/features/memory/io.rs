@@ -50,13 +50,10 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
 /// 脱敏：存储根前缀折叠为 `~/.pinvou3`，文件名与错误文本保留，桌面端诊断
 /// 不受影响，绝对路径不跨 relay。同一策略也用于随成功负载出站的
 /// `snapshot_path` / `runtime_path` 展示字段（内容仅作展示，无回读消费方）。
+/// Round-5 复审:委托平台共享的 `redact_storage_prefix`(remote_control
+/// 管理器同一实现),不再维护第三份平行脱敏实现。
 pub(crate) fn display_redacted(path: &Path) -> String {
-    let raw = path.display().to_string();
-    let prefix = paths::pinvou3_home().display().to_string();
-    match raw.strip_prefix(&prefix) {
-        Some(rest) => format!("~/.pinvou3{rest}"),
-        None => raw,
-    }
+    paths::redact_storage_prefix(&path.display().to_string())
 }
 
 /// Stored-text caps per store, shared by the write path (which re-cleans every
@@ -685,6 +682,22 @@ fn write_topic_migration_journal_unlocked(
 pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
     dir: &Path,
 ) -> io::Result<TopicReconciliation> {
+    reconcile_topic_migration_journals_unlocked_with::<T, _>(dir, |path: &Path| {
+        fs::remove_file(path)
+    })
+}
+
+/// Round-5 复审:移除动作注入缝(同 commit 车道的
+/// `commit_topic_migration_unlocked_with`),让 journal 移除失败这个脱敏点
+/// 能被跨平台确定性测试直接驱动,而不必依赖平台特定语义。
+pub(super) fn reconcile_topic_migration_journals_unlocked_with<T, F>(
+    dir: &Path,
+    remove_file: F,
+) -> io::Result<TopicReconciliation>
+where
+    T: serde::de::DeserializeOwned,
+    F: Fn(&Path) -> io::Result<()>,
+{
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -730,7 +743,7 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
                 && stable_id_with_prefix("authority", &raw) == journal.authority_hash
         });
         if !authority_valid {
-            fs::remove_file(&journal_path)?;
+            remove_file(&journal_path)?;
             continue;
         }
         let mut journal_cleanup_pending = false;
@@ -739,14 +752,14 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
             if stale == authority || !stale.exists() {
                 continue;
             }
-            if let Err(error) = fs::remove_file(&stale) {
+            if let Err(error) = remove_file(&stale) {
                 journal_cleanup_pending = true;
                 hidden_files.insert(stale.clone());
                 cleanup_failures.push(format!("{}: {error}", display_redacted(&stale)));
             }
         }
         if !journal_cleanup_pending {
-            if let Err(error) = fs::remove_file(&journal_path) {
+            if let Err(error) = remove_file(&journal_path) {
                 cleanup_failures.push(format!("{}: {error}", display_redacted(&journal_path)));
             }
         }
