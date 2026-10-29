@@ -2388,7 +2388,10 @@ mod tests {
     /// ":(literal)src"` 会把已跟踪/已暂存的 `src/.env` 完整补丁发给手机
     /// (词法检查只看得到无害祖先名 "src")。目录目标在差异车道整体拒绝;
     /// 本钉在真实 git 仓库上同时锁住已跟踪未暂存与已暂存两条泄露臂,并钉
-    /// 住清白兄弟文件的差异仍然可用(功能不被一刀切)。需要 git 二进制。
+    /// 住清白兄弟文件的差异仍然可用(功能不被一刀切)。Round-6 复审 M1:
+    /// 直接点名的凭据文件请求(最直接的敌意形状)也必须在 git 仓库上被
+    /// 两条检查腿拦住——词法腿(已删除文件 canonicalize 失败时唯一的
+    /// 防线)与解析腿。需要 git 二进制。
     #[test]
     fn workspace_diff_refuses_directory_pathspecs_over_tracked_credentials() {
         if std::process::Command::new("git")
@@ -2420,10 +2423,27 @@ mod tests {
             .expect("a directory pathspec must be refused in the diff lane");
         assert!(error.to_string().contains("文件路径"), "got: {error}");
 
+        // Round-6 复审 M1:直接点名的凭据文件(已跟踪未暂存)必须拒绝。
+        let error = workspace_diff("s-dir-file", repo, "src/.env")
+            .err()
+            .expect("a tracked-dirty credential file diff must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
         // 已暂存臂与整仓拼写:同一形状。
         run_git(repo, &["add", "src/.env", "src/innocent.txt"]);
         assert!(workspace_diff("s-dir", repo, "src").is_err());
         assert!(workspace_diff("s-dir", repo, ".").is_err());
+        // 已暂存的凭据文件点名请求:同一拒绝。
+        assert!(workspace_diff("s-dir-file", repo, "src/.env").is_err());
+
+        // Round-6 复审 M1:已删除的凭据文件——canonicalize 失败,解析腿
+        // 跳过,词法腿是唯一防线;删除差异(渲染旧凭据字节为 `-` 行)同样
+        // 不得离开差异车道。
+        fs::remove_file(repo.join("src/.env")).unwrap();
+        let error = workspace_diff("s-dir-file", repo, "src/.env")
+            .err()
+            .expect("a deleted credential file's removal diff must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
 
         // 文件级差异仍然工作:清白兄弟文件的补丁照常返回。
         let diff = workspace_diff("s-dir", repo, "src/innocent.txt").unwrap();
@@ -2497,6 +2517,58 @@ mod tests {
             !names.iter().any(|name| name.ends_with(".env")),
             "credential names must not leak through the changes lane: {names:?}"
         );
+    }
+
+    /// Round-6 复审:changes 车道 git 半边的过滤排序——凭据 retain 先于
+    /// `classify_origin` 的内容读取(SHA-256/来源分类),一个不可读的脏
+    /// `.env` 不得让整个 changes 调用失败,更不得出现在列表里。上方非 git
+    /// 钉只覆盖过滤本身;本钉在真实 git 仓库上锁住排序(EACCES 腿仅
+    /// unix;Windows 无 chmod 语义,过滤断言在所有平台都成立)。
+    #[test]
+    fn workspace_changes_git_arm_filters_credentials_before_content_classification() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping workspace_changes_git_arm_filters_credentials_before_content_classification: git binary not available"
+            );
+            return;
+        }
+        let root = TestDir::new("credential-changes-git");
+        let repo = root.path();
+        run_git(repo, &["init", "-b", "main", "."]);
+        run_git(repo, &["config", "user.name", "test"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join(".env"), "SECRET=1\n").unwrap();
+        fs::write(repo.join("notes.md"), "hello\n").unwrap();
+        run_git(repo, &["add", ".env", "notes.md"]);
+        run_git(repo, &["commit", "-m", "init"]);
+        fs::write(repo.join(".env"), "SECRET=2\n").unwrap();
+        fs::write(repo.join("notes.md"), "hello v2\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(repo.join(".env"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let changes = workspace_changes("s-changes-git", repo)
+            .expect("an unreadable dirty credential file must be filtered, not fail the lane");
+        let names: Vec<&str> = changes
+            .changes
+            .iter()
+            .map(|change| change.relative_path.as_str())
+            .collect();
+        assert!(names.contains(&"notes.md"), "got: {names:?}");
+        assert!(
+            !names.iter().any(|name| name.ends_with(".env")),
+            "credential names must not leak through the git changes arm: {names:?}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(repo.join(".env"), fs::Permissions::from_mode(0o644)).unwrap();
+        }
     }
 
     /// 大小写变体经真实入口的端到端钉(macOS 独有意义:APFS 默认卷大小写
