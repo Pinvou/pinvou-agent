@@ -109,6 +109,15 @@ pub fn canonical_system_prefix_hit(canonical: &Path, alias_symlinks: bool) -> bo
 
 /// 检查已规范化路径是否触及凭据组件或系统敏感前缀。
 /// 供 `validate_user_path` 和 `validate_browsable_path` 共享。
+///
+/// 已接受的残余(Round-7 复审核对在案):本判定是「词法 + 解析落点」的
+/// 组件策略;同用户在检查与打开之间换掉路径(swap)或硬链接别名
+/// (`ln ~/.ssh/id_rsa ~/work/notes.txt` 对组件检查不可见)不在威胁模型
+/// 内——本地单用户应用里,这样的行动者本就能直接读该文件;策略意图是
+/// 把凭据挡在外部模型上下文之外(见 file_ingest::validate_browsable_path)。
+/// 「链接名清白」的符号链接不在残余内:由调用方的 canonicalize + 解析落
+/// 点复检封闭(如 codex_acp/workspace 的解析腿、workspace_grants 的
+/// dev/ino 身份复核)。
 pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String> {
     for blocked in BLOCKED_COMPONENTS {
         if canonical
