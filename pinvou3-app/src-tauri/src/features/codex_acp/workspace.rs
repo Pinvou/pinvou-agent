@@ -854,6 +854,23 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
     }
     let path = root.join(&relative);
     ensure_path_within_workspace(&root, &path)?;
+    // Round-5 复审 BLOCKER:git pathspec 按目录前缀递归,`:(literal)` 只关
+    // 通配不关递归——`git diff -- ":(literal)src"` 会把已跟踪/已暂存的
+    // `src/.env` 完整补丁发给手机,而词法检查只看得到 "src" 这个无害祖先
+    // 名。目录(含整仓的空 relative)目标整体拒绝:差异车道按变更车道给出
+    // 的文件路径工作,目录级差异从来不是契约功能;文件级 pathspec 不递归,
+    // 两条 git 臂由此封闭。
+    if path.is_dir() {
+        bail!("工作区差异仅支持文件路径: {relative}");
+    }
+    // 解析腿(与 preview 车道同约束):落点经符号链接命中黑名单时,在任何
+    // 内容读取(含 diff 缓存的指纹哈希)之前拒绝。canonicalize 失败(已删
+    // 除的文件)保持原拼写,由下方 git 臂按词法腿处理。
+    if let Ok(landing) = std::fs::canonicalize(&path) {
+        if path_crosses_blocked_component(&landing) {
+            bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
+        }
+    }
 
     if let Some(cached) = diff_cache_get(session_id, &root, &relative) {
         return Ok(WorkspaceDiff {
@@ -2156,6 +2173,22 @@ mod tests {
                 "a local untracked symlink must diff via its canonical target, got: {}",
                 diff.text
             );
+
+            // (d) Round-5 复审 M4:workspace 内指向凭据文件的未跟踪符号链接
+            // 必须按解析后的落点拒绝。此前的 git 车道夹具只钉越界与本地直读,
+            // 删掉 untracked_diff 的落点黑名单检查时本模块全部用例仍然全绿
+            // (突变实测)——git 工作区里 `notes.md -> .env` 的差异会退化为
+            // 凭据字节外泄且无红测试。
+            fs::write(repo.join(".env"), "AWS_SECRETKEY=leak\n").unwrap();
+            std::os::unix::fs::symlink(".env", repo.join("notes.md")).unwrap();
+            let error = workspace_diff("sess-untracked-symlink", repo, "notes.md")
+                .err()
+                .expect("an untracked symlink landing on a credential file must be refused");
+            let rendered = format!("{error:#}");
+            assert!(
+                rendered.contains("凭据文件"),
+                "the resolved credential landing must be refused, got: {rendered}"
+            );
         }
 
         // Bounded read: an untracked text file larger than DIFF_LIMIT is
@@ -2349,6 +2382,53 @@ mod tests {
             .expect("credential file diff must be rejected");
         assert!(error.to_string().contains("凭据"), "got: {error}");
         assert!(workspace_diff("s-cred", root.path(), "sub/.ssh/id_rsa").is_err());
+    }
+
+    /// Round-5 复审 BLOCKER:git pathspec 按目录前缀递归,`git diff --
+    /// ":(literal)src"` 会把已跟踪/已暂存的 `src/.env` 完整补丁发给手机
+    /// (词法检查只看得到无害祖先名 "src")。目录目标在差异车道整体拒绝;
+    /// 本钉在真实 git 仓库上同时锁住已跟踪未暂存与已暂存两条泄露臂,并钉
+    /// 住清白兄弟文件的差异仍然可用(功能不被一刀切)。需要 git 二进制。
+    #[test]
+    fn workspace_diff_refuses_directory_pathspecs_over_tracked_credentials() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping workspace_diff_refuses_directory_pathspecs_over_tracked_credentials: git binary not available"
+            );
+            return;
+        }
+        let root = TestDir::new("credential-dir-diff");
+        let repo = root.path();
+        run_git(repo, &["init", "-b", "main", "."]);
+        run_git(repo, &["config", "user.name", "test"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(repo.join("src/.env"), "AWS_SECRETKEY=base\n").unwrap();
+        fs::write(repo.join("src/innocent.txt"), "hello\n").unwrap();
+        run_git(repo, &["add", "src/.env", "src/innocent.txt"]);
+        run_git(repo, &["commit", "-m", "init"]);
+        fs::write(repo.join("src/.env"), "AWS_SECRETKEY=dirty\n").unwrap();
+        fs::write(repo.join("src/innocent.txt"), "hello v2\n").unwrap();
+
+        // 已跟踪未暂存臂:祖先目录的 diff 不得携带凭据补丁。
+        let error = workspace_diff("s-dir", repo, "src")
+            .err()
+            .expect("a directory pathspec must be refused in the diff lane");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // 已暂存臂与整仓拼写:同一形状。
+        run_git(repo, &["add", "src/.env", "src/innocent.txt"]);
+        assert!(workspace_diff("s-dir", repo, "src").is_err());
+        assert!(workspace_diff("s-dir", repo, ".").is_err());
+
+        // 文件级差异仍然工作:清白兄弟文件的补丁照常返回。
+        let diff = workspace_diff("s-dir", repo, "src/innocent.txt").unwrap();
+        assert!(diff.text.contains("+hello v2"), "got: {}", diff.text);
+        assert!(!diff.text.contains("AWS_SECRETKEY"), "got: {}", diff.text);
     }
 
     /// 提示引用车道(`web_access_codex_acp_prompt` 的 workspace_references)
