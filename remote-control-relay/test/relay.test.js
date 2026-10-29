@@ -737,6 +737,42 @@ test("a cross-endpoint revoker keeps its own session", async () => {
   }
 });
 
+test("an unauthenticated cross-endpoint revoker stays bounded by the auth timeout", async () => {
+  // The secret authorizes the revoke itself, but a revoker that never
+  // authenticated keeps its socket after a cross-endpoint revoke — so the
+  // authentication timer, cleared when the revoke started, must be re-armed.
+  // Without that, the socket holds a connection (and a healthz
+  // unauthenticated counter) forever.
+  const isolated = await spawnRelay({ WS_AUTH_TIMEOUT_MS: "1500", WS_CONNECT_LIMIT: "20" });
+  let desktopB;
+  let revoker;
+  try {
+    desktopB = await registerDesktop(
+      "endpoint_revoke_unk_b",
+      "revoke-unk-token-b-0000000000001",
+      "revoke-unk-secret-b-0000000000001",
+      isolated.wsUrl,
+    );
+    await desktopB.registered;
+    revoker = await openSocket(isolated.wsUrl);
+    const revoked = nextMessage(revoker, "desktop_endpoint_revoked");
+    revoker.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: "endpoint_revoke_unk_b",
+      desktop_secret: "revoke-unk-secret-b-0000000000001",
+    }));
+    await revoked;
+    // The endpoint is gone; the revoker has no credentials left to
+    // authenticate with and must be closed by the re-armed timeout.
+    await waitForClose(revoker, 6000);
+  } finally {
+    closeSocket(revoker);
+    closeSocket(desktopB?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
 test("desktop revoke invalidates the persistent link", async (t) => {
   const endpointId = `endpoint_revoke_${Date.now()}`;
   const accessToken = "access-token-revoke-00000000000001";
