@@ -1910,6 +1910,9 @@ impl RemoteControlManager {
                     // 真实结果永远到不了手机。只有占位可被取代:占位被替换后
                     // 第二次 complete 仍走幂等忽略;确定性拒绝等真终态不可被
                     // 伪造的 complete 覆盖(命令未派发,不存在真实完成)。
+                    // 替换是有意「存而不发」:手机已收到超时终态,同
+                    // client_request_id 的主动双发会破坏单响应契约;手机
+                    // 重放该 id 时,Complete 臂会回放这里替换后的真实结果。
                     if Self::rpc_completion_is_in_flight_timeout(completion) {
                         let fingerprint = fingerprint.clone();
                         inner.rpc_cache.insert(
@@ -4792,7 +4795,7 @@ mod tests {
         // 该文件持有 desktop_secret:load 必须恢复 0600 基线(同 config)。
         assert!(load_pending_revocations_from(&path).is_ok());
         assert_eq!(
-            crate::platform::test_support::private_file_mode(&path),
+            crate::platform::test_support::permission_bits(&path),
             Some(0o600),
             "load must restore the private 0600 baseline for the secret-bearing ledger"
         );
@@ -5122,7 +5125,10 @@ mod tests {
     /// 接线钉(Round-5 复审 M2):settle 收口的安全契约(瞬时拒绝绝不进
     /// Complete 缓存、墓碑冲突绝不缓存)只在 `handle_rpc_request` 的调用
     /// 点生效——把三个调用点改回无条件缓存/无条件结算时,helper 级测试仍
-    /// 全绿(模块内注释自证)。删除任一收口调用即红。
+    /// 全绿(模块内注释自证)。Round-6 复审 minor:墓碑与预检按存在性断言,
+    /// 两条 admission 臂各有一个调用点,按**计数**断言——回退任意一支
+    /// (计数掉到 1)或新增绕过收口的臂(计数超过 2)都即红;负面钉禁止
+    /// 收口漏斗之外的任何直接 `settle_complete` 进函数体。
     #[test]
     fn rpc_cache_settle_funnels_are_wired_in_handle_rpc_request() {
         let source = include_str!("mod.rs");
@@ -5137,13 +5143,73 @@ mod tests {
             body.contains("Self::settle_tombstone_outcome("),
             "the tombstone branch must route its cache decision through settle_tombstone_outcome"
         );
-        assert!(
-            body.contains("Self::settle_admission_rejection("),
-            "both admission branches must route their cache decision through settle_admission_rejection"
+        assert_eq!(
+            body.matches("Self::settle_admission_rejection(").count(),
+            2,
+            "both admission branches (reconstructed tombstone and fresh durable) must route \
+             their cache decision through settle_admission_rejection"
         );
         assert!(
             body.contains("validate_web_rpc_scope("),
             "the preflight must consult the web scope gate (KB paths / prompt references / session scope)"
+        );
+        assert!(
+            !body.contains("Self::settle_complete("),
+            "no arm inside handle_rpc_request may bypass the settle funnels with a direct \
+             Complete-cache write"
+        );
+    }
+
+    /// 接线钉(Round-6 复审 M5):`web_rejoining` 标志的安全语义(重连不
+    /// 清 staged 传输、live takeover 才清)只在帧路径的调用点生效——helper
+    /// 级测试直接驱动 `apply_web_lease_change(inner, true)`,看不见接线。
+    /// 把任一调用点改回 `false`(或删除解析、让缺省 false 生效)会原样
+    /// 复原 round-2 的 staged 状态每 ~2.5 分钟被看门狗清空的回归,而全套
+    /// 件仍绿。两个到达路径(`handle_registered` 重注册转发、
+    /// `handle_web_connected` web join)都必须解析并透传该标志。
+    #[test]
+    fn web_rejoining_flag_is_wired_into_both_lease_change_call_sites() {
+        let source = include_str!("mod.rs");
+        for fn_name in [
+            "fn handle_registered(&self, value: &Value)",
+            "fn handle_web_connected(&self, value: &Value)",
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\n    fn ")
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("get(\"web_rejoining\")"),
+                "{fn_name} must parse the web_rejoining flag from the frame"
+            );
+            assert!(
+                body.contains("apply_web_lease_change(&mut inner, web_rejoining);"),
+                "{fn_name} must pass the parsed flag (not a constant) into apply_web_lease_change"
+            );
+        }
+    }
+
+    /// 接线钉(Round-6 复审 M6):`last_error_code` 字段契约的断连半边——
+    /// 不携带码的错误写入必须清掉旧恢复码(否则旧三语恢复提示会盖在新
+    /// 错误文本之上)。connected 臂与断连臂各自清码;删除任一臂的清码
+    /// 行即红。
+    #[test]
+    fn handle_connection_clears_stale_error_code_on_both_branches() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn handle_connection(&self, endpoint_id: &str, connected: bool, error: Option<String>)")
+            .expect("handle_connection must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_connection body must be terminated by the next fn")];
+        assert_eq!(
+            body.matches("last_error_code = None").count(),
+            2,
+            "both the connected and the disconnected branch must clear the stale code"
         );
     }
 
@@ -5399,7 +5465,7 @@ mod tests {
 
         assert_eq!(load_config_from(&path).unwrap(), Some(config));
         assert_eq!(
-            crate::platform::test_support::private_file_mode(&path),
+            crate::platform::test_support::permission_bits(&path),
             Some(0o600),
             "load must restore the private 0600 baseline after a successful parse"
         );
@@ -5424,6 +5490,28 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert!(!path.exists(), "stop must leave no unparsable state behind");
         std::fs::remove_dir_all(directory).unwrap();
+
+        // Round-6 复审 minor:上面只钉住了容错读取;「降级后仍删除文件」
+        // 的接线在 stop_current 里,单元测试到不了(mock_app 缺失),按
+        // 本模块的 source-contract 惯例钉住——降级读取与删除调用必须
+        // 同时存在于 stop_current,二者缺一即红。
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn stop_current(&self)")
+            .expect("stop_current must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    pub fn ")
+            .or_else(|| body.find("\n    fn "))
+            .expect("stop_current body must be terminated by the next fn")];
+        assert!(
+            body.contains("load_config_for_stop()"),
+            "stop must degrade a corrupt config via the tolerant read"
+        );
+        assert!(
+            body.contains("remove_config()"),
+            "stop must still remove the (corrupt) config file after the tolerant read"
+        );
     }
 
     #[test]
@@ -5438,5 +5526,36 @@ mod tests {
             !rendered.contains(&pending.desktop_secret),
             "the desktop secret must never appear in Debug output"
         );
+    }
+
+    /// Round-6 复审:0600 修复必须挂在第一个句柄、先于任何内容读取——
+    /// 非 UTF-8 的损坏内容走读取腿报错返回,挂在读取之后的修复永远不会
+    /// 执行,损坏 + 放宽权限的凭据文件就一直裸留在盘上(与加载注释的
+    /// 威胁模型直接相抵)。把修复挪回读取之后或删除修复即红。
+    /// Windows/fallback 无 POSIX 模式,模式断言经 test_support 钩子跳过。
+    #[test]
+    fn corrupt_world_readable_config_is_still_repaired_on_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-config-repair-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("web-access.json");
+        // 非 UTF-8 字节:read_to_string 必然失败,模拟「损坏内容 + 放宽
+        // 权限」的组合。
+        std::fs::write(&path, [0xff_u8, 0xfe, b'{', b'\n']).unwrap();
+        let enforced = crate::platform::test_support::force_private_file_mode(&path, 0o644);
+        let outcome = load_config_from(&path);
+        assert!(outcome.is_err(), "corrupt content must still fail closed");
+        if enforced {
+            assert_eq!(
+                crate::platform::test_support::permission_bits(&path),
+                Some(0o600),
+                "the load-time repair must land on the first handle, before the failing read"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

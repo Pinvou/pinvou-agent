@@ -170,17 +170,20 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
+    // 读取即修复,且先于任何内容读取:损坏 + 放宽权限的组合也不能把一个
+    // 世界可读的凭据文件留在盘上(备份恢复或外部工具可能把它改成组/全员
+    // 可读)。Round-6 复审:修复必须挂在**第一个**句柄上、先于
+    // `read_to_string`——非 UTF-8 的损坏内容会让读取腿先行报错返回,挂在
+    // 读取之后的修复永远不会执行,放宽权限的损坏文件就一直裸留在盘上。
+    // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛,同时免去
+    // 第二次 open 的 TOCTOU(两次打开之间路径可被换掉)。Windows/fallback
+    // 平台该调用是显式 no-op。
+    platform::enforce_private_permissions(&file, path)
+        .map_err(|error| format!("restrict {}: {error}", path.display()))?;
     let mut text = String::new();
     file.take((super::MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
         .read_to_string(&mut text)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
-    // 读取即修复,且先于内容判定:损坏 + 放宽权限的组合也不能把一个世界
-    // 可读的凭据文件留在盘上(备份恢复或外部工具可能把它改成组/全员可读)。
-    // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛。(take() 消耗
-    // 了读句柄,这里重新打开;Windows/fallback 平台该调用是显式 no-op。)
-    let handle = File::open(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    platform::enforce_private_permissions(&handle, path)
-        .map_err(|error| format!("restrict {}: {error}", path.display()))?;
     if text.len() > super::MAX_WEB_ACCESS_CONFIG_BYTES {
         return Err(format!(
             "Web access config is larger than {} KiB: {}",
@@ -860,5 +863,42 @@ mod tests {
             normalized_env_url(Some("".into()), "PINVOU_REMOTE_TEST_URL", ws),
             None
         );
+    }
+
+    /// Round-6 复审:三个 env 覆盖读取点必须全部经由 `normalized_env_url`
+    /// (trim + 校验 + 非法回落),直接回退到裸 `std::env::var` 会让非法
+    /// 覆盖静默生效。helper 级测试(上方)看不见接线,按本模块惯例用
+    /// source-contract 钉住三个调用点的函数体。
+    #[test]
+    fn env_override_readers_route_through_the_normalized_helper() {
+        let source = include_str!("persistence.rs");
+        for (fn_name, env_name) in [
+            (
+                "fn remote_public_base_url() -> String",
+                "PINVOU_REMOTE_PUBLIC_URL",
+            ),
+            (
+                "fn remote_relay_ws_url() -> String",
+                "PINVOU_REMOTE_RELAY_WS_URL",
+            ),
+            (
+                "fn apply_runtime_relay_override(mut config: WebAccessConfig)",
+                "PINVOU_REMOTE_RUNTIME_RELAY_WS_URL",
+            ),
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub(super) fn ")
+                .or_else(|| body.find("\nfn "))
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("normalized_env_url("),
+                "{fn_name} must route its env override through normalized_env_url"
+            );
+            assert!(body.contains(env_name), "{fn_name} must read {env_name}");
+        }
     }
 }
