@@ -192,7 +192,9 @@
         state.webAccess = Object.assign({}, state.webAccess, status || {});
       } catch (error) {
         if (intentSeq !== webAccessIntentSeq || statusSeq !== webAccessStatusSeq) return;
-        state.webAccess = Object.assign({}, state.webAccess, { last_error: String(error) });
+        // Round-6 复审:错误写入与码清理必须成对——刷新失败也要清掉旧恢复
+        // 码,否则 registerHint 优先级会让旧的三语提示盖住本次真实错误。
+        state.webAccess = Object.assign({}, state.webAccess, { last_error: String(error), last_error_code: null });
       }
       notify();
     }
@@ -200,7 +202,9 @@
     async function startRemoteControl(options) {
       const seq = ++webAccessIntentSeq;
       const wasActive = !!state.webAccess.active;
-      state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null });
+      // Round-6 复审:乐观开始同样清掉旧恢复码(last_error 清理与码清理
+      // 成对),否则新尝试期间横幅仍显示上一轮的旧恢复提示。
+      state.webAccess = Object.assign({}, state.webAccess, { starting: true, last_error: null, last_error_code: null });
       notify();
       try {
         const info = await invoke("web_access_enable", {
@@ -233,7 +237,9 @@
         await invoke("web_access_disable");
       } catch (error) {
         if (seq !== webAccessIntentSeq) return; // 陈旧失败不向调用者抛错：已有更新的用户操作接管状态（审计补充）
-        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error), starting: false });
+        // Round-6 复审:停用失败的错误写入同样必须清掉旧恢复码,与
+        // start/rotate/revoke 的失败分支同口径。
+        state.webAccess = Object.assign({}, state.webAccess, { status: "error", last_error: String(error), last_error_code: null, starting: false });
         notify();
         throw error;
       }

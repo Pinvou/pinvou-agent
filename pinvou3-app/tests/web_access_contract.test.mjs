@@ -1024,6 +1024,20 @@ assert.equal((i18n.match(/update_desktop:/g) || []).length, 3,
   'the update-desktop recovery copy must exist in all three languages');
 assert.match(desktopRemoteControlBridge, /invoke\("web_access_revoke_host_workspace"\)/,
   'the desktop bridge must call the desktop-only revoke command');
+// Round-6 复审 M6:round-5 的「乐观合并清码」账必须逐分支成立——错误
+// 写入与码清理成对,refresh 失败、乐观开始、停用失败三个此前漏掉的分支
+// 也必须清码;revoke 合并必须按 url 有无推导 active,不得把非活跃状态
+// 标成在线。删除任一清理行或改回强制 active: true 即红。
+assert.match(desktopRemoteControlBridge, /\{ starting: true, last_error: null, last_error_code: null \}/,
+  'the optimistic start merge must clear the stale recovery code');
+assert.match(desktopRemoteControlBridge, /status: "error", last_error: String\(error\), last_error_code: null, starting: false \}/,
+  'the stop failure merge must clear the stale recovery code');
+assert.match(desktopRemoteControlBridge,
+  /active: !!\(info && info\.url\), starting: false,\n          host_workspace_authorized: false, last_error: null, last_error_code: null,/,
+  'the revoke merge must derive active from the url and clear the stale recovery code');
+assert.equal(
+  (desktopRemoteControlBridge.match(/\{ last_error: String\(error\), last_error_code: null \}/g) || []).length, 2,
+  'the status-refresh failure merge and the revoke failure merge must both clear the stale code');
 assert.match(remoteControlCommands, /web_access_revoke_host_workspace\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'only the main desktop WebView may revoke folder consent');
 assert.match(remoteControlCommands, /web_access_enable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
