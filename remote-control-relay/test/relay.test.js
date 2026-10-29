@@ -1501,7 +1501,13 @@ test("destroys an upgrade request with a hostile Host header without killing the
   // throw into an uncaught exception.
   await new Promise((resolve, reject) => {
     const raw = netConnect(port, "127.0.0.1");
-    const timer = setTimeout(() => { raw.destroy(); resolve(); }, 1500);
+    // Strict teardown expectation: only the relay closing/destroying the
+    // hostile socket resolves. If the socket is still alive after 1500ms the
+    // relay accepted the request and stalled it, which must fail the test.
+    const timer = setTimeout(() => {
+      raw.destroy();
+      reject(new Error("the relay neither closed nor destroyed the hostile upgrade socket within 1500ms"));
+    }, 1500);
     raw.on("close", () => { clearTimeout(timer); resolve(); });
     raw.on("error", () => { /* destroyed by the relay: expected */ });
     raw.write(
