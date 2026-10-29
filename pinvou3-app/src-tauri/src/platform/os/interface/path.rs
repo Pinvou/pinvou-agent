@@ -60,6 +60,8 @@ pub fn path_identity_is_same_or_nested(key: &str, base: &str) -> bool {
 /// std 没有 case-fold API，显式替换这三个码点后做 Unicode 小写即可覆盖
 /// 「黑名单常量均为纯 ASCII」场景的全部折叠拼写，不引入新依赖。非 ASCII
 /// 拼写是罕见输入：函数体本身只在慢路径分配，热路径见下面两个谓语。
+/// 注意 ı 的折叠对 macOS 是过量折叠（APFS 简单折叠表不折叠 ı，该码点来自
+/// NTFS `$UpCase`）——黑名单只增匹配，方向 fail-closed，可接受。
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub(crate) fn volume_fold_spelling(text: &str) -> String {
     text.replace('\u{017F}', "s")
