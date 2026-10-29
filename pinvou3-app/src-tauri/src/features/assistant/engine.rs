@@ -1684,8 +1684,13 @@ where
 /// the deterministic recursion shield: the engine consults ask rules for
 /// `exec_shell` and the file tools only, and mutating MCP tools resolve to
 /// silent Allow under the current full-auto approval (contract §9). Applied
-/// only to the unattended turn; a later interactive continuation gets a
-/// fresh engine with the ordinary catalog.
+/// only to the unattended turn. Lifetime differs by family (round-15
+/// wording): the scheduled family's pre/post-turn evict respawns a fresh
+/// engine with the ordinary catalog, while the session-creation delivery's
+/// engine keeps the list until the first send through the shared seams —
+/// the two attended seams and both relay tail-calls (messaging + the
+/// scheduled family's deliver_session_message; round-31 minor 3) —
+/// re-shapes the same engine (see `EnginePool::watcher_shielded_sessions`).
 pub(crate) fn unattended_disallowed_tools(disallowed: &[String]) -> Vec<String> {
     let mut list = disallowed.to_vec();
     for tool in [
@@ -1712,6 +1717,16 @@ pub(crate) fn unattended_disallowed_tools(disallowed: &[String]) -> Vec<String> 
         // upstream per the fork boundary.
         "registry_sync",
         "start_registry_mcp_server",
+        crate::features::assistant::platform::bridge::SESSION_CREATE_TOOL,
+        // Round-21 M1 (#657): the delegation-shed closure. The `agent` tool
+        // takes a model-supplied `inherit_disallowed_tools=false` that sheds
+        // preference denies in the child — an injected opening instruction on
+        // a watcher-created (plain-id, subagents-default-on) session could
+        // delegate the shield away and recurse through this named tool. The
+        // scheduled family already disables subagents at spawn (round-8 M1),
+        // so the deny is redundant-but-harmless there; for the
+        // session-creation delivery it is the deterministic closure.
+        "agent",
     ] {
         if !list.iter().any(|blocked| blocked == tool) {
             list.push(tool.to_string());
@@ -1827,8 +1842,10 @@ impl AppEngine {
         // 该列表来自 compute_disallowed_tools；多智能体会话不改写它，
         // 工具面与普通会话保持一致。
         // One automation run owns exactly one engine turn. Apply the
-        // unattended deny list only to that turn; a later interactive
-        // continuation gets a fresh engine with the ordinary catalog.
+        // unattended deny list only to that turn; the scheduled family's
+        // pre/post-turn evict respawns a fresh engine with the ordinary
+        // catalog (the session-creation delivery instead re-shapes the
+        // same engine at the attended seams).
         let scheduled_disallowed_tools = unattended_disallowed_tools(&disallowed);
         engine_config.disallowed_tools = if disallowed.is_empty() {
             None
@@ -2102,6 +2119,34 @@ impl AppEngine {
                 restrict_tools,
             )
         }
+    }
+
+    /// Round-9 M6 (session-creation): a watcher-dispatched turn is
+    /// UNATTENDED — nobody is watching the session the tool created, so an
+    /// injected opening message must not be able to recursively create
+    /// sessions/goals/task-writes. Push the engine's shield list (the same
+    /// `unattended_disallowed_tools` composition the scheduled turn sends
+    /// below) BEFORE the delivered turn op reaches this engine. Lifetime
+    /// (round-13 wording, both relays named per round-31 minor 3): the
+    /// list persists on this engine until it is recycled OR the first
+    /// subsequent send through the shared seams — the two attended seams
+    /// (`send_reserved_user_message` / `edit_last_turn_reserved`) plus both
+    /// relay tail-calls — restores
+    /// the ordinary catalog — the pool marks the session when the delivered
+    /// turn's submission succeeds and those seams clear the mark and
+    /// re-shape the catalog (see `EnginePool::watcher_shielded_sessions`).
+    /// "The seams" includes the #627-disclosed cross-session relay
+    /// tail-call, whose sender is unauthenticated — the shield is
+    /// fail-closed against interactive silence, not against relays. Until
+    /// that first send, a user who opens the session inherits the shield —
+    /// disclosed in the session-creation design doc; the scheduled family
+    /// never goes interactive so persistence is exactly right there.
+    pub(crate) async fn apply_unattended_shield(&self) -> Result<()> {
+        self.handle
+            .send(Op::SetDisallowedTools {
+                tools: Some(self.scheduled_disallowed_tools.clone()),
+            })
+            .await
     }
 
     /// Submit the initial prompt for one scheduled run using the immutable
@@ -4551,9 +4596,11 @@ mod unattended_shield_tests {
     use super::unattended_disallowed_tools;
 
     /// The recursion shield (review R4-M1): an unattended automation turn
-    /// must deny the scheduled-task write family deterministically — the
-    /// engine-level tool list, not an Ask rule (which mutating MCP tools
-    /// never consult under the current full-auto approval).
+    /// must deny the mutating tool families deterministically — the
+    /// scheduled-task write family and session creation (this split PR's
+    /// addition) — via the engine-level tool list, not an Ask rule (which
+    /// mutating MCP tools never consult under the current full-auto
+    /// approval).
     #[test]
     fn unattended_turn_denies_scheduled_task_write_family() {
         let caller = vec![
@@ -4580,6 +4627,7 @@ mod unattended_shield_tests {
             // red.
             "registry_sync",
             "start_registry_mcp_server",
+            "mcp_session-reader_create_session",
         ] {
             assert!(
                 list.iter().any(|blocked| blocked == tool),
@@ -4651,6 +4699,67 @@ mod unattended_shield_tests {
                 "let scheduled_disallowed_tools = unattended_disallowed_tools(&disallowed);"
             ),
             "the engine's shield field must be composed through unattended_disallowed_tools"
+        );
+    }
+}
+
+#[cfg(test)]
+mod agent_shed_pin_tests {
+    use super::unattended_disallowed_tools;
+    use crate::features::assistant::platform::bridge::{
+        MESSAGING_SEND_TOOL, SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL,
+        SCHEDULED_TASK_UPDATE_TOOL, SESSION_CREATE_TOOL,
+    };
+
+    /// Round-21 M1 (#657): the unattended deny list carries all TEN named
+    /// tools — including the `agent` delegation shed (a model-supplied
+    /// `inherit_disallowed_tools=false` would otherwise spawn a child with a
+    /// clean catalog and recurse through the named tool the shield claims to
+    /// deny). Deleting any entry turns this red.
+    #[test]
+    fn unattended_list_carries_the_full_deny_set() {
+        let list = unattended_disallowed_tools(&[]);
+        for tool in [
+            SESSION_CREATE_TOOL,
+            "create_goal",
+            "update_goal",
+            SCHEDULED_TASK_CREATE_TOOL,
+            SCHEDULED_TASK_UPDATE_TOOL,
+            SCHEDULED_TASK_DELETE_TOOL,
+            MESSAGING_SEND_TOOL,
+            "agent",
+        ] {
+            assert!(
+                list.iter().any(|entry| entry == tool),
+                "the unattended deny list must carry {tool}"
+            );
+        }
+    }
+
+    /// Round-21 minor 4d: the toggle broadcast consults the mark set —
+    /// deleting the round-15 re-shield arm (a mid-window toggle otherwise
+    /// un-shields a watcher-marked session) turns this red.
+    #[test]
+    fn toggle_broadcast_re_shields_watcher_marked_sessions() {
+        let source = include_str!("engine_pool.rs");
+        let start = source
+            .find("pub async fn set_disallowed_all")
+            .expect("the broadcast fn must exist");
+        let fn_end = source[start..]
+            .find(
+                "
+    pub ",
+            )
+            .map(|offset| start + offset)
+            .unwrap_or(source.len());
+        let body = &source[start..fn_end];
+        // Round-29 M1: the needle is code-qualified (the `.lock().contains`
+        // chain) so a comment mentioning watcher_shielded_sessions cannot
+        // satisfy it (mutation-proven dead in the round-29 review).
+        let needle = "self.watcher_shielded_sessions.lock().contains(&sid)";
+        assert!(
+            body.contains(needle),
+            "the broadcast must re-shield watcher-marked sessions (code-qualified needle)"
         );
     }
 }
