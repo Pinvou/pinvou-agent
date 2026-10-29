@@ -301,10 +301,12 @@ function expandIpv6(address) {
   const leftGroups = left === "" ? [] : left.split(":");
   const groups = leftGroups.concat(right === "" ? [] : right.split(":"));
   // An embedded IPv4 tail stands for the final two groups and is only valid
-  // at the very end of the address.
+  // as the literal tail of the address: "1.2.3.4::" would otherwise place
+  // the converted groups ahead of the compression fill and canonicalize
+  // text that isIP rejects into an unrelated routable address.
   if (groups.length && groups[groups.length - 1].includes(".")) {
     const tail = groups.pop();
-    if (isIP(tail) !== 4) return null;
+    if (isIP(tail) !== 4 || !address.endsWith(tail)) return null;
     const [o1, o2, o3, o4] = tail.split(".").map(Number);
     groups.push(
       (o1 * 256 + o2).toString(16).padStart(4, "0"),
