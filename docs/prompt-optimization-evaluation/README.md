@@ -33,6 +33,11 @@ and [calibration changes](calibration-changes-v2.4.5.json).
 
 ## Current review source and validation boundary
 
+The original R5 checkpoint is `5a78aebfd`. A [Linux loader follow-up](review-r5-ci-verification.json)
+adds the read-only `/lib64` view needed by x86_64 ELF interpreters; the earlier
+R5 receipts below retain their exact original source/test boundary. Current
+ready-PR CI is tracked separately from local ARM64 execution.
+
 [R5 verification](review-r5-verification.json) and [R5 source manifest](source-manifest-review-r5.json)
 record grading correctness, regression controls, integrated-state documentation,
 exact Plan/browser pins and applicable current checks. New evaluation rows carry

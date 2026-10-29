@@ -26,6 +26,16 @@ proxy_module = load("eval_proxy", "prompt_eval_model_proxy.py")
 
 
 class NamespaceAcceptanceTests(unittest.TestCase):
+    def test_platform_dynamic_loader_view_is_read_only_when_present(self):
+        original_exists = Path.exists
+        for present in [False, True]:
+            def exists(path):
+                return present if str(path) == "/lib64" else original_exists(path)
+            with patch.object(Path, "exists", exists), patch.object(sandbox.shutil, "which", return_value="/usr/bin/bwrap"):
+                args = sandbox.base_args()
+            binds = [args[index:index + 3] for index, value in enumerate(args) if value == "--ro-bind"]
+            self.assertEqual(["--ro-bind", "/lib64", "/lib64"] in binds, present)
+
     def test_declared_roots_include_spaces_unicode_and_nested_selections(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

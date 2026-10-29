@@ -1,0 +1,53 @@
+{
+  "revision": "V2.4.5-review-r5-loader",
+  "author": "Codex (OpenAI) / GPT-6; exact variant/reasoning level unavailable",
+  "date": "2026-10-29T07:17:50.570023+00:00",
+  "parent_before_revision": "5a78aebfdc910fc479b8f18b9006b35229c0b89b",
+  "foundation_head": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c",
+  "scope": "Small provider-free namespace follow-up over the published R5 checkpoint; original R5 source/verification receipts remain unchanged. Unchanged sources use the parent commit; the entries below identify this delta. No new model task or result.",
+  "root_cause": "The namespace mounted /usr and /lib but omitted the /lib64 ELF interpreter view used on x86_64. The installed official bubblewrap example explicitly creates that view. Local ARM64 namespace success alone does not verify the x86_64 interpreter layout.",
+  "change": "Read-only bind the host /lib64 view when it exists; preserve the existing layout when absent. The already mounted system libraries remain the only exposed content; user/credential/network boundaries are unchanged.",
+  "python": {
+    "exit_code": 0,
+    "elapsed_seconds": 29.66,
+    "log_sha256": "32ea1693e240290461e5840435ef030d4c95e4cc3f14c83f83ed104f29595962",
+    "scope": "Full script suite including loader contract and real ARM64 namespace acceptance; both opt-ins enabled",
+    "tests": 618,
+    "failed": 0,
+    "skipped": 0,
+    "includes": "Both opt-ins enabled: exact digest controls, real ARM64 namespace/proxy acceptance, and loader-view present/absent contract."
+  },
+  "negative_control": {
+    "description": "New loader contract against exact pre-fix namespace in a temporary tree",
+    "exit_code": 1,
+    "failed_tests": 1,
+    "log_sha256": "ccc09c4299ad54425b7e6eca3a2afb8da85f70bfd13aed1a17bef1f73eac8610"
+  },
+  "architecture": "passed, no architecture debt increased",
+  "sources": [
+    {
+      "path": "scripts/prompt_eval_sandbox.py",
+      "sha256": "e9aee15493291d0ff93a3fdcb144f593de268df8c0b4f21b03facf85eb942038"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_namespace.py",
+      "sha256": "eab0c77d668024aa7a579079720c3bfbe067082975e9cd64a259c805ae0c60ff"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/README.md",
+      "sha256": "9eeead43e5fb9b7138058345e0be633d6ec1ab22da885d90355d904da0005783"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/report-artifacts-v2.4.5.json",
+      "sha256": "6bc056c8ddad6063dea44f8a6eb6f08fc874c776d246dcab96b0af773fd26a30"
+    }
+  ],
+  "publication": "All 19 current report-artifact hashes recomputed; original R5/model/frozen files unchanged. Staged scan covers this delta after receipt update.",
+  "gitleaks": {
+    "version": "8.30.1",
+    "staged_status": "passed",
+    "findings": 0
+  },
+  "self_review": "The change is conditional on a trusted host loader path and read-only; it adds no user path, secret, route, dependency or product behavior. No earlier execution claim is expanded into native x86_64 evidence.",
+  "remaining": "Native x86_64 coverage belongs to ready-PR CI. At inspection the preceding ready head had no registered checks/runs and four required contexts Expected; absence is not success. Monitor registration and re-review; no old-head rerun, merge, queue or protected-ref change."
+}

@@ -52,6 +52,10 @@ def base_args():
             "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
             "--dir", "/run/pinvou", "--dir", "/opt/pinvou-eval", "--dir", VISIBLE_ROOT,
             "--dir", str(Path.home())]
+    # x86_64 ELF interpreters use /lib64 even on usr-merged distributions.
+    # Keep the host's loader view without exposing any mutable host data.
+    if Path("/lib64").exists():
+        args += ["--ro-bind", "/lib64", "/lib64"]
     for path in ["/etc/ssl", "/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf", "/etc/localtime", "/etc/fonts"]:
         if Path(path).exists():
             args += ["--ro-bind", path, path]
