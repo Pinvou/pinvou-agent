@@ -130,8 +130,10 @@ const MAX_REVOKED_ENDPOINTS = Math.min(
 const RELAY_STATE_PATH = resolve(
   process.env.PINVOU_REMOTE_STATE_PATH || resolve(__dirname, "data", "relay-state.json"),
 );
-// No textual IP (including an IPv6 zone id) approaches this length; the cap
-// bounds header-derived garbage before isIP ever sees it.
+// Caps header- and config-derived IP text before parsing: isIP accepts zone
+// ids of unbounded length, so the cap keeps garbage from reaching isIP at
+// all. OS-reported peer addresses (interface names are short) stay far
+// below it.
 const MAX_IP_TEXT_CHARS = 128;
 // A forwarded header longer than this is treated as unusable and the
 // connection is attributed to the direct peer; real proxy chains stay far
@@ -268,10 +270,22 @@ function send(ws, value) {
   }
 }
 
+// A policy close waits for the peer's close handshake so queued frames (an
+// error message, a revocation or replacement notice) are delivered. A peer
+// that withholds the handshake would otherwise keep the socket draining —
+// receiving frames outside ingress accounting — until ws's own 30 s close
+// timeout, so enforce a shorter bound.
+const POLICY_CLOSE_DRAIN_MS = 5000;
+
 function closeSocket(ws, code = 1000, reason = "") {
   if (!ws) return;
   ws.policyClosing = true;
   try { ws.close(code, String(reason).slice(0, 123)); } catch {}
+  const drain = setTimeout(() => {
+    try { ws.terminate(); } catch {}
+  }, POLICY_CLOSE_DRAIN_MS);
+  drain.unref();
+  ws.once("close", () => clearTimeout(drain));
 }
 
 function boundedInteger(raw, fallback, min, max) {
