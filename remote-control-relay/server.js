@@ -224,14 +224,18 @@ try {
 
 // A signal during a revocation write can strand a relay-state.json.*.tmp
 // sibling; the rename design means none of them is ever the live state, so
-// last boot's leftovers are swept before this process writes anything.
+// last boot's leftovers are swept before this process writes anything. The
+// sweep matches only names the writer itself produces (basename, pid, hex
+// nonce, .tmp) so a sibling state path that merely extends this basename —
+// state.json versus state.json.backup — keeps its own writer's temp files.
 // Failures are ignored on purpose: persistence renames over the live path
 // regardless, and a sweep that cannot run must not block startup.
 try {
   const stateDirectory = dirname(RELAY_STATE_PATH);
   const prefix = `${basename(RELAY_STATE_PATH)}.`;
+  const writerTemp = new RegExp(`^\\d+\\.[0-9a-f]+\\.tmp$`);
   for (const entry of await readdir(stateDirectory)) {
-    if (entry.startsWith(prefix) && entry.endsWith(".tmp")) {
+    if (entry.startsWith(prefix) && writerTemp.test(entry.slice(prefix.length))) {
       await rm(join(stateDirectory, entry), { force: true }).catch(() => {});
     }
   }

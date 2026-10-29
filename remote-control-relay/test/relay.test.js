@@ -1047,6 +1047,11 @@ test("sweeps stranded state temp files at startup", async () => {
   await mkdir(stateDirectory, { recursive: true });
   await writeFile(join(stateDirectory, "relay-state.json.999.deadbeef.tmp"), "partial write");
   await writeFile(join(stateDirectory, "unrelated.tmp"), "keep me");
+  // A sibling state path extending this basename keeps its own writer's
+  // temp files, and a bare basename.tmp is not a writer product either:
+  // the sweep matches only basename.<pid>.<hex>.tmp.
+  await writeFile(join(stateDirectory, "relay-state.json.backup.123.abcde.tmp"), "sibling partial write");
+  await writeFile(join(stateDirectory, "relay-state.json.tmp"), "not a writer product");
   const isolated = await spawnRelay({
     PINVOU_REMOTE_STATE_PATH: join(stateDirectory, "relay-state.json"),
   });
@@ -1054,6 +1059,8 @@ test("sweeps stranded state temp files at startup", async () => {
     const survivors = new Set(await readdir(stateDirectory));
     assert.ok(!survivors.has("relay-state.json.999.deadbeef.tmp"), "stranded temp file not swept");
     assert.ok(survivors.has("unrelated.tmp"), "sweep removed an unrelated file");
+    assert.ok(survivors.has("relay-state.json.backup.123.abcde.tmp"), "sweep removed a sibling path's temp file");
+    assert.ok(survivors.has("relay-state.json.tmp"), "sweep removed a non-writer temp name");
   } finally {
     await stopRelay(isolated.child);
   }
