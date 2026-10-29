@@ -187,8 +187,13 @@ fn fold_web_session_error(operation: WebSessionOperation, error: String) -> Stri
 /// make a losing admission race indistinguishable from a hard failure, so it
 /// keeps a dedicated stable code whose suffix preserves the classifier
 /// substring; the raw chain stays desktop-log-only like every other fold.
+/// Round-7 复审:判定锚定在预留段前缀上,而不是整链子串——调用方可控的
+/// session id 字符集允许 `session_turn_in_progress` 这样的合法 id,load/
+/// rollback 段会把它嵌进文本,按整链子串判定会把硬失败误报成可重试的忙
+/// 拒绝。忙拒绝只会经 `reserve Web chat turn: ` 段进入链条(engine 只会
+/// 裸 bail 这一个标记)。
 fn fold_web_chat_error(error: String) -> String {
-    if error.contains("session_turn_in_progress") {
+    if error.contains("reserve Web chat turn: session_turn_in_progress") {
         log::warn!("[remote_control] Web session chat refused: turn already in progress");
         return "web_session_turn_in_progress".to_string();
     }
@@ -1951,10 +1956,20 @@ mod tests {
         );
         // The dedicated turn-gate busy code (fold_web_chat_error) is part of
         // the locked wire surface: the phone's classifier and trilingual copy
-        // key on it.
+        // key on it. Round-7: the busy marker is only honored inside the
+        // reservation segment (`reserve Web chat turn: ` prefix — the engine's
+        // only producer of the marker); a caller-influenced session id spelled
+        // `session_turn_in_progress` must fold to the generic chat code, not
+        // the retryable busy code.
         assert_eq!(
-            fold_web_chat_error("session_turn_in_progress".to_string()),
+            fold_web_chat_error("reserve Web chat turn: session_turn_in_progress".to_string()),
             "web_session_turn_in_progress"
+        );
+        assert_eq!(
+            fold_web_chat_error(
+                "load Session session_turn_in_progress: no such session".to_string()
+            ),
+            "web_session_chat_failed"
         );
         assert_eq!(
             web_session_result(WebSessionOperation::ReadConversationAttachmentChunk, error)
