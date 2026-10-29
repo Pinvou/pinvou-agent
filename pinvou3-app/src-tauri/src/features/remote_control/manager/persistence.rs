@@ -397,8 +397,6 @@ fn quarantine_pending_ledger(path: &Path, data: &[u8]) {
 }
 
 fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
-    // 与 config 读取相同的 take() 有界读取:先按上限截断再检查,损坏/超大
-    // 文件不能触发无界分配。
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -408,25 +406,24 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
             return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
         }
     };
+    // 读取即修复,且先于任何内容读取(Round-7 复审补齐,与 load_config_from
+    // 同形):该文件持有 desktop_secret,损坏 + 放宽权限的组合也不能把世界
+    // 可读的密文件留在盘上。修复挂在**第一个**句柄上——读取腿的真实 I/O
+    // 错误(EISDIR/EACCES 等)会先行返回,挂在读取之后的修复永远不会执行,
+    // 放宽权限的损坏文件就一直裸留在盘上;同时免去第二次 open 的 TOCTOU
+    // (两次打开之间路径可被换掉,修复的可能不是读到的那个 inode)。
+    // (Windows/fallback 平台该调用是显式 no-op。)
+    if let Err(error) = platform::enforce_private_permissions(&file, path) {
+        return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
+    }
+    // 与 config 读取相同的 take() 有界读取:先按上限截断再检查,损坏/超大
+    // 文件不能触发无界分配。
     let mut data = Vec::new();
     if let Err(error) = file
         .take((super::MAX_PENDING_REVOCATIONS_FILE_BYTES + 1) as u64)
         .read_to_end(&mut data)
     {
         return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
-    }
-    // 读取即修复,且先于内容判定(同 load_config_from):该文件持有
-    // desktop_secret,损坏 + 放宽权限的组合也不能把世界可读的密文件留在
-    // 盘上——隔离搬移会带着同样的权限,必须先收紧。(Windows/fallback 平台
-    // 该调用是显式 no-op。)
-    let handle = match File::open(path) {
-        Ok(handle) => handle,
-        Err(error) => {
-            return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
-        }
-    };
-    if let Err(error) = platform::enforce_private_permissions(&handle, path) {
-        return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
     }
     if data.len() > super::MAX_PENDING_REVOCATIONS_FILE_BYTES {
         quarantine_pending_ledger(path, &data);

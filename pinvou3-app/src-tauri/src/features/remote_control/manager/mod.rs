@@ -1864,8 +1864,9 @@ impl RemoteControlManager {
         if let Err(error) = persist_rpc_ledger(&next_ledger) {
             // 持久化失败是瞬时的(磁盘满/EACCES 等),与 handle_rpc_request
             // 的准入路径同一裁决:响应但不写 Complete 缓存。命令尚未执行,
-            // 同一 client_request_id 的重试会重新走完整准入与 begin;缓存成
-            // Complete 会把这次瞬时失败永久重放给手机(replay poisoning)。
+            // 同一 client_request_id 的重试会经 Pending 臂重派发并重走
+            // begin(settle 收口解除派发代标记);缓存成 Complete 会把这次
+            // 瞬时失败永久重放给手机(replay poisoning)。
             Self::settle_begin_persist_failure(&mut inner, request_id, &lease_id, &error);
             return Ok(false);
         }
@@ -1928,6 +1929,10 @@ impl RemoteControlManager {
                                 ),
                             },
                         );
+                        // Round-7 复审:替换插入与 Pending→Complete 臂同一
+                        // 记账对称性——插入后立即按容量裁剪,避免一次 ≤2MiB
+                        // 的迟到真实结果把缓存字节顶过上限直到下一次插入。
+                        prune_rpc_cache(&mut inner);
                     }
                     return Ok(());
                 }
@@ -2411,10 +2416,15 @@ impl RemoteControlManager {
     }
 
     /// begin(副作用屏障)分支的结算收口:账本持久化失败是瞬时的,响应但不
-    /// 进 Complete 缓存——命令尚未执行,重试会重新走准入与 begin;缓存会把
-    /// 这一次失败永久重放(与准入路径曾有的 replay poisoning 同类)。错误
+    /// 进 Complete 缓存——命令尚未执行,重试会重新派发并重走 begin;缓存会
+    /// 把这一次失败永久重放(与准入路径曾有的 replay poisoning 同类)。错误
     /// 文本在这里折叠存储根前缀:它会作为 rpc_response.error 到达手机。
-    /// 收口理由同 [`Self::settle_tombstone_outcome`]。
+    /// Round-7 复审:收口同时解除 Pending 的派发代标记——失败后 Pending 仍
+    /// 带着当前派发代,同 id 重试会在 Pending 臂被幂等吞掉(静默直到 TTL
+    /// 占位顶成伪造超时),与上面「重试重新派发」的承诺相抵。解除后重试经
+    /// Pending 臂重派发、重走 begin;begin 失败意味着命令未被执行(WebView
+    /// 只在 begin 返回 true 后执行),重派发无双执行风险。收口理由同
+    /// [`Self::settle_tombstone_outcome`]。
     fn settle_begin_persist_failure(
         inner: &mut Inner,
         request_id: &str,
@@ -2428,6 +2438,9 @@ impl RemoteControlManager {
                 paths::redact_storage_prefix(error)
             ),
         );
+        if let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get_mut(request_id) {
+            pending.dispatched_generation = None;
+        }
         if let Some(endpoint) = inner.endpoint.as_ref() {
             let response = rpc_response(
                 &endpoint.config.endpoint_id,
@@ -4110,9 +4123,12 @@ mod tests {
             matches!(
                 inner.rpc_cache.get("begin-req"),
                 Some(RpcCacheEntry::Pending(pending))
-                    if pending.acknowledged_generation.is_none(),
+                    if pending.acknowledged_generation.is_none()
+                        && pending.dispatched_generation.is_none(),
             ),
-            "the pending entry must survive untouched: a retry re-runs admission + begin"
+            "the pending entry must stay uncached but re-armed: the dispatch generation is \
+             cleared so a retry re-dispatches and re-runs begin (Round-7: keeping the stale \
+             generation silenced the retry until the TTL sweep fabricated a timeout)"
         );
 
         // 源码契约(同 revoke 死锁钉形态):begin_rpc 必须经 settle 收口应答
@@ -5402,6 +5418,31 @@ mod tests {
             relay_registration_error_code("endpoint_capacity_reached"),
             None
         );
+
+        // Round-7 复审:两张映射的分支对齐按终结码全表循环钉住——只往其中
+        // 一张加分支(另一张漏掉)时,该码会渲染原文且无恢复码(fail-soft
+        // 但不一致,单码独立断言抓不住)。endpoint_revoked 走 handle_revoked
+        // 的完整清理路径,两类指引都不适用,显式断言这一分区。
+        for code in TERMINAL_REGISTRATION_ERROR_CODES {
+            let recovery = relay_registration_error_code(code);
+            let hinted = relay_registration_error_reason(code, "relay said no") != "relay said no";
+            assert_eq!(
+                recovery.is_some(),
+                hinted,
+                "terminal code {code} must map to a recovery code and a reason hint together"
+            );
+            if code == &"endpoint_revoked" {
+                assert!(
+                    recovery.is_none(),
+                    "revocation is handled by the full revoke path, not a hint"
+                );
+            } else {
+                assert!(
+                    recovery.is_some(),
+                    "terminal code {code} must carry recovery guidance"
+                );
+            }
+        }
     }
 
     #[test]
@@ -5557,5 +5598,38 @@ mod tests {
         }
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Round-7 复审 M1:账本侧的 0600 修复必须与 config 同形——挂在**第一
+    /// 个**句柄上、先于任何内容读取。账本走 read_to_end(不因非 UTF-8 而
+    /// 失败),能暴露顺序的只有读取腿的真实 I/O 错误:这里用「路径是目录」
+    /// 制造 unix 上 open 成功、read(2) 必失败的 EISDIR。修复挂在读取之后
+    /// (round-6 之前的形状)或被删除时,Unavailable 提前返回,权限保持
+    /// 放宽,本测试即红。Windows 无 POSIX 模式,模式断言经 test_support
+    /// 钩子跳过(open 目录在该平台直接失败,同样走 Unavailable)。
+    #[test]
+    fn corrupt_world_readable_ledger_is_still_repaired_on_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-ledger-repair-order-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        std::fs::create_dir(&path).unwrap();
+        let enforced = crate::platform::test_support::force_private_file_mode(&path, 0o755);
+        let outcome = load_pending_revocations_from(&path);
+        assert!(
+            outcome.is_err(),
+            "the read-leg I/O error must surface as unavailable"
+        );
+        if enforced {
+            assert_eq!(
+                crate::platform::test_support::permission_bits(&path),
+                Some(0o600),
+                "the load-time repair must land on the first handle, before the failing read"
+            );
+        }
+        std::fs::remove_dir_all(directory).ok();
     }
 }
