@@ -164,7 +164,11 @@ already died (watchdog or network recovery by the same token holder) and
 `web_rejoining: false` on a first join or a live takeover (`endpoint_replaced`).
 The desktop uses the flag to keep lease-scoped state (staged attachments,
 in-flight uploads, session downloads) across a rejoin while still discarding it
-on a takeover.
+on a takeover. Limitation: the flag is derived from relay-observed socket
+death only. When the previous web socket is still OPEN server-side (a half-open
+connection the heartbeat has not reaped yet, or a fast reconnect racing the
+close event), the join classifies as a live takeover — an app-level rejoin
+token would be needed to close that window.
 
 The desktop invalidates a link with:
 
