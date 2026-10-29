@@ -496,6 +496,16 @@ function rejectUpgrade(socket, status, message) {
   socket.destroy();
 }
 
+function armAuthTimer(ws) {
+  clearTimeout(ws.authTimer);
+  ws.authTimer = setTimeout(() => {
+    if (ws.role === "unknown") {
+      rejectSocket(ws, "authentication_timeout", "websocket authentication timeout");
+    }
+  }, WS_AUTH_TIMEOUT_MS);
+  ws.authTimer.unref?.();
+}
+
 function authenticateSocket(ws, role, endpointId, leaseId = null) {
   clearTimeout(ws.authTimer);
   ws.authTimer = null;
@@ -1234,6 +1244,11 @@ async function revokeFromSocket(ws, msg) {
   // session; teardownEndpoint already told it desktop_endpoint_revoked.
   if (ws.endpointId !== endpointId) {
     ws.revokePending = false;
+    // The revoke cleared the authentication timer. A cross-endpoint revoker
+    // that never authenticated keeps its socket, so the timer must be
+    // re-armed to keep unauthenticated connections bounded like every other;
+    // an authenticated socket legitimately has none.
+    if (ws.role === "unknown") armAuthTimer(ws);
     return;
   }
   closeSocket(ws, 1000, "endpoint revoked");
@@ -1314,12 +1329,7 @@ wss.on("connection", (ws, req) => {
   ws.policyClosing = false;
   ws.revokePending = false;
   ws.ingressBucket = { started_at: Date.now(), messages: 0, bytes: 0 };
-  ws.authTimer = setTimeout(() => {
-    if (ws.role === "unknown") {
-      rejectSocket(ws, "authentication_timeout", "websocket authentication timeout");
-    }
-  }, WS_AUTH_TIMEOUT_MS);
-  ws.authTimer.unref?.();
+  armAuthTimer(ws);
   ws.on("pong", () => { ws.isAlive = true; });
   // ws emits "error" on the socket for protocol violations (e.g. a frame over
   // maxPayload). Without a listener, one unauthenticated frame would crash the
