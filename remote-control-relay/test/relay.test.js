@@ -266,6 +266,27 @@ test("spawned relay environments strip node injection vectors", () => {
   }
 });
 
+test("the strip list covers every variable server.js reads", async () => {
+  // Stripping only protects spawned relays while RELAY_TUNING_ENV_NAMES
+  // tracks what server.js actually reads: a knob added to the server but not
+  // to this list would leave spawned relays ambient-configurable with
+  // nothing failing. Read the source and pin the coupling.
+  const source = await readFile(join(relayDir, "server.js"), "utf8");
+  const read = new Set();
+  for (const match of source.matchAll(/process\.env\.([A-Za-z0-9_]+)/gu)) {
+    read.add(match[1]);
+  }
+  // A refactor to computed env access would shrink the scan to a vacuous
+  // pass; the read count is pinned so that cannot happen silently.
+  assert.ok(read.size >= 20, `env read scan found too few names: ${[...read].sort().join(",")}`);
+  for (const name of read) {
+    assert.ok(
+      name.startsWith("PINVOU_REMOTE_") || RELAY_TUNING_ENV_NAMES.has(name),
+      `${name} is read by server.js but not stripped from spawned environments`,
+    );
+  }
+});
+
 async function spawnRelay(env = {}, { awaitListening = true } = {}) {
   const isolatedPort = await getFreePort();
   const statePath = env.PINVOU_REMOTE_STATE_PATH
