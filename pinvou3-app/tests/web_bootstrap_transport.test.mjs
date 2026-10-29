@@ -677,6 +677,48 @@ async function connectWithCapabilities(events, listener) {
   stale.client._livenessCheck();
   assert.equal(stale.client.speculativeReconnect, true,
     'a verified join must reset the speculative failure ladder');
+  // Round-6 复审:上一条断言在 failures 恒为 0 的场景里对「join 复位」
+  // 这一行不敏感(删除复位行仍然全绿)。真正的判别场景:先积一次
+  // ackless 失败(failures=1,封顶内仍隐藏),再经验证 join 复位,然后再
+  // 经历一个 ackless 周期——复位生效时 failures 1→0→1 仍是隐藏周期;
+  // 复位缺失时 1→2 越过封顶,该周期必须可见,断言变红。
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  takeReconnectTimer(stale.timers).callback();
+  const ackless = stale.MockWebSocket.instances[2];
+  ackless.open();
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  assert.equal(ackless.closeCalled, true,
+    'the ackless cycle must be closed to route recovery');
+  assert.equal(stale.client.speculativeReconnect, true,
+    'the first ackless cycle stays under the failure cap');
+  takeReconnectTimer(stale.timers).callback();
+  const verified = stale.MockWebSocket.instances[3];
+  verified.open();
+  verified.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_next',
+    desktop_connected: true,
+  });
+  assert.equal(stale.client.speculativeReconnect, false,
+    'a verified join clears the speculative flag');
+  // 验证过的 socket 静默死亡:joined 周期不计失败,下一个重连仍隐藏。
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  assert.equal(stale.client.speculativeReconnect, true,
+    'a silent joined cycle must not escalate');
+  takeReconnectTimer(stale.timers).callback();
+  const afterReset = stale.MockWebSocket.instances[4];
+  afterReset.open();
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  assert.equal(afterReset.closeCalled, true,
+    'the post-reset ackless cycle must still be closed to route recovery');
+  assert.equal(stale.client.speculativeReconnect, true,
+    'the verified join must have reset the failure ladder (without the reset this cycle escalates past the cap)');
 
   const failing = await connectWithCapabilities(['chat:delta'], () => {});
   failing.client.lastInboundAt = Date.now() - 121_000;
