@@ -639,6 +639,16 @@ jobs:
       - name: Gate policy test suite (scripts/tests)
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
+      - name: Evaluation namespace isolation controls (no model calls)
+        env:
+          PINVOU_EVAL_NS_SELFTEST: '1'
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends bubblewrap
+          fi
+          python3 -m unittest scripts.tests.test_prompt_eval_namespace.NamespaceAcceptanceTests
+
       - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
         run: |
           python3 -m pip install --quiet python-pptx python-docx

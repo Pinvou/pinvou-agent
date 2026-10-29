@@ -118,7 +118,7 @@ test('work instructions define a durable and verified loopback preview workflow'
     new URL('../src-tauri/resources/common/bundle/instructions-work.md', import.meta.url),
     'utf8',
   );
-  assert.match(instructions, /browser\/host-request-expired.*停止本次流程并说明/);
+  assert.match(instructions, /`browser\/host-request-expired`.*停止本次流程并说明/);
   const hostSource = readFileSync(new URL('../src-tauri/src/features/browser/mod.rs', import.meta.url), 'utf8');
   // Exclude the final unit-test module: fixture literals cannot establish a
   // production emission. Earlier inline cfg(test) hooks do not end production.
@@ -126,7 +126,7 @@ test('work instructions define a durable and verified loopback preview workflow'
   assert.ok(testsAt >= 0, 'browser unit-test boundary must be explicit');
   const production = hostSource.slice(0, testsAt);
   for (const code of ['browser/host-request-expired', 'browser/host-consumer-unavailable', 'browser/host-caller-not-live']) {
-    assert.ok(instructions.includes(code));
+    assert.ok(instructions.includes(`\`${code}\``), `instruction must name the exact delimited code: ${code}`);
     const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const emission = new RegExp(`(?:Err|Some)\\(\\s*(?:format!\\(\\s*)?"${escaped}:|map_err\\(\\|[^|]*\\|\\s*format!\\(\\s*"${escaped}:`);
     assert.match(production, emission, `advertised browser error must be emitted in production: ${code}`);

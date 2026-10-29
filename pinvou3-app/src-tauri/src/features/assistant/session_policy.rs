@@ -260,6 +260,11 @@ mod tests {
         let code = SessionPolicy::for_mode(SessionMode::Code).plan_reminder();
         assert_eq!(plain, Some(PLAN_REMINDER));
         assert_eq!(plain, code, "两模式 Plan reminder 必须同文(行为不变)");
+        for reminder in [plain.unwrap(), code.unwrap()] {
+            assert!(reminder.contains("用 `todo_write` 提交方案步骤"));
+            assert!(reminder.contains("每步写入 content，status 用 pending"));
+            assert!(reminder.contains("工具成功并结束本轮后，应用展示方案卡"));
+        }
     }
 
     /// R-2 行为不变断言：两模式审批参数均为「全自动 + Auto」，与 D-2 前共享 op

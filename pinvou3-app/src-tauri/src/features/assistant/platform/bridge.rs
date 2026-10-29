@@ -1121,13 +1121,18 @@ impl Pinvou3Bridge {
         for project_rule in &project_rules {
             out.push(InstructionSource::File(project_rule.clone()));
         }
-        if !project_rules.is_empty() {
+        if self
+            .execution_root_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(session_id))
+            .is_some()
+        {
             // Fixed at engine creation like the existing File sources. These
             // labels preserve path scope and make incomplete discovery
             // explicit after the supplied rules, before the user overlay.
             out.push(InstructionSource::Inline {
                 name: "pinvou3:project-rule-scopes".to_string(),
-                content: "上述 AGENTS.md 按来源路径生效：仅适用于其所在目录及子目录，不因排列在后就覆盖其他目录的规则。对同一路径，适用规则以更近目录为准。规则不扩大任务、权限或信任范围。\nOnly root and ancestor rules were loaded above; this is not a complete rule search for a target file. Before editing, identify the selected root containing the target file, then check AGENTS.md in every directory from that root through the target file's directory. A target in an additional root uses that root's own rule chain, not the primary root's chain. Deeper rules may exist even when a root rule is already supplied. Reuse supplied files, but inspect the remaining directories; do not recursively scan unrelated paths.".to_string(),
+                content: "若上方已加载 AGENTS.md，按来源路径生效：仅适用于其所在目录及子目录，不因排列在后就覆盖其他目录的规则。对同一路径，适用规则以更近目录为准。规则不扩大任务、权限或信任范围。\nAny rules loaded above cover only the primary root and its ancestors; this is not a complete rule search for a target file, even when no rules were found. Before editing, identify the selected root containing the target file, then check AGENTS.md in every directory from that root through the target file's directory. A target in an additional root uses that root's own rule chain, not the primary root's chain. Deeper rules may exist even when a root rule is already supplied. Reuse supplied files, but inspect the remaining directories; do not recursively scan unrelated paths.".to_string(),
             });
         }
         let user = paths::user_instructions();
@@ -4432,7 +4437,7 @@ mod tests {
                 matches!(source,
                 InstructionSource::Inline { name, content }
                 if name == "pinvou3:project-rule-scopes"
-                    && content.contains("Only root and ancestor rules were loaded above")
+                    && content.contains("Any rules loaded above cover only the primary root and its ancestors")
                     && content.contains("through the target file's directory")
                     && content.contains("A target in an additional root uses that root's own rule chain"))
             })
@@ -4445,6 +4450,20 @@ mod tests {
                 );
             }
         }
+        for directory in [&primary, &secondary, &unrelated, base.path()] {
+            std::fs::remove_file(directory.join("AGENTS.md")).unwrap();
+        }
+        assert!(
+            bridge
+                .code_session_project_rules("multi-root-rules")
+                .is_empty()
+        );
+        assert!(bridge.session_instructions("multi-root-rules").iter().any(
+            |source| matches!(source,
+            InstructionSource::Inline { name, content }
+            if name == "pinvou3:project-rule-scopes"
+                && content.contains("even when no rules were found"))
+        ));
     }
 
     /// A plain chat session bound to a real working directory: its mode identity is

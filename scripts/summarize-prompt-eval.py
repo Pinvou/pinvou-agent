@@ -8,8 +8,15 @@ never added to completion tokens a second time. Missing usage stays visible.
 import argparse
 from collections import defaultdict
 import json
+import importlib.util
 from pathlib import Path
 import statistics
+
+
+_spec = importlib.util.spec_from_file_location(
+    "prompt_family_stats", Path(__file__).with_name("summarize-prompt-community.py"))
+family_stats = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(family_stats)
 
 
 def percentile(values, fraction):
@@ -23,10 +30,9 @@ def percentile(values, fraction):
 
 
 def summarize(rows):
-    families = defaultdict(list)
+    families = family_stats.family_groups(rows)
     scenarios = defaultdict(list)
     for row in rows:
-        families[(row["repetition"], row["scenario"])].append(row)
         scenarios[row["scenario"]].append(row)
     success = sum(all(row["passed"] for row in task) for task in families.values())
     usages = [row.get("observed_usage", row.get("usage")) for row in rows]

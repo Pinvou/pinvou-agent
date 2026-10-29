@@ -440,6 +440,11 @@ Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f2767293
 - 本 PR 只在父仓 main 已有指纹之外补充 24 项 T2 检查；旧候选新增的 26 项中已有两项进入父仓 main，其余仍能匹配当前公开树。它们覆盖结构化结果遗漏、恢复提示、真实 gate/子代理 DTO、完整 fetch 信封、不可变 artifact、检索激活及串行/并行/聚合派发合同；不改生产代码、gitlink、维护计数、已有谓词或执行层。既有底座原生测试/变异证据仍只属于其原提交；本轮指纹检查不等于重新执行这些原生测试，也不构成发布验证。
 - 历史变异验证工作流保留在 CodeWhale 的验证专用分支 `validation/returned-result-20261024`，提交为 `b4eb108335a99556429b11191b9a2dabadbd23c8`（六项指定测试 × 正常分支及三个反例）。它相对当时源码提交只改验证工作流，不属于已合入的生产 CI，也不在本 PR 引入；本次核实该公开分支仍指向此提交，不将旧执行回执扩展为当前底座重新执行。
 
+> Historical candidate review record (pre-integration). The counts and heads below
+> belong to their dated checkpoints. They are superseded for current consumption by
+> the [2026-10-28 consumed baseline](#current-consumed-baseline) below (`f1eb10efc`, CodeWhale#125 merged).
+> The former draft/dependency instructions no longer apply.
+
 ## 2026-10-23 local prompt candidate (T3; unpublished)
 
 The prompt-optimization worktree now consumes the registered `6e1ee88ee` gitlink
@@ -466,7 +471,7 @@ comparison. Author: Codex; model: GPT-6 (exact variant and reasoning level unava
 
 ## 2026-10-27 prompt guidance review candidate (T3; CodeWhale#125)
 
-The parent review gitlink is `50a42c38edf81e45019403d33ac05ef87da77555`; public maintenance remains
+The parent review gitlink is `50a42c38edf81e45019403d33ac05ef87da77555`; public maintenance then remained
 `6e1ee88ee8f8ea28eec7be3d8add3a591468412a`. This adds one DCO-signed commit
 (14 files, +173/-47) in T3. It advances bundled Skills from generation 11 to 12,
 records the exact old discovery-body digest, and keeps existing user-edit/deletion
@@ -502,7 +507,7 @@ Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 
 ## 2026-10-27 review revision R1 (T3; CodeWhale#125)
 
-R1 review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance stays `6e1ee88ee`.
+R1 review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance then stayed `6e1ee88ee`.
 The two review commits total 17 files, +296/-49. Candidate topology is 86 commits
 above v0.9.12, 71 above r1, 84 signed; only the two registered historical squashes
 lack a footer. Drift: 522 files, +90219/-39420, net +50799; 255 distinct guard names.
@@ -521,15 +526,15 @@ The parent fixes browser error-code and evidence-authority wording, strict Plan
 and unattended constraints, and additional-root labels. The original model matrix
 remains the immutable pre-review V2.4.5 measurement, not a score for R1. See
 [review verification](prompt-optimization-evaluation/review-r1-verification.json).
-The app PR remains draft; public-head verification is unchanged and still must
-pass after the foundation's actual maintenance squash is repinned.
+At this checkpoint the app PR remained draft pending the actual maintenance squash.
+The consumed baseline below records the subsequent repin and public-head verification.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 
 
 ## 2026-10-28 review revision R2 (T3; CodeWhale#125)
 
-Current review gitlink: `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6`; public maintenance remains
+Historical review gitlink: `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6`; public maintenance then remained
 `6e1ee88ee`. The three review commits total 18 files, +376/-60. Recounted
 candidate history: 87 commits above v0.9.12, 72 above r1, 85 signed; only
 the registered #107/#116 squashes lack a footer. Drift: 522 files,
@@ -553,8 +558,8 @@ V2.4.5 sources/measurements remain frozen; no fresh live-model score is claimed.
 Fresh checks and source boundaries are recorded in
 [review-r2-verification.json](prompt-optimization-evaluation/review-r2-verification.json)
 and [source-manifest-review-r2.json](prompt-optimization-evaluation/source-manifest-review-r2.json).
-The public verifier is unchanged and must pass after the actual maintenance
-squash is repinned. Keep PR799 draft until then.
+At this checkpoint the unchanged public verifier still required an actual maintenance
+squash. That repin and verification are recorded in the consumed baseline below.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 
@@ -579,8 +584,8 @@ and review history are reconciled without changing frozen model data/manifests.
 See [R3 verification](prompt-optimization-evaluation/review-r3-verification.json)
 and [R3 source manifest](prompt-optimization-evaluation/source-manifest-review-r3.json)
 for fresh checks and their limits. Prior measured scores are not R3 results.
-CodeWhale#125 remains open; the app stays draft until its actual maintenance
-squash is repinned and the unchanged public verifier passes.
+At this checkpoint CodeWhale#125 was open and the app stayed draft. The actual
+maintenance squash has since been consumed and public verification passes, as recorded below.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 
@@ -588,7 +593,7 @@ Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 
 The approval [at `643e5e1b3`](https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5677804087)
 confirmed all prior requested changes. The small follow-up candidate is `0af53af6c0648b544e4b79194acc9e4f408ef7a4`;
-public `pinvou3-clean` remains `6e1ee88ee`. It restores the system-level core-capability
+public `pinvou3-clean` then remained `6e1ee88ee`. It restores the system-level core-capability
 match definition and inspect-before-local ordering, qualifies discovery on availability,
 clarifies shell query/receipt flow, and independently pins host declarations and the
 exact-name-first tool description. The installer is unchanged; its existing regression
@@ -602,10 +607,12 @@ net +50907; 255 distinct guard names. Fresh checks and deletion controls are in
 [R4 verification](prompt-optimization-evaluation/review-r4-verification.json), with a
 separate [R4 source manifest](prompt-optimization-evaluation/source-manifest-review-r4.json).
 No new model result or fresh full application/native-platform regression is claimed.
-Keep the app draft until the foundation is integrated, then repin the actual maintenance
-squash, recount and run the unchanged public verifier.
+At this checkpoint the app stayed draft pending integration. The consumed-baseline
+record below supersedes that dependency; the actual squash is now pinned and verified.
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+<a id="current-consumed-baseline"></a>
 
 ## 2026-10-28 消费基线：流式工具入参复用与发现指引对齐（T2/T3）
 
@@ -616,3 +623,27 @@ Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
 - 父仓登记：`fork-guard.sh` 的 8 条 T3 文案指纹随 #125 真实措辞重钉（技能索引 Usage ×2、子代理 `## Skills` 头串、mcp-discovery 步骤 1/3、registry-first 指令 ×2、worker `handle_read` 提示），并新增 2 条 T3 可执行回归指纹（父级 deferred 工具可达、技能升级刷新保留用户编辑）与 2 条 #114 T2 指纹（suffix-only 模块意图、交错工具端到端回归）。
 
 重算：上游 v0.9.12 `dcd4c200f` 之上 86 个登记提交，84 个带 sign-off；#107 `f27672935` 与 #116 `e9a7f48da1` 仍是仅有的缺 footer 例外。本头实测 drift：525 files, +91397/-39288，净增 52109；255 个独立 `forkguard_*` 行为名（下限 64）。不可变 r3 收口 tag 仍为 `61cb769be`。#114/#125 的 CodeWhale 侧评审证据在各自 CodeWhale PR；本登记只记录消费的公开状态，不在父仓树上重新声称那些执行边界，超出本 PR 父仓门禁的执行一概不声称。
+
+## 2026-10-29 review revision R5 (evaluation correctness and integrated state)
+
+The consumed foundation remains `f1eb10efc`; its candidate/squash patch identity
+and all 164 unaffected parent-file patches were independently verified before
+following the maintainer's `1aac7942c` replay. No foundation source changes.
+Current public verification and fork inventory replace the old candidate dependency.
+
+The app pins eager ordinary-mode delivery with code denial, unattended exclusion,
+bound-root discovery including an empty primary rule chain, canonical Plan submission
+and exact browser error-code boundaries. The scope label remains fixed at spawn.
+The evaluator shares ID-paired settled presentation events and exact numeric tokens;
+new rows carry a grader revision covering the delegated source chain. Existing
+suite-specific acceptance/browser policies remain versioned rather than silently
+regrading historical rows. Bytecode-cache exceptions use path components.
+
+Current CI runs the exact digest allowance controls and provider-free namespace
+acceptance explicitly. Report binaries/figures are retained, with generated assets
+excluded from textual diffs. Frozen model receipts, scores and grader copies retain
+their original source boundary; there are no new model results. See
+[R5 verification](prompt-optimization-evaluation/review-r5-verification.json) and
+[R5 sources](prompt-optimization-evaluation/source-manifest-review-r5.json).
+
+Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).

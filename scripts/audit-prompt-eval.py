@@ -57,6 +57,14 @@ def tool_events(blocks):
     return events
 
 
+def presented(events, path):
+    """Require a settled successful call with its own exact path argument."""
+    return any(event.get("name") == "mcp_pinvou3_present_artifact"
+               and event.get("failed") is False
+               and event.get("input", {}).get("path") == str(path)
+               for event in events)
+
+
 def code_oracle(root):
     program = """import math, runpy
 f = runpy.run_path('calculator.py')['discount']
@@ -107,9 +115,7 @@ def audit(directory):
             checks["no_tools"] = not events
         elif case in ("artifact", "multi_artifact"):
             target = root / ("secondary" if case == "multi_artifact" else "primary") / "report.md"
-            checks["presented"] = any(event["name"] == "mcp_pinvou3_present_artifact"
-                                      and event["failed"] is False
-                                      and event["input"].get("path") == str(target) for event in events)
+            checks["presented"] = presented(events, target)
             if case == "artifact" and turn:
                 content = target.read_text() if target.exists() else ""
                 checks["brief_fact_preserved"] = "接口联调" in content and "完成" in content

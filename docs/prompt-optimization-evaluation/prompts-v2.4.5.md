@@ -1,3 +1,9 @@
+> Historical pre-R1 measurement snapshot, superseded for current runtime by R1–R5.
+> The preserved `browser/host-request-timeout` spelling below is historical; current
+> runtime guidance uses `browser/host-request-expired`. See [current sources](source-manifest-review-r5.json)
+> and [R5 verification](review-r5-verification.json). The original snapshot bytes
+> after this banner have SHA-256 `8ce282a02fa095d3a904b47f04f1274227e8d967a55d17369111cf9106b08cac`.
+
 # V2.4.5 prompt and runtime-guidance snapshot
 
 Author: Codex (OpenAI). Model: GPT-6 (exact variant and reasoning level unavailable).

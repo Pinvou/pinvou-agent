@@ -24,7 +24,7 @@ def pass_power(successes, attempts, k):
     return math.comb(successes, k) / math.comb(attempts, k) if successes >= k else 0.0
 
 
-def family_groups(rows, repetitions):
+def family_groups(rows, repetitions=None):
     groups = defaultdict(list)
     keys = set()
     for row in rows:
@@ -35,7 +35,8 @@ def family_groups(rows, repetitions):
         groups[(row["model"], row["variant"], row["scenario"], row["repetition"])].append(row)
     for (_, _, case, repetition), turns in groups.items():
         expected = 2 if case in ["artifact", "unbound_artifact", "plan_execute", "skill"] else 1
-        if sorted(row["turn"] for row in turns) != list(range(expected)) or not 0 <= repetition < repetitions:
+        if (sorted(row["turn"] for row in turns) != list(range(expected))
+                or repetition < 0 or repetitions is not None and repetition >= repetitions):
             raise ValueError("incomplete task family")
     return groups
 

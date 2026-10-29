@@ -737,13 +737,10 @@ mod tests {
                 "file/shell discipline missing: {discipline}"
             );
         }
-        // The artifact-card rule must teach two-stage activation:
-        // `mcp_pinvou3_present_artifact` is a deferred builtin MCP tool, so it
-        // is absent from the first-turn tool list even when the server is
-        // healthy — only a failed `tool_search` means the backend is
-        // unavailable. The same two-stage pattern must cover the deferred
-        // browser tools (their "unavailable" branch is reachable only through
-        // a failed `tool_search`, never through plain list absence).
+        // Ordinary sessions eagerly load the presenter; code-mode denial
+        // remains authoritative. Other hosts may defer it, so the text still
+        // teaches discovery/probing before claiming unavailability. Browser
+        // tools remain deferred; initial list absence alone proves nothing.
         assert!(
             rendered.contains("工具未出现时先 `tool_search`")
                 && rendered.contains("确认本轮无法呈现时"),

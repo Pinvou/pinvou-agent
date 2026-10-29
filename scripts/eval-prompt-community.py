@@ -58,6 +58,11 @@ def run(args):
     source_files = [Path(__file__), Path(cases.__file__), Path(legacy.__file__), Path(audit.__file__),
                     Path(sandbox.__file__), Path(__file__).with_name("prompt_eval_model_proxy.py"),
                     Path(__file__).with_name("prompt_eval_namespace_bootstrap.py")]
+    # Include every delegated grader generation, not only the selected leaf.
+    ancestor = getattr(cases, "previous", None)
+    while ancestor is not None:
+        source_files.append(Path(ancestor.__file__))
+        ancestor = getattr(ancestor, "previous", None)
     manifest = {"suite": "pinvou-community-method-v2-isolated", "repetitions": args.repetitions,
                 "model": profile["model"], "model_alias": args.model_alias,
                 "model_id": args.model_id, "scenarios": chosen,
@@ -70,12 +75,14 @@ def run(args):
                 "isolation": "bubblewrap mount/PID/network/IPC namespaces; one trial only; no harness, neighbors, real home or credentials; only scoped model proxy socket; generated-code verification read-only and networkless",
                 "transport": "real configured endpoints via streaming credential-isolating pass-through; request bodies unchanged",
                 "settings_policy": "configured routes and sampling, memory off, max_steps=40"}
+    manifest["grader_revision"] = hashlib.sha256(
+        json.dumps(manifest["source_hashes"], sort_keys=True).encode()).hexdigest()
     mf = output / "manifest.json"
     if mf.exists() and json.loads(mf.read_text()) != manifest:
         raise ValueError("resume requires identical protocol, sources, binaries and model")
     legacy.write(mf, json.dumps(manifest, indent=2))
     receipt = output / "results.jsonl"
-    rows = [json.loads(s) for s in receipt.read_text().splitlines()] if receipt.exists() else []
+    rows = legacy.load_receipts(receipt)
     done = {(r["variant"], r["repetition"], r["scenario"], r["turn"]) for r in rows}
     for repetition in range(args.repetitions):
         for index, case in enumerate(chosen):
@@ -179,6 +186,7 @@ def run(args):
                         observed_usage = {field: sum(request.get(field) or 0 for request in requests)
                                           for field in ["input_tokens", "output_tokens", "cache_hit_tokens", "cache_miss_tokens"]}
                     row = dict(variant=variant, model_id=args.model_alias, model=profile["model"],
+                               grader_revision=manifest["grader_revision"],
                                repetition=repetition, scenario=case, turn=turn, status=report.get("status"),
                                passed=all(checks.values()), checks=checks, dimensions=dimensions,
                                elapsed_secs=round(elapsed, 3), return_code=return_code,

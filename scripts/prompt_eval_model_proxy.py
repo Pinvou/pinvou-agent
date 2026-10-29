@@ -95,8 +95,10 @@ class ModelProxy:
                                                   "parameters": {k: v for k, v in payload.items() if k in public_parameters}})
                     except ValueError:
                         pass
-                headers = {k: v for k, v in self.headers.items() if k.lower() not in {
-                    "host", "authorization", "connection", "content-length", "transfer-encoding", "accept-encoding"}}
+                # Forward protocol negotiation only; arbitrary client headers
+                # must not carry cookies or alternate credentials upstream.
+                headers = {k: v for k, v in self.headers.items() if k.lower() in {
+                    "accept", "content-type", "anthropic-version", "anthropic-beta", "openai-beta"}}
                 headers["Authorization"] = "Bearer " + owner._key
                 headers["Accept-Encoding"] = "identity"
                 request = Request(base_url + path[len("/v1"):], data=body, headers=headers, method=self.command)

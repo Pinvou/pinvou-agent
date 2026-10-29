@@ -127,11 +127,10 @@ def grade(case, turn, root, home, report, before, snapshot, events, legacy, audi
         checks = {"completed": str(report.get("status", "")).lower() == "completed"
                   and not report.get("timed_out") and not report.get("completed_after_deadline")}
     else:
-        checks = legacy.checks_for(case, turn, root, home, report, before, snapshot)
+        checks = legacy.checks_for(case, turn, root, home, report, before, snapshot, events=events)
     if case in ("artifact", "multi_artifact", "semantic_revision"):
         target = root / ("secondary" if case == "multi_artifact" else "primary") / "report.md"
-        checks["presented"] = any(e["name"] == "mcp_pinvou3_present_artifact"
-                                  and e["input"].get("path") == str(target) for e in successful)
+        checks["presented"] = legacy.presented(events, target)
         content = target.read_text() if target.exists() else ""
         if case == "semantic_revision" or case == "artifact" and turn:
             checks["fact_preserved"] = "接口联调" in content and "已完成" in content
@@ -162,7 +161,7 @@ def grade(case, turn, root, home, report, before, snapshot, events, legacy, audi
         checks["hidden_functional_and_aliasing_tests"] = merge_oracle(primary / "config_merge.py")
         after = legacy.project_snapshot(primary)
         checks["unrelated_files_preserved"] = all(after.get(k) == v for k, v in snapshot.items() if k != "config_merge.py")
-        checks["no_extra_documents"] = not any(k not in snapshot and not k.startswith("__pycache__/") for k in after)
+        checks["no_extra_documents"] = legacy.no_extra_files(snapshot, after)
         try:
             checks["visible_tests_pass"] = subprocess.run([sys.executable, "-m", "unittest", "-q"], cwd=primary,
                                                           capture_output=True, timeout=15).returncode == 0

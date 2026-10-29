@@ -131,6 +131,7 @@ class ProxyContractTests(unittest.TestCase):
 
             def do_POST(self):
                 observed["auth"] = self.headers.get("Authorization")
+                observed["headers"] = {k.lower(): v for k, v in self.headers.items()}
                 observed["body"] = self.rfile.read(int(self.headers["Content-Length"]))
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -155,11 +156,16 @@ class ProxyContractTests(unittest.TestCase):
                     self.assertEqual(selected["vendor"], "glm")
                     body = b'{"model":"fixture-model","messages":[{"role":"user","content":"hello"}],"stream":false}'
                     request = Request(selected["base_url"] + "/chat/completions", data=body,
-                                      headers={"Authorization": "Bearer " + selected["api_key"], "Content-Type": "application/json"})
+                                      headers={"Authorization": "Bearer " + selected["api_key"], "Content-Type": "application/json",
+                                               "Cookie": "synthetic-cookie", "X-Api-Key": "synthetic-other-key",
+                                               "Proxy-Authorization": "synthetic-proxy-key", "Anthropic-Version": "2023-06-01"})
                     with urlopen(request, timeout=5) as response:
                         self.assertEqual(response.read(), b'{"result":"from-upstream"}')
                     self.assertEqual(observed["body"], body)
                     self.assertEqual(observed["auth"], "Bearer synthetic-unit-credential")
+                    for secret_header in ["cookie", "x-api-key", "proxy-authorization"]:
+                        self.assertNotIn(secret_header, observed["headers"])
+                    self.assertEqual(observed["headers"]["anthropic-version"], "2023-06-01")
                     self.assertNotIn("messages", proxy.wire_shapes[0]["parameters"])
                 finally:
                     proxy.close()
