@@ -682,6 +682,13 @@ async function loadRelayState() {
   // Checked before reading: a FIFO at the state path would block the read
   // forever.
   if (!metadata.isFile()) throw new Error("relay state path is not a regular file");
+  // Checked before reading, like the regular-file check: the limit's purpose
+  // is to bound what this process will hold in memory, so an oversize file
+  // (a misconfigured path, a stray deployment leftover) must be rejected at
+  // stat time instead of being read fully into a Buffer plus a utf8 string.
+  if (metadata.size > MAX_RELAY_STATE_BYTES) {
+    throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
+  }
   let contents;
   try {
     contents = await readFile(RELAY_STATE_PATH, "utf8");
@@ -689,8 +696,7 @@ async function loadRelayState() {
     if (error?.code === "ENOENT") return;
     throw new Error("relay_state_load_failed", { cause: error });
   }
-  if (metadata.size > MAX_RELAY_STATE_BYTES
-    || Buffer.byteLength(contents) > MAX_RELAY_STATE_BYTES) {
+  if (Buffer.byteLength(contents) > MAX_RELAY_STATE_BYTES) {
     throw new Error("relay state exceeds MAX_RELAY_STATE_BYTES");
   }
 
