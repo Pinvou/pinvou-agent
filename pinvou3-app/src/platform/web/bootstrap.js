@@ -107,6 +107,14 @@
   // visible reconnecting state.
   const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;
   const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;
+  // A speculative cycle whose socket never delivered its join ack is NOT a
+  // healthy idle cycle. After this many ackless cycles the watchdog stops
+  // marking the reconnect speculative, so recovery becomes visible: each
+  // watchdog close matches its own speculativeSource, so the close-side
+  // "verification failed" branch alone can never fire, and a relay that
+  // completes the handshake but blackholes application frames would
+  // otherwise keep the UI on "connected" forever (round-5 review).
+  const LIVENESS_MAX_SPECULATIVE_FAILURES = 1;
   // A connect wedged past this window (browser TCP timeouts can run minutes,
   // and background tabs never fire the error event for a silent drop) gets
   // one watchdog kick so recovery reroutes through the close handler.
@@ -158,8 +166,11 @@
       this.reconnectTimer = null;
       // Speculative-reconnect state: set only by the liveness watchdog, whose
       // staleness close is a suspicion to verify, not a proven failure.
+      // speculativeFailures counts finished cycles whose socket never got its
+      // join ack; past the cap the watchdog reconnects visibly instead.
       this.speculativeReconnect = false;
       this.speculativeSource = null;
+      this.speculativeFailures = 0;
       // Consecutive desktop-gone reconnects (endpoint_not_found / TTL expiry).
       this.desktopGoneRetries = 0;
       this.reconnectForDesktopGone = false;
@@ -253,7 +264,13 @@
       if (!this.speculativeReconnect) this.setConnection("connecting", "正在连接桌面端…");
       let socket;
       try { socket = new WebSocket(this.url); }
-      catch (error) { this.scheduleReconnect(String(error)); return; }
+      catch (error) {
+        // No socket exists, so the close path can never clear a speculative
+        // state; count the failed cycle so the cap escalates (round-5 review).
+        this.noteSpeculativeFailure();
+        this.scheduleReconnect(String(error));
+        return;
+      }
       this.socket = socket;
       // Every new socket gets a full silence window to deliver its join ack
       // before the liveness watchdog may judge it, and a wedge window before
@@ -281,12 +298,12 @@
         if (this.speculativeReconnect && socket !== this.speculativeSource) {
           // A socket issued by the speculative reconnect died before it could
           // rejoin: verification failed, so stop hiding the recovery.
-          this.clearSpeculativeReconnect();
+          this.noteSpeculativeFailure();
         }
         if (!this.closedPermanently) this.scheduleReconnect("连接已断开，正在重试…");
       });
       socket.addEventListener("error", () => {
-        this.clearSpeculativeReconnect();
+        this.noteSpeculativeFailure();
         // 异常断线先于 close 触发 error:desktop_offline 的专属文案同样不得
         // 被这里的 connecting 覆盖(close→scheduleReconnect 一侧有同款门),
         // 否则离线窗口内的 TCP reset 会把「桌面端离线」换成误导性转圈。
@@ -331,6 +348,18 @@
       this.speculativeSource = null;
     }
 
+    // A speculative cycle failed verification (its socket died — or was
+    // constructed, in the connect()-throw case — before the join ack). Count
+    // it and stop hiding recovery; the watchdog re-enables speculation only
+    // while the failure count is under the cap. Idempotent per cycle: the
+    // flag is cleared on the first call, so an error event followed by the
+    // close event counts once.
+    noteSpeculativeFailure() {
+      if (!this.speculativeReconnect) return;
+      this.speculativeFailures += 1;
+      this.clearSpeculativeReconnect();
+    }
+
     startLivenessWatchdog() {
       if (this.livenessTimer) return;
       if (typeof window.setInterval !== "function" || typeof window.clearInterval !== "function") return;
@@ -359,7 +388,12 @@
       }
       if (this.socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - this.lastInboundAt <= LIVENESS_SILENCE_TIMEOUT_MS) return;
-      this.speculativeReconnect = true;
+      // A socket that never got its join ack is not a healthy idle cycle:
+      // past the failure cap the reconnect becomes visible instead of
+      // speculatively repeating forever (see LIVENESS_MAX_SPECULATIVE_FAILURES).
+      if (!this.joined) this.speculativeFailures += 1;
+      this.speculativeReconnect =
+        this.speculativeFailures <= LIVENESS_MAX_SPECULATIVE_FAILURES;
       this.speculativeSource = this.socket;
       try { this.socket.close(); } catch { this.clearSpeculativeReconnect(); }
     }
@@ -372,8 +406,11 @@
         // An OPEN socket looks alive, but the OS just said connectivity
         // changed: treat it as the same suspicion as the liveness watchdog.
         // Like the watchdog, the close is speculative — the UI stays on
-        // "connected" unless the rejoin fails to verify.
-        this.speculativeReconnect = true;
+        // "connected" unless the rejoin fails to verify, and an ackless
+        // socket counts toward the same failure cap.
+        if (!this.joined) this.speculativeFailures += 1;
+        this.speculativeReconnect =
+          this.speculativeFailures <= LIVENESS_MAX_SPECULATIVE_FAILURES;
         this.speculativeSource = this.socket;
         try { this.socket.close(); } catch { this.clearSpeculativeReconnect(); }
         return;
@@ -449,6 +486,9 @@
           this.reconnectAttempt = 0;
           this.desktopGoneRetries = 0;
           this.clearSpeculativeReconnect();
+          // A verified join resets the failure ladder: healthy idle cycles
+          // (join ack present) never accumulate toward the cap.
+          this.speculativeFailures = 0;
           this.joined = true;
           this.lastInboundAt = Date.now();
           this.desktopOnline = message.desktop_connected !== false;

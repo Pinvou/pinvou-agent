@@ -653,6 +653,10 @@ async function connectWithCapabilities(events, listener) {
     statusEventsBefore,
     'speculative recovery must not broadcast a reconnecting/connecting status');
   takeReconnectTimer(stale.timers).callback();
+  // Round-5 W1a pin: the speculative spawn itself must not flip the UI to
+  // connecting — only a failed verification may.
+  assert.equal(stale.client.connectionState.status, 'connected',
+    'the speculative spawn itself must not flip the UI to connecting');
   const rejoin = stale.MockWebSocket.instances[1];
   rejoin.open();
   rejoin.message({
@@ -667,6 +671,12 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(stale.client.speculativeReconnect, false,
     'a successful speculative rejoin must clear the speculative flag silently');
   assert.equal(stale.client.connectionState.status, 'connected');
+  // A verified join resets the failure ladder: the next silent cycle is
+  // speculative again instead of escalating off stale failures.
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  assert.equal(stale.client.speculativeReconnect, true,
+    'a verified join must reset the speculative failure ladder');
 
   const failing = await connectWithCapabilities(['chat:delta'], () => {});
   failing.client.lastInboundAt = Date.now() - 121_000;
@@ -679,6 +689,41 @@ async function connectWithCapabilities(events, listener) {
     'a failed speculative verification must escalate to the visible reconnecting status');
   assert.equal(failing.client.speculativeReconnect, false,
     'a failed speculative verification must clear the speculative flag');
+
+  // Round-5 wedge pin: a relay that completes the handshake but never
+  // delivers the join ack must not wedge the UI on "connected" forever.
+  // Every watchdog close matches its own speculativeSource, so the
+  // close-side verification-failed branch can never fire; past the failure
+  // cap the reconnect becomes visible instead.
+  {
+    const wedged = await connectWithCapabilities(['chat:delta'], () => {});
+    wedged.client.lastInboundAt = Date.now() - 121_000;
+    wedged.client._livenessCheck();
+    assert.equal(wedged.client.connectionState.status, 'connected',
+      'the first cycle closes a joined socket: still a speculative idle cycle');
+    takeReconnectTimer(wedged.timers).callback();
+    const second = wedged.MockWebSocket.instances[1];
+    second.open();
+    wedged.client.lastInboundAt = Date.now() - 121_000;
+    wedged.client._livenessCheck();
+    assert.equal(second.closeCalled, true,
+      'the first ackless cycle must still be closed to route recovery');
+    assert.equal(wedged.client.speculativeReconnect, true,
+      'the first ackless cycle stays under the failure cap');
+    assert.equal(wedged.client.connectionState.status, 'connected',
+      'the second cycle is still speculative');
+    takeReconnectTimer(wedged.timers).callback();
+    const third = wedged.MockWebSocket.instances[2];
+    third.open();
+    wedged.client.lastInboundAt = Date.now() - 121_000;
+    wedged.client._livenessCheck();
+    assert.equal(third.closeCalled, true,
+      'the second ackless cycle must still be closed to route recovery');
+    assert.equal(wedged.client.speculativeReconnect, false,
+      'past the failure cap the watchdog reconnect must not be speculative');
+    assert.equal(wedged.client.connectionState.status, 'connecting',
+      'the capped watchdog reconnect must be visible, not silently repeated');
+  }
 
   const fresh = await connectWithCapabilities(['chat:delta'], () => {});
   fresh.client.lastInboundAt = Date.now();
