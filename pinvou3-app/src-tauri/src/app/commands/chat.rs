@@ -333,7 +333,16 @@ pub(crate) async fn chat_with_reservation(
     let mut created_snapshot_id: Option<String> = None;
     // aux 侧聊会话零工具、无回退 UI 消费快照（评审 round-5 minor 2）：跳过整套
     // per-turn 快照成本（树遍历 + git 登记），与定时会话同款排除。
-    if !is_scheduled && !crate::features::sessions::is_aux_session_id(&sid) {
+    // r39 minor 6：快照门的 scheduled 腿用与拒绝门同款别名挫败谓词
+    // （is_scheduled_session 的 sched- 前缀 + 记录文件存在性腿）——此前只查
+    // 注册表精确键，case 变体别名（SCHED-x）按非 scheduled 快照。当前不可达
+    // （send 路径的 session_roots 对此类别名先行 bail），但探测必须统一口径；
+    // 读失败按 scheduled 处理（跳过快照 = 诚实降级，不与 fork 拒绝口径分叉）。
+    // 上方 142 行的 is_scheduled 只服务附件目录/图像路由（注册表规范会话语义），
+    // 与本门刻意不同谓词。
+    if !store.is_scheduled_session(&sid).unwrap_or(true)
+        && !crate::features::sessions::is_aux_session_id(&sid)
+    {
         // The turn-checkpoint label is user-facing on the rewind surface: strip
         // the session-mention injection block the way titles/bubbles do, so a
         // refs-carrying first turn labels the checkpoint with the user's text

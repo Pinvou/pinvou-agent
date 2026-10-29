@@ -5926,6 +5926,29 @@ fn checkpoints_rewind(
     //    only copy of the pre-rewind state (undo would silently no-op).
     let revision = pinvou3_lib::features::sessions::transcript_revision(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error:#}")))?;
+    // r39 M2: refuse a different-boundary rewind while a crashed pending is
+    // live, BEFORE prepare_restore. PreRestore registration can evict the
+    // pending's target at index-full (LRU orders by age and never consults
+    // pending_rewind.json), after which live_pending_rewind deletes the
+    // pending as target-missing and the r36-M2 overwrite guard reads "no
+    // pending" — the crashed boundary is silently overwritten and the new P2
+    // snapshots the half-applied worktree as its rollback point. Same boundary
+    // is not refused: that is the guided-retry path (the matcher reuses P1
+    // idempotently). Non-destructive peek; IO errors fail closed (refuse this
+    // rewind instead of reopening the eviction window).
+    if checkpoints::pending_rewind_targets_different_checkpoint(&ledger, &checkpoint.id)
+        .map_err(|error| {
+            crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+        })?
+    {
+        return Err(CliError::failed(format!(
+            "pending_rewind_conflict: an unfinished rewind (checkpoint {}) is still pending; \
+             complete it first — desktop: send a new message to auto-reconcile, or retry the \
+             same rewind; headless: remove the pending marker in the session's checkpoint \
+             ledger — before rewinding to a different boundary",
+            checkpoint.id,
+        )));
+    }
     // r25 MAJOR-3: the matcher's revision check is itself the commit
     // discriminator - a completed rewind's truncate rewrites the transcript,
     // so the revision always advances and the matcher returns None. The only
@@ -6249,6 +6272,44 @@ mod tests {
         // fail-closed split of matching_pending_pre_restore is now pinned
         // behaviorally in the app crate (mod.rs, mirrored on the degraded
         // twin); nothing falsifiable remains to assert at this layer.
+    }
+
+    /// r39 M2 pin: the CLI rewind must refuse a different-boundary rewind
+    /// while a crashed pending is live, BEFORE prepare_restore — the
+    /// PreRestore registration can evict the pending's target at index-full
+    /// (LRU never consults pending_rewind.json), after which
+    /// live_pending_rewind deletes the pending as target-missing and the
+    /// r36-M2 overwrite guard reads "no pending": the crashed boundary is
+    /// silently overwritten. Deleting the probe or moving it after
+    /// prepare_restore turns red; the non-destructive/fail-closed semantics
+    /// of the probe itself are pinned behaviorally in the app crate.
+    #[test]
+    fn cli_rewind_refuses_different_boundary_before_prepare() {
+        let src = include_str!("code.rs");
+        let fn_start = src
+            .find("fn checkpoints_rewind(")
+            .expect("checkpoints_rewind must exist");
+        let rest = &src[fn_start..];
+        let body_end = ["\nfn ", "\npub "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(rest.len(), |offset| offset);
+        let body = &rest[..body_end];
+        let prepare_at = body
+            .find("prepare_restore(&ledger")
+            .expect("prepare_restore call must exist");
+        let probe_at = body
+            .find("pending_rewind_targets_different_checkpoint(&ledger")
+            .expect("the different-boundary refusal must probe the live pending (r39 M2)");
+        assert!(
+            probe_at < prepare_at,
+            "the refusal must run before prepare_restore registers the evicting PreRestore (r39 M2)"
+        );
+        assert!(
+            body.contains("pending_rewind_conflict"),
+            "the refusal must carry the named error kind (r39 M2)"
+        );
     }
 
     /// Round-52 review: an unknown `--model-slot` slot used to parse fine

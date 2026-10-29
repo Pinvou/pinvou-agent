@@ -1305,17 +1305,21 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // diff 等）且位于 `--no-textconv`/`--no-ext-diff` 等选项钉之后——
             // git 选项 last-wins，被篡改的 `"--ext-diff"` 值可重新启用外部 diff
             // 驱动（config 清洗只覆盖 diff.* 节，攻击者可改 index 而非 config）。
-            // 失败按损坏处理：fail-closed 报错优于把不可信 rev 喂给 git。
-            for entry in &index.entries {
+            // r39 minor 5：语义损坏（合法 JSON、非法对象 id）改走与解析损坏
+            // 同款的隔离+重建——此前 bail! 让该会话所有 checkpoint 操作永久
+            // 失败（load_index 是全部读写的入口），而解析损坏路径早已证明隔离
+            // +重建既保住「不可信 rev 不喂 git」（坏条目随隔离消失）又恢复
+            // 快照能力。取证保留在隔离文件里供检查。
+            let corrupt_entry = index.entries.iter().any(|entry| {
                 let commit = entry.commit.trim();
                 let valid_len = commit.len() == 40 || commit.len() == 64;
-                if !valid_len || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    bail!(
-                        "checkpoint '{}' 的 commit 字段不是合法对象 id（索引可能被篡改或损坏），拒绝使用: {}",
-                        entry.id,
-                        entry.commit
-                    );
-                }
+                !valid_len || !commit.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+            if corrupt_entry {
+                eprintln!(
+                    "[checkpoints] checkpoint index entry with a malformed object id quarantined; rebuilt from an empty index"
+                );
+                return Ok(quarantine_index_and_rebuild(&path));
             }
             Ok(index)
         }
@@ -1333,19 +1337,26 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // sidecar persist logs. The ledger root in context already
             // identifies the write, and the evidence stays in the quarantined
             // file for inspection.
-            match crate::platform::filesystem::quarantine_corrupt_file(&path) {
-                Ok(_) => eprintln!(
-                    "[checkpoints] corrupt checkpoint index quarantined; rebuilt from an empty index"
-                ),
-                Err(_) => eprintln!(
-                    "[checkpoints] failed to quarantine the corrupt index (scene not preserved); rebuilt from an empty index"
-                ),
-            }
-            Ok(CheckpointIndex {
-                version: 2,
-                entries: Vec::new(),
-            })
+            Ok(quarantine_index_and_rebuild(&path))
         }
+    }
+}
+
+/// r39 minor 5：索引损坏（解析失败或语义损坏）的共用隔离+重建腿——隔离保留
+/// 现场后返回空索引。隔离失败只记日志（现场未保留，但重建照常），不得让
+/// checkpoint 能力因一次写坏而永久失效。
+fn quarantine_index_and_rebuild(path: &std::path::Path) -> CheckpointIndex {
+    match crate::platform::filesystem::quarantine_corrupt_file(path) {
+        Ok(_) => eprintln!(
+            "[checkpoints] corrupt checkpoint index quarantined; rebuilt from an empty index"
+        ),
+        Err(_) => eprintln!(
+            "[checkpoints] failed to quarantine the corrupt index (scene not preserved); rebuilt from an empty index"
+        ),
+    }
+    CheckpointIndex {
+        version: 2,
+        entries: Vec::new(),
     }
 }
 
@@ -1672,6 +1683,31 @@ pub fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<Checkp
         .with_context(|| format!("checkpoint '{checkpoint_id}' 不存在"))
 }
 
+/// r39 minor 4：暂记成员校验专用——区分「索引读失败」与「条目确认不存在」。
+/// 此前三条成员腿（matching_pending_pre_restore 的 PreRestore、
+/// live_pending_rewind 的目标、pending_pre_restore_for_degraded 的绑定）都
+/// 用 `find_checkpoint(...).is_err()` 判淘汰：索引文件的瞬态读失败与「已被
+/// LRU 淘汰」同判，活暂记在飞时一次读失败就删暂记/丢绑定，孤儿化 P1——
+/// 模块自身的 fail-closed 信条（读腿、命令层对账均已实现）没有覆盖到成员腿。
+/// 只有「确认不存在」（错误链根部不是索引 IO）返回 false；读失败上抛。
+fn checkpoint_entry_present(ledger_root: &Path, checkpoint_id: &str) -> Result<bool> {
+    match find_checkpoint(ledger_root, checkpoint_id) {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            let io_rooted = error.root_cause().downcast_ref::<std::io::Error>().is_some()
+                || error
+                    .root_cause()
+                    .downcast_ref::<serde_json::Error>()
+                    .is_some();
+            if io_rooted {
+                Err(error)
+            } else {
+                Ok(false)
+            }
+        }
+    }
+}
+
 /// 待完成回退的暂记（评审 r6 M2）：rewind 的恢复阶段已创建（或复用）PreRestore
 /// 但整个回退未走完（恢复或截断中途失败）时，把「目标 checkpoint + keepTurns +
 /// PreRestore id」记到账本根 `pending_rewind.json`。同目标的引导重试据此复用
@@ -1719,15 +1755,20 @@ pub fn write_pending_rewind(
         // r32 MAJOR-2：按失败腿分流——revision 前进（truncate 前发生了不经
         // 对账前奏的 transcript 写入：edit_last_turn / compact_now / 定时投递）
         // 时，同边界重试必然 matcher None + 本守卫拒绝 = 死循环；此时正确动作
-        // 是发送一条新消息（快照前奏的 reconcile 重放会自动完成被中断的回退）。
+        // 是桌面端发送一条新消息（快照前奏的 reconcile 重放会自动完成被中断
+        // 的回退；headless 无此入口，文案同时给出真实补救，r39 minor 8）。
         // 目标/keepTurns 不同才是真正的「边界冲突」文案。
         let revision_moved = existing.transcript_revision != transcript_revision;
         let same_target =
             existing.checkpoint_id == checkpoint_id && existing.keep_turns == keep_turns;
         if same_target && revision_moved {
+            // r39 minor 8：恢复指引按表面分流如实表述——「发送一条新消息自动
+            // 对账」只有桌面端存在（快照前奏的 reconcile）；headless CLI 没有
+            // 对账入口，真实补救是删除暂记标记。单一文案同时说真。
             bail!(
                 "存在未完成的回退暂记（目标 {}，保留 {} 轮），且对话在暂记后发生了变化：\
-                 发送一条新消息即可自动完成被中断的回退，无需重试回退",
+                 桌面端发送一条新消息即可自动完成被中断的回退，无需重试回退；\
+                 无界面环境（CLI）没有发送对账入口，请删除账本根下的 pending_rewind.json 后重试",
                 existing.checkpoint_id,
                 existing.keep_turns
             );
@@ -1784,9 +1825,11 @@ pub fn matching_pending_pre_restore(
     {
         return Ok(None);
     }
-    // 索引成员校验（评审 r7 minor 5）：复用目标已被 LRU/压力裁剪时按不复用
-    // 处理并删除陈旧暂记——硬报错会让同目标重试一直失败直到 revision 变化。
-    if find_checkpoint(ledger_root, &pending.pre_restore_id).is_err() {
+    // 索引成员校验（评审 r7 minor 5；r39 minor 4 fail-closed）：复用目标已被
+    // LRU/压力裁剪时按不复用处理并删除陈旧暂记——硬报错会让同目标重试一直
+    // 失败直到 revision 变化。索引读失败（瞬态 IO）不再是「淘汰」同义词：
+    // 活暂记在飞时删暂记会孤儿化 P1，读失败如实上抛由调用方拒绝本次回退。
+    if !checkpoint_entry_present(ledger_root, &pending.pre_restore_id)? {
         let _ = fs::remove_file(&path);
         return Ok(None);
     }
@@ -1823,7 +1866,9 @@ pub fn pending_pre_restore_for_degraded(
     if pending.transcript_revision != transcript_revision {
         return Ok(None);
     }
-    if find_checkpoint(ledger_root, &pending.pre_restore_id).is_err() {
+    // r39 minor 4：成员腿 fail-closed——读失败上抛（调用方拒绝），只有确认
+    // 不存在才放弃绑定。
+    if !checkpoint_entry_present(ledger_root, &pending.pre_restore_id)? {
         return Ok(None);
     }
     Ok(Some(pending.pre_restore_id))
@@ -1848,6 +1893,40 @@ pub fn live_pending_rewind_present(ledger_root: &Path) -> Result<bool> {
     Ok(live_pending_rewind(ledger_root)?.is_some())
 }
 
+/// r39 M2：非破坏性暂记窥视——只读解析，无任何删除副作用，也不做索引成员
+/// 校验。回退入口的不同边界拒绝必须走无副作用读取：`live_pending_rewind`
+/// 的「目标已被淘汰 → 删除暂记」终结臂如果被入口探测复用，被淘汰的崩溃
+/// 暂记会在拒绝路径上被顺手清掉，引导重试随之丢失（正是 M2 要堵的静默
+/// 覆盖链的前半段）。损坏文件返回 None、不做清理——清理语义仍归
+/// live_pending_rewind 的既有约定（快照前奏/对账路径）。
+pub fn peek_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
+    let path = pending_rewind_path(ledger_root);
+    // 读腿 fail-closed 与 live_pending_rewind 同款（r25 minor 1）：真实 IO
+    // 错误上抛，由入口按「暂记不可读 → 拒绝本次回退」处理，不得吞成 None
+    // 后照常 prepare_restore（那会重新打开 M2 的淘汰窗口）。
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
+    };
+    let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
+        return Ok(None);
+    };
+    Ok(Some(pending))
+}
+
+/// r39 M2：回退入口的不同边界判定——活暂记存在且目标 ≠ 本次请求的
+/// checkpoint id。跨 crate 布尔包装（CLI crate 无法触及 pub(crate) 的
+/// `PendingRewind`），GUI 与 CLI 的入口拒绝共用同一判定。
+pub fn pending_rewind_targets_different_checkpoint(
+    ledger_root: &Path,
+    checkpoint_id: &str,
+) -> Result<bool> {
+    Ok(peek_pending_rewind(ledger_root)?
+        .map(|pending| pending.checkpoint_id != checkpoint_id)
+        .unwrap_or(false))
+}
+
 pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
     let path = pending_rewind_path(ledger_root);
     // r25 minor 1：NotFound（无暂记）与真实 IO 错误必须区分——后者映射为
@@ -1862,7 +1941,11 @@ pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
         let _ = fs::remove_file(&path);
         return Ok(None);
     };
-    if find_checkpoint(ledger_root, &pending.checkpoint_id).is_err() {
+    // r39 minor 4：目标成员校验 fail-closed——索引读失败与「已被淘汰」不再
+    // 同判。淘汰才清暂记解除快照阻断并如实留痕；瞬态读失败上抛，快照前奏
+    // 的 Err 臂照常阻断本轮快照（不得在暂记在飞时因一次读失败删暂记孤儿化
+    // P1）。
+    if !checkpoint_entry_present(ledger_root, &pending.checkpoint_id)? {
         // 目标已被 LRU 淘汰：该回退永远无法完成——清掉暂记解除快照阻断并
         // 如实留痕（此前静默 None，文件永不清、reconcile 的淘汰分支不可达）。
         eprintln!(
@@ -1888,18 +1971,34 @@ pub fn prepare_restore(
     let execution_root = canonical_execution_root(execution_root)?;
     let undo = match reuse_pre_restore {
         Some(id) => find_checkpoint(ledger_root, id)?,
-        None => create_checkpoint_preserving(
-            ledger_root,
-            &execution_root,
-            None,
-            CheckpointKind::PreRestore,
-            // Fixed zh label persisted as ledger fidelity data (byte-identical
-            // with the pre-cleanup surface) and printed verbatim by the CLI;
-            // localizing it is a consumer-side decision (PR #602).
-            &format!("回滚到 {} 前的自动快照", meta.id),
-            &[&meta.id],
-        )
-        .context("回滚前自动快照失败，已中止回滚")?,
+        None => {
+            // r39 M2：崩溃暂记在飞时，索引满员/存储压力的 LRU 淘汰按年龄裁
+            // 最老、从不查看 pending_rewind.json——若暂记的目标或其 PreRestore
+            // 恰是最老条目，会被本次登记的新 PreRestore 挤出索引并删 ref，
+            // live_pending_rewind 随后按「目标缺失」终结暂记、r36-M2 守卫
+            // 失明，崩溃边界被静默覆盖（快照被暂记阻断，其目标年龄只增不减，
+            // 恰是最容易被裁的位置）。把在飞暂记的两个 id 加入 preserve 集；
+            // 窥视读腿 fail-closed（IO 错误上抛中止回退，不打开淘汰窗口）。
+            // 无暂记时 preserve 集与旧行为逐字相同。
+            let pending_ids = match peek_pending_rewind(ledger_root)? {
+                Some(pending) => vec![pending.checkpoint_id, pending.pre_restore_id],
+                None => Vec::new(),
+            };
+            let mut preserve: Vec<&str> = vec![meta.id.as_str()];
+            preserve.extend(pending_ids.iter().map(|id| id.as_str()));
+            create_checkpoint_preserving(
+                ledger_root,
+                &execution_root,
+                None,
+                CheckpointKind::PreRestore,
+                // Fixed zh label persisted as ledger fidelity data (byte-identical
+                // with the pre-cleanup surface) and printed verbatim by the CLI;
+                // localizing it is a consumer-side decision (PR #602).
+                &format!("回滚到 {} 前的自动快照", meta.id),
+                &preserve,
+            )
+            .context("回滚前自动快照失败，已中止回退")?
+        }
     };
     Ok((meta, undo))
 }
@@ -2413,7 +2512,12 @@ fn with_index_write_lock<R>(ledger_root: &Path, f: impl FnOnce() -> R) -> R {
         .entry(key)
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone();
-    let _guard = bucket.lock();
+    let _guard = bucket
+        .lock()
+        // r39 minor 5：与注册表锁同款 poison 恢复——持锁闭包 panic 会毒化桶锁，
+        // 此前 `let _guard = bucket.lock();` 绑定的是 Result，Err（毒化）臂
+        // 等于放弃串行化静默放行，进程内 index RMW 从此互斥失效。
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     f()
 }
 
@@ -2422,6 +2526,27 @@ pub fn invalidate_turn_checkpoints_after(ledger_root: &Path, keep_turns: u32) ->
     with_index_write_lock(ledger_root, || {
         invalidate_entries_if(ledger_root, |entry| {
             entry.kind == CheckpointKind::Turn && entry.turn.is_some_and(|turn| turn > keep_turns)
+        })
+    })
+}
+
+/// r39 minor 1：压缩钩子的火时刻截止变体。钩子在自己的线程上异步执行，与
+/// 新 turn 的快照登记竞速——纯 `turn > kept` 谓词会把「钩子触发后、线程执行
+/// 前」合法登记的 kept+1 轮快照一并作废（该轮入口永久降级为仅对话，且无
+/// 自愈）。截止取钩子触发时刻（persist 锁内捕获，先于线程 spawn）：只有
+/// 创建于火时刻之前的 Turn 快照属被压缩截断的分支。与
+/// invalidate_stale_turn_checkpoints 同款秒级精度约定（<=，同秒条目按被截
+/// 分支处理是安全方向：误删只降级入口，漏删会重新引入 first-wins 劫持）。
+pub fn invalidate_turn_checkpoints_after_created_until(
+    ledger_root: &Path,
+    keep_turns: u32,
+    created_until: i64,
+) -> Result<usize> {
+    with_index_write_lock(ledger_root, || {
+        invalidate_entries_if(ledger_root, |entry| {
+            entry.kind == CheckpointKind::Turn
+                && entry.turn.is_some_and(|turn| turn > keep_turns)
+                && entry.created_at <= created_until
         })
     })
 }
@@ -3156,13 +3281,12 @@ mod tests {
             "p1",
             "rev-a-but-transcript-moved",
         );
+        let revision_moved_message = revision_moved.err().map(|error| error.to_string());
         assert!(
-            revision_moved.is_err()
-                && revision_moved
-                    .unwrap_err()
-                    .to_string()
-                    .contains("自动完成被中断的回退"),
-            "同目标 + revision 前进必须携带自动完成指引文案"
+            revision_moved_message.as_deref().is_some_and(|message| {
+                message.contains("自动完成被中断的回退") && message.contains("pending_rewind.json")
+            }),
+            "同目标 + revision 前进必须携带自动完成指引文案，且为无界面环境给出真实补救（r39 minor 8）"
         );
         // 原暂记保持（未被覆盖）。
         let pending = live_pending_rewind(ledger.path()).unwrap().unwrap();
@@ -4167,6 +4291,107 @@ mod tests {
         );
     }
 
+    /// r39 M2 回归：崩溃暂记在飞时，prepare_restore 的 PreRestore 登记不得
+    /// 在索引满员淘汰中裁掉暂记的目标或其 PreRestore（淘汰按年龄、从不查看
+    /// pending_rewind.json；暂记被「目标缺失」终结后 r36-M2 守卫失明，崩溃
+    /// 边界被静默覆盖）。preserve 名额必须落到非暂记条目头上。
+    #[test]
+    fn prepare_restore_preserves_a_live_pendings_entries_at_index_full() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("pending-preserve-ledger");
+        let exec = TestDir::new("pending-preserve-exec");
+        exec.write("a.txt", "0\n");
+        let oldest = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let mut ids = vec![oldest.id.clone()];
+        // 只填到 MAX-1：bootstrap 的 PreRestore 登记占满最后一格而不触发淘汰，
+        // 让「满员淘汰」精确发生在暂记在飞后的那次不同边界 prepare 上。
+        for turn in 2..MAX_CHECKPOINTS {
+            exec.write("a.txt", &format!("{turn}\n"));
+            ids.push(
+                create_checkpoint(
+                    ledger.path(),
+                    exec.path(),
+                    Some(turn as u32),
+                    CheckpointKind::Turn,
+                    "t",
+                )
+                .unwrap()
+                .id,
+            );
+        }
+        // 引导重试路径先把暂记立起来：索引 MAX-1 满时为最老条目登记
+        // PreRestore（占满最后一格、不触发淘汰），再写暂记文件——此刻索引
+        // 满员、暂记目标 = 最老条目（淘汰第一顺位）。
+        let (_, pending_pre) = prepare_restore(ledger.path(), exec.path(), &oldest.id, None)
+            .unwrap();
+        write_pending_rewind(ledger.path(), &oldest.id, 0, &pending_pre.id, "rev-1").unwrap();
+        assert!(live_pending_rewind(ledger.path()).unwrap().is_some());
+        // 不同边界的 prepare_restore（目标 = 最新 Turn）：PreRestore 登记触发
+        // MAX+1 溢出淘汰——暂记的两个 id 必须被 preserve 保住，名额落到次老
+        // 条目头上。
+        let newest = ids.last().unwrap().clone();
+        let second_oldest = ids[1].clone();
+        let (_, _) = prepare_restore(ledger.path(), exec.path(), &newest, None).unwrap();
+        let listed = list_checkpoints(ledger.path()).unwrap();
+        assert!(
+            listed.iter().any(|entry| entry.id == oldest.id),
+            "在飞暂记的目标不得被他人 PreRestore 的淘汰挤出: {listed:?}"
+        );
+        assert!(
+            listed.iter().any(|entry| entry.id == pending_pre.id),
+            "在飞暂记的 PreRestore 不得被淘汰挤出: {listed:?}"
+        );
+        assert!(
+            !listed.iter().any(|entry| entry.id == second_oldest),
+            "淘汰名额必须落到非暂记条目（次老）头上: {listed:?}"
+        );
+        // 暂记必须仍然存活且成员校验通过（live_pending_rewind 不走终结臂）。
+        let live = live_pending_rewind(ledger.path()).unwrap();
+        assert_eq!(live.as_ref().map(|pending| pending.checkpoint_id.as_str()), Some(oldest.id.as_str()));
+    }
+
+    /// r39 M2 回归：入口窥视无副作用——不同边界判定为 true / 同边界为 false
+    /// 都不得删除或改写暂记文件（拒绝路径顺手清暂记 = 引导重试丢失）。
+    #[test]
+    fn pending_boundary_probe_is_non_destructive() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("peek-ledger");
+        let exec = TestDir::new("peek-exec");
+        exec.write("a.txt", "a\n");
+        let t1 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let (_, pre) = prepare_restore(ledger.path(), exec.path(), &t1.id, None).unwrap();
+        write_pending_rewind(ledger.path(), &t1.id, 0, &pre.id, "rev-1").unwrap();
+        let pending_path = pending_rewind_path(ledger.path());
+        let before = fs::read(&pending_path).unwrap();
+        // 同边界 → false；不同边界 → true。两次窥视后文件逐字节不变。
+        assert!(!pending_rewind_targets_different_checkpoint(ledger.path(), &t1.id).unwrap());
+        assert!(pending_rewind_targets_different_checkpoint(ledger.path(), "c-other").unwrap());
+        assert_eq!(fs::read(&pending_path).unwrap(), before);
+        // 窥视对「目标已被淘汰」的暂记同样无副作用（终结臂只属于
+        // live_pending_rewind——快照前奏/对账的清理约定）。
+        drop_checkpoint(ledger.path(), &t1.id).unwrap();
+        assert!(peek_pending_rewind(ledger.path()).unwrap().is_some());
+        assert_eq!(fs::read(&pending_path).unwrap(), before);
+    }
+
     /// 评审 M3 回归：损坏的 index.json 被隔离为 index.json.corrupt 并从空索引
     /// 重建——该会话的 checkpoint 能力恢复（此前所有操作永久失败）。
     #[test]
@@ -5141,6 +5366,113 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first.commit, second.commit);
+    }
+
+    /// r39 minor 5(c)：purge_secret_survivors_exactly 的存在性 fixture——
+    /// `.env` 与 `.ENV` 在影子 index 中共存时，icase pathspec 的单次
+    /// `rm --cached` 只移除一个大小写变体（git 2.43 实证），幸存变体由精确
+    /// 路径回扫清除；此前删除两条 purge 调用全部测试仍绿（评审变异实证）。
+    /// 构造「排除规则生效前」的存量旧树（plumbing 直填两个变体——cacheinfo
+    /// 不落盘，case-insensitive 文件系统上 index 也能同时持有两者；`.ENV`
+    /// 的 blob 内容取自探测临时文件，blob 与来源文件名无关），apply_restore
+    /// 的 read-tree 把两个变体同时带入 index：删掉幸存者回扫腿，`.ENV` 将
+    /// 抵达 checkout-index 被写回工作区（必须变红）。
+    #[test]
+    fn apply_restore_purges_both_icase_secret_variants_from_a_legacy_tree() {
+        if !git_available() {
+            return;
+        }
+        const LEGACY_ID: &str = "c-legacy-icase";
+        let ledger = TestDir::new("icase-purge-ledger");
+        let exec = TestDir::new("icase-purge-exec");
+        exec.write(".env", "SECRET=one\n");
+        exec.write("env_upper_probe.tmp", "SECRET=two\n");
+        exec.write("a.txt", "a\n");
+        let _bootstrap =
+            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn, "t1")
+                .expect("bootstrap checkpoint");
+        let repo = repo_dir(ledger.path());
+        // git() 只设 --git-dir/--work-tree，进程 cwd 不在 exec——hash-object
+        // 的读取路径按绝对路径传。
+        let abs = |name: &str| {
+            exec.path()
+                .join(name)
+                .to_str()
+                .expect("utf-8 test path")
+                .to_string()
+        };
+        let blob_env = git_ok(&repo, exec.path(), &["hash-object", "-w", "--", &abs(".env")])
+            .expect("hash .env")
+            .trim()
+            .to_string();
+        let blob_env_upper = git_ok(
+            &repo,
+            exec.path(),
+            &["hash-object", "-w", "--", &abs("env_upper_probe.tmp")],
+        )
+        .expect("hash upper probe")
+        .trim()
+        .to_string();
+        let blob_a = git_ok(&repo, exec.path(), &["hash-object", "-w", "--", &abs("a.txt")])
+            .expect("hash a.txt")
+            .trim()
+            .to_string();
+        for (blob, path) in [
+            (&blob_env, ".env"),
+            (&blob_env_upper, ".ENV"),
+            (&blob_a, "a.txt"),
+        ] {
+            git_ok(
+                &repo,
+                exec.path(),
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("100644,{blob},{path}"),
+                ],
+            )
+            .unwrap_or_else(|error| panic!("cacheinfo {path}: {error}"));
+        }
+        let tree = git_ok(&repo, exec.path(), &["write-tree"])
+            .expect("legacy tree")
+            .trim()
+            .to_string();
+        let commit = git_ok(
+            &repo,
+            exec.path(),
+            &["commit-tree", &tree, "-m", "legacy snapshot with secret variants"],
+        )
+        .expect("legacy commit")
+        .trim()
+        .to_string();
+        git_ok(
+            &repo,
+            exec.path(),
+            &["update-ref", &format!("refs/checkpoints/{LEGACY_ID}"), &commit],
+        )
+        .expect("ref legacy snapshot");
+        let mut index = load_index(ledger.path()).unwrap();
+        index.entries.push(CheckpointMeta {
+            id: LEGACY_ID.to_string(),
+            turn: Some(2),
+            kind: CheckpointKind::Turn,
+            label: "legacy".to_string(),
+            commit,
+            created_at: now_seconds(),
+        });
+        save_index(ledger.path(), &index).unwrap();
+
+        // 恢复到存量旧树：read-tree 带入两个变体 → 两级 purge 清场 →
+        // checkout-index 只落 a.txt。
+        restore_checkpoint(ledger.path(), exec.path(), LEGACY_ID).expect("restore legacy tree");
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).expect("ls-files");
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(".env")),
+            "存量树的两个大小写变体都不得在 restore 后留在影子 index（幸存者回扫腿）: {tracked}"
+        );
     }
 
     /// P0 修复：回退后作废旧分支 Turn 快照——只移除 turn > keep_turns 的 Turn

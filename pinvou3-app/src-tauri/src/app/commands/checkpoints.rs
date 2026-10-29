@@ -278,9 +278,10 @@ async fn reconcile_pending_rewind(
     let apply_ledger = ledger.to_path_buf();
     let apply_execution = execution.to_path_buf();
     // r38 M3：evict 在 apply **之前**——与手动回退路径的 restore-前驱逐同向。
-    // 驱逐后即使引擎的 idle persist 在 apply/truncate 窗口内落地，
-    // `persist_admitted_chat_display` 的 revision 守卫也会拒绝（引擎不存在 =
-    // 无存活写入者，无复活窗口）。
+    // r39 minor 2 注释修正：保护不是「revision 守卫」——forwarder persist 路径
+    // （sessions/store.rs）整体替换 messages、无 revision 检查；真正的防线是
+    // 驱逐本身（引擎不存在 = 无存活写入者，apply/truncate 窗口内没有 idle
+    // persist 可落地），残余的迟到写入由 admit() 写者闸拒收。
     if let Some((pool, _)) = gates.pools {
         pool.evict_if_present(session_id).await;
     }
@@ -485,9 +486,12 @@ pub async fn list_checkpoints(
     // count+1 登记 → 末条 turn == 最后一个已开始轮的序号），消除每 turn 边沿
     // 2-3 次的全量 transcript 读盘+解析（大会话 0.5-2s 级后台 CPU、随长度
     // 线性、与流式渲染抢预算；main 上本列表只读 index.json）。已知 staleness
-    // 窗口（消息唤醒轮后未再发送、发送失败且作废失败、压缩后未再发送）均
-    // 表现为调和门诚实隐藏入口、下次发送自愈——与主车道失准的既有处理语义
-    // 一致。rewind_to_turn 预检仍走全量精确计数：那是实际执行回退前的一次性
+    // 窗口均表现为调和门诚实隐藏入口，但恢复路径按成因分流（r39 M1 修正
+    // 「下次发送自愈」的旧说法——发送不改变账本计数，busy 容忍恰差 1 盖不住
+    // 压缩缺口，发送本身不自愈）：压缩收缩由 chat:compaction done 的真实收缩
+    // 臂失效前端缓存 buffer、下次盘载重注水后两侧计数重新对齐；唤醒轮未发送
+    // 等其余窗口由下一个 turn 的快照落账 + refreshKey 边沿收敛。
+    // rewind_to_turn 预检仍走全量精确计数：那是实际执行回退前的一次性
     // 校验，不在轮询热路径。
     tauri::async_runtime::spawn_blocking(move || {
         let entries = checkpoints::list_checkpoints(&ledger)
@@ -1025,6 +1029,24 @@ pub async fn rewind_to_turn(
     // 注释已按实际保证范围改写）。
     let mut restored_checkpoint = None;
     if let Some(checkpoint) = plan.checkpoint {
+        // r39 M2：入口不同边界拒绝——必须先于 prepare_restore。prepare 会登记
+        // 新 PreRestore 并在索引满员/存储压力时按年龄淘汰（preserve 集此前不含
+        // 在飞暂记的 id）；若崩溃暂记的目标被淘汰，live_pending_rewind 的终结
+        // 臂会删掉暂记，write_pending_rewind 的 r36-M2 覆盖守卫读到「无暂记」
+        // 失明——崩溃边界被静默覆盖，新回退的 P2 把半应用工作区快照成回滚点。
+        // 窥视读腿无副作用（不删暂记、不做成员校验），IO 错误 fail-closed 拒绝
+        // 本次回退。同边界不拦：那是错误信息引导的重试/重放路径（matcher 复用
+        // P1 幂等完成）。
+        if let Some(pending) = checkpoints::peek_pending_rewind(&ledger)
+            .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
+        {
+            if pending.checkpoint_id != checkpoint.id {
+                return Err(format!(
+                    "存在未完成的回退暂记（目标 {}，保留 {} 轮）：请先重试同一回退完成截断，或撤销后重试；本次目标不同，已在改动工作区前拒绝",
+                    pending.checkpoint_id, pending.keep_turns
+                ));
+            }
+        }
         let ledger_restore = ledger.clone();
         let execution_restore = execution.clone();
         let revision_for_prepare = transcript_revision.clone();
@@ -1324,6 +1346,15 @@ pub async fn undo_last_rewind(
     .map_err(|error| format!("反悔预检任务失败: {error}"))??
     .ok_or_else(|| "没有可反悔的回退（未回退过、回退后已产生新轮次/对话被编辑，或绑定的回滚点已被最近 20 个检查点淘汰）".to_string())?;
 
+    // r39 minor 3：驱逐前提到步骤 1 之前（r35-MAJOR-1 / r38-M3 同向收口）。
+    // 此前驱逐在对话恢复（步骤 2）之后——引擎在恢复窗口内的 idle persist
+    // （MCP 启动失败注释等 idle append）会把反悔前（回退态）的 transcript
+    // 整体写回磁盘，静默回滚本次反悔。当前由 undo 前置条件（有任何完成轮次
+    // 即拒绝反悔）挡住，但那是一次前置条件放宽之遥的永久丢失；与 rewind、
+    // 重放臂对齐把驱逐前提。驱逐后若后续步骤失败，引擎已不存在但下次使用会
+    // 从磁盘重建（安全，同 rewind 语义）。
+    pool.evict(&session_id).await;
+
     // 1) 恢复代码到本次回退绑定的 PreRestore（仅对话降级的回退无绑定，跳过
     //    本步——degraded 语义承诺绝不动代码，也不做 ACP 复检）。对称语义：
     //    restore 内部会再打一次 PreRestore（内容为回退后的状态），「反悔的反悔」
@@ -1410,11 +1441,10 @@ pub async fn undo_last_rewind(
             (None, false) => format!("对话恢复失败: {detail}"),
         }
     })?;
-    // 3) 回收 engine（同 rewind：下次发送 lazy respawn + SyncSession 重注水）。
-    // undo 成功 = 会话状态已变，任何在途回退暂记一律作废（评审 r6 M2 暂记
-    // 生命周期：rev 会话 revision 已不匹配兜底，这里显式清理收口）。
+    // 3) undo 成功 = 会话状态已变，任何在途回退暂记一律作废（评审 r6 M2 暂记
+    // 生命周期：rev 会话 revision 已不匹配兜底，这里显式清理收口）。引擎驱逐
+    // 已前提到步骤 1 之前（r39 minor 3）。
     checkpoints::clear_pending_rewind(&ledger);
-    pool.evict(&session_id).await;
     drop(reservation);
     Ok(UndoLastRewindResult { restored_messages })
 }
@@ -1526,6 +1556,19 @@ mod tests {",
             body.contains("pool.evict_if_present(session_id)"),
             "重放截断后必须以 evict_if_present 驱逐活引擎（r26 M3 + r28 B1：普通 evict 的无条目臂会失效在途预约）"
         );
+        // r39 minor 2：evict 必须在 apply **之前**（r38 M3 语义）——此前只有
+        // 存在性检查，把驱逐挪回 apply 之后套件仍全绿。锚定顺序本身：
+        // evict 的字节偏移必须早于 apply_restore 的 spawn_blocking。
+        let evict_at = body
+            .find("pool.evict_if_present(session_id)")
+            .expect("replay arm must evict the live engine");
+        let apply_at = body
+            .find("checkpoints::apply_restore(&apply_ledger")
+            .expect("replay arm must apply the restore");
+        assert!(
+            evict_at < apply_at,
+            "重放臂的引擎驱逐必须先于 apply_restore（r38 M3：apply 后驱逐留复活窗口）"
+        );
     }
 
     /// r28 M2(a) pin：rewind_to_turn 的复用判定不得查 sidecar 绑定记录——
@@ -1557,6 +1600,31 @@ fn ",
         assert!(
             !body.contains("latest_rewound_turns_record"),
             "rewind_to_turn 的复用判定不得查 sidecar 绑定记录（r28 M2：否则 persist 分裂窗被否决、P1 孤儿化）"
+        );
+    }
+
+    /// r39 minor 1 pin：lib.rs 的生产收缩钩子注册必须存活——覆盖测试注册的是
+    /// 自己的同形镜像，删掉生产注册块全部 checkpoint 测试仍然全绿（评审变异
+    /// 实证）。同时钉住火时刻截止调用形状：异步线程与新一轮快照登记竞速，
+    /// 退回纯 `turn > kept` 谓词会把火后合法登记的 kept+1 轮锚点一并作废。
+    #[test]
+    fn production_shrink_hook_registration_is_pinned() {
+        let src = include_str!("../../lib.rs");
+        let at = src
+            .find("register_messages_shrunk_hook")
+            .expect("lib.rs must register the production messages-shrunk hook");
+        let rest = &src[at..];
+        let next_block = rest
+            .find("SessionStore::delete")
+            .unwrap_or(rest.len().min(4000));
+        let window = &rest[..next_block];
+        assert!(
+            window.contains("invalidate_turn_checkpoints_after_created_until"),
+            "the production hook must invalidate with the fire-time cutoff (r39 minor 1)"
+        );
+        assert!(
+            window.contains("fired_at"),
+            "the production hook must capture the fire time before spawning its thread (r39 minor 1)"
         );
     }
 

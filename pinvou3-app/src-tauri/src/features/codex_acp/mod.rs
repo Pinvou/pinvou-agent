@@ -1977,6 +1977,25 @@ fn npm_move_aside_needed(resolved: Option<&Path>, script_paths: &[PathBuf]) -> b
     }
 }
 
+/// r39 minor 6：is_acp 的 case-alias 扫描腿（r16 M2/r17 M3）提为自由函数——
+/// 该腿承载全部六道 ACP 车道闸，此前内联在 is_acp 且没有任何测试执行它
+/// （删除小写扫描后全部套件仍然全绿）。metadata 腿只查已知键的小写等值；
+/// durable 索引腿额外要求该已知会话确为 ACP 后端（普通会话的大小写变体
+/// 不得被误判为 ACP）。`lower` 由调用方先折叠好（与两腿同一次 to_lowercase）。
+fn acp_case_alias_matches(
+    lower: &str,
+    metadata_keys: &[String],
+    agent_ids: &[String],
+    is_acp_backend: impl Fn(&str) -> bool,
+) -> bool {
+    metadata_keys
+        .iter()
+        .any(|known| known.to_lowercase() == lower)
+        || agent_ids
+            .iter()
+            .any(|known| known.to_lowercase() == lower && is_acp_backend(known))
+}
+
 impl AcpPool {
     pub fn new(app: AppHandle, session_store: SessionStore) -> Result<Self> {
         let resource_root = app.path().resource_dir().ok();
@@ -2235,16 +2254,16 @@ impl AcpPool {
         // the map only fills at pool construction and on list commands, so a
         // freshly-created ACP session (before any list) is invisible to the
         // map scan but present in the durable session-agents.json store.
+        // r39 minor 6: the scan is extracted into a free function so the leg
+        // is unit-testable (deleting the lowercase scan previously kept every
+        // suite green — the six gates built on is_acp had no coverage here).
         let lower = session_id.to_lowercase();
-        self.acp_metadata_backends
-            .read()
-            .keys()
-            .any(|known| known.to_lowercase() == lower)
-            || self
-                .agents
-                .session_ids()
-                .iter()
-                .any(|known| known.to_lowercase() == lower && self.agents.backend(known).is_acp())
+        acp_case_alias_matches(
+            &lower,
+            &self.acp_metadata_backends.read().keys().cloned().collect::<Vec<_>>(),
+            &self.agents.session_ids(),
+            |known| self.agents.backend(known).is_acp(),
+        )
     }
 
     pub fn backend(&self, session_id: &str) -> AgentBackend {
@@ -6375,6 +6394,32 @@ mod tests {
         assert!(!npm_fallback_available(Some("@openai/codex"), false));
         assert!(!npm_fallback_available(None, true));
         assert!(!npm_fallback_available(None, false));
+    }
+
+    /// r39 minor 6：is_acp 的 case-alias 扫描腿必须有测试执行——此前删除
+    /// 小写扫描全部套件仍然全绿（腿承载全部六道 ACP 车道闸）。两条腿分别
+    /// 钉住：metadata 键表的大小写变体命中；durable 索引腿要求该已知会话
+    /// 确为 ACP 后端（普通会话的大小写变体不得误判）。
+    #[test]
+    fn acp_case_alias_scan_matches_variants_and_demands_acp_backend() {
+        let metadata = vec!["Pinvou-1".to_string()];
+        let agents = vec!["Codex-2".to_string(), "chat-3".to_string()];
+        let backends = |known: &str| known.eq_ignore_ascii_case("Codex-2");
+        // metadata 键表：大小写变体命中。
+        assert!(acp_case_alias_matches("pinvou-1", &metadata, &agents, backends));
+        // durable 索引腿：ACP 后端的大小写变体命中。
+        assert!(acp_case_alias_matches("codex-2", &metadata, &agents, backends));
+        // durable 索引腿：普通会话的大小写变体不得命中（backend 判定参与）。
+        assert!(!acp_case_alias_matches("chat-3", &metadata, &agents, backends));
+        // 未知 id 不命中。
+        assert!(!acp_case_alias_matches("nope-9", &metadata, &agents, backends));
+        // 生产接线 pin：is_acp 必须经由提纯后的扫描函数（删除扫描退化为仅
+        // 精确键查找时变红）。
+        let src = include_str!("mod.rs");
+        assert!(
+            src.contains("acp_case_alias_matches("),
+            "is_acp 的 case-alias 腿必须经 acp_case_alias_matches（r39 minor 6）"
+        );
     }
 
     /// A card from an older generation must not hold the current

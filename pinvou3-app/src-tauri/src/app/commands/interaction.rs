@@ -239,7 +239,9 @@ pub async fn accept_plan(
     let checkpoint_ledger_root = Some(roots.ledger.clone());
     // 原生车道（工作模式 + 原生 code）同款快照门：ACP 已在命令入口拒绝；
     // scheduled 会话维持无快照（与 chat()/fork 拒绝口径一致）。
-    if store.scheduled_profile(&session_id).is_none()
+    // r39 minor 6：scheduled 腿用与拒绝门同款别名挫败谓词（此前只查注册表
+    // 精确键）；读失败按 scheduled 处理（跳过快照 = 诚实降级）。
+    if !store.is_scheduled_session(&session_id).unwrap_or(true)
         && !crate::features::sessions::is_aux_session_id(&session_id)
     {
         // r23 M1：崩溃对账重放臂的栅栏输入（与 chat() 同款；pool 引用供

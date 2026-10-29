@@ -45,6 +45,46 @@ assert.match(rewindDialogs, /export function RewindUndoConfirmDialog\(/, 'Rewind
   );
 }
 
+// ── r39 M1：压缩收缩 → 缓存失效/盘载重注水接线 ──────────────────────
+// 评审 r36/r37/r38/r39 连续四轮的「压缩后 chips 永久消失」MAJOR 的根修复。
+// 此前一轮推送公告声称该修复存在而实际未落树（丢失修复类）——本锚钉住接线
+// 本身：真实收缩臂必须失效缓存 buffer，活动会话强制盘载重注水，bridge 必须
+// 把两个原语注入 chat-events context（feature registry 有而 context 缺字段时
+// typeof 守卫会静默退化成现状）。
+{
+  const chatEvents = source('platform/tauri/bridge/chat-events.js');
+  assert.match(chatEvents, /const compactionShrank = phase === "done" &&/,
+    '收缩判定必须存在（before≠after 或计数缺失保守收缩）——删掉判定臂失效退化（r39 M1）');
+  assert.match(chatEvents, /if \(compactionShrank && compactionActive &&\s*typeof invalidateSessionBuffer === "function" && typeof switchToSessionInternal === "function"\) \{\s*invalidateSessionBuffer\(compactionSid\);\s*Promise\.resolve\(switchToSessionInternal\(compactionSid, true, "compaction", \{ forceDurableLoad: true \}\)\)/,
+    '活动会话收缩臂必须先失效缓存再强制盘载重注水——同 id 快路径不重载、失效不重注水会留下空白时间线（r39 M1）');
+  assert.match(chatEvents, /else if \(compactionShrank && !compactionActive && typeof invalidateSessionBuffer === "function"\) \{\s*invalidateSessionBuffer\(compactionSid\);/,
+    '后台会话收缩臂必须失效缓存 buffer——否则切回走缓存快路径复用压缩前时间线（r39 M1）');
+  const chatEventsContext = tauriBridge.match(/installBridgeFeature\("chat-events", \{[\s\S]*?\n  \}\);/m);
+  assert.ok(chatEventsContext, 'chat-events feature 装配必须存在');
+  assert.match(chatEventsContext[0], /invalidateSessionBuffer/,
+    'chat-events context 必须注入 invalidateSessionBuffer（r39 M1——context 缺字段时 typeof 守卫静默退化）');
+  assert.match(chatEventsContext[0], /switchToSessionInternal/,
+    'chat-events context 必须注入 switchToSessionInternal（r39 M1）');
+}
+
+// ── r39 minor 9/10：前端遗漏 pin（变异实证此前全绿） ─────────────────
+// 1) Bug-A 修复的 busy 容差参数：删掉 { busy: Boolean(busy) } → 发送期间
+//    乐观气泡恰差 1 触发调和门拒绝，每轮发送期间入口整体消失（竞态回归）。
+//    函数级单测只测函数本身，调用点丢参对此静默——pin 必须钉调用点形状。
+assert.match(controller, /rewindEntriesByTurnId\(turns, checkpoints\.checkpoints, checkpoints\.userTurns, \{ busy: Boolean\(busy\) \}\)/,
+  'useRewindController 必须把 busy 容差传入 rewindEntriesByTurnId 调用点——删参恢复 Bug-A 发送期入口消失（r39 minor 9）');
+// 2) code 车道（code-native-lane）重载过滤的两条腿：压缩载体与步数预算通知
+//    （r25 MAJOR-2 载体同族 + r10 M3 预算同口径）。共享核心的两条已 pin，
+//    code 车道自己的过滤行此前未 pin——禁用任一腿全绿，压缩+重载后序号被
+//    载体顶偏、调和门永久隐藏该会话入口。
+{
+  const codeLane = source('features/codex/code-native-lane.js');
+  assert.match(codeLane, /const skipUserBubble = isCompactionCarrierBlocks\(blocks\)\s*\|\|\s*isToolResultCarrierBlocks\(blocks\);/,
+    'code 车道重载必须过滤压缩载体与 tool_result 载体（r39 minor 10：禁腿全绿、序号顶偏回归）');
+  assert.match(codeLane, /if \(text && isStepBudgetNoticeText\(text\)\) continue;/,
+    'code 车道重载必须过滤步数预算通知（r10 M3 同口径；r39 minor 10 pin）');
+}
+
 // ── ChatView 接线：共享模块 + 时间线入口 + 弹窗 ──────────────────────
 // 共享模块导入（搬家后唯一来源是 features/conversation）。
 assert.match(chatView, /from '\.\.\/conversation\/useRewindController\.js'/, 'ChatView 必须使用共享编排 hook');

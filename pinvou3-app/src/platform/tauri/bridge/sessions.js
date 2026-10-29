@@ -188,8 +188,14 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
     if (typeof id !== "string" || !id) return;
     // 评审 r9 minor 1：暂存未发送草稿再丢缓存（本文件既定原则——淘汰不得
     // 丢草稿）；保持与 purgeSessionBuffer 的差异：无删除回调、不动其它记账。
-    if (sessionStates[id] && typeof stashEvictedSessionDraft === "function") {
-      stashEvictedSessionDraft(id, sessionStates[id]);
+    // r39 minor 9：暂存失败（超过上限、不可安全保留的草稿）时拒绝失效——
+    // 此前无条件丢缓存会连带丢掉草稿，违反 pruneSessionBuffers 的同一取舍
+    // （keep the buffer）。代价：该会话的压缩重同步（r39 M1 失效臂）与回退
+    // 跳过失效推迟到草稿清掉之后的下一次失效/切换，调和门维持诚实隐藏——
+    // 「宁可入口暂缺、不可静默丢草稿」。
+    if (sessionStates[id]) {
+      if (typeof stashEvictedSessionDraft !== "function") return;
+      if (!stashEvictedSessionDraft(id, sessionStates[id])) return;
     }
     delete sessionStates[id];
     // 活动会话的失效必须同时作用于 live 工作集（评审 r11 M2）：只删
