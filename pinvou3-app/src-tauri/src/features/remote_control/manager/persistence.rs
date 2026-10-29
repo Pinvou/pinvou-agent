@@ -295,10 +295,6 @@ pub(super) fn validate_pending_revocation_ledger(
     Ok(())
 }
 
-pub(super) fn load_pending_revocations() -> Result<PendingRevocationLedger, String> {
-    load_pending_revocations_from(&pending_revocations_path())
-}
-
 /// replay 启动路径专用:Corrupt 的原件已在读取时隔离,按空账本继续——与
 /// queue/acknowledge 的「恢复路径不被坏文件卡死」口径一致,enable/resume/
 /// rotate 不再为一个已经清理掉的文件一次性失败(原文 parse 错误直接抛给
@@ -314,6 +310,9 @@ pub(super) fn load_pending_revocations_for_replay() -> Result<PendingRevocationL
     }
 }
 
+/// 严格读取(Corrupt/Unavailable 都报错):生产路径全部走分类版或
+/// replay 包装;本函数只服务测试对真实磁盘文件的直接断言。
+#[cfg(test)]
 pub(super) fn load_pending_revocations_from(
     path: &Path,
 ) -> Result<PendingRevocationLedger, String> {

@@ -270,6 +270,11 @@ pub(super) fn rpc_response(
     })
 }
 
+/// TTL 扫描写入的超时占位码:`complete_rpc` 用它区分「可被真实结果取代的
+/// 占位」与「不可取代的终态完成值」。只有本扫描会产出这个码(确定性拒绝
+/// 走 settle 收口,码各不相同),真实完成晚于扫描到达时据此取代占位。
+pub(super) const RPC_TIMED_OUT_CODE: &str = "rpc_timed_out";
+
 pub(super) fn rpc_error_completion(
     code: impl Into<String>,
     error: impl Into<String>,
@@ -401,19 +406,23 @@ fn web_workspace_rpc_policy(command: &str) -> Option<WebWorkspaceRpcPolicy> {
     }
 }
 
-fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), String> {
+fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), WebScopeRejection> {
     // Only reached for commands present in the Web access policy, so native
     // workspace commands never get here; the policy gate rejects them first.
     let Some(policy) = web_workspace_rpc_policy(command) else {
         return Ok(());
     };
     if args.get("workspacePath").is_some() || args.get("workspace_path").is_some() {
-        return Err(format!("{command} does not accept a native workspace path"));
+        return Err(WebScopeRejection::Deterministic(format!(
+            "{command} does not accept a native workspace path"
+        )));
     }
     if policy == WebWorkspaceRpcPolicy::HostFileBrowse {
         for field in ["issueWorkspaceHandle", "issue_workspace_handle"] {
             if args.get(field).is_some_and(|value| !value.is_boolean()) {
-                return Err(format!("{field} must be a boolean"));
+                return Err(WebScopeRejection::Deterministic(format!(
+                    "{field} must be a boolean"
+                )));
             }
         }
         return Ok(());
@@ -426,9 +435,15 @@ fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), String>
             return Ok(());
         }
         let Some(handle) = handle.as_str() else {
-            return Err("workspaceHandle must be a string or null".to_string());
+            return Err(WebScopeRejection::Deterministic(
+                "workspaceHandle must be a string or null".to_string(),
+            ));
         };
-        super::workspace_grants::validate_handle(handle)?;
+        // Round-5 复审 minor:grant 兑换态是桌面侧可变状态(一次性句柄在
+        // 重试之间可能已被兑换或过期),拒绝按瞬时类处理,重试拿到新鲜
+        // 裁决;形状违规仍走确定性。
+        return super::workspace_grants::validate_handle(handle)
+            .map_err(WebScopeRejection::Transient);
     }
     Ok(())
 }
@@ -453,9 +468,10 @@ const MAX_WEB_KB_PATHS: usize = 128;
 /// Rejection messages stay path-free; the native detail is log-only. The
 /// cache classification follows the module-head criterion: arg-shape
 /// violations depend only on the request itself and stay deterministic
-/// (cacheable), while `validate_browsable_path` touches the filesystem
-/// (`canonicalize` + `metadata`), so a not-yet-existing path or a
-/// temporarily unavailable volume is a TRANSIENT rejection — caching it as
+/// (cacheable); `classify_browsable_path` splits its verdicts the same way —
+/// a policy verdict on an existing landing path ($HOME 之外 / 黑名单命中)
+/// is deterministic, while a filesystem-backed failure (not-yet-existing
+/// path, unavailable volume) is a TRANSIENT rejection — caching it as
 /// a terminal completion would brick that `client_request_id` until FIFO
 /// eviction, exactly the poisoning class this module exists to prevent.
 /// `web_access_codex_acp_prompt` 的 workspace_references 条数上限:每条引用
@@ -531,11 +547,24 @@ fn validate_web_kb_paths(command: &str, args: &Value) -> Result<(), WebScopeReje
                 "{paths_field} entries must be absolute paths"
             )));
         }
-        if crate::features::files::file_ingest::validate_browsable_path(path).is_err() {
-            log::warn!("[remote_control] rejected non-browsable kb path over Web");
-            return Err(WebScopeRejection::Transient(format!(
-                "{command} may only index browsable paths under the home directory"
-            )));
+        // Round-5 复审 minor:拒绝分类按 file_ingest 的拆分——真实存在落点
+        // 上的策略裁决($HOME 之外、词法/解析后黑名单)是只依赖请求的结论,
+        // 按确定性(可缓存);尚不存在的路径是触盘失败,按瞬时类(缓存会把
+        // 注定成功的重试永远挡住,正是本模块要消灭的毒化类)。
+        match crate::features::files::file_ingest::classify_browsable_path(path) {
+            Ok(_) => {}
+            Err(crate::features::files::file_ingest::BrowsablePathViolation::Deterministic(_)) => {
+                log::warn!("[remote_control] rejected non-browsable kb path over Web");
+                return Err(WebScopeRejection::Deterministic(format!(
+                    "{command} may only index browsable paths under the home directory"
+                )));
+            }
+            Err(crate::features::files::file_ingest::BrowsablePathViolation::Transient(_)) => {
+                log::warn!("[remote_control] rejected non-browsable kb path over Web");
+                return Err(WebScopeRejection::Transient(format!(
+                    "{command} may only index browsable paths under the home directory"
+                )));
+            }
         }
     }
     Ok(())
@@ -646,8 +675,10 @@ pub(super) fn validate_web_rpc_scope(
     command: &str,
     args: &Value,
 ) -> Result<(), WebScopeRejection> {
-    validate_web_workspace_rpc(command, args)
-        .map_err(|error| WebScopeRejection::Deterministic(error))?;
+    // 接线点(Round-5 复审 M2,由本模块测试的源码契约钉住):KB 路径门与
+    // 提示引用门必须留在 web 作用域校验内,而 web 作用域校验由
+    // handle_rpc_request 的 preflight 调用(manager 侧源码钉锁定)。
+    validate_web_workspace_rpc(command, args)?;
     validate_web_prompt_references(command, args)?;
     validate_web_kb_paths(command, args)?;
     let Some(scope) = web_session_scope(command) else {
@@ -677,8 +708,10 @@ pub(super) fn validate_web_rpc_scope(
             "invalid_web_session_id".to_string(),
         ));
     }
+    // Round-5 复审 minor:多 agent 模式是桌面侧可变状态(重试之间可能
+    // 变化),拒绝按瞬时类处理,让重试拿到新鲜裁决而不是缓存里的陈旧拒绝。
     super::validate_multi_agent_session_web_scope(app, command, session_id)
-        .map_err(WebScopeRejection::Deterministic)?;
+        .map_err(WebScopeRejection::Transient)?;
     if command == "web_access_cancel_session_download"
         || (command == "web_access_load_session_chunk"
             && args
@@ -955,6 +988,35 @@ mod tests {
         ));
     }
 
+    /// 接线钉(Round-5 复审 M2):KB 路径门与提示引用门必须留在
+    /// `validate_web_rpc_scope` 内——它们是该车道唯一的防线(kb 处理器
+    /// 自身不做任何路径策略检查),删除接线行不会让任何 helper 级测试
+    /// 变红。删除任一接线调用即红。
+    #[test]
+    fn web_scope_gate_wires_the_kb_and_reference_checks() {
+        let source = include_str!("rpc.rs");
+        let start = source
+            .find("pub(super) fn validate_web_rpc_scope(")
+            .expect("validate_web_rpc_scope must exist");
+        let tail = &source[start..];
+        let end = ["\nfn ", "\npub(super) fn ", "\npub fn ", "#[cfg(test)]"]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("validate_web_rpc_scope must be followed by another item");
+        let body = &tail[..end];
+        let references = body
+            .find("validate_web_prompt_references(command, args)")
+            .expect("the prompt-reference gate must be wired into the web scope gate");
+        let kb = body
+            .find("validate_web_kb_paths(command, args)")
+            .expect("the kb path gate must be wired into the web scope gate");
+        assert!(
+            references < kb,
+            "both gates must stay wired ahead of the session-scope work"
+        );
+    }
+
     #[test]
     fn web_kb_paths_require_browsable_home_paths() {
         // 无路径字段的知识库命令不受影响;kb_start_scan 缺省 roots 扫描
@@ -974,25 +1036,32 @@ mod tests {
         assert!(
             validate_web_kb_paths("kb_start_scan", &json!({ "roots": ["relative/path"] })).is_err()
         );
-        // 绝对但越出 $HOME(且真实存在)的路径必须拒绝;拒绝消息不得回显路径。
-        // 触盘校验失败归类 Transient(路径尚不存在/卷暂不可用都可能恢复),
-        // 不能缓存成终态——否则同 client_request_id 的重试永远重放这次失败,
-        // 正是本模块要消灭的毒化类。两种平台拼写都测:任一平台上,另一平台
-        // 的绝对路径都无法落在 $HOME 下;它在本平台按相对形状归类为确定性
-        // 形状拒绝(与文件系统无关),本平台的绝对拼写才走触盘的瞬时类。
+        // 绝对但越出 $HOME 的路径必须拒绝;拒绝消息不得回显路径。分类按
+        // round-5 拆分:真实存在落点上的策略裁决($HOME 之外/黑名单)是
+        // 确定性(可缓存);尚不存在的路径是触盘失败 → 瞬时(不能缓存成
+        // 终态,否则同 client_request_id 的重试永远重放这次失败,正是本
+        // 模块要消灭的毒化类)。两种平台拼写都测:任一平台上,另一平台
+        // 的绝对路径都不存在,恰好覆盖两类分支。
         for outside in ["/etc/hosts", r"C:\Windows\notepad.exe"] {
             let rejection =
                 validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": [outside] }))
                     .expect_err("a path outside $HOME must not be indexable over Web");
-            if std::path::Path::new(outside).is_absolute() {
+            let spelling = std::path::Path::new(outside);
+            if !spelling.is_absolute() {
                 assert!(
-                    matches!(rejection, WebScopeRejection::Transient(_)),
-                    "filesystem-backed rejections must be transient, got {rejection:?}"
+                    matches!(rejection, WebScopeRejection::Deterministic(_)),
+                    "a spelling that is not absolute on this platform is a shape violation, \
+                     got {rejection:?}"
+                );
+            } else if spelling.exists() {
+                assert!(
+                    matches!(rejection, WebScopeRejection::Deterministic(_)),
+                    "a policy verdict on an existing path must be deterministic, got {rejection:?}"
                 );
             } else {
                 assert!(
-                    matches!(rejection, WebScopeRejection::Deterministic(_)),
-                    "relative-shaped spellings must stay deterministic, got {rejection:?}"
+                    matches!(rejection, WebScopeRejection::Transient(_)),
+                    "a filesystem-backed rejection must be transient, got {rejection:?}"
                 );
             }
             let message = rejection.message();
