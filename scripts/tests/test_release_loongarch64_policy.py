@@ -202,6 +202,8 @@ def _bash_env_with_gnu_tooling(tmp):
       --decompress), so the scripts' `grep -lIZ` NUL-delimited scans would
       emit newline-separated paths, their `read -d ''` consumers would
       never iterate, and the missing-member nets would pass vacuously.
+      The shim applies to any host grep whose --version output lacks
+      "GNU grep", not only BSD grep.
     - readelf: stock macOS ships no readelf; a minimal ELF-header reader
       covers the `readelf -h` Machine probe on the synthetic fixtures.
     """
@@ -227,7 +229,7 @@ def _bash_env_with_gnu_tooling(tmp):
     system_grep = shutil.which("grep")
     if system_grep:
         result = probe([system_grep, "--version"])
-        if "GNU grep" not in result.stdout:
+        if not (result.returncode == 0 and "GNU grep" in result.stdout):
             shims.mkdir(parents=True, exist_ok=True)
             shim_grep = shims / "grep"
             shim_grep.write_text(
@@ -254,7 +256,7 @@ def _bash_env_with_gnu_tooling(tmp):
     readelf_is_gnu = False
     if system_readelf:
         result = probe([system_readelf, "--version"])
-        readelf_is_gnu = "GNU" in result.stdout
+        readelf_is_gnu = result.returncode == 0 and "GNU" in result.stdout
     if not readelf_is_gnu:
         shims.mkdir(parents=True, exist_ok=True)
         shim_readelf = shims / "readelf"
