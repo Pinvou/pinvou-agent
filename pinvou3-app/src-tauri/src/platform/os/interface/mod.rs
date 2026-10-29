@@ -17,11 +17,12 @@ pub use path::{
 // eq/prefix (no allowance needed there — a stopped consumer must resurface as
 // an unused-import tripwire); on the byte-exact platforms none of the aliases
 // is referenced, hence the cfg'd allowance. `volume_fold_spelling` is never
-// consumed through this re-export on any platform (its own module and tests
-// reach it directly), so it stays out of the list (round-5 review: the
-// unconditional blanket allow removed the mac/win tripwire). The E0425 class
-// is about a MISSING re-export, which stays impossible: the two consumed
-// aliases are unconditional in the list.
+// consumed through this re-export on any platform (its own module's eq/prefix
+// reach it directly; its İ-expansion behavior is pinned by a test in
+// `path.rs`), so it stays out of the list (round-5 review: the unconditional
+// blanket allow removed the mac/win tripwire). The E0425 class is about a
+// MISSING re-export, which stays impossible: the two consumed aliases are
+// unconditional in the list.
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows")),
     allow(unused_imports)

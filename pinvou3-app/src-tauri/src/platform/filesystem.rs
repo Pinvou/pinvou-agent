@@ -2605,8 +2605,11 @@ pub(crate) fn quarantine_corrupt_file_bytes(path: &Path, bytes: &[u8]) -> io::Re
 /// Full-content fallback for oversize sources: the bytes-fallback above only
 /// holds what the caller's bounded read kept in memory (a truncated prefix by
 /// design), so when the complete on-disk file is the evidence, copy it whole.
-/// `fs::copy` preserves permission bits — callers repair the source to 0600
-/// before quarantining, so the copy inherits that mode.
+/// Permission inheritance is platform-shaped: on unix, `fs::copy` preserves
+/// permission bits and the caller repairs the source to 0600 before
+/// quarantining, so the copy inherits that mode; on Windows the repair is a
+/// documented no-op and the copy carries the source's ACL (same exposure as
+/// the source file, no widening).
 pub(crate) fn quarantine_corrupt_file_copy(path: &Path) -> io::Result<PathBuf> {
     let quarantine = quarantine_destination(path);
     std::fs::copy(path, &quarantine)?;
