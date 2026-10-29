@@ -42,10 +42,14 @@ const OUTBOUND_CHANNEL_CAPACITY: usize = 2_048;
 // bound retained wire payload to roughly 128 MiB. Only the current frame is
 // parsed at either side of the queue.
 const INBOUND_CHANNEL_CAPACITY: usize = 32;
-/// Must accept every frame the desktop itself is allowed to send: PROTOCOL.md
-/// pins MAX_PAYLOAD_BYTES at >= 4 MiB with desktop frames at or below
-/// 4 MiB - 64 KiB (the same bound as `MAX_RELAY_FRAME_BYTES`). A lower ceiling
-/// would make the Relay's own large frames disconnect us.
+/// Covers the relay's DEFAULT deployment: PROTOCOL.md pins MAX_PAYLOAD_BYTES
+/// at >= 4 MiB (documented as a deployment knob up to 16 MiB) with desktop
+/// frames at or below 4 MiB - 64 KiB (the same bound as
+/// `MAX_RELAY_FRAME_BYTES`). A lower ceiling would make the Relay's own large
+/// frames disconnect us; a self-hosted relay raised ABOVE this bound can
+/// still kill the socket with a legal frame — raising the desktop ceiling
+/// must ride along with such a deployment (round-5 review: the old comment
+/// justified the bound by the wrong direction).
 const MAX_INBOUND_TEXT_BYTES: usize = (4 * 1024 * 1024) - (64 * 1024);
 const OUTBOUND_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 // Stream resets are tiny control messages. Keeping at most one in-flight and
@@ -830,7 +834,12 @@ pub(crate) const REGISTER_REJECTED_ERROR_CODES: &[&str] = &[
 fn terminal_message(value: &Value, endpoint_id: &str) -> Option<RelayTerminal> {
     let message_endpoint = value.get("endpoint_id").and_then(Value::as_str);
     if value.get("type").and_then(Value::as_str) == Some("error") {
-        if !message_endpoint.is_none_or(|value| value == endpoint_id) {
+        // Round-5 复审 M6:空串 scope 与缺失同等对待(与下方补戳谓词同一
+        // 口径)。此前分类在补戳之前运行、把空串当「外来 endpoint」,补戳
+        // 谓词却把空串当「未打scope 的本端帧」——同一文件里两个谓词互相
+        // 矛盾,发来 `endpoint_id:""` 拒绝帧的 relay 会让本端显示 Error
+        // 却不终结循环,永远 Error↔Connecting 翻转。
+        if !message_endpoint.is_none_or(|value| value.is_empty() || value == endpoint_id) {
             return None;
         }
         let code = value.get("code").and_then(Value::as_str);
@@ -1436,6 +1445,41 @@ mod tests {
             "type": "desktop_endpoint_revoked",
             "code": "endpoint_revoked"
         })));
+
+        // Round-5 复审 M6:空串 scope 的注册拒绝帧在终结分类里视同本端——
+        // 与补戳谓词(上方断言)同一口径。删除 terminal_message 的空串折叠
+        // 后,这些帧被分类为「外来 endpoint」,循环不终结,UI 永远在
+        // Error↔Connecting 之间翻转,本钉变红。
+        for code in [
+            "endpoint_revoked",
+            "invalid_access_token",
+            "invalid_desktop_secret",
+            "bad_desktop_endpoint_register",
+            "unsupported_protocol_version",
+        ] {
+            let frame = json!({ "type": "error", "code": code, "endpoint_id": "" });
+            assert!(
+                terminal_message(&frame, "ep_self").is_some(),
+                "an empty-scope {code} error must classify terminal for this endpoint"
+            );
+        }
+        // 非 error 类通知(桌面侧事件)总是携带显式 id:空串仍不算本端。
+        assert_eq!(
+            terminal_message(
+                &json!({ "type": "desktop_endpoint_revoked", "endpoint_id": "" }),
+                "ep_self"
+            ),
+            None,
+            "an empty-scope notice must not classify terminal"
+        );
+        // 外来显式 id 仍然不终结(既有语义不回归)。
+        assert_eq!(
+            terminal_message(
+                &json!({ "type": "error", "code": "endpoint_revoked", "endpoint_id": "ep_other" }),
+                "ep_self"
+            ),
+            None
+        );
 
         // 补戳一体:命中帧被写入本 socket 的 endpoint,未命中帧保持原样。
         let mut scoped = json!({
