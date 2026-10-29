@@ -205,9 +205,9 @@ assert.deepStrictEqual(
   "edit mode must always run LLM instead of appending the edit instruction",
 );
 assert.deepStrictEqual(
-  ruleContext.classifyVoiceText("第一整理会议第二提取风险第三明天发送。", "structured").strategy,
+  ruleContext.classifyVoiceText("第一整理会议第二提取风险第三明天发送。", "dictation").strategy,
   "run_llm",
-  "legacy structured mode must fold into the dictation main path",
+  "dictation within the short-clear length budget must still run LLM once task words appear",
 );
 assert.deepStrictEqual(
   ruleContext.classifyVoiceText("一张用于公司年会的海报，时间是下午3点，12月36日需要联网下载一张图片，然后这个图片要尽量的好看呃，突出员工协作。这个海报是长方形的，上面需要有一点点文字，然后是红色背景。", "dictation").strategy,

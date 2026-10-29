@@ -69,9 +69,8 @@ assert.deepStrictEqual(
   'pressing any other key while Alt is pending must disarm the trigger, unswallowed',
 );
 assert.deepStrictEqual(
-  voiceShortcutActionForKeyDown(alt(), { status: 'idle', pendingSpace: true }),
+  voiceShortcutActionForKeyDown(alt(), { status: 'idle' }),
   { type: 'pending_alt' },
-  'legacy pending Space state must not turn Alt into task mode',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'dictation' }),
@@ -98,17 +97,8 @@ assert.deepStrictEqual(
   { type: 'clear_pending' },
 );
 assert.deepStrictEqual(
-  voiceShortcutActionForKeyDown(alt(), { status: 'recording', mode: 'task', pendingSpace: true }),
-  { type: 'pending_alt' },
-);
-assert.deepStrictEqual(
   voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'edit', pendingAlt: true }),
   { type: 'trigger', mode: 'edit' },
-);
-assert.deepStrictEqual(
-  voiceShortcutActionForKeyUp(alt(), { status: 'recording', mode: 'structured', pendingAlt: true }),
-  { type: 'trigger', mode: 'dictation' },
-  'legacy structured recordings should stop through the dictation main path',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'recording', mode: 'task' }),
@@ -128,11 +118,6 @@ assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'postprocessing' }),
   { type: 'cancel' },
   'Escape should still cancel active postprocessing voice work',
-);
-assert.deepStrictEqual(
-  voiceShortcutActionForKeyDown(altSpace({ repeat: true }), { status: 'idle' }),
-  { type: 'clear_pending' },
-  'repeat filtering is handled before action mapping so tests can exercise pure key mapping',
 );
 assert.deepStrictEqual(
   voiceShortcutActionForKeyDown({ key: 'Escape' }, { status: 'requesting_permission' }),

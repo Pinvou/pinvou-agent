@@ -12,11 +12,9 @@ const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
 // 防止某一侧单独回退成字面 "0 s"/"0 tok/s" 造成桌面/网页显示漂移。
 // Wave 1 moved pollMonitor (vllmTtft/vllmTps formatting) into the shared
 // base; both lanes forward to it, so the shared body is the single source to
-// pin (the lane files no longer carry the formatted literals).
-const bridges = {
-  tauri: read('src', 'shared', 'bridge-shared-helpers.js'),
-  web: read('src', 'shared', 'bridge-shared-helpers.js'),
-};
+// pin (the lane files no longer carry the formatted literals) — one read
+// covers both lanes.
+const sharedBridgeSource = read('src', 'shared', 'bridge-shared-helpers.js');
 
 // pollBackendStatus 仍是两条 lane 各自声明的手抄体(round-9 review R2:仅
 // 对齐语义,未单源)。钉住在飞守卫必须同时存在于两侧 —— get_backend_status
@@ -38,27 +36,25 @@ const TTFT_FALLBACK_PATTERN =
 const TPS_FALLBACK_PATTERN =
   /vllmTps: sadj && sadj\.tps_time_s > 0\s*\?\s*\(sadj\.tps_tokens \/ sadj\.tps_time_s\)\.toFixed\(1\) \+ " tok\/s" : "—"/;
 
-for (const [name, source] of Object.entries(bridges)) {
-  assert.match(
-    source,
-    TTFT_FALLBACK_PATTERN,
-    `${name} bridge TTFT 无数据必须回退为 —`,
-  );
-  assert.match(
-    source,
-    TPS_FALLBACK_PATTERN,
-    `${name} bridge TPS 无数据必须回退为 —`,
-  );
-  assert.doesNotMatch(
-    source,
-    /vllmTtft:[\s\S]*?toFixed\(2\) \+ " s" : "0 s"/,
-    `${name} bridge TTFT 无数据不得回退为字面 "0 s"`,
-  );
-  assert.doesNotMatch(
-    source,
-    /vllmTps:[\s\S]*?toFixed\(1\) \+ " tok\/s" : "0 tok\/s"/,
-    `${name} bridge TPS 无数据不得回退为字面 "0 tok/s"`,
-  );
-}
+assert.match(
+  sharedBridgeSource,
+  TTFT_FALLBACK_PATTERN,
+  'bridge TTFT 无数据必须回退为 —',
+);
+assert.match(
+  sharedBridgeSource,
+  TPS_FALLBACK_PATTERN,
+  'bridge TPS 无数据必须回退为 —',
+);
+assert.doesNotMatch(
+  sharedBridgeSource,
+  /vllmTtft:[\s\S]*?toFixed\(2\) \+ " s" : "0 s"/,
+  'bridge TTFT 无数据不得回退为字面 "0 s"',
+);
+assert.doesNotMatch(
+  sharedBridgeSource,
+  /vllmTps:[\s\S]*?toFixed\(1\) \+ " tok\/s" : "0 tok\/s"/,
+  'bridge TPS 无数据不得回退为字面 "0 tok/s"',
+);
 
-console.log('monitor bridge 无数据 TTFT/TPS fallback 在 tauri/web 两份 bridge 中一致为 —');
+console.log('monitor bridge 无数据 TTFT/TPS fallback 断言通过(共享 bridge 源单次读取)');

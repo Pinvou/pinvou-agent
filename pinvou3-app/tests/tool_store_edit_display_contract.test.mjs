@@ -41,11 +41,8 @@ assert.equal(
 // 永不渲染、卡面也不消费覆盖值（后端 bundle_readiness 已下发，前端断路）。
 // 批次来源必须是本次刚拉回的 list（stale-closure 陷阱：闭包里的 toolBackend
 // state 是渲染快照，首挂载/刚上传后为空 → 上传 MCP 卡漏批直到下次无关刷新）。
-assert.match(
-  toolStoreSource,
-  /customToolIds/,
-  'uploaded MCP/combo ids must join the readiness batch (customToolIds)',
-);
+// (the generic customToolIds substring pin is implied by the exact
+// declaration pin below, so it is not duplicated)
 assert.match(
   toolStoreSource,
   /const customToolIds = \(Array\.isArray\(list\) \? list : \[\]\)/,

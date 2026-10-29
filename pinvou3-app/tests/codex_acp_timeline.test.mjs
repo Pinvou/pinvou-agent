@@ -4,11 +4,6 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import {
-  createRightDockState,
-  reduceRightDockState,
-  rightDockSnapshot,
-} from '../src/components/layout/right-dock-state.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -996,13 +991,10 @@ try {
     && auxChatPanelView.includes('onActiveChange={onActiveChange}'),
   'the code-mode aux chat must reuse the shared Right Dock panel, remember scroll on open, keep its entry highlight tied to real dock visibility, and gate the panel mount and the quote selection on isNativeAgent like the entry button (external-ACP tasks must never reach the aux session)');
 
-  let codexDockState = createRightDockState();
-  codexDockState = reduceRightDockState(codexDockState, { type: 'activate', panelId: 'codex-workspace' });
-  codexDockState = reduceRightDockState(codexDockState, { type: 'activate', panelId: 'subagent-transcript' });
-  assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'subagent-transcript');
-  codexDockState = reduceRightDockState(codexDockState, { type: 'hide', panelId: 'subagent-transcript' });
-  assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'codex-workspace',
-    'closing the active subagent panel must reveal the still-mounted workspace');
+  // The right-dock activate/hide fallback semantics exercised here are pinned
+  // with strictly stronger assertions by side_panel_layout.test.mjs ("Right
+  // Dock has one physical host..." covers the full snapshot and the hide
+  // fallback; its occlusion test pins activate's auto-mount).
   assert.ok(codexWorkspace.includes('listAcpWorkspace({')
     && codexWorkspace.includes('previewAcpWorkspaceFile({')
     && codexWorkspace.includes('loadAcpWorkspaceChanges({')

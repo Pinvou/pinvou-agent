@@ -249,7 +249,13 @@ mod tests {
 
     #[test]
     fn pet_window_size_keeps_activity_cards_readable_at_every_pet_scale() {
-        assert_eq!(pet_window_logical_size(0.5, false, None), (144.0, 165.0));
+        // First arg is default_scale() on purpose (not the literal 0.5): a
+        // drift of the default scale body must fail here, at the minimum-size
+        // window assertion.
+        assert_eq!(
+            pet_window_logical_size(default_scale(), false, None),
+            (144.0, 165.0)
+        );
         assert_eq!(pet_window_logical_size(0.5, true, None), (350.0, 228.0));
         assert_eq!(pet_window_logical_size(1.0, true, None), (350.0, 332.0));
         assert_eq!(pet_window_logical_size(1.2, true, None), (350.0, 373.6));
