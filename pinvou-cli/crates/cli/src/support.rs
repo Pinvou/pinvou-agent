@@ -20,8 +20,8 @@ use crate::{CliError, CliOutcome, ExitCode};
 /// mutates process-global environment variables (`PINVOU3_HOME`, secret
 /// variables). The lib's `#[cfg(test)]` tests run in parallel threads in one
 /// process, and the env has no in-process synchronization of its own, so two
-/// modules steering it at once race each other's fixtures: the gaia tests in
-/// `lib.rs` point `PINVOU3_HOME` at per-fixture temp roots while the models
+/// modules steering it at once race each other's fixtures: the gaia test in
+/// `lib.rs` points `PINVOU3_HOME` at a per-fixture temp root while the models
 /// credential tests in `models.rs` do the same for their stores, and the two
 /// groups were reproduced failing 4/5 in combined runs while both were green
 /// in isolation. The fix is one lock shared by both groups — a per-module

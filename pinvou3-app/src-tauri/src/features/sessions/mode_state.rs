@@ -4,9 +4,10 @@
 //! 特性字段）原先在 `core/mode_state.rs`，违反 `core/README.md` 的"feature 内部
 //! 类型不入 core"准则，Wave 3 将其定义迁回此文件（行为 impl 一直在此），并由
 //! `features::sessions` 正式 re-export，消费方一律从
-//! `crate::features::sessions::{...}` 导入。跨层协议类型
-//! （`SerializableMode`/`ModeLane`/`ModeDefaultsView`）仍定义在
-//! `core/mode_state.rs`，经 `features::sessions` 转出。
+//! `crate::features::sessions::{...}` 导入。跨层协议类型仍定义在
+//! `core/mode_state.rs`：其中 `SerializableMode` 经 `features::sessions`
+//! re-export（`mod.rs` 的 `pub use`），`ModeLane`/`ModeDefaultsView` 由消费方
+//! 直接从 `crate::core::mode_state` 导入，不经 features 转出。
 //!
 //! These methods drive the `mode_states` map (mode, pending Plan ticket
 //! + claim-in-flight, persona, mounted collection). The durable subset:

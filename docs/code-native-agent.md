@@ -250,9 +250,11 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   影响；predicate 未注入时行为与注入前一致。
 
 ### 8.5 受限项目规则注入（AGENTS.md）
-- 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描 AGENTS.md），
-  `project_context_pack_enabled` 在 pinvou3 显式关闭；为满足审阅建议③a，
-  在 app 侧（`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
+- 底座仍枚举 `PROJECT_CONTEXT_FILES`，但 pinvou3 安装的 static prompt-composer
+  override 使底座把上下文视为 embedder 所有（自动扫描返回空，workspace context
+  pack 也随 `!static_composer_installed` 与 `project_context_pack_enabled = false`
+  双保险关闭）；为满足审阅建议③a，在 app 侧
+  （`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
 - **注入范围**：仅对**绑定了项目目录的原生代码会话**（execution root resolver
   命中且 `is_code_session`，双门控）注入 `AGENTS.md`。覆盖项目根逐级向上到
   用户家目录为止（家目录本身不入链，`~/AGENTS.md` 不注入，避免泄露桌面/用户

@@ -239,8 +239,9 @@ const expectedProtocolHashes = {
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
   // Recomputed for the repo-wide stale-comment cleanup: wording-only comment
-  // edits inside invoke/listen spans (dead doFinal reference, stale line
-  // numbers, a duplicated attachment comment) — command surface unchanged.
+  // edits inside the captured chat-events.js listener spans (stale tool_start
+  // line number, three deleted English captions) — chat.js spans and the
+  // command surface unchanged.
   chat: 'f81e5a4a3152024bd0c80b46b0d89f628553cc69ee8bac28960129d9260b20eb',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',

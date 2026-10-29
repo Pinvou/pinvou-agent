@@ -507,7 +507,7 @@ Flags:
 
 #### 节点参数组装
 
-> **详细参考：** 流程节点类型、审批模式、条件分支和 10 种审批人选择规则的完整说明见 [oa-process-nodes.md](oa/oa-process-nodes.md)。
+> **详细参考：** 流程节点类型、审批模式、条件分支和 11 种审批人选择规则的完整说明见 [oa-process-nodes.md](oa/oa-process-nodes.md)。
 
 **directAppointedApprovers（指定审批人覆盖模板流程）：**
 

@@ -1095,10 +1095,13 @@ impl Pinvou3Bridge {
     ///      code sessions' project directory, or plain chat sessions' bound user
     ///      working directory) inject the `AGENTS.md` files on the bound root →
     ///      user-home (exclusive) path, in root→cwd order (the foundation
-    ///      still enumerates `PROJECT_CONTEXT_FILES`, but its context pack is
-    ///      disabled via `project_context_pack_enabled = false`, so it no
-    ///      longer scans automatically; the app side fills the gap within
-    ///      the security boundary here);
+    ///      still enumerates `PROJECT_CONTEXT_FILES`, but the app's static
+    ///      prompt-composer override makes the foundation treat the embedder
+    ///      as owning context — the automatic scan returns empty and the
+    ///      workspace context pack stays off, with
+    ///      `project_context_pack_enabled = false` as belt-and-suspenders —
+    ///      so it no longer injects automatically; the app side fills the
+    ///      gap within the security boundary here);
     ///   3. user-custom `~/.codewhale/instructions.md` (optional, still `File`).
     ///
     /// A previous version wrote a `~/.pinvou3/sessions/<sid>/instructions.md`
@@ -1144,10 +1147,14 @@ impl Pinvou3Bridge {
     /// prompt-injection surface for both kinds of bound sessions, so both share the
     /// same injection rules.
     ///
-    /// The foundation still enumerates `PROJECT_CONTEXT_FILES`, but its
-    /// context pack is disabled via `project_context_pack_enabled = false`
-    /// (no more automatic scanning); the app side fills the gap within the
-    /// security boundary here. Behavioral semantics:
+    /// The foundation still enumerates `PROJECT_CONTEXT_FILES`, but the
+    /// app's static prompt-composer override makes the foundation treat the
+    /// embedder as owning context: the automatic scan returns empty
+    /// (`load_project_context`) and the workspace context pack stays off
+    /// (also gated on `!static_composer_installed`;
+    /// `project_context_pack_enabled = false` is belt-and-suspenders). No
+    /// automatic injection; the app side fills the gap within the security
+    /// boundary here. Behavioral semantics:
     ///   - injection order root→cwd (ancestors first, project root last),
     ///     matching codex/claude convention — the closer a rule is to the
     ///     project root, the later it appears in the prompt;

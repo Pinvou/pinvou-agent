@@ -19,7 +19,8 @@
 //!
 //! 注册表汇总四类源：MCP manifest（`bundle/mcp-servers/<id>/manifest.json`）、
 //! 预置技能（编译内嵌）、CLI 连接器（内置常量表）、已上传技能
-//! （`bundle/skills/` 带 `.installed-from=upload:` 标记）。
+//! （`bundles/<id>/skills/`，来源（`BundleSource::Upload`）与内容指纹记录在
+//! bundles.json——`.installed-from` 标记已退役）。
 
 use serde::{Deserialize, Serialize};
 

@@ -1,6 +1,6 @@
 # GAIA NativeTurn 工具与权限安全规范
 
-状态：已实施（canonical 家族名 + action 级只读 dispatch）
+状态：已实施（exact canonical 工具名 allowlist）
 
 版本：v1.1
 

@@ -2878,8 +2878,8 @@ content-length: {}\r\n\r\n{}",
     /// variable name plus the value to install — `Some(value)` sets it,
     /// `None` removes it — and every variable's PREVIOUS value is captured
     /// before the set and restored on drop, so a failing assert cannot leak
-    /// a fixture into sibling tests (the same RAII rule as the gaia tests in
-    /// lib.rs, which hold `ENV_LOCK` across their `TempHome` fixture), with
+    /// a fixture into sibling tests (the same RAII rule as the gaia test in
+    /// lib.rs, which holds `ENV_LOCK` across its `TempHome` fixture), with
     /// `ENV_LOCK` held for the guard's whole lifetime.
     struct RestoreEnvVars(
         Option<std::sync::MutexGuard<'static, ()>>,

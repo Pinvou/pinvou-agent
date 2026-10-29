@@ -39,7 +39,7 @@
 | `agreeAll` | Boolean | 是 | `true` 全部通过 / `false` 任一通过 |
 | `noneActionerAction` | String | 否 | 如 `"admin"`（找不到审批人时转管理员） |
 
-支持全部 10 种 actionerRules 类型。
+支持全部 11 种 actionerRules 类型。
 
 ### 3. 办理人节点（handler）
 
@@ -111,7 +111,7 @@
 
 ---
 
-## 10 种审批人选择规则（actionerRules）
+## 11 种审批人选择规则（actionerRules）
 
 ### 1. 指定成员（target_approval）
 
@@ -278,6 +278,36 @@
 
 - 仅适用于审批人节点
 - 目前尚在完善中
+
+### 11. 连接器动态获取（target_connect_approval）
+
+通过钉钉连接器在运行时动态获取审批人，适用于审批人与办理人节点。
+
+```json
+{
+  "type": "target_connect_approval",
+  "sysParams": {
+    "corpId": "TODO_CORP_ID",
+    "appUuid": "TODO_APP_UUID",
+    "staffId": "#userId",
+    "actionInstanceId": "TODO_ACTION_INSTANCE_ID",
+    "scene": "approval"
+  },
+  "extParams": {
+    "procInstId": "#procInstId",
+    "actionName": "TODO_ACTION_NAME"
+  },
+  "sync": true,
+  "isEmpty": false,
+  "actType": ""
+}
+```
+
+- 前置条件：必须已在钉钉管理后台 → 连接 → 连接器中创建并发布对应连接器实例
+- `actionInstanceId`（`G-A-INST-` 前缀）必须取自用户提供的真实值，**严禁编造**；
+  未提供时用 `"TODO_ACTION_INSTANCE_ID"` 占位并在待用户填写清单中说明
+- `staffId` 固定 `"#userId"`、`procInstId` 固定 `"#procInstId"`，运行时由引擎替换
+- 通常配合 `noneActionerAction: "admin"` 使用：连接器返回空结果时转交管理员
 
 ---
 
