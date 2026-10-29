@@ -391,6 +391,7 @@
       // A socket that never got its join ack is not a healthy idle cycle:
       // past the failure cap the reconnect becomes visible instead of
       // speculatively repeating forever (see LIVENESS_MAX_SPECULATIVE_FAILURES).
+      // Keep byte-identical with the speculative-close block in handleNetworkBecomeOnline — edit both together (transport tests pin each copy).
       if (!this.joined) this.speculativeFailures += 1;
       this.speculativeReconnect =
         this.speculativeFailures <= LIVENESS_MAX_SPECULATIVE_FAILURES;
@@ -408,6 +409,7 @@
         // Like the watchdog, the close is speculative — the UI stays on
         // "connected" unless the rejoin fails to verify, and an ackless
         // socket counts toward the same failure cap.
+        // Keep byte-identical with the speculative-close block in _livenessCheck — edit both together (transport tests pin each copy).
         if (!this.joined) this.speculativeFailures += 1;
         this.speculativeReconnect =
           this.speculativeFailures <= LIVENESS_MAX_SPECULATIVE_FAILURES;
