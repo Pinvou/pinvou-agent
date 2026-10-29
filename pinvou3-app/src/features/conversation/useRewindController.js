@@ -133,8 +133,10 @@ export function useRewindController({
 
   const openRewindUndoDialog = useCallback((state) => {
     setRewindUndoError('');
-    setRewindUndoEntry({ ...state, reloadFailed: false });
-  }, [setRewindUndoEntry]);
+    // r37 M2: stamp sessionId to guard the confirm against cross-session
+    // invocation (same window as confirmRewind's rewindTarget).
+    setRewindUndoEntry({ ...state, reloadFailed: false, sessionId });
+  }, [setRewindUndoEntry, sessionId]);
 
   const cancelRewindUndo = useCallback(() => {
     if (!rewindUndoInFlightRef.current) setRewindUndoEntry(null);
@@ -277,6 +279,8 @@ export function useRewindController({
     const entry = rewindUndoEntryRef.current;
     const { sessionId: currentSessionId, copy: currentCopy, invoke: currentInvoke, reload: currentReload, ownsSession: currentOwnsSession, bumpTick: currentBumpTick, appendNotice: currentAppendNotice } = depsRef.current;
     if (!entry || !currentSessionId) return;
+    // r37 M2: cross-session guard (same as confirmRewind's rewindTarget stamp).
+    if (entry.sessionId && entry.sessionId !== currentSessionId) return;
     // 与 confirmRewind 同款跨类型单 flight：回退/撤销任一在途时如实上屏（评审 M9）。
     if (rewindUndoInFlightRef.current || rewindInFlightRef.current) {
       setRewindUndoError(currentCopy.rewindInFlightBusy);

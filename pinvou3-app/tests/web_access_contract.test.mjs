@@ -513,9 +513,19 @@ assert.match(rustCommandBlock(commands, 'edit_last_turn'),
   'edit_last_turn must reject ACP sessions before the reserve-truncate-resend path runs');
 // r23 变异实证补 pin：chat_with_reservation 缝内自查是「六站点」计数的一员，
 // 删除它其余外置门仍绿（纵深冗余）——接缝必须自持（评审 r9 minor 10）。
-assert.match(rustCommandBlock(commands, 'chat_with_reservation'),
+// r37 M4: the previous pin sliced from chat()'s #[tauri::command] attribute
+// (chat_with_reservation is pub(crate), no attribute), so the slice contained
+// chat()'s own gate and stayed green even when the seam gate was deleted.
+// Anchor on the seam fn body with a bounded window instead.
+assert.match(
+  (() => {
+    const i = commands.indexOf('pub(crate) async fn chat_with_reservation(');
+    const body = commands.slice(i, commands.indexOf('\n}', i) + 2);
+    return body;
+  })(),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
-  'chat_with_reservation must self-check the ACP lane inside the seam, not only at its callers');
+  'chat_with_reservation must self-check the ACP lane inside the seam (r37 M4: bounded-body pin, not the chat() slice)',
+);
 // r26 M4（body 声明的承接 pin）：归档列表的 ACP 过滤此前无任何测试引用、
 // 回退该行全绿——浏览器客户端会拿到 ACP 会话 id（launchpad 通道）。
 assert.match(rustCommandBlock(commands, 'web_access_list_archived_sessions'),
