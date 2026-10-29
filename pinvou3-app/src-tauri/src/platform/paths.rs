@@ -849,4 +849,141 @@ pub(crate) mod tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
+
+    // Round-7 复审:共享脱敏原语 `redact_storage_prefix` 此前只有调用方
+    // (memory / remote_control)的内容级钉,原语本身的语义边界没有直接用例。
+    // 以下五钉按字节语义钉住:根内绝对路径折叠、同名前缀的兄弟目录不得被
+    // 改写成「根内」形态、已折叠文本不二次折叠、同一文本多处出现全折叠、
+    // 空前缀护栏不 panic。前缀经 PINVOU3_HOME 注入(本函数每次调用现读,
+    // 无缓存),env 写全程持 ENV_LOCK。
+
+    #[test]
+    fn redact_storage_prefix_folds_expanded_absolute_storage_root_prefix() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-redact-root") };
+        let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-redact-root");
+        // 根内完整展开的绝对路径必须折叠为 ~/.pinvou3 前缀。
+        let expanded = root.join("user/memory/snapshot.md").display().to_string();
+        assert_eq!(
+            redact_storage_prefix(&expanded),
+            "~/.pinvou3/user/memory/snapshot.md",
+            "an expanded absolute path under the storage root must fold"
+        );
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    #[test]
+    fn redact_storage_prefix_keeps_sibling_out_of_storage_root_form() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // 存储根本身命名为 .pinvou3(镜像默认布局 <home>/.pinvou3),
+        // 兄弟目录 <home>/.pinvou3-evil 与根共享字符串前缀:折叠绝不能把
+        // 兄弟改写成「根内」形态(~/.pinvou3/…),否则它会伪装成存储根内
+        // 路径被模型/中继消费。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-redact-sibling/.pinvou3") };
+        let root =
+            crate::platform::os::platform_compat_path("/tmp/pinvou3-redact-sibling/.pinvou3");
+        let sibling = crate::platform::os::platform_compat_path("/tmp/pinvou3-redact-sibling")
+            .join(".pinvou3-evil");
+        let folded = redact_storage_prefix(&sibling.display().to_string());
+        assert!(
+            folded.ends_with(".pinvou3-evil"),
+            "the sibling directory must keep its own name: {folded}"
+        );
+        assert!(
+            !folded.starts_with("~/.pinvou3/"),
+            "the sibling must not be rewritten into the inside-root form: {folded}"
+        );
+        assert!(
+            !folded.contains(&root.display().to_string()),
+            "the absolute storage root must not survive either: {folded}"
+        );
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    #[test]
+    fn redact_storage_prefix_passes_already_folded_text_through() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-redact-folded") };
+        // 已是 ~/.pinvou3 折叠形态的文本必须原样通过,不得二次折叠或改写。
+        let folded = "~/.pinvou3/user/memory/snapshot.md";
+        assert_eq!(
+            redact_storage_prefix(folded),
+            folded,
+            "already-folded text must pass through unchanged"
+        );
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    #[test]
+    fn redact_storage_prefix_folds_every_occurrence_in_one_text() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // io::Error 的 Display 可能内嵌多个绝对路径(如 rename 的 from/to),
+        // 每一处都要折叠,只折第一处会泄漏第二个绝对路径。
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "/tmp/pinvou3-redact-multi") };
+        let root = crate::platform::os::platform_compat_path("/tmp/pinvou3-redact-multi");
+        let text = format!(
+            "{} -> {}",
+            root.join("a.md").display(),
+            root.join("b/c.md").display()
+        );
+        assert_eq!(
+            redact_storage_prefix(&text),
+            "~/.pinvou3/a.md -> ~/.pinvou3/b/c.md",
+            "every occurrence of the storage root in one text must fold"
+        );
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    /// 空存储根护栏:PINVOU3_HOME 为空串时 `pinvou3_home().display()` 为空,
+    /// `redact_storage_prefix` 必须走 `prefix.is_empty()` 早退原样返回——
+    /// 若对空 prefix 做 `replace` 会把空串替换进每个字符间隙,毁掉整段文本。
+    /// 前缀由本函数内部现算、无测试可见的 prefix 参数,故经公开 API(空
+    /// PINVOU3_HOME)钉住该护栏,这是干净可达的唯一入口。
+    #[test]
+    fn redact_storage_prefix_empty_prefix_guard_returns_input_unchanged() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", "") };
+        let text = "/abs/path must stay.md";
+        assert_eq!(
+            redact_storage_prefix(text),
+            text,
+            "an empty storage prefix must leave the text untouched"
+        );
+        match prev {
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
 }
