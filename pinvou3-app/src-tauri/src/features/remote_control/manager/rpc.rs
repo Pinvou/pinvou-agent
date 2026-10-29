@@ -439,9 +439,11 @@ fn validate_web_workspace_rpc(command: &str, args: &Value) -> Result<(), WebScop
                 "workspaceHandle must be a string or null".to_string(),
             ));
         };
-        // Round-5 复审 minor:grant 兑换态是桌面侧可变状态(一次性句柄在
-        // 重试之间可能已被兑换或过期),拒绝按瞬时类处理,重试拿到新鲜
-        // 裁决;形状违规仍走确定性。
+        // Round-5 复审 minor,措辞按 Round-6 复审修正:`validate_handle` 本
+        // 身是纯词法形状检查(长度/前缀/字符集),不读兑换态——按模块判据
+        // 它本可确定性。这里有意保守:grant 生命周期的拒绝一律瞬时、绝不
+        // 入缓存,任何与句柄相关的重试(修复后的新句柄是不同指纹,旧句柄
+        // 的重放)都拿新鲜裁决;代价只是请求级拒绝少一次缓存命中。
         return super::workspace_grants::validate_handle(handle)
             .map_err(WebScopeRejection::Transient);
     }
@@ -963,6 +965,22 @@ mod tests {
             )
             .is_ok()
         );
+        // Round-6 复审:两条拼写的计数必须**合并**后再对上限——65+64 单独
+        // 都在上限内、合并超限,跨拼写叠加绕过(每字段各自计数)即红。
+        let combined: Vec<String> = (0..64).map(|index| format!("file-{index}.md")).collect();
+        let rejection = validate_web_prompt_references(
+            "web_access_codex_acp_prompt",
+            &json!({
+                "workspaceReferences": at_cap.iter().take(65).cloned().collect::<Vec<String>>(),
+                "workspace_references": combined,
+            }),
+        )
+        .err()
+        .expect("cross-spelling accumulation past the cap must be rejected");
+        assert!(
+            matches!(rejection, WebScopeRejection::Deterministic(_)),
+            "the cap stays deterministic, got {rejection:?}"
+        );
         assert!(validate_web_prompt_references("web_access_codex_acp_prompt", &json!({})).is_ok());
         assert!(
             validate_web_prompt_references(
@@ -1040,8 +1058,10 @@ mod tests {
         // round-5 拆分:真实存在落点上的策略裁决($HOME 之外/黑名单)是
         // 确定性(可缓存);尚不存在的路径是触盘失败 → 瞬时(不能缓存成
         // 终态,否则同 client_request_id 的重试永远重放这次失败,正是本
-        // 模块要消灭的毒化类)。两种平台拼写都测:任一平台上,另一平台
-        // 的绝对路径都不存在,恰好覆盖两类分支。
+        // 模块要消灭的毒化类)。/etc/hosts 覆盖存在路径的策略裁决腿;
+        // C:\Windows\notepad.exe 在 unix 上不是绝对拼写,只覆盖形状腿——
+        // 瞬时腿(绝对且不存在)由下方专门拼写钉住(Round-6 复审 M4:
+        // 该分支在原拼写组合下于所有平台都不可达)。
         for outside in ["/etc/hosts", r"C:\Windows\notepad.exe"] {
             let rejection =
                 validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": [outside] }))
@@ -1071,6 +1091,25 @@ mod tests {
             );
         }
 
+        // Round-6 复审 M4:绝对且不存在的路径是触盘失败,按瞬时类拒绝——
+        // 折叠成确定性会把注定成功的重试永久挡在缓存里(毒化类)。该分支
+        // 在上方两种平台拼写下于任何平台都不可达,必须显式驱动。
+        let missing = std::env::temp_dir().join(format!(
+            "pinvou3-kb-missing-probe-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        assert!(!missing.exists());
+        let rejection = validate_web_kb_paths(
+            "kb_collection_add_sources",
+            &json!({ "paths": [missing.to_string_lossy()] }),
+        )
+        .expect_err("a nonexistent absolute path must be rejected");
+        assert!(
+            matches!(rejection, WebScopeRejection::Transient(_)),
+            "a filesystem-backed rejection must be transient, got {rejection:?}"
+        );
+
         // 相对路径是纯形状违规:按确定性(可缓存)拒绝,不归入瞬时类。
         let rejection =
             validate_web_kb_paths("kb_start_scan", &json!({ "roots": ["relative/path"] }))
@@ -1090,11 +1129,18 @@ mod tests {
             );
         }
 
-        // 条数上限:确定性拒绝。条目故意用相对路径——触盘校验对它们的拒绝
-        // 会归类 Transient,这里的 Deterministic 恰好证明拒绝来自条数上限
-        // (上限检查先于逐条触盘)而非路径校验。
+        // 条数上限:确定性拒绝。条目故意用「绝对且不存在」的拼写——它们若
+        // 进入逐条触盘会归类 Transient,这里的 Deterministic 恰好证明拒绝
+        // 来自条数上限(上限检查先于逐条触盘)而非路径校验(Round-6 复审:
+        // 相对拼写被更早的形状检查拦下,同样产生 Deterministic,区分不出
+        // 两个检查点)。
         let flood: Vec<String> = (0..MAX_WEB_KB_PATHS + 1)
-            .map(|i| format!("docs/{i}.txt"))
+            .map(|i| {
+                std::env::temp_dir()
+                    .join(format!("pinvou3-kb-flood-probe-{i}.txt"))
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         let rejection =
             validate_web_kb_paths("kb_collection_add_sources", &json!({ "paths": flood }))
