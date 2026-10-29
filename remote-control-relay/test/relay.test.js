@@ -275,6 +275,9 @@ async function spawnRelay(env = {}, { awaitListening = true } = {}) {
     env: {
       ...relayEnvironment(),
       PORT: String(isolatedPort),
+      // Loopback unless a test opts out: the server default would bind every
+      // interface and expose the test relay to the LAN for the suite's run.
+      PINVOU_REMOTE_HOST: "127.0.0.1",
       PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
       PINVOU_REMOTE_WEB_DIR: webDir,
       HEARTBEAT_INTERVAL_MS: "5000",
@@ -318,6 +321,7 @@ before(async () => {
     env: {
       ...relayEnvironment(),
       PORT: String(port),
+      PINVOU_REMOTE_HOST: "127.0.0.1",
       PINVOU_REMOTE_PUBLIC_BASE_PATH: "/pinvou3/remote",
       PINVOU_REMOTE_WEB_DIR: webDir,
       PINVOU_REMOTE_STATE_PATH: relayStatePath,
