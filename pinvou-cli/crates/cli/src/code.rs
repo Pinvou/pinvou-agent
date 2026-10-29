@@ -5936,11 +5936,9 @@ fn checkpoints_rewind(
     // is not refused: that is the guided-retry path (the matcher reuses P1
     // idempotently). Non-destructive peek; IO errors fail closed (refuse this
     // rewind instead of reopening the eviction window).
-    if checkpoints::pending_rewind_targets_different_checkpoint(&ledger, &checkpoint.id)
-        .map_err(|error| {
-            crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
-        })?
-    {
+    if checkpoints::pending_rewind_targets_different_checkpoint(&ledger, &checkpoint.id).map_err(
+        |error| crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error),
+    )? {
         return Err(CliError::failed(format!(
             "pending_rewind_conflict: an unfinished rewind (checkpoint {}) is still pending; \
              complete it first — desktop: send a new message to auto-reconcile, or retry the \
@@ -6165,13 +6163,16 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
             // r27 M3 (r26 minor 10 copy leg-order fix): this arm restores
             // code first and the conversation second - on failure here the
             // conversation has NOT been restored (the truncation is still in
-            // place); the real state is "code partially restored + transcript
-            // still truncated". Rollback point kept; idempotent retry safe.
+            // place). r40 minor 8: the copy must not assert a state it
+            // cannot know — prepare itself may have failed with the tree
+            // untouched, and this leg cannot distinguish "nothing moved"
+            // from "partially restored" (the GUI rewind copy's honest
+            // "may be" phrasing, mirrored here).
             CliError::failed(format!(
                 "code checkpoints undo: restoring code to rollback point {checkpoint_id} failed \
-                 before the conversation was restored (code partially restored, transcript still \
-                 truncated); the rollback point is kept and retrying the undo is safe (restore \
-                 re-runs): {error:#}"
+                 before the conversation was restored (code may be partially restored — retrying \
+                 the undo re-runs the idempotent restore —, transcript still truncated); the \
+                 rollback point is kept and retrying the undo is safe: {error:#}"
             ))
         })?;
     }
@@ -6261,7 +6262,7 @@ mod tests {
             .iter()
             .filter_map(|marker| rest.find(marker))
             .min()
-            .map_or(rest.len(), |offset| offset);
+            .unwrap_or(rest.len());
         let body = &rest[..body_end];
         assert!(
             !body.contains("latest_rewound_turns_record"),
@@ -6294,7 +6295,7 @@ mod tests {
             .iter()
             .filter_map(|marker| rest.find(marker))
             .min()
-            .map_or(rest.len(), |offset| offset);
+            .unwrap_or(rest.len());
         let body = &rest[..body_end];
         let prepare_at = body
             .find("prepare_restore(&ledger")

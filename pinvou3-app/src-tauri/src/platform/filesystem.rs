@@ -398,6 +398,24 @@ pub(crate) fn permission_bits(path: &Path) -> io::Result<Option<u32>> {
     }
 }
 
+/// 把目录收敛到 owner-only（0700）；无 POSIX 模式概念的平台是幂等 no-op
+/// （隐私由用户目录 ACL 表达，继承自应用数据/工作树布局）。幂等修复语义：
+/// 存量目录（umask 继承的 0775 等）与新建目录同样收敛。`cfg(unix)` 留在
+/// 本层，feature 层保持无条件编译
+/// （architecture-guard: rust_target_cfg_outside_adapter）。
+pub(crate) fn enforce_private_directory_mode(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 /// A file's stable identity (device/inode); `None` on platforms without a
 /// portable equivalent, where callers must fall back to the weaker change
 /// signal (length + mtime). An atomic rename always changes the inode, so

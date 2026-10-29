@@ -238,13 +238,14 @@ const expectedProtocolHashes = {
   // chat:transcript_committed guard clause in the same body (chat-events.js).
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
-  // Recomputed for the r39-M1 compaction resync: the chat:compaction done
-  // handler (chat-events.js) gains the real-shrink arm that invalidates the
-  // session's cached buffer and force-reloads the active session from disk
-  // (timeline N → ledger kept M realignment; the compaction-hides-chips
-  // MAJOR carried through r36–r39). Same event set, no new invoke/listen
-  // entries — only the captured handler body changed.
-  chat: '1ec3fd7391afe23e72a0f346e805008bf09e19c9891a42ade0326c3a5c28f29f',
+  // Recomputed for the r40-M1 outer-active capture: the chat:compaction
+  // handler now reads the true dispatch-time active ownership BEFORE
+  // onSessionEvent (runSyncOnSession swaps state.activeSessionId for
+  // background sessions inside the handler scope, so the r39 in-handler
+  // classification always took the active arm — a background compaction
+  // force-switched the user's foreground view). Same event set, no new
+  // invoke/listen entries — only the captured handler body changed.
+  chat: '98481f5c57f56c61b6d7ae1be9b5a8bc5d7567d47d6214fc818bd9aa3ce1bad0',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

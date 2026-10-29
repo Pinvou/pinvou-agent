@@ -23,6 +23,13 @@ assert.match(rewindChip, /export function RewindUndoChip\(/, 'RewindChip.jsx 必
 assert.doesNotMatch(rewindChip, /export function RewindConfirmDialog\(/, '确认弹窗必须已拆出（不得留在启动路径的 chips 文件内）');
 assert.match(rewindDialogs, /export function RewindConfirmDialog\(/, 'RewindDialogs.jsx 必须导出确认弹窗');
 assert.match(rewindDialogs, /export function RewindUndoConfirmDialog\(/, 'RewindDialogs.jsx 必须导出撤销确认弹窗');
+// r40 minor 9：弹窗入口必须保持 React.lazy 动态导入（~7KB 启动预算——r22
+// minor 4 披露的拆分收益）。静态 re-import 会静默把预算吃回去且套件全绿。
+// 两个视图各两处（确认 + 撤销）。
+for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', codexView]]) {
+  const lazyCount = (viewSource.match(/React\.lazy\(\(\) => import\('\.\.\/conversation\/RewindDialogs\.jsx'\)/g) || []).length;
+  assert.equal(lazyCount, 2, `${viewName} 的两个弹窗入口必须保持 React.lazy 动态导入 RewindDialogs（静态导入回吃启动预算，r40 minor 9），实际 ${lazyCount}`);
+}
 
 // ── 运行时桥暴露锚定：ChatView 依赖的两个 bridge 方法必须真的在 TauriBridge
 // curated 对象上（静态源断言曾漏过此层——方法只存在于 feature registry 而
@@ -55,10 +62,17 @@ assert.match(rewindDialogs, /export function RewindUndoConfirmDialog\(/, 'Rewind
   const chatEvents = source('platform/tauri/bridge/chat-events.js');
   assert.match(chatEvents, /const compactionShrank = phase === "done" &&/,
     '收缩判定必须存在（before≠after 或计数缺失保守收缩）——删掉判定臂失效退化（r39 M1）');
+  // r40 M1：真实活动归属必须在 onSessionEvent 之前捕获——runSyncOnSession 对
+  // 后台会话临时把 state.activeSessionId 改写为事件 sid，handler 内分类恒为
+  // 换入值：后台压缩会强切用户前台视图（前台抢占回归），「后台臂」死代码。
+  assert.match(chatEvents, /listen\("chat:compaction", function \(e\) \{\s*const compactionSid = e\.payload && e\.payload\.session_id;[\s\S]{0,600}?const compactionOuterActive =\s*!!compactionSid && compactionSid === state\.activeSessionId;/,
+    '压缩事件必须在进入 onSessionEvent 之前捕获真实活动归属——handler 内分类读到的是换入后的 sid（r40 M1 前台抢占回归）');
+  assert.match(chatEvents, /const compactionActive = compactionOuterActive;/,
+    '活动臂分类必须消费派发时刻归属（重分类回 handler 内读取 = 回归 r40 M1）');
   assert.match(chatEvents, /if \(compactionShrank && compactionActive &&\s*typeof invalidateSessionBuffer === "function" && typeof switchToSessionInternal === "function"\) \{\s*invalidateSessionBuffer\(compactionSid\);\s*Promise\.resolve\(switchToSessionInternal\(compactionSid, true, "compaction", \{ forceDurableLoad: true \}\)\)/,
     '活动会话收缩臂必须先失效缓存再强制盘载重注水——同 id 快路径不重载、失效不重注水会留下空白时间线（r39 M1）');
   assert.match(chatEvents, /else if \(compactionShrank && !compactionActive && typeof invalidateSessionBuffer === "function"\) \{\s*invalidateSessionBuffer\(compactionSid\);/,
-    '后台会话收缩臂必须失效缓存 buffer——否则切回走缓存快路径复用压缩前时间线（r39 M1）');
+    '后台会话收缩臂必须仅失效缓存（绝不重载——切走前台视图是 r40 M1 的回归形状），否则切回走缓存快路径复用压缩前时间线（r39 M1）');
   const chatEventsContext = tauriBridge.match(/installBridgeFeature\("chat-events", \{[\s\S]*?\n  \}\);/m);
   assert.ok(chatEventsContext, 'chat-events feature 装配必须存在');
   assert.match(chatEventsContext[0], /invalidateSessionBuffer/,
@@ -68,6 +82,14 @@ assert.match(rewindDialogs, /export function RewindUndoConfirmDialog\(/, 'Rewind
 }
 
 // ── r39 minor 9/10：前端遗漏 pin（变异实证此前全绿） ─────────────────
+// 0) r40 minor 7：invalidateSessionBuffer 的草稿暂存拒绝必须钉住——删掉
+//    `if (!stash…) return` 会恢复「失效连带丢 >1MB 草稿」的形状（此前变异
+//    全绿）。
+{
+  const tauriSessions = source('platform/tauri/bridge/sessions.js');
+  assert.match(tauriSessions, /if \(!stashEvictedSessionDraft\(id, sessionStates\[id\]\)\) return;/,
+    'invalidateSessionBuffer 必须在草稿不可安全暂存时拒绝失效（r39 minor 9 / r40 minor 7）');
+}
 // 1) Bug-A 修复的 busy 容差参数：删掉 { busy: Boolean(busy) } → 发送期间
 //    乐观气泡恰差 1 触发调和门拒绝，每轮发送期间入口整体消失（竞态回归）。
 //    函数级单测只测函数本身，调用点丢参对此静默——pin 必须钉调用点形状。
@@ -108,7 +130,7 @@ assert.match(sharedHelpers, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBud
 // 压缩载体过滤的调用形状锚（变异实证：禁用过滤行全绿）。过滤器必须在 rerender
 // 的 user 分支里被调用（carrier check 在 bubble 创建前），谓词定义在共享核心内。
 assert.match(sharedHelpers, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, '重载核心：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
-assert.match(sharedHelpers, /function isCompactionCarrierBlocks\(blocks\)/, '重载核心：压缩载体谓词必须随核心定义（classic script 无法 import ESM，与 internal-message.mjs 逐字镜像）');
+assert.match(sharedHelpers, /function isCompactionCarrierBlocks\(blocks\)/, '重载核心：压缩载体谓词必须随核心定义（classic script 无法 import ESM；与 internal-message.mjs / code-native-lane.js 为同源副本——判定集一致但存在既知有意差异，非逐字镜像，r24 minor 22 / r40 minor 8 措辞对齐）');
 // r13 M4：三个安全关键机制的接线 pin——变异实证均全绿。
 // 1) forceDurableLoad：删掉第四参 → 同 id 快路径假成功（r7-M3 修掉的形状）。
 assert.match(chatView, /switchToSessionInternal\(sid, true, 'chat-rewind', \{ forceDurableLoad: true \}\)/,
