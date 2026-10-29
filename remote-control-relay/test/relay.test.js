@@ -1409,6 +1409,30 @@ test("rejects a duplicate version key before JSON.parse collapses it", async (t)
   }
 });
 
+test("a version-lookalike escape is not the version key", async (t) => {
+  // \u0056 is "V", not "v": recognizing the escape spelling of the version
+  // key must match the exact escape text, or a repeated lookalike would be
+  // wrongly rejected (and a real dup hidden behind it). Each frame lands on
+  // its own socket: a missing version key is rejected with a socket-closing
+  // unsupported_protocol_version, unlike the send-only bad_json.
+  {
+    const ws = await openSocket();
+    t.after(() => closeSocket(ws));
+    const reply = nextMessage(ws, "error", 5000);
+    ws.send('{"\\u0056":1,"\\u0056":2,"x":1}');
+    assert.equal((await reply).code, "unsupported_protocol_version");
+  }
+  {
+    const ws = await openSocket();
+    t.after(() => closeSocket(ws));
+    // A longer escape-bearing key that merely contains the escape spelling
+    // as a substring of its raw text is likewise not the version key.
+    const longer = nextMessage(ws, "error", 5000);
+    ws.send('{"a\\u0076b":1,"a\\u0076b":2}');
+    assert.equal((await longer).code, "unsupported_protocol_version");
+  }
+});
+
 test("invalid or partially invalid proxy IP configuration fails startup instead of opening the allowlist", async () => {
   for (const variable of ["PINVOU_REMOTE_ALLOWED_PROXY_IPS", "PINVOU_REMOTE_TRUSTED_PROXY_IPS"]) {
     // The last value is a valid address padded past the IP text cap: length is
@@ -1809,6 +1833,19 @@ test("scans a many-key frame in bounded time", async (t) => {
   ws.send(`{${parts.join(",")}}`);
   assert.equal((await reply).code, "unsupported_protocol_version");
   assert(performance.now() - started < 2000, `scan took ${performance.now() - started} ms`);
+  // The same shape with an escape-bearing key on every line: recognizing the
+  // escape spelling of "v" must stay a fixed comparison, not a per-key
+  // decode, or the escaped shape pays parse cost twice. A fresh socket,
+  // since the plain frame's unsupported_protocol_version closes this one.
+  const ws2 = await openSocket();
+  t.after(() => closeSocket(ws2));
+  const escaped = new Array(120000);
+  for (let i = 0; i < escaped.length; i += 1) escaped[i] = `"\\u006b${String(i).padStart(8, "0")}":1`;
+  const escapedReply = nextMessage(ws2, "error", 5000);
+  const escapedStarted = performance.now();
+  ws2.send(`{${escaped.join(",")}}`);
+  assert.equal((await escapedReply).code, "unsupported_protocol_version");
+  assert(performance.now() - escapedStarted < 2000, `escaped-key scan took ${performance.now() - escapedStarted} ms`);
 });
 
 test("a blank trusted proxy list is empty while an unset one inherits the allowlist", async () => {

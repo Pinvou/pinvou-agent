@@ -549,11 +549,13 @@ function hasLegacyTokenAlias(message) {
 // object whose version key appears twice, including escaped spellings.
 //
 // This runs on every inbound frame ahead of JSON.parse, so it must stay cheap:
-// the scan allocates nothing for keys that cannot spell "v", and string values
-// are skipped without decoding. Trailing content after the root value is
-// rejected by the scan itself; the rest of the grammar that the walk ignores
-// stays JSON.parse's backstop. Char codes below: 34 " 123 { 91 [ 125 } 93 ]
-// 44 , 58 : 92 \ 118 v.
+// the scan allocates nothing at all — string values are skipped without
+// decoding, and a key that can spell "v" is recognized by fixed char-code
+// comparisons against the only two raw spellings that decode to it. Trailing
+// content after the root value is rejected by the scan itself; the rest of
+// the grammar that the walk ignores stays JSON.parse's backstop. Char codes
+// below: 34 " 123 { 91 [ 125 } 93 ] 44 , 58 : 92 \ 117 u 48 0 55 7 54 6
+// 118 v.
 function isJsonSpaceCharCode(code) {
   return code === 32 || code === 9 || code === 10 || code === 13;
 }
@@ -579,14 +581,20 @@ function readWireString(text, state, decodeKey) {
     state.cursor = quote + 1;
     if (!decodeKey) return null;
     if (quote - start === 2 && text.charCodeAt(start + 1) === 118) return "v";
-    // Bound the escape probe to the key text: an unbounded search to the end
-    // of the document makes the scan quadratic in key count whenever the
-    // frame has no later backslash.
-    for (let i = start + 1; i < quote; i += 1) {
-      if (text.charCodeAt(i) === 92) {
-        return JSON.parse(text.slice(start, state.cursor)) === "v" ? "v" : null;
-      }
-    }
+    // "v" has exactly two raw spellings in a JSON string: the plain char
+    // (handled above) and the six-char escape \u0076 — every other escape
+    // form is either a different character (\u0056 is V), more than one
+    // character, or invalid JSON that JSON.parse rejects right after the
+    // scan. Comparing six fixed char codes therefore replaces decoding,
+    // which paid one JSON.parse per backslash-bearing key and made
+    // escape-key-heavy frames pay parse cost twice.
+    if (quote - start === 7
+      && text.charCodeAt(start + 1) === 92
+      && text.charCodeAt(start + 2) === 117
+      && text.charCodeAt(start + 3) === 48
+      && text.charCodeAt(start + 4) === 48
+      && text.charCodeAt(start + 5) === 55
+      && text.charCodeAt(start + 6) === 54) return "v";
     return null;
   }
 }
