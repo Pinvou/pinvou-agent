@@ -95,6 +95,11 @@ const SHADOW_EXCLUDES: &[&str] = &[
 /// 随回退恢复；.env.production 等约定文件仍会进快照（其内容通常可提交）。
 /// 扩展名对齐 file_ingest.rs 的 secret 分类
 /// （key/pem/p12/pfx/keystore/jks/gpg/pgp）与 gitleaks 的私钥约定。
+/// 与 `platform/path_policy.rs` 的 `BLOCKED_COMPONENTS` 刻意不同步:那是
+/// 「手机/模型上下文禁入」语义(逐组件、含 .envrc/.pgpass 等从不该出本地
+/// 的文件),本清单是「gitignore 模式、允许 .env.production 等可提交约定
+/// 文件」语义。新增凭据名时两侧都要评估,不要从一侧推导另一侧
+/// (round-5 复审 S06:两清单已在其语义边界内各自演化)。
 /// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
 const SECRET_EXCLUDES: &[&str] = &[
     ".env",
