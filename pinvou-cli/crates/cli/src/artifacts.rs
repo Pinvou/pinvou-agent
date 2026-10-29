@@ -54,8 +54,10 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_
 /// that both surfaces read one constant.
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COMPONENTS;
 
-/// The system-prefix blocklist, imported from
-/// `platform::path_policy::BLOCKED_PREFIXES` for the same reason.
+/// The system-prefix half is the upstream composed predicate
+/// (`path_policy::canonical_system_prefix_hit`, which wraps
+/// `BLOCKED_PREFIXES` with the macOS `/private/{etc,var,tmp}` alias
+/// expansion) — see [`check_sensitive_path`].
 ///
 /// Only consulted for paths the user names freely — the round-45 lane set is
 /// `files ingest`, `artifacts read`/`write`, `feedback submit
@@ -64,17 +66,16 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COM
 /// --file`. See the module docs for the session-storage caveat: targets
 /// already proved inside session storage take the component half
 /// ([`crosses_sensitive_component`], now including the `.env.*` component
-/// prefix rule) while the *system*-prefix half
-/// ([`SENSITIVE_PATH_PREFIXES`], unix system areas) cannot apply to them.
-use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
-
+/// prefix rule) while the *system*-prefix half (unix system areas) cannot
+/// apply to them.
 /// The component half of `path_policy::check_sensitive_components`.
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
 /// the blacklisted component it crosses, if any. The comparison delegates to
 /// `pinvou3_lib::platform::path_component_eq` (byte-exact on non-macOS unix;
 /// on macOS and Windows the shared primitive ASCII fast-paths then applies
-/// Unicode simple-case folding incl. ſ/KELVIN/ı — those default volumes fold
+/// Unicode simple-case folding (ſ/K) plus the NTFS `$UpCase` U+0131 mapping —
+/// those default volumes fold
 /// case at the filesystem layer, so a byte-exact compare would let
 /// `ID_RSA`-style spellings through the lexical check).
 fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
@@ -101,7 +102,13 @@ fn crosses_sensitive_component_prefix(canonical: &Path) -> Option<&'static str> 
 
 /// Mirror of the whole `path_policy::check_sensitive_components` predicate
 /// (components *and* system prefixes), for user-named paths that are not
-/// confined to session storage.
+/// confined to session storage. The system-prefix half delegates to the
+/// upstream composed predicate (`canonical_system_prefix_hit`, published for
+/// exactly this consumer in the Round-6 review): hand-looping the prefix list
+/// here silently missed the macOS `/private/{etc,var,tmp}` alias expansion
+/// that `check_sensitive_components` gained — canonicalized spellings on
+/// macOS resolve `/etc/...` to `/private/etc/...`, which matches no list
+/// entry, so the GUI refused paths this mirror shipped.
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
     if let Some(blocked) = crosses_sensitive_component(canonical) {
         return Err(format!(
@@ -115,16 +122,14 @@ pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
             canonical.display()
         ));
     }
-    for prefix in SENSITIVE_PATH_PREFIXES {
-        // 组件序列比较走平台折叠语义,与上游 path_policy 同一谓语:大小写
-        // 不敏感卷(macOS APFS)会把 `/Etc/Sudoers` 解析到真文件,字节
-        // starts_with 会让大写变体绕过系统区黑名单。
-        if pinvou3_lib::platform::path_starts_with_folded(canonical, prefix) {
-            return Err(format!(
-                "{} is in the system-sensitive area {prefix}",
-                canonical.display()
-            ));
-        }
+    if pinvou3_lib::platform::path_policy::canonical_system_prefix_hit(
+        canonical,
+        cfg!(target_os = "macos"),
+    ) {
+        return Err(format!(
+            "{} is in the system-sensitive area",
+            canonical.display()
+        ));
     }
     Ok(())
 }
@@ -625,6 +630,10 @@ fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Round-6 复审:生产半边已上收为上游组合谓词,系统前缀清单只剩测试
+    // 在用——随用随导入,避免非测试构建的 unused_imports 硬门报错。
+    use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
+    use pinvou3_lib::platform::path_policy::canonical_system_prefix_hit;
 
     fn parse(arguments: &[&str]) -> Result<ArtifactsCommand, CliError> {
         let ["artifacts", rest @ ..] = arguments else {
@@ -810,6 +819,32 @@ mod tests {
             check_sensitive_path(Path::new("/Etc/Sudoers")).is_err(),
             folded,
             "case variants follow the platform's volume folding (GUI mirror parity)"
+        );
+        // Round-6 复审 M2:镜像必须吃上游组合谓词的 /private 别名展开——
+        // macOS 的调用方全部先 canonicalize,/etc/... 落到镜像时已是
+        // /private/etc/... 拼写,手抄前缀循环在这类拼写上整体漏过。别名
+        // 参数是显式入参,所有平台都能直接驱动:开启时 /private/etc/shadow
+        // 命中,/private/etc 的普通邻居与 /private/etcfoo 不受牵连;关闭时
+        // (Linux 语义)/private/etc 是普通目录,字节精确不命中。
+        assert!(
+            canonical_system_prefix_hit(Path::new("/private/etc/shadow"), true),
+            "the macOS aliased spelling must hit through the composed predicate"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/shadowprobe"), true),
+            "the component boundary must survive the alias splice"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etcfoo/shadow"), true),
+            "only exact aliased roots expand, not shared-prefix names"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/usr/local/tool"), true),
+            "unrelated /private subtrees stay unaliased"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/shadow"), false),
+            "without the alias parameter the aliased spelling is an ordinary path (Linux semantics)"
         );
         // Names that merely contain a blacklisted string are not components.
         for benign in [
