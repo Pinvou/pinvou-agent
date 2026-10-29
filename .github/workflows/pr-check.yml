@@ -676,6 +676,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The UI imports template facts from the pinned public foundation.
+      # Leave the unrelated private Windows runtime uninitialized.
+      - name: Checkout shared model-template facts
+        working-directory: ${{ github.workspace }}
+        run: git submodule update --init --depth=1 -- CodeWhale
+
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"

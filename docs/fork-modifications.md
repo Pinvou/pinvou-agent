@@ -1,5 +1,26 @@
 # CodeWhale Fork 修改清单
 
+## Local template reasoning candidate (2026-10-28)
+
+Review candidate `2ed7b03b5a87559f84172cfb00100efa2b06af7b` adds six signed
+commits above public maintenance `f1eb10efc` (92 commits above upstream v0.9.12).
+It extends T10 with generic, revision-sourced vLLM template effort facts, with
+[upstream contribution #7125](https://github.com/codewhale-hq/Codewhale/pull/7125)
+and [compatible backport #128](https://github.com/Pinvou/CodeWhale/pull/128).
+The app shares its selectable tiers with the wire shaper and retains provider,
+credential and permission ownership. Details: [local model controls](local-model-reasoning.md).
+
+This is an unmerged review candidate, not a public maintenance-head update or
+release. `pinvou3-clean`, immutable tags and `verify-public-submodule.sh` are
+unchanged; the public-head gate remains a release blocker until the backport
+lands. Existing historical validation receipts do not cover this candidate.
+New behavior tests cover supported tiers, legacy aliases, unaffected routes,
+request-field preservation and bridge credentials. Local native Rust execution
+is unavailable because this Windows host lacks MSVC link.exe; Linux validation
+and CI receipts are tracked separately and must not be replaced by formatting
+or source assertions.
+
+
 ## 已合入维护分支：压缩检查点角色兼容性
 
 - T7：将带类型的 Agent 拓扑检查点放到最近一次真实用户输入之后、该轮 assistant/tool 链之前，包括压缩摘要位于链尾的情况。Chat Completions 发送前把结构化识别的当前格式摘要移到其保留轮次之前，并把该摘要与拓扑检查点合并进这条 user 出站消息；普通用户引用摘要标记不会触发重排。修复范围是压缩流程自身产生的尾部 `tool -> user`，客户报错原文为 `SSE stream request failed: HTTP 400 Bad Request: response_role: "user"`（SSE 载体）；存储历史及工具调用/结果 ID 不变，会话固定的系统前缀也不变。
