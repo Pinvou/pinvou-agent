@@ -287,7 +287,10 @@ and `desktop_offline`.
   problems (`relay_state_load_failed ...`, the over-size line, or the
   non-regular-file line), and bind failures (`listen_failed code=<errno>`).
   No startup report echoes a filesystem path, the offending value, or the
-  bind address.
+  bind address. Three runtime events share the same fixed-line discipline and
+  leave the process up: `websocket_protocol_violation code=<ws error code>`
+  (a contained per-socket protocol violation), `revocation_persist_failed
+  code=<errno>`, and `revocation_unexpected_failure`.
 - Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
   all WebSocket clients without a close handshake (peers observe an abnormal
   closure) and exit the process with code 0; in-flight HTTP responses are not
@@ -307,6 +310,9 @@ and `desktop_offline`.
   against `WS_MAX_BUFFERED_BYTES`. A slow recipient is terminated when the
   high-water mark would be crossed; the Relay does not accumulate an unbounded
   per-client queue.
+- Static file serving reads each asset fully into memory, for `HEAD` as well
+  as `GET` (so the two can never disagree), and the web root is
+  deployment-controlled: keep large files out of it.
 - Browser WebSocket upgrades must use either a same-host `Origin` or an origin
   listed in `PINVOU_REMOTE_ALLOWED_WEB_ORIGINS`. Native desktop clients may omit
   `Origin`. The check assumes the reverse proxy preserves the public `Host` and
@@ -317,8 +323,20 @@ and `desktop_offline`.
 Relevant limits are configured with `ENDPOINT_OFFLINE_TTL_MS`,
 `WS_INGRESS_WINDOW_MS`, `WS_INGRESS_MESSAGE_LIMIT`,
 `WS_INGRESS_BYTE_LIMIT`, `MAX_PAYLOAD_BYTES`, `WS_MAX_BUFFERED_BYTES`,
-`MAX_REVOKED_ENDPOINTS`, and `MAX_RELAY_STATE_BYTES`. Relay tests always point
+`MAX_REVOKED_ENDPOINTS`, and `MAX_RELAY_STATE_BYTES`; connection capacity and
+pacing use `MAX_ENDPOINTS`, `MAX_WS_CONNECTIONS`, `WS_CONNECT_LIMIT` /
+`WS_CONNECT_WINDOW_MS`, `ENDPOINT_CREATE_LIMIT` / `ENDPOINT_CREATE_WINDOW_MS`,
+`WS_AUTH_TIMEOUT_MS`, and `HEARTBEAT_INTERVAL_MS` (fallback 15 s, floor 5 s,
+ceiling 24 h). Relay tests always point
 `PINVOU_REMOTE_STATE_PATH` at a temporary directory.
+
+Other knobs: `PORT` (default 8787), `PINVOU_REMOTE_HOST` (default `0.0.0.0`,
+every IPv4 interface; `::` for IPv6), `PINVOU_REMOTE_PUBLIC_BASE_PATH`
+(default `/pinvou3/remote`), `PINVOU_REMOTE_WEB_DIR` (default
+`<relay dir>/web/dist`, a deployment-time build location that may not exist),
+and `PINVOU_REMOTE_ALLOWED_WEB_ORIGINS`. The legacy spellings `MAX_ROOMS`,
+`ROOM_CREATE_LIMIT`, and `ROOM_CREATE_WINDOW_MS` still map onto
+`MAX_ENDPOINTS`, `ENDPOINT_CREATE_LIMIT`, and `ENDPOINT_CREATE_WINDOW_MS`.
 
 Origin checks and caller-supplied first-registration credentials are not a
 production enrollment system. Formal desktop enrollment remains a deployment
