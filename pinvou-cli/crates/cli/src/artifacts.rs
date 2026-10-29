@@ -72,10 +72,11 @@ use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFI
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
 /// the blacklisted component it crosses, if any. The comparison delegates to
-/// `pinvou3_lib::platform::path_component_eq` (byte-exact on non-macOS unix,
-/// ASCII case-insensitive on macOS and Windows — on those platforms the
-/// default volume folds case at the filesystem layer, so a case-sensitive
-/// compare would let `ID_RSA`-style spellings through the lexical check).
+/// `pinvou3_lib::platform::path_component_eq` (byte-exact on non-macOS unix;
+/// on macOS and Windows the shared primitive ASCII fast-paths then applies
+/// Unicode simple-case folding incl. ſ/KELVIN/ı — those default volumes fold
+/// case at the filesystem layer, so a byte-exact compare would let
+/// `ID_RSA`-style spellings through the lexical check).
 fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
     SENSITIVE_PATH_COMPONENTS.iter().copied().find(|blocked| {
         canonical.components().any(|component| {
@@ -801,6 +802,15 @@ mod tests {
                 );
             }
         }
+        // 大小写变体语义与 GUI 镜像一致(path_policy 的平台折叠):折叠平台
+        // 上 /Etc/Sudoers 必须命中;字节精确平台上是不同路径,放行
+        // (round-5 复审:case-variant 钉此前只存在于 GUI 镜像)。
+        let folded = cfg!(target_os = "macos") || cfg!(target_os = "windows");
+        assert_eq!(
+            check_sensitive_path(Path::new("/Etc/Sudoers")).is_err(),
+            folded,
+            "case variants follow the platform's volume folding (GUI mirror parity)"
+        );
         // Names that merely contain a blacklisted string are not components.
         for benign in [
             "/home/u/.pinvou3/sessions/s-1/workspace/environment.md",
