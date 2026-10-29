@@ -204,6 +204,10 @@ async function expectStartupFailure(env, expectedStderr, also = null) {
   try {
     await waitForExit(isolated.child, 10000);
     assert.notEqual(isolated.child.exitCode, 0);
+    // A clean config rejection exits on its own; dying by signal (a hang
+    // that stopRelay had to kill, or a crash path that signal-kills) must
+    // fail this helper, not pass on the strength of the stderr line.
+    assert.equal(isolated.child.signalCode, null, "startup failure died by signal");
     assert.equal(isolated.errors().trim(), expectedStderr);
     if (also) also(isolated);
   } finally {
@@ -715,8 +719,10 @@ test("a cross-endpoint revoker keeps its own session", async () => {
     const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
     assert.equal(health.endpoint_count, 1);
     assert.equal(health.desktop_offline_count, 0);
-    // The surviving session must still work: B is gone, so an rpc from A's
-    // desktop is refused for lack of a web client, not a dead socket.
+    // The surviving session must still work: B is gone, so an rpc_request
+    // from A's desktop-role socket is refused as unsupported_message_type
+    // (desktops may not originate rpc_request) — an answered error proving
+    // the socket is alive, not a dead one.
     desktopA.ws.send(JSON.stringify({
       v: 2,
       type: "rpc_request",
@@ -1053,18 +1059,22 @@ test("sweeps stranded state temp files at startup", async () => {
   }
 });
 
-test("a non-numeric heartbeat falls back instead of a 1 ms NaN tick", async () => {
-  // setInterval(NaN) beats at 1 ms and prints a Node warning; the bounded
-  // parser must fall back to the default cadence instead.
+test("a non-numeric heartbeat falls back instead of a 1 ms NaN tick", async (t) => {
+  // setInterval(NaN) beats at 1 ms; on current Node it also prints no
+  // warning, so the observable regression is the ping cadence itself: a
+  // connected client must see no ping for a window that a 1 ms ticker blows
+  // past immediately (the 15 s fallback's first ping lands far outside it).
   const isolated = await spawnRelay({ HEARTBEAT_INTERVAL_MS: "abc" });
-  try {
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    assert.ok(!isolated.errors().includes("TimeoutNaNWarning"), "NaN heartbeat reached setInterval");
-    const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
-    assert.equal(health.endpoint_count, 0);
-  } finally {
-    await stopRelay(isolated.child);
-  }
+  const ws = await openSocket(isolated.wsUrl);
+  t.after(() => { closeSocket(ws); return stopRelay(isolated.child); });
+  let pings = 0;
+  ws.on("ping", () => { pings += 1; });
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  assert.equal(pings, 0, `garbage heartbeat produced ${pings} pings (1 ms NaN tick)`);
+  // And the relay stays silent on stderr — a clean fallback prints nothing.
+  assert.equal(isolated.errors(), "", "heartbeat fallback produced stderr");
+  const health = await (await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`)).json();
+  assert.equal(health.endpoint_count, 0);
 });
 
 test("clamps a sub-floor heartbeat to the five second floor", async (t) => {
@@ -1437,7 +1447,13 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
   for (const variable of ["PINVOU_REMOTE_ALLOWED_PROXY_IPS", "PINVOU_REMOTE_TRUSTED_PROXY_IPS"]) {
     // The last value is a valid address padded past the IP text cap: length is
     // checked before trimming, so it must be rejected like any other garbage.
-    for (const value of ["not-an-ip", "127.0.0.1,not-an-ip", ",,,", `1.2.3.4${" ".repeat(140)}`]) {
+    // The zone-id values exercise the zone charset guard: an empty zone, a
+    // colon inside it, and a second % are each outside [0-9A-Za-z._-].
+    for (const value of [
+      "not-an-ip", "127.0.0.1,not-an-ip", ",,,",
+      `1.2.3.4${" ".repeat(140)}`,
+      "fe80::1%", "fe80::1%a:b", "fe80::1%a%b",
+    ]) {
       await expectStartupFailure(
         { [variable]: value },
         `[relay-error] proxy_ip_configuration_invalid: ${variable}`,
