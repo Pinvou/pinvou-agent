@@ -309,6 +309,29 @@ mod tests {
     }
 
     #[test]
+    fn volume_fold_spelling_expansion_is_pinned_directly() {
+        // Round-7 复审:折叠表最微妙的一行是 ı(U+0131)的显式展开——
+        // `to_lowercase` 对它返回原字符,而 `.replace` 把它展开成 `i`;
+        // İ(U+0130)则必须保持**不**折叠:它的 to_lowercase 展开成
+        // `i` + U+0307 组合符,永远不会等于/前缀命中 ASCII 名(fail-closed
+        // 的过折叠方向)。此前该行为只被 eq/prefix 间接经过,无直接断言。
+        assert_eq!(volume_fold_spelling("id_r\u{017F}a"), "id_rsa");
+        assert_eq!(volume_fold_spelling("\u{0131}d_rsa"), "id_rsa");
+        assert_eq!(
+            volume_fold_spelling("\u{0130}"),
+            "i\u{0307}",
+            "İ must expand to i + combining dot, never a bare ASCII i"
+        );
+        assert_ne!(volume_fold_spelling("\u{0130}"), "i");
+        assert_ne!(
+            volume_fold_spelling("\u{0130}d_rsa"),
+            "id_rsa",
+            "the İ expansion must not fold onto the ASCII credential name"
+        );
+        assert_eq!(volume_fold_spelling(".AWS"), ".aws");
+    }
+
+    #[test]
     fn path_starts_with_folded_follows_component_folding_and_boundaries() {
         // 前缀按分量比较走 path_component_eq 的平台语义:折叠平台识别
         // `/Etc/Sudoers`,字节精确平台(Linux)不识别;组件边界让
