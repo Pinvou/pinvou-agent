@@ -257,22 +257,6 @@ function needsAddFolderConfirm(session, target) {
   return !!workspacePath && !projectCoversPath(target, workspacePath);
 }
 
-// Unavailable-root filter for the sidebar rebind badge (review #463
-// round-14 R3): the wire shape is { path, available } — `available` comes
-// from the backend's is_dir() stat and a root WITHOUT the field reads as
-// unavailable (undefined is falsy), so a backend that drops the field turns
-// every healthy root into a permanent badge. Kept as a pure function so the
-// filter the sidebar actually runs is the one the node suite pins.
-function unavailableProjectRootPaths(roots) {
-  return (Array.isArray(roots) ? roots : [])
-    // Round-40 M9: strictly `available === false` — the prior truthiness
-    // filter inverted the round-6/7 ruling (a root WITHOUT the field read
-    // as unavailable, painting every healthy folder with the permanent
-    // rebind badge). Matches the sidebar's live `unavailableRootsOf`.
-    .filter((root) => root && typeof root === 'object' && root.available === false)
-    .map((root) => String(root.path));
-}
-
 // Display trimming for unavailable-root badges (review #463 m3): the header
 // row is a fixed 28px, and one full badge ("Folder unavailable · Rebind") is
 // already close to the limit — several shrink-0 badges squeeze the collapse
@@ -285,4 +269,4 @@ function capUnavailableRootsForDisplay(roots, expanded) {
   return { visibleRoots: list.slice(0, 1), hiddenCount: Math.max(0, list.length - 1) };
 }
 
-export { capUnavailableRootsForDisplay, groupSessionsWithProjects, hasProjectWorkspace, isUnderRoot, needsAddFolderConfirm, orderedProjectsByPosition, PROJECT_SESSION_DRAG_TYPE, projectCoversPath, resolveSessionProjectId, rootPath, TEMPORARY_GROUP_KEY, unavailableProjectRootPaths };
+export { capUnavailableRootsForDisplay, groupSessionsWithProjects, hasProjectWorkspace, isUnderRoot, needsAddFolderConfirm, orderedProjectsByPosition, PROJECT_SESSION_DRAG_TYPE, projectCoversPath, resolveSessionProjectId, rootPath, TEMPORARY_GROUP_KEY };

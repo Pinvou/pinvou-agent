@@ -22,7 +22,6 @@ import {
   resolveMaterializedDraftKey,
   clearDraftMaterialization,
   materializationCarry,
-  isReportedMaterialization,
   recordDraftMaterialization,
 } from '../src/features/chat/session-mention.js';
 import {
@@ -4026,7 +4025,6 @@ test('a reported-less failure after mid-await navigation keeps the chips on the 
     mentionDraftKeyRef: keyRef,
     sessionMentionEnabledRef: { current: true },
     mentionPendingDraftSendsRef: pendingDraftSends,
-    isReportedMaterialization,
     isMultiAgentReadOnly: false,
     canSend: true,
     chatVoice: null,

@@ -18,7 +18,6 @@ import {
   SCHEDULED_TASK_CREATE_TOOL,
   SCHEDULED_TASK_DELETE_TOOL,
   SCHEDULED_TASK_LIST_TOOL,
-  SCHEDULED_TASK_READ_TOOL,
   SCHEDULED_TASK_UPDATE_TOOL,
   scheduledTaskCreateSummary,
   scheduledTaskDeleteSummary,
@@ -262,7 +261,9 @@ test('tool names match the manifest registration', () => {
   );
   for (const name of [
     SCHEDULED_TASK_CREATE_TOOL,
-    SCHEDULED_TASK_READ_TOOL,
+    // The read tool has no card summary of its own; pin its literal so the
+    // manifest registration check keeps covering all five app-automations tools.
+    'mcp_app-automations_read_scheduled_task',
     SCHEDULED_TASK_LIST_TOOL,
     SCHEDULED_TASK_UPDATE_TOOL,
     SCHEDULED_TASK_DELETE_TOOL,
