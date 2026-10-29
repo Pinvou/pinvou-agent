@@ -1235,8 +1235,18 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     }
   }); });
 
-  listen("chat:compaction", function (e) { onSessionEvent(e, function () {
+  listen("chat:compaction", function (e) {
     const compactionSid = e.payload && e.payload.session_id;
+    // r40 M1：真实活动归属必须在进入 onSessionEvent **之前**捕获——
+    // runSyncOnSession 对后台会话会临时把 state.activeSessionId 改写为事件
+    // sid（finally 恢复），handler 内读取到的恒为换入值。r39 首版在 handler
+    // 内分类：后台压缩恒走活动臂，把正在阅读/输入的用户强切到刚压缩完的
+    // 后台会话（前台抢占回归），「后台臂」沦为死代码。此捕获值语义：true
+    // 当且仅当被压缩会话在事件派发时刻就是前台会话（事件未携带 sid 的事件
+    // 不做重同步，只挂通知）。
+    const compactionOuterActive =
+      !!compactionSid && compactionSid === state.activeSessionId;
+    onSessionEvent(e, function () {
     if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
     const msg = e.payload && e.payload.message || "";
@@ -1256,17 +1266,18 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     // 停留在压缩前快照，而后端收缩钩子已把账本冻结在 kept 并作废截断分支的
     // Turn 快照——调和门按时间线全量气泡数出的序号与账本计数失配（busy 容忍
     // 恰差 1 盖不住压缩缺口），所有回退入口被诚实隐藏且无自愈路径。失效该会话
-    // 的缓存 buffer，活动会话立即强制盘载重注水：时间线按收缩后 transcript
-    // 重建，序号与账本计数重新对齐，chips 恢复渲染。done 通知条在重注水完成
-    // 后补挂（盘载会整体重建时间线，先挂会被吞掉）；后台会话先失效再挂——
-    // 事件为无缓存会话重建的空桩 buffer 不被切换快速路径采纳（见
-    // switchToSessionInternal 的 loadedFromDisk 判定），切回自然落盘载。
+    // 的缓存 buffer；前台会话（按 r40 M1 的派发时刻归属判定）立即强制盘载
+    // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，chips
+    // 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建时间线，先挂
+    // 会被吞掉）；后台会话仅失效再挂——事件为无缓存会话重建的空桩 buffer
+    // 不被切换快速路径采纳（见 switchToSessionInternal 的 loadedFromDisk
+    // 判定），切回自然落盘载。后台绝不重载：那会把用户前台视图切走（r40 M1）。
     // 压缩多发生在 turn 途中（上下文超限自动触发）：盘载与在途流式并存时，
     // 未决 token 积累在 pending 缓冲、随消息边界落在新 buffer 上，chat:done
     // 对账兜底——宁可短暂闪动也不留陈旧全量时间线。
     const compactionShrank = phase === "done" &&
       (!Number.isFinite(before) || !Number.isFinite(after) || before !== after);
-    const compactionActive = !!compactionSid && compactionSid === state.activeSessionId;
+    const compactionActive = compactionOuterActive;
     const compactionNotice = bt("compactDone") + auto + " " + msg;
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);

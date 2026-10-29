@@ -532,6 +532,13 @@ pub async fn checkpoint_diff(
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请稍后再读取变更预览".to_string());
     }
+    // r40 minor 5：执行根回退标志探针——回退在飞的秒级 apply 窗口内
+    // （read-tree→checkout-index），is_turn_active 对无条目驱逐是盲的；原始
+    // IPC 直调的 diff 会在半途影子 index 上跑 add -A。UI 已禁用 chips，本门
+    // 是纵深防御（compact_now 的 r34-M1 探针同款）。
+    if pool.is_execution_root_rewinding(&execution) {
+        return Err("会话绑定的项目目录正在回退/回滚，请稍后再读取变更预览".to_string());
+    }
     // r22 R2：压缩在飞时预览读到的是「压缩中」的中间态（forwarder 尚未落盘
     // 压缩转录），拒绝让前端稍后重试（评审标注 arguably；与上游闸同向）。
     if pool.is_compaction_in_flight(&session_id) {
@@ -1132,8 +1139,40 @@ pub async fn rewind_to_turn(
         // 评审 r7 minor 4：降级回退携带同边界失败全量回退的暂记 PreRestore——
         // 代码已在那次尝试中回退，undo 必须能恢复它（记录不得承诺「代码保持
         // 不变」而与实际不符）。无匹配暂记（真降级）保持 None 语义不变。
-        None => checkpoints::pending_pre_restore_for_degraded(&ledger, &transcript_revision)
-            .map_err(|error| format!("读取回退暂记失败: {error:#}"))?,
+        None => {
+            // r40 M2：降级腿的入口拒绝——活暂记 + revision 错位不得静默截断
+            // 后删暂记。revision 错位不等于「代码未被触碰」：apply_restore 从
+            // 不动 transcript，活暂记 + 错位 revision 恰是「崩溃暂记的 apply
+            // 已跑完」（工作区停在崩溃目标树）的特征签名——最危险形态而非
+            // 安全降级。此时仅对话回退会在截断后无条件清暂记：P1 在应用内
+            // 不可达（standalone restore 已移除）、sidecar 记录绑 None、undo
+            // 只还原对话而工作区停在崩溃目标树——「代码保持不变」失实且
+            // 代码/对话分叉永久。同款指引：先完成或撤销该暂记。revision
+            // 匹配的活暂记照旧绑定 P1（r33 M2 的引导路径），不受本拒绝影响。
+            // r39 M2 的全量腿入口拒绝只覆盖 plan.checkpoint 分支；本臂是它
+            // 的降级腿镜像（评审 r40 minor 4：GUI 腿此前无 tripwire pin）。
+            if let Some(pending) = checkpoints::peek_pending_rewind(&ledger)
+                .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
+            {
+                if pending.transcript_revision != transcript_revision {
+                    return Err(format!(
+                        "存在未完成的回退暂记（目标 {}，保留 {} 轮），且对话 revision 已变化：请先重试同一回退完成截断，或撤销后重试；本次为仅对话回退、不会绑定其回滚点，已在改动对话前拒绝",
+                        pending.checkpoint_id, pending.keep_turns
+                    ));
+                }
+            }
+            checkpoints::pending_pre_restore_for_degraded(&ledger, &transcript_revision)
+                .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
+        }
+    };
+    // r40 minor 12：降级回退绑定崩溃暂记的 P1 时，工作区真实状态是「已恢复到
+    // 崩溃目标树」（apply_restore 在崩溃前已跑完）——结果必须携带
+    // restoredCheckpoint=P1，前端通知按「文件已恢复」如实表述；仅按请求
+    // conversationOnlyRequested 推导会说「文件未动」而失实。
+    let degraded_bound = match pre_restore_id.as_deref() {
+        // 仅对话降级绑定的 P1（restored_checkpoint 恒 None 的那条腿）。
+        Some(p1) if restored_checkpoint.is_none() => checkpoints::find_checkpoint(&ledger, p1).ok(),
+        _ => None,
     };
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
@@ -1172,7 +1211,7 @@ pub async fn rewind_to_turn(
     // 引擎已在 restore 前驱逐（r35 MAJOR-1），此处无需重复驱逐。
     drop(reservation);
     Ok(RewindToTurnResult {
-        restored_checkpoint,
+        restored_checkpoint: restored_checkpoint.or(degraded_bound),
         rewound_turns: outcome.rewound_turns,
         degraded: plan.degraded,
         had_compaction: outcome.had_compaction,
@@ -1625,6 +1664,67 @@ fn ",
         assert!(
             window.contains("fired_at"),
             "the production hook must capture the fire time before spawning its thread (r39 minor 1)"
+        );
+    }
+
+    /// r40 minor 4：两条丢失修复 tripwire——GUI 不同边界拒绝（全量腿 + 降级
+    /// 腿）与 undo 驱逐前提此前删除后全部套件仍绿（丢失修复类已发生三次）。
+    /// 偏移顺序 pin：拒绝先于任何 mutation、驱逐先于 restore。
+    #[test]
+    fn gui_refusals_precede_mutations_and_undo_evicts_before_restore() {
+        let src = include_str!("checkpoints.rs");
+        // 1) rewind_to_turn：全量腿拒绝先于 prepare_restore；降级腿拒绝先于
+        //    truncate。
+        let fn_start = src
+            .find("pub async fn rewind_to_turn(")
+            .expect("rewind_to_turn must exist");
+        let rest = &src[fn_start..];
+        let body_end = ["\npub ", "\nasync fn ", "\nfn "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .map_or(rest.len(), |offset| offset);
+        let body = &rest[..body_end];
+        let full_refusal_at = body
+            .find("checkpoints::peek_pending_rewind(&ledger)")
+            .expect("the full-path different-boundary refusal must exist (r39 M2)");
+        let prepare_at = body
+            .find("checkpoints::prepare_restore(")
+            .expect("prepare_restore call must exist");
+        let degraded_refusal_at = body
+            .find("pending.transcript_revision != transcript_revision")
+            .expect("the degraded-leg revision-mismatch refusal must exist (r40 M2)");
+        let truncate_at = body
+            .find("truncate_to_user_turn(&session_id_truncate")
+            .expect("the truncate call must exist");
+        assert!(
+            full_refusal_at < prepare_at,
+            "全量腿拒绝必须先于 prepare_restore（r39 M2）"
+        );
+        assert!(
+            degraded_refusal_at < truncate_at,
+            "降级腿拒绝必须先于截断（r40 M2：错位暂记不得被静默清掉）"
+        );
+        // 2) undo_last_rewind：驱逐先于 restore 步骤 1。
+        let undo_start = src
+            .find("pub async fn undo_last_rewind(")
+            .expect("undo_last_rewind must exist");
+        let undo_rest = &src[undo_start..];
+        let undo_end = ["\npub ", "\nasync fn ", "\nfn "]
+            .iter()
+            .filter_map(|marker| undo_rest.find(marker))
+            .min()
+            .map_or(undo_rest.len(), |offset| offset);
+        let undo_body = &undo_rest[..undo_end];
+        let evict_at = undo_body
+            .find("pool.evict(&session_id).await")
+            .expect("the undo evict must exist");
+        let restore_at = undo_body
+            .find("checkpoints::prepare_restore(&ledger_prepare")
+            .expect("the undo prepare call must exist");
+        assert!(
+            evict_at < restore_at,
+            "undo 的引擎驱逐必须先于 restore（r39 minor 3：恢复窗口内的 idle persist 会写回回退态）"
         );
     }
 

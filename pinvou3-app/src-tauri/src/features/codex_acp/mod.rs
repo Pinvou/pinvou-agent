@@ -2260,7 +2260,12 @@ impl AcpPool {
         let lower = session_id.to_lowercase();
         acp_case_alias_matches(
             &lower,
-            &self.acp_metadata_backends.read().keys().cloned().collect::<Vec<_>>(),
+            &self
+                .acp_metadata_backends
+                .read()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
             &self.agents.session_ids(),
             |known| self.agents.backend(known).is_acp(),
         )
@@ -6406,19 +6411,39 @@ mod tests {
         let agents = vec!["Codex-2".to_string(), "chat-3".to_string()];
         let backends = |known: &str| known.eq_ignore_ascii_case("Codex-2");
         // metadata 键表：大小写变体命中。
-        assert!(acp_case_alias_matches("pinvou-1", &metadata, &agents, backends));
+        assert!(acp_case_alias_matches(
+            "pinvou-1", &metadata, &agents, backends
+        ));
         // durable 索引腿：ACP 后端的大小写变体命中。
-        assert!(acp_case_alias_matches("codex-2", &metadata, &agents, backends));
+        assert!(acp_case_alias_matches(
+            "codex-2", &metadata, &agents, backends
+        ));
         // durable 索引腿：普通会话的大小写变体不得命中（backend 判定参与）。
-        assert!(!acp_case_alias_matches("chat-3", &metadata, &agents, backends));
+        assert!(!acp_case_alias_matches(
+            "chat-3", &metadata, &agents, backends
+        ));
         // 未知 id 不命中。
-        assert!(!acp_case_alias_matches("nope-9", &metadata, &agents, backends));
-        // 生产接线 pin：is_acp 必须经由提纯后的扫描函数（删除扫描退化为仅
-        // 精确键查找时变红）。
+        assert!(!acp_case_alias_matches(
+            "nope-9", &metadata, &agents, backends
+        ));
+        // 生产接线 pin（r40 minor 3 有界化）：is_acp 的**函数体**必须真的调用
+        // 提纯后的扫描函数——全文件 contains 会被函数定义本身满足（r31 空洞
+        // pin 类：把 is_acp 改回仅精确键查找时本断言仍绿）。以下一个条目边界
+        // 截取函数体后再断言。
         let src = include_str!("mod.rs");
+        let fn_start = src
+            .find("pub fn is_acp(&self, session_id: &str) -> bool")
+            .expect("is_acp must exist");
+        let rest = &src[fn_start..];
+        let body_end = rest.find("\n    pub fn ").unwrap_or(rest.len());
         assert!(
-            src.contains("acp_case_alias_matches("),
-            "is_acp 的 case-alias 腿必须经 acp_case_alias_matches（r39 minor 6）"
+            body_end < rest.len(),
+            "is_acp body bounding must find the next associated fn"
+        );
+        let body = &rest[..body_end];
+        assert!(
+            body.contains("acp_case_alias_matches("),
+            "is_acp 的 case-alias 腿必须在函数体内经 acp_case_alias_matches（r39 minor 6 / r40 minor 3）"
         );
     }
 

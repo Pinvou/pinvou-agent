@@ -91,8 +91,12 @@ const SHADOW_EXCLUDES: &[&str] = &[
 /// （临时会话、未初始化目录）没有 .gitignore 兜底，`add -A` 会把它们快照进
 /// 影子 objects。匹配恒为大小写不敏感（exclude 用字符类、purge 用 `:(icase)`、
 /// 过滤用 ASCII 折叠），`.ENV`/`ID_RSA` 等变体同样命中。收窄的取舍：
-/// .env.example/.env.sample/id_rsa.pub 等常被有意提交的示例/公钥照常进快照、
-/// 随回退恢复；.env.production 等约定文件仍会进快照（其内容通常可提交）。
+/// .env.example/.env.sample 等常被有意提交的示例照常进快照、随回退恢复；
+/// .env.production 等约定文件仍会进快照（其内容通常可提交）。
+/// r40 minor 10 收紧私钥家族：`id_rsa*` 等通配涵盖后缀变体（id_rsa.bak/
+/// .old/id_rsa2 此前明文进预览）——`id_rsa.pub` 公钥随家族一并不再进快照
+/// （保守方向：公钥本可公开，不随回退恢复的既有取舍延伸到它，换取私钥
+/// 变体的全覆盖）。
 /// 扩展名对齐 file_ingest.rs 的 secret 分类
 /// （key/pem/p12/pfx/keystore/jks/gpg/pgp）与 gitleaks 的私钥约定。
 /// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
@@ -115,9 +119,14 @@ const SECRET_EXCLUDES: &[&str] = &[
     "*.gpg",
     "*.pgp",
     "id_rsa",
-    "id_ed25519",
-    "id_dsa",
-    "id_ecdsa",
+    // r40 minor 10：私钥本体的大小写/后缀变体（id_rsa.bak/.old/id_rsa2 等
+    // ——harness 实证明文进预览；`*` 通配涵盖后缀变体，id_rsa.pub 公钥的
+    // 排除取舍不变——`id_rsa.pub` 同样命中 `id_rsa*`，与 r27 起的 *.key 家族
+    // 同向保守）。
+    "id_rsa*",
+    "id_ed25519*",
+    "id_dsa*",
+    "id_ecdsa*",
     // r27 M4 + r28 M3：平台 path_policy / safety_deny_rules 同类凭据（ingest
     // 侧整目录拦截；快照侧按内容 glob 粒度补齐——含斜杠条目经 B2 双腿派生
     // 覆盖嵌套副本；`.tfstate*` 状态文件含明文 secret 变量）。
@@ -140,6 +149,10 @@ const SECRET_EXCLUDES: &[&str] = &[
     ".envrc",
     "_netrc",
     "secrets.yaml",
+    // r40 minor 10：同族部署密文（仅列 .yaml 漏 .yml；Rails/CI 惯用
+    // database.yml 含连接凭据）。
+    "secrets.yml",
+    "database.yml",
     "service-account*.json",
 ];
 
@@ -654,6 +667,15 @@ fn git_bounded(
         command.arg("-c").arg("core.fsmonitor=false");
         command.arg("-c").arg("core.hooksPath=");
         command.arg("-c").arg("core.attributesFile=");
+        // r40 M4：写入面硬化——快照/恢复的字节面。core.sparseCheckout / index.sparse
+        // 可让 `add -A` 对锥外路径静默跳过（exit 0，提示进 stderr 即弃）：快照
+        // 缺文件、diff --cached 盲区，随后 rewind 的 checkout-index 对缺失条目
+        // 不写、clean -fd 把带后置编辑的文件一并删除——安全网被静默掏空。
+        // core.autocrlf 可把 CRLF 文件的快照存成 LF（字节面被规范化）。init 时
+        // 写入的 autocrlf=false 不防事后篡改，命令面钉死与执行面同款。
+        command.arg("-c").arg("core.sparseCheckout=false");
+        command.arg("-c").arg("index.sparse=false");
+        command.arg("-c").arg("core.autocrlf=false");
         command.args(arguments);
         crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
             .map_err(|error| run_error(&error))
@@ -1040,6 +1062,13 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         git_ok(&repo, execution_root, &["init"])?;
         git_ok(&repo, execution_root, &["config", "core.autocrlf", "false"])?;
     }
+    // r40 minor 10：影子仓库目录私有化（create/repair 双路径幂等）——目录
+    // 默认继承 umask（评审实测 0775），多用户主机上快照存储（含已披露的
+    // loose 对象残留）对其他用户可读；与模块自身 index/pending/spill 的
+    // 0600 文件姿态对齐为 0700 目录。平台差异由 platform 层原语承载
+    // （Windows 无 POSIX mode：继承应用数据/工作树 ACL，既有平台姿态，
+    // 非绑定布局随工作树披露）。
+    let _ = crate::platform::filesystem::enforce_private_directory_mode(&repo);
     // config 幂等：按执行根 fs 语义探测（存量仓库同样每次校正）。该配置只承载
     // git 原生大小写语义（Makefile/makefile alias、仅大小写改名）；秘密排除的
     // 大小写不敏感由 info/exclude 的字符类模式保证，不靠此配置（见下）。
@@ -1079,7 +1108,10 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // 正则的大小写敏感 `core\.sshCommand` 永不命中（死代码，与 r17 的「输出
     // 形状击败解析器」同类）；subsection 可含点（`remote.evil.x.url` 实证
     // 逃逸 `[^.]+`），放宽为 `.+`。
-    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.)";
+    // r40 M4：scrub 覆盖 sparseCheckout/index.sparse/autocrlf 的持久化形态
+    // （命令面 -c 钉是第一道防线；被写入 config 的值在 scrub 后由 init 的
+    // false 落盘或命令钉压制——两层同向）。
+    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf)";
     let dangerous_keys = match git(
         &repo,
         execution_root,
@@ -1316,6 +1348,18 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 !valid_len || !commit.bytes().all(|b| b.is_ascii_hexdigit())
             });
             if corrupt_entry {
+                // r40 minor 6：隔离前身份复核——隔离与读取不在锁内，并发写者
+                // 可能在两次读之间整体替换了 index（新鲜好索引被误隔离 =
+                // 一个 turn 的条目孤儿化，靠自愈收敛）。仅当磁盘内容仍等于
+                // 本次判损的字节才隔离；已变化则按并发写处理：重新读取解析
+                // 一次（新鲜写入是 v2 已校验形态），仍损坏才隔离新内容。
+                if let Ok(current) = fs::read(&path) {
+                    if current != bytes {
+                        if let Ok(fresh) = serde_json::from_slice::<CheckpointIndex>(&current) {
+                            return Ok(fresh);
+                        }
+                    }
+                }
                 eprintln!(
                     "[checkpoints] checkpoint index entry with a malformed object id quarantined; rebuilt from an empty index"
                 );
@@ -1337,6 +1381,14 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // sidecar persist logs. The ledger root in context already
             // identifies the write, and the evidence stays in the quarantined
             // file for inspection.
+            // r40 minor 6：解析损坏腿同款身份复核（见上）。
+            if let Ok(current) = fs::read(&path) {
+                if current != bytes {
+                    if let Ok(fresh) = serde_json::from_slice::<CheckpointIndex>(&current) {
+                        return Ok(fresh);
+                    }
+                }
+            }
             Ok(quarantine_index_and_rebuild(&path))
         }
     }
@@ -1694,16 +1746,15 @@ fn checkpoint_entry_present(ledger_root: &Path, checkpoint_id: &str) -> Result<b
     match find_checkpoint(ledger_root, checkpoint_id) {
         Ok(_) => Ok(true),
         Err(error) => {
-            let io_rooted = error.root_cause().downcast_ref::<std::io::Error>().is_some()
+            let io_rooted = error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .is_some()
                 || error
                     .root_cause()
                     .downcast_ref::<serde_json::Error>()
                     .is_some();
-            if io_rooted {
-                Err(error)
-            } else {
-                Ok(false)
-            }
+            if io_rooted { Err(error) } else { Ok(false) }
         }
     }
 }
@@ -3546,10 +3597,13 @@ mod tests {
     }
 
     /// 敏感文件 exclude 语义：.env（任意深度，gitignore 语义的 exclude 文件
-    /// 本就在任意深度生效）/私钥本体不进快照；.env.example、id_rsa.pub 等
-    /// 示例/公钥照常进快照。匹配恒大小写不敏感（info/exclude 字符类模式），
-    /// 大小写敏感文件系统上 `.ENV`/`ID_RSA`/`SERVER.KEY` 等变体同样命中。
-    /// 本测试锚定 exclude 集合的回归。
+    /// 本就在任意深度生效）/私钥家族不进快照；.env.example 示例照常进快照。
+    /// 匹配恒大小写不敏感（info/exclude 字符类模式），大小写敏感文件系统上
+    /// `.ENV`/`ID_RSA`/`SERVER.KEY` 等变体同样命中。本测试锚定 exclude 集合
+    /// 的回归。r40 minor 10：私钥家族收紧为 `id_rsa*` 通配（后缀变体
+    /// id_rsa.bak/.old/id_rsa2 此前明文进预览）——`id_rsa.pub` 公钥随家族
+    /// 一并不再进快照（保守取舍，见 SECRET_EXCLUDES 头注释；公钥本可公开，
+    /// 不随回退恢复的既有取舍延伸到它）。
     #[test]
     fn secret_files_are_excluded_but_examples_and_public_keys_are_tracked() {
         if !git_available() {
@@ -3563,6 +3617,8 @@ mod tests {
         exec.write(".env.example", "EXAMPLE=\n");
         exec.write("id_rsa", "PRIVATE\n");
         exec.write("id_rsa.pub", "PUBLIC\n");
+        exec.write("id_rsa.bak", "PRIVATE-OLD\n");
+        exec.write("id_rsa2", "PRIVATE-2\n");
         exec.write("SERVER.KEY", "SECRET=4\n");
         exec.write("src/a.rs", "a\n");
         create_checkpoint(
@@ -3578,7 +3634,6 @@ mod tests {
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
         let is_tracked = |path: &str| tracked.lines().any(|line| line == path);
         assert!(is_tracked(".env.example"), "示例文件应照常进快照");
-        assert!(is_tracked("id_rsa.pub"), "公钥应照常进快照");
         assert!(is_tracked("src/a.rs"));
         assert!(!is_tracked(".env"), ".env 不得进快照");
         assert!(!is_tracked("sub/.env"), "任意深度的 .env 不得进快照");
@@ -3589,6 +3644,16 @@ mod tests {
                 || line.eq_ignore_ascii_case("server.key")
                 || line.eq_ignore_ascii_case("id_rsa")),
             "大小写变体的秘密文件不得进快照: {tracked}"
+        );
+        // r40 minor 10：私钥家族通配——后缀/编号变体不得进快照；id_rsa.pub
+        // 随家族一并排除（保守取舍，见 SECRET_EXCLUDES 头注释）。
+        assert!(
+            !tracked
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("id_rsa.bak")
+                    || line.eq_ignore_ascii_case("id_rsa2")
+                    || line.eq_ignore_ascii_case("id_rsa.pub")),
+            "私钥后缀变体与 .pub 家组成员不得进快照: {tracked}"
         );
     }
 
@@ -4331,8 +4396,8 @@ mod tests {
         // 引导重试路径先把暂记立起来：索引 MAX-1 满时为最老条目登记
         // PreRestore（占满最后一格、不触发淘汰），再写暂记文件——此刻索引
         // 满员、暂记目标 = 最老条目（淘汰第一顺位）。
-        let (_, pending_pre) = prepare_restore(ledger.path(), exec.path(), &oldest.id, None)
-            .unwrap();
+        let (_, pending_pre) =
+            prepare_restore(ledger.path(), exec.path(), &oldest.id, None).unwrap();
         write_pending_rewind(ledger.path(), &oldest.id, 0, &pending_pre.id, "rev-1").unwrap();
         assert!(live_pending_rewind(ledger.path()).unwrap().is_some());
         // 不同边界的 prepare_restore（目标 = 最新 Turn）：PreRestore 登记触发
@@ -4356,7 +4421,10 @@ mod tests {
         );
         // 暂记必须仍然存活且成员校验通过（live_pending_rewind 不走终结臂）。
         let live = live_pending_rewind(ledger.path()).unwrap();
-        assert_eq!(live.as_ref().map(|pending| pending.checkpoint_id.as_str()), Some(oldest.id.as_str()));
+        assert_eq!(
+            live.as_ref().map(|pending| pending.checkpoint_id.as_str()),
+            Some(oldest.id.as_str())
+        );
     }
 
     /// r39 M2 回归：入口窥视无副作用——不同边界判定为 true / 同边界为 false
@@ -4390,6 +4458,58 @@ mod tests {
         drop_checkpoint(ledger.path(), &t1.id).unwrap();
         assert!(peek_pending_rewind(ledger.path()).unwrap().is_some());
         assert_eq!(fs::read(&pending_path).unwrap(), before);
+    }
+
+    /// r40 M4：写入面硬化回归——被植入 config 的 `core.sparseCheckout=true` +
+    /// `info/sparse-checkout` 不得让 `add -A` 静默跳过锥外路径（命令面
+    /// `-c core.sparseCheckout=false` 钉压制 config 值；`core.autocrlf` 同钉）。
+    /// 静默窄化 = 快照缺文件 + diff 盲区，随后 rewind 的 checkout-index 对
+    /// 缺失条目不写、clean -fd 把带后置编辑的文件一并删除——安全网被掏空
+    /// 且确认预览毫无征兆。
+    #[test]
+    fn hostile_sparse_checkout_config_cannot_narrow_snapshots() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("sparse-ledger");
+        let exec = TestDir::new("sparse-exec");
+        exec.write("in-cone.txt", "a\n");
+        exec.write("outside.txt", "b\n");
+        let _first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("bootstrap checkpoint");
+        let repo = repo_dir(ledger.path());
+        // 植入敌对 config（追加 [core] 段，同键后者生效）+ 锥定义。
+        let mut config = fs::read_to_string(repo.join("config")).unwrap_or_default();
+        config.push_str("[core]\n\tsparseCheckout = true\n\tautocrlf = true\n");
+        fs::write(repo.join("config"), config).unwrap();
+        let info = repo.join("info");
+        fs::create_dir_all(&info).unwrap();
+        fs::write(info.join("sparse-checkout"), b"in-cone.txt\n").unwrap();
+        exec.write("outside.txt", "b2\n");
+        let second = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .expect("snapshot must not be narrowed by the hostile sparse config");
+        let tree_ls = git_ok(
+            &repo,
+            exec.path(),
+            &["ls-tree", "-r", "--name-only", &second.commit],
+        )
+        .expect("ls-tree second snapshot");
+        assert!(
+            tree_ls.lines().any(|line| line == "outside.txt"),
+            "敌对 sparseCheckout 不得让锥外文件静默缺席快照: {tree_ls}"
+        );
     }
 
     /// 评审 M3 回归：损坏的 index.json 被隔离为 index.json.corrupt 并从空索引
@@ -5388,9 +5508,14 @@ mod tests {
         exec.write(".env", "SECRET=one\n");
         exec.write("env_upper_probe.tmp", "SECRET=two\n");
         exec.write("a.txt", "a\n");
-        let _bootstrap =
-            create_checkpoint(ledger.path(), exec.path(), Some(1), CheckpointKind::Turn, "t1")
-                .expect("bootstrap checkpoint");
+        let _bootstrap = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("bootstrap checkpoint");
         let repo = repo_dir(ledger.path());
         // git() 只设 --git-dir/--work-tree，进程 cwd 不在 exec——hash-object
         // 的读取路径按绝对路径传。
@@ -5401,10 +5526,14 @@ mod tests {
                 .expect("utf-8 test path")
                 .to_string()
         };
-        let blob_env = git_ok(&repo, exec.path(), &["hash-object", "-w", "--", &abs(".env")])
-            .expect("hash .env")
-            .trim()
-            .to_string();
+        let blob_env = git_ok(
+            &repo,
+            exec.path(),
+            &["hash-object", "-w", "--", &abs(".env")],
+        )
+        .expect("hash .env")
+        .trim()
+        .to_string();
         let blob_env_upper = git_ok(
             &repo,
             exec.path(),
@@ -5413,10 +5542,14 @@ mod tests {
         .expect("hash upper probe")
         .trim()
         .to_string();
-        let blob_a = git_ok(&repo, exec.path(), &["hash-object", "-w", "--", &abs("a.txt")])
-            .expect("hash a.txt")
-            .trim()
-            .to_string();
+        let blob_a = git_ok(
+            &repo,
+            exec.path(),
+            &["hash-object", "-w", "--", &abs("a.txt")],
+        )
+        .expect("hash a.txt")
+        .trim()
+        .to_string();
         for (blob, path) in [
             (&blob_env, ".env"),
             (&blob_env_upper, ".ENV"),
@@ -5441,7 +5574,19 @@ mod tests {
         let commit = git_ok(
             &repo,
             exec.path(),
-            &["commit-tree", &tree, "-m", "legacy snapshot with secret variants"],
+            // r40 M3：与生产 commit_tree 同款身份钉——隔离 env 剥掉全部身份源
+            // （GIT_CONFIG_GLOBAL=<null>、GIT_* 全清），裸 commit-tree 在无
+            // 泄漏身份的机器上确定性失败（评审实测 105/1 red）。
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &tree,
+                "-m",
+                "legacy snapshot with secret variants",
+            ],
         )
         .expect("legacy commit")
         .trim()
@@ -5449,7 +5594,11 @@ mod tests {
         git_ok(
             &repo,
             exec.path(),
-            &["update-ref", &format!("refs/checkpoints/{LEGACY_ID}"), &commit],
+            &[
+                "update-ref",
+                &format!("refs/checkpoints/{LEGACY_ID}"),
+                &commit,
+            ],
         )
         .expect("ref legacy snapshot");
         let mut index = load_index(ledger.path()).unwrap();
