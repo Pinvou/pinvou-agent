@@ -1579,3 +1579,36 @@ test("marks a rejoin after the web socket died, but not a takeover", async (t) =
   assert.equal(reregistered.registered.web_client_connected, false);
   assert.equal(reregistered.registered.web_rejoining, false);
 });
+
+test("forwards the incumbent rejoin flag on desktop re-registration", async (t) => {
+  const endpointId = `endpoint_rejoin_fwd_${Date.now()}`;
+  const accessToken = "access-token-rejoin-fwd-00000001";
+  const desktopSecret = "desktop-secret-rejoin-fwd-000001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const firstJoin = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  const first = await firstJoin;
+  assert.equal(first.web_rejoining, false);
+  t.after(() => closeSocket(desktop.ws));
+
+  // Web dies then rejoins: the incumbent (the rejoined socket) is flagged.
+  const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(web.ws);
+  await disconnected;
+  const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");
+  const rejoined = await joinWeb(endpointId, accessToken);
+  const rejoin = await rejoinNotice;
+  assert.equal(rejoin.web_rejoining, true);
+
+  // The desktop reconnects (relay restart / socket drop) while the rejoined
+  // web client is still online: the fresh registration must forward the
+  // incumbent's web_rejoining=true so the desktop keeps its lease-scoped
+  // state instead of wiping it. Without the passthrough the flag would
+  // default to false and the lease-churn bug (staged state wiped on every
+  // desktop reconnect) would return on exactly this path.
+  closeSocket(desktop.ws);
+  const reregistered = await registerDesktop(endpointId, accessToken, desktopSecret);
+  t.after(() => closeSocket(reregistered.ws));
+  assert.equal(reregistered.registered.web_client_connected, true);
+  assert.equal(reregistered.registered.web_rejoining, true);
+});
