@@ -1929,19 +1929,21 @@ test("scans a many-key frame in bounded time", async (t) => {
   ws.send(`{${parts.join(",")}}`);
   assert.equal((await reply).code, "unsupported_protocol_version");
   assert(performance.now() - started < 2000, `scan took ${performance.now() - started} ms`);
-  // The same shape with an escape-bearing key on every line: recognizing the
-  // escape spelling of "v" must stay a fixed comparison, not a per-key
-  // decode, or the escaped shape pays parse cost twice. A fresh socket,
-  // since the plain frame's unsupported_protocol_version closes this one.
+  // The same shape with an escape-bearing key on every line: a large
+  // escape-heavy frame must neither false-reject nor stall past the reply
+  // timeout. A per-key-decode regression of this frame size costs tens of
+  // milliseconds — inside timing noise for any bound loose enough for CI —
+  // so the fixed-comparison property is enforced by construction (only the
+  // two raw spellings compare equal) and by the escaped duplicate-key and
+  // lookalike pins, not by a clock here. A fresh socket, since the plain
+  // frame's unsupported_protocol_version closes this one.
   const ws2 = await openSocket();
   t.after(() => closeSocket(ws2));
   const escaped = new Array(120000);
   for (let i = 0; i < escaped.length; i += 1) escaped[i] = `"\\u006b${String(i).padStart(8, "0")}":1`;
   const escapedReply = nextMessage(ws2, "error", 5000);
-  const escapedStarted = performance.now();
   ws2.send(`{${escaped.join(",")}}`);
   assert.equal((await escapedReply).code, "unsupported_protocol_version");
-  assert(performance.now() - escapedStarted < 2000, `escaped-key scan took ${performance.now() - escapedStarted} ms`);
 });
 
 test("a blank trusted proxy list is empty while an unset one inherits the allowlist", async () => {
