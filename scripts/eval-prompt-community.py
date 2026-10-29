@@ -29,6 +29,7 @@ def load(name, filename):
 
 legacy = load("legacy_prompt_eval", "eval-prompt-suite.py")
 audit = load("prompt_audit", "audit-prompt-eval.py")
+provenance = legacy.provenance
 legacy.subprocess = sandbox.VerifierSubprocess
 audit.subprocess = sandbox.VerifierSubprocess
 cases.subprocess = sandbox.VerifierSubprocess
@@ -55,18 +56,16 @@ def run(args):
     chosen = args.cases.split(",") if args.cases else list(all_cases)
     if any(case not in all_cases for case in chosen):
         raise ValueError("unknown case")
-    source_files = [Path(__file__), Path(cases.__file__), Path(legacy.__file__), Path(audit.__file__),
+    source_files = [Path(__file__), Path(cases.__file__), Path(legacy.__file__), Path(audit.__file__), Path(provenance.__file__),
                     Path(sandbox.__file__), Path(__file__).with_name("prompt_eval_model_proxy.py"),
                     Path(__file__).with_name("prompt_eval_namespace_bootstrap.py")]
-    # Include every delegated grader generation, not only the selected leaf.
-    ancestor = getattr(cases, "previous", None)
-    while ancestor is not None:
-        source_files.append(Path(ancestor.__file__))
-        ancestor = getattr(ancestor, "previous", None)
+    source_files.extend(provenance.case_source_files(cases))
+    source_files.extend(globals().get("extra_source_files", ()))
+    source_hashes, grader_revision = provenance.source_identity(source_files)
     manifest = {"suite": "pinvou-community-method-v2-isolated", "repetitions": args.repetitions,
                 "model": profile["model"], "model_alias": args.model_alias,
                 "model_id": args.model_id, "scenarios": chosen,
-                "source_hashes": {p.name: digest(p) for p in source_files},
+                "source_hashes": source_hashes,
                 "settings_template_sha256": digest(args.home_template / "settings.json"),
                 "binary_hashes": {name: digest(p) for name, p in variants.items()},
                 "runtime_hashes": {"credential_cli": digest(args.credential_cli), "xvfb": digest(args.xvfb)},
@@ -75,14 +74,13 @@ def run(args):
                 "isolation": "bubblewrap mount/PID/network/IPC namespaces; one trial only; no harness, neighbors, real home or credentials; only scoped model proxy socket; generated-code verification read-only and networkless",
                 "transport": "real configured endpoints via streaming credential-isolating pass-through; request bodies unchanged",
                 "settings_policy": "configured routes and sampling, memory off, max_steps=40"}
-    manifest["grader_revision"] = hashlib.sha256(
-        json.dumps(manifest["source_hashes"], sort_keys=True).encode()).hexdigest()
+    manifest["grader_revision"] = grader_revision
     mf = output / "manifest.json"
     if mf.exists() and json.loads(mf.read_text()) != manifest:
         raise ValueError("resume requires identical protocol, sources, binaries and model")
-    legacy.write(mf, json.dumps(manifest, indent=2))
     receipt = output / "results.jsonl"
-    rows = legacy.load_receipts(receipt)
+    rows = legacy.load_receipts(receipt, grader_revision)
+    legacy.write(mf, json.dumps(manifest, indent=2))
     done = {(r["variant"], r["repetition"], r["scenario"], r["turn"]) for r in rows}
     for repetition in range(args.repetitions):
         for index, case in enumerate(chosen):
@@ -176,8 +174,10 @@ def run(args):
                         if path.is_file():
                             artifacts[relative] = path.read_text()
                     legacy.write(root / f"artifacts-{turn}.json", json.dumps(artifacts, ensure_ascii=False))
-                    events = sandbox.normalize_event_paths(audit.tool_events(audit.turn_blocks(root, report, turn)), root)
+                    blocks = audit.turn_blocks(root, report, turn)
+                    events = sandbox.normalize_event_paths(audit.tool_events(blocks), root)
                     checks, dimensions = cases.grade(case, turn, root, home, report, before, snapshot, events, legacy, audit)
+                    checks["turn_trace_available"] = bool(blocks)
                     names = [e["name"] for e in events]
                     usage = report.get("usage")
                     requests = legacy.request_metrics(home, report.get("session_id"))

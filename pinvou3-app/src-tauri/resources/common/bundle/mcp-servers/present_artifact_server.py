@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """present_artifact — pinvou3 内置 MCP server(零第三方依赖,只用 stdlib)。
 
-把一个"阶段性成品"交给 Pinvou 客户端展示。工具成功只表示文件验证通过；客户端
+把用户请求生成或修改的最终文件交给 Pinvou 客户端展示。工具成功只表示文件验证通过；客户端
 收到结果后会尝试展示，不是对用户当前可见界面的反向确认。
 
 协议:newline-delimited JSON-RPC 2.0 over stdio(对齐底座 mcp.rs 的 stdio

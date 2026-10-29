@@ -96,6 +96,8 @@
 旧 r13 相对 v0.9.5 修改 110 个文件。与 v0.9.12 对照时，104 个旧修改文件也被上游改动，直接三方移植预计产生 57 个冲突文件。与此同时，上游已经吸收或重构了大量旧 patch，包括会话快照/恢复、编辑上一轮、压缩后 token、provider/model 路由、原生搜索、Windows UTF-8 Shell、JSON schema 修复与任务基础设施。
 
 因此本次从官方 `v0.9.12` tag 直接建立新分支，只重表达仍然缺失且必须位于底座生命周期内的语义；没有 merge 或 cherry-pick 旧 r13 冲突树。
+| `f1eb10efc` | T3：统一有界发现与精确名称技能指引；迁移 v11 捆绑发现技能并保留用户编辑（#125） |
+| `fe90f72f9` | T2：复用可证明的流式工具入参后缀；不确定片段保留原回退（#114） |
 
 ## 2. 旧 r13 逐项处置
 
@@ -647,3 +649,34 @@ their original source boundary; there are no new model results. See
 [R5 sources](prompt-optimization-evaluation/source-manifest-review-r5.json).
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## PR799 review R6 follow-up (2026-10-29)
+
+Foundation inventory and gitlink remain at consumed public squash `f1eb10efc`;
+this follow-up changes only the parent application, evaluation tools and CI.
+
+- Secret-scan explicitly prepares Python 3.x before importing the exact digest
+  controls (`tomllib` requires Python 3.11+). The CLI regression lane executes
+  the `prompt_eval` example's two unit tests explicitly. Namespace preparation
+  precedes discovery and retries package downloads; exhausted failures remain red.
+- Grader identity includes lateral `prompt_eval_*` imports and the selected runner
+  adapter. Resume validates existing rows before tail repair or manifest creation.
+  Both aggregators and adjudication reject mixed revisions and legacy/current
+  mixtures; wholly legacy frozen corpora remain readable.
+- Numeric controls reject alternative totals and code-consult substrings, allow
+  whole-number decimal notation, and retain disclosed semantic-review limits.
+  Ambiguous overlapping IDs remain unsettled; missing turn prompts and deleted
+  preservation sentinels fail checks rather than crashing the auditor.
+- Restore explicit protected-directory, unavailable-browser, scheduling-lifetime,
+  memory-UI and authorization wording. Align five shipped Skill files with ordinary
+  presenter exposure when the backend is healthy. No permission, dispatch, engine
+  loader, foundation or frozen-score behavior is changed.
+- Three additional APP fingerprints pin the restored authorization and browser
+  boundaries. The short zh/en commit inventories now both list #114/#125; the
+  detailed Chinese section 3 already listed both squashes before R6.
+
+Current verification and source boundaries are recorded in
+[prompt-optimization-evaluation/review-r6-verification.json](prompt-optimization-evaluation/review-r6-verification.json)
+and [source-manifest-review-r6.json](prompt-optimization-evaluation/source-manifest-review-r6.json).
+Earlier receipts retain their original sources and execution counts. No fresh
+model run, per-request token measurement or native-platform CI result is implied.

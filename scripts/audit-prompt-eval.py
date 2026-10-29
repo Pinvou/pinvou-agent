@@ -27,7 +27,9 @@ def turn_blocks(root, report, turn):
             block.get("type") == "text" and prompt in block.get("text", "")
             for block in message.get("content", []))
 
-    start = next(i for i, message in enumerate(messages) if matches(message, prompts[turn]))
+    start = next((i for i, message in enumerate(messages) if matches(message, prompts[turn])), None)
+    if start is None:
+        return []
     end = next((i for i in range(start + 1, len(messages))
                 if any(matches(messages[i], prompt) for prompt in prompts[turn + 1:])), len(messages))
     return [block for message in messages[start:end] for block in message.get("content", [])]
@@ -37,12 +39,21 @@ def tool_events(blocks):
     events = []
     for block in blocks:
         if block.get("type") == "tool_use":
+            pending = [event for event in events
+                       if event["id"] == block["id"] and event["failed"] is None]
+            # Overlapping duplicate IDs cannot identify which call a result
+            # settles. Keep every affected call unsettled for this turn.
+            for event in pending:
+                event["ambiguous_id"] = True
             events.append({"id": block["id"], "name": block["name"],
-                           "input": block.get("input", {}), "failed": None})
+                           "input": block.get("input", {}), "failed": None,
+                           "ambiguous_id": bool(pending)})
         elif block.get("type") == "tool_result":
             event = next((event for event in reversed(events)
                           if event["id"] == block["tool_use_id"] and event["failed"] is None), None)
             if event is not None:
+                if event["ambiguous_id"]:
+                    continue
                 content = str(block.get("content", ""))
                 event["failed"] = bool(block.get("is_error"))
                 if event["failed"]:
@@ -87,7 +98,8 @@ def audit(directory):
         root = directory / f"m{models.index(row['model_id'])}-r{row['repetition']}-{row['scenario']}"
         report_path = root / f"response-{row['turn']}.json"
         report = json.loads(report_path.read_text()) if report_path.exists() else {}
-        events = tool_events(turn_blocks(root, report, row["turn"]))
+        blocks = turn_blocks(root, report, row["turn"])
+        events = tool_events(blocks)
         names = [event["name"] for event in events]
         success = {event["name"] for event in events if event["failed"] is False}
         row["product_reported_tools"] = {key: row[key] for key in ("tool_calls", "failed_tools", "tool_names")}
@@ -110,6 +122,7 @@ def audit(directory):
         row["tool_accounting_changed"] = row["product_reported_tools"] != {
             key: row[key] for key in ("tool_calls", "failed_tools", "tool_names")}
         checks = dict(row["checks"])
+        checks["turn_trace_available"] = bool(blocks)
         case, turn = row["scenario"], row["turn"]
         if case == "consult":
             checks["no_tools"] = not events
@@ -128,7 +141,10 @@ def audit(directory):
             target = root / ("secondary" if case == "multi_code" else "primary")
             checks["independent_code_oracle"] = code_oracle(target)
             if case == "multi_code":
-                checks["primary_notes_preserved"] = (root / "primary/notes.txt").read_text() == "KEEP_EXISTING_NOTES\n"
+                try:
+                    checks["primary_notes_preserved"] = (root / "primary/notes.txt").read_text() == "KEEP_EXISTING_NOTES\n"
+                except (OSError, UnicodeError):
+                    checks["primary_notes_preserved"] = False
         if case == "browser_host_boundary":
             checks["discovery_attempted"] = "tool_search" in names or any(name.startswith("mcp_browser_") for name in names)
             checks["no_registry"] = not any(name in names for name in ("registry_sync", "start_registry_mcp_server"))

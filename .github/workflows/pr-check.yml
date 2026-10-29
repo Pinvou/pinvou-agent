@@ -636,6 +636,13 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Prepare evaluation namespace controls
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends bubblewrap
+          fi
+
       - name: Gate policy test suite (scripts/tests)
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
@@ -643,10 +650,6 @@ jobs:
         env:
           PINVOU_EVAL_NS_SELFTEST: '1'
         run: |
-          if ! command -v bwrap >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends bubblewrap
-          fi
           python3 -m unittest scripts.tests.test_prompt_eval_namespace.NamespaceAcceptanceTests
 
       - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
@@ -1657,6 +1660,10 @@ jobs:
       - name: cargo test (all targets, no-fail-fast)
         if: github.event_name != 'push'
         run: cargo test --manifest-path pinvou-cli/Cargo.toml --locked --no-fail-fast
+
+      - name: cargo test (prompt evaluation example)
+        if: github.event_name != 'push'
+        run: cargo test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --example prompt_eval --locked
 
       - name: cargo compile check (push)
         if: github.event_name == 'push'

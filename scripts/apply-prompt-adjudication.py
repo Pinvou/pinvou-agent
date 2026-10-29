@@ -8,10 +8,16 @@ No new model calls are made. The frozen raw receipts remain the primary record.
 import argparse
 import copy
 import json
+import importlib.util
 from pathlib import Path
 
 
 KEY_FIELDS = ("model_id", "variant", "repetition", "scenario", "turn")
+
+_spec = importlib.util.spec_from_file_location(
+    "adjudication_provenance", Path(__file__).with_name("prompt_eval_provenance.py"))
+provenance = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(provenance)
 
 
 def key(row):
@@ -26,6 +32,7 @@ def boolean(annotation, name):
 
 
 def apply(rows, annotations, include_semantic_checks=False):
+    provenance.validate_revisions(rows)
     indexed = {}
     for annotation in annotations:
         identity = key(annotation)

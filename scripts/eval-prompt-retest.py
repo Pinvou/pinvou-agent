@@ -14,6 +14,7 @@ spec = importlib.util.spec_from_file_location("community", Path(__file__).with_n
 community = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(community)
 community.cases = cases
+community.extra_source_files = (Path(__file__),)
 cases.subprocess = community.sandbox.VerifierSubprocess
 prepare = cases.prepare
 

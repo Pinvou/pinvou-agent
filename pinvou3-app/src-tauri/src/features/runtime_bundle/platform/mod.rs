@@ -229,7 +229,7 @@ pub const INSTRUCTIONS_SHARED_MD: &str =
 /// `{{PINVOU3_SUDO_INSTRUCTION}}`'s lifecycle (setting changes take effect on new sessions).
 const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 - 用户明确要求记住内容时，简短确认收到请求，同轮继续任务。应用后台在回合结束后处理长期保存，必要时请求确认；未取得保存结果前，不断言已持久保存。\n\
-- 对未明确要求记忆的偏好自然回应，不承诺入库。只使用实际提供的记忆，不编造“我记得”；与当前明确要求冲突时，以当前要求为准。\n\n";
+- 对未明确要求记忆的偏好自然回应，不承诺入库。只使用实际提供的记忆，不编造“我记得”；与当前明确要求冲突时，以当前要求为准；事实核对和指令优先级见「底线」。\n\n";
 
 /// Off-state fill for the same placeholder: memory is off by default (and
 /// force-disabled for non-Simplified-Chinese users), so the default session has
@@ -238,7 +238,7 @@ const MEMORY_SECTION_MD: &str = "## 用户记忆\n\
 /// the same persistence contract [`MEMORY_SECTION_MD`] guards against. Chinese
 /// is used to match the all-Chinese instruction file this line embeds into (the
 /// on-state [`MEMORY_SECTION_MD`] is Chinese as well).
-const MEMORY_OFF_NOTICE_MD: &str = "本会话长期记忆已关闭。用户要求记住时，不声称已长期保存；说明可在简体中文界面的设置中开启。本轮照常完成任务。\n\n";
+const MEMORY_OFF_NOTICE_MD: &str = "本会话长期记忆已关闭。用户要求记住时，不声称已长期保存；说明需先切换到简体中文界面，再在设置中开启。本轮照常完成任务。\n\n";
 
 /// Fill for the `{{PINVOU3_MEMORY_SECTION}}` placeholder line (newline included): the
 /// [`MEMORY_SECTION_MD`] when memory is on, a truthful off-notice ([`MEMORY_OFF_NOTICE_MD`])
@@ -410,21 +410,17 @@ pub const LOCALE_CLOSER_JA: &str = "## 言語再確認\n\n\
 ユーザーの最新メッセージの言語に従って返信してください。\
 判断できない場合は日本語。";
 
-/// pinvou3 版静态层 mode 块——Yolo（生产主路径,approval=Auto）。瘦身依据:
-/// 行为引导大头已由 `build_send_message_op`(Plan 段经 `SessionPolicy::plan_reminder`)
-/// 每 turn `<system-reminder>` 注入,静态块只立常驻事实;底座 YOLO_MODE/AUTO_APPROVAL/
-/// Session Longevity/Efficient Approvals 的逐条教学全不保留。
-///
-/// (史料,防重蹈:句尾曾有「phase rules」尾巴,是 phase 时代残留;b891b2f 删它属正确清理。
-/// 我一度误以为删它致 GUI 首请求采歪、还恢复过(8e20f16)——实为 **gongwen MCP 工具才是
-/// 真因**(用户移除 gongwen 即不漂、删 phase 也不漂),phase 是被其开关混淆的红鲱鱼。
-/// git 二分时 gongwen 开关状态不一致 → 误判。详见 memory。)
+/// Static Execute guidance follows the current turn's permission and mode
+/// posture. Per-turn reminders supply Plan and unattended constraints; this
+/// fragment preserves explicit authorization and refusal boundaries.
 pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Follow this turn's `<turn_meta>` permission/sandbox posture and `<system-reminder>`.
 Plan is read-only; consultation can be answered without changing files.
 For authorized implementation tasks, act, verify and deliver.
+When authorization is required, describe the concrete proposed change in your
+reply and wait for the user's decision.
 After a permission/approval refusal, stop the blocked operation. Reconsider it
 only when the required authorization or runtime conditions have actually changed;
 do not retry unchanged requests or switch channels to bypass the refusal.";

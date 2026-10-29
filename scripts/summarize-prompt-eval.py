@@ -83,6 +83,7 @@ def main():
                 raise ValueError(f"duplicate receipt: {key}")
             keys.add(key)
             groups[(row["variant"], row["model"])].append(row)
+    family_stats.provenance.validate_revisions([row for rows in groups.values() for row in rows])
     print(json.dumps([dict(variant=variant, model=model, **summarize(rows))
                       for (variant, model), rows in sorted(groups.items())], ensure_ascii=False, indent=2))
 

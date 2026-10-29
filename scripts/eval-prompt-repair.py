@@ -12,6 +12,7 @@ import prompt_eval_repair_cases as cases
 
 def attach_cases(community, suite=cases):
     community.cases = suite
+    community.extra_source_files = (Path(__file__),)
     # New, delegated and public-API generated-code graders all stay isolated.
     suite.subprocess = community.sandbox.VerifierSubprocess
     suite.previous.subprocess = community.sandbox.VerifierSubprocess

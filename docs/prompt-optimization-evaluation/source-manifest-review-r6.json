@@ -1,0 +1,144 @@
+{
+  "revision": "V2.4.5-review-r6",
+  "date": "2026-10-29T09:36:44.238378+00:00",
+  "parent_before_revision": "d3e84dcec9b19317ee29baa477571a88bf933b82",
+  "scope": "Changed parent sources and metadata only. Unchanged source bytes are inherited from the named parent; previous model/review receipts retain their own frozen identities.",
+  "sources": [
+    {
+      "path": ".github/workflows/pr-check.yml",
+      "sha256": "91d3ad9dc6877a69a0ba571b4f0bfaca803e12ccf9bb16a7658f330de5d0de03"
+    },
+    {
+      "path": ".github/workflows/secret-scan.yml",
+      "sha256": "10641b88466c42b1893fac8358d0d0758e5c4da1236c7302a81a36cdfac23bf5"
+    },
+    {
+      "path": "docs/fork-modifications.en.md",
+      "sha256": "5193df1b4751fe567af0902c89cd330549f240c1d64b9a0069927b52eec5b8ee"
+    },
+    {
+      "path": "docs/fork-modifications.md",
+      "sha256": "a469743786a81b16538a04cabe0251eeb0b63601137d46abf8e1e33de5780e97"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/README.md",
+      "sha256": "b2c04e8ddf32580f65627b57cb1f673df3bc4e907f2746c6560e46864797529a"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/report-artifacts-v2.4.5.json",
+      "sha256": "a4d8aa3d91ca49d1799d45d1de219b99623880d16633115289b37955e0385308"
+    },
+    {
+      "path": "docs/scheduled-tasks-run-now-chat-create-bugfix-plan.md",
+      "sha256": "0070b862120f1b75f42a82153e9250146c8d560af6217b9925cca421d83a46fe"
+    },
+    {
+      "path": "docs/提示词优化-普通模式与代码模式.md",
+      "sha256": "71ec11d3ae88a8777a6e4f40f622a52afd9ca6eda3218bce853b475937d67498"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/builtin-skills/visual-design/SKILL.md",
+      "sha256": "51a4449f20b9a0df5bb6a0e44f07079e1852304d88b292b03f45ba6e7b7b16ac"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md",
+      "sha256": "28037f91484061195c3936ae05cfa7047d00e362217628e93e878c949d3d769b"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md",
+      "sha256": "e145c6e7096f4e422138d7e6a5f8cffe54b7cc47e4087fc2bd43890489c01cd0"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/mcp-servers/present_artifact_server.py",
+      "sha256": "02dc910ca4fe5fb6cb4a9e1f5e8664de7b3c3f9a03b33b86c5b0dc945b871554"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/skill-marketplace/government-writing/SKILL.md",
+      "sha256": "fd92d05d6fb0a65fef9c3f4954643a3775ff4b7268d253a72e595a27cb4ef480"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/skill-marketplace/pptx/SKILL.md",
+      "sha256": "3da5fdb780a3b1509a837eab3bab7df0fc00baa7f4c1516e0c7727187814f973"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/skill-marketplace/visualizer/SKILL.md",
+      "sha256": "30bee705865178bfdbffbc235bf439b7cd4e8fc8d940a5857f289d063aa063d9"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/skill-marketplace/visualizer/references/visualizer-design-system.md",
+      "sha256": "cb14d153549dcf9da6efde52f628d6d6abd8e9799af7ebc137d298747c5630a8"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs",
+      "sha256": "24560cbf12b2dc28e93c61a4b8ff252cbaeaa4c92209fcdd860ad2ad9a7c35d3"
+    },
+    {
+      "path": "scripts/apply-prompt-adjudication.py",
+      "sha256": "fc3e448e0d9c116457009f47bb51f6c850dbcb7842307fb760225f9309f6b853"
+    },
+    {
+      "path": "scripts/audit-prompt-eval.py",
+      "sha256": "fa8a2cefcb2293b55fb8e2df973e950936ddca80feef14b2378d0b1126c80de2"
+    },
+    {
+      "path": "scripts/eval-prompt-community.py",
+      "sha256": "601807c296b0dcd7e774b3f85a6c530f798348f105c4aaf91740956fc296961b"
+    },
+    {
+      "path": "scripts/eval-prompt-repair.py",
+      "sha256": "fc3de0c124e335a9996902da887f8d692c70d149fa0c6efbcca62bac51a2e5fe"
+    },
+    {
+      "path": "scripts/eval-prompt-retest.py",
+      "sha256": "65b7619e8d2db718049dba877cbde5926588409017f343156716ea8b41bfa123"
+    },
+    {
+      "path": "scripts/eval-prompt-suite.py",
+      "sha256": "d5ba91a9713d1574e0e90d6c77972016f9f8e8eea517b3f5375f8e77ecd5e8c5"
+    },
+    {
+      "path": "scripts/fork-guard.sh",
+      "sha256": "0d6e1b3dd63629bbcb8511a6d25f5d661674a54acdfa1333b42b6a6bd82af9c2"
+    },
+    {
+      "path": "scripts/prompt_eval_community_cases.py",
+      "sha256": "56699588b5f61974c83a3e71cb45a5f1359d69fa935781f4bbe0e46fd0dcbac3"
+    },
+    {
+      "path": "scripts/prompt_eval_provenance.py",
+      "sha256": "25c6204439c84406c58fa9e4f15368a9cc2f6066b5f48009e05991347af48417"
+    },
+    {
+      "path": "scripts/summarize-prompt-community.py",
+      "sha256": "f3b6185f9cfb1f0e474227ff742f738fed92c883bb9b15d9b92785f9ffee5686"
+    },
+    {
+      "path": "scripts/summarize-prompt-eval.py",
+      "sha256": "0177c4dfe8b4af373ea656029b6a9d1f986cd09edacdebbb909da61bca257248"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_adjudication.py",
+      "sha256": "f82cdc5a51e16fc8fedf59ba1e5decb9d1db9edeea4156a1ce3aaa3a13b7edea"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_audit.py",
+      "sha256": "51c9137ee376300328831918a45c42bd27c0fe3a9411684a72a3e00f5a50f4ba"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_ci.py",
+      "sha256": "3c9b30d1ee1b69ce2c506cf6681c11626bde59707336bd791b05355a53f09591"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_community_stats.py",
+      "sha256": "6d51b4f8d184eeccb7fab5751b20d0b6504851eacdf7d39f2a9eaeed01163e4f"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_oracles.py",
+      "sha256": "d09f4c69dd4e45b7915511a3e66751c00d7f603b6e886b81b505f30b09b155b9"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_provenance.py",
+      "sha256": "740547524af98939680a6dd675342fbd5516f6693d3736eabd3e1d5fced10ecd"
+    }
+  ]
+}

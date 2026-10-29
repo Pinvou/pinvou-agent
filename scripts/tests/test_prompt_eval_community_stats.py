@@ -48,6 +48,20 @@ class CommunityStatisticsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 legacy.summarize(incomplete)
 
+    def test_different_or_missing_grader_revisions_cannot_be_aggregated(self):
+        rows = [dict(variant=variant, model="fixture", repetition=0, scenario="consult", turn=0,
+                     grader_revision=revision) for variant, revision in
+                [("baseline", "old-generation"), ("candidate", "new-generation")]]
+        for change in ["mixed", "legacy"]:
+            if change == "legacy":
+                rows[0].pop("grader_revision")
+            with self.assertRaisesRegex(ValueError, "mixed grader_revision"):
+                stats.summarize(rows, repetitions=1)
+            with self.assertRaisesRegex(ValueError, "mixed grader_revision"):
+                legacy.summarize(rows)
+        rows[1].pop("grader_revision")
+        self.assertEqual(len(stats.family_groups(rows, 1)), 2, "wholly legacy frozen corpora remain readable")
+
 
 if __name__ == "__main__":
     unittest.main()

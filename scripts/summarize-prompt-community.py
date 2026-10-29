@@ -8,6 +8,13 @@ import math
 from pathlib import Path
 import random
 import statistics
+import importlib.util
+
+
+_spec = importlib.util.spec_from_file_location(
+    "stats_provenance", Path(__file__).with_name("prompt_eval_provenance.py"))
+provenance = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(provenance)
 
 
 def percentile(values, q):
@@ -25,6 +32,7 @@ def pass_power(successes, attempts, k):
 
 
 def family_groups(rows, repetitions=None):
+    provenance.validate_revisions(rows)
     groups = defaultdict(list)
     keys = set()
     for row in rows:

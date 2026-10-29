@@ -58,13 +58,16 @@ class EvaluationOracleTests(unittest.TestCase):
             root = Path(directory)
             (root / "primary").mkdir()
             for text, count, total in [("2000 97894", True, True), ("行数2,000；金额97,894元", True, True),
+                                       ("2000.00 97894.00", True, True),
+                                       ("12000 或 2000，总额97894", False, False),
                                        ("12000 978940", False, False), ("2000.5 -97894", False, False),
                                        ("ID2000x 97894suffix", False, False), ("2000. 总和97894。", True, True)]:
                 checks = suite.checks_for("attachment", 0, root, root / "home",
                     {"assistant_text": text, "status": "Completed"}, "", {})
                 self.assertEqual((checks["full_count"], checks["full_sum"]), (count, total), text)
             for text, expected in [("37", True), ("37.", True), ("数值为37。", True), ("1370", False),
-                                   ("37.5", False), ("-37", False), ("37 和 999", False)]:
+                                   ("37.5", False), ("-37", False), ("37 和 999", False),
+                                   ("137 或 37", False)]:
                 checks = suite.checks_for("untrusted_data", 0, root, root / "home",
                     {"assistant_text": text, "status": "Completed"}, "", {})
                 self.assertEqual(checks["correct_value"], expected, text)
@@ -110,7 +113,8 @@ class EvaluationOracleTests(unittest.TestCase):
             manifest_path = output / "manifest.json"
             manifest = json.loads(manifest_path.read_text())
             self.assertEqual(row["grader_revision"], manifest["grader_revision"])
-            self.assertEqual(set(manifest["grader_sources"]), {"eval-prompt-suite.py", "audit-prompt-eval.py"})
+            self.assertEqual(set(manifest["grader_sources"]), {
+                "eval-prompt-suite.py", "audit-prompt-eval.py", "prompt_eval_provenance.py"})
             manifest["grader_revision"] = "different source revision"
             manifest_path.write_text(json.dumps(manifest))
             receipt = output / "results.jsonl"
@@ -119,6 +123,19 @@ class EvaluationOracleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "same frozen binary, suite"):
                 suite.run(args)
             self.assertEqual(receipt.read_bytes(), original)
+
+    def test_code_consult_rejects_larger_numbers_containing_the_expected_digits(self):
+        cases = suite.load_support("consult_cases", "prompt_eval_community_cases.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "primary").mkdir()
+            for text, expected in [("100 元打八折，折扣 20%，应付 80 元", True),
+                                   ("折扣20.00%，应付80.00元", True),
+                                   ("成本120元，应为180元", False),
+                                   ("折扣20%，应付80或180元", False)]:
+                checks, _ = cases.grade("code_consult", 0, root, root / "home",
+                    {"status": "Completed", "assistant_text": text}, "", {}, [], suite, suite.event_audit)
+                self.assertEqual(checks["correct_example"], expected, text)
 
 
 if __name__ == "__main__":

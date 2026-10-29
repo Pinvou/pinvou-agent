@@ -299,6 +299,9 @@ fingerprints=(
   "T8|roster 载荷携带 host_profiles 键  |CodeWhale/crates/tui/src/tools/subagent/mod.rs|\"host_profiles_truncated\": host_profiles_truncated,"
   "T8|roster profile_query 关键词发现通道 |CodeWhale/crates/tui/src/tools/subagent/mod.rs|fn roster_profile_query(input: &Value) -> Option<String>"
 
+  "APP|Execute explicit authorization boundary|pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs|reply and wait for the user's decision."
+  "APP|Protected directory closed-state boundary|pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md|关闭或不支持时禁止写入这些目录"
+  "APP|Unavailable browser external-process boundary|pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md|不启动外部 Chrome 或切换到截图流"
   "APP|spawn 前安装 Engine session id   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.session_id = Some(session_id.to_string());"
   "APP|产品白名单复用原生 allowed_tools |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
   "APP|宿主申报输出事实抵达钢丝回归        |pinvou3-app/src-tauri/src/features/assistant/route_wire_cap_tests.rs|fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies"

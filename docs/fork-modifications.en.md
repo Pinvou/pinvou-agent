@@ -531,3 +531,34 @@ their original source boundary; there are no new model results. See
 [R5 sources](prompt-optimization-evaluation/source-manifest-review-r5.json).
 
 Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
+
+## PR799 review R6 follow-up (2026-10-29)
+
+Foundation inventory and gitlink remain at consumed public squash `f1eb10efc`;
+this follow-up changes only the parent application, evaluation tools and CI.
+
+- Secret-scan explicitly prepares Python 3.x before importing the exact digest
+  controls (`tomllib` requires Python 3.11+). The CLI regression lane executes
+  the `prompt_eval` example's two unit tests explicitly. Namespace preparation
+  precedes discovery and retries package downloads; exhausted failures remain red.
+- Grader identity includes lateral `prompt_eval_*` imports and the selected runner
+  adapter. Resume validates existing rows before tail repair or manifest creation.
+  Both aggregators and adjudication reject mixed revisions and legacy/current
+  mixtures; wholly legacy frozen corpora remain readable.
+- Numeric controls reject alternative totals and code-consult substrings, allow
+  whole-number decimal notation, and retain disclosed semantic-review limits.
+  Ambiguous overlapping IDs remain unsettled; missing turn prompts and deleted
+  preservation sentinels fail checks rather than crashing the auditor.
+- Restore explicit protected-directory, unavailable-browser, scheduling-lifetime,
+  memory-UI and authorization wording. Align five shipped Skill files with ordinary
+  presenter exposure when the backend is healthy. No permission, dispatch, engine
+  loader, foundation or frozen-score behavior is changed.
+- Three additional APP fingerprints pin the restored authorization and browser
+  boundaries. The short zh/en commit inventories now both list #114/#125; the
+  detailed Chinese section 3 already listed both squashes before R6.
+
+Current verification and source boundaries are recorded in
+[prompt-optimization-evaluation/review-r6-verification.json](prompt-optimization-evaluation/review-r6-verification.json)
+and [source-manifest-review-r6.json](prompt-optimization-evaluation/source-manifest-review-r6.json).
+Earlier receipts retain their original sources and execution counts. No fresh
+model run, per-request token measurement or native-platform CI result is implied.

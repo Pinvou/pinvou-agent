@@ -1707,13 +1707,15 @@ cargo test -p pinvou3-tauri engine_pool --no-run
 
 #### 6. 立即运行后的执行约束
 
-任务 prompt 原文本来就作为用户消息传入会话（`ScheduledChatExecutor::execute` → `task.prompt()` → `EnginePool::run_scheduled_turn` → `AppEngine::send_scheduled_message`），链路无缺失。为防模型把目标改写成别的事，`engine.rs` 的 `SCHEDULED_TURN_REMINDER` 只加**一条**短约束（走既有 per-turn `<system-reminder>` 通道，复用 persona reminder 参数位）：
+任务 prompt 原文本来就作为用户消息传入会话（`ScheduledChatExecutor::execute` → `task.prompt()` → `EnginePool::run_scheduled_turn` → `AppEngine::send_scheduled_message`），链路无缺失。为防模型把目标改写成别的事，`engine.rs` 的 `SCHEDULED_TURN_REMINDER` 通过既有每轮通道注入约束。原一行方案已由 PR799 的无人值守安全默认与阻塞说明补全（2026-10-29），当前三行文本如下（走既有 per-turn `<system-reminder>` 通道，复用 persona reminder 参数位）：
 
 ```
-本轮是定时任务的自动执行：直接执行用户消息里的任务，不要改写、替换或扩展任务目标。
+本轮为无人值守自动执行，只完成用户给定的任务，不改写、替换或扩展任务目标。
+有安全默认且在已有授权范围内时直接推进；不要发起等待用户回答或确认的操作。
+缺少关键条件或授权时，说明阻塞、已完成部分和未执行事项，然后结束本轮；不猜测缺失事实或声称已经完成。
 ```
 
-不要在这里继续堆叠长提示词。
+提醒保持目标、授权、交互限制与阻塞报告四项边界，不扩展任务目标或授权。
 
 ### 三、已完成的 UI 修复
 
@@ -1783,6 +1785,6 @@ cargo check --locked
 2. 不要把运行记录删除误实现为删除定时任务定义。删除一次运行只清 Session + Run + Task，任务定义、共享工作间、其他运行必须保留。
 3. 不要再给 `sched-*` 会话新增平行 Session 命令。会话元数据（标题/置顶/收起）就用普通 Session 命令，差异在后端 `SessionKind` 分发处收敛。
 4. 不要给侧边栏记录列表加二级索引或汇总存储。条数上限由后端既有 retention 兜底；前端加载走 `loadScheduledTaskRecentRuns()` 的单次 `list_scheduled_runs`（一次 reconcile + 过滤 + 倒序），见交接说明 §三.3。
-5. 不要在 `SCHEDULED_TURN_REMINDER` 上继续堆提示词。任务 prompt 原文已完整传入，那里只允许一条防目标改写的短约束。
+5. `SCHEDULED_TURN_REMINDER` 的原一行限制已由 PR799 的三行无人值守契约取代，见上文「立即运行后的执行约束」；仍使用原任务 prompt 和原注入通道，不扩展目标或授权。
 6. 不要新增第二份定时任务方案文档；后续修改继续写入本文档。
 7. 如果后续要释放侧边栏空间，优先优化分组展开策略或记录区高度分配，不要压缩主导航项。侧边栏空间偏小的问题尚未解决（现在记录不再截断，这个问题会更明显），需作为下一轮 UI 优化项跟进。

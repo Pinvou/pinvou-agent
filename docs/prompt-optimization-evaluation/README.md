@@ -9,7 +9,7 @@ dated R1–R4 records are superseded; those records retain their original heads.
 Illustrated [Chinese report](提升报告-V2.4.5.md), [English report](report-v2.4.5.md),
 [PDF](pinvou-improvement-report-v2.4.5.pdf), and [poster](figures/pinvou-poster-v2.4.5.png)
 contain the historical pre-review V2.4.5 measurements. PNG/SVG figures are reproducible
-with `render_report_figures.py`. No R1–R5 model run or new score is implied.
+with `render_report_figures.py`. No R1–R6 model run or new score is implied.
 
 Read the result-layer labels: frozen raw, frozen calibration, uniformly repaired
 command-path grading, and secondary author review are separate. Current-source
@@ -32,6 +32,26 @@ and [calibration changes](calibration-changes-v2.4.5.json).
 
 
 ## Current review source and validation boundary
+
+R6 over `d3e84dcec` fixes the secret-scan Python prerequisite, fingerprints lateral
+grader imports and runner adapters, and refuses mixed revisions during resume,
+aggregation and adjudication. Deleting a manifest does not make old rows eligible.
+Wholly unversioned historical corpora remain readable as legacy evidence; they
+cannot be appended to a current live run. See [R6 verification](review-r6-verification.json)
+and [R6 source manifest](source-manifest-review-r6.json).
+
+Current numeric controls reject extra alternative values and accept equivalent
+whole-number `.00` notation. Negated numbers and other prose interpretations
+still require disclosed transcript review; these lexical controls are not a
+general semantic oracle. Overlapping duplicate tool-call IDs stay unsettled,
+since the trace cannot establish which call owns a result. Missing turn traces
+or deleted preservation sentinels fail checks instead of crashing an audit.
+
+The presenter schema adds input cost to every ordinary-mode request when its
+server is healthy. There is no measured per-request token figure for the current
+schema; tokenizer, serialization and model vary. The earlier R5 review estimate
+is historical, not a validated bound. Eager exposure does not guarantee a healthy
+backend or a visible native card.
 
 The original R5 checkpoint is `5a78aebfd`. A [Linux loader follow-up](review-r5-ci-verification.json)
 adds the read-only `/lib64` view needed by x86_64 ELF interpreters; the earlier

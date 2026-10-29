@@ -12,6 +12,19 @@ spec.loader.exec_module(adjudication)
 
 
 class TranscriptAdjudicationTests(unittest.TestCase):
+    def test_adjudication_rejects_different_or_missing_grader_revisions(self):
+        first, a = self.fixture()
+        second, b = self.fixture()
+        second["repetition"] = b["repetition"] = 1
+        first["grader_revision"] = "old-generation"
+        second["grader_revision"] = "new-generation"
+        with self.assertRaisesRegex(ValueError, "mixed grader_revision"):
+            adjudication.apply([first, second], [a, b])
+        second.pop("grader_revision")
+        with self.assertRaisesRegex(ValueError, "mixed grader_revision"):
+            adjudication.apply([first, second], [a, b])
+        first.pop("grader_revision")
+        self.assertEqual(len(adjudication.apply([first, second], [a, b])), 2)
     def fixture(self, **checks):
         row = dict(model_id="fixture", variant="candidate", repetition=0,
                    scenario="untrusted_data", turn=0, passed=False,
