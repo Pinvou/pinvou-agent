@@ -4,7 +4,7 @@ mod platform;
 mod protocol;
 mod relay_client;
 
-pub use manager::{RelaySettingsInfo, RemoteControlManager};
+pub use manager::RemoteControlManager;
 pub use protocol::{WebAccessInfo, WebAccessStatus};
 
 pub(crate) const MAX_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
