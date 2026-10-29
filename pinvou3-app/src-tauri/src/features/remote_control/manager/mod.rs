@@ -48,9 +48,9 @@ use persistence::{
 // enums (`RpcRequestAction`, `EventSource`, ...) and calls
 // the pure helpers, so the whole surface is imported by name.
 use rpc::{
-    EventSource, NewRpcAdmission, ReplayMessageContext, RpcRejection, RpcRequestAction,
-    WebScopeRejection, bounded_rpc_completion, enqueue_stream_reset, event_message,
-    prepare_bridge_generation, prepare_new_rpc_admission, prune_rpc_cache,
+    EventSource, NewRpcAdmission, RPC_TIMED_OUT_CODE, ReplayMessageContext, RpcRejection,
+    RpcRequestAction, WebScopeRejection, bounded_rpc_completion, enqueue_stream_reset,
+    event_message, prepare_bridge_generation, prepare_new_rpc_admission, prune_rpc_cache,
     request_conflict_completion, rpc_admission_rejection, rpc_error_completion, rpc_fingerprint,
     rpc_in_flight_expired, rpc_response, snapshot_message, stream_reset_message,
     subscription_filtered_replay_messages, tombstone_completion, tombstone_completion_cacheable,
@@ -1069,11 +1069,18 @@ impl RemoteControlManager {
             self.emit_status();
         }
         let inner = self.inner.lock();
-        inner
-            .endpoint
-            .as_ref()
-            .map(pairing_info)
-            .ok_or_else(|| "Web access is not active".to_string())
+        // Round-5 复审 minor:endpoint 未激活(resume 尚未成功/激活失败)时
+        // 撤权仍已持久化成功,按失败上报会让设置弹窗对一次真实的撤权显示
+        // 错误。返回携带配置内 endpoint_id 的非活跃信息而不是 Err。
+        match inner.endpoint.as_ref() {
+            Some(endpoint) => Ok(pairing_info(endpoint)),
+            None => Ok(WebAccessInfo {
+                endpoint_id: config.endpoint_id.clone(),
+                url: String::new(),
+                qr_data_url: None,
+                status: WebAccessStatusKind::Stopped,
+            }),
+        }
     }
 
     pub fn relay_settings(&self) -> RelaySettingsInfo {
@@ -1893,7 +1900,34 @@ impl RemoteControlManager {
                     }
                     (pending.lease_id.clone(), pending.fingerprint.clone())
                 }
-                Some(RpcCacheEntry::Complete { .. }) => return Ok(()),
+                Some(RpcCacheEntry::Complete {
+                    fingerprint,
+                    completion,
+                }) => {
+                    // Round-5 复审 M1:TTL 扫描会把仍在执行(或恰好刚完成)的
+                    // 请求先写成超时占位。真实完成必须取代占位而不是被幂等吞
+                    // 掉,否则手机重放这个 id 拿到的是过期超时(「已释放」),
+                    // 真实结果永远到不了手机。只有占位可被取代:占位被替换后
+                    // 第二次 complete 仍走幂等忽略;确定性拒绝等真终态不可被
+                    // 伪造的 complete 覆盖(命令未派发,不存在真实完成)。
+                    if Self::rpc_completion_is_in_flight_timeout(completion) {
+                        let fingerprint = fingerprint.clone();
+                        inner.rpc_cache.insert(
+                            request_id.to_string(),
+                            RpcCacheEntry::Complete {
+                                fingerprint,
+                                completion: bounded_rpc_completion(
+                                    ok,
+                                    result,
+                                    error,
+                                    error_code,
+                                    error_category,
+                                ),
+                            },
+                        );
+                    }
+                    return Ok(());
+                }
                 None => return Err(format!("unknown Web RPC request: {request_id}")),
             };
             let completion = bounded_rpc_completion(ok, result, error, error_code, error_category);
@@ -1997,6 +2031,9 @@ impl RemoteControlManager {
                 endpoint.lease_id = None;
                 endpoint.fresh_baseline_seq = None;
                 endpoint.last_error = error;
+                // 字段契约:任何不携带码的错误写入都必须清掉旧码,防止旧恢复
+                // 码被映射到新的错误文本上(round-5 复审 minor)。
+                endpoint.last_error_code = None;
             }
         }
         self.emit_status();
@@ -2400,6 +2437,13 @@ impl RemoteControlManager {
         completion
     }
 
+    /// 是否为 TTL 扫描写入的超时占位(唯一的 `rpc_timed_out` 产出点在
+    /// `handle_rpc_request` 的扫描)。`complete_rpc` 据此允许真实完成取代
+    /// 占位;确定性拒绝等真终态码各不相同,不会被误取代。
+    fn rpc_completion_is_in_flight_timeout(completion: &RpcCompletion) -> bool {
+        !completion.ok && completion.error_code.as_deref() == Some(RPC_TIMED_OUT_CODE)
+    }
+
     fn handle_rpc_request(&self, value: &Value) {
         let request_id = value
             .get("client_request_id")
@@ -2469,8 +2513,11 @@ impl RemoteControlManager {
             let endpoint_id = endpoint.config.endpoint_id.clone();
             let sender = endpoint.sender.clone();
             let bridge_generation = inner.bridge_generation.clone();
-            // 浏览器已在 180 秒超时后放弃的卡死请求，超过 TTL 后转为终态错误，
-            // 释放 in-flight 槽位。迟到的 begin/complete 会命中 Complete 并被幂等忽略。
+            // 在途请求超过 TTL 后转为超时占位,释放 in-flight 槽位,并阻止
+            // 同 id 重放触发重派发(幂等去重仍成立)。占位不是终态真理:
+            // 真实完成晚于扫描到达时,complete_rpc 会取代占位(Round-5 复审
+            // M1),所以迟到 begin/complete 的「幂等忽略」只对已取代后的
+            // 正常完成值成立。
             let now = Instant::now();
             let expired: Vec<String> = inner
                 .rpc_cache
@@ -2492,7 +2539,7 @@ impl RemoteControlManager {
                         RpcCacheEntry::Complete {
                             fingerprint,
                             completion: rpc_error_completion(
-                                "rpc_timed_out",
+                                RPC_TIMED_OUT_CODE,
                                 "远程控制请求执行超时，已释放该请求",
                             ),
                         },
@@ -2512,7 +2559,6 @@ impl RemoteControlManager {
             // 无活跃 lease 时保持原行为(主准入路径本来就没有可回复的
             // endpoint)。
             if !rpc_request_targets_active_lease(&inner, &lease_id) {
-                eprintln!("[web-access] ignored rpc_request targeting a replaced lease");
                 return;
             }
             match inner.rpc_cache.get_mut(&request_id) {
@@ -4088,6 +4134,60 @@ mod tests {
     }
 
     #[test]
+    fn only_the_sweep_timeout_completion_is_replaceable() {
+        let placeholder = rpc_error_completion(RPC_TIMED_OUT_CODE, "timed out");
+        assert!(
+            RemoteControlManager::rpc_completion_is_in_flight_timeout(&placeholder),
+            "the TTL sweep's timeout completion must be recognized as the replaceable placeholder"
+        );
+        let real =
+            bounded_rpc_completion(true, Some(serde_json::json!({ "ok": 1 })), None, None, None);
+        assert!(
+            !RemoteControlManager::rpc_completion_is_in_flight_timeout(&real),
+            "a real completion must never be replaceable"
+        );
+        let rejection = rpc_error_completion("invalid_session_scope", "rejected");
+        assert!(
+            !RemoteControlManager::rpc_completion_is_in_flight_timeout(&rejection),
+            "a deterministic rejection is a real terminal value, not a placeholder"
+        );
+        let failed = rpc_error_completion("web_session_chat_failed", "failed");
+        assert!(
+            !RemoteControlManager::rpc_completion_is_in_flight_timeout(&failed),
+            "a real command failure is a real terminal value, not a placeholder"
+        );
+    }
+
+    /// 接线钉(源码契约,同 lease gate 钉的形态):`complete_rpc` 的 Complete
+    /// 臂必须经共享谓词识别 TTL 超时占位并允许真实完成取代之——helper 级
+    /// 谓词测试钉不住「接线点被改回无条件幂等忽略」(Round-5 复审 M1 的
+    /// 病根:占位吞掉真实结果,手机重放永远拿到过期超时)。删除取代分支
+    /// 或绕开谓词即红。
+    #[test]
+    fn complete_rpc_supersedes_the_in_flight_timeout_placeholder() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn complete_rpc(")
+            .expect("complete_rpc must exist");
+        let tail = &source[start..];
+        let end = ["\n    fn ", "\n    pub fn ", "\n    #[test]"]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("complete_rpc body must be terminated by the next item");
+        let body = &tail[..end];
+        assert!(
+            body.contains("rpc_completion_is_in_flight_timeout(completion)"),
+            "the Complete arm must route the placeholder decision through the shared predicate"
+        );
+        assert!(
+            body.contains("rpc_cache.insert"),
+            "a real completion arriving after the TTL sweep must replace the placeholder, \
+             not be idempotently swallowed"
+        );
+    }
+
+    #[test]
     fn rpc_command_and_error_envelopes_are_bounded() {
         assert!(validate_rpc_command("web_access_chat").is_ok());
         assert!(validate_rpc_command("session:resume-2").is_ok());
@@ -4555,8 +4655,12 @@ mod tests {
     #[test]
     fn invalid_ledger_salvages_valid_entries_and_quarantines_the_original() {
         // 可解析但未过整体校验的账本(此处:一条 endpoint_id 非法的坏条目 +
-        // 一条与合法条目重复的键)必须逐条抢救合法条目并隔离原件,而不是
-        // 整体重写——整体丢弃会让旧 endpoint 在 relay 侧保持可加入。
+        // 一条与合法条目同键的重复条目)必须逐条抢救合法条目并隔离原件,
+        // 而不是整体重写——整体丢弃会让旧 endpoint 在 relay 侧保持可加入。
+        // 重复条目与 valid_a 完全相同(同 relay_url + endpoint_id = 同键):
+        // 抢救按「重复键保留首个」跳过它——若删除键去重,抢救结果会多出
+        // 一条,本钉的条数断言即红(round-5 复审:原夹具改了 endpoint_id,
+        // 键随之不同,重复键分支从未被真正钉住)。
         let directory = std::env::temp_dir().join(format!(
             "pinvou-ledger-salvage-test-{}-{}",
             std::process::id(),
@@ -4567,13 +4671,14 @@ mod tests {
 
         let valid_a = PendingRevocation::from(&test_web_config("ep_salv_a"));
         let valid_b = PendingRevocation::from(&test_web_config("ep_salv_b"));
-        let mut bad = serde_json::to_value(&valid_a).unwrap();
-        bad["endpoint_id"] = json!("bad id");
+        let mut invalid = serde_json::to_value(&valid_a).unwrap();
+        invalid["endpoint_id"] = json!("bad id");
         let body = json!({
             "version": PENDING_REVOCATIONS_VERSION,
             "entries": [
                 serde_json::to_value(&valid_a).unwrap(),
-                bad,
+                invalid,
+                serde_json::to_value(&valid_a).unwrap(),
                 serde_json::to_value(&valid_b).unwrap(),
             ],
         });
@@ -5011,6 +5116,62 @@ mod tests {
             lock < gate && gate < cache,
             "the lease gate must run inside the admission lock and before the cache match \
              (lock at {lock}, gate at {gate}, cache at {cache})"
+        );
+    }
+
+    /// 接线钉(Round-5 复审 M2):settle 收口的安全契约(瞬时拒绝绝不进
+    /// Complete 缓存、墓碑冲突绝不缓存)只在 `handle_rpc_request` 的调用
+    /// 点生效——把三个调用点改回无条件缓存/无条件结算时,helper 级测试仍
+    /// 全绿(模块内注释自证)。删除任一收口调用即红。
+    #[test]
+    fn rpc_cache_settle_funnels_are_wired_in_handle_rpc_request() {
+        let source = include_str!("mod.rs");
+        let handle_start = source
+            .find("fn handle_rpc_request(&self, value: &Value)")
+            .expect("handle_rpc_request must exist");
+        let body = &source[handle_start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_rpc_request body must be terminated by the next fn")];
+        assert!(
+            body.contains("Self::settle_tombstone_outcome("),
+            "the tombstone branch must route its cache decision through settle_tombstone_outcome"
+        );
+        assert!(
+            body.contains("Self::settle_admission_rejection("),
+            "both admission branches must route their cache decision through settle_admission_rejection"
+        );
+        assert!(
+            body.contains("validate_web_rpc_scope("),
+            "the preflight must consult the web scope gate (KB paths / prompt references / session scope)"
+        );
+    }
+
+    /// 接线钉(Round-5 复审 M2 的 endpoint_revoked 半边):relay 的
+    /// endpoint_revoked 错误帧必须路由进 handle_revoked 的完整清理——
+    /// 删除该臂会让本地配置对一个不可能成功的注册永远重试,而
+    /// terminal_relay_message 的分类钉住在 relay_client 侧,看不见这条
+    /// manager 侧路由。删除臂内任一关键调用即红。
+    #[test]
+    fn relay_error_frames_route_endpoint_revoked_to_the_revoke_cleanup() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn handle_relay_message(&self, value: Value)")
+            .expect("handle_relay_message must exist");
+        let tail = &source[start..];
+        let body = &tail[..tail
+            .find("\n    fn ")
+            .expect("handle_relay_message body must be terminated by the next fn")];
+        let arm = body
+            .find("if error_code == \"endpoint_revoked\"")
+            .expect("the endpoint_revoked error arm must exist");
+        let arm_tail = &body[arm..];
+        let arm_body = &arm_tail[..arm_tail
+            .find("\n                    return;")
+            .expect("the endpoint_revoked arm must be closed by its early return")];
+        assert!(
+            arm_body.contains("handle_revoked(&current)"),
+            "the endpoint_revoked arm must run the full revoke cleanup for the current endpoint"
         );
     }
 
