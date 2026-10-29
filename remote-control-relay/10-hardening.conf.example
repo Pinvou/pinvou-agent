@@ -32,7 +32,7 @@ Environment=ENDPOINT_CREATE_WINDOW_MS=60000
 # Keep the 4 MiB payload default: scan and parse are linear in frame size,
 # so raising MAX_PAYLOAD_BYTES makes each frame block the event loop
 # proportionally longer (a maximal frame at 16 MiB stalls liveness probes
-# for roughly half a second).
+# for roughly half a second). Values above 16 MiB clamp to a 16 MiB ceiling.
 Environment=MAX_PAYLOAD_BYTES=4194304
 Environment=MAX_WS_CONNECTIONS=5000
 Environment=WS_CONNECT_LIMIT=120

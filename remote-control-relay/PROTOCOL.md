@@ -203,7 +203,10 @@ The Relay reports rejects with a `type: "error"` message carrying a `code`.
 Codes enforced by the reject helper also close the socket with WebSocket close
 code 1008. Five informational codes leave the connection open:
 `bad_json`, `bad_message`, `binary_unsupported`, `unsupported_message_type`,
-and `desktop_offline`.
+and `desktop_offline`. Graceful closes wait for the peer's close handshake so
+queued messages are delivered, and frames that arrive after the close are
+ignored; a peer that withholds the handshake is terminated unconditionally
+after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 
 | Code | Trigger |
 | --- | --- |
@@ -220,7 +223,7 @@ and `desktop_offline`.
 | `invalid_access_token` | Desktop re-registration whose access token hash does not match the endpoint. |
 | `invalid_desktop_secret` | Desktop re-registration or revoke whose desktop secret hash does not match the endpoint. |
 | `invalid_token` | `web_client_join` whose access token hash does not match the endpoint. |
-| `bad_web_client_join` | Malformed `web_client_join`: invalid `endpoint_id` or missing access token. |
+| `bad_web_client_join` | Malformed `web_client_join`: invalid `endpoint_id`, missing access token, or an already-authenticated socket. |
 | `endpoint_not_found` | Join, revoke, or forwarded message referenced an endpoint that does not exist. |
 | `stale_lease` | A Web message arrived from a socket that no longer holds the active lease. |
 | `desktop_endpoint_replaced` | A desktop message arrived from a socket already replaced by a newer registration. |
@@ -296,18 +299,19 @@ and `desktop_offline`.
   leave the process up: `websocket_protocol_violation code=<ws error code>`
   (a contained per-socket protocol violation), `revocation_persist_failed
   code=<errno>`, and `revocation_unexpected_failure`.
-- Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
-  all WebSocket clients without a close handshake (peers observe an abnormal
-  closure) and exit the process with code 0; in-flight HTTP responses are not
-  drained. A signal that arrives during startup — before the handlers are
-  installed at the very end of startup — takes the default action instead.
+- After the handlers are installed at the very end of startup, `SIGINT` and
+  `SIGTERM` terminate all WebSocket clients without a close handshake (peers
+  observe an abnormal closure) and exit the process with code 0; in-flight
+  HTTP responses are not drained. A signal that arrives earlier — during
+  startup — takes the default action instead.
 - The Relay rejects any frame whose complete serialized WebSocket message
   exceeds `MAX_PAYLOAD_BYTES` (protocol v2 requires at least 4 MiB), counting
   the whole envelope rather than just the event payload. The desktop keeps its
   own frames at or below `4 MiB - 64 KiB` so they fit inside that bound.
   Scan and parse costs are linear in frame size, so raising
   `MAX_PAYLOAD_BYTES` above the 4 MiB default trades per-frame event-loop
-  latency: a maximal frame briefly blocks the Relay.
+  latency: a maximal frame briefly blocks the Relay. Values above 16 MiB
+  clamp to a 16 MiB ceiling.
 - The desktop replay journal retains at most 1,024 complete event frames and
   16 MiB. When either boundary evicts the requested cursor, the desktop rotates
   the stream epoch and sends `stream_reset`; the Relay never fabricates a gap.
