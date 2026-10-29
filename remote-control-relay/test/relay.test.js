@@ -1165,8 +1165,11 @@ test("tombstone capacity stays inside what the state limit can hold", async () =
   try {
     // The banner must expose the effective capacity: the clamp silently caps
     // a configured 100 down to what 2 KiB of state can hold (8), and an
-    // operator otherwise cannot see the real value.
+    // operator otherwise cannot see the real value. The heartbeat and the
+    // state cap are the same class of silently-altered knob.
     assert.match(isolated.output(), /\brevoked_capacity=8\b/);
+    assert.match(isolated.output(), /\bheartbeat=5000ms\b/);
+    assert.match(isolated.output(), /\bmax_relay_state=2048B\b/);
     for (let i = 0; i < 8; i += 1) {
       const endpointId = `endpoint_clamp_${String(i).padStart(2, "0")}`;
       const desktop = await registerDesktop(
@@ -1689,7 +1692,11 @@ test("shuts down with exit code 0 on repeated SIGTERM and on SIGINT", async () =
       await waitForExit(isolated.child, 5000);
       assert.equal(isolated.child.exitCode, 0);
       assert.equal(isolated.child.signalCode, null);
+      // No bind-address echo in any wording: the banner reports limits only,
+      // so neither the historical "listening on <url>" nor any other URL
+      // form may reappear.
       assert.doesNotMatch(isolated.output(), /listening on /u);
+      assert.doesNotMatch(isolated.output(), /https?:\/\//u);
     } finally {
       closeSocket(ws);
       await stopRelay(isolated.child);
