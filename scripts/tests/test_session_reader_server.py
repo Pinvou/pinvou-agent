@@ -32,6 +32,7 @@ Run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 from __future__ import annotations
 
 import builtins
+import hashlib
 import importlib.util
 import json
 import os
@@ -841,6 +842,7 @@ class FeatureGateTests(unittest.TestCase):
         "mcp_session-reader_read_session": ["session-mention", "long-memory"],
         "mcp_session-reader_list_sessions": ["session-mention", "long-memory"],
         "mcp_session-reader_send_message_to_session": ["session-messaging"],
+        "mcp_session-reader_create_session": ["session-creation"],
     }
 
     def setUp(self):
@@ -860,6 +862,23 @@ class FeatureGateTests(unittest.TestCase):
     def gate(self, tool="read_session"):
         return server.feature_gate_error(
             tool, str(self.sessions_dir), self.TOOL_FEATURES)
+
+    def test_create_tool_gated_by_its_own_feature(self):
+        """Round-8 M5b: disabling session-creation returns the structured
+        feature_disabled error for create_session (the send tool's twin)."""
+        self.write_state(["session-creation"])
+        gate = server.feature_gate_error(
+            "create_session", str(self.sessions_dir), self.TOOL_FEATURES)
+        self.assertIsNotNone(gate)
+        self.assertEqual(gate["code"], "feature_disabled")
+        self.assertIn("session-creation", gate["error"])
+
+    def test_create_tool_available_when_other_features_off(self):
+        """Union semantics: read/messaging state must not gate the create
+        tool (round-8 M5b)."""
+        self.write_state(["session-mention", "long-memory", "session-messaging"])
+        self.assertIsNone(server.feature_gate_error(
+            "create_session", str(self.sessions_dir), self.TOOL_FEATURES))
 
     def test_all_features_disabled_returns_feature_disabled(self):
         self.write_state(["session-mention", "long-memory"])
@@ -988,7 +1007,7 @@ class StdioContractTests(unittest.TestCase):
 
             tools = self._rpc(proc, "tools/list")
             names = [tool["name"] for tool in tools["result"]["tools"]]
-            self.assertEqual(names, ["read_session", "list_sessions", "send_message_to_session"])
+            self.assertEqual(names, ["read_session", "list_sessions", "send_message_to_session", "create_session"])
 
             call = self._rpc(proc, "tools/call", {
                 "name": "read_session",
@@ -1243,6 +1262,72 @@ class FeatureGateStdioTests(unittest.TestCase):
             proc.kill()
             proc.communicate()
 
+
+class CreateSessionStdioDispatchTests(unittest.TestCase):
+    """Round-24 M2: create_session through stdio _handle_call dispatch —
+    the sessions_dir wiring must reach the marker-echo existence gate.
+    Deleting the sessions_dir pass-through from _handle_call turns this
+    red (the round-7 dead-wired gate regression class)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-create-stdio-")
+        self.requests = Path(self.tmp) / "session-requests"
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        (self.sessions / "sessdisp.json").write_text(
+            json.dumps({"metadata": {"id": "sessdisp"}, "messages": []}),
+            encoding="utf-8",
+        )
+        self._old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.0
+
+    def tearDown(self):
+        server.RESULT_WAIT_SECONDS = self._old_wait
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_dispatch_reaches_marker_echo_existence_gate(self):
+        import hashlib as _h
+        import io as _io
+
+        stem = _h.sha256(b"srcdisp|create|kdisp").hexdigest()
+        done = Path(self.requests, "spool", ".done")
+        done.mkdir(parents=True, exist_ok=True)
+        digest = server.session_request_digest(title="会话", first_message="消息")
+        (done / (stem + ".json")).write_text(
+            json.dumps({
+                "ok": True, "session_id": "ghost01",
+                "request_digest": digest,
+            }),
+            encoding="utf-8",
+        )
+        saved_stdin, saved_stdout = sys.stdin, sys.stdout
+        req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "create_session",
+            "arguments": {
+                "requests_dir": str(self.requests),
+                "sessions_dir": str(self.sessions),
+                "from_session": "srcdisp",
+                "title": "会话",
+                "first_message": "消息",
+                "idempotency_key": "kdisp",
+            },
+        }}
+        captured = _io.StringIO()
+        sys.stdin = _io.StringIO(json.dumps(req) + chr(10))
+        sys.stdout = captured
+        try:
+            server._handle_call(1, req["params"], str(self.sessions),
+                                None, str(self.requests),
+                                {"session-reader": {"session-create": True}})
+        finally:
+            sys.stdin, sys.stdout = saved_stdin, saved_stdout
+        out = captured.getvalue().strip()
+        obj = json.loads(out) if out else {}
+        result = obj.get("result") or {}
+        content = result.get("content") or []
+        body = json.loads(content[0]["text"]) if content else {}
+        assert "does not exist" in body.get("error", ""), body
+        assert "session creation result marker" in body.get("error", ""), body
 
 class SendMessageTests(unittest.TestCase):
     """send_message_to_session: validation + spool write (contract §5 L1 / §6)."""
@@ -1608,12 +1693,21 @@ class SessionsDirResolutionTests(unittest.TestCase):
             server.resolve_sessions_dir(["--sessions-dir", "/tmp/x"]), "/tmp/x")
 
     def test_env_fallback(self):
+        # Round-29 minor strengthening: the expected value used to be
+        # computed with the same join as the implementation
+        # (near-tautological); spell it out and add the env-vs-CLI
+        # precedence pairing.
         old = os.environ.get("PINVOU3_HOME")
         os.environ["PINVOU3_HOME"] = "/tmp/pinvou3home"
         try:
             self.assertEqual(
                 server.resolve_sessions_dir([]),
-                os.path.join("/tmp/pinvou3home", "sessions"),
+                "/tmp/pinvou3home" + os.sep + "sessions",
+            )
+            # A CLI --sessions-dir beats the env.
+            self.assertEqual(
+                server.resolve_sessions_dir(["--sessions-dir", "/tmp/cli-wins"]),
+                "/tmp/cli-wins",
             )
         finally:
             if old is None:
@@ -2185,7 +2279,883 @@ class ScopedStdioTests(unittest.TestCase):
             proc.kill()
             proc.communicate()
 
+class CreateSessionValidationTests(unittest.TestCase):
+    """create_session: argument validation (contract §5 L1)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-create-test-")
+        self.requests = Path(self.tmp) / "session-requests"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _call(self, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "title": "早报会话",
+            "first_message": "汇总今天的新闻",
+            "from_session": "src0001",
+        }
+        args.update(overrides)
+        # Zero the wait: validation failures return before any polling, and a
+        # passing shape must not stall the suite for RESULT_WAIT_SECONDS.
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.0
+        try:
+            return server.create_session(**args)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+
+    def test_title_and_message_caps(self):
+        _, error = self._call(title="x" * 201)
+        self.assertIn("title", error)
+        _, error = self._call(title="   ")
+        self.assertIn("title", error)
+        _, error = self._call(first_message="x" * (server.MAX_FIRST_MESSAGE_CHARS + 1))
+        self.assertIn("first_message", error)
+        _, error = self._call(first_message=" ")
+        self.assertIn("first_message", error)
+
+    def test_workspace_must_be_absolute_existing_dir(self):
+        _, error = self._call(workspace_path="relative/path")
+        self.assertIn("workspace_path", error)
+        _, error = self._call(workspace_path=str(Path(self.tmp) / "missing"))
+        self.assertIn("workspace_path", error)
+        _, error = self._call(workspace_path="x" * (server.MAX_WORKSPACE_PATH_CHARS + 1))
+        self.assertIn("workspace_path", error)
+        payload, error = self._call(workspace_path=self.tmp)
+        self.assertIsNone(error)
+        self.assertEqual(payload["delivery"], "pending")
+
+    def test_optional_field_caps(self):
+        _, error = self._call(model_id="x" * (server.MAX_MODEL_ID_CHARS + 1))
+        self.assertIn("model_id", error)
+        _, error = self._call(from_title="x" * (server.MAX_SENDER_TITLE_CHARS + 1))
+        self.assertIn("from_title", error)
+
+    def test_non_string_fields_are_rejected_not_repr_coerced(self):
+        # Round-29 minor, extended round-30 minor 3: non-string
+        # title/first_message/model_id/from_title/workspace_path used to be
+        # str()-coerced or silently defaulted; the send tool rejects the
+        # same class.
+        for field in ("title", "first_message", "model_id", "from_title"):
+            payload, error = self._call(**{field: {"not": "a string"}})
+            self.assertIsNone(payload, field)
+            self.assertIn(field, error)
+            self.assertIn("string", error)
+        # A falsy non-string workspace_path used to mean "use the app
+        # default" (silently changing what gets created).
+        payload, error = self._call(workspace_path=0)
+        self.assertIsNone(payload)
+        self.assertIn("workspace_path", error)
+        self.assertIn("string", error)
+        payload, error = self._call(workspace_path={"path": True})
+        self.assertIsNone(payload)
+        self.assertIn("workspace_path", error)
+        self.assertIn("string", error)
+
+    def test_volume_root_refused_as_workspace(self):
+        # Round-30 minor 2: the parent-component check replaces the old
+        # `len() <= 3` heuristic (which misclassified 1-2 char top-level
+        # dirs); dirname(p) == p is the volume-root shape on drive roots,
+        # UNC shares, and POSIX "/".
+        payload, error = self._call(workspace_path=os.path.abspath(os.sep))
+        self.assertIsNone(payload)
+        self.assertIn("volume root", error)
+
+    def test_lone_surrogate_idempotency_key_is_a_validation_error(self):
+        # Round-29 minor: the key used to escape the spool-name hash as a
+        # raw -32603 UnicodeEncodeError; the send tool's sibling gate.
+        payload, error = self._call(idempotency_key="k\ud800")
+        self.assertIsNone(payload)
+        self.assertIn("idempotency_key", error)
+        self.assertIn("UTF-8", error)
+
+    def test_idempotency_key_length_cap(self):
+        # Round-29 minor rename: the first half used to pin a keyed call
+        # without a sender — unreachable code, since from_session is
+        # required outright (review round-3 M1) and the key-namespace rule
+        # is enforced by that same gate. Only the length cap is separately
+        # reachable.
+        _, error = self._call(idempotency_key="x" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1))
+        self.assertIn("idempotency_key", error)
+
+    def test_isolated_senders_are_rejected(self):
+        for prefix in ("sched-run1", "aux-side1", "eval_case1", "AUX-X"):
+            _, error = self._call(from_session=prefix)
+            self.assertIsNotNone(error, prefix)
+
+    def test_all_optional_session_create_is_valid(self):
+        payload, error = self._call(title=None, first_message=None)
+        self.assertIsNone(error)
+        self.assertEqual(payload["delivery"], "pending")
+
+
+class CreateSessionSpoolAndResultTests(unittest.TestCase):
+    """create_session: spool write, idempotency, result-marker wait."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-create-spool-")
+        self.requests = Path(self.tmp) / "session-requests"
+        # Round-6 M3: the marker echo's existence check consults the store.
+        self.sessions = Path(self.tmp) / "sessions"
+        self.sessions.mkdir()
+        for sid in ("tgt0001", "sess0001", "sess0002"):
+            (self.sessions / ("%s.json" % sid)).write_text(
+                json.dumps({"metadata": {"id": sid}, "messages": []}),
+                encoding="utf-8",
+            )
+        self._old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.0
+
+    def tearDown(self):
+        server.RESULT_WAIT_SECONDS = self._old_wait
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _call(self, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "sessions_dir": str(self.sessions),
+            "from_session": "src0001",
+            "title": "早报会话",
+            "first_message": "汇总今天的新闻",
+        }
+        args.update(overrides)
+        return server.create_session(**args)
+
+    def _spool_dir(self):
+        return Path(self.requests, "spool")
+
+    def _spooled(self):
+        return sorted(self._spool_dir().glob("*.json"))
+
+    def _write_marker(self, spool_id, payload):
+        done = self._spool_dir() / ".done"
+        done.mkdir(parents=True, exist_ok=True)
+        (done / ("%s.json" % spool_id)).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def test_valid_request_spools_full_record(self):
+        payload, error = self._call(
+            title="早报会话",
+            first_message="汇总今天的新闻",
+            workspace_path=self.tmp,
+            model_id="m1",
+            from_session="src0001",
+            from_title="源会话",
+        )
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["delivery"], "pending")
+        self.assertFalse(payload["duplicate"])
+        files = self._spooled()
+        self.assertEqual(len(files), 1)
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["schema_version"], 1)
+        self.assertEqual(record["title"], "早报会话")
+        self.assertEqual(record["first_message"], "汇总今天的新闻")
+        self.assertEqual(record["workspace_path"], os.path.realpath(self.tmp))
+        self.assertEqual(record["model_id"], "m1")
+        self.assertEqual(record["from_session"], "src0001")
+        self.assertEqual(record["from_title"], "源会话")
+        self.assertEqual(record["idempotency_key"], None)
+
+    def test_session_request_digest_golden_vectors(self):
+        """Round-9 M1: committed golden vectors — the Rust twin
+        (session_creation::session_request_digest_golden_vectors) pins the
+        same two hex strings; canonicalization drift on either side turns
+        the pair red."""
+        self.assertEqual(
+            server.session_request_digest(
+                title="早报会话", first_message="汇总今天的新闻",
+            ),
+            "eb1b90a155dee08c5c09c9e74cce0276244ada0445a50f14f866106ac799a97b",
+        )
+        self.assertEqual(
+            server.session_request_digest(
+                title="夜报", model_id="gpt-x", workspace_path="/tmp/ws",
+            ),
+            "77cd5ad19bed3538ee2b5fbdd230e5fe27c8c67c74dcf2735deba27d81b6d0a4",
+        )
+
+    def test_diverging_replay_answers_mismatch_without_respooling(self):
+        """Round-9 M1: a keyed replay with a CHANGED payload against a
+        completed marker answers payload_mismatch:True with the honest
+        note, and the completed key is terminal — the divergent body is
+        NOT re-spooled (re-spooled, the watcher's digest gate would treat
+        it as the surgery/forge shape and create a second session)."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|kdiv").hexdigest()
+        digest = server.session_request_digest(
+            title="早报会话", first_message="汇总今天的新闻",
+        )
+        self._write_marker(stem, {
+            "ok": True, "session_id": "sess0001", "title": "早报会话",
+            "request_digest": digest,
+        })
+        payload, error = self._call(
+            title="改名会话", from_session="src0001", idempotency_key="kdiv",
+        )
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"], payload)
+        self.assertTrue(payload["duplicate"], payload)
+        self.assertTrue(payload["payload_mismatch"], payload)
+        self.assertIn("NOT", payload["note"])
+        self.assertIn("new idempotency_key", payload["note"])
+        # terminal key: no queue entry was created for the divergent body.
+        self.assertEqual(self._spooled(), [])
+        # the recorded marker is untouched
+        marker = json.loads(
+            (self._spool_dir() / ".done" / (stem + ".json")).read_text("utf-8")
+        )
+        self.assertEqual(marker["request_digest"], digest)
+
+    def test_identical_replay_answers_no_mismatch(self):
+        """Round-9 M1: a byte-identical keyed replay against a completed
+        marker is a plain duplicate — mismatch:False, no second session,
+        and the body is not re-spooled either."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|ksame").hexdigest()
+        digest = server.session_request_digest(
+            title="早报会话", first_message="汇总今天的新闻",
+        )
+        self._write_marker(stem, {
+            "ok": True, "session_id": "sess0001", "title": "早报会话",
+            "request_digest": digest,
+        })
+        payload, error = self._call(
+            from_session="src0001", idempotency_key="ksame",
+        )
+        self.assertIsNone(error)
+        self.assertTrue(payload["duplicate"], payload)
+        self.assertFalse(payload["payload_mismatch"], payload)
+        self.assertEqual(self._spooled(), [])
+
+    def test_first_message_delivered_reflects_the_applied_payload(self):
+        """Round-57 review minor: the echoed firstMessageDelivered describes
+        the APPLIED payload's opening turn (the recorded marker carries the
+        key only when the applied request had a first_message). A
+        payload_mismatch replay that OMITS first_message must surface the
+        recorded delivery state — keying the echo on this call's argument
+        (the old shape) drops the field for exactly this replay, and would
+        answer a false "failed" when the replay instead sent its own
+        first_message."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|kdeliv").hexdigest()
+        digest = server.session_request_digest(
+            title="早报会话", first_message="汇总今天的新闻",
+        )
+        self._write_marker(stem, {
+            "ok": True, "session_id": "sess0001", "title": "早报会话",
+            "request_digest": digest,
+            "first_message_delivered": True,
+        })
+        payload, error = self._call(
+            title="改名会话", from_session="src0001", idempotency_key="kdeliv",
+            first_message=None,
+        )
+        self.assertIsNone(error)
+        self.assertTrue(payload["duplicate"], payload)
+        self.assertTrue(payload["payload_mismatch"], payload)
+        self.assertEqual(payload["firstMessageDelivered"], "delivered", payload)
+
+    def test_first_message_delivered_omitted_when_applied_had_none(self):
+        """Round-57 review minor twin: the applied payload had NO opening
+        message, so the marker carries no delivery key — a replay that
+        DID send a first_message (not applied) claims no delivery state at
+        all; the old call-argument gate answered a false "failed" here."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|knodeliv").hexdigest()
+        digest = server.session_request_digest(title="早报会话")
+        self._write_marker(stem, {
+            "ok": True, "session_id": "sess0001", "title": "早报会话",
+            "request_digest": digest,
+        })
+        payload, error = self._call(
+            title="早报会话", from_session="src0001",
+            idempotency_key="knodeliv", first_message="新的开场",
+        )
+        self.assertIsNone(error)
+        self.assertTrue(payload["payload_mismatch"], payload)
+        self.assertNotIn("firstMessageDelivered", payload, payload)
+
+    def test_marker_session_id_existence_gate_fires(self):
+        """Round-9 M4: the store-existence half of the marker session_id
+        gate, finally exercised — this fixture wires sessions_dir, so a
+        charset-VALID id that names no real session must hit "names a
+        session that does not exist" (the round-7 wiring shipped this gate
+        once as dead code; the only test touching it skipped the check)."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|kghost").hexdigest()
+        digest = server.session_request_digest(
+            title="早报会话", first_message="汇总今天的新闻",
+        )
+        self._write_marker(stem, {
+            "ok": True, "session_id": "a1b2c3d4e5f6", "title": "早报会话",
+            "request_digest": digest,
+        })
+        payload, error = self._call(
+            from_session="src0001", idempotency_key="kghost",
+        )
+        self.assertIsNone(payload, payload)
+        self.assertIn("names a session that does not exist", error)
+
+    def test_surrogate_request_leaks_no_fd_or_tmp(self):
+        """Round-5 M6: the serialize-before-mkstemp order — a lone surrogate
+        errors cleanly with zero stray tmp files in the spool root (the
+        round-3 shape leaked one fd + one tmp per call)."""
+        import os as _os
+        spool_dir = _os.path.join(str(self.requests), "spool")
+        before = set(_os.listdir(spool_dir)) if _os.path.isdir(spool_dir) else set()
+        payload, error = self._call(title="\ud800", from_session="src0001")
+        self.assertIsNone(payload)
+        self.assertIn("serializable", error)
+        after = set(_os.listdir(spool_dir)) if _os.path.isdir(spool_dir) else set()
+        strays = [f for f in after - before if f.endswith(".tmp")]
+        self.assertEqual(strays, [], "no tmp file may leak on the surrogate path")
+
+    def test_oversize_marker_answers_cleanly(self):
+        """Round-5 M6: the marker-read size caps — an oversize regular-file
+        marker is refused (a clean error/pending, never a slurp or hang)."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|kbig").hexdigest()
+        done = Path(self.requests, "spool", ".done")
+        done.mkdir(parents=True, exist_ok=True)
+        # Round-6 M2: VALID JSON over the cap (the round-5 form used invalid
+        # JSON, so json.load failed either way and the cap was unpinned) —
+        # with the cap deleted, this payload would be echoed; the cap keeps
+        # it refused.
+        # Round-18 minor 7: the fixture is DIGEST-BOUND — the round-15 form
+        # was a digest-less ok marker, so the digest gate refused it anyway
+        # and deleting the size cap stayed green (the pin's comment claimed
+        # mutation-sensitivity it did not have).
+        (done / (stem + ".json")).write_text(
+            json.dumps({
+                "ok": True, "session_id": "tgt0001", "request_digest": "d",
+                "title": "t" * (66 * 1024),
+            }),
+            encoding="utf-8",
+        )
+        payload, error = self._call(from_session="src0001", idempotency_key="kbig")
+        # Refused shape ONLY (round-8 B1): with the cap present the marker
+        # is unreadable → fresh spool + zero-wait timeout → pending with
+        # sessionId None; with the cap DELETED the 66 KiB valid marker
+        # would be echoed with a real sessionId — this assertion goes red
+        # on that mutation (the round-5 form accepted both branches).
+        self.assertIsNotNone(payload)
+        self.assertTrue(payload.get("ok"))
+        self.assertIsNone(payload.get("sessionId"), payload)
+        self.assertEqual(payload.get("delivery"), "pending")
+
+    def test_divergent_marker_during_poll_answers_mismatch(self):
+        """Round-12 minor 8: the POLL-time digest branch — a divergent
+        same-key marker published WHILE this call is polling (the entry
+        check saw nothing) answers payload_mismatch:True with the honest
+        note. The entry-time tests above cannot see this branch."""
+        import hashlib as _h
+        import threading
+        stem = _h.sha256(b"src0001|create|kpoll").hexdigest()
+        other_digest = server.session_request_digest(
+            title="另一个会话", first_message="别的任务",
+        )
+        done = Path(self.requests, "spool", ".done")
+
+        def plant_marker():
+            done.mkdir(parents=True, exist_ok=True)
+            (done / (stem + ".json")).write_text(
+                json.dumps({
+                    "ok": True, "session_id": "sess0001", "title": "另一个会话",
+                    "request_digest": other_digest,
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 2.0
+        timer = threading.Timer(0.3, plant_marker)
+        timer.start()
+        try:
+            payload, error = self._call(from_session="src0001", idempotency_key="kpoll")
+        finally:
+            timer.join()
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"], payload)
+        self.assertFalse(payload["duplicate"], payload)
+        self.assertTrue(payload["payload_mismatch"], payload)
+        self.assertIn("DIFFERENT payload", payload["note"])
+        self.assertIn("new idempotency_key", payload["note"])
+        self.assertEqual(payload["sessionId"], "sess0001", payload)
+
+    def test_failure_retry_never_answers_duplicate(self):
+        """Round-5 M6/F5: a FAILED entry marker never yields the
+        "duplicate: returning its recorded result" answer."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|krec").hexdigest()
+        done = Path(self.requests, "spool", ".done")
+        done.mkdir(parents=True, exist_ok=True)
+        (done / (stem + ".json")).write_text(
+            json.dumps({"ok": False, "error": "old"}), encoding="utf-8"
+        )
+        payload, error = self._call(from_session="src0001", idempotency_key="krec")
+        # Round-9 minor: unconditional — the old `if payload and ...` guard
+        # made the assertion near-vacuous (a crash or an error answer
+        # passed silently). No watcher runs here, so the retry re-spools
+        # and this call lands in pending — with duplicate:False (the
+        # round-5 M6 point) and the stale failure marker unlinked by the
+        # recovery path.
+        self.assertIsNotNone(payload, error)
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertEqual(payload.get("delivery"), "pending", payload)
+        self.assertFalse(payload.get("duplicate", False), payload)
+        self.assertIn("SAME idempotency_key", payload.get("note", ""))
+
+    def test_fifo_marker_is_refused_not_wedged(self):
+        """Round-8 M5a: a planted non-regular file at the marker path must
+        be refused (the S_ISREG gate) — a clean pending/error, never a
+        hang of the single-threaded stdio server."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|kfifo").hexdigest()
+        done = Path(self.requests, "spool", ".done")
+        done.mkdir(parents=True, exist_ok=True)
+        fifo = done / (stem + ".json")
+        if fifo.exists() or fifo.is_symlink():
+            fifo.unlink()
+        try:
+            os.mkfifo(fifo)
+        except (OSError, AttributeError):
+            self.skipTest("mkfifo unavailable")
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.0
+        try:
+            payload, error = self._call(from_session="src0001", idempotency_key="kfifo")
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+            fifo.unlink()
+        # Round-12 minor 9: assert the actual refusal shape (like
+        # test_oversize_marker_answers_cleanly) — the old form was satisfied
+        # by every reachable outcome. With the S_ISREG gate intact the FIFO
+        # marker is refused: fresh spool + zero-wait timeout → pending with
+        # sessionId None; deleting the gate wedges the open (test timeout)
+        # or echoes a planted result — this goes red on both.
+        self.assertIsNone(error, error)
+        self.assertIsNotNone(payload)
+        self.assertTrue(payload.get("ok"), payload)
+        self.assertIsNone(payload.get("sessionId"), payload)
+        self.assertEqual(payload.get("delivery"), "pending", payload)
+
+    def test_nonstring_marker_session_id_is_malformed(self):
+        """Round-8 minor: the isinstance half of the echo gate — a
+        non-string session_id must error cleanly, not -32603."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|kint").hexdigest()
+        done = Path(self.requests, "spool", ".done")
+        done.mkdir(parents=True, exist_ok=True)
+        (done / (stem + ".json")).write_text(
+            json.dumps({"ok": True, "session_id": 123, "request_digest": "d"}),
+            encoding="utf-8",
+        )
+        payload, error = self._call(from_session="src0001", idempotency_key="kint")
+        self.assertIsNone(payload)
+        self.assertIn("malformed", error)
+
+    def test_pinvou3_home_refused_as_workspace(self):
+        """Round-23 M1: the pinvou3 home (settings.json, credentials,
+        sessions/, spool roots) is refused as a project workspace — both
+        here and in the Rust validator — so privileged state is never
+        presented as an unattended opening turn's project. Round-29
+        hygiene + B2-3: runs against a relocated PINVOU3_HOME (a temp
+        dir) instead of creating/reading the real ~/.pinvou3, which also
+        exercises the env-aware home resolution."""
+        import os as _os
+        with tempfile.TemporaryDirectory(prefix="pinvou-home-refusal-") as home:
+            Path(home, "sessions").mkdir()
+            old = _os.environ.get("PINVOU3_HOME")
+            _os.environ["PINVOU3_HOME"] = home
+            try:
+                payload, error = self._call(
+                    title="标题", first_message="消息",
+                    workspace_path=str(Path(home)),
+                    from_session="src0001",
+                )
+                assert error is not None and "Pinvou home" in error, (payload, error)
+                inside = self._call(
+                    title="标题", first_message="消息",
+                    workspace_path=str(Path(home, "sessions")),
+                    from_session="src0001",
+                )
+            finally:
+                if old is None:
+                    _os.environ.pop("PINVOU3_HOME", None)
+                else:
+                    _os.environ["PINVOU3_HOME"] = old
+        assert inside[0] is None and "Pinvou home" in inside[1], inside
+
+    def test_agentic_requester_rejected_as_isolated(self):
+        """Round-23 M2: headless `agentic_` sessions join the isolated
+        prefix set — a prompt-injected headless run must not delegate
+        session creation. Mixed-case AGENTIC_ is the same family."""
+        payload, error = self._call(from_session="agentic_4242_0")
+        assert "isolated" in error or "cannot request" in error, error
+        payload, error = self._call(from_session="AGENTIC_x")
+        assert "isolated" in error or "cannot request" in error, error
+        assert self._spooled() == [], "nothing spooled for isolated requesters"
+
+    def test_agentic_targets_and_senders_both_refused_post_752(self):
+        """Round-41 M3, converged (round-44): #752 merged into main carrying
+        the target re-scope in the shared four-prefix tuple, so this tree
+        sits on that semantics — validate_session_id refuses ALL FOUR
+        prefixes as targets (the round-42 'agentic_ targets stay readable'
+        arm is superseded), and the create sender leg rejects the same
+        family. Dropping any prefix from the shared tuple — or the sender
+        leg's — turns an arm red."""
+        for target in ("sched-x1", "eval_x1", "aux-0001", "agentic_4242_0"):
+            assert server.validate_session_id(target) is not None, (
+                f"{target} must be refused as a target (post-#752 semantics)"
+            )
+        for sender in ("sched-x1", "eval_x1", "aux-0001", "agentic_4242_0"):
+            error = server.validate_sender_session_id(sender)
+            assert error is not None and "cannot request" in error, (
+                f"{sender} must stay refused on the create sender leg"
+            )
+
+    def test_terminal_surrogate_title_degrades_to_placeholder(self):
+        """Round-31 MAJOR 2: a lone-surrogate retry title on the terminal
+        path (digest-bound ok entry marker + empty marker title) degrades
+        to the empty placeholder instead of a raw -32603. This test is the
+        guard's red arm — deleting it leaves the suite green (the path had
+        no other coverage)."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|ksur").hexdigest()
+        recorded_digest = server.session_request_digest(
+            title="早报会话", first_message="汇总今天的新闻"
+        )
+        self._write_marker(stem, {
+            "ok": True,
+            "session_id": "sess0001",
+            "title": "",
+            "request_digest": recorded_digest,
+        })
+        payload, error = self._call(
+            from_session="src0001", idempotency_key="ksur",
+            title="\ud800",
+        )
+        assert error is None, (payload, error)
+        assert payload.get("ok") is True, payload
+        # The surrogate title diverges from the recorded digest — the honest
+        # mismatch flag rides along.
+        assert payload.get("payload_mismatch") is True, payload
+        assert payload.get("title") == "", payload
+
+    def test_digestless_ok_entry_marker_does_not_terminate(self):
+        """Round-15 minor 8: a planted digest-less ok:true marker at ENTRY
+        is not a recorded result — the body is re-spooled (the key is not
+        terminated by an unbound marker) and the call answers pending.
+        Reverting the entry gate's digest requirement turns this red (the
+        marker would answer terminal and no body would be spooled)."""
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|kdl").hexdigest()
+        self._write_marker(stem, {"ok": True, "session_id": "sess0001"})
+        payload, error = self._call(from_session="src0001", idempotency_key="kdl")
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"], payload)
+        self.assertTrue(payload["duplicate"], payload)
+        self.assertEqual(payload["delivery"], "pending", payload)
+        self.assertFalse(payload.get("payload_mismatch"), payload)
+        # the body IS re-spooled: the watcher's digest gate judges it
+        self.assertEqual(len(self._spooled()), 1)
+
+    def test_divergent_resend_of_queued_request_answers_replaced(self):
+        """Round-19 MAJOR 2: a divergent same-key resend REPLACES a
+        still-queued request before the watcher ever sees it — the answered
+        result is THIS resend's create (the receipt binds the resent
+        payload's digest), and the note says REPLACED instead of the false
+        "already processed … no second session was created"."""
+        import hashlib as _h
+        import threading
+        stem = _h.sha256(b"src0001|create|krepl").hexdigest()
+        first, err = self._call(
+            title="第一次", first_message="一",
+            from_session="src0001", idempotency_key="krepl",
+        )
+        self.assertIsNone(err)
+        self.assertEqual(len(self._spooled()), 1)
+        resent_digest = server.session_request_digest(
+            title="第二次", first_message="二",
+        )
+        done = Path(self.requests, "spool", ".done")
+
+        def plant_receipt():
+            done.mkdir(parents=True, exist_ok=True)
+            (done / (stem + ".json")).write_text(
+                json.dumps({
+                    "ok": True, "session_id": "sess0002", "title": "第二次",
+                    "request_digest": resent_digest,
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 2.0
+        timer = threading.Timer(0.3, plant_receipt)
+        timer.start()
+        try:
+            payload, error = self._call(
+                title="第二次", first_message="二",
+                from_session="src0001", idempotency_key="krepl",
+            )
+        finally:
+            timer.join()
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"], payload)
+        self.assertTrue(payload["duplicate"], payload)
+        self.assertFalse(payload["payload_mismatch"], payload)
+        self.assertEqual(payload["sessionId"], "sess0002", payload)
+        self.assertIn("REPLACED", payload["note"], payload)
+        self.assertNotIn("no second session was created", payload["note"], payload)
+
+    def test_idempotency_key_reuses_one_spool_file(self):
+        for _ in range(2):
+            self._call(first_message="首次", from_session="src0001", idempotency_key="k1")
+        files = self._spooled()
+        self.assertEqual(len(files), 1)
+        record = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["first_message"], "首次")
+
+    def test_spool_file_name_is_sender_scoped_sha256(self):
+        self._call(from_session="src0001", idempotency_key="k1")
+        files = self._spooled()
+        expected = hashlib.sha256(
+            "src0001|create|k1".encode("utf-8")).hexdigest()
+        self.assertEqual(files[0].stem, expected)
+
+    def test_no_key_uses_unique_files(self):
+        self._call()
+        self._call()
+        self.assertEqual(len(self._spooled()), 2)
+
+    def test_marker_hit_returns_session_ids(self):
+        self._call(title="早报会话", from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        server.RESULT_WAIT_SECONDS = 5.0
+        import threading
+
+        def watcher():
+            import time as _time
+            _time.sleep(0.1)
+            self._write_marker(spool_id, {
+                "ok": True, "session_id": "sess0001", "title": "早报会话",
+                "request_digest": "d",
+            })
+
+        threading.Thread(target=watcher).start()
+        payload, error = self._call(title="早报会话", from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertEqual(payload["sessionId"], "sess0001")
+        self.assertEqual(payload["title"], "早报会话")
+        self.assertTrue(payload["ok"])
+        # Round-31 minor 4: the plant carries a non-matching digest ("d") —
+        # the mismatch flag must surface (a broken comparison loses this).
+        self.assertTrue(payload["payload_mismatch"])
+
+    def test_non_literal_ok_marker_does_not_terminate_keyed_create(self):
+        """Round-35 review M3: a planted {"ok": 1, "request_digest": <any>}
+        marker must NOT terminate the keyed create as a recorded success —
+        the poll-loop receipt gate requires a literal ok:true. Deleting the
+        two `is True` gates in the poll loop turns this red (the call would
+        answer the planted marker instead of going pending)."""
+        self._call(from_session="src0001", idempotency_key="kok1")
+        spool_id = self._spooled()[0].stem
+        self._write_marker(spool_id, {
+            "ok": 1, "session_id": "sess0001", "title": "早报会话",
+            "request_digest": "whatever",
+        })
+        payload, error = self._call(from_session="src0001", idempotency_key="kok1")
+        self.assertIsNone(error)
+        self.assertIsNone(payload["sessionId"])
+        self.assertEqual(payload["delivery"], "pending")
+
+    def test_preexisting_marker_reports_duplicate_result(self):
+        self._call(from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        self._write_marker(spool_id, {
+            "ok": True, "session_id": "sess0001", "title": "早报会话",
+            "request_digest": "d",
+        })
+        payload, error = self._call(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertTrue(payload["duplicate"])
+        self.assertEqual(payload["sessionId"], "sess0001")
+        # Round-31 minor 4: the non-matching planted digest ("d") must flag.
+        self.assertTrue(payload["payload_mismatch"])
+
+    def test_failed_marker_surfaces_as_error(self):
+        # A stale failure marker is unlinked on re-spool (fresh attempt), so
+        # the error must land DURING this call's wait to be surfaced.
+        self._call(from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        server.RESULT_WAIT_SECONDS = 5.0
+        import threading
+
+        def watcher():
+            import time as _time
+            _time.sleep(0.1)
+            self._write_marker(spool_id, {"ok": False, "error": "model_id 不存在"})
+
+        threading.Thread(target=watcher).start()
+        payload, error = self._call(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(payload)
+        self.assertIn("model_id", error)
+
+    def test_surrogate_marker_error_degrades_not_crashes(self):
+        """Round-58 review minor: a planted ok:false marker whose error
+        carries a lone surrogate must not crash the frame into a -32603
+        UnicodeEncodeError — the call answers the generic honest failure
+        (the ok:true title echo got this encode gate in round-31 MAJOR 2).
+        Dropping the encode gate turns this red with UnicodeEncodeError."""
+        self._call(from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        server.RESULT_WAIT_SECONDS = 5.0
+        import threading
+
+        def watcher():
+            import time as _time
+            _time.sleep(0.1)
+            # ensure_ascii=True (json.dumps' default) plants the surrogate
+            # as ASCII escape text; json.load parses it back into a
+            # lone-surrogate str — exactly what a hostile writer controls.
+            done = self._spool_dir() / ".done"
+            done.mkdir(parents=True, exist_ok=True)
+            (done / ("%s.json" % spool_id)).write_text(
+                json.dumps({"ok": False, "error": "bad \ud800 thing"}),
+                encoding="utf-8",
+            )
+
+        threading.Thread(target=watcher).start()
+        payload, error = self._call(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(payload)
+        self.assertEqual(error, "session creation failed")
+
+    def test_retry_after_failure_gets_fresh_result_not_stale_error(self):
+        self._call(from_session="src0001", idempotency_key="k1")
+        spool_id = self._spooled()[0].stem
+        self._write_marker(spool_id, {"ok": False, "error": "transient"})
+        server.RESULT_WAIT_SECONDS = 5.0
+        import threading
+
+        def watcher():
+            import time as _time
+            _time.sleep(0.1)
+            self._write_marker(spool_id, {
+                "ok": True, "session_id": "sess0002", "title": "重试会话",
+                "request_digest": "d",
+            })
+
+        threading.Thread(target=watcher).start()
+        payload, error = self._call(from_session="src0001", idempotency_key="k1")
+        self.assertIsNone(error)
+        self.assertEqual(payload["sessionId"], "sess0002")
+
+    def test_spool_errors_do_not_leak_host_paths(self):
+        # A regular file occupying the spool path makes makedirs fail: the
+        # error must be the sanitized fixed message, never the OSError text.
+        self.requests.mkdir(parents=True)
+        (self.requests / "spool").write_text("not a dir", encoding="utf-8")
+        _, error = self._call()
+        self.assertEqual(error, "session request queue is not writable")
+
+    def test_wait_timeout_returns_pending_not_error(self):
+        payload, error = self._call()
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["delivery"], "pending")
+        self.assertIn("queued", payload["note"])
+
+
+
+
+class CreateSessionRequiredSenderTests(unittest.TestCase):
+    """Review round-3 M1/M2: the omission hole is closed server-side and the
+    workspace path is canonicalized before spooling."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinvou-create-req-test-")
+        self.requests = Path(self.tmp) / "session-requests"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _call(self, **overrides):
+        args = {
+            "requests_dir": str(self.requests),
+            "title": "会话",
+            "from_session": "src0001",
+        }
+        args.update(overrides)
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.0
+        try:
+            return server.create_session(**args)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+
+    def test_from_session_is_required(self):
+        payload, error = self._call(from_session=None)
+        self.assertIsNone(payload)
+        self.assertIn("required", error)
+        self.assertIn("from_session", error)
+
+    def test_workspace_path_is_canonicalized_before_spooling(self):
+        # Round-6 M2: a SYMLINK case (the round-5 dot-collapsing form also
+        # passes under os.path.abspath, so the realpath guarantee was
+        # half-pinned) — the spooled record must be the symlink's TARGET.
+        real = Path(os.path.realpath(self.tmp)) / "real-dir"
+        real.mkdir()
+        link = Path(self.tmp) / "link-dir"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable on this platform/privilege")
+        payload, error = self._call(workspace_path=str(link))
+        self.assertIsNone(error)
+        spooled = sorted(Path(self.requests, "spool").glob("*.json"))
+        assert spooled, "request spooled"
+        record = json.loads(spooled[0].read_text(encoding="utf-8"))
+        self.assertEqual(
+            record["workspace_path"], str(real),
+            "the spooled path is the RESOLVED target, not the symlink",
+        )
+        # The dot-collapsing form still holds too.
+        payload, error = self._call(workspace_path=str(real) + "/../real-dir")
+        self.assertIsNone(error)
+        spooled = sorted(Path(self.requests, "spool").glob("*.json"))
+        record = json.loads(spooled[-1].read_text(encoding="utf-8"))
+        self.assertEqual(record["workspace_path"], str(real))
+
+    def test_result_marker_session_id_is_validated(self):
+        # A pre-placed marker with a hostile session_id must not be echoed
+        # as a created session.
+        _payload, error = self._call(idempotency_key="k1")
+        self.assertIsNone(error)
+        import hashlib as _h
+        stem = _h.sha256(b"src0001|create|k1").hexdigest()
+        done = Path(self.requests, "spool", ".done")
+        done.mkdir(parents=True, exist_ok=True)
+        (done / (stem + ".json")).write_text(
+            json.dumps({"ok": True, "session_id": "../../evil", "title": "x", "request_digest": "d"}),
+            encoding="utf-8",
+        )
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 1.0
+        try:
+            payload, error = self._call(idempotency_key="k1")
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(payload)
+        self.assertIn("malformed", error)
 
 if __name__ == "__main__":
     unittest.main()
-
