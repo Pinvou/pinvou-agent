@@ -277,6 +277,13 @@ async fn reconcile_pending_rewind(
     };
     let apply_ledger = ledger.to_path_buf();
     let apply_execution = execution.to_path_buf();
+    // r38 M3：evict 在 apply **之前**——与手动回退路径的 restore-前驱逐同向。
+    // 驱逐后即使引擎的 idle persist 在 apply/truncate 窗口内落地，
+    // `persist_admitted_chat_display` 的 revision 守卫也会拒绝（引擎不存在 =
+    // 无存活写入者，无复活窗口）。
+    if let Some((pool, _)) = gates.pools {
+        pool.evict_if_present(session_id).await;
+    }
     let apply = tauri::async_runtime::spawn_blocking(move || {
         checkpoints::apply_restore(&apply_ledger, &apply_execution, &target)
     })
