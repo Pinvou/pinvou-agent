@@ -43,13 +43,15 @@ const OUTBOUND_CHANNEL_CAPACITY: usize = 2_048;
 // parsed at either side of the queue.
 const INBOUND_CHANNEL_CAPACITY: usize = 32;
 /// Covers the relay's DEFAULT deployment: PROTOCOL.md pins MAX_PAYLOAD_BYTES
-/// at >= 4 MiB (documented as a deployment knob up to 16 MiB) with desktop
+/// at >= 4 MiB (the relay clamps the deployment knob to at most 16 MiB, the
+/// same bound as its replay journal) with desktop
 /// frames at or below 4 MiB - 64 KiB (the same bound as
 /// `MAX_RELAY_FRAME_BYTES`). A lower ceiling would make the Relay's own large
 /// frames disconnect us; a self-hosted relay raised ABOVE this bound can
 /// still kill the socket with a legal frame — raising the desktop ceiling
 /// must ride along with such a deployment (round-5 review: the old comment
-/// justified the bound by the wrong direction).
+/// justified the bound by the wrong direction; round-6 review: the 16 MiB
+/// figure is the relay's server-side clamp, not a PROTOCOL.md number).
 const MAX_INBOUND_TEXT_BYTES: usize = (4 * 1024 * 1024) - (64 * 1024);
 const OUTBOUND_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 // Stream resets are tiny control messages. Keeping at most one in-flight and
@@ -885,7 +887,12 @@ pub(crate) fn terminal_relay_message(value: &Value, endpoint_id: &str) -> bool {
         && value
             .get("endpoint_id")
             .and_then(Value::as_str)
-            .is_none_or(|framed| framed == endpoint_id)
+            // Round-6 复审:空串 scope 与缺失同口径(本模块 M6 不变量的
+            // 第三处折叠此前漏了这一处——Some("") 会被当成「带 scope 的
+            // 他端帧」落到 terminal_message 的可恢复分类,探针帧收不到
+            // ack,持久化条目滞留)。方向是 fail-safe 的,但口径必须
+            // 一致;外端 id 仍不折叠。
+            .is_none_or(|framed| framed.is_empty() || framed == endpoint_id)
     {
         // The endpoint is already absent: the pending revocation is
         // trivially confirmed even though the live loop must keep
@@ -1409,6 +1416,16 @@ mod tests {
             &json!({ "type": "error", "code": "endpoint_not_found" }),
             "ep_1"
         ));
+        // Round-6 复审:空串 scope 与缺失同口径——探针帧的第三处折叠此前
+        // 漏了这一处,Some("") 会被当成带 scope 的他端帧,ack 不落地。
+        assert!(terminal_relay_message(
+            &json!({ "type": "error", "code": "endpoint_not_found", "endpoint_id": "" }),
+            "ep_1"
+        ));
+        assert!(!terminal_relay_message(
+            &json!({ "type": "error", "code": "endpoint_not_found", "endpoint_id": "ep_other" }),
+            "ep_1"
+        ));
         assert!(!terminal_relay_message(
             &json!({ "type": "error", "code": "invalid_desktop_secret" }),
             "ep_1"
@@ -1445,6 +1462,22 @@ mod tests {
             "type": "desktop_endpoint_revoked",
             "code": "endpoint_revoked"
         })));
+        // Round-6 复审:测试文档声称「非注册类错误码不得误戳」——瞬时类
+        // (容量/限流)的未带 scope 错误帧必须原样放行;补戳会让 manager 把
+        // 每次瞬时拒绝记成粘性 Error,在容量挤压期来回翻转,恰是本 PR 要
+        // 消灭的抖动类。删除谓词中的码白名单即红。
+        for transient in [
+            "endpoint_capacity_reached",
+            "endpoint_creation_rate_limited",
+        ] {
+            assert!(
+                !registration_error_without_scope(&json!({
+                    "type": "error",
+                    "code": transient
+                })),
+                "a transient unscoped error ({transient}) must not be stamped with our endpoint"
+            );
+        }
 
         // Round-5 复审 M6:空串 scope 的注册拒绝帧在终结分类里视同本端——
         // 与补戳谓词(上方断言)同一口径。删除 terminal_message 的空串折叠
