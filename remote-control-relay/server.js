@@ -404,8 +404,15 @@ function browserOriginAllowed(req) {
   return Boolean(requestHost) && parsed.host.toLowerCase() === requestHost;
 }
 
+// Canonical loopback spellings. peerIp is normalizeIp's canonical form — an
+// IPv6 peer arrives expanded to eight zero-padded groups — so comparing raw
+// literals here would make the "::1" branch unreachable and silently drop
+// the documented always-admitted guarantee for ::1 peers the moment a
+// non-empty allowlist makes that guarantee observable.
+const LOOPBACK_IPS = new Set([normalizeIp("127.0.0.1"), normalizeIp("::1")]);
+
 function isLoopback(ip) {
-  return ip === "127.0.0.1" || ip === "::1";
+  return LOOPBACK_IPS.has(ip);
 }
 
 function peerIp(req) {

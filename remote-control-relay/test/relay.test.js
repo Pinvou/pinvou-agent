@@ -1939,6 +1939,28 @@ test("matches expanded and mapped ip spellings canonically", async () => {
   }
 });
 
+test("loopback peers stay admitted under a non-loopback allowlist", async () => {
+  // PROTOCOL.md promises that a direct peer on 127.0.0.1 or ::1 is always
+  // admitted, whatever the allowlist says. The promise is only observable
+  // when the allowlist is non-empty and excludes loopback, and it is exactly
+  // there that a literal-compare loopback check dies for ::1: the peer is
+  // canonicalized to the expanded eight-group form before the check.
+  const isolated = await spawnRelay({
+    PINVOU_REMOTE_HOST: "::",
+    PINVOU_REMOTE_ALLOWED_PROXY_IPS: "192.0.2.1",
+    PINVOU_REMOTE_STATE_PATH: join(testRoot, `loopback-admit-${Date.now()}.json`),
+  });
+  try {
+    for (const host of ["127.0.0.1", "[::1]"]) {
+      const response = await fetch(`http://${host}:${isolated.port}/pinvou3/remote/healthz`);
+      assert.equal(response.status, 200, `loopback peer ${host} was rejected`);
+      await response.text();
+    }
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
 test("a forwarded ipv6 item shares its canonical bucket", async () => {
   const isolated = await spawnRelay({
     WS_CONNECT_LIMIT: "1",
