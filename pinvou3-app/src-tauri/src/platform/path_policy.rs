@@ -46,7 +46,9 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
 /// 组件前缀黑名单:`.env.` 系命名(`.env.local`、`.env.production`、
 /// `.env.development`……)与 `.env` 同为本地环境凭据文件,环境变体命名
 /// 无法逐一枚举,按前缀判定。匹配经由平台感知的 `path_component_prefix`
-/// (macOS/Windows ASCII 折叠,与 `path_component_eq` 同语义)。
+/// (macOS/Windows Unicode 大小写折叠,与 `path_component_eq` 同语义:
+/// ASCII 快路径 + U+017F/U+212A 简单大小写折叠,Windows/macOS 另含
+/// NTFS `$UpCase` 大写表的 U+0131 映射)。
 pub const BLOCKED_COMPONENT_PREFIXES: &[&str] = &[".env."];
 
 /// 系统敏感前缀黑名单——Unix 系统文件/虚拟文件系统路径。
@@ -88,8 +90,10 @@ fn strip_macos_private_alias(path: &Path) -> Option<PathBuf> {
 
 /// 系统前缀命中判定,含 macOS 别名展开。`alias_symlinks` 由调用方按平台
 /// 传入(`cfg!(target_os = "macos")`),独立参数让折叠平台语义在所有平台
-/// 上都可被单元测试直接驱动。
-fn canonical_system_prefix_hit(canonical: &Path, alias_symlinks: bool) -> bool {
+/// 上都可被单元测试直接驱动。CLI 镜像(`pinvou-cli`)消费同一组合谓词:
+/// 系统前缀判定必须与 GUI 完全同源,手抄前缀循环会漏掉别名展开
+/// (Round-6 复审 M2)。
+pub fn canonical_system_prefix_hit(canonical: &Path, alias_symlinks: bool) -> bool {
     let alias_stripped = if alias_symlinks {
         strip_macos_private_alias(canonical)
     } else {
@@ -399,9 +403,14 @@ mod tests {
     fn unresolvable_dotdot_paths_fail_closed() {
         let nested = std::env::temp_dir().join("pinvou3-path-policy-missing/../etc-shadow-probe");
         assert!(validate_user_path(&nested.to_string_lossy()).is_err());
+        // Round-6 复审 M3:断言对象必须是规范化后的拼写——macOS 的
+        // TMPDIR(/var/folders/...)经 canonicalize 解析到 /private/var/...,
+        // 与未展开的 temp_dir() 拼写不等,原断言在 macOS 上必红。
         let existing = std::env::temp_dir();
+        let canonical_existing =
+            std::fs::canonicalize(&existing).unwrap_or_else(|_| existing.clone());
         let ok =
             validate_user_path(&existing.to_string_lossy()).expect("existing path stays valid");
-        assert_eq!(ok, existing);
+        assert_eq!(ok, canonical_existing);
     }
 }
