@@ -94,14 +94,15 @@ assert.doesNotMatch(controller, /invalidateSkippedBuffer\?\.\(depsRef\.current\.
   '不得回读执行时刻的活动会话 id——那是 r11-M1 修掉的回归形状（目标会话漏失效 + 活动会话被误伤）');
 assert.match(controller, /invalidateSkippedCache\(sessionId\)/,
   '调用点必须传闭包局部 sessionId（回退目标）——至少一处形状锚定');
-// r37 M3 pins: the r36 M2 stamp/guard pair — openRewindDialog stamps
-// sessionId and confirmRewind bails on mismatch (cross-session truncation).
-assert.match(controller, /setRewindTarget\(\{[\s\S]*?sessionId[\s\S]*?\}\)/,
-  'openRewindDialog must stamp sessionId into the rewind target (r37 M3)');
+// r38 M2 pins (bounded window): the unbounded-lazy spans matched sessionId
+// from the useCallback deps array even when the stamp lost the field.
+// Bounded to the literal stamp expressions so a missing sessionId turns red.
+assert.match(controller, /setRewindTarget\(\{ \.\.\.entry, sessionId \}\)/,
+  'openRewindDialog must stamp sessionId into the rewind target (r38 M2)');
 assert.match(controller, /target\.sessionId !== currentSessionId/,
   'confirmRewind must bail on cross-session truncation (r37 M3)');
-assert.match(controller, /setRewindUndoEntry\(\{[\s\S]*?sessionId[\s\S]*?\}\)/,
-  'openRewindUndoDialog must stamp sessionId into the undo entry (r37 M2)');
+assert.match(controller, /setRewindUndoEntry\(\{ \.\.\.state, reloadFailed: false, sessionId \}\)/,
+  'openRewindUndoDialog must stamp sessionId into the undo entry (r38 M2)');
 assert.match(controller, /entry\.sessionId !== currentSessionId/,
   'confirmRewindUndo must bail on cross-session undo (r37 M2)');
 const invalidateCallCount = (controller.match(/invalidateSkippedCache\(sessionId\)/g) || []).length;
