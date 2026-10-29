@@ -38,8 +38,10 @@ Environment=MAX_WS_CONNECTIONS=5000
 Environment=WS_CONNECT_LIMIT=120
 Environment=WS_CONNECT_WINDOW_MS=60000
 Environment=WS_AUTH_TIMEOUT_MS=10000
-# Heartbeat pings: fallback 15000, floor 5000, ceiling 24h; a non-numeric
-# value takes the fallback. PORT defaults to 8787. The legacy spellings
+# Heartbeat pings: fallback 15000, floor 5000, ceiling 24h. A non-numeric
+# value takes the fallback; an empty or whitespace-only value parses as 0
+# and clamps to the floor, like every other numeric knob. PORT defaults to
+# 8787. The legacy spellings
 # MAX_ROOMS / ROOM_CREATE_LIMIT / ROOM_CREATE_WINDOW_MS still map onto
 # MAX_ENDPOINTS / ENDPOINT_CREATE_LIMIT / ENDPOINT_CREATE_WINDOW_MS.
 # Environment=HEARTBEAT_INTERVAL_MS=15000

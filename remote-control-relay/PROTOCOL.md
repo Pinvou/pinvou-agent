@@ -182,8 +182,10 @@ endpoint's desktop secret keeps its own session and receives
 `revoke_persistence_failed`, closes the requester, and leaves the endpoint
 usable rather than acknowledging a revoke it cannot preserve. A revoke that
 hits the tombstone capacity is refused before any write with
-`revoked_endpoint_capacity_reached`; the endpoint stays usable and a larger
-`MAX_RELAY_STATE_BYTES` (which raises the derived capacity) makes room.
+`revoked_endpoint_capacity_reached`; the endpoint stays usable until the file
+is pruned or a limit is raised — a larger `MAX_RELAY_STATE_BYTES` raises the
+derived ceiling, and a larger `MAX_REVOKED_ENDPOINTS` raises it when the
+configured value, not the state-size clamp, is the binding limit.
 
 The state file contains only schema version, endpoint IDs, and revoke times; it
 does not contain access tokens, desktop secrets, or their hashes. New revocations
@@ -234,8 +236,11 @@ and `desktop_offline`.
 ## HTTP and operational behavior
 
 - `GET /pinvou3/remote/healthz` exposes aggregate counters only.
-- The startup banner intentionally omits the bind address; the listening
-  socket is configured entirely by `PORT` and `PINVOU_REMOTE_HOST`.
+- The startup banner intentionally omits the bind address and reports the
+  effective limits, including the silently-derived ones: the post-clamp
+  `revoked_capacity`, the effective `heartbeat` interval, and the
+  `max_relay_state` cap. The listening socket is configured entirely by
+  `PORT` and `PINVOU_REMOTE_HOST`.
 - `/pinvou3/remote/` serves `web/dist/index.html`; extensionless paths use the
   same SPA fallback.
 - Hashed `assets/` files are immutable. HTML is never cached and fixed-name
@@ -294,8 +299,8 @@ and `desktop_offline`.
 - Once startup state loading has finished, `SIGINT` and `SIGTERM` terminate
   all WebSocket clients without a close handshake (peers observe an abnormal
   closure) and exit the process with code 0; in-flight HTTP responses are not
-  drained. A signal that arrives during startup state loading takes the
-  default action instead.
+  drained. A signal that arrives during startup — before the handlers are
+  installed at the very end of startup — takes the default action instead.
 - The Relay rejects any frame whose complete serialized WebSocket message
   exceeds `MAX_PAYLOAD_BYTES` (protocol v2 requires at least 4 MiB), counting
   the whole envelope rather than just the event payload. The desktop keeps its
