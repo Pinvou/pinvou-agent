@@ -1456,9 +1456,14 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
     // checked before trimming, so it must be rejected like any other garbage.
     // The zone-id values exercise the zone charset guard: an empty zone, a
     // colon inside it, and a second % are each outside [0-9A-Za-z._-].
+    // The dotted-tail values are the compression hole: isIP rejects
+    // "1.2.3.4::" outright, and a naive dotted-quad conversion would place
+    // the converted groups ahead of the "::" fill and accept a typo as a
+    // routable entry (2a01:1.2.3.4:: -> 2a01:102::304).
     for (const value of [
       "not-an-ip", "127.0.0.1,not-an-ip", ",,,",
       `1.2.3.4${" ".repeat(140)}`,
+      "1.2.3.4::", "2a01:1.2.3.4::",
       "fe80::1%", "fe80::1%a:b", "fe80::1%a%b",
     ]) {
       await expectStartupFailure(
@@ -1995,6 +2000,31 @@ test("matches expanded and mapped ip spellings canonically", async () => {
   } finally {
     closeSocket(first);
     closeSocket(second);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("a mapped dotted-tail trust entry matches its reduced address", async () => {
+  // The dotted quad is the literal tail here, so the guard that rejects
+  // "1.2.3.4::" must keep accepting "::ffff:127.0.0.1": the entry reduces to
+  // the plain IPv4 the peer reports and trust must survive that reduction.
+  const isolated = await spawnRelay({
+    WS_CONNECT_LIMIT: "1",
+    PINVOU_REMOTE_TRUSTED_PROXY_IPS: "::ffff:127.0.0.1",
+  });
+  let first;
+  try {
+    first = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": "198.51.100.10" } });
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "198.51.100.10" },
+    }), 429);
+    // The plain connection uses the unattributed peer bucket, so its success
+    // proves the XFF bucket — not the peer bucket — was consumed, i.e. the
+    // peer really was trusted through the mapped spelling.
+    const plain = await openSocket(isolated.wsUrl);
+    closeSocket(plain);
+  } finally {
+    closeSocket(first);
     await stopRelay(isolated.child);
   }
 });
