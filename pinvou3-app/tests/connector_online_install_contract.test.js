@@ -534,4 +534,72 @@ assert.doesNotMatch(
   assert.ok(permIdx > timeoutIdx, "wecom-smoke.sh: [3] 超时分支必须先于权限词分支");
 }
 
+// ---- 10) wecom [4] 错误键只查 envelope,不查正文 content 值 ----
+// wecomcli-doc SKILL.md 返回表:content 是「文档内容较短时直接返回的原文」——
+// 值恰为 error 的合法文档曾被裸 grep 误红成读失败(评审 P3,真脚本 + 假 CLI 全跑)。
+// 屏蔽正文后 envelope 层的结构化错误键(errcode:3)仍必须 FAIL——屏蔽不得吞检查。
+{
+  const { spawnSync } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    const fakeCli = (docPayload) =>
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        '  --version) echo "wecom-cli 1.3.4 (fake)"; exit 0 ;;',
+        '  auth) echo "authorized"; exit 0 ;;',
+        "  doc)",
+        '    if [ "${2:-}" = contents ]; then printf \'%s\' \'' + docPayload + "'; exit 0; fi",
+        "    exit 0 ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n");
+    const runSmoke = (docPayload) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "wecom-doc-home-"));
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "wecom-cli"), fakeCli(docPayload));
+      fs.chmodSync(path.join(bin, "wecom-cli"), 0o755);
+      return spawnSync("bash", [path.join(root, "scripts", "wecom-smoke.sh")], {
+        encoding: "utf8",
+        timeout: 120000,
+        killSignal: "SIGKILL",
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: bin + path.delimiter + process.env.PATH,
+          WECOM_TEST_DOCID: "DOC123",
+        },
+      });
+    };
+    // 合法 envelope + 正文值恰为 "error":屏蔽正文后必须判读成功,不得误红。
+    const good = runSmoke(
+      '{"url":"https://doc.example/x","name":"周报","content":"error","file_path":"","document":{},"version":"3"}',
+    );
+    assert.strictEqual(
+      good.status,
+      0,
+      `wecom-smoke.sh: 正文值为 error 的合法 envelope 不得误红(status=${good.status})\n${good.stdout}`,
+    );
+    assert.ok(
+      good.stdout.includes("[PASS] 读到文档内容"),
+      `wecom-smoke.sh: 正文屏蔽后读取必须 PASS\n${good.stdout}`,
+    );
+    // envelope 真错误键:屏蔽不得吞掉 envelope 层的结构化错误。
+    const bad = runSmoke(
+      '{"url":"https://doc.example/x","name":"t","content":"ok","file_path":"","document":{},"version":"3","errcode":3}',
+    );
+    assert.notStrictEqual(
+      bad.status,
+      0,
+      `wecom-smoke.sh: envelope errcode:3 必须 FAIL(屏蔽不得吞掉错误键)\n${bad.stdout}`,
+    );
+    assert.ok(
+      !bad.stdout.includes("[PASS] 读到文档内容"),
+      `wecom-smoke.sh: errcode:3 不得判读成功\n${bad.stdout}`,
+    );
+  }
+}
+
 console.log("✓ connector first-use online install contract passed");
