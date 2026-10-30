@@ -612,6 +612,28 @@ async function connectWithCapabilities(events, listener) {
     'an error on an ordinary socket must still escalate to the connecting state');
 }
 
+// Round-10 复审 minor:看门狗投机关闭的半开 socket 在部分浏览器上会先触发
+// error(失败的关闭握手报成 error+close)。这是关闭握手的一部分,不是验证
+// 失败——不得计入投机失败,也不得提前点亮 connecting(否则「UI 保持
+// connected 直到验证失败」随浏览器引擎分叉)。Mock 的 close 从不发 error,
+// 该交错此前不可达。
+{
+  const speculative = await connectWithCapabilities(['chat:delta'], () => {});
+  speculative.client.lastInboundAt = Date.now() - 121_000;
+  speculative.client._livenessCheck();
+  assert.equal(speculative.socket.closeCalled, true,
+    'the watchdog must have closed the silent socket');
+  assert.equal(speculative.client.speculativeReconnect, true,
+    'the first ackless cycle stays under the failure cap');
+  assert.equal(speculative.client.connectionState.status, 'connected',
+    'the reconnect after a speculative close is not visible yet');
+  speculative.socket.emit('error', {});
+  assert.equal(speculative.client.speculativeFailures, 0,
+    'an error on the speculative source is the close handshake, not a verification failure');
+  assert.equal(speculative.client.connectionState.status, 'connected',
+    'the speculative source error must not surface the connecting banner');
+}
+
 // 真正的吊销（其他 reason 或缺失 reason）保持今天的永久关闭行为。
 {
   const revoke = async message => {

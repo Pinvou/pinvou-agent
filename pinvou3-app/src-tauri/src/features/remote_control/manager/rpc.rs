@@ -188,6 +188,9 @@ pub(super) fn prepare_bridge_generation(
             continue;
         };
         pending.dispatched_generation = Some(generation.to_string());
+        // 与 handle_rpc_request 的重派发臂同口径:重派发重置 TTL 时钟,
+        // 否则 webview 重载后的再派发继承旧时钟,窗口尾部即刻被扫成超时。
+        pending.dispatched_at = Instant::now();
         actions.push(RpcRequestAction::Dispatch(RpcDispatch {
             request_id,
             command,

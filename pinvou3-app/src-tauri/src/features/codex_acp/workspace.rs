@@ -504,6 +504,12 @@ pub fn checkout_workspace_branch(
     if !known.lines().map(str::trim).any(|name| name == branch) {
         bail!("分支不存在: {branch}");
     }
+    // Round-10 复审 minor(记录语义变化):git_status_entries 现按凭据策略
+    // 过滤 changes 车道,黑名单来源的 staged rename 目的地被丢弃——其唯一
+    // 变更就是这类改名的工作区在此处读作「干净」,走裸 checkout 快路径而
+    // 非 Stash/Commit 模式。快路径与 Carry 的 git 命令完全一致,方向 fail-
+    // safe(无数据损失),且泄露过滤必须对一切消费方生效,不能为此引入
+    // 未过滤的第二计数;分支 UI 的 dirty_count 同理低估。
     if git_status_entries(&root)?.is_empty() {
         git_output(&root, &["checkout", branch])?;
         return workspace_branches(&root);
@@ -942,8 +948,16 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // 的目的地名。按完整 porcelain 解析重建 目的地→来源 映射,请求路
         // 径是黑名单来源的改名/拷贝目标时整体拒绝(检测经 -c 强制,仓库
         // 配置 status.renames=false 拆不散改名对)。porcelain 层无改名对
-        // 的形状(cp+add、相似度低于检测阈值的改写)属共享策略已记录的同
-        // 名别名残余——git 不再持有可追随的链接。改名会改写索引,diff 缓
+        // 的形状属共享策略已记录的同名别名残余——git 不再持有可追随的
+        // 链接,字节已落在一个真实的清白命名文件里,与 cp+add 及 agent
+        // 自行写入任意内容不可区分:cp+add、相似度低于检测阈值的改写
+        // (Round-9 已记),以及两个最顺手到达的无对形状——纯 `mv` 后
+        // `D .env|?? innocent.txt`、只 add 目的地侧的
+        // `D .env|A innocent.txt`(改写对只存在于 index-vs-HEAD,-z 解析
+        // 看不到配对)。关闭它们需要内容检查,超出本车道词法策略的范围
+        // (Round-10 复审 minor:补记形状)。case 不敏感文件系统上的
+        // Linux(非默认挂载)同理:字节精确解析腿会放行 `.ENV` 拼写
+        // (Round-10 复审 minor:环境约束记录)。改名会改写索引,diff 缓
         // 存指纹随之失效,不存在跨改名命中旧缓存条的窗口。
         if let Some(origin) = git_staged_rename_origins(&root)?.get(&relative) {
             if relative_path_crosses_blocked_component(origin) {

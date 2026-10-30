@@ -77,24 +77,30 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     // Round-9 复审 MAJOR:组件化比较把字节 starts_with 的误伤(`/etc/
     // shadowed` 被拦)修成了组件精确,但清单成员还是字节前缀时代的写法
     // ——真实存在的家族成员被静默放行:`shadow-`/`gshadow-` 是 passwd/
-    // useradd 落盘的哈希备份,`sudoers.tmp` 是 visudo 的工作文件,
-    // `sudoers.d/` 存放解析中的授权片段,`/var/log/auth.log` 本体是
-    // `/var/log/auth` 条目真正的目标(Debian/Ubuntu 的认证日志,adm 组
-    // 默认可读)。逐项枚举真实变体;`shadowed`/`shadowprobe` 这类无辜
-    // 同名仍按精确语义放行,不能为图省事改回字节前缀。
+    // useradd 落盘的哈希备份,`/var/log/auth.log` 本体是 `/var/log/auth`
+    // 条目真正的目标(Debian/Ubuntu 的认证日志,adm 组默认可读)。
+    // Round-10 复审 MAJOR:字节前缀同样覆盖的备份家族(管理员 `cp` 留下
+    // 的 `.bak`/`.old`,pacman 的 `.pacnew`,vipw 的 `.lock`,编辑器的
+    // `~`)按开放家族恢复——`shadow.*` 形式的末分量组件前缀一并收拢
+    // `.d/` 解析片段与 `.tmp` 工作文件,且不会误伤 `sudoersedit` 这类
+    // 无点同前缀名;`~` 后缀不含点,单独精确枚举。
     "/etc/shadow-",
     "/etc/gshadow",
     "/etc/gshadow-",
     "/etc/sudoers",
-    "/etc/sudoers.d/",
-    "/etc/sudoers.tmp",
     "/etc/ssh/",
     "/root/",
     "/var/log/auth",
-    // 轮转日志(auth.log.1 / auth.log.2.gz / …)是无法逐一枚举的开放家
-    // 族:末分量 `*` 表示该分量按组件前缀匹配(清单自律仅用于此类条目,
-    // 语义见 path_starts_with_folded)。
+    // 轮转日志(auth.log.1 / auth.log.2.gz / …)与上述备份家族是无法逐
+    // 一枚举的开放家族:末分量 `*` 表示该分量按组件前缀匹配(清单自律
+    // 仅用于此类条目,语义见 path_starts_with_folded)。
     "/var/log/auth.log*",
+    "/etc/shadow.*",
+    "/etc/shadow~",
+    "/etc/gshadow.*",
+    "/etc/gshadow~",
+    "/etc/sudoers.*",
+    "/etc/sudoers~",
     "/proc/",
     "/sys/",
 ];
@@ -429,15 +435,34 @@ mod tests {
         // 默放行——精确枚举的变体逐一拒绝,轮转家族走末分量组件前缀,
         // 无辜同名保持放行。逐项驱动消费方判定(check_sensitive_components
         // → canonical_system_prefix_hit),清单改写若再收窄覆盖即红。
-        for variant in [
-            "/etc/shadow-",
-            "/etc/gshadow-",
-            "/etc/sudoers.tmp",
-            "/var/log/auth.log",
-        ] {
+        for variant in ["/etc/shadow-", "/etc/gshadow-", "/var/log/auth.log"] {
             assert!(
                 check_sensitive_components(Path::new(variant)).is_err(),
                 "{variant} must be refused"
+            );
+        }
+        // Round-10 复审 MAJOR:备份家族——管理员 `cp` 的 `.bak`/`.old`
+        // (默认 umask 下常是全局可读,比原件更暴露)、pacman 的
+        // `.pacnew`、vipw 的 `.lock`、编辑器的 `~`,在字节前缀时代同样
+        // 被拦,组件化改写曾一并放行。开放后缀走 `shadow.*` 家族条目,
+        // `~` 走精确条目,无辜同名不回捕。
+        for variant in [
+            "/etc/shadow.bak",
+            "/etc/shadow.old",
+            "/etc/shadow.lock",
+            "/etc/gshadow.bak",
+            "/etc/gshadow~",
+            "/etc/sudoers.bak",
+            "/etc/sudoers.old",
+            "/etc/sudoers.save",
+            "/etc/sudoers.orig",
+            "/etc/sudoers.pacnew",
+            "/etc/sudoers.tmp",
+            "/etc/sudoers~",
+        ] {
+            assert!(
+                check_sensitive_components(Path::new(variant)).is_err(),
+                "{variant} must be refused by the backup-family prefix"
             );
         }
         assert!(
@@ -514,6 +539,49 @@ mod tests {
             !canonical_system_prefix_hit(Path::new("/private/usr/local/bin/tool"), true),
             "only the symlinked system roots are aliased"
         );
+        // Round-10 复审 minor:别名展开覆盖 etc/var/tmp 三根,轮转家族
+        // 在 macOS 上以 `/private/var/log/...` 拼写出现,`/private/var`
+        // 腿一旦收窄,已有 only-etc 断言仍然全绿——此处钉住 var 腿的
+        // 命中与无辜放行两个方向。
+        assert!(
+            canonical_system_prefix_hit(Path::new("/private/var/log/auth.log.1"), true),
+            "the rotated auth log under the aliased /var must hit"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/var/log/authprobe"), true),
+            "the component boundary must survive the aliased /var leg"
+        );
+    }
+
+    /// 清单自律:`*` 只允许出现在末分量且剥掉星号后非空——裸 `*` 会退化
+    /// 成逐路径全匹配,内嵌 `*` 只会按字面比较而静默失效。清单改写无法
+    /// 靠编译器约束,测试运行时逐条钉住(Round-10 复审 minor)。
+    #[test]
+    fn wildcard_entries_keep_list_discipline() {
+        for prefix in BLOCKED_PREFIXES {
+            let components: Vec<&str> = prefix.split('/').filter(|c| !c.is_empty()).collect();
+            for (index, component) in components.iter().enumerate() {
+                if component.ends_with('*') {
+                    assert!(
+                        index + 1 == components.len(),
+                        "{prefix}: a wildcard component must be the last one"
+                    );
+                    assert!(
+                        component.len() > 1,
+                        "{prefix}: a bare '*' component would match every path"
+                    );
+                }
+            }
+        }
+        // 家族条目自身端到端可命中(星号剥离后按组件前缀比较)。
+        assert!(canonical_system_prefix_hit(
+            Path::new("/etc/sudoers.bak"),
+            false
+        ));
+        assert!(canonical_system_prefix_hit(
+            Path::new("/etc/shadow.lock"),
+            false
+        ));
     }
 
     /// Round-5 复审:canonicalize 失败的回退分支必须拒绝含 `..` 的未规范

@@ -179,6 +179,10 @@ for (const command of [
   'web_access_rotate',
   'web_access_revoke_host_workspace',
   'web_access_relay_settings',
+  // Round-10 复审 minor:主 WebView 事件通道同样管理专用——进 Web 策略的
+  // 话手机可经 RPC→bridge invoke 触发 publish_frontend_event(只过
+  // policy.events 允许名单,可伪造允许事件);缺席即全部防线。
+  'web_access_publish_event',
   // 上传包展示名/说明编辑写 bundles.json 并可能回写 SKILL.md：写操作桌面专用。
   'update_bundle_display_meta',
   // 回收站恢复/彻底删除与两种包导出都是桌面端写操作（原生保存对话框 + 文件系统
@@ -784,6 +788,19 @@ assert.match(webBridge, /web_session_turn_in_progress:\s*"turnAlreadyInProgress"
   'the web bridge itself must map the turn-in-progress code to product copy');
 assert.match(webBridge, /addSystemItem\(concurrentTurn[\s\S]{0,120}bt\("turnAlreadyInProgress"\)/,
   'the web-side turn admission conflict must show product copy');
+// Round-10 复审 minor:accept_plan/edit_last_turn 不折叠,错误链携带调用方
+// 可选的 session id——裸 `session_turn_in_progress` 子串匹配会把同名会话的
+// 硬失败折成可重试 busy(对账卡死)。两个 catch 必须锚定各自的 reservation
+// 段(生产者 map_err 独家引入,session id 字符集无法伪造空格/冒号)。
+assert.match(webBridge,
+  /includes\("reserve accept_plan turn: session_turn_in_progress"\)/,
+  'the accept_plan catch must anchor on its reservation segment');
+assert.match(webBridge,
+  /includes\("reserve edit_last_turn: session_turn_in_progress"\)/,
+  'the edit_last_turn catch must anchor on its reservation segment');
+assert.doesNotMatch(webBridge,
+  /includes\("session_turn_in_progress"\)/,
+  'no web-bridge busy match may stay on the bare, session-id-forgeable marker');
 // Round-9 复审:下载车道的折叠此前零测试钉——回退码表查找或删除任一表
 // 项都全绿。钉住:下载 catch 走 displayTurnError(未识别文本进与 turn 车
 // 道相同的脱敏兜底,不再拼接原始码/admission 原文);admission 层可达的

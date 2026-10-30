@@ -2869,8 +2869,11 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
         return true;
       })
       .catch(function (err) {
+        // web_access_chat 在 Rust 侧全量折叠:这里只会收到稳定码,busy 的
+        // 码 `web_session_turn_in_progress` 按契约保留 `session_turn_in_progress`
+        // 后缀——按完整码锚定,与折叠器的锚定契约互为镜像。
         const errorText = String(err && err.message ? err.message : err || "");
-        const concurrentTurn = errorText.includes("session_turn_in_progress");
+        const concurrentTurn = errorText.includes("web_session_turn_in_progress");
         recordAuthoritySyncDiagnostic("local_turn_admission_failed", Object.assign({
           operation: "send",
           concurrent_turn: concurrentTurn,
@@ -5060,8 +5063,13 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
       applyAuthoritativeModeState(sid, st);
     } catch (e) {
+      // accept_plan 不折叠:错误链原样携带 `accept_plan({sid}): …`,而
+      // session id 由调用方选择——按裸 `session_turn_in_progress` 匹配会把
+      // 同名会话的硬失败折成可重试 busy。锚定 reservation 段(生产者
+      // `reserve accept_plan turn: {error:#}` 独家引入,id 字符集
+      // [A-Za-z0-9_-] 无法伪造空格/冒号)。
       const errorText = String(e && e.message ? e.message : e || "");
-      const concurrentTurn = errorText.includes("session_turn_in_progress");
+      const concurrentTurn = errorText.includes("reserve accept_plan turn: session_turn_in_progress");
       const planNotActive = errorText.includes("plan_not_active");
       if (planBuffer) planBuffer.localTurnOwned = false;
       if (itemId) {
@@ -5262,8 +5270,10 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       try { window.PinvouToolStoreEvents.notifyChatRoundCommitted(); } catch { /* silently ignored */ }
       if (editBuffer) editBuffer.deferredRemoteUserEvent = null;
     } catch (e) {
+      // edit_last_turn 同 accept_plan:不折叠的原始链 + 调用方可选的
+      // session id,锚定 reservation 段防同名会话把硬失败折成 busy。
       const errorText = String(e && e.message ? e.message : e || "");
-      const concurrentTurn = errorText.includes("session_turn_in_progress");
+      const concurrentTurn = errorText.includes("reserve edit_last_turn: session_turn_in_progress");
       emitPetEvent();
       if (editBuffer) editBuffer.localTurnOwned = false;
       runSyncOnSession(sid, function () {

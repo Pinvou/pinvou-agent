@@ -46,7 +46,7 @@ use super::util::{
 
 struct IsolatedPinvouHome {
     root: PathBuf,
-    prev: Option<String>,
+    prev: Option<std::ffi::OsString>,
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -704,16 +704,15 @@ fn reconcile_journal_cleanup_failure_folds_host_paths_before_the_relay() {
 /// 无法充当同一失败原语——只读目录会先挡住迁移自身的 journal/新文件写入
 /// （round-7 已认定其不可移植），故这里改用「正文 id ≠ 文件名 + 同名目录桩」：
 /// 桩经无条件 old_path 进入 stale_paths（无需解析），commit 的清理被真实
-/// `fs::remove_file` 以 EISDIR 确定性拒绝，而写入车道不受影响；存活的
-/// journal 用 round-7 同款注入闭包播种，让加载车道先把目录桩隐藏。
-/// `dir_read_only_or_skip` 只驱动只读重试段（纯读 + 软失败移除，root 环境按
-/// helper 语义响亮跳过该段）。
-#[cfg(unix)]
+/// `fs::remove_file` 以 EISDIR/ACCESS_DENIED 确定性拒绝，而写入车道不受影响；
+/// 存活的 journal 用 round-7 同款注入闭包播种，让加载车道先把目录桩隐藏。
+/// 该核心段跨平台(Round-10 复审 minor:整个用例此前 cfg(unix),Windows CI
+/// 对这条包装层警告车道零覆盖);`dir_read_only_or_skip` 只驱动只读重试段
+/// （纯读 + 软失败移除,root 环境按 helper 语义响亮跳过该段）,仅该段保持
+/// unix 门槛。
 #[test]
 fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let home = IsolatedPinvouHome::new("update-stale-cleanup-unix");
+    let home = IsolatedPinvouHome::new("update-stale-cleanup");
     let prefs_dir = paths::user_memory_preferences_dir();
     let context_dir = work_context_dir();
     fs::create_dir_all(&prefs_dir).unwrap();
@@ -802,18 +801,24 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
 
     // 只读目录重试段：0555 让真实 remove_file 以 EACCES 继续失败；helper 在
     // root 下恢复 0755 并返回 false，该段随之跳过（上方断言与权限无关）。
-    if crate::platform::test_support::dir_read_only_or_skip(
-        &prefs_dir,
-        "update_wrappers_persistent_stale_cleanup",
-    ) {
-        let read = list_preferences_with_cleanup().unwrap();
-        let warning = read
-            .cleanup_warning
-            .expect("a read-only directory must keep the stale cleanup failing");
-        assert_warning_is_folded(&warning, &home, "read-only retry warning");
-        assert!(stale_path.is_dir());
+    // 仅此段需要 unix 位语义；核心失败原语(目录桩)是跨平台的
+    // (Round-10 复审 minor)。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if crate::platform::test_support::dir_read_only_or_skip(
+            &prefs_dir,
+            "update_wrappers_persistent_stale_cleanup",
+        ) {
+            let read = list_preferences_with_cleanup().unwrap();
+            let warning = read
+                .cleanup_warning
+                .expect("a read-only directory must keep the stale cleanup failing");
+            assert_warning_is_folded(&warning, &home, "read-only retry warning");
+            assert!(stale_path.is_dir());
+        }
+        let _ = std::fs::set_permissions(&prefs_dir, std::fs::Permissions::from_mode(0o755));
     }
-    let _ = std::fs::set_permissions(&prefs_dir, std::fs::Permissions::from_mode(0o755));
 
     // 自愈：桩移除后，重试车道清掉 journal，警告消失。
     fs::remove_dir(&stale_path).unwrap();
@@ -944,13 +949,15 @@ fn duplicate_authority_cleanup_failure_folds_host_paths_before_the_relay() {
     )
     .unwrap();
 
-    assert!(
-        crate::platform::test_support::dir_read_only_or_skip(
-            &dir,
-            "duplicate_authority_cleanup_failure_folds_host_paths"
-        ),
-        "root environments cannot enforce the read-only denial"
-    );
+    // root 不受 0555 约束:helper 已恢复 0755 并响亮跳过,依赖 EACCES 的
+    // 断言按仓库对这类 fixture 的既定形式整段略过而不是把 root CI 染红
+    // (Round-10 复审 minor)。
+    if !crate::platform::test_support::dir_read_only_or_skip(
+        &dir,
+        "duplicate_authority_cleanup_failure_folds_host_paths",
+    ) {
+        return;
+    }
     let read = list_preferences_with_cleanup().unwrap();
     let warning = read
         .cleanup_warning
@@ -1209,7 +1216,10 @@ impl IsolatedPinvouHome {
         let guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        // var_os 而非 var:非 UTF-8 的既有值按字节原样恢复,不在 Drop 时被
+        // 静默丢成 remove(Round-10 复审 minor;与 test_support 的 EnvRestore
+        // 同口径)。
+        let prev = std::env::var_os("PINVOU3_HOME");
         let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let root = std::env::temp_dir().join(format!(
             "pinvou3-memory-{name}-{}-{nanos}",
