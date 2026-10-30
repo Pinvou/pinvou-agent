@@ -1613,7 +1613,12 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
     // checked before trimming, so it must be rejected like any other garbage.
     // The zone-id values exercise the zone charset guard: an empty zone, a
     // colon inside it, and a second % are each outside [0-9A-Za-z._-].
-    // The dotted-tail values are the compression hole: isIP rejects
+    // The suffix values on dotted-quad and mapped spellings are the
+    // inapplicable-zone rejects: a dotted quad never carries a zone (a bare
+    // trailing % would slip past a zone-only emptiness check), and a mapped
+    // spelling reduces to plain IPv4, so a validated suffix there would be
+    // silently dropped instead of matched. The dotted-tail values are the
+    // compression hole: isIP rejects
     // "1.2.3.4::" outright, and a naive dotted-quad conversion would place
     // the converted groups ahead of the "::" fill and accept a typo as a
     // routable entry (2a01:1.2.3.4:: -> 2a01:102::304).
@@ -1622,6 +1627,7 @@ test("invalid or partially invalid proxy IP configuration fails startup instead 
       `1.2.3.4${" ".repeat(140)}`,
       "1.2.3.4::", "2a01:1.2.3.4::",
       "fe80::1%", "fe80::1%a:b", "fe80::1%a%b",
+      "1.2.3.4%", "1.2.3.4%eth0", "::ffff:1.2.3.4%eth0",
     ]) {
       await expectStartupFailure(
         { [variable]: value },
@@ -1702,6 +1708,13 @@ test("attributes trusted-proxy connections to the rightmost forwarded address", 
     second = await openSocket(isolated.wsUrl, { headers: { "x-forwarded-for": `1.2.3.4, ${"a".repeat(200)}` } });
     // The peer bucket is now full, so a connection with no XFF is rejected...
     assert.equal(await rejectedUpgrade(isolated.wsUrl), 429);
+    // ...and so is one whose only forwarded item is a dotted quad carrying a
+    // zone suffix: a suffix cannot apply to a dotted quad, so the item must
+    // collapse onto the full peer bucket instead of minting the bare address
+    // as a fresh identity.
+    assert.equal(await rejectedUpgrade(isolated.wsUrl, {
+      headers: { "x-forwarded-for": "1.2.3.4%" },
+    }), 429);
     // ...and so is one whose header exceeds the forwarded-header cap, even
     // though its final item is a perfectly valid address.
     assert.equal(await rejectedUpgrade(isolated.wsUrl, {
