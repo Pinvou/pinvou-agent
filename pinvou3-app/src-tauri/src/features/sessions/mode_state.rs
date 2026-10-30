@@ -1303,4 +1303,24 @@ impl SessionStore {
         self.code_permission.write().yolo_confirmed = true;
         Ok(self.code_permission_prefs())
     }
+
+    /// Tri-mode safety: set the global ask-on-guardrail default (new
+    /// sessions seed their per-session toggle from it; sessions absent from
+    /// `_ask_on_guardrail.json` resolve against it). Same two-step shape as
+    /// [`Self::confirm_code_yolo`]: settings.json field-level transaction
+    /// first, then the in-memory mirror — the mirror is what
+    /// `code_permission_prefs()` readers (and the session-materialization
+    /// path) see, so skipping it would leave this run answering the stale
+    /// value until restart.
+    pub fn set_ask_on_guardrail_default(
+        &self,
+        enabled: bool,
+    ) -> Result<CodePermissionPrefs, String> {
+        UserPrefs::update_transaction(|prefs| {
+            prefs.code_permission.ask_on_guardrail_default = enabled;
+            Ok(())
+        })?;
+        self.code_permission.write().ask_on_guardrail_default = enabled;
+        Ok(self.code_permission_prefs())
+    }
 }

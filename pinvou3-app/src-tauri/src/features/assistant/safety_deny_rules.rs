@@ -798,6 +798,43 @@ const SENSITIVE_ABS_FILES: &[&str] = &[
     "/etc/sudoers.d/*",
 ];
 
+/// Which safety-mode profile a ruleset serves (tri-mode safety).
+///
+/// The profile selects WHICH rule families compose into the deny ruleset —
+/// it never re-tags a rule's action: every emitted rule stays typed `Deny`,
+/// so a kept family short-circuits every approval mode exactly as before,
+/// and the prompt-vs-silent-deny decision for an ARMED session happens
+/// engine-side on the deny face (the fork's guardrail-prompt mapping). A
+/// family dropped from the Yolo/Floor profile is therefore genuinely
+/// uncovered by the mechanical gate under Yolo — that is the product intent:
+/// Yolo trades the sensitive deny faces for the armed card, keeping only the
+/// never-sensible floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SafetyRuleProfile {
+    /// Plan/Auto: floor + sensitive families, all Deny (matches the
+    /// pre-profile composition byte-for-byte; this is also the default path
+    /// for every caller that has no session-mode information).
+    Full,
+    /// Yolo: only the never-sensible floor; sensitive families dropped
+    /// (the armed/unarmed deny face and the engine's guardrail-prompt
+    /// mapping decide card vs silent deny).
+    Floor,
+}
+
+impl SafetyRuleProfile {
+    /// Session mode → profile, applied by the EnginePool from
+    /// `store.mode_state(sid)`: the Yolo lane drops the sensitive families;
+    /// Plan and Auto keep the full face.
+    #[must_use]
+    pub fn for_mode(mode: crate::core::mode_state::SerializableMode) -> Self {
+        match mode {
+            crate::core::mode_state::SerializableMode::Yolo => Self::Floor,
+            crate::core::mode_state::SerializableMode::Plan
+            | crate::core::mode_state::SerializableMode::Auto => Self::Full,
+        }
+    }
+}
+
 /// First-argument destroy/tamper commands: the former live segments 1/2
 /// substrings denied deleting a sensitive path as well (`rm ~/.ssh/id_rsa`,
 /// `rm -rf ~/.ssh/`, `shred …`). v2 anchors these with a middle wildcard
@@ -1390,9 +1427,27 @@ fn sudo_block_rules_for(enabled: bool) -> Vec<ToolAskRule> {
 /// filesystem root targets ([`destroy_root_targets`]): `rm -rf ~` destroys
 /// every enumerated sensitive path at once.
 fn destroy_rules() -> Vec<ToolAskRule> {
-    let mut rules = destroy_rules_for(&sensitive_first_arg_variants());
-    rules.extend(destroy_rules_for(&destroy_root_targets()));
+    let mut rules = destroy_credential_rules();
+    rules.extend(destroy_root_rules());
     rules
+}
+
+/// Sensitive face of [`destroy_rules`] (Full profile only): the per-file
+/// credential inventory destroy spellings (`rm * ~/.ssh/id_rsa`). Under
+/// Yolo these are exactly the spellings key rotation and dotfile management
+/// live next to, and the armed engine converts the deny face into a card —
+/// so the per-file face is dropped and only the wholesale face below stays
+/// mechanical.
+fn destroy_credential_rules() -> Vec<ToolAskRule> {
+    destroy_rules_for(&sensitive_first_arg_variants())
+}
+
+/// Floor face of [`destroy_rules`] (both profiles): the bare-root /
+/// trailing-slash destroy targets (`rm -rf ~`, `rm * /root`). Destroying a
+/// whole home (or the filesystem root) is never a rotation step, so it
+/// stays a hard deny under every profile.
+fn destroy_root_rules() -> Vec<ToolAskRule> {
+    destroy_rules_for(&destroy_root_targets())
 }
 
 /// `dd` overwrite rules (v2 wildcard re-anchoring, narrowed v3): the
@@ -1440,6 +1495,17 @@ fn dd_overwrite_rules() -> Vec<ToolAskRule> {
 /// inventory in the same 7 shapes — `scp -r ~ host:` exfiltrated the whole
 /// home past the credential-path-only face.
 fn exfil_source_rules() -> Vec<ToolAskRule> {
+    let mut rules = exfil_credential_upload_rules();
+    rules.extend(exfil_root_upload_rules());
+    rules
+}
+
+/// Sensitive face of [`exfil_source_rules`] (Full profile only): the
+/// per-credential upload spellings (`curl * ~/.ssh/id_rsa`). Under Yolo the
+/// armed engine owns the card for these; dropping the face also un-deniess
+/// the registered curl collateral (`scp -i <key>` flag-value double-read)
+/// that fires on ordinary key usage.
+fn exfil_credential_upload_rules() -> Vec<ToolAskRule> {
     let mut rules = Vec::new();
     for variant in sensitive_first_arg_variants() {
         rules.push(deny_cmd(format!("curl * {variant}")));
@@ -1451,6 +1517,15 @@ fn exfil_source_rules() -> Vec<ToolAskRule> {
         rules.push(deny_cmd(format!("wget * --post-file={variant}")));
         rules.push(deny_cmd(format!("wget * --post-file {variant}")));
     }
+    rules
+}
+
+/// Floor face of [`exfil_source_rules`] (both profiles): the bare home-root
+/// upload inventory (v3.4, the mass-exfil face) — `scp -r ~ host:` moves
+/// every credential at once and is never rotation vocabulary, so it stays a
+/// hard deny under every profile.
+fn exfil_root_upload_rules() -> Vec<ToolAskRule> {
+    let mut rules = Vec::new();
     for root in exfil_root_targets() {
         rules.push(deny_cmd(format!("curl * {root}")));
         rules.push(deny_cmd(format!("curl * @{root}")));
@@ -1475,6 +1550,15 @@ fn exfil_source_rules() -> Vec<ToolAskRule> {
 /// them again would double-count (the same dedupe philosophy as
 /// [`win_destroy_rules`]).
 fn win_exfil_source_rules() -> Vec<ToolAskRule> {
+    let mut rules = win_exfil_credential_upload_rules();
+    rules.extend(win_exfil_root_upload_rules());
+    rules
+}
+
+/// Sensitive face of [`win_exfil_source_rules`] (Full profile only): the
+/// per-credential Windows upload spellings — the Windows twin of
+/// [`exfil_credential_upload_rules`], same Yolo rationale.
+fn win_exfil_credential_upload_rules() -> Vec<ToolAskRule> {
     let mut rules = Vec::new();
     for variant in win_sensitive_variants() {
         rules.push(deny_cmd(format!("curl * {variant}")));
@@ -1483,6 +1567,18 @@ fn win_exfil_source_rules() -> Vec<ToolAskRule> {
         }
         rules.push(deny_cmd(format!("curl * @{variant}")));
     }
+    rules
+}
+
+/// Floor face of [`win_exfil_source_rules`] (both profiles): the bare
+/// profile-root upload shapes (v3.4, the Windows mass-exfil face) — the
+/// Windows twin of [`exfil_root_upload_rules`]. The `~` and `$home` roots
+/// are deliberately skipped: the engine folds case, so the POSIX family's
+/// `curl * ~` / `curl * $HOME` are the IDENTICAL rule strings (the same
+/// dedupe philosophy as [`win_destroy_rules`], kept here so the Floor
+/// composition inherits it verbatim).
+fn win_exfil_root_upload_rules() -> Vec<ToolAskRule> {
+    let mut rules = Vec::new();
     for root in [
         "%userprofile%",
         "%userprofile%\\",
@@ -1729,6 +1825,19 @@ fn catastrophic_rules() -> Vec<ToolAskRule> {
 /// (`echo x >> ~/.bashrc`) — is invisible to the token channel and stays
 /// registered (module docs).
 fn persistence_rules() -> Vec<ToolAskRule> {
+    let mut rules = persistence_injection_rules();
+    rules.extend(sudoers_persistence_rules());
+    rules
+}
+
+/// Sensitive face of [`persistence_rules`] (Full profile only): the
+/// shell-startup / repo-config / workspace injection writes and the
+/// service/scheduled-task/registry persistence words (`tee * ~/.bashrc`,
+/// `tee * ~/.gitconfig`, `mv * .git/hooks/pre-commit`, `crontab -e`, …).
+/// These are the faces with day-to-day false-positive cost inside an agent
+/// workspace (dotfile management, git hook setup, cron editing) — under
+/// Yolo the armed engine owns the card for them instead of a hard deny.
+fn persistence_injection_rules() -> Vec<ToolAskRule> {
     let mut targets = Vec::new();
     for file in SHELL_STARTUP_FILES {
         targets.extend(path_variants(&dir_prefixes(), file, false));
@@ -1744,18 +1853,26 @@ fn persistence_rules() -> Vec<ToolAskRule> {
             rules.push(deny_cmd(format!("{cmd} * {target}")));
         }
     }
-    // Privilege: sudoers writes and the editor that grants them. `install`
-    // is here too: `install -m 440 payload /etc/sudoers` is a same-effort
-    // bypass of the `cp` form. `ln`/`ditto` join for the same reason
-    // ([`PERSISTENCE_WRITE_COMMANDS`]).
+    for word in SERVICE_PERSISTENCE_COMMANDS {
+        rules.push(deny_cmd(word.to_string()));
+    }
+    rules
+}
+
+/// Floor face of [`persistence_rules`] (both profiles): the sudoers write
+/// face and the editor that grants it (`tee * /etc/sudoers`, the
+/// `sudoers.d` glob token, `visudo`). A sudoers write is root escalation —
+/// never daily work — so it stays a hard deny under every profile.
+/// `install` is included like in the Full face: `install -m 440 payload
+/// /etc/sudoers` is a same-effort bypass of the `cp` form; `ln`/`ditto`
+/// join for the same reason ([`PERSISTENCE_WRITE_COMMANDS`]).
+fn sudoers_persistence_rules() -> Vec<ToolAskRule> {
+    let mut rules = Vec::new();
     for cmd in PERSISTENCE_WRITE_COMMANDS {
         rules.push(deny_cmd(format!("{cmd} * /etc/sudoers")));
     }
     rules.push(deny_cmd("tee /etc/sudoers.d/*".to_string()));
     rules.push(deny_cmd("visudo".to_string()));
-    for word in SERVICE_PERSISTENCE_COMMANDS {
-        rules.push(deny_cmd(word.to_string()));
-    }
     rules
 }
 
@@ -1788,7 +1905,25 @@ fn win_native_rules() -> Vec<ToolAskRule> {
 }
 
 /// Sensitive-data / privilege-escalation / catastrophic-command hard-deny
-/// ruleset (v3).
+/// ruleset (v3), composed for the session's safety-mode profile.
+///
+/// Profile-aware entry for the tri-mode composition (`safety_deny_rules` is
+/// the Full-profile default): the Floor profile keeps only the never-sensible
+/// families (see [`floor_safety_rules`]). Shared by the spawn-time injection
+/// initial value (`build_engine_config_for_session_roots`) and the hot
+/// refreshes (`EnginePool::refresh_permission_rulesets` /
+/// `refresh_session_permission_ruleset`). The caller (bridge) merges it into
+/// the same `Ruleset` as the scope gate.
+#[must_use]
+pub fn safety_rules_for_profile(profile: SafetyRuleProfile) -> Vec<ToolAskRule> {
+    safety_rules_for_profile_with_home(
+        profile,
+        crate::platform::super_permission::is_enabled(),
+        win_real_home_prefix(),
+    )
+}
+
+/// The Full-profile ruleset (the pre-profile composition, byte-identical).
 ///
 /// Shared by the spawn-time injection initial value
 /// (`build_engine_config_for_session_roots`) and the hot refresh after a
@@ -1814,29 +1949,85 @@ pub(crate) fn safety_deny_rules_for(super_permission_enabled: bool) -> Vec<ToolA
 /// Fully injectable form: `win_home_prefix` plays the same role as the sudo
 /// state for the Windows real-home family. Production passes
 /// [`win_real_home_prefix`] (host-derived); tests inject a fixed value (or
-/// `None`) so the rule count stays host-independent.
+/// `None`) so the rule count stays host-independent. Back-compat seam: the
+/// Full profile (the pre-profile composition).
 fn safety_deny_rules_with_home(
     super_permission_enabled: bool,
     win_home_prefix: Option<String>,
 ) -> Vec<ToolAskRule> {
-    let mut rules = destroy_rules();
-    rules.extend(dd_overwrite_rules());
-    rules.extend(catastrophic_rules());
-    rules.extend(persistence_rules());
-    rules.extend(exfil_source_rules());
-    rules.extend(win_native_rules());
-    rules.extend(win_exfil_source_rules());
-    if let Some(home) = win_home_prefix {
-        rules.extend(win_real_home_rules(&home));
+    safety_rules_for_profile_with_home(
+        SafetyRuleProfile::Full,
+        super_permission_enabled,
+        win_home_prefix,
+    )
+}
+
+/// Profile- and host-injectable composition. The Floor profile keeps the
+/// [`floor_safety_rules`] families and drops the [`sensitive_safety_rules`]
+/// ones; the Full profile is their union — the pre-profile composition,
+/// byte-for-byte (the family bodies are shared, only the selection differs).
+fn safety_rules_for_profile_with_home(
+    profile: SafetyRuleProfile,
+    super_permission_enabled: bool,
+    win_home_prefix: Option<String>,
+) -> Vec<ToolAskRule> {
+    let mut rules = floor_safety_rules(win_home_prefix.as_deref());
+    if profile == SafetyRuleProfile::Full {
+        rules.extend(sensitive_safety_rules(super_permission_enabled));
     }
-    rules.extend(sudo_block_rules_for(super_permission_enabled));
     // Safety net against accidental cross-family duplicates on any host
     // composition (e.g. a resolved home that collides with an enumerated
     // root or Windows prefix): duplicate rule strings would double-count in
     // the pinned snapshot and double-scan at check time. A no-op on dev/CI
-    // hosts (the snapshot test pins the deduped composition).
+    // hosts (the snapshot test pins the deduped composition). Applied to
+    // both profiles so neither can carry duplicates.
     rules.sort_by(|a, b| a.command.cmp(&b.command));
     rules.dedup_by(|a, b| a.command == b.command);
+    rules
+}
+
+/// The floor families — kept in BOTH profiles (never sensible to allow a
+/// mechanical pass on): catastrophic system destruction
+/// ([`catastrophic_rules`]), the irreversible `dd of=` overwrites
+/// ([`dd_overwrite_rules`]), the bare-root/trailing-slash destroy face
+/// ([`destroy_root_rules`]), the sudoers-persistence + `visudo` face
+/// ([`sudoers_persistence_rules`]), the mass-exfil bare-root upload faces
+/// ([`exfil_root_upload_rules`] / [`win_exfil_root_upload_rules`]), the
+/// whole Windows-native destroy family ([`win_native_rules`], emitted on
+/// every host — inert on POSIX, keeps the pinned count host-independent),
+/// and the resolved real-home Windows family ([`win_real_home_rules`]).
+///
+/// Deliberately NOT here: the sudo command-word block — the sudo product
+/// stance is a Sensitive face (Full only), so the Floor/Yolo composition
+/// carries zero sudo rules regardless of the super-permission toggle.
+fn floor_safety_rules(win_home_prefix: Option<&str>) -> Vec<ToolAskRule> {
+    let mut rules = Vec::new();
+    rules.extend(destroy_root_rules());
+    rules.extend(dd_overwrite_rules());
+    rules.extend(catastrophic_rules());
+    rules.extend(sudoers_persistence_rules());
+    rules.extend(exfil_root_upload_rules());
+    rules.extend(win_native_rules());
+    rules.extend(win_exfil_root_upload_rules());
+    if let Some(home) = win_home_prefix {
+        rules.extend(win_real_home_rules(home));
+    }
+    rules
+}
+
+/// The sensitive families — Full profile only: the per-file credential
+/// destroy ([`destroy_credential_rules`]) and upload
+/// ([`exfil_credential_upload_rules`] / [`win_exfil_credential_upload_rules`])
+/// spellings, the non-sudoers persistence/injection writes and service
+/// persistence words ([`persistence_injection_rules`]), and the sudo
+/// command-word block ([`sudo_block_rules_for`], still gated on the
+/// super-permission toggle: enabled = zero sudo rules, exactly as before).
+fn sensitive_safety_rules(super_permission_enabled: bool) -> Vec<ToolAskRule> {
+    let mut rules = destroy_credential_rules();
+    rules.extend(persistence_injection_rules());
+    rules.extend(exfil_credential_upload_rules());
+    rules.extend(win_exfil_credential_upload_rules());
+    rules.extend(sudo_block_rules_for(super_permission_enabled));
     rules
 }
 
@@ -2243,6 +2434,139 @@ mod tests {
         // Sudo rules present in the off state (injected, not host-disk bound).
         assert!(commands.contains(&"sudo"));
         assert!(commands.contains(&"sudoedit"));
+    }
+
+    /// Tri-mode profile seam: the Full profile IS the pre-profile
+    /// composition, byte-for-byte (same family bodies, only the selection
+    /// differs). Any drift here means the profile split changed a rule
+    /// string or dropped/duplicated a family — fix the split, not this pin.
+    #[test]
+    fn forkguard_ruleset_profile_full_is_the_pinned_composition() {
+        assert_eq!(
+            safety_rules_for_profile_with_home(SafetyRuleProfile::Full, false, None),
+            safety_deny_rules_with_home(false, None),
+            "Full profile must compose the exact pre-profile ruleset"
+        );
+    }
+
+    /// Tri-mode profile seam: Floor keeps the never-sensible faces
+    /// (catastrophic mkfs, dd-of overwrite, sudoers persistence, the
+    /// bare-root destroy AND mass-exfil faces) and drops every sensitive
+    /// face (per-file credential destroy/upload spellings, non-sudoers
+    /// persistence writes, service persistence words). Rules are addressed
+    /// by exact command strings shared with the pinned Full snapshot above.
+    #[test]
+    fn forkguard_ruleset_profile_floor_keeps_floor_drops_sensitive() {
+        let full = safety_rules_for_profile_with_home(SafetyRuleProfile::Full, false, None);
+        let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
+        let floor_commands: Vec<&str> =
+            floor.iter().filter_map(|r| r.command.as_deref()).collect();
+
+        // Floor faces kept (one anchor per floor family).
+        for must in [
+            "mkfs.ext4",                       // catastrophic words
+            "dd * of=~/.ssh/id_rsa",           // dd overwrite (floor by mandate)
+            "tee * /etc/sudoers",              // sudoers persistence
+            "visudo",                          // the privilege-granting editor
+            "rm * ~",                          // bare-root destroy face
+            "rm * ~/",                         // trailing-slash destroy spelling
+            "scp ~",                           // mass-exfil bare-root upload
+            "wget * --post-file=/root",        // bare-root upload, wget shape
+            "del * %userprofile%\\.ssh\\id_rsa", // Windows destroy family
+        ] {
+            assert!(
+                floor_commands.contains(&must),
+                "floor face must stay in the Floor profile: {must}"
+            );
+        }
+
+        // Sensitive faces dropped.
+        for must_not in [
+            "rm * ~/.ssh/id_rsa",     // per-file credential destroy
+            "shred * ~/.ssh/id_rsa",  // per-file credential destroy
+            "curl * ~/.ssh/id_rsa",   // per-file credential upload
+            "scp ~/.ssh/id_rsa",      // per-file credential upload
+            "curl * %userprofile%\\.aws\\credentials", // Windows per-file upload
+            "tee * ~/.bashrc",        // non-sudoers persistence write
+            "tee * ~/.gitconfig",     // repo-config write
+            "mv * .git/hooks/pre-commit", // workspace git-hook write
+            "crontab -e",             // service persistence word
+            "systemctl enable",       // service persistence word
+            "sudo",                   // sudo product stance (Sensitive face)
+            "sudoedit",
+        ] {
+            assert!(
+                !floor_commands.contains(&must_not),
+                "sensitive face must stay out of the Floor profile: {must_not}"
+            );
+        }
+
+        // Floor is exactly the Full composition minus the sensitive faces:
+        // every Floor rule exists in Full with the identical string (the
+        // profile only selects WHICH rules compose — no re-spelling).
+        let full_commands: std::collections::HashSet<&str> =
+            full.iter().filter_map(|r| r.command.as_deref()).collect();
+        assert!(
+            floor_commands.iter().all(|c| full_commands.contains(c)),
+            "Floor must be a strict subset of Full (same rule strings)"
+        );
+    }
+
+    /// Tri-mode profile seam, sudo interplay: the super-permission toggle
+    /// keeps its exact pre-profile meaning in the Full profile (off = 2
+    /// command-word denies, NOPASSWD = zero), and the Floor profile carries
+    /// zero sudo rules in BOTH toggle states (the sudo stance is a
+    /// Sensitive face; the toggle must not re-add it behind Yolo's back).
+    #[test]
+    fn forkguard_ruleset_profile_sudo_toggle_interplay_unchanged() {
+        for enabled in [false, true] {
+            let floor = safety_rules_for_profile_with_home(
+                SafetyRuleProfile::Floor,
+                enabled,
+                None,
+            );
+            assert!(
+                floor.iter().all(|r| r.command.as_deref() != Some("sudo")),
+                "Floor profile carries no sudo rule in either toggle state"
+            );
+        }
+        let full_off = safety_rules_for_profile_with_home(SafetyRuleProfile::Full, false, None);
+        let full_on = safety_rules_for_profile_with_home(SafetyRuleProfile::Full, true, None);
+        let off_commands: Vec<&str> =
+            full_off.iter().filter_map(|r| r.command.as_deref()).collect();
+        assert!(off_commands.contains(&"sudo"));
+        assert!(off_commands.contains(&"sudoedit"));
+        assert!(
+            full_on.iter().all(|r| r.command.as_deref() != Some("sudo")),
+            "super-permission-on Full ruleset must not generate any sudo deny rule"
+        );
+    }
+
+    /// Tri-mode profile seam, engine-level: under the Floor ruleset the
+    /// sensitive spellings really pass (Yolo trades them for the armed
+    /// card) while the floor faces still short-circuit AskForApproval::Never
+    /// — the mechanical behavior the composition promises, not just the
+    /// rule-string census.
+    #[test]
+    fn forkguard_ruleset_profile_floor_engine_behavior() {
+        let floor_engine = ExecPolicyEngine::with_rulesets(vec![ruleset_with_denied_prefix_promotion(
+            safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None),
+        )]);
+        // Sensitive faces: allowed under Floor (the armed engine's deny-face
+        // mapping owns the card; unarmed Yolo runs them silent).
+        for cmd in ["crontab -e", "tee ~/.bashrc", "rm ~/.ssh/id_rsa"] {
+            let d = check(&floor_engine, cmd);
+            assert!(d.allow, "Floor profile must allow the sensitive face: {cmd}");
+        }
+        // Floor faces: still hard-denied under every approval mode.
+        for cmd in ["mkfs.ext4 /dev/sda", "dd if=/dev/zero of=~/.ssh/id_rsa", "visudo"] {
+            let d = check(&floor_engine, cmd);
+            assert!(
+                !d.allow,
+                "Floor profile must keep the floor face denied: {cmd} -> {:?}",
+                d.reason()
+            );
+        }
     }
 
     #[test]

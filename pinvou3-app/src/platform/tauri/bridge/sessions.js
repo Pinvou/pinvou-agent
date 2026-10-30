@@ -34,6 +34,9 @@ function pinvouSharedtauriSessions() {
     const scheduledRunSessionOwners = context.scheduledRunSessionOwners;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
     const runSyncOnSession = context.runSyncOnSession;
+    // 审批卡重放（tri-mode）：切会话时按后端登记表补插缺失的审批卡。
+    const addChatItem = context.addChatItem;
+    const timeStr = context.timeStr;
     const resetPendingAssistant = context.resetPendingAssistant;
     const rerenderFromMessages = context.rerenderFromMessages;
     const syncModeState = context.syncModeState;
@@ -764,6 +767,48 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     return remappedCurrentStreamId;
   }
 
+  // ── tri-mode 审批卡重放（切会话恢复）─────────────────────────────
+  // 审批卡与 user_input 卡同款：不进 messages.json，磁盘 hydration 后不复活。
+  // 后端在弹卡时登记（pending_approvals），这里在每次会话切换后按登记表补插
+  // 该会话缺失的审批卡——既覆盖冷启动后的首次切入，也覆盖热 buffer 的幂等
+  // 重放（按 approvalId 去重，与 chat-events.js 的 live 事件同一去重键）。
+  // 读取失败静默跳过：恢复是尽力而为，不得阻塞会话切换。
+  function hasApprovalChatItem(approvalId) {
+    return !!approvalId && state.chatItems.some(function (item) {
+      return item && item.type === "approval" && item.approvalId === approvalId;
+    });
+  }
+  async function replayPendingApprovals(sid) {
+    if (!sid) return;
+    let pending = [];
+    try { pending = await invoke("get_pending_approvals", { sessionId: sid }) || []; }
+    catch { return; }
+    if (!pending.length) return;
+    let changed = false;
+    runSyncOnSession(sid, function () {
+      pending.forEach(function (entry) {
+        const approvalId = String(entry && entry.approvalId || "");
+        if (!approvalId || hasApprovalChatItem(approvalId)) return;
+        addChatItem({
+          type: "approval",
+          approvalId,
+          toolName: String(entry.toolName || ""),
+          description: String(entry.description || ""),
+          intentSummary: entry.intentSummary == null ? "" : String(entry.intentSummary),
+          input: entry.input === undefined ? null : entry.input,
+          forcePrompt: !!entry.forcePrompt,
+          resolved: false,
+          cardState: "active",
+          submitting: false,
+          statusLabel: "",
+          time: timeStr(),
+        });
+        changed = true;
+      });
+    });
+    if (changed) notify();
+  }
+
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   async function switchToSessionInternal(id, preserveScheduledRunContext, errorScope, options) {
     const requestToken = ++sessionSwitchRequestToken;
@@ -810,6 +855,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       await syncActivePersona();
       await syncMountedCollection();
       await loadMemoryOverview({ rehydratePending: true });
+      await replayPendingApprovals(id);
       if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== id) return false;
       notify();
       reconcileArtifacts(id); // 对账磁盘产物(fire-and-forget)
@@ -896,6 +942,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     await syncActivePersona();
     await syncMountedCollection();
     await loadMemoryOverview({ rehydratePending: true });
+    await replayPendingApprovals(id);
     if (requestToken !== sessionSwitchRequestToken || state.activeSessionId !== saved.metadata.id) return false;
     notify();
     reconcileArtifacts(id); // 对账磁盘产物(修重启/跟踪遗漏导致的面板缺文件)

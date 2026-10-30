@@ -447,6 +447,8 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       interruptBusy: "Another interrupt is already in progress; the message stays queued — retry in a moment",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
       toolGateDecision: "Permission gate", toolGateAllowed: "allowed", toolGateDenied: "denied", toolGateUnavailable: "could not review and denied", toolGateAgent: "agent", toolGateRisk: "risk",
+      toolGuardrailDenied: "Guardrail denied", toolGuardrailDeniedSessionDenied: "this exact operation was denied in this session (a changed request asks again)", toolGuardrailDeniedPlan: "Plan mode is read-only; denied", toolGuardrailDeniedAskOff: "ask-on-guardrail is off; denied outright",
+      approvalDecisionFailed: "⚠️ decide_approval failed: ",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
@@ -557,6 +559,8 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       interruptBusy: "別の割り込みが進行中のため実行できません。メッセージはキューに残ります。しばらくしてから再試行してください",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
       toolGateDecision: "権限ゲート", toolGateAllowed: "許可", toolGateDenied: "拒否", toolGateUnavailable: "レビュー不能のため拒否", toolGateAgent: "エージェント", toolGateRisk: "リスク",
+      toolGuardrailDenied: "ガードレール拒否", toolGuardrailDeniedSessionDenied: "このセッションで拒否済みの操作です（内容が変われば再度確認）", toolGuardrailDeniedPlan: "Plan モードは読み取り専用のため拒否", toolGuardrailDeniedAskOff: "ガードレール確認がオフのため直接拒否",
+      approvalDecisionFailed: "⚠️ decide_approval に失敗: ",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -667,6 +671,8 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedtauriMain().
       interruptBusy: "已有打断正在进行，消息保留在排队区，请稍后重试",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
       toolGateDecision: "权限闸门", toolGateAllowed: "允许", toolGateDenied: "拒绝", toolGateUnavailable: "无法审查并拒绝", toolGateAgent: "子智能体", toolGateRisk: "风险",
+      toolGuardrailDenied: "守卫拦截", toolGuardrailDeniedSessionDenied: "该会话已拒绝此操作（换参数需重新请批）", toolGuardrailDeniedPlan: "Plan 模式为只读，已拒绝", toolGuardrailDeniedAskOff: "守卫询问已关闭，已直接拒绝",
+      approvalDecisionFailed: "⚠️ decide_approval 失败: ",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
@@ -1070,6 +1076,9 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
       }
     },
     runSyncOnSession, persistMessagesFor,
+    // 审批卡重放（tri-mode）：切会话时经 get_pending_approvals 补插缺失的
+    // 审批卡（user_input 同款「不进 messages.json、靠登记表还原」思路）。
+    addChatItem, timeStr,
     resetPendingAssistant: function (...args) { return resetPendingAssistant(...args); },
     stopThinking: function (...args) { return stopThinking(...args); },
     rerenderFromMessages,
@@ -1191,7 +1200,18 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
   function applyAuthoritativeModeState(sid, st) {
     bumpModeStateEpoch(sid);
     runSyncOnSession(sid || state.activeSessionId, function () {
-      state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
+      // tri-mode（#tri-mode 安全模型）：modeState 权威形状扩为
+      // { mode, multiAgent, askOnGuardrail }。ask_on_guardrail 缺失按默认
+      // 开（后端 default_true；旧后端 payload 无此键时不把开关翻成关）。
+      // multi_agent 缺失（chat:mode_changed 只带 mode/ask_on_guardrail）=
+      // 负载不携带该字段，保留该会话当前显示，不得误置 false。
+      state.modeState = {
+        mode: st.mode || "yolo",
+        multiAgent: st.multi_agent === undefined
+          ? !!(state.modeState && state.modeState.multiAgent)
+          : !!st.multi_agent,
+        askOnGuardrail: st.ask_on_guardrail == null ? true : !!st.ask_on_guardrail,
+      };
     });
   }
 
@@ -1917,6 +1937,12 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const setMultiAgentMode = interactionFeature.setMultiAgentMode;
   const planStuckReplan = interactionFeature.planStuckReplan;
   const planStuckGo = interactionFeature.planStuckGo;
+  // tri-mode 安全模型（plan/auto/yolo + 会话级守卫询问 + 审批卡）
+  const planStuckGoAuto = interactionFeature.planStuckGoAuto;
+  const setSessionMode = interactionFeature.setSessionMode;
+  const setAskOnGuardrail = interactionFeature.setAskOnGuardrail;
+  const decideApproval = interactionFeature.decideApproval;
+  const getPendingApprovals = interactionFeature.getPendingApprovals;
   const submitUserInput = interactionFeature.submitUserInput;
   const cancelUserInput = interactionFeature.cancelUserInput;
   const editLastTurn = interactionFeature.editLastTurn;
@@ -2343,6 +2369,11 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     setMultiAgentMode,
     planStuckReplan,
     planStuckGo,
+    planStuckGoAuto,
+    setSessionMode,
+    setAskOnGuardrail,
+    decideApproval,
+    getPendingApprovals,
     // 用户交互
     submitUserInput,
     cancelUserInput,

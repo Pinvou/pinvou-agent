@@ -90,6 +90,10 @@ const codexJa = {
   nativePlanApproved:'✅ 承認済み', nativePlanDiscarded:'🚪 プランを破棄',
   nativePlanSuperseded:'📜 新しいプランで上書きされました', nativePlanHistorical:'📜 過去のプラン',
   nativePlanAcceptFailed:'⚠️ accept_plan に失敗: ', nativePlanDiscardFailed:'⚠️ discard_plan に失敗: ',
+  // tri-mode 承認カードの終状態 / ガードレール拒否通知（安定 reason キーをフロント側で対応付け）。
+  nativeApprovalAllowed:'✅ 許可済み', nativeApprovalAllowedSession:'✅ このセッションでは許可済み', nativeApprovalDenied:'🚫 拒否済み',
+  nativeGuardrailDenied:'ガードレール拒否', nativeGuardrailDeniedSession:'このセッションで拒否済みの操作です（内容が変われば再度確認）',
+  nativeGuardrailDeniedPlan:'Plan モードは読み取り専用のため拒否', nativeGuardrailDeniedAskOff:'ガードレール確認がオフのため直接拒否',
   addAttachment:'添付ファイルを追加', commandsAvailable:'Agent が報告したコマンド', commandsAfterSession:'セッション作成後に Agent コマンドを同期',
   connectedSuffix:'接続済み', notReadySuffix:'は準備できていません',
   notSet:'未設定', choiceTitle:'Agent が選択を求めています', submit:'送信', cancel:'キャンセル', submitted:'送信済み', canceled:'キャンセル済み', inputExpired:'この入力リクエストは期限切れです',
@@ -204,6 +208,8 @@ const jaBase = {
         outputs: '成果物',
         kbMount: 'ナレッジ', kbMountTitle: 'このチャットのコレクションを管理', kbMountPick: 'コレクションを選択', kbMountNone: 'コレクションがありません — 「ナレッジ」で作成または接続してください', kbMountRemove: 'すべて解除', kbMountRemoveOne: 'このコレクションを解除', kbMountEnable: '有効化', kbMountDisable: '無効化', kbMountEnabled: '有効', kbMountDisabled: '無効', kbMountCount: n => `${n} 個のナレッジ`,  kbMountNoModel: 'まず「ナレッジ → ローカル知識」で Embedding モデルをインストールするとリンクできます', kbMountNotReady: 'Embedding モデルを読み込み中、または読み込みに失敗したため、まだリンクできません',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'モード切替', modeYoloDesc: 'すぐ実行', modePlanDesc: '計画してから実行',
+        modeAuto: 'Auto', modeAutoDesc: '通常操作は都度確認、ワークスペース内のファイル書き込みは確認なし',
+        modeAskOnGuardrail: 'ガードレール命中時に確認', modeAskOnGuardrailDesc: 'オフにするとガードレール命中時はカードを出さず直接拒否されます',
         modeYoloConfirmTitle: 'YOLO モードに切り替えますか？', modeYoloConfirmBody: 'このモードでは、モデルがプロジェクトディレクトリを全自動で読み書きし、shell コマンドを実行できます。段階的な承認はありません。', modeYoloConfirmHint: '確認後はグローバルに記憶され、今後は表示されません。', modeYoloConfirmOk: '確認', modeYoloConfirmCancel: 'キャンセル',
          
         kbRescan: '再スキャン', kbScanning: 'スキャン中',  kbScanNow: 'このPCをスキャン',
@@ -584,6 +590,10 @@ const jaBase = {
         stuckPlanPre: '⚠️ Plan モードで AI が', stuckPlanPost: 'を呼びましたがホワイトリストでブロックされました。Plan モードは議論専用です。選択肢は 2 つ:',
         handled: '処理済み',
         stuckReplan: '📋 AI にプランを出し直させる',  stuckGo: 'そのまま実行（プランを省略）',
+        stuckGoAuto: '続行 (Auto)', stuckGoYolo: '続行 (Yolo)',
+        approvalTitle: '承認が必要なツール呼び出し', approvalIntent: 'モデルの意図',
+        approvalAllow: '許可', approvalAllowSession: 'このセッションでは許可', approvalDeny: '拒否',
+        approvalAllowed: '✅ 許可済み', approvalAllowedSession: '✅ このセッションでは許可済み', approvalDenied: '🚫 拒否済み', approvalSubmitting: '送信中…',
         // 品悟レビューカード。品/悟 の字はブランド表記として保持、周囲の文言は言語に追従。
         pvLoadingPin: 'Pinvou 品 · レビュー', pvLoadingWu: 'Pinvou 悟 · 発散補完',
         pvLoadingPinSub: '一つずつ照合し、問題を洗い出し中', pvLoadingWuSub: '完全性の観点を比較し、補強点を発散中',

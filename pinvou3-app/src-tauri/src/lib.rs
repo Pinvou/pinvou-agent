@@ -1405,6 +1405,9 @@ pub fn run() {
                             crate::features::assistant::pending_user_input::clear_session(
                                 session_id,
                             );
+                            crate::features::assistant::pending_approvals::clear_session(
+                                session_id,
+                            );
                             crate::features::memory::discard_turn_capture(session_id);
                             // The computer-use audit trail is per-session
                             // metadata about what the agent did on the user's
@@ -1666,6 +1669,8 @@ pub fn run() {
             commands::connectors::ima_connect,
             commands::connectors::ima_logout,
             commands::settings::get_settings,
+            commands::settings::get_ask_on_guardrail_default,
+            commands::settings::set_ask_on_guardrail_default,
             commands::runtime::get_platform_capabilities,
             commands::settings::submit_feedback,
             commands::settings::get_effective_model_config,
@@ -1911,6 +1916,10 @@ pub fn run() {
             commands::interaction::cancel_user_input,
             commands::interaction::get_pending_user_inputs,
             commands::interaction::summon_pinvou,
+            commands::interaction::decide_approval,
+            commands::interaction::get_pending_approvals,
+            commands::interaction::set_session_mode,
+            commands::interaction::set_ask_on_guardrail,
             commands::personas::save_session_pinvou_reviews,
             commands::personas::get_session_pinvou_reviews,
             commands::interaction::get_super_permission_status,

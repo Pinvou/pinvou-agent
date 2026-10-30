@@ -565,6 +565,9 @@ pub(crate) fn emit_chat_terminal(
 ) {
     // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
     crate::features::assistant::pending_user_input::clear_session(session_id);
+    // 审批卡同理：中断的 turn 里 engine 侧审批已随 turn 丢弃，挂起登记与
+    // 会话级授予/拒绝缓存一并兜底清空，残留卡不得跨 turn 存活。
+    crate::features::assistant::pending_approvals::clear_session(session_id);
     let payload = json!({
         "session_id": session_id,
         // Turn identity: terminal events must carry the generation so the
@@ -1753,9 +1756,17 @@ impl AppEngine {
             None
         };
         // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
+        // Tri-mode safety: one mode_state read feeds both the swarm switch
+        // and the safety-profile derivation threaded into the spawn config
+        // (the pool's post-spawn arming separately syncs the live posture).
+        let mode_state = store.mode_state(session_id);
+        let safety_profile =
+            crate::features::assistant::safety_deny_rules::SafetyRuleProfile::for_mode(
+                mode_state.mode,
+            );
         let multi_agent_enabled = scheduled_profile.is_none()
             && bridge.multi_agent_mode_available(session_id)
-            && store.mode_state(session_id).multi_agent;
+            && mode_state.multi_agent;
         let roots = if scheduled_profile.is_some() {
             // 定时任务保留既有 profile/fallback 解析；其 ledger 可能是用户选择的
             // automation workspace，下面不会对它执行任何旧投影删除。
@@ -1803,14 +1814,19 @@ impl AppEngine {
                 // a plain session, which inherits none of these limits. The
                 // swarm switch and the session's multi_agent switch share one
                 // source (the mode_state just read above).
-                bridge.build_engine_config_for_multi_agent(
+                bridge.build_engine_config_for_multi_agent_with_profile(
                     session_id,
                     roots,
                     snapshot,
                     multi_agent_enabled,
+                    safety_profile,
                 )
             }
-            None => bridge.build_engine_config_for_session_roots(session_id, roots),
+            None => bridge.build_engine_config_for_session_roots_with_profile(
+                session_id,
+                roots,
+                safety_profile,
+            ),
         };
         if scheduled_unattended_spawn {
             engine_config.subagents_enabled = false;

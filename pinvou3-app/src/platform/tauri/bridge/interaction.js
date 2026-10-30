@@ -81,16 +81,24 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
       if ((modeStateEpochs[sid] || 0) !== epoch) return;
       if (state.activeSessionId !== sid) {
         runSyncOnSession(sid, function () {
-          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+          state.modeState = {
+            mode: ms.mode || "yolo",
+            multiAgent: !!ms.multi_agent,
+            askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+          };
         });
         return;
       }
-      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+      state.modeState = {
+        mode: ms.mode || "yolo",
+        multiAgent: !!ms.multi_agent,
+        askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+      };
     } catch {
       // get 失败同样不得用默认值覆盖已发生的权威改写。
       if ((modeStateEpochs[sid] || 0) !== epoch) return;
       if (state.activeSessionId !== sid) return;
-      state.modeState = { mode: "yolo", multiAgent: false };
+      state.modeState = { mode: "yolo", multiAgent: false, askOnGuardrail: true };
     }
   }
 
@@ -351,6 +359,7 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
         state.modeState = {
           mode: (state.modeState && state.modeState.mode) || "yolo",
           multiAgent: !!enabled,
+          askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
         };
         // 草稿分支会从 try 内提前返回，走不到函数末尾的 notify()。
         // 必须在这里主动发布快照，否则拨杆只能等下一次无关状态事件才刷新。
@@ -368,6 +377,7 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
       state.modeState = {
         mode: (state.modeState && state.modeState.mode) || "yolo",
         multiAgent: !!enabled,
+        askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
       };
       notify();
       try {
@@ -380,6 +390,7 @@ async function setPlanModeNext() { return pinvouSharedtauriInteraction().setPlan
           state.modeState = {
             mode: (state.modeState && state.modeState.mode) || "yolo",
             multiAgent: previousMultiAgent,
+            askOnGuardrail: (state.modeState && state.modeState.askOnGuardrail) !== false,
           };
           addSystemItem(bt("switchModeFailed") + invokeError);
         });
@@ -414,6 +425,117 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     try {
       await sendMessageToSession(sid, bt("planStuckGoPrompt"));
     } catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
+  }
+  // plan-stuck 卡的 Auto 档继续（tri-mode）：与 planStuckGo 同一条补充指令，
+  // 但切换目标是 Auto（逐项审批）而不是 Yolo——UI 层的一次性确认门只对
+  // yolo 生效，Auto 不经门。sid 捕获 / 定向写回与 planStuckGo 同一约定。
+  async function planStuckGoAuto(itemId, targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    patchItemById(itemId, { resolved: true }); notify();
+    try {
+      const st = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); notify(); return; }
+    try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
+    catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
+  }
+
+  // ── tri-mode 统一模式切换 / 会话级 ask-on-guardrail / 审批卡决策 ──────────
+  // sid 捕获与 exitPlanToYolo 同一约定：调用方可显式钉住目标会话，无参调用
+  // 读 live-active。权威写回一律走 applyAuthoritativeModeState（共享 epoch 表）。
+  async function setSessionMode(targetSessionId, mode, askOnGuardrail) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    try {
+      const args = { sessionId: sid, mode };
+      // 可选参数：仅显式传入时携带（undefined 不上线，保持协议指纹最小）。
+      if (askOnGuardrail === true || askOnGuardrail === false) args.askOnGuardrail = askOnGuardrail;
+      const st = await invoke("set_session_mode", args);
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
+    notify();
+  }
+  // 会话级「守卫命中时询问」开关：乐观翻转（后端要热同步底座安全姿态，可能
+  // 耗时），失败按触发会话回滚并提示（setMultiAgentMode 同款乐观模式）。
+  async function setAskOnGuardrail(targetSessionId, enabled) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    const previousAsk = (state.modeState && state.modeState.askOnGuardrail) !== false;
+    bumpModeStateEpoch(sid);
+    state.modeState = {
+      mode: (state.modeState && state.modeState.mode) || "yolo",
+      multiAgent: !!(state.modeState && state.modeState.multiAgent),
+      askOnGuardrail: !!enabled,
+    };
+    notify();
+    try {
+      const st = await invoke("set_ask_on_guardrail", { sessionId: sid, enabled: !!enabled });
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) {
+      runOnSession(sid, function () {
+        state.modeState = {
+          mode: (state.modeState && state.modeState.mode) || "yolo",
+          multiAgent: !!(state.modeState && state.modeState.multiAgent),
+          askOnGuardrail: previousAsk,
+        };
+        addSystemItem(bt("switchModeFailed") + e);
+      });
+    }
+    notify();
+  }
+  // 审批卡决策回传（decide_approval）：sid 在 entry 捕获（await 期间用户可能
+  // 切会话，写入必须定向回触发会话，与 acceptPlan 同一约定）。乐观置为提交中，
+  // 成功写终态（终态文案由渲染层按 cardState 映射三语），失败恢复 active。
+  async function decideApproval(approvalId, decision, targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid || !approvalId) return;
+    let card = null;
+    runSyncOnSession(sid, function () {
+      card = state.chatItems.find(function (candidate) {
+        return candidate && candidate.type === "approval" && candidate.approvalId === approvalId;
+      }) || null;
+    });
+    if (!card || card.resolved) return;
+    const previous = { resolved: !!card.resolved, cardState: card.cardState || "active" };
+    runSyncOnSession(sid, function () { card.submitting = true; });
+    notify();
+    try {
+      await invoke("decide_approval", { sessionId: sid, approvalId, decision });
+      runSyncOnSession(sid, function () {
+        card.submitting = false;
+        card.resolved = true;
+        card.cardState = decision === "deny" ? "denied"
+          : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        card.statusLabel = "";
+      });
+    } catch (e) {
+      runSyncOnSession(sid, function () {
+        card.submitting = false;
+        card.resolved = previous.resolved;
+        card.cardState = previous.cardState;
+      });
+      addSystemItemFor(sid, bt("approvalDecisionFailed") + e);
+    }
+    notify();
+  }
+  // 会话当前挂起的审批卡（remount / 切会话恢复用）。读取失败按空处理——
+  // 恢复是尽力而为，不得阻塞会话切换。
+  async function getPendingApprovals(targetSessionId) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return [];
+    try { return await invoke("get_pending_approvals", { sessionId: sid }) || []; }
+    catch { return []; }
   }
 
   // ── 用户交互卡 ───────────────────────────────────────────────────
@@ -532,6 +654,11 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
       setMultiAgentMode,
       planStuckReplan,
       planStuckGo,
+      planStuckGoAuto,
+      setSessionMode,
+      setAskOnGuardrail,
+      decideApproval,
+      getPendingApprovals,
       submitUserInput,
       cancelUserInput,
       editLastTurn,

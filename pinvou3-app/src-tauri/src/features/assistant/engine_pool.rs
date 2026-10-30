@@ -69,8 +69,11 @@ use crate::features::assistant::expert_roster::ExpertRosterSnapshot;
 use crate::features::assistant::platform::bridge::{Pinvou3Bridge, base_url_uses_local_or_private};
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::product_runtime::note_stderr;
+use crate::features::assistant::safety_deny_rules::SafetyRuleProfile;
 use crate::features::assistant::turn_shell_tasks::{SessionShellManagers, SessionTurnShellTasks};
-use crate::features::sessions::{ScheduledRunProfile, SessionStore, transcript_revision};
+use crate::features::sessions::{
+    ScheduledRunProfile, SessionModeState, SessionStore, transcript_revision,
+};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
 // The idle-reclaim threshold and sweep interval (IDLE_EVICT_AFTER_SECS /
@@ -1881,6 +1884,51 @@ fn require_live_engine_for_steer<T>(engine: Option<T>, session_id: &str) -> Resu
     engine.with_context(|| format!("no live engine for session '{session_id}' to steer"))
 }
 
+/// Shared pure derivation for the tri-mode safety sync — both the hot sync
+/// after a mode/arming change ([`EnginePool::sync_session_safety_posture`])
+/// and the spawn-time arming
+/// ([`EnginePool::arm_spawned_session_safety_posture`]) map the session's
+/// persisted mode state onto the engine's `Op::ChangeMode` posture here, so
+/// the two paths cannot drift.
+///
+/// Field-by-field:
+/// - mode + approval: `SerializableMode::to_app_mode` /
+///   `approval_params` (Plan/Auto → (false, Suggest), Yolo → (true,
+///   Bypass)) — the same mapping every per-turn send op carries;
+/// - allow_shell/trust_mode: the exact arms of the per-turn send op
+///   (`Pinvou3Bridge::build_send_message_op_with_hooks`) —
+///   Agent=(pool allow_shell, true), Plan=(true, true),
+///   Operate=(allow_shell, false). `SerializableMode` never produces
+///   Operate; the arm mirrors the send op so a future mode mapping cannot
+///   silently diverge between the two op families;
+/// - configured_sandbox_mode: `None`. ChangeMode REPLACES the whole
+///   posture, but pinvou3 never configures a foundation sandbox mode
+///   (engine configs are built from `DtConfig::default()`, whose
+///   `sandbox_mode` is None — the safety_deny_rules module docs pin the
+///   same fact), so `None` re-states the constructed value instead of
+///   clearing an override;
+/// - ask_on_guardrail: `Some(flag)` — carried explicitly on every sync
+///   because the op replaces the posture wholesale; `None` (leave
+///   unchanged) is for senders that only touch the other fields.
+fn safety_change_mode_op(mode_state: &SessionModeState, allow_shell: bool) -> Op {
+    let mode = mode_state.mode.to_app_mode();
+    let (auto_approve, approval_mode) = mode_state.mode.approval_params();
+    let (op_allow_shell, trust_mode) = match mode {
+        AppMode::Agent => (allow_shell, true),
+        AppMode::Plan => (true, true),
+        AppMode::Operate => (allow_shell, false),
+    };
+    Op::ChangeMode {
+        mode,
+        allow_shell: op_allow_shell,
+        trust_mode,
+        auto_approve,
+        approval_mode,
+        configured_sandbox_mode: None,
+        ask_on_guardrail: Some(mode_state.ask_on_guardrail),
+    }
+}
+
 /// Steer ids are generation-scoped at the pool boundary. The foundation mints
 /// per-handle ordinal ids (`steer-{n}`) whose counter resets whenever an
 /// engine is rebuilt (idle reclaim / model switch), so a raw id is ambiguous
@@ -2787,6 +2835,12 @@ impl EnginePool {
         // predicate guarantees the in-flight reservation's rule survives.
         turn_lifecycle.prune_stale_transcript_rules();
         let sync_session_ms = elapsed_ms(sync_session_started);
+
+        // Tri-mode safety: arm the engine with the session's persisted
+        // posture + mode-derived deny ruleset before it is published in the
+        // entries table (see arm_spawned_session_safety_posture for the
+        // ordering and the never-fail contract).
+        self.arm_spawned_session_safety_posture(session_id, &engine);
 
         self.entries.lock().await.insert(
             session_id.to_string(),
@@ -3886,6 +3940,7 @@ impl EnginePool {
             content,
             display_message,
             mode,
+            crate::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
             restrict_tools_for_turn,
             expert_snapshot,
             expert_candidates,
@@ -4588,26 +4643,127 @@ impl EnginePool {
         }
     }
 
+    /// The session's execpolicy deny ruleset as its CURRENT tri-mode state
+    /// dictates: the safety families compose under the session's mode-derived
+    /// profile ([`SafetyRuleProfile::for_mode`]) on top of the scope gate.
+    /// Shared by the one-session refresh and the global broadcast so a
+    /// session's ruleset is built exactly one way. There is no
+    /// "mode unavailable" fallback here: the store always answers
+    /// (`mode_state` resolves the lane default), which IS the documented
+    /// fallback — callers with genuinely no store information (tests,
+    /// static fixtures) use `bridge.scope_deny_ruleset` (Full) directly.
+    fn session_scope_ruleset_for_mode(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
+        let profile = SafetyRuleProfile::for_mode(self.store.mode_state(session_id).mode);
+        self.bridge.scope_deny_ruleset_for_mode(session_id, profile)
+    }
+
     /// execpolicy hard-deny hot refresh (scope gate channel ③ + safety net):
     /// after connector/skill toggles are persisted or the super-permission
     /// toggle changes, recompute the deny ruleset per session scope (CLI
     /// binary names + disabled skill script paths + sensitive-data/privilege
     /// rules) and broadcast it to every running engine so it hard-denies from
-    /// the next turn. Newly spawned / rebuilt engines get the initial value
-    /// from build_engine_config_for_session_roots — both share
-    /// `bridge.scope_deny_ruleset`.
+    /// the next turn. Each session's ruleset composes under ITS OWN
+    /// mode-derived safety profile (a Yolo session keeps the Floor face; the
+    /// sudo toggle must not re-tighten a Yolo session behind its back).
+    /// Newly spawned / rebuilt engines get the initial value from the spawn
+    /// config — both share `session_scope_ruleset_for_mode`.
     pub async fn refresh_permission_rulesets(&self) {
         let targets = self.live_engine_targets().await;
         for (sid, engine) in targets {
             if let Err(e) = engine
                 .handle
                 .send(Op::SetPermissionRuleset {
-                    ruleset: self.bridge.scope_deny_ruleset(&sid),
+                    ruleset: self.session_scope_ruleset_for_mode(&sid),
                 })
                 .await
             {
                 eprintln!("[engine_pool] refresh_permission_rulesets {sid} failed: {e:?}");
             }
+        }
+    }
+
+    /// execpolicy hard-deny hot refresh for ONE session: rebuild the deny
+    /// ruleset under that session's mode-derived safety profile and send it
+    /// to the session's live engine only. A session with no live engine is a
+    /// no-op (`Ok`) — its next spawn reads the initial value from the spawn
+    /// config. Called on the mode-change path (a Yolo⇄other switch changes
+    /// the profile); identical-profile sends rebuild the same ruleset, so
+    /// the caller never needs to track the previous mode.
+    pub async fn refresh_session_permission_ruleset(&self, session_id: &str) -> Result<()> {
+        let Some(engine) = self.handle_for(session_id).await else {
+            return Ok(());
+        };
+        engine
+            .handle
+            .send(Op::SetPermissionRuleset {
+                ruleset: self.session_scope_ruleset_for_mode(session_id),
+            })
+            .await
+            .context(format!(
+                "refresh_session_permission_ruleset {session_id}: send failed"
+            ))
+    }
+
+    /// Sync a session's live engine with its persisted tri-mode safety state
+    /// (mode posture + ask_on_guardrail arming). Sends Op::ChangeMode with the
+    /// full posture so the engine's next turn and its <turn_meta> reflect the
+    /// change; a no-op (Ok) when the session has no live engine.
+    ///
+    /// Also refreshes the session's permission ruleset: the safety profile is
+    /// a pure function of the mode, so the refresh is exactly the Yolo⇄other
+    /// lane change's ruleset swap and an identical no-op otherwise — the
+    /// caller never has to track the previous mode. The change-mode send
+    /// uses `try_send` (refresh-class op, same class as the foundation's
+    /// posture edits) so a wedged engine cannot park the caller; a failed
+    /// send IS an error — the caller surfaces it instead of letting the
+    /// engine silently run on a stale posture.
+    pub async fn sync_session_safety_posture(&self, session_id: &str) -> Result<()> {
+        let Some(engine) = self.handle_for(session_id).await else {
+            // No live engine: nothing to sync — the next spawn arms the
+            // persisted posture (arm_spawned_session_safety_posture).
+            return Ok(());
+        };
+        let mode_state = self.store.mode_state(session_id);
+        let op = safety_change_mode_op(&mode_state, self.bridge.allow_shell());
+        engine
+            .handle
+            .try_send(op)
+            .context(format!(
+                "sync_session_safety_posture {session_id}: change-mode send failed"
+            ))?;
+        self.refresh_session_permission_ruleset(session_id).await
+    }
+
+    /// Spawn-time arming (tri-mode safety): queue the freshly spawned
+    /// engine's persisted posture (`Op::ChangeMode`, full field set via
+    /// [`safety_change_mode_op`]) and its mode-derived deny ruleset
+    /// (`Op::SetPermissionRuleset`) so the engine's FIRST turn already runs
+    /// the session's lane — a Yolo session must not spend even its first
+    /// turn on the Full deny face, and an armed session's guardrail mapping
+    /// must be live before the first tool call.
+    ///
+    /// Called BEFORE the entry is published in the entries table: ops queue
+    /// in channel order, so any handle a concurrent sender clones after the
+    /// publish carries the arming ahead of it. Must never block or fail the
+    /// spawn — `try_send` (a full queue still guarantees the engine drains
+    /// before the sender's own turn op) and a failed send is logged, not
+    /// propagated: the per-turn send ops re-carry mode/approval anyway, so
+    /// the worst case is a first turn without the arming flag, not a broken
+    /// session.
+    fn arm_spawned_session_safety_posture(&self, session_id: &str, engine: &AppEngine) {
+        let mode_state = self.store.mode_state(session_id);
+        let op = safety_change_mode_op(&mode_state, self.bridge.allow_shell());
+        if let Err(error) = engine.handle.try_send(op) {
+            log::warn!(
+                "[engine_pool] spawn arming {session_id} change-mode send failed: {error:#}"
+            );
+        }
+        if let Err(error) = engine.handle.try_send(Op::SetPermissionRuleset {
+            ruleset: self.session_scope_ruleset_for_mode(session_id),
+        }) {
+            log::warn!(
+                "[engine_pool] spawn arming {session_id} ruleset send failed: {error:#}"
+            );
         }
     }
 

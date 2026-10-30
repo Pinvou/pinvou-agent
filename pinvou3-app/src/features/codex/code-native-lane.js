@@ -576,6 +576,51 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       });
       return true;
     }
+    case 'chat:approval_required': {
+      // tri-mode 审批卡（ask-on-guardrail 武装 / Auto 姿态弹卡）。按
+      // approvalId 幂等去重（后端登记表对同一审批原位替换、remount 后
+      // get_pending_approvals 重放同一审批，均不得重复出卡）。字段与
+      // PendingApproval（serde camelCase 查询返回）/事件 snake_case 负载
+      // 双通道对齐：这里兼容读两种 casing，lane 内统一存 camelCase。
+      const approvalId = String(p.approval_id || p.approvalId || '');
+      if (!approvalId) return false;
+      if (lane.items.some(item => (
+        item && item.type === 'approval' && item.approvalId === approvalId
+      ))) return false;
+      lane.items.push({
+        id: nextId(lane),
+        type: 'approval',
+        approvalId,
+        toolName: String(p.tool_name || p.toolName || ''),
+        description: String(p.description || ''),
+        intentSummary: (p.intent_summary ?? p.intentSummary) == null
+          ? ''
+          : String(p.intent_summary ?? p.intentSummary),
+        input: (p.input ?? null),
+        forcePrompt: Boolean(p.force_prompt ?? p.forcePrompt),
+        resolved: false,
+        cardState: 'active',
+      });
+      return true;
+    }
+    case 'chat:guardrail_denied': {
+      // 守卫硬拒（不出卡）：reason 是稳定英文键，渲染层按键映射三语文案；
+      // 未知键原样透出，保证可审计（与 chat:tool_gate_decision 同款归一）。
+      lane.items.push({
+        id: nextId(lane),
+        type: 'system',
+        guardrailDenied: true,
+        toolName: String(p.tool_name || ''),
+        reason: String(p.reason || ''),
+      });
+      return true;
+    }
+    case 'chat:mode_changed': {
+      // 权威 mode 广播：lane 自身不持 mode 展示（native controls 由
+      // CodexAcpView.refreshNativeControls 按 sessionId 驱动，请求序号 +
+      // 归属保护），这里无可视变化——返回 false，不 bump 渲染。
+      return false;
+    }
     case 'chat:memory': {
       // 每轮 chat 后后端推送的本会话注入记忆快照（chat.rs 对全部会话发射）。
       // 只归一化 id/kind/text 三字段，渲染层做轻量展示（条数徽标 + 弹层列表）。

@@ -238,7 +238,11 @@ const expectedProtocolHashes = {
   // chat:transcript_committed guard clause in the same body (chat-events.js).
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
-  chat: '7fb864e1e16b91a481cfa72502df4a1aa9e4efba267d41b1595c9395cca0e47f',
+  // Recomputed for the tri-mode safety surface: chat-events.js gains three
+  // listeners — chat:approval_required (approval card projection), 
+  // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
+  // (authoritative mode broadcast through applyAuthoritativeModeState).
+  chat: 'b0952ac80180966c89e2c263b5b9190b4c7f3e09fe9c248dab0100a3d4cd6572',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -249,7 +253,12 @@ const expectedProtocolHashes = {
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the lane-merge residual wave: toggleSuperPerm
   // (set_super_permission, get_super_permission_status) joined the shared base.
-  interaction: 'a4c231e1119499eae66fe3e0e36d9604393b85468398a062b1e271e5e2f19b20',
+  // Recomputed for the tri-mode safety surface: the interaction domain gains
+  // set_session_mode / set_ask_on_guardrail / decide_approval /
+  // get_pending_approvals invokes (plan/auto/yolo unified switching,
+  // session-level ask-on-guardrail toggle, approval-card decisions and the
+  // remount replay query).
+  interaction: '2c39bff2d754594288036960063dbaa91914eeb981fdf480d14ed52fcf1ff188',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
@@ -322,7 +331,11 @@ const expectedProtocolHashes = {
   // main's sidecar-helper wave (#596), aux-session surface and the
   // #713/#735/#701 lane merges; the pin below is the extractor's output on
   // the merged bridge/sessions.js (rebase onto main @ 88bff8582).
-  sessions: 'acee7f6975f19302026d6619618aadf8619e51684b271d024aa705e6c1efcd17',
+  // Recomputed for the tri-mode safety surface: the switch paths gain the
+  // get_pending_approvals invoke (replayPendingApprovals re-projects pending
+  // approval cards after a session switch, same recovery idea as
+  // get_pending_user_inputs).
+  sessions: '7ca365ccf3cc2ef38b664bc86baae7fe372e6fcdf7f6523bb2efc0ece530eae2',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.

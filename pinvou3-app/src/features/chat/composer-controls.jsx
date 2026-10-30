@@ -7,7 +7,7 @@
 // 传 sessionId）；不传时走原 bs/bridge 路径，聊天页行为不变。
 
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, Check, ChevronDown, ClipboardList, X, Zap } from '../../components/icons.jsx';
+import { BookOpen, Check, ChevronDown, ClipboardCheck, ClipboardList, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { isWeb } from '../../shared/platform.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
@@ -288,36 +288,55 @@ const ComposerKbSelector = ({
 };
 /* eslint-enable sonarjs/cognitive-complexity -- dense mounted-state normalization / explicit-lane branches; legacy view; tracked separately */
 
-// [plan/yolo] composer 模式 chip:默认 Yolo,下拉手切 Plan。进 Plan=只读调研
-// (底座 ReadOnly+只读工具集),调 update_plan 出方案卡决策。切换逻辑搬自旧 ModeHeader。
-const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSwitch }) => {
+// [plan/auto/yolo] composer 模式 chip（tri-mode 安全模型）：默认 Yolo，下拉可切
+// Auto（逐项审批）与 Plan（只读调研：底座 ReadOnly+只读工具集，调 update_plan
+// 出方案卡决策）。Auto/Yolo 激活时附会话级「守卫命中时询问」开关（askOnGuardrail；
+// 代码车道经显式 prop + 回调，聊天车道读 bs.modeState）。切换逻辑搬自旧 ModeHeader。
+const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, askOnGuardrail: askOnGuardrailProp, onSwitch, onToggleAskOnGuardrail }) => {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   // 显式会话态驱动（代码车道）优先；否则读 bridge 聊天 active 的 mode/busy。
   const ms = modeProp == null ? ((bs && bs.modeState) || { mode: 'yolo' }) : { mode: modeProp };
-  const isPlan = ms.mode === 'plan';
+  const activeMode = ms.mode === 'plan' ? 'plan' : ms.mode === 'auto' ? 'auto' : 'yolo';
+  const isPlan = activeMode === 'plan';
   const busy = busyProp === undefined ? (bs && bs.busy) : busyProp;
+  // 「守卫命中时询问」展示值：显式 prop（代码车道）优先；聊天车道读
+  // modeState.askOnGuardrail，缺省按开（后端 default_true，旧快照无此键时不
+  // 把开关翻成关）。
+  const askOnGuardrail = (askOnGuardrailProp === undefined || askOnGuardrailProp === null)
+    ? ((ms && ms.askOnGuardrail) !== false)
+    : !!askOnGuardrailProp;
+  const showAskToggle = activeMode !== 'plan';
+  const activeModeLabel = isPlan ? t.modePlan : activeMode === 'auto' ? t.modeAuto : t.modeYolo;
   async function switchTo(target) {
     setOpen(false);
     // 点击已激活模式：无状态变更，早退避免冗余刷新（代码车道 onSwitch 路径
     // 会触发一次 refreshNativeControls 3 次 invoke；ChatView bridge 路径同样受益）。
-    if ((target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)) return;
+    if (target === activeMode) return;
     if (onSwitch) { onSwitch(target, { isPlan, busy }); return; }
     if (!bridge.available) return;
-    if (target === 'plan' && !isPlan) {
+    if (target === 'plan') {
       await bridge.interaction.setPlanModeNext();
-    } else if (target === 'yolo' && isPlan) {
+    } else if (target === 'yolo') {
       await bridge.interaction.exitPlanToYolo();
+    } else if (target === 'auto') {
+      await bridge.interaction.setSessionMode(null, 'auto');
     }
+  }
+  function toggleAskOnGuardrail() {
+    // 开关行保持弹层展开（与 multiagent-toggle 一致），便于连续调整。
+    if (onToggleAskOnGuardrail) onToggleAskOnGuardrail(!askOnGuardrail);
   }
   const optCls = COMPOSER_MENU_ENTRY_OPTION_CLASS;
   return (
     <div className="relative">
-      <button type="button" ref={triggerRef} onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + (isPlan ? t.modePlan : t.modeYolo)}
+      <button type="button" ref={triggerRef} onClick={() => setOpen(!open)} title={t.modeSwitchTitle + ' · ' + activeModeLabel}
         className={`${COMPOSER_ICON_BUTTON_CLASS} font-semibold ${isPlan ? 'text-[#1A73E8] dark:text-[#A8C7FA]' : ''}`}>
         {isPlan
           ? <ClipboardList size={18} className="shrink-0" />
-          : <Zap size={18} className="shrink-0" />}
+          : activeMode === 'auto'
+            ? <ClipboardCheck size={18} className="shrink-0" />
+            : <Zap size={18} className="shrink-0" />}
       </button>
       <ComposerPopover open={open} onClose={() => setOpen(false)} triggerRef={triggerRef} compact={compact}
         desktopClassName="absolute bottom-full left-0 mb-2 z-50 w-60 bg-white dark:bg-[#1E1E20] border border-black/5 dark:border-white/10 rounded-2xl shadow-xl p-1.5">
@@ -326,7 +345,14 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSw
                 <span className="font-semibold">{t.modeYolo}</span>
                 <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modeYoloDesc}</span>
               </span>
-              {!isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+              {activeMode === 'yolo' && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
+            </button>
+            <button type="button" onClick={() => switchTo('auto')} className={optCls}>
+              <span className="flex flex-col items-start min-w-0">
+                <span className="font-semibold">{t.modeAuto}</span>
+                <span className="text-[11px] text-gray-400 group-hover:text-white/80">{t.modeAutoDesc}</span>
+              </span>
+              {activeMode === 'auto' && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
             </button>
             <button type="button" onClick={() => switchTo('plan')} className={optCls}>
               <span className="flex flex-col items-start min-w-0">
@@ -335,6 +361,22 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, onSw
               </span>
               {isPlan && <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />}
             </button>
+            {showAskToggle && (
+              <>
+                <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
+                <button type="button" data-testid="ask-on-guardrail-toggle" onClick={toggleAskOnGuardrail} disabled={typeof onToggleAskOnGuardrail !== 'function'}
+                  title={t.modeAskOnGuardrailDesc}
+                  className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] rounded-xl text-gray-700 dark:text-gray-200 hover:bg-black/[0.045] dark:hover:bg-white/[0.07] transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  <span className="flex flex-col items-start min-w-0">
+                    <span className="truncate">{t.modeAskOnGuardrail}</span>
+                    <span className="text-[11px] text-gray-400">{t.modeAskOnGuardrailDesc}</span>
+                  </span>
+                  <span aria-hidden="true" className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${askOnGuardrail ? 'bg-[#007AFF]' : 'bg-black/20 dark:bg-white/25'}`}>
+                    <span className={`absolute top-[2px] left-0 w-[14px] h-[14px] rounded-full bg-white shadow transition-transform ${askOnGuardrail ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                  </span>
+                </button>
+              </>
+            )}
       </ComposerPopover>
     </div>
   );

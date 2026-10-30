@@ -505,6 +505,11 @@ const NATIVE_CHAT_EVENTS = [
   // 冻结为 discarded。处理逻辑在 code-native-lane.js（applyNativeChatEvent 的
   // chat:plan_resolved 分支，与 bridge chat-events.js plan_resolved 对齐）。
   'chat:plan_resolved',
+  // tri-mode 审批面：弹卡（按 approvalId 幂等去重）、守卫硬拒通知、权威 mode
+  // 广播（mode_changed 在订阅回调里走 refreshNativeControls，lane 无可视变化）。
+  'chat:approval_required',
+  'chat:guardrail_denied',
+  'chat:mode_changed',
   'chat:transient_error',
   'chat:done',
 ];
@@ -536,6 +541,90 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
       onSubmit={submit}
       onCancel={actionable ? () => onCancelInput(item.toolCallId) : undefined}
     />
+  );
+}
+
+// 原生车道的 tri-mode 审批卡：结构镜像主聊天 ApprovalCard（tool-renderers.jsx），
+// 决策走显式 sessionId 的 decide_approval，不经 bridge 全局 activeSession。
+// lane 是纯数据不持文案：终态存 cardState（allowed / allowed_session / denied），
+// 这里按键映射三语（statusKey copy = uiCodex）；按钮/标题复用根级 t.approval*。
+const NATIVE_APPROVAL_STATUS_COPY = {
+  allowed: 'nativeApprovalAllowed',
+  allowed_session: 'nativeApprovalAllowedSession',
+  denied: 'nativeApprovalDenied',
+};
+
+// chat:guardrail_denied 的稳定 reason 键 → 三语短文案（uiCodex）。未知键原样透出。
+function nativeGuardrailReasonText(reason, copy) {
+  const key = String(reason || '');
+  if (key === 'session_denied') return copy.nativeGuardrailDeniedSession;
+  if (key === 'plan_mode') return copy.nativeGuardrailDeniedPlan;
+  if (key === 'guardrail_ask_off') return copy.nativeGuardrailDeniedAskOff;
+  return key;
+}
+
+// 输入参数视图：小而浅对象 → key: value 行；否则整段 JSON 截断（与主聊天
+// ApprovalCard 的 approvalInputView 同一规则——两处保持渲染语义一致）。
+function nativeApprovalInputView(input) {
+  if (input == null) return null;
+  if (typeof input === 'string') {
+    return { pre: input.length > 400 ? `${input.slice(0, 400)}…` : input };
+  }
+  if (typeof input !== 'object') return { pre: String(input) };
+  const keys = Object.keys(input);
+  if (keys.length > 0 && keys.length <= 6 && keys.every((key) => {
+    const value = input[key];
+    if (value == null || typeof value === 'object') return false;
+    return String(value).length <= 80 && key.length <= 40;
+  })) {
+    return { lines: keys.map(key => [key, String(input[key])]) };
+  }
+  let text;
+  try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
+  return { pre: text.length > 400 ? `${text.slice(0, 400)}…` : text };
+}
+
+function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
+  const done = !!item.resolved;
+  const submitting = !done && !!responding;
+  const statusText = done ? (copy[NATIVE_APPROVAL_STATUS_COPY[item.cardState]] || '') : '';
+  const inputView = nativeApprovalInputView(item.input);
+  return (
+    <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
+      <div className={`text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
+        {t.approvalTitle}{' '}
+        <code className={`px-1.5 py-0.5 rounded text-[12px] font-mono bg-black/10 dark:bg-white/10`}>{item.toolName || t.uiToolRender.toolUnknown}</code>
+      </div>
+      {item.description ? (
+        <div className={`text-[13px] leading-relaxed mb-1.5 text-[#444746] dark:text-[#C4C7C5]`}>{item.description}</div>
+      ) : null}
+      {item.intentSummary ? (
+        <div className={`text-[12px] leading-relaxed mb-1.5 text-[#757575] dark:text-[#8E8E8E]`}>
+          <span className="font-medium">{t.approvalIntent}: </span>{item.intentSummary}
+        </div>
+      ) : null}
+      {inputView ? (
+        inputView.lines ? (
+          <div className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] space-y-0.5`}>
+            {inputView.lines.map(([key, value]) => (
+              <div key={key}><span className="text-[#0B57D0] dark:text-[#8AB4F8]">{key}</span>: {value}</div>
+            ))}
+          </div>
+        ) : (
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
+        )
+      ) : null}
+      <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
+      {done ? (
+        <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('allow')}>{t.approvalAllow}</button>
+          <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('allow_for_session')}>{t.approvalAllowSession}</button>
+          <button type="button" className={cardBtnCls('danger') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={submitting} onClick={() => onDecide('deny')}>{t.approvalDeny}</button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1011,6 +1100,7 @@ export function CodexAcpView({
     mode: CODE_MODE_FALLBACK,
     multiAgent: false,
     multiAgentAvailable: false,
+    askOnGuardrail: true,
   });
   const [nativeDraftControls, setNativeDraftControls] = useState({});
   // Grant-notice/picker mode source, agent-aware (review #484 round-8 m4):
@@ -1159,6 +1249,11 @@ export function CodexAcpView({
     handoffMode: nativeDraftControlsHandoff?.mode,
     prefs: codePermPrefs,
   });
+  // 会话级「守卫命中时询问」展示值（tri-mode）：归属保护与 mode 同款——刷新
+  // 返回前 / 上一会话的控件不串台，草稿态与切换途中按开（后端 default_true）。
+  const nativeAskOnGuardrail = activeId && nativeControlsSessionRef.current === activeId
+    ? nativeControls.askOnGuardrail !== false
+    : true;
   const nativeModelChoices = visibleUserModels((bs && bs.savedModels) || [])
     .map(model => ({ value: model.id, name: selectorMainLabel(model, t) || model.id }));
   const nativeSessionModelId = resolveNativeModelId({
@@ -1489,6 +1584,9 @@ export function CodexAcpView({
       mode: (modeState && modeState.mode) || nativeModeFallback(codePermPrefs),
       multiAgent: Boolean(modeState && modeState.multi_agent),
       multiAgentAvailable: Boolean(modeState && modeState.multi_agent_available),
+      // 会话级「守卫命中时询问」（tri-mode）：后端 default_true；读取失败/旧后端
+      // 无此键时按开显示，不把开关翻成关。
+      askOnGuardrail: modeState ? modeState.ask_on_guardrail !== false : true,
     };
     // 请求期间可能切换会话；旧响应不得覆盖新会话的模型/模式/多智能体展示。
     if (!canApplyNativeControlsRefresh({
@@ -1674,9 +1772,38 @@ export function CodexAcpView({
         await invoke('set_plan_mode_next', { sessionId: activeId });
       } else if (target === 'yolo' && isPlan) {
         await invoke('exit_plan_to_yolo', { sessionId: activeId });
+      } else if (target === 'auto') {
+        // Auto（tri-mode 逐项审批档）：无一次性确认门（门只对 yolo）。
+        // 统一走 set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
+        await invoke('set_session_mode', { sessionId: activeId, mode: 'auto' });
       }
       await refreshNativeControls(activeId);
     } catch (err) { showError(err); }
+  }
+
+  /// 会话级「守卫命中时询问」开关（tri-mode）：乐观翻转 → set_ask_on_guardrail
+  /// → refreshNativeControls 权威复核；请求期间可能已切会话，只有仍是目标会话
+  /// 时才回滚旧值（switchNativeMultiAgent 同款归属保护）。
+  async function toggleNativeAskOnGuardrail(enabled) {
+    const targetSessionId = activeId;
+    if (!targetSessionId) return; // 草稿态无会话级开关（跟随全局默认，物化时落后端）
+    const previous = nativeControlsSessionRef.current === targetSessionId
+      ? nativeControls.askOnGuardrail !== false
+      : true;
+    setNativeControls(current => (nativeControlsSessionRef.current === targetSessionId
+      ? { ...current, askOnGuardrail: Boolean(enabled) }
+      : current));
+    try {
+      await invoke('set_ask_on_guardrail', { sessionId: targetSessionId, enabled: Boolean(enabled) });
+      await refreshNativeControls(targetSessionId);
+    } catch (err) {
+      if (targetSessionId === activeIdRef.current) {
+        setNativeControls(current => (nativeControlsSessionRef.current === targetSessionId
+          ? { ...current, askOnGuardrail: previous }
+          : current));
+      }
+      showError(err);
+    }
   }
 
   /// 确认卡【确认】：写全局 yolo 确认标志，成功后继续被中断的切换。
@@ -1848,6 +1975,26 @@ export function CodexAcpView({
             lane.thinking = { active: true, startedAt: Date.now(), phase: 'thinking', toolName: null };
           }
         }
+        // tri-mode 审批卡还原：与 user_input 同款「pending 登记表 → 合成事件」，
+        // applyNativeChatEvent 按 approvalId 幂等去重。查询返回是 serde camelCase
+        // 的 PendingApproval，按事件负载的 snake_case 形状重灌。
+        const pendingApprovals = await invoke('get_pending_approvals', { sessionId: id })
+          .catch(() => null);
+        if (sessionLoadRequestRef.current !== requestId) return null;
+        ((pendingApprovals) || []).forEach(entry => {
+          if (!entry) return;
+          applyNativeChatEvent(lane, 'chat:approval_required', {
+            session_id: id,
+            approval_id: entry.approvalId,
+            tool_name: entry.toolName,
+            description: entry.description,
+            input: entry.input,
+            intent_summary: entry.intentSummary,
+            approval_key: entry.approvalKey,
+            approval_grouping_key: entry.approvalGroupingKey,
+            force_prompt: entry.forcePrompt,
+          });
+        });
         await refreshNativeControls(id);
         if (sessionLoadRequestRef.current !== requestId) return null;
         setNativeLaneTick(tick => tick + 1);
@@ -2661,6 +2808,12 @@ export function CodexAcpView({
       if (name === 'chat:turn_started' || name === 'chat:done') {
         refreshSessions().catch(() => {});
       }
+      if (name === 'chat:mode_changed' && sessionId === activeIdRef.current) {
+        // 权威 mode 广播（本端/远端切换都会发射）：lane 自身无 mode 展示，
+        // 底栏 chip 的 mode/askOnGuardrail 经 refreshNativeControls 权威刷新
+        // （内部请求序号 + 会话归属保护，与常规刷新同一条路径）。
+        refreshNativeControls(sessionId).catch(() => {});
+      }
       if (changed && sessionId === activeIdRef.current) {
         setNativeLaneTick(tick => tick + 1);
       }
@@ -3243,6 +3396,38 @@ export function CodexAcpView({
     setNativeLaneTick(tick => tick + 1);
   }
 
+  // 原生车道 tri-mode 审批卡决策：语义镜像 respondNativeInput——entry 捕获
+  // sid（await 期间用户切会话时不得把终态写进错误 lane），成功后按决策写终态
+  // （decide_approval 不再 emit 事件，前端对自己的卡做权威收口），失败仅提示、
+  // 卡保持 active 可重试。
+  async function decideNativeApproval(approvalId, decision) {
+    if (!activeId || !approvalId) return;
+    const sid = activeId;
+    setRespondingSessionId(sid); setError('');
+    try {
+      await invoke('decide_approval', { sessionId: sid, approvalId, decision });
+      markNativeApprovalResolved(sid, approvalId, decision);
+    } catch (err) {
+      if (sid === activeIdRef.current) showError(err);
+    } finally {
+      setRespondingSessionId(current => current === sid ? null : current);
+    }
+  }
+
+  function markNativeApprovalResolved(sessionId, approvalId, decision) {
+    const lane = getNativeLane(sessionId);
+    const card = lane.items.find(item => (
+      item && item.type === 'approval' && item.approvalId === approvalId
+    ));
+    if (card) {
+      card.resolved = true;
+      card.cardState = decision === 'deny' ? 'denied'
+        : decision === 'allow_for_session' ? 'allowed_session'
+        : 'allowed';
+    }
+    setNativeLaneTick(tick => tick + 1);
+  }
+
   // 原生车道手动压缩：直接调 compact_now 命令（与 work 侧共享同一条命令）——调完后，
   // 进行中/结果由 chat:compaction 系统项呈现（compactStart/compactDone/compactFail）；
   // invoke 本身失败按 work 侧同款补一条 compactFail 系统提示项。
@@ -3392,6 +3577,17 @@ export function CodexAcpView({
         />
       );
     }
+    if (item.extensionType === 'approval' && item.legacyItem) {
+      return (
+        <NativeApprovalCard
+          item={item.legacyItem}
+          responding={responding}
+          t={t}
+          copy={codexCopy}
+          onDecide={(decision) => decideNativeApproval(item.legacyItem.approvalId, decision).catch(showError)}
+        />
+      );
+    }
     if (item.type === 'permission' && item.extensionType === 'careful_blocked') {
       return (
         <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[12px] text-red-600 dark:text-red-300">
@@ -3428,6 +3624,15 @@ export function CodexAcpView({
               legacy.risk,
               legacy.agentId,
             )}
+          </div>
+        );
+      }
+      if (legacy.guardrailDenied) {
+        // tri-mode 守卫硬拒（不出卡）：按稳定 reason 键映射三语；未知键原样透出。
+        return (
+          <div className="px-1 text-[11px] text-gray-400">
+            {codexCopy.nativeGuardrailDenied}{legacy.toolName ? `: ${legacy.toolName} — ` : ': '}
+            {nativeGuardrailReasonText(legacy.reason, codexCopy)}
           </div>
         );
       }
@@ -4198,6 +4403,8 @@ export function CodexAcpView({
                         mode={nativeModeValue}
                         busy={busy || working}
                         onSwitch={switchNativeMode}
+                        askOnGuardrail={nativeAskOnGuardrail}
+                        onToggleAskOnGuardrail={toggleNativeAskOnGuardrail}
                       />
                       {nativeModelChoices.length > 0 && (
                         <ComposerModelSelector
