@@ -111,7 +111,15 @@ impl ConnectorGate {
                 // deny-first gate above, because the consent write can block on
                 // the cross-process flock (#515), and a frozen peer must not
                 // hang a Tokio worker.
-                crate::features::marketplace::grant_connect_enable(self.id)
+                //
+                // The FULL tail outcome is kept (round-12 review P2): the
+                // tail runs last before the completion, so its observed
+                // identity — a fresh own grant, or the standing consent it
+                // relied on, tokenless included — is the final identity the
+                // completion validates. Collapsing it to the `granted` bool
+                // discarded exactly the captures whose completion check the
+                // round-11 replacement decline needed.
+                let tail = crate::features::marketplace::grant_connect_enable(self.id)
                     .inspect_err(|_| {
                         // Round-2 review m2: if this leg fails after the
                         // deny-first grant landed, grant + lifted rows would
@@ -143,13 +151,14 @@ impl ConnectorGate {
                             &e,
                         )
                     })?;
-                // Round-7 review P2: the completion succeeded on top of the
-                // standing consent (the gate declined a fresh grant) — commit
-                // it so the older in-flight operation's revoke cannot strip
-                // what this connect just proved usable. Required (round-8
-                // review): a lost or unpersistable commit fails the connect
-                // instead of reporting success over vanished consent.
-                self.commit_relied_grant_for_completion(&grant)?;
+                // Round-7 review P2, generalized by the round-12 review:
+                // complete on the FINAL observed consent identity (the tail's)
+                // — commit what this connect relied on, finalize its own fresh
+                // grant, and decline the success when the standing consent
+                // belongs to a newer in-flight owner or has vanished. Required
+                // (round-8 review): a lost or unpersistable commit fails the
+                // connect instead of reporting success over vanished consent.
+                self.complete_grant_for_completion(&grant, &tail)?;
             }
             Ok(show)
         })
@@ -180,33 +189,43 @@ impl ConnectorGate {
         .map_err(|e| format!("spawn_blocking: {e}"))?
     }
 
-    /// Round-7 review P2, REQUIRED form (round-8 review): a completion that
-    /// succeeded on top of STANDING consent it does not own (its gate hit the
-    /// ledger short-circuit and captured the relied-upon token instead of
-    /// granting fresh) commits that grant BEFORE reporting success, so the
-    /// older in-flight operation's pending compensating revoke stops matching
-    /// and can no longer strip the consent this connect/refresh just proved
-    /// usable. The commit is a completion requirement, not best-effort: if
-    /// the relied-upon grant is GONE by commit time (the owner operation's
-    /// compensating revoke won the race, a teardown swept it, or a user
-    /// verdict consumed it) or the commit persist fails, a `visible:true`
-    /// would stand on consent that computes OFF — the failure surfaces with
-    /// the shared reconnect-to-retry copy instead. A NEWER owner's standing
-    /// grant WITHOUT a token ([`ReliedGrantCommit::Superseded`]) is
-    /// deliberately tolerated: no compensating revoke can match a tokenless
-    /// grant, so the newer consent is permanent and covers this connector. A
-    /// newer grant under a PENDING token
-    /// ([`ReliedGrantCommit::ReplacementPending`], the round-11 review P2) is
-    /// the opposite: that operation's materialization is still in flight and
-    /// its compensating revoke is still armed, so this completion's success
-    /// is declined — the commit-incomplete copy (it stays enabled, but the
-    /// newer operation could still withdraw it) without the consent-failure
-    /// latch, the same class as a commit persist failure. The steady state
-    /// after a commit is token-less, so this is a no-op write-wise for plain
-    /// reconnects over long-standing consent.
-    fn commit_relied_grant_for_completion(
+    /// Round-7 review P2, REQUIRED form (round-8 review), generalized by the
+    /// round-12 review (P2 + P3): a completion must stand on consent it can
+    /// PROVE permanent at completion time. The claim set is
+    /// [`complete_connect_grant`]'s: this operation's OWN grants (the gate's
+    /// and the tail's fresh grants) plus the consent its GATE relied on — the
+    /// decision basis. The tail's mere OBSERVATION of a different standing
+    /// grant is not claimable: it belongs to a newer lifecycle whose owner
+    /// must complete or fail on its own, and the completion declines
+    /// (`ReplacementPending`) rather than reporting success over an armed
+    /// stranger or disarming its compensation. That is exactly the round-12
+    /// review P2's shape: a gate that granted FRESH (empty capture) whose
+    /// real-teardown + regrant window leaves a NEWER owner's pending grant
+    /// standing at the tail — the stale gate capture used to short-circuit
+    /// the whole validation to `NotRelied` and report success. The claims are
+    /// re-validated under the write lock at completion time, so the gate-era
+    /// capture commits only while it still stands (rounds 6/8/11), and a
+    /// fresh own grant is FINALIZED (the round-12 review P3 — an
+    /// unfinalized fresh token kept a completed owner indistinguishable from
+    /// an in-flight one and produced false `ReplacementPending` declines for
+    /// later operations).
+    ///
+    /// The commit is a completion requirement, not best-effort: a
+    /// [`ReliedGrantCommit::ReplacementPending`] (a newer in-flight owner's
+    /// armed compensation can still strip the consent) or
+    /// [`ReliedGrantCommit::GrantLost`] (nothing stands behind the success)
+    /// FAILS the connect — a `visible:true` over consent that computes (or
+    /// can compute) OFF would be the fail-open the review forbids. A NEWER
+    /// owner's standing grant WITHOUT a token
+    /// ([`ReliedGrantCommit::Superseded`]) is deliberately tolerated: no
+    /// compensating revoke can match a tokenless grant, so the newer consent
+    /// is permanent and covers this connector. The steady state after a
+    /// commit is token-less, so this is a no-op write-wise for plain
+    /// reconnects over long-standing committed consent.
+    fn complete_grant_for_completion(
         &self,
-        grant: &crate::features::marketplace::ConnectGrantOutcome,
+        gate: &crate::features::marketplace::ConnectGrantOutcome,
+        tail: &crate::features::marketplace::ConnectGrantOutcome,
     ) -> Result<(), String> {
         let lost = |cause: String| {
             crate::features::marketplace::scope::connect_consent_sync_failure_message(
@@ -214,10 +233,7 @@ impl ConnectorGate {
                 &cause,
             )
         };
-        match crate::features::marketplace::commit_relied_connect_grant(
-            self.id,
-            &grant.relied_grant_token,
-        ) {
+        match crate::features::marketplace::complete_connect_grant(self.id, gate, Some(tail)) {
             Ok(
                 crate::features::marketplace::ReliedGrantCommit::NotRelied
                 | crate::features::marketplace::ReliedGrantCommit::Committed,
@@ -316,7 +332,12 @@ impl ConnectorGate {
             // caller surfaces them only via a frontend console.warn — the
             // failure is additionally marked on the startup timeline where it
             // is observable.
-            crate::features::marketplace::grant_connect_enable_refresh(self.id)
+            // The FULL tail outcome, like the connect body (round-12 review
+            // P2): the tail's observed identity is the final one the
+            // completion validates. A declined refresh tail (verdict guard /
+            // recovery hold) carries no identity and the completion falls
+            // back to the gate's — nothing stood on, nothing validated.
+            let tail = crate::features::marketplace::grant_connect_enable_refresh(self.id)
                 .inspect_err(|_| {
                     // Same round-2 m2 compensation as the connect body: a
                     // tail-leg failure must not leave the backfill grant (or
@@ -344,14 +365,14 @@ impl ConnectorGate {
                         self.display_name
                     )
                 })?;
-            // Round-7 review P2: the refresh completed on top of the
-            // standing consent (the gate declined a fresh grant) — commit
-            // it so a concurrent connect's compensating revoke cannot
-            // strip the consent this refresh just proved usable. Required
-            // (round-8 review): a lost or unpersistable commit fails the
-            // refresh, marked on the startup timeline like the tail persist
-            // failure above.
-            self.commit_relied_grant_for_completion(&grant)
+            // Round-7 review P2, generalized by the round-12 review: complete
+            // on the FINAL observed consent identity — commit what this
+            // refresh relied on, finalize its own fresh grant, decline when a
+            // newer in-flight owner owns the state. Required (round-8
+            // review): a lost or unpersistable commit fails the refresh,
+            // marked on the startup timeline like the tail persist failure
+            // above.
+            self.complete_grant_for_completion(&grant, &tail)
                 .map_err(|e| {
                     crate::platform::startup::mark_with_detail(
                         "rust",
@@ -1210,7 +1231,7 @@ mod tests {
                 crate::features::marketplace::scope::grant_connect_enable_refresh("feishu")
                     .unwrap();
             assert!(
-                !regrant,
+                !regrant.granted && !regrant.relied_standing_consent,
                 "the boot refresh must not grant over the restored verdict"
             );
         });
@@ -1359,8 +1380,12 @@ mod tests {
             // nothing of B's own lands — B succeeds on A's standing state.
             let tail_b = crate::features::marketplace::grant_connect_enable("feishu").unwrap();
             assert!(
-                !tail_b,
+                !tail_b.granted && tail_b.relied_standing_consent,
                 "fixture: B's tail grant skips over the standing consent"
+            );
+            assert_eq!(
+                tail_b.relied_grant_token, grant_a.grant_token,
+                "fixture: the tail observes the same standing token the gate captured"
             );
             // B completes successfully: the relied-upon grant is committed,
             // ending A's pending ownership claim.

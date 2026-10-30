@@ -2233,6 +2233,20 @@ fn deny_first_register_connector_inner(
                 .get(&package_id)
                 .cloned()
                 .unwrap_or_default(),
+            // A reliance ONLY when consent actually stands — a standing
+            // grant without a token is committed consent (the completion
+            // validates it, round-12 review P2), a captured token is the
+            // GrantLost schedule when its grant vanished by completion time,
+            // while a ledger entry whose consent a verdict consumed (the
+            // toggle-off shape removes grant and token together) is a
+            // verdict-respecting decline, not a reliance, and keeps the
+            // completion's `NotRelied` no-op (a reconnect over an explicit
+            // disable must keep succeeding).
+            relied_standing_consent: ledger_file
+                .connect_granted
+                .iter()
+                .any(|id| id == &package_id)
+                || ledger_file.connect_grant_tokens.contains_key(&package_id),
             ..ConnectGrantOutcome::default()
         });
     }
@@ -2461,8 +2475,15 @@ fn sync_deny_all_scopes_inner(raw_id: &str) -> Result<(), String> {
 /// BEHIND [`deny_first_register_connector`]'s gates (owner-claim refusal +
 /// ledger gate) — route a new caller through the gate, never straight here.
 /// A retry is safe (idempotent membership writes).
-pub(crate) fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
-    grant_connect_enable_inner(&to_package_id(raw_id), false).map(|outcome| outcome.granted)
+///
+/// Returns the FULL outcome, not a `granted` bool (round-12 review P2): the
+/// tail runs last before the completion, so its observed identity — a fresh
+/// own grant, or the standing consent it relied on, tokenless included — is
+/// the final identity the completion must validate
+/// ([`complete_connect_grant`]). The round-11 review's replacement check was
+/// unreachable for exactly the outcomes this collapse used to discard.
+pub(crate) fn grant_connect_enable(raw_id: &str) -> Result<ConnectGrantOutcome, String> {
+    grant_connect_enable_inner(&to_package_id(raw_id), false)
 }
 
 /// The STARTUP connector-gate-refresh variant: LEDGER-GATED and
@@ -2473,8 +2494,13 @@ pub(crate) fn grant_connect_enable(raw_id: &str) -> Result<bool, String> {
 /// (the ledger gate alone cannot see the no-ledger verdict cohorts). The
 /// gesture counterpart that may lift stale rows on a fresh connect is
 /// [`grant_connect_enable`].
-pub(crate) fn grant_connect_enable_refresh(raw_id: &str) -> Result<bool, String> {
-    grant_connect_enable_inner(&to_package_id(raw_id), true).map(|outcome| outcome.granted)
+///
+/// Full outcome like [`grant_connect_enable`] (round-12 review P2). A
+/// declined refresh tail (verdict guard, recovery hold) carries NEITHER a
+/// grant nor a reliance — [`ConnectGrantOutcome::relied_standing_consent`]
+/// stays false — so the completion knows there is nothing it may validate.
+pub(crate) fn grant_connect_enable_refresh(raw_id: &str) -> Result<ConnectGrantOutcome, String> {
+    grant_connect_enable_inner(&to_package_id(raw_id), true)
 }
 
 /// What one connect-grant write actually did. The compensating revoke needs
@@ -2526,6 +2552,22 @@ pub struct ConnectGrantOutcome {
     /// in-flight operation's failure can no longer strip the consent this
     /// successful operation just proved usable.
     pub relied_grant_token: String,
+    /// Whether THIS call's decision stood on STANDING consent it declined to
+    /// replace (round-12 review P2). True exactly on the reliance captures —
+    /// the gate's ledger short-circuit and the grant/known-bundle skips —
+    /// AND only while consent actually stands there: a standing grant without
+    /// a token (committed consent) captures with an EMPTY
+    /// [`ConnectGrantOutcome::relied_grant_token`] and this flag true, which
+    /// is how the completion tells it apart from "nothing captured" — the
+    /// ambiguity that let a completion over a newer owner's pending grant
+    /// slip through as `NotRelied`. A capture whose consent a verdict
+    /// CONSUMED (the toggle-off shape removes grant and token together,
+    /// leaving only the verdict-protecting ledger pair) keeps this false: it
+    /// is a verdict-respecting decline, not a reliance, and the completion's
+    /// `NotRelied` no-op must keep succeeding over it (a reconnect over an
+    /// explicit disable). So do the refresh variant's verdict guard and
+    /// recovery hold and a `show == false` no-op.
+    pub relied_standing_consent: bool,
     /// DenyAll scope keys where THIS call recorded the grant while the
     /// scope was still UNINITIALIZED (the fresh-home arm: the grant + its
     /// ledger pair are all that covers the connector there, so nothing was
@@ -2559,6 +2601,17 @@ fn known_bundle_standing_reliance(package_id: &str) -> ConnectGrantOutcome {
                 .get(package_id)
                 .cloned()
                 .unwrap_or_default(),
+            // The known-bundle skip IS a reliance decision — but only when
+            // consent actually stands (round-12 review P2): a standing grant
+            // without a token is committed consent the completion validates
+            // (`Superseded`), a captured token whose grant vanished by
+            // completion time is the GrantLost schedule, while a capture
+            // over a VERDICT-consumed consent (the toggle-off shape removes
+            // grant and token together, leaving only the ledger pair) is a
+            // verdict-respecting decline, not a reliance, and keeps the
+            // completion's `NotRelied` no-op.
+            relied_standing_consent: file.connect_granted.iter().any(|id| id == package_id)
+                || file.connect_grant_tokens.contains_key(package_id),
             ..ConnectGrantOutcome::default()
         }
     };
@@ -2619,6 +2672,13 @@ fn grant_connect_enable_inner(
                 .get(package_id)
                 .cloned()
                 .unwrap_or_default();
+            // Same consent-standing bar as the gate capture (round-12 review
+            // P2): tokenless standing consent validates, a captured token is
+            // the GrantLost schedule, a verdict-consumed consent does not
+            // rely.
+            outcome.relied_standing_consent =
+                file.connect_granted.iter().any(|id| id == package_id)
+                    || file.connect_grant_tokens.contains_key(package_id);
             return Ok(outcome);
         }
         // BOOT REFRESH NEVER OVERRIDES A VERDICT: a stored row in any scope
@@ -2947,9 +3007,13 @@ pub enum ReliedGrantCommit {
     /// granted fresh, or found and declined a standing verdict): nothing to
     /// commit, nothing at risk.
     NotRelied,
-    /// The relied-upon token was standing and is now cleared: the grant
-    /// owner's pending compensating revoke no longer matches, so the
-    /// completion's success stands on secured consent.
+    /// The standing pending token was cleared because the completion could
+    /// claim it — the token it RELIED on (the round-7 semantics), or its OWN
+    /// fresh grant's token (the round-12 review P3: a fresh owner finalizes
+    /// its own grant instead of leaving it indistinguishable from an
+    /// in-flight one). Either way the grant owner's pending compensating
+    /// revoke no longer matches, so the completion's success stands on
+    /// secured consent.
     Committed,
     /// A NEWER grant stands WITHOUT a token. A tokenless grant can never be
     /// revoked by a compensating revoke (the predicate matches on the token),
@@ -3007,29 +3071,15 @@ pub const RELIED_GRANT_REPLACEMENT_PENDING_CAUSE: &str = "the relied-upon connec
 /// ledger B's success relied on, disabling a connector a completed connect
 /// just proved usable.
 ///
-/// The result is four-way (rounds 8 and 11): the commit fires only while the
-/// standing entry still carries the RELIED-UPON token (re-validated under
-/// the write lock). A standing grant WITHOUT a token is a permanent newer
-/// consent no compensating revoke can match
-/// ([`ReliedGrantCommit::Superseded`] — left untouched), while a standing
-/// grant under a DIFFERENT PENDING token means a newer live operation owns
-/// the state and can still revoke it
-/// ([`ReliedGrantCommit::ReplacementPending`] — committing over its token
-/// would make ITS OWN failure compensation a no-op, fail-open, and
-/// tolerating it lets that revoke strip the consent behind a success, so the
-/// caller declines the success). A vanished grant
-/// means the relied-upon consent is gone entirely
-/// ([`ReliedGrantCommit::GrantLost`] — the caller must surface an
-/// uncompleted completion instead of reporting success). The token is the
-/// only mutation — grant, ledger, and rows are untouched, so the verdict
-/// rules are not engaged. With no token captured
-/// ([`ReliedGrantCommit::NotRelied`]) this is a no-op, so the steady-state
-/// reconnect/refresh tail adds no store write. Not crate-internal despite
-/// the bare grant/revoke writers being so: the CLI's `connect` finish side
-/// effects drive the same gated entry cross-crate and must commit the
-/// consent they relied on (`pub` like
-/// `deny_first_register_connector` — a consent-affecting caller routes
-/// through the gate entry it sits behind, never here directly).
+/// The relied-only FORM of [`complete_connect_grant`] (round-12 review P2):
+/// it constructs the standing-consent reliance outcome and delegates. An
+/// EMPTY `relied_token` here keeps the historical `NotRelied` no-op — which
+/// is precisely why production completions must NOT call this with a
+/// possibly-empty capture: they cannot tell "relied on committed tokenless
+/// consent" from "relied on nothing", and the empty form skips the final
+/// validation the round-12 review requires. Kept `pub` for the pinned
+/// nonempty-reliance semantics tests cross-crate; production surfaces drive
+/// [`complete_connect_grant`].
 pub fn commit_relied_connect_grant(
     package_id: &str,
     relied_token: &str,
@@ -3037,14 +3087,105 @@ pub fn commit_relied_connect_grant(
     if relied_token.is_empty() {
         return Ok(ReliedGrantCommit::NotRelied);
     }
+    complete_connect_grant(
+        package_id,
+        &ConnectGrantOutcome {
+            relied_grant_token: relied_token.to_string(),
+            relied_standing_consent: true,
+            ..ConnectGrantOutcome::default()
+        },
+        None,
+    )
+}
+
+/// COMPLETION of a connect operation (round-12 review P2/P3): validate the
+/// consent identity this operation can actually claim, and secure it for the
+/// reported success. `gate` is the outcome of the operation's deny-first
+/// consent write; `tail` the outcome of the follow-up grant that ran after
+/// materialization (`None` on surfaces with a single consent write, like the
+/// CLI connect). Two claim classes exist:
+///
+/// - OWN grants (`granted` on either outcome): the completion FINALIZES the
+///   operation's own token — cleared while it still stands, so a completed
+///   owner stops looking like an in-flight one (the round-12 review P3: an
+///   unfinalized fresh token made a later operation that captured an older
+///   token receive `ReplacementPending` even though the newer owner had
+///   already completed and would never revoke).
+/// - the GATE's captured reliance (`relied_standing_consent`, tokenless
+///   standing consent INCLUDED — the empty token still validates): the
+///   consent the operation's DECISION stood on. Committing it ends the
+///   depended-on owner's matching revoke window (the round-7 semantics,
+///   re-validated under the write lock per rounds 6/8/11).
+///
+/// The TAIL's reliance capture is deliberately NOT a claim: it ran after
+/// materialization, so a token it observed that matches neither class above
+/// belongs to a NEWER lifecycle whose owner must complete or fail on its own
+/// (the round-12 review P2: an operation whose gate captured an EMPTY token —
+/// a fresh grant a real teardown consumed, or already-committed tokenless
+/// consent — used to report success over exactly such a newer owner's
+/// still-armed compensating revoke). It still ARMS the validation: a tail
+/// that stood on standing consent makes the completion validate the final
+/// state even when the gate produced no identity, so a tokenless observation
+/// reads as [`ReliedGrantCommit::Superseded`] (permanent newer consent) and
+/// a foreign pending token as [`ReliedGrantCommit::ReplacementPending`]
+/// instead of a blind `NotRelied` success. An operation with no claims and
+/// no reliance anywhere (a `show == false` no-op, the refresh variant's
+/// verdict guard or recovery hold) is `NotRelied` — nothing to validate.
+///
+/// The result is the five-way [`ReliedGrantCommit`]: a claim fires only
+/// while the standing entry still carries THAT token. A standing grant
+/// WITHOUT a token is a permanent newer consent no compensating revoke can
+/// match ([`ReliedGrantCommit::Superseded`] — left untouched), while a
+/// standing grant under a DIFFERENT PENDING token means a newer live
+/// operation owns the state and can still revoke it
+/// ([`ReliedGrantCommit::ReplacementPending`] — committing over its token
+/// would make ITS OWN failure compensation a no-op, fail-open, and tolerating
+/// it lets that revoke strip the consent behind a success, so the caller
+/// declines the success). A vanished grant means the consent the completion
+/// stands on is gone entirely ([`ReliedGrantCommit::GrantLost`] — the caller
+/// must surface an uncompleted completion instead of reporting success). The
+/// token is the only mutation — grant, ledger, and rows are untouched, so
+/// the verdict rules are not engaged. `pub` for the same cross-crate reason
+/// as `commit_relied_connect_grant`: the CLI's `connect` finish side effects
+/// drive the same gated entry and must complete the consent they stood on.
+pub fn complete_connect_grant(
+    package_id: &str,
+    gate: &ConnectGrantOutcome,
+    tail: Option<&ConnectGrantOutcome>,
+) -> Result<ReliedGrantCommit, String> {
+    // The claim set: this operation's own grants (gate and tail) and the
+    // standing consent its gate relied on — the decision basis. Empty claims
+    // are legitimate (a tokenless reliance) and still validate; only an
+    // EMPTY SET with no reliance anywhere short-circuits.
+    let mut claims: Vec<&str> = Vec::new();
+    if gate.granted {
+        claims.push(gate.grant_token.as_str());
+    }
+    if gate.relied_standing_consent {
+        claims.push(gate.relied_grant_token.as_str());
+    }
+    if let Some(tail) = tail {
+        if tail.granted {
+            claims.push(tail.grant_token.as_str());
+        }
+    }
+    // Validation is armed by any reliance decision, even one that adds no
+    // claim: the tail standing on consent it observed makes the completion
+    // validate the final state (Superseded / ReplacementPending) instead of
+    // reporting a blind success over whatever stands.
+    let validate = !claims.is_empty() || tail.is_some_and(|tail| tail.relied_standing_consent);
+    if !validate {
+        return Ok(ReliedGrantCommit::NotRelied);
+    }
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         // The round-6 ownership pair, reported separately (rounds 8 and 11):
         // a grant that no longer stands is a LOST reliance — the completion
         // would report success over consent that computes OFF; a standing
-        // grant under a pending different token is a replacement owner the
-        // commit must leave alone AND decline to stand on; a tokenless
-        // standing grant is a permanent newer consent that may be stood on.
+        // grant under a pending token outside the claim set is a replacement
+        // owner the completion must leave alone AND decline to stand on; a
+        // tokenless standing grant is a permanent newer consent that may be
+        // stood on.
         if !file.connect_granted.iter().any(|id| id == package_id) {
             return Ok(ReliedGrantCommit::GrantLost);
         }
@@ -3054,14 +3195,20 @@ pub fn commit_relied_connect_grant(
             // enable/welcome/composer commit), and no compensating revoke
             // can match a tokenless grant — the newer consent is stable.
             None => Ok(ReliedGrantCommit::Superseded),
-            // A different LIVE token: the newer owner's materialization is
-            // still in flight and its compensating revoke is still armed —
-            // the consent this completion relies on can still be stripped
-            // out from under a success. Decline without writing: C's token
-            // must stay armed for C's own failure compensation (round-11
-            // review P2).
-            Some(token) if token != relied_token => Ok(ReliedGrantCommit::ReplacementPending),
-            // The relied-upon token still stands: commit (clear) it.
+            // A live token OUTSIDE the claim set: the newer owner's
+            // materialization is still in flight and its compensating revoke
+            // is still armed — the consent this completion stands on can
+            // still be stripped out from under a success. Decline without
+            // writing: the newer token must stay armed for its own failure
+            // compensation (round-11 review P2), and a completion that never
+            // relied on it must not disarm it (round-12 review P2).
+            Some(token) if !claims.contains(&token.as_str()) => {
+                Ok(ReliedGrantCommit::ReplacementPending)
+            }
+            // A claimed token still stands: commit (clear) it. An own claim
+            // finalizes this operation's fresh grant (round-12 P3); a
+            // gate-relied claim acknowledges the grant this completion stood
+            // on (round-7 P2).
             _ => {
                 file.connect_grant_tokens.remove(package_id);
                 try_save_disabled_bundles_file(&file)?;
@@ -4439,6 +4586,353 @@ mod tests {
                     .iter()
                     .any(|entry| entry.ends_with(":feishu")),
                 "the ledger pair the completion relied on must survive: {file:?}"
+            );
+        });
+    }
+
+    /// Round-12 review P2, the empty-capture completion hole. Op1's gate
+    /// grants FRESH (empty reliance capture by construction) and its
+    /// materialization is in flight when a real uninstall of the installed
+    /// record sweeps the consent (grant + token + ledger + rows); a newer
+    /// connection re-grants under a PENDING token. Op1's tail then observes
+    /// that standing consent — the fix carries the observed token on the
+    /// outcome instead of collapsing it to a bool — but the completion used
+    /// the STALE GATE capture (empty) and short-circuited to `NotRelied`,
+    /// reporting success over a newer owner's still-armed compensating
+    /// revoke. The completion must validate the FINAL observed identity and
+    /// decline (`ReplacementPending`) without touching the newer token, and
+    /// the newer owner's legitimate failure compensation must still strip in
+    /// full afterwards.
+    #[test]
+    fn teardown_regrant_between_gate_and_tail_declines_an_empty_capture_completion() {
+        with_temp_home("pinvou3-scope-round12-empty-capture", || {
+            // Op1's gate grants fresh on the fresh home.
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_a.granted && grant_a.relied_grant_token.is_empty(),
+                "fixture: op1 grants fresh, capturing nothing: {grant_a:?}"
+            );
+            // A REAL uninstall of an installed record sweeps the consent
+            // mid-flight — grant, token, ledger, rows (not a vacuous
+            // uninstall: the store record exists). The companion layout is
+            // planted only after op2's gate below so the scope read path's
+            // present-bundle scan cannot re-seed the swept ledger pair
+            // before op2's gate probes it.
+            plant_installed_record("feishu", BundleSource::Preset);
+            remove_bundle_from_disabled_scopes_exact("feishu").unwrap();
+            assert!(
+                load_disabled_bundles_file().connect_granted.is_empty(),
+                "fixture: the teardown swept the grant"
+            );
+
+            // A newer connection re-grants while op1 is still in flight.
+            let grant_b = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_b.granted && grant_b.grant_token != grant_a.grant_token,
+                "fixture: the newer owner grants afresh: {grant_b:?}"
+            );
+            // Op1's materialization lands the companion layout (what the
+            // tail's known-bundle clause vouches on below).
+            let skills_root = paths::bundles_root().join("feishu").join("skills");
+            for dir in crate::features::marketplace::bundle::cli_bundle_skill_dirs("feishu") {
+                std::fs::create_dir_all(skills_root.join(dir)).unwrap();
+                std::fs::write(skills_root.join(dir).join("SKILL.md"), "# skill").unwrap();
+            }
+
+            // Op1's tail observes the standing consent: a reliance capture of
+            // op2's PENDING token (pre-fix this collapsed to `false` and the
+            // identity was discarded).
+            let tail = grant_connect_enable("feishu").unwrap();
+            assert!(
+                !tail.granted && tail.relied_standing_consent,
+                "the tail must carry its reliance decision: {tail:?}"
+            );
+            assert_eq!(
+                tail.relied_grant_token, grant_b.grant_token,
+                "the tail must observe the newer owner's pending token: {tail:?}"
+            );
+
+            // The completion declines on the final identity and writes
+            // nothing: the claims are op1's OWN gate grant (T1, consumed) —
+            // the tail's observation of op2's pending token is not a claim —
+            // so the standing token matches nothing.
+            assert_eq!(
+                complete_connect_grant("feishu", &grant_a, Some(&tail)).unwrap(),
+                ReliedGrantCommit::ReplacementPending,
+                "an empty gate capture must not bypass the replacement decline"
+            );
+            let file = load_disabled_bundles_file();
+            assert_eq!(
+                file.connect_grant_tokens.get("feishu").map(String::as_str),
+                Some(grant_b.grant_token.as_str()),
+                "the decline must leave the newer owner's compensation armed: {file:?}"
+            );
+
+            // The newer owner's legitimate failure still strips in full —
+            // the state the declined completion refused to stand on.
+            revoke_connect_enable(&grant_b).unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                !file.connect_granted.iter().any(|id| id == "feishu")
+                    && file.connect_grant_tokens.get("feishu").is_none(),
+                "the newer owner's compensation must still work in full: {file:?}"
+            );
+        });
+    }
+
+    /// Round-12 review P2, the committed-tokenless starting condition: an
+    /// operation whose gate observes ALREADY-COMMITTED consent (tokenless —
+    /// its reliance capture carries the flag with an EMPTY token) must still
+    /// validate the final state at completion, in both directions. With
+    /// nothing intervening the completion stands on the permanent tokenless
+    /// consent (`Superseded`); with a teardown + regrant landing a newer
+    /// pending owner in between, the same empty capture must DECLINE — the
+    /// pre-fix empty-token short-circuit reported success over the armed
+    /// replacement in both shapes.
+    #[test]
+    fn completion_over_committed_tokenless_consent_validates_the_final_state() {
+        with_temp_home("pinvou3-scope-round12-tokenless", || {
+            // Seed the committed shape: a grant landed and its owner
+            // finalized it (tokenless, ledger intact).
+            let first = deny_first_register_connector("feishu", true).unwrap();
+            assert!(first.granted, "fixture: the first owner grants: {first:?}");
+            assert_eq!(
+                complete_connect_grant("feishu", &first, None).unwrap(),
+                ReliedGrantCommit::Committed,
+                "fixture: the fresh owner finalizes its own grant"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(file.connect_granted.iter().any(|id| id == "feishu"));
+            assert!(file.connect_grant_tokens.get("feishu").is_none());
+
+            // A reconnect's gate observes the committed-tokenless consent.
+            let gate = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                !gate.granted && gate.relied_standing_consent && gate.relied_grant_token.is_empty(),
+                "fixture: the tokenless reliance capture must still flag as reliance: {gate:?}"
+            );
+            // Nothing intervened: the completion stands on the permanent
+            // consent instead of silently no-op'ing.
+            assert_eq!(
+                complete_connect_grant("feishu", &gate, None).unwrap(),
+                ReliedGrantCommit::Superseded,
+                "the empty capture must validate the standing tokenless consent"
+            );
+
+            // Variant: the committed consent is swept and a newer pending
+            // owner lands between the capture and the completion.
+            let gate2 = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                gate2.relied_standing_consent && gate2.relied_grant_token.is_empty(),
+                "fixture: second tokenless capture: {gate2:?}"
+            );
+            remove_bundle_from_disabled_scopes_exact("feishu").unwrap();
+            let newer = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                newer.granted,
+                "fixture: the replacement owner grants: {newer:?}"
+            );
+            assert_eq!(
+                complete_connect_grant("feishu", &gate2, None).unwrap(),
+                ReliedGrantCommit::ReplacementPending,
+                "the empty capture must decline over the newer pending owner"
+            );
+            // The replacement's armed compensation still strips in full.
+            revoke_connect_enable(&newer).unwrap();
+            assert!(
+                !load_disabled_bundles_file()
+                    .connect_granted
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the replacement's compensation must still work in full"
+            );
+        });
+    }
+
+    /// Round-12 review P2, the refresh surface's gateless shape: the boot
+    /// refresh's verdict guard declines the gate (a stored row stands — NO
+    /// identity), the row is consumed mid-materialization by another
+    /// operation's consent write, and the refresh TAIL then observes that
+    /// standing pending grant. The tail's observation adds no claim (the
+    /// newer owner must complete or fail on its own), but it ARMS the
+    /// completion's validation: the completion must decline over the armed
+    /// stranger instead of reporting a blind `NotRelied` success. (Dropping
+    /// the tail-relied validation arm turns this green-under-mutation.)
+    #[test]
+    fn gateless_refresh_tail_validates_the_standing_consent_it_observed() {
+        with_temp_home("pinvou3-scope-round12-gateless-tail", || {
+            // A stored off-row with NO ledger pair: the refresh variant's
+            // verdict guard declines the gate — the outcome carries no grant
+            // and no reliance.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            let gate = deny_first_register_connector_refresh("feishu", true).unwrap();
+            assert!(
+                !gate.granted && !gate.relied_standing_consent && gate.relied_grant_token.is_empty(),
+                "fixture: the verdict guard declines the gate with no identity: {gate:?}"
+            );
+
+            // Mid-materialization, another operation's consent write lands:
+            // the row goes, and a fresh grant stands under a PENDING token
+            // (its owner still in flight).
+            {
+                let mut file = load_disabled_bundles_file();
+                if let Some(ids) = file.scopes.get_mut("plain") {
+                    ids.retain(|id| id != "feishu");
+                }
+                file.install_default_synced
+                    .push("plain:feishu".to_string());
+                file.install_default_synced.push("code:feishu".to_string());
+                file.connect_granted.push("feishu".to_string());
+                file.connect_grant_tokens
+                    .insert("feishu".to_string(), "op-x-token".to_string());
+                try_save_disabled_bundles_file(&file).unwrap();
+            }
+
+            // The refresh tail observes the standing consent (the in-lock
+            // ledger capture): a reliance on a foreign pending token.
+            let tail = grant_connect_enable_refresh("feishu").unwrap();
+            assert!(
+                !tail.granted && tail.relied_standing_consent,
+                "fixture: the tail observes the standing consent: {tail:?}"
+            );
+            assert_eq!(tail.relied_grant_token, "op-x-token");
+
+            // The completion validates and declines: no claims, standing
+            // foreign pending token.
+            assert_eq!(
+                complete_connect_grant("feishu", &gate, Some(&tail)).unwrap(),
+                ReliedGrantCommit::ReplacementPending,
+                "the gateless refresh completion must decline over the armed stranger"
+            );
+            let file = load_disabled_bundles_file();
+            assert_eq!(
+                file.connect_grant_tokens.get("feishu").map(String::as_str),
+                Some("op-x-token"),
+                "the stranger's compensation must stay armed: {file:?}"
+            );
+        });
+    }
+
+    /// Round-12 review P3: a fresh owner's successful completion FINALIZES
+    /// its own grant (clears its token) instead of leaving it pending — an
+    /// unfinalized token kept a completed owner indistinguishable from an
+    /// in-flight one. The finalized shape is exactly the committed consent a
+    /// later operation captures as a tokenless reliance and stands on.
+    #[test]
+    fn fresh_completion_finalizes_its_own_grant() {
+        with_temp_home("pinvou3-scope-round12-fresh-finalize", || {
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_a.granted && !grant_a.grant_token.is_empty(),
+                "fixture: the fresh grant carries its own token: {grant_a:?}"
+            );
+            // The completion clears the token and nothing else — the grant
+            // and its ledger pair stay as permanent consent.
+            assert_eq!(
+                complete_connect_grant("feishu", &grant_a, None).unwrap(),
+                ReliedGrantCommit::Committed,
+                "the fresh completion must finalize its own token"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the grant itself stays: {file:?}"
+            );
+            assert!(
+                file.connect_grant_tokens.get("feishu").is_none(),
+                "the ownership token is finalized (pending compensation window closed): {file:?}"
+            );
+            assert!(
+                file.install_default_synced
+                    .iter()
+                    .any(|e| e.ends_with(":feishu")),
+                "the ledger pair stays: {file:?}"
+            );
+
+            // The finalized shape is what a later operation relies on —
+            // tokenlessly — and its completion stands on the permanent
+            // consent instead of seeing a phantom in-flight owner.
+            let later = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                !later.granted
+                    && later.relied_standing_consent
+                    && later.relied_grant_token.is_empty(),
+                "fixture: the later gate captures tokenless reliance: {later:?}"
+            );
+            assert_eq!(
+                complete_connect_grant("feishu", &later, None).unwrap(),
+                ReliedGrantCommit::Superseded,
+                "the finalized consent must read as permanent, not as an in-flight owner"
+            );
+        });
+    }
+
+    /// Round-12 review P3's exact scenario, both halves. A completes after B
+    /// captured A's token: B's late completion must read the finalized
+    /// (tokenless) consent as `Superseded` — the pre-fix behavior kept A's
+    /// token pending and handed B a false `ReplacementPending` decline even
+    /// though A had completed and would never revoke. The control half keeps
+    /// the replacement genuinely in flight: there the decline still fires and
+    /// the owner's compensation stays armed.
+    #[test]
+    fn completed_owner_supersedes_a_late_relied_completion() {
+        with_temp_home("pinvou3-scope-round12-completed-owner", || {
+            // A grants; B's gate captures A's pending token.
+            let grant_a = deny_first_register_connector("feishu", true).unwrap();
+            assert!(grant_a.granted, "fixture: A grants: {grant_a:?}");
+            let gate_b = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                !gate_b.granted && gate_b.relied_grant_token == grant_a.grant_token,
+                "fixture: B relies on A's grant: {gate_b:?}"
+            );
+            // A COMPLETES (finalizes its own token); its compensating revoke
+            // can never fire now.
+            assert_eq!(
+                complete_connect_grant("feishu", &grant_a, None).unwrap(),
+                ReliedGrantCommit::Committed
+            );
+            // B's late completion: the completed owner's consent is permanent.
+            assert_eq!(
+                complete_connect_grant("feishu", &gate_b, None).unwrap(),
+                ReliedGrantCommit::Superseded,
+                "a completed replacement must supersede, not read as pending"
+            );
+
+            // Control: a capture against a GENUINELY pending replacement
+            // still declines. C grants (in flight); D captures C's token;
+            // the consent is swept and E re-grants before D completes — D's
+            // claim (C's token) no longer matches the standing (E's, still
+            // pending) token, so the decline fires.
+            remove_bundle_from_disabled_scopes_exact("feishu").unwrap();
+            let grant_c = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_c.granted,
+                "fixture: C re-grants after the sweep: {grant_c:?}"
+            );
+            let gate_d = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                !gate_d.granted && gate_d.relied_grant_token == grant_c.grant_token,
+                "fixture: D relies on C's pending grant: {gate_d:?}"
+            );
+            remove_bundle_from_disabled_scopes_exact("feishu").unwrap();
+            let grant_e = deny_first_register_connector("feishu", true).unwrap();
+            assert!(
+                grant_e.granted && grant_e.grant_token != grant_c.grant_token,
+                "fixture: E re-grants under a fresh token: {grant_e:?}"
+            );
+            assert_eq!(
+                complete_connect_grant("feishu", &gate_d, None).unwrap(),
+                ReliedGrantCommit::ReplacementPending,
+                "a genuinely pending replacement must still decline the completion"
+            );
+            // E's compensation is intact and still strips in full.
+            revoke_connect_enable(&grant_e).unwrap();
+            assert!(
+                !load_disabled_bundles_file()
+                    .connect_granted
+                    .iter()
+                    .any(|id| id == "feishu"),
+                "the in-flight owner's compensation must still work in full"
             );
         });
     }
