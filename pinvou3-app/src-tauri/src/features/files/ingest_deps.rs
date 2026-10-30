@@ -6,6 +6,7 @@
 //!
 //! [`super`]: super
 
+use std::io::Read as _;
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -142,20 +143,44 @@ pub(super) fn pdf_tool_command(command: &str) -> Command {
     crate::platform::process::HiddenCommand::new(crate::platform::os::pdf_tool_path(command))
 }
 
-/// `pdftotext -layout <pdf> -` → stdout text, shared by pdf-body extraction
-/// and presentation-to-PDF extraction. Kill-backed timeout (60s): corrupt or
-/// oddly wrapped input can hang the demuxer. Failure wording keeps the two
-/// call sites' historical strings (spawn failure → 「pdftotext 调用失败」,
-/// non-zero exit → 「pdftotext 失败」); the kind/warning IngestResult wrapping
-/// stays with the caller.
+/// 抽取产物落盘后的读回上限。整本文档走 stdout 曾受平台层 4 MiB 捕获上限
+/// 约束，几千页的合法文档会被误杀；改落盘后读回侧独立限量，放宽到 32 MiB
+/// （仍挡住解压炸弹类输入把读回变成无界内存）。
+pub(super) const EXTRACTED_TEXT_READ_CAP: u64 = 32 * 1024 * 1024;
+
+/// 从抽取产物文件限量读回文本：超过 [`EXTRACTED_TEXT_READ_CAP`] 报错。
+pub(super) fn read_capped_text(path: &Path) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("读取抽取产物失败: {e}"))?;
+    let mut buffer = Vec::new();
+    file.take(EXTRACTED_TEXT_READ_CAP + 1)
+        .read_to_end(&mut buffer)
+        .map_err(|e| format!("读取抽取产物失败: {e}"))?;
+    if buffer.len() as u64 > EXTRACTED_TEXT_READ_CAP {
+        return Err(format!(
+            "抽取文本超过 {EXTRACTED_TEXT_READ_CAP} 字节读回上限"
+        ));
+    }
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
+
+/// `pdftotext -layout <pdf> <tmpfile>` → 落盘后限量读回，shared by pdf-body
+/// extraction and presentation-to-PDF extraction. Kill-backed timeout (60s):
+/// corrupt or oddly wrapped input can hang the demuxer. Failure wording keeps
+/// the two call sites' historical strings (spawn failure → 「pdftotext 调用
+/// 失败」, non-zero exit → 「pdftotext 失败」); the kind/warning IngestResult
+/// wrapping stays with the caller.
 pub(super) fn pdftotext_extract(pdf: &Path) -> Result<String, String> {
+    // 产物落盘再限量读回（原 `-` 走 stdout，整本输出受平台层 4 MiB 捕获上限
+    // 约束，大文档会被整树终止误杀）；runaway 进程仍受超时与溢出终止约束。
+    let temporary = tempfile::tempdir().map_err(|e| format!("pdftotext 调用失败: {e}"))?;
+    let output_path = temporary.path().join("extracted.txt");
     let mut command = pdf_tool_command("pdftotext");
-    command.arg("-layout").arg(pdf).arg("-");
+    command.arg("-layout").arg(pdf).arg(&output_path);
     match crate::platform::process::output_with_timeout_and_kill_tree(
         command,
         std::time::Duration::from_secs(60),
     ) {
-        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+        Ok(o) if o.status.success() => read_capped_text(&output_path),
         Ok(o) => Err(format!(
             "pdftotext 失败: {}",
             String::from_utf8_lossy(&o.stderr).trim()
@@ -313,6 +338,18 @@ pub(super) fn ocr_lang_arg() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_capped_text_passes_small_files_and_rejects_over_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.txt");
+        std::fs::write(&path, "抽取文本").unwrap();
+        assert_eq!(read_capped_text(&path).unwrap(), "抽取文本");
+
+        std::fs::write(&path, vec![b'a'; (EXTRACTED_TEXT_READ_CAP + 1) as usize]).unwrap();
+        let error = read_capped_text(&path).unwrap_err();
+        assert!(error.contains("读回上限"), "{error}");
+    }
 
     #[test]
     fn libreoffice_user_installation_uses_encoded_file_url() {

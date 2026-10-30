@@ -56,6 +56,30 @@ const MAX_CHECKPOINTS: usize = 20;
 /// imports it — a speculative `pub` here is how a surface the dead-code
 /// cleanups removed comes back without a reader.
 const DIFF_PATCH_LIMIT: usize = 512 * 1024;
+/// Bound on one `diff --cached --raw` record (including its newline) while
+/// the change list is streamed out of its spill file by
+/// [`read_raw_status_changes`]. The list is the rollback confirmation's
+/// authoritative inventory and must be complete, so it carries no
+/// aggregate byte bound at all: snapshot admission limits the entry count
+/// ([`SIZE_WALK_MAX_ENTRIES`]) and the content bytes
+/// ([`MAX_WORKSPACE_BYTES_FOR_SNAPSHOT`]) but not pathname bytes, and
+/// `diff_checkpoint` does not re-admit the current tree, so no constant on
+/// the listing's total size can be made consistent with what admission
+/// lets through (a review probe measured 72.5 MB from 160,000 admitted
+/// entries with 419-byte paths against the former 64 MiB). What does need
+/// a bound is the single record resident in memory while it is parsed: a
+/// record is the fixed fields (two modes, two object names, a status —
+/// about 150 bytes even with full SHA-256 names) plus one path, or two for
+/// a rename/copy, and a path is bounded by the OS, not by admission —
+/// 4096 bytes on Linux, 1024 on macOS, 32767 UTF-16 units on Windows with
+/// long paths (about 98 KB as UTF-8). With `core.quotepath=false` git still
+/// C-quotes quotes, backslashes and control characters, each byte to at
+/// most four, so the largest representable record is two fully escaped
+/// Windows paths, about 786 KB. 1 MiB is above every representable record
+/// on every supported platform, so no admitted inventory can reach it;
+/// crossing it is corrupt or runaway git output and is reported as an
+/// error rather than parsed as a path.
+const RAW_STATUS_RECORD_LIMIT: usize = 1024 * 1024;
 /// 执行根体积门（对齐底座 snapshot 的 DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT）：
 /// 超过 2GB 的目录不做快照——每轮全量 `add -A` 的 IO/CPU 与影子仓库存储都不
 /// 划算，该会话如实没有回退入口（设计 §5 降级语义）。
@@ -522,9 +546,153 @@ fn git_ok(repo: &Path, work_tree: &Path, arguments: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Same bounded `git` invocation as [`git_ok`], but the command's stdout is
-/// redirected to a temp file via `diff --output` and only the first `cap`
-/// bytes (plus one probe byte) are read back into memory — a huge diff costs
+/// A `git diff --output` spill beside the shadow repo. Created here with
+/// private permissions, removed on drop, and swept by
+/// [`reap_stale_diff_spills`] when a crash leaves it behind.
+///
+/// The spill lives beside the shadow repo, not in the shared temp
+/// directory. The git child writes the UNFILTERED diff here, so on a crash
+/// or SIGKILL between the write and this guard's drop the leftover is a full
+/// plaintext copy of the working tree's changes — including whatever the
+/// secret filter would have dropped. Under the ledger it is inside the same
+/// private tree as the snapshots themselves and goes away with the session;
+/// in `/tmp` it is a world-visible artifact with no reaper and an unbounded
+/// lifetime.
+struct DiffSpill {
+    path: PathBuf,
+}
+
+impl DiffSpill {
+    fn create(repo: &Path) -> Result<Self> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let spill_dir = repo.parent().unwrap_or(repo).to_path_buf();
+        let path = spill_dir.join(format!(
+            ".checkpoint-diff-{}-{nanos}.tmp",
+            std::process::id()
+        ));
+        let spill = DiffSpill { path };
+        // Create the spill file ourselves with private permissions: a
+        // child-created file would follow the process umask. `git diff --output`
+        // truncates an existing file and keeps its mode, so pre-creating with
+        // 0600 is enough.
+        crate::platform::filesystem::create_secret_file(&spill.path).with_context(|| {
+            format!(
+                "create private checkpoint diff spill file {}",
+                spill.path.display()
+            )
+        })?;
+        Ok(spill)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DiffSpill {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Same bounded `git` invocation as [`git`], with the diff command's output
+/// redirected to a fresh [`DiffSpill`] via `diff --output`: git's stdout
+/// stays empty, so the platform capture bound only ever meets its (small)
+/// stderr, and a listing or patch of any size costs disk in the git child,
+/// never RSS in this process. A non-zero exit is `failure` plus git's
+/// stderr. It deliberately names no arguments: the argv carries the spill
+/// path (and this error reaches the frontend via the command layer), and
+/// the same privacy posture that keeps the quarantine path and serde
+/// message off stderr applies here.
+fn git_diff_spilled(
+    repo: &Path,
+    work_tree: &Path,
+    arguments: &[&str],
+    failure: &str,
+) -> Result<DiffSpill> {
+    let spill = DiffSpill::create(repo)?;
+    let mut arguments: Vec<String> = arguments
+        .iter()
+        .map(|argument| (*argument).to_string())
+        .collect();
+    arguments.push(format!("--output={}", spill.path().display()));
+    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    let output = git(repo, work_tree, &arguments)?;
+    if !output.status.success() {
+        bail!(
+            "{failure}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(spill)
+}
+
+/// The `diff --cached --raw` change list, streamed out of a [`DiffSpill`] by
+/// [`read_raw_status_changes`]. This is the rollback confirmation's
+/// authoritative inventory, so it must come back complete or not at all:
+/// the spill has no aggregate bound to cross (see
+/// [`RAW_STATUS_RECORD_LIMIT`] for why none could be admission-consistent),
+/// the parser reads it to the end, and a read error or an oversized record
+/// is the error — never a shorter list. It cannot go through [`git_ok`]: that
+/// path captures stdout under the platform's memory bound and marks a clip
+/// with a line the record parser would drop as noise, which is exactly how a
+/// partial list would pass for a complete one.
+fn git_raw_status_changes(
+    repo: &Path,
+    work_tree: &Path,
+    arguments: &[&str],
+) -> Result<Vec<CheckpointChange>> {
+    let spill = git_diff_spilled(repo, work_tree, arguments, "git diff --raw 清单生成失败")?;
+    let file = fs::File::open(spill.path()).context("open checkpoint raw-status spill")?;
+    read_raw_status_changes(std::io::BufReader::new(file))
+}
+
+/// Streams `diff --cached --raw` records into change entries one record at a
+/// time, so the listing's size never governs memory: only the record being
+/// parsed and the resulting entries are resident. Reads to end of input —
+/// there is no aggregate bound — and fails rather than guesses: an I/O
+/// error is returned as such, and a record longer than
+/// [`RAW_STATUS_RECORD_LIMIT`] is an error instead of being cut and parsed
+/// as a path. Non-record lines are skipped exactly as `str::lines` would
+/// yield them (a trailing `\r` is stripped, a final unterminated line
+/// counts).
+fn read_raw_status_changes(mut reader: impl std::io::BufRead) -> Result<Vec<CheckpointChange>> {
+    use std::io::{BufRead as _, Read as _};
+
+    let mut changes = Vec::new();
+    let mut record = Vec::new();
+    loop {
+        record.clear();
+        // `take` caps what one record may pull in; a record that fills the
+        // extra byte without reaching its newline is over the bound.
+        let read = (&mut reader)
+            .take(RAW_STATUS_RECORD_LIMIT as u64 + 1)
+            .read_until(b'\n', &mut record)
+            .context("read checkpoint raw-status spill")?;
+        if read == 0 {
+            break;
+        }
+        if record.len() > RAW_STATUS_RECORD_LIMIT {
+            bail!("git diff --raw 清单记录超过 {RAW_STATUS_RECORD_LIMIT} 字节");
+        }
+        let line = String::from_utf8_lossy(&record);
+        // `str::lines` semantics: `\r` is a terminator only in front of `\n`.
+        let line = match line.strip_suffix('\n') {
+            Some(line) => line.strip_suffix('\r').unwrap_or(line),
+            None => &line,
+        };
+        if let Some(change) = parse_raw_status_line(line) {
+            changes.push(change);
+        }
+    }
+    Ok(changes)
+}
+
+/// Reads a [`git_diff_spilled`] patch back capped at `cap` bytes: only the
+/// first `cap` bytes (plus one probe byte) enter memory — a huge diff costs
 /// disk in the git child, never RSS in this process. Returns the output
 /// clamped to a `\n` boundary (a `diff --git` section header is therefore
 /// either fully present or fully absent, which the secret-path filter
@@ -536,55 +704,12 @@ fn git_diff_capped(
     arguments: &[&str],
     cap: usize,
 ) -> Result<(String, bool)> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    // The spill lives beside the shadow repo, not in the shared temp
-    // directory. The git child writes the UNFILTERED diff here, so on a crash
-    // or SIGKILL between the write and `TempDiffFile`'s drop the leftover is
-    // a full plaintext copy of the working tree's changes — including
-    // whatever the secret filter would have dropped. Under the ledger it is
-    // inside the same private tree as the snapshots themselves and goes away
-    // with the session; in `/tmp` it is a world-visible artifact with no
-    // reaper and an unbounded lifetime.
-    let spill_dir = repo.parent().unwrap_or(repo).to_path_buf();
-    let output_path = spill_dir.join(format!(
-        ".checkpoint-diff-{}-{nanos}.tmp",
-        std::process::id()
-    ));
-    let _cleanup = TempDiffFile(&output_path);
-    // Create the spill file ourselves with private permissions: a
-    // child-created file would follow the process umask. `git diff --output`
-    // truncates an existing file and keeps its mode, so pre-creating with
-    // 0600 is enough.
-    crate::platform::filesystem::create_secret_file(&output_path).with_context(|| {
-        format!(
-            "create private checkpoint diff spill file {}",
-            output_path.display()
-        )
-    })?;
     use std::io::Read as _;
-    let mut arguments: Vec<String> = arguments
-        .iter()
-        .map(|argument| (*argument).to_string())
-        .collect();
-    arguments.push(format!("--output={}", output_path.display()));
-    let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    let output = git(repo, work_tree, &arguments)?;
-    if !output.status.success() {
-        // Deliberately names no arguments: the argv carries the spill path
-        // (and this error reaches the frontend via the command layer), and
-        // the same privacy posture that keeps the quarantine path and serde
-        // message off stderr applies here.
-        bail!(
-            "git diff 预览生成失败: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let file_len = fs::metadata(&output_path)?.len();
+    let spill = git_diff_spilled(repo, work_tree, arguments, "git diff 预览生成失败")?;
+    let output_path = spill.path();
+    let file_len = fs::metadata(output_path)?.len();
     let truncated = file_len > cap as u64;
-    let mut file = fs::File::open(&output_path)?;
+    let mut file = fs::File::open(output_path)?;
     let mut buf = Vec::new();
     if truncated {
         (&mut file).take(cap as u64 + 1).read_to_end(&mut buf)?;
@@ -597,16 +722,6 @@ fn git_diff_capped(
         file.read_to_end(&mut buf)?;
     }
     Ok((String::from_utf8_lossy(&buf).into_owned(), truncated))
-}
-
-/// Best-effort removal of the `--output` spill file; the diff preview must
-/// not leave a full-diff copy behind in the shared temp directory.
-struct TempDiffFile<'a>(&'a Path);
-
-impl Drop for TempDiffFile<'_> {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(self.0);
-    }
 }
 
 /// 迁移/恢复共用的敏感文件 pathspec 全集：字面模式（无通配符，如 .env、
@@ -658,7 +773,7 @@ fn purge_secret_patterns_from_index(repo: &Path, work_tree: &Path) -> Result<()>
 }
 
 /// Crash-leftover reaper for diff spill files: `.checkpoint-diff-<pid>-<nanos>.tmp`
-/// holds the UNFILTERED diff until `TempDiffFile` drops it, and a hard kill
+/// holds the UNFILTERED diff until [`DiffSpill`] drops it, and a hard kill
 /// leaves it behind with no in-process owner. Age-gated far past the 120 s
 /// git command timeout so a concurrently running diff (this or another
 /// process) is never reaped mid-flight. Best-effort: sweep failures are
@@ -1022,41 +1137,38 @@ fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<Checkpoint
         .with_context(|| format!("checkpoint '{checkpoint_id}' 不存在"))
 }
 
-/// `diff --cached --raw` 输出行解析（`:<srcmode> <dstmode> <srcsha> <dstsha> <status>\t<path>`，
-/// rename/copy 多一个 `\t<newpath>`）。gitlink（嵌套仓库/submodule，mode 160000）
-/// 单独标注——快照不跟踪其内容、restore 不会 materialize 它（评审 M4）。
-fn parse_raw_status(text: &str) -> Vec<CheckpointChange> {
-    text.lines()
-        .filter_map(|line| {
-            let (header, paths) = line.split_once('\t')?;
-            let fields: Vec<&str> = header.split_whitespace().collect();
-            if fields.len() < 5 {
-                return None;
-            }
-            let (src_mode, dst_mode, status) = (fields[0], fields[1], fields[4]);
-            let label = if src_mode == "160000" || dst_mode == "160000" {
-                "gitlink"
-            } else {
-                match status.chars().next() {
-                    Some('A') => "added",
-                    Some('M') => "modified",
-                    Some('D') => "deleted",
-                    Some('R') => "renamed",
-                    Some('C') => "copied",
-                    _ => "other",
-                }
-            };
-            // R/C 状态是「旧路径\t新路径」，展示新路径。
-            let path = paths.rsplit('\t').next()?.to_string();
-            if path.is_empty() {
-                return None;
-            }
-            Some(CheckpointChange {
-                path,
-                status: label.to_string(),
-            })
-        })
-        .collect()
+/// `diff --cached --raw` 单行解析（`:<srcmode> <dstmode> <srcsha> <dstsha> <status>\t<path>`，
+/// rename/copy 多一个 `\t<newpath>`），非记录行返回 `None`。gitlink（嵌套仓库/
+/// submodule，mode 160000）单独标注——快照不跟踪其内容、restore 不会
+/// materialize 它（评审 M4）。
+fn parse_raw_status_line(line: &str) -> Option<CheckpointChange> {
+    let (header, paths) = line.split_once('\t')?;
+    let fields: Vec<&str> = header.split_whitespace().collect();
+    if fields.len() < 5 {
+        return None;
+    }
+    let (src_mode, dst_mode, status) = (fields[0], fields[1], fields[4]);
+    let label = if src_mode == "160000" || dst_mode == "160000" {
+        "gitlink"
+    } else {
+        match status.chars().next() {
+            Some('A') => "added",
+            Some('M') => "modified",
+            Some('D') => "deleted",
+            Some('R') => "renamed",
+            Some('C') => "copied",
+            _ => "other",
+        }
+    };
+    // R/C 状态是「旧路径\t新路径」，展示新路径。
+    let path = paths.rsplit('\t').next()?.to_string();
+    if path.is_empty() {
+        return None;
+    }
+    Some(CheckpointChange {
+        path,
+        status: label.to_string(),
+    })
 }
 
 /// 仅支持 `*` 的通配匹配（任意字符序列）。敏感模式均无斜杠，等价于
@@ -1104,8 +1216,8 @@ fn secret_path_matches(path: &str) -> bool {
     })
 }
 
-/// Secret check for a `--raw` status path. `parse_raw_status` hands the field
-/// through verbatim, and with `core.quotepath=false` git still C-quotes paths
+/// Secret check for a `--raw` status path. `parse_raw_status_line` hands the
+/// field through verbatim, and with `core.quotepath=false` git still C-quotes paths
 /// containing quotes/backslashes/tabs (`"my \"key.pem"`), whose trailing
 /// quote defeats a plain suffix match — while the patch filter (which parses
 /// the quoted shapes) drops that section, leaving the two preview surfaces
@@ -1237,6 +1349,12 @@ fn filter_secret_paths_from_patch(patch: &str) -> String {
 /// unbounded (only the read-back is capped), and the desktop preview renders
 /// only the list — it must pass `false`. The patch surface exists for the
 /// CLI. When `false`, `patch` is empty and `patch_truncated` is `false`.
+/// The list is the rollback confirmation's authoritative inventory, so it
+/// is streamed out of a private `git diff --output` spill to the end
+/// (`git_raw_status_changes`) rather than captured under a byte bound:
+/// snapshot admission bounds entries and content bytes, not pathname bytes,
+/// so no in-memory capture bound can cover every admitted workspace, and
+/// this list either comes back complete or the call fails — never clipped.
 pub fn diff_checkpoint(
     ledger_root: &Path,
     execution_root: &Path,
@@ -1248,7 +1366,7 @@ pub fn diff_checkpoint(
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // add -A 让影子 index 反映当前执行根，diff --cached <commit> 即「快照→现在」。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
-    let raw_status = git_ok(
+    let listed = git_raw_status_changes(
         &repo,
         &execution_root,
         // --raw 带文件模式（gitlink 160000 = 嵌套仓库/submodule，清单中如实
@@ -1268,7 +1386,7 @@ pub fn diff_checkpoint(
     // legacy 快照（迁移前打的）tree 里可能仍含秘密原文：清单剔除命中敏感模式
     // 的条目，预览不谎称「回滚将删除 .env」（restore 实际保留工作区现有同名
     // 文件）。过滤恒大小写不敏感，与 exclude/purge 三层同向。
-    let changes: Vec<CheckpointChange> = parse_raw_status(&raw_status)
+    let changes: Vec<CheckpointChange> = listed
         .into_iter()
         .filter(|change| !raw_status_path_is_secret(&change.path))
         .collect();
@@ -1400,9 +1518,17 @@ pub fn restore_checkpoint(
         .context("清理快照中的敏感文件条目失败")?;
     git_ok(&repo, &execution_root, &["checkout-index", "-f", "-a"])
         .context("写回 checkpoint 文件失败")?;
-    git_ok(&repo, &execution_root, &["clean", "-fd"]).context("清理快照后新建文件失败")?;
+    git_ok(&repo, &execution_root, RESTORE_CLEAN_ARGS).context("清理快照后新建文件失败")?;
     Ok(undo)
 }
+
+/// 恢复收尾的 clean 参数。`-q` 是正确性而不是美观：clean 默认逐文件打印
+/// 「Removing <path>」，一次恢复删掉几万个普通小文件（工作区准入允许
+/// 20 万条目）时列表会越过平台层 4 MiB 捕获上限，而清理发生在
+/// checkout-index 已经重写工作区**之后**——恢复实际完成却报错回滚收据，
+/// 后续调度还可能把半程终止。静默后该站点对捕获上限免疫；`-fd` 的语义
+/// （含目录、不动 ignored）不变。
+const RESTORE_CLEAN_ARGS: &[&str] = &["clean", "-fd", "-q"];
 
 /// 只操作 refs 的 git 调用（update-ref/gc 不需要 work-tree）。
 /// 与写路径共用陈旧锁清扫重试：被超时 kill 的 git 会留下
@@ -1941,6 +2067,329 @@ mod tests {
             exec.read(".ENV").as_deref(),
             Some("SECRET=after\n"),
             "大写秘密文件必须在 restore 后存活且内容不变"
+        );
+    }
+
+    /// 恢复收尾的 `clean` 必须静默（RESTORE_CLEAN_ARGS 带 -q）：clean 默认
+    /// 逐文件打印「Removing <path>」，大工作区（准入允许 20 万条目；评审
+    /// 实锤 2.7 万个 ~160 字符文件名 ≈ 4.4 MiB 列表）会越过平台层 4 MiB
+    /// 捕获上限，而清理发生在 checkout-index 已重写工作区**之后**——恢复
+    /// 实际完成却报错。-q 让该站点对捕获上限免疫；丢掉 -q 会在这里以非空
+    /// stdout 红灯。（4 MiB 规模的夹具对 CI 太重，这里钉 -q 在场与
+    /// stdout 为空。）
+    #[test]
+    fn restore_clean_runs_quiet_so_the_listing_cannot_hit_the_capture_cap() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("quiet-clean-ledger");
+        let exec = TestDir::new("quiet-clean-exec");
+        exec.write("kept.txt", "v1\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // 快照后新建的普通文件：restore 收尾的 clean 会逐个删除它们。
+        exec.write("new-1.txt", "n\n");
+        exec.write("new-2.txt", "n\n");
+        exec.write("new-3.txt", "n\n");
+
+        let repo = repo_dir(ledger.path());
+        let listing = git_ok(&repo, exec.path(), RESTORE_CLEAN_ARGS).unwrap();
+
+        assert!(
+            listing.is_empty(),
+            "quiet clean must print nothing; a per-file listing here overflows \
+             the 4 MiB capture cap on large workspaces: {listing}"
+        );
+        assert!(
+            exec.read("new-1.txt").is_none(),
+            "untracked post-snapshot files must still be removed"
+        );
+        assert!(
+            exec.read("kept.txt").is_some(),
+            "tracked files must survive the clean"
+        );
+    }
+
+    /// The rollback confirmation's list must not be cut by any capture
+    /// bound: snapshot admission limits entries and content bytes, not
+    /// pathname bytes, and the review's real-index counterexample (160,000
+    /// entries with 419-byte paths, a 72,480,000-byte listing) was rejected
+    /// by the former 64 MiB aggregate bound. The fixture is index-only
+    /// (`update-index --index-info`, no physical files) at that exact scale:
+    /// every entry must stream out, and no spill may outlive the call.
+    #[test]
+    fn raw_status_admitted_long_path_inventory_lists_complete_past_any_capture_bound() {
+        if !git_available() {
+            return;
+        }
+        let entries = 160_000;
+        let ledger = TestDir::new("raw-status-wide-ledger");
+        let exec = TestDir::new("raw-status-wide-exec");
+        exec.write("kept.txt", "v1\n");
+        let meta = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        // One blob for every entry to reference.
+        exec.write("one.txt", "n\n");
+        let one = exec.path().join("one.txt");
+        let repo = repo_dir(ledger.path());
+        let blob = git(
+            &repo,
+            exec.path(),
+            &["hash-object", "-w", one.to_str().unwrap()],
+        )
+        .unwrap();
+        assert!(blob.status.success());
+        let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+        // Four 100-byte directory components plus a file name: a 419-byte
+        // relative path, the review counterexample's shape.
+        let file_name_len = "file-000000.txt".len();
+        let mut index_info = String::new();
+        for index in 0..entries {
+            let path = format!(
+                "{}/{}/{}/{}/file-{index:06}.txt",
+                "a".repeat(100),
+                "b".repeat(100),
+                "c".repeat(100),
+                "d".repeat(100),
+            );
+            index_info.push_str(&format!("100644 {blob} 0\t{path}\n"));
+        }
+        let mut feeder = isolated_git_command();
+        feeder.arg(format!("--git-dir={}", repo.display()));
+        feeder.args(["update-index", "--index-info"]);
+        feeder.stdin(std::process::Stdio::piped());
+        feeder.stdout(std::process::Stdio::null());
+        feeder.stderr(std::process::Stdio::null());
+        let mut feeder = feeder.spawn().unwrap();
+        let mut stdin = feeder.stdin.take().unwrap();
+        let writer = std::thread::spawn(move || {
+            use std::io::Write as _;
+            stdin.write_all(index_info.as_bytes())
+        });
+        writer.join().unwrap().unwrap();
+        assert!(
+            feeder.wait().unwrap().success(),
+            "update-index --index-info must accept the fixture"
+        );
+
+        let arguments = [
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--cached",
+            "--raw",
+            "-M",
+            "--no-color",
+            meta.commit.as_str(),
+        ];
+        let changes = git_raw_status_changes(&repo, exec.path(), &arguments).unwrap();
+        assert_eq!(changes.len(), entries, "every entry must be listed");
+        assert!(
+            changes.iter().all(|change| change.status == "added"),
+            "index-only entries are additions to the checkpoint tree"
+        );
+        assert!(
+            changes
+                .iter()
+                .all(|change| change.path.len() == 100 * 4 + 4 + file_name_len),
+            "the fixture's paths are the 419-byte review shape"
+        );
+        // A floor on the listing's size (each record is its path plus at
+        // least 33 bytes of fixed fields, a tab and a newline) must clear
+        // both the platform's 4 MiB capture bound and the former 64 MiB
+        // list bound: both constants sit below this fixture, and the
+        // streamed path returns every entry regardless.
+        let listed_floor: usize = changes.iter().map(|c| c.path.len() + 35).sum();
+        assert!(
+            listed_floor > 64 * 1024 * 1024,
+            "fixture must exceed the former 64 MiB bound to prove anything: {listed_floor}"
+        );
+        let spills: Vec<String> = fs::read_dir(ledger.path().join("checkpoints"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".checkpoint-diff-"))
+            .collect();
+        assert!(
+            spills.is_empty(),
+            "the raw-status spill must not outlive the call: {spills:?}"
+        );
+    }
+
+    /// The streamed parse keeps `str::lines` semantics: A/M/D/R/C, gitlink,
+    /// a C-quoted path, a noise line, an empty line, CRLF and a final
+    /// unterminated line, each asserted. This pins that
+    /// [`read_raw_status_changes`] and [`parse_raw_status_line`] share one
+    /// parse path — a divergence in shape turns red here first.
+    #[test]
+    fn raw_status_stream_parses_every_record_shape_and_skips_noise() {
+        let listing = concat!(
+            ":100644 100644 abc1234 def5678 M\tsrc/main.rs\n",
+            ":000000 100644 0000000 1111111 A\tadded.txt\n",
+            ":100644 000000 2222222 0000000 D\tgone.txt\n",
+            ":100644 100644 3333333 3333333 R100\told name.txt\tnew name.txt\n",
+            ":100644 100644 4444444 4444444 C075\tsrc.txt\tcopy.txt\n",
+            ":160000 160000 5555555 6666666 M\tvendor/sub\n",
+            ":100644 100644 7777777 8888888 M\t\"quoted\\ttab.txt\"\n",
+            "warning: not a record, no tab field\n",
+            "\n",
+            ":100644 100644 9999999 aaaaaaa M\tcrlf.txt\r\n",
+            ":100644 100644 bbbbbbb ccccccc M\tlast-without-newline.txt",
+        );
+        let changes = read_raw_status_changes(std::io::Cursor::new(listing)).unwrap();
+        let listed: Vec<(&str, &str)> = changes
+            .iter()
+            .map(|change| (change.path.as_str(), change.status.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("src/main.rs", "modified"),
+                ("added.txt", "added"),
+                ("gone.txt", "deleted"),
+                ("new name.txt", "renamed"),
+                ("copy.txt", "copied"),
+                ("vendor/sub", "gitlink"),
+                ("\"quoted\\ttab.txt\"", "modified"),
+                ("crlf.txt", "modified"),
+                ("last-without-newline.txt", "modified"),
+            ]
+        );
+
+        // A bare `\r` is not a terminator for `str::lines` unless it precedes
+        // `\n`: on a final unterminated line it stays part of the path.
+        let bare_cr = ":100644 100644 bbbbbbb ccccccc M\tbare-cr.txt\r";
+        let changes = read_raw_status_changes(std::io::Cursor::new(bare_cr)).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "bare-cr.txt\r");
+        assert_eq!(
+            bare_cr.lines().collect::<Vec<_>>(),
+            vec![bare_cr],
+            "the fixture's premise about std must hold"
+        );
+    }
+
+    /// The per-record bound caps resident memory without eating record
+    /// content: a record exactly at the bound parses as usual, one byte
+    /// over is an explicit error — never cut and parsed as a path with the
+    /// remainder resumed as a fresh record (that would be a silently
+    /// corrupted list).
+    #[test]
+    fn raw_status_record_past_the_bound_is_an_error_not_a_path() {
+        let header = ":100644 100644 abc1234 def5678 M\t";
+        let at_limit = format!(
+            "{header}{}\n",
+            "p".repeat(RAW_STATUS_RECORD_LIMIT - header.len() - 1)
+        );
+        let changes = read_raw_status_changes(std::io::Cursor::new(&at_limit)).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].status, "modified");
+        assert_eq!(
+            changes[0].path.len(),
+            RAW_STATUS_RECORD_LIMIT - header.len() - 1
+        );
+
+        let over_limit = format!(
+            "{header}{}\n:100644 100644 abc1234 def5678 M\tsmall.txt\n",
+            "p".repeat(RAW_STATUS_RECORD_LIMIT - header.len()),
+        );
+        let error = read_raw_status_changes(std::io::Cursor::new(&over_limit))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&RAW_STATUS_RECORD_LIMIT.to_string()),
+            "the error must name the record bound, got: {error}"
+        );
+    }
+
+    /// An I/O failure while reading the spill back must be an error, not a
+    /// shorter list: the entries read before the break, like an empty list,
+    /// would pass in the dialog for "nothing (or less) to roll back".
+    #[test]
+    fn raw_status_read_error_is_an_error_not_a_shorter_list() {
+        struct BreaksMidway {
+            data: Vec<u8>,
+            done: bool,
+        }
+        impl std::io::Read for BreaksMidway {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.done {
+                    return Err(std::io::Error::other("spill vanished mid-read"));
+                }
+                self.done = true;
+                let n = self.data.len().min(buf.len());
+                buf[..n].copy_from_slice(&self.data[..n]);
+                Ok(n)
+            }
+        }
+        let listing = b":100644 100644 abc1234 def5678 M\tfirst.txt\n".to_vec();
+        let error = read_raw_status_changes(std::io::BufReader::new(BreaksMidway {
+            data: listing,
+            done: false,
+        }))
+        .unwrap_err();
+        // `{:#}` renders the anyhow context chain; the cause is what proves
+        // the break surfaced rather than some unrelated failure.
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("spill vanished mid-read"),
+            "the underlying read error must surface, got: {error}"
+        );
+    }
+
+    /// A git failure (an unknown commit) must be an error rather than an
+    /// empty list, and the error must not carry the argv: it names the
+    /// spill path, and this error reaches the frontend via the command
+    /// layer.
+    #[test]
+    fn raw_status_git_failure_errors_without_naming_the_spill() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("raw-status-fail-ledger");
+        let exec = TestDir::new("raw-status-fail-exec");
+        exec.write("kept.txt", "v1\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let arguments = [
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--cached",
+            "--raw",
+            "-M",
+            "--no-color",
+            // A well-formed but unknown object: git exits non-zero.
+            "0123456789abcdef0123456789abcdef01234567",
+        ];
+        let error = git_raw_status_changes(&repo_dir(ledger.path()), exec.path(), &arguments)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("清单生成失败"),
+            "a git failure must surface as the list error, got: {error}"
+        );
+        assert!(
+            !error.contains(".checkpoint-diff-") && !error.contains("--output"),
+            "the error must not name the spill path or argv, got: {error}"
         );
     }
 
@@ -2680,7 +3129,7 @@ mod tests {
         // The spill file must not outlive the call: `.checkpoint-diff-*.tmp`
         // holds the UNFILTERED diff (secret sections included), so a leftover
         // is plaintext residue beside the shadow repo. Guards both the
-        // TempDiffFile drop and the spill's placement under the ledger (a
+        // DiffSpill drop and the spill's placement under the ledger (a
         // regression to a shared temp dir would also fail the read-dir here).
         let spills: Vec<String> = fs::read_dir(ledger.path().join("checkpoints"))
             .unwrap()

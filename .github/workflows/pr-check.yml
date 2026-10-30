@@ -2270,6 +2270,12 @@ jobs:
           cd pinvou3-app/src-tauri
           # 逐过滤器断言至少命中 1 个测试,避免测试改名后过滤器 0 匹配却 exit 0
           # 导致的静默空跑。
+          # PR #784 round 3: the tempfile-capture filters below make the
+          # capture tests actually run on Windows — the fixture modes re-exec
+          # this same exe and exercise the capture engine, the overflow kill
+          # paths and the positional readback on the platform whose native
+          # handle semantics motivated them (a green Windows job previously
+          # selected none of them).
           index=0
           for filter in \
             'platform::filesystem::tests::windows_' \
@@ -2332,6 +2338,12 @@ jobs:
             'features::sessions::' \
             'run_with_timeout_reaps_and_stays_bounded' \
             'reap_killed_child_' \
+            'platform::process::tests::output_capture_' \
+            'platform::process::tests::completed_process_cannot_bypass_output_capture_limit' \
+            'platform::process::tests::completed_parent_does_not_wait_for_descendant_capture_handles' \
+            'platform::process::tests::plain_output_limit_also_terminates_the_process_tree' \
+            'platform::process::tests::read_capture_' \
+            'platform::process::tests::writing_descendant_' \
             'features::browser::platform::windows::tests::' \
             'features::monitor::platform::windows_cpu::tests::' \
             'features::monitor::platform::windows_memory::tests::' \

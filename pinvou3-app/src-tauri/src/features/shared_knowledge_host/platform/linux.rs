@@ -332,10 +332,24 @@ fn privileged_helper<const N: usize>(
 }
 
 fn privileged_helper_execution_error(operation: &str, error: &str) -> String {
-    if error.contains(" timed out after ") {
-        format!(
-            "{operation}等待超时，已停止等待；系统操作可能仍在收尾，请刷新状态后再重试：{error}"
-        )
+    // 注意与 platform::process 的消息格式耦合（锚点子句在固定前缀里，先于
+    // 可能内嵌的捕获输出），格式由 platform 侧测试与本文件 fixture 钉住；
+    // 锚点用 platform 导出的常量匹配，不得私拷贝字面量。分型按锚点首次
+    // 出现位置取先者（同 connector 的 ProbeError::classify），助手输出里
+    // 含另一条锚点文本时不得翻转分型；超时与溢出错误都可能内嵌助手原始
+    // 输出，两者都不把 raw 错误串放进用户文案（spawn/wait 错误无捕获输
+    // 出，raw 文案只留给它们）。
+    let timeout_anchor = error.find(crate::platform::process::CAPTURE_TIMEOUT_ANCHOR);
+    let overflow_anchor = error.find(crate::platform::process::CAPTURE_OVERFLOW_ANCHOR);
+    let prefer_timeout = match (timeout_anchor, overflow_anchor) {
+        (Some(t), Some(o)) => t < o,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    if prefer_timeout {
+        format!("{operation}等待超时，已停止等待；系统操作可能仍在收尾，请刷新状态后再重试")
+    } else if overflow_anchor.is_some() {
+        format!("{operation}输出超出捕获上限，已终止该操作；请刷新状态后再重试")
     } else {
         format!("无法打开系统管理员确认：{error}")
     }
@@ -429,9 +443,59 @@ mod tests {
         assert!(
             privileged_helper_execution_error(
                 "恢复共享知识库",
-                "pkexec timed out after 3600s: subprocess tree termination requested"
+                // Fixture mirrors the real platform::process timeout format:
+                // the captured-output detail follows the "timed out after"
+                // clause.
+                "pkexec timed out after 3600s: no subprocess output"
             )
             .contains("等待超时")
         );
+        assert!(
+            privileged_helper_execution_error(
+                "恢复共享知识库",
+                // Overflow fixture: raw helper output is embedded after the
+                // fixed claim clause and must not reach the user message.
+                "pkexec output exceeded 4194304 bytes; subprocess tree termination requested: stdout:\nsudo: policy plugindata"
+            )
+            .contains("输出超出捕获上限")
+        );
+        // Windows 溢出后退出路径对已回收 root 产出**无 claim** 的溢出文案:
+        // 本边界对两条锚点路径都只回固定文案、不透传 raw,该形态钉住的是
+        // 归因仍按锚点、文案仍不含内嵌输出。
+        let overflow_no_claim = privileged_helper_execution_error(
+            "恢复共享知识库",
+            "pkexec output exceeded 4194304 bytes: stdout:\nsudo: policy plugindata",
+        );
+        assert!(
+            overflow_no_claim.contains("输出超出捕获上限"),
+            "{overflow_no_claim}"
+        );
+        assert!(
+            !overflow_no_claim.contains("plugindata"),
+            "{overflow_no_claim}"
+        );
+
+        // 超时错误同样内嵌捕获输出：固定前缀照旧，detail 不得进用户文案。
+        let timeout_with_capture = privileged_helper_execution_error(
+            "恢复共享知识库",
+            "pkexec timed out after 3600s: stdout:\nsudo: a very long helper transcript",
+        );
+        assert!(timeout_with_capture.contains("等待超时"));
+        assert!(
+            !timeout_with_capture.contains("helper transcript"),
+            "{timeout_with_capture}"
+        );
+
+        // 溢出错误的 detail 里即便含「 timed out after 」文本，也必须按
+        // 溢出分型（锚点首次出现位置取先者），不得误报超时。
+        let overflow_with_anchor = privileged_helper_execution_error(
+            "恢复共享知识库",
+            "pkexec output exceeded 4194304 bytes; subprocess tree termination requested: stdout:\nconnection timed out after 1s",
+        );
+        assert!(
+            overflow_with_anchor.contains("输出超出捕获上限"),
+            "{overflow_with_anchor}"
+        );
+        assert!(!overflow_with_anchor.contains("等待超时"));
     }
 }
