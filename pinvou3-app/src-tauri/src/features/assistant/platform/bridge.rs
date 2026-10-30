@@ -417,6 +417,29 @@ pub const SCHEDULED_TASK_UPDATE_TOOL: &str = "mcp_app-automations_update_schedul
 /// Scheduled Tasks panel.
 pub const SCHEDULED_TASK_DELETE_TOOL: &str = "mcp_app-automations_delete_scheduled_task";
 
+/// Per-turn approval posture carried into the send-op builder (tri-mode
+/// safety, S-1). The pool derives it from the session's `SerializableMode`
+/// (`Plan`/`Auto` → `(false, Suggest)`, `Yolo` → `(true, Bypass)`);
+/// scheduled and benchmark paths pass their own (byte-identical to the
+/// pre-tri-mode values) instead.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TurnApprovalPosture {
+    pub(crate) auto_approve: bool,
+    pub(crate) approval_mode: deepseek_tui::ApprovalMode,
+}
+
+impl TurnApprovalPosture {
+    pub(crate) fn from_serialized_mode(
+        mode: crate::core::mode_state::SerializableMode,
+    ) -> Self {
+        let (auto_approve, approval_mode) = mode.approval_params();
+        Self {
+            auto_approve,
+            approval_mode,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -3678,6 +3701,7 @@ impl Pinvou3Bridge {
         session_id: &str,
         content: String,
         mode: AppMode,
+        approval: TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<Op> {
@@ -3686,6 +3710,7 @@ impl Pinvou3Bridge {
             session_id,
             content,
             mode,
+            approval,
             persona_reminder,
             restrict_tools,
             self.build_hook_executor(),
@@ -3762,6 +3787,7 @@ impl Pinvou3Bridge {
         session_id: &str,
         content: String,
         mode: AppMode,
+        approval: TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         workspace: &std::path::Path,
@@ -3773,6 +3799,7 @@ impl Pinvou3Bridge {
             session_id,
             content,
             mode,
+            approval,
             persona_reminder,
             restrict_tools,
             self.build_multi_agent_hook_executor(workspace),
@@ -3821,6 +3848,7 @@ impl Pinvou3Bridge {
         session_id: &str,
         content: String,
         mode: AppMode,
+        approval: TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         hook_executor: Arc<HookExecutor>,
@@ -3835,9 +3863,15 @@ impl Pinvou3Bridge {
             expert_snapshot.is_some() || expert_candidates.is_empty(),
             "ordinary turns must not carry expert candidate lines",
         );
-        // CodeWhale 0.9.12 no longer represents bypass authority as an
-        // AppMode variant. Keep mode and approval as separate typed inputs.
-        let (auto_approve, approval_mode) = policy.approval_params();
+        // Tri-mode safety (S-1 landed): the approval posture arrives from the
+        // pool (which resolves it from the session's SerializableMode —
+        // Plan/Auto = (false, Suggest), Yolo = (true, Bypass)); scheduled and
+        // benchmark paths pass their own postures. Mode and approval stay
+        // separate typed inputs (CodeWhale 0.9.12 contract).
+        let TurnApprovalPosture {
+            auto_approve,
+            approval_mode,
+        } = approval;
         let (allow_shell, trust_mode) = match mode {
             // Agent/Yolo is the local single-user work mode; workspace trust
             // is fixed product semantics and must not be accidentally narrowed

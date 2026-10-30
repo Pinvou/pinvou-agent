@@ -260,12 +260,18 @@ pub async fn accept_plan(
         super::multiagent::MatchSource(&plan_markdown),
     );
     crate::features::assistant::timing::start_turn(&session_id);
+    // Tri-mode safety (S-1): execution after plan approval runs in the mode
+    // the session was in before entering Plan (fallback Auto) — the claim
+    // already flipped the store; carry its posture on the wire.
+    let accepted_mode = accepted_mode_state.mode;
+    let approval = crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(accepted_mode);
     if let Err(error) = pool
         .send_reserved_user_message(
             &session_id,
             prepared_delegation.content,
             user_display_message(display_content),
-            SerializableMode::Yolo.to_app_mode(),
+            accepted_mode.to_app_mode(),
+            approval,
             false,
             prepared_delegation.expert_snapshot,
             prepared_delegation.expert_candidates,

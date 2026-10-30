@@ -345,12 +345,17 @@ pub(crate) async fn chat_with_reservation(
         mode,
         full.len()
     );
+    // Tri-mode safety (S-1): the approval posture follows the session's
+    // SerializableMode — Plan/Auto = per-call approvals (false, Suggest),
+    // Yolo = full auto (true, Bypass).
+    let approval = crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(mode);
     match pool
         .send_reserved_user_message(
             &sid,
             full,
             user_display_message(display_content.clone()),
             mode.to_app_mode(),
+            approval,
             restrict_tools.unwrap_or(false),
             prepared_delegation.expert_snapshot,
             prepared_delegation.expert_candidates,
