@@ -26,7 +26,7 @@
 //!    Shutdown the engine + abort the forwarder).
 //!
 //! The pool itself is Tauri State; chat / cancel / submit_user_input etc. in
-//! `commands.rs` all route to the corresponding engine by `session_id`.
+//! `app/commands` all route to the corresponding engine by `session_id`.
 //!
 //! Concurrency note: runtime model preparation may access an external
 //! credential service and must not hold the global `entries` lock. Each
@@ -2018,8 +2018,9 @@ impl EnginePool {
         for (session_id, snapshot_last_active) in candidates {
             if self.evict_if_idle(&session_id, snapshot_last_active).await {
                 // No session id in the log: even a digested rendering trips
-                // the cleartext-logging scanner (its source is tainted and
-                // sanitizer-less, same as checkpoints.rs:556/564 on main).
+                // the cleartext-logging scanner (tainted source, no
+                // sanitizer — same constraint as the checkpoints module's
+                // stderr logs).
                 eprintln!(
                     "[engine_pool] a session idle for over {IDLE_EVICT_AFTER_SECS}s had its engine reclaimed (lazily respawned on the next message)"
                 );
@@ -3527,7 +3528,7 @@ impl EnginePool {
         .map_err(|error| anyhow::anyhow!("cancel shell task join failed: {error}"))?
     }
 
-    // ── Model hot switching (called by commands.rs) ─────────────────────
+    // ── Model hot switching (called by app/commands) ─────────────────────
 
     /// The default model for a new session: the (model name, id) of the
     /// global active model. Read fresh from disk (the GUI may have just
@@ -3656,7 +3657,7 @@ impl EnginePool {
         Ok(())
     }
 
-    // ── High-level routing (called by commands.rs) ──────────────────────
+    // ── High-level routing (called by app/commands) ──────────────────────
 
     /// Atomically switch the multi-agent resource policy: first occupy the
     /// same lifecycle slot as a send, then persist the state and reclaim the
