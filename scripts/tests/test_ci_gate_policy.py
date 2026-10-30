@@ -208,16 +208,20 @@ def _extract_install_contract_script_reads(contract_test):
         targets.append("pinvou3-app/scripts/" + "/".join(parts))
     # 非字面量首参 fail-closed:变量/模板串/表达式首参的 read(…) 主正则看不见,
     # 派生结果却因其他字面量读取仍非空——新增读取静默逃出路由锁(经变异验证
-    # fail-open)。枚举每个 read( 调用,首参不是引号字面量即红(宁可误红也不
-    # fail-open;注释里提及 read( 形态时同样须保持字面量示例形态)。
+    # fail-open)。枚举每个 read( 调用,首参必须是完整的引号字面量(整个表达式,
+    # 不只是开头引号):quote 打头的拼接首参(如 "scr"+"ipts")骗得过开头引号
+    # 检查,主正则却照旧看不见它,读取静默逃出路由锁(评审指出的残余 fail-open;
+    # 与下方其余参数的 fullmatch 同口径)。宁可误红也不 fail-open;注释里提及
+    # read( 形态时同样须保持字面量示例形态。
     for call_head in re.findall(
         r"(?<![A-Za-z0-9_$.])read\s*\(\s*([^,)]*)", contract_test, re.S
     ):
         first = call_head.strip()
-        if not first.startswith(("'", '"')):
+        if not re.fullmatch(r"'[^']*'|\"[^\"]*\"", first):
             raise AssertionError(
-                "read() 首参不是字符串字面量,路由锁无法派生其读取目标"
-                f"(改为字面量或同步本提取器): {first}"
+                "read() 首参必须是完整的字符串字面量(开头引号检查放得过拼接/"
+                "插值首参,读取会静默逃出路由锁,改为字面量或同步本提取器): "
+                f"{first}"
             )
     # scripts 首参调用的其余参数必须各自是完整的引号字面量(整个表达式,不只是
     # 开头引号):拼接/插值/计算后参会被主正则切成错误目标,而派生结果因其他
@@ -1031,7 +1035,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # 回归锁(round-12 review):变量/模板串首参的 read(…) 主正则看不见,
         # 派生结果却因其他字面量读取仍非空——新增读取静默逃出路由锁(经变异
         # 验证 fail-open)。首参非引号字面量必须抛错;真实测试源(全部字面量
-        # 首参)必须照常派生。
+        # 首参)必须照常派生。round-14 评审残余:quote 打头的拼接首参骗得过
+        # 开头引号检查,同样必须抛错。
         contract_test = (
             ROOT
             / "pinvou3-app/tests/connector_online_install_contract.test.js"
@@ -1049,6 +1054,11 @@ class CiGatePolicyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             _extract_install_contract_script_reads(
                 "const a = read(`scripts`, \"future-smoke.sh\");\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scr\" + \"ipts\", \"future-smoke.sh\");\n"
+                "const b = read(\"scripts\", \"tauri\", \"build.js\");\n"
             )
 
     def test_readme_claims_derivation_covers_template_literal_rows(self):
