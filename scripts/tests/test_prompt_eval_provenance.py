@@ -26,9 +26,43 @@ community = load("provenance_community", "eval-prompt-community.py")
 repair = load("provenance_repair", "eval-prompt-repair.py")
 
 
+def adapter_bindings():
+    return [(repair.cases, "subprocess"), (repair.cases.previous, "subprocess"),
+            (repair.cases.api, "VerifierSubprocess"), (repair.cases, "prepare"),
+            (community, "cases")]
+
+
+@contextlib.contextmanager
+def isolated_repair_adapter():
+    # The CLI installs process-wide grader bindings. A unit fixture must restore
+    # shared imports, including prepare, even when an assertion or runner fails.
+    with contextlib.ExitStack() as stack:
+        for module, name in adapter_bindings():
+            stack.enter_context(patch.object(module, name, getattr(module, name)))
+        stack.enter_context(patch.object(community, "extra_source_files",
+                                        getattr(community, "extra_source_files", ()), create=True))
+        repair.attach_cases(community)
+        yield
+
+
 class RepairGenerationTests(unittest.TestCase):
+    def test_adapter_bindings_restore_on_failure(self):
+        bindings = adapter_bindings()
+        originals = [getattr(module, name) for module, name in bindings]
+        extra_present = hasattr(community, "extra_source_files")
+        extra_original = getattr(community, "extra_source_files", None)
+        with self.assertRaisesRegex(RuntimeError, "fixture interruption"):
+            with isolated_repair_adapter():
+                self.assertIs(repair.cases.previous.subprocess, community.sandbox.VerifierSubprocess)
+                self.assertIsNot(repair.cases.prepare, originals[3])
+                raise RuntimeError("fixture interruption")
+        for (module, name), original in zip(bindings, originals):
+            self.assertIs(getattr(module, name), original, name)
+        self.assertEqual(hasattr(community, "extra_source_files"), extra_present)
+        self.assertIs(getattr(community, "extra_source_files", None), extra_original)
+
     def test_lateral_api_changes_revision_and_cannot_resume_after_manifest_deletion(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with isolated_repair_adapter(), tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "template"
             template.mkdir()
@@ -46,9 +80,10 @@ class RepairGenerationTests(unittest.TestCase):
             proxy = SimpleNamespace(settings=settings, wire_shapes=[], close=Mock())
             process = SimpleNamespace(stdout=json.dumps({"status": "Completed",
                                       "assistant_text": "100元折扣20%，应付80元"}), stderr="", returncode=0)
-            repair.attach_cases(community)
             with patch.object(repair.cases.api, "__file__", str(api)), \
                     patch.object(community.sandbox, "self_test"), \
+                    patch.object(community.sandbox.shutil, "which", return_value=None), \
+                    patch.object(community.sandbox, "command", return_value=[str(binary)]) as command, \
                     patch.object(community, "ModelProxy", return_value=proxy), \
                     patch.object(community.subprocess, "run", return_value=process), \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -71,6 +106,7 @@ class RepairGenerationTests(unittest.TestCase):
                 community.run(args)
                 second = json.loads((args.output / "manifest.json").read_text())
                 self.assertNotEqual(first["grader_revision"], second["grader_revision"])
+                self.assertGreater(command.call_count, 0)
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ metadata:
 2. **自己写完整 HTML**（含 `<!DOCTYPE html>`，内联 CSS、无外链），套上面设计系统。
 3. **自查一遍**（落盘前）：对照设计系统过一遍——有没有用了外链 CDN / 廉价渐变 / 错位 / 间距挤 / 配色或品牌色跑偏 / 溢出 / 死宽度 / 没 `</html>` 收尾？**有毛病就改掉再落盘。**
 4. `write` 用**相对路径**写到会话产物目录（如 `write(path="xxx.html", content=…)`，自动落本会话工作目录）。
-5. **调 `mcp_pinvou3_present_artifact` 上产物卡**（**path 传绝对路径**，title 用一句话说清这是什么作品；工具列表里没有它时先 `tool_search` 激活，返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到才直接交付成品并说明产物卡本轮不可用）。
+5. **调 `mcp_pinvou3_present_artifact` 上产物卡**（**path 传绝对路径**，title 用一句话说清这是什么作品；普通模式下呈现服务健康时，工具通常已直接可用。工具列表里没有它时先 `tool_search` 激活，返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到才直接交付成品并说明产物卡本轮不可用；代码模式仍遵守工具禁用边界）。
 6. 用户要改（换色/改文案/改尺寸/加图）→ 拿原内容重写一版。
 
 ## 用户传图（可选）

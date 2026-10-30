@@ -1,0 +1,115 @@
+{
+  "revision": "V2.4.5-review-r7",
+  "date": "2026-10-30T03:39:51.983988+00:00",
+  "author": "Codex (OpenAI) / GPT-6; exact variant/reasoning level unavailable",
+  "parent_before_revision": "58431e750b924e4e438e012b5bb52c9a04e2184c",
+  "review_id": 5707768247,
+  "review_url": "https://github.com/Pinvou/pinvou-agent/pull/799#pullrequestreview-5707768247",
+  "review_state_at_parent": "APPROVED",
+  "review_body_sha256": "7a790cb2c26f5dce40c9f62b690173256220531f01ef908d4aa1912134b208ad",
+  "foundation_gitlink": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c",
+  "scope": "Approved-review test-infrastructure minors, current evidence interpretation, localized presenter guidance and explicit separate follow-up. No new model run or retroactive score change.",
+  "disposition": {
+    "m1": "Stub namespace argv construction in the provider-free provenance fixture; keep real namespace acceptance opt-in. The unit test is now portable rather than skipped.",
+    "m2": "Scope every shared binding modified by the CLI adapter, including prepare and optional source list, to the fixture. Verify identity restoration even on exception and both test orders. The one-shot live CLI remains isolated; no live sandbox is disabled.",
+    "m3": "README separates 1284/1204 observed model_request receipts from proxy-side 1314/1209 attempts; the 30/5 gap cannot be reconstructed from published JSONL.",
+    "m4": "README explicitly describes reviewed/path-corrected as parallel children of calibrated.",
+    "m5": "PR description names the scheduling governing-document synchronization. Historical commit timing is retained.",
+    "m6": "PR-total net fingerprint additions independently counted: 8 APP plus 11 T3. The three APP entries were R6-only; total remains 283.",
+    "m7": "README names approved R6 checkpoint and labels 1aac7942c historical; follow-ups have their own source boundary.",
+    "m8": "README Scheduled-origin follow-up identifies the discarded origin instruction, source function and acceptance cases for a separate behavior PR.",
+    "m9": "Visual-design now states healthy ordinary-mode exposure and code-mode denial. Presenter receipt wording is limited to existence/size and handoff metadata. Harmless duplicate root resolver, permissive example unknown keys, semantic-vs-source contract pins and formatting-brittle source slices remain acknowledged nonblocking follow-ups, not new product changes.",
+    "policy": "Current evidence retained as reviewed. Maintainers decide future package thresholds/distribution; no new repository policy or LFS migration is inferred."
+  },
+  "python": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "scripts/tests",
+      "-q"
+    ],
+    "tests": 628,
+    "failed": 0,
+    "skipped": 0,
+    "namespace_and_pinned_digest_opt_ins": true,
+    "exit_code": 0,
+    "elapsed_seconds": 29.7,
+    "log_sha256": "45e6d36e97b6c6199779462e89cb6bb2d870e9278627bfd4d1d691c6db19a601"
+  },
+  "baseline_reproduction": {
+    "reviewed_source": "58431e750b924e4e438e012b5bb52c9a04e2184c",
+    "without_bwrap": "Original provenance test errors with Linux-bubblewrap requirement.",
+    "shared_binding_leak": "Original successful test leaves both subprocess aliases and prepare rebound; API verifier already aliases the sandbox class at this checkpoint.",
+    "after": "Same original driver succeeds with/without bwrap and reports zero changed bindings."
+  },
+  "order_controls": {
+    "tests_per_order": 20,
+    "orders": [
+      "provenance,retest,repair",
+      "repair,retest,provenance"
+    ],
+    "bwrap_unavailable": true,
+    "both_passed": true,
+    "includes_failure_cleanup_control": true,
+    "receipt_sha256": "3f6db737f030f553b804c91abe76664bbbf0f2706254821abbdb512b7ac99c89"
+  },
+  "fast_gates": [
+    {
+      "command": [
+        "bash",
+        "scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "log_sha256": "ee5826573a59ff7941f8caa73ffddc2680c7846443de5caf9bfd53ebdc8d2126"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "log_sha256": "de5bff130d75700fdd1ec335b56d6149a8f099986718a127dbac577fcb556ea3"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/verify-public-submodule.sh"
+      ],
+      "exit_code": 0,
+      "log_sha256": "31e9b79336c461476f79d4d0541ed20e84817b43e3b1d1d43db50312e548f75e"
+    }
+  ],
+  "fingerprints": {
+    "current_total": 283,
+    "base_total": 264,
+    "net_new_APP": 8,
+    "net_new_T3": 11
+  },
+  "distinct_foundation_guard_names": 255,
+  "preservation": {
+    "unchanged_prior_evidence_files": 127,
+    "all_previous_review_receipts_unchanged": true,
+    "whole_historical_prompt_snapshot_unchanged": true,
+    "receipt_sha256": "5d8c7c1c2b7b6d9d4423b7cc460d612c1b5b985dd9332f1f59fdfe094f66bf9b"
+  },
+  "source_manifest": "source-manifest-review-r7.json",
+  "source_count": 5,
+  "gitleaks": {
+    "version": "8.30.1",
+    "scope": "Nonempty introduced staged patch (about 15 KB), using unchanged repository configuration/allowlist. Final publication records repeat the scan after this receipt update and scan the one-new-commit range.",
+    "initial_staged_exit_code": 0,
+    "findings": 0
+  },
+  "self_review": "Fixture cleanup covers success/failure, real namespace controls remain enabled, portable unit fixture does not claim OS isolation coverage, score/proxy boundaries are explicit, prior evidence is immutable, localized Skill retains fallback and deny semantics, and the separate scheduled-origin behavior issue is tracked without scope expansion. No Rust/runtime/production grader, workflow, dependency, VERSION, lockfile or foundation source changes.",
+  "remaining": "Current head has no registered GitHub CI; local Linux ARM64 checks do not substitute for native ready-PR CI. Approval was on the named parent; re-review/approval policy on the follow-up is whatever GitHub actually reports. No new model, full app or native Windows/macOS run is claimed. No merge, queue, tag or protected-ref action.",
+  "documentation_checks": {
+    "source_hashes": 5,
+    "local_document_targets": 40,
+    "zh_en_r7_sections_identical": true,
+    "diff_check": true
+  }
+}

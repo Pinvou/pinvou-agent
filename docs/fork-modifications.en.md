@@ -562,3 +562,24 @@ Current verification and source boundaries are recorded in
 and [source-manifest-review-r6.json](prompt-optimization-evaluation/source-manifest-review-r6.json).
 Earlier receipts retain their original sources and execution counts. No fresh
 model run, per-request token measurement or native-platform CI result is implied.
+
+## PR799 approved-review follow-up R7 (2026-10-30)
+
+The provenance unit fixture stubs namespace command construction and restores
+shared grader imports, including the prepare wrapper, on success or failure.
+The real Linux namespace opt-in remains separate. Forward/reverse fixture order
+and a bwrap-unavailable control cover the two approved-review infrastructure nits.
+
+The evidence README distinguishes the approved R6 checkpoint from the historical
+replay, parallel scoring branches, receipt-derived request counts from proxy-side
+attempt totals, and the separate scheduled-origin follow-up. The visual-design
+Skill explicitly describes healthy ordinary-mode presenter exposure and retains
+the Code-mode deny boundary. The presenter receipt verifies existence/size and
+handoff, not content correctness or a visible native card.
+
+Foundation gitlink/inventory and the 283 fingerprint entries / 255 distinct
+foundation guard names are unchanged in R7. The PR's overall additions are 8 APP
+and 11 T3 entries; R6's three APP entries were a per-round count. Evidence-retention
+policy remains a maintainer decision; no new retention threshold is inferred.
+See [R7 verification](prompt-optimization-evaluation/review-r7-verification.json)
+and [R7 sources](prompt-optimization-evaluation/source-manifest-review-r7.json).
