@@ -1612,9 +1612,34 @@ test("forwards the incumbent rejoin flag on desktop re-registration", async (t) 
   // state instead of wiping it. Without the passthrough the flag would
   // default to false and the lease-churn bug (staged state wiped on every
   // desktop reconnect) would return on exactly this path.
+  //
+  // The re-registration path ALSO notifies the fresh desktop about the
+  // incumbent web client (notifyDesktopOfWeb with the same flag). Consume
+  // that notice too: its listener must attach before the register message
+  // goes out, so the helper-free open-then-register sequence is used here
+  // instead of registerDesktop (which settles the registered frame first).
   closeSocket(desktop.ws);
-  const reregistered = await registerDesktop(endpointId, accessToken, desktopSecret);
-  t.after(() => closeSocket(reregistered.ws));
-  assert.equal(reregistered.registered.web_client_connected, true);
-  assert.equal(reregistered.registered.web_rejoining, true);
+  const reregisteredSocket = await openSocket();
+  const reregistered = nextMessage(reregisteredSocket, "desktop_endpoint_registered");
+  const renotify = nextMessage(reregisteredSocket, "web_client_connected");
+  reregisteredSocket.send(JSON.stringify({
+    v: 2,
+    type: "desktop_endpoint_register",
+    endpoint_id: endpointId,
+    access_token: accessToken,
+    desktop_secret: desktopSecret,
+  }));
+  t.after(() => closeSocket(reregisteredSocket));
+  const reregisteredFrame = await reregistered;
+  assert.equal(reregisteredFrame.web_client_connected, true);
+  assert.equal(reregisteredFrame.web_rejoining, true);
+  assert.deepEqual(await renotify, {
+    v: 2,
+    type: "web_client_connected",
+    endpoint_id: endpointId,
+    lease_id: rejoined.joined.lease_id,
+    stream_epoch: null,
+    after_seq: 0,
+    web_rejoining: true,
+  });
 });
