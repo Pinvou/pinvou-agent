@@ -126,8 +126,8 @@ echo "[1] --version runs and is >= ${MIN_TRI} (dws SKILL.md cli_version floor; l
 # 含 CLI 名字的那一行、且位于名字之后取:同族 lark-cli 实测会在版本行*之前*打
 # 「a new version 1.0.96 is available」(feishu.rs 钉有该夹具),dws 的自动更新检查
 # 也写 stderr——「全文首个点分数字」会把更新号/代理 URL 里的 IP 读成本机版本,
-# 让低于下限的 CLI 误 PASS。上游文档的 DWS_NO_UPDATE_CHECK=1 顺手关掉更新检查
-# (CLI 不认该变量时无副作用)。只认点分版本号(比 connector_cli.rs parse_semver3
+# 让低于下限的 CLI 误 PASS。DWS_NO_UPDATE_CHECK=1 若 CLI 认该变量则顺手关掉
+# 更新检查(不认该变量时无副作用)。只认点分版本号(比 connector_cli.rs parse_semver3
 # 更严:那边按任意非数字切分,裸数字串如构建日期 20261027 会读成 20261027.0.0
 # 放行;此处点分要求天然排除),不足三段补 0,不用 sort -V。残余已知误读形状:
 # 名字在数字之前的行(如 `dws mirror 2.5.1 …`)仍会被当成版本行——真实 CLI 未观测
@@ -181,11 +181,14 @@ echo "[3] 服务域抽样探测(代表性子集,只读 --help;存在的服务 ex
 # 域=dws 顶层服务,--help 不触网、不需授权。用退出码判定——Cobra 对未知命令也会打
 # "Run '… --help' for usage." 行,grep Usage 会把不存在的域误报可用。只探顶层服务:
 # Cobra 对组命令下的未知叶子会直接打印组帮助并 exit 0,叶子级探测分不出真假。
+# 超时(124)检查先于错误词(与 wecom-smoke [3] 同款,那边有分支序钉):超时探测的
+# 部分输出可能恰含 not found/未知——先查词会把超时误标成「域不存在」硬失败;
+# 两者处置不同,超时要求的是重跑,标注不能误导。
 for d in doc drive calendar todo chat sheet aitable; do
   OUT="$(dws_run "$d" --help 2>&1)"; d_rc=$?
   if [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
-  elif echo "$OUT" | grep -Eqi 'unknown command|not found|不存在|未知'; then no "$d 域不存在(CLI 无此服务)"
   elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${DWS_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
+  elif echo "$OUT" | grep -Eqi 'unknown command|not found|不存在|未知'; then no "$d 域不存在(CLI 无此服务)"
   # SKIP 回显同样过 redact:未知退出码正是 CLI 重试/报错时可能把凭证带进输出的路径。
   else sk "$d 域结果未知(exit $d_rc): $(printf '%s' "$OUT" | redact | tr -d '\n' | head -c 60)"; fi
 done
@@ -198,8 +201,14 @@ if [ -n "${DINGTALK_TEST_DOC_ID:-}" ]; then
   # 必含 JSON 对象(dingtalk.rs 取首个 { 到末个 } 同口径),exit 0 的 usage/help
   # 倾倒不含 {,同样不判读成功。只查结构化错误键("error"/"success":false),
   # 不再扫正文错误词——正文是用户文档,主题恰好是「错误/权限」的合法文档会误红。
+  # 错误键只查 envelope、不查正文值:doc read 返回的 content 字段是文档原文
+  # (与 wecom-smoke [4] 同族同键),值为恰为 error 的合法文档会被裸 grep 误红。
+  # 正文值按 JSON 字符串语义(\" 不终止值)整体屏蔽后再查错误键;错误键仍在
+  # envelope 其余字段上生效。dws 的 --format json envelope 键名未在包内文档
+  # 钉死,此处按同族约定取 content——真实 CLI 若用别的键名,改这一行 sed 即可。
+  R_ENVELOPE="$(printf '%s' "$R" | sed -E 's/"content"[[:space:]]*:[[:space:]]*"(\\.|[^"\\])*"/"content":"[正文已屏蔽]"/g')"
   if [ "$r_rc" -eq 0 ] && [ -n "$R" ] && echo "$R" | grep -q '{' \
-    && ! echo "$R" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false'; then
+    && ! printf '%s\n' "$R_ENVELOPE" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false'; then
     ok "读到文档内容($(printf '%s' "$R" | wc -c | tr -d ' ') 字节)"
   else
     no "读文档失败(exit $r_rc): $(printf '%s' "$R" | redact | tr -d '\n' | head -c 160)"
