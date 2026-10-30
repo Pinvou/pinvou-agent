@@ -60,20 +60,30 @@ for (const [viewName, viewSource] of [['ChatView', chatView], ['CodexAcpView', c
 // typeof 守卫会静默退化成现状）。
 {
   const chatEvents = source('platform/tauri/bridge/chat-events.js');
-  assert.match(chatEvents, /const compactionShrank = phase === "done" &&/,
-    '收缩判定必须存在（before≠after 或计数缺失保守收缩）——删掉判定臂失效退化（r39 M1）');
-  // r40 M1：真实活动归属必须在 onSessionEvent 之前捕获——runSyncOnSession 对
-  // 后台会话临时把 state.activeSessionId 改写为事件 sid，handler 内分类恒为
-  // 换入值：后台压缩会强切用户前台视图（前台抢占回归），「后台臂」死代码。
-  assert.match(chatEvents, /listen\("chat:compaction", function \(e\) \{\s*const compactionSid = e\.payload && e\.payload\.session_id;[\s\S]{0,600}?const compactionOuterActive =\s*!!compactionSid && compactionSid === state\.activeSessionId;/,
-    '压缩事件必须在进入 onSessionEvent 之前捕获真实活动归属——handler 内分类读到的是换入后的 sid（r40 M1 前台抢占回归）');
-  assert.match(chatEvents, /const compactionActive = compactionOuterActive;/,
-    '活动臂分类必须消费派发时刻归属（重分类回 handler 内读取 = 回归 r40 M1）');
-  assert.match(chatEvents, /if \(compactionShrank && compactionActive &&\s*typeof invalidateSessionBuffer === "function" && typeof switchToSessionInternal === "function"\) \{\s*invalidateSessionBuffer\(compactionSid\);\s*Promise\.resolve\(switchToSessionInternal\(compactionSid, true, "compaction", \{ forceDurableLoad: true \}\)\)/,
-    '活动会话收缩臂必须先失效缓存再强制盘载重注水——同 id 快路径不重载、失效不重注水会留下空白时间线（r39 M1）');
-  assert.match(chatEvents, /else if \(compactionShrank && !compactionActive && typeof invalidateSessionBuffer === "function"\) \{\s*invalidateSessionBuffer\(compactionSid\);/,
-    '后台会话收缩臂必须仅失效缓存（绝不重载——切走前台视图是 r40 M1 的回归形状），否则切回走缓存快路径复用压缩前时间线（r39 M1）');
-  const chatEventsContext = tauriBridge.match(/installBridgeFeature\("chat-events", \{[\s\S]*?\n  \}\);/m);
+  assert.match(chatEvents, /const compactionShrank = prePhase === "done" &&/,
+    '收缩判定必须在换入域之前计算（r39 M1 / r41 minor 1）');
+  // r40 M1 + r41 minor 2（负向卫）：派发时刻归属捕获与缓存失效都必须位于
+  // onSessionEvent 换入域之前——runSyncOnSession 会在 handler 域内改写
+  // state.activeSessionId 并打断工作集数组引用。仅 presence 检查会把捕获
+  // 文本挪回 callback 内仍判绿（r40-M1 回归形状），这里锚定顺序本身。
+  const listenAt = chatEvents.indexOf('listen("chat:compaction"');
+  const sidAt = chatEvents.indexOf('const compactionSid =', listenAt);
+  const captureAt = chatEvents.indexOf('const compactionOuterActive =', listenAt);
+  const invalidateAt = chatEvents.indexOf('if (compactionResync) invalidateSessionBuffer(compactionSid);', listenAt);
+  const handlerAt = chatEvents.indexOf('onSessionEvent(e, function', listenAt);
+  assert.ok(
+    listenAt !== -1 && sidAt !== -1 && captureAt !== -1 && invalidateAt !== -1 && handlerAt !== -1,
+    '压缩事件处理的全部锚点必须存在（r40 M1 / r41 minor 1）',
+  );
+  assert.ok(
+    sidAt < captureAt && captureAt < invalidateAt && invalidateAt < handlerAt,
+    '归属捕获与缓存失效必须都在 onSessionEvent 换入域之前——失效挪回 handler 内即回归 r40 M1/r41 minor 1（换入域误清后台工作集引用、通知条进失联数组）',
+  );
+  assert.match(chatEvents, /const compactionResync = compactionShrank && !!compactionSid &&\s*typeof invalidateSessionBuffer === "function" &&\s*\(compactionOuterActive \? typeof switchToSessionInternal === "function" : true\);/,
+    '重同步判定必须在换入域前完成（活动臂要求重载原语在场；后台臂仅失效）');
+  assert.match(chatEvents, /if \(compactionResync && compactionOuterActive && typeof switchToSessionInternal === "function"\) \{\s*(?:\/\/[^\n]*\n\s*)?Promise\.resolve\(switchToSessionInternal\(compactionSid, true, "compaction", \{ forceDurableLoad: true \}\)\)/,
+    '前台收缩臂必须强制盘载重注水——同 id 快路径不重载、失效不重注水会留下空白时间线（r39 M1）');
+  const chatEventsContext = tauriBridge.match(/installBridgeFeature\("chat-events", \{[\s\S]*?\n {2}\}\);/m);
   assert.ok(chatEventsContext, 'chat-events feature 装配必须存在');
   assert.match(chatEventsContext[0], /invalidateSessionBuffer/,
     'chat-events context 必须注入 invalidateSessionBuffer（r39 M1——context 缺字段时 typeof 守卫静默退化）');

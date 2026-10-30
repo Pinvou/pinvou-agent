@@ -1237,6 +1237,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
 
   listen("chat:compaction", function (e) {
     const compactionSid = e.payload && e.payload.session_id;
+    const prePhase = e.payload && e.payload.phase;
+    const preBefore = Number(e.payload && e.payload.messages_before);
+    const preAfter = Number(e.payload && e.payload.messages_after);
     // r40 M1：真实活动归属必须在进入 onSessionEvent **之前**捕获——
     // runSyncOnSession 对后台会话会临时把 state.activeSessionId 改写为事件
     // sid（finally 恢复），handler 内读取到的恒为换入值。r39 首版在 handler
@@ -1246,6 +1249,19 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     // 不做重同步，只挂通知）。
     const compactionOuterActive =
       !!compactionSid && compactionSid === state.activeSessionId;
+    // r41 minor 1：缓存失效同样必须在换入域**之前**执行——
+    // invalidateSessionBuffer 的活动腿（清 live 工作集数组引用）在换入域内
+    // 会对后台 sid 误发：state.messages/chatItems 被清空后与工作集对象失联，
+    // 其后 addSystemItem 推入失联数组、finally 把失联内容持久化进孤儿对象，
+    // 通知条无处渲染。预换入失效让两条腿都自然走对：活动会话清 live 投影 +
+    // 换草稿，后台会话删缓存 + 换草稿。收缩判定也在此计算（payload 原样
+    // 可得），handler 只消费结果。
+    const compactionShrank = prePhase === "done" &&
+      (!Number.isFinite(preBefore) || !Number.isFinite(preAfter) || preBefore !== preAfter);
+    const compactionResync = compactionShrank && !!compactionSid &&
+      typeof invalidateSessionBuffer === "function" &&
+      (compactionOuterActive ? typeof switchToSessionInternal === "function" : true);
+    if (compactionResync) invalidateSessionBuffer(compactionSid);
     onSessionEvent(e, function () {
     if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
@@ -1262,36 +1278,27 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
-    // r39 M1：真实收缩（before≠after；计数缺失按收缩保守处理）后，缓存 buffer
-    // 停留在压缩前快照，而后端收缩钩子已把账本冻结在 kept 并作废截断分支的
-    // Turn 快照——调和门按时间线全量气泡数出的序号与账本计数失配（busy 容忍
-    // 恰差 1 盖不住压缩缺口），所有回退入口被诚实隐藏且无自愈路径。失效该会话
-    // 的缓存 buffer；前台会话（按 r40 M1 的派发时刻归属判定）立即强制盘载
+    // r39 M1：真实收缩后（缓存已在换入前失效——见上）前台会话立即强制盘载
     // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，chips
     // 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建时间线，先挂
-    // 会被吞掉）；后台会话仅失效再挂——事件为无缓存会话重建的空桩 buffer
-    // 不被切换快速路径采纳（见 switchToSessionInternal 的 loadedFromDisk
-    // 判定），切回自然落盘载。后台绝不重载：那会把用户前台视图切走（r40 M1）。
-    // 压缩多发生在 turn 途中（上下文超限自动触发）：盘载与在途流式并存时，
-    // 未决 token 积累在 pending 缓冲、随消息边界落在新 buffer 上，chat:done
-    // 对账兜底——宁可短暂闪动也不留陈旧全量时间线。
-    const compactionShrank = phase === "done" &&
-      (!Number.isFinite(before) || !Number.isFinite(after) || before !== after);
-    const compactionActive = compactionOuterActive;
+    // 会被吞掉）。后台会话不重载（r40 M1：那会把用户前台视图切走），照常
+    // 挂 done 通知条——r41 minor 1 如实：换入域内的挂载对后台是尽力而为
+    // （空桩 buffer 的通知不被切换快速路径采纳，切回盘载后消失），后台用户
+    // 以切回后的落盘时间线为准。压缩多发生在 turn 途中（上下文超限自动
+    // 触发）：盘载与在途流式并存时，未决 token 积累在 pending 缓冲、随消息
+    // 边界落在新 buffer 上，chat:done 对账兜底——宁可短暂闪动也不留陈旧
+    // 全量时间线。
     const compactionNotice = bt("compactDone") + auto + " " + msg;
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
     else if (phase === "done") {
-      if (compactionShrank && compactionActive &&
-          typeof invalidateSessionBuffer === "function" && typeof switchToSessionInternal === "function") {
-        invalidateSessionBuffer(compactionSid);
+      if (compactionResync && compactionOuterActive && typeof switchToSessionInternal === "function") {
+        // 前台臂：失效已在换入前完成，此处强制盘载重注水，通知条后补。
         Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
           .then(function () { addSystemItem(compactionNotice); })
           .catch(function () {});
-      } else if (compactionShrank && !compactionActive && typeof invalidateSessionBuffer === "function") {
-        invalidateSessionBuffer(compactionSid);
-        addSystemItem(compactionNotice);
       } else {
+        // 后台收缩（已预失效）/非收缩 done/原语缺席：照常挂通知。
         addSystemItem(compactionNotice);
       }
     }

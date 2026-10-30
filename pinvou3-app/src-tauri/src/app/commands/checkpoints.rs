@@ -556,6 +556,13 @@ pub async fn checkpoint_diff(
         "请稍后再读取变更预览",
     )
     .await?;
+    // r41 minor 13：先存在后 materialize——diff 对任意 charset 合法 id 都会
+    // 经 ensure_repo 落 create_dir_all + git init（读命令带目录创建副作用，
+    // 不可达自前端，raw IPC 可达）。find_checkpoint 只读 index（缺失索引 =
+    // 空集，不物化任何目录），不存在即在此拒绝，与 rewind/undo 的
+    // reserve_turn 先败同序。
+    checkpoints::find_checkpoint(&ledger, &checkpoint_id)
+        .map_err(|error| format!("检查点不存在或已淘汰: {error:#}"))?;
     tauri::async_runtime::spawn_blocking(move || {
         // `false`: the webview renders only the `changes` list (RewindChip);
         // generating the unified diff here would cost a full `git diff` per
@@ -1372,6 +1379,23 @@ pub async fn undo_last_rewind(
     )
     .await?;
 
+    // r41 M1：活暂记拒绝——undo 的旧记录清理曾无条件删暂记（step 3 的
+    // clear_pending_rewind），崩溃回退的 P1（真前态唯一在应用内指针）被未
+    // 消费孤儿化：对话还原到 #1 前态、文件停在崩溃 #2 目标树、sidecar 记录
+    // 绑 None，下一个消息把已应用树拍成新基线——代码/对话分叉永久且无声。
+    // 与 rewind 两个入口同款：活暂记在飞时先完成或撤销它（发消息对账重放、
+    // 重试同回退、删标记），undo 拒绝。拒绝保证走到 step 3 清理时磁盘上
+    // 已无暂记——旧清理的「防重放臂截断」理由（CLI 侧注释）因拒绝前置而
+    // 自然成立，不再以「清未消费暂记」为代价。
+    if let Some(pending) = checkpoints::peek_pending_rewind(&ledger)
+        .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
+    {
+        return Err(format!(
+            "存在未完成的回退暂记（目标 {}，保留 {} 轮）：请先完成或撤销该回退——发送一条新消息自动对账重放、重试同一回退，或撤销回退记录；反悔操作已在改动对话前拒绝",
+            pending.checkpoint_id, pending.keep_turns
+        ));
+    }
+
     // 预检先于 restore：可反悔条件全部满足才动代码，把「代码已反悔、对话未
     // 反悔」的窗口压到最小（restore_rewound_turns 落盘前还会在 mutation 锁内
     // 复核 turn 数 + revision 双条件）。
@@ -1705,23 +1729,36 @@ fn ",
             degraded_refusal_at < truncate_at,
             "降级腿拒绝必须先于截断（r40 M2：错位暂记不得被静默清掉）"
         );
-        // 2) undo_last_rewind：驱逐先于 restore 步骤 1。
+        // 2) undo_last_rewind：活暂记拒绝先于预检/清理；驱逐先于 restore 步骤 1。
+        //    r41 minor 3：边界必须含 "\n#["——undo_last_rewind 之后的下一个
+        //    顶层项是 #[cfg(test)]，旧标记集让函数体延伸到 EOF、锚点被自身
+        //    needle 字符串自洽满足（双删变异仍绿）。
         let undo_start = src
             .find("pub async fn undo_last_rewind(")
             .expect("undo_last_rewind must exist");
         let undo_rest = &src[undo_start..];
-        let undo_end = ["\npub ", "\nasync fn ", "\nfn "]
+        let undo_end = ["\npub ", "\nasync fn ", "\nfn ", "\n#["]
             .iter()
             .filter_map(|marker| undo_rest.find(marker))
             .min()
             .map_or(undo_rest.len(), |offset| offset);
         let undo_body = &undo_rest[..undo_end];
+        let pending_probe_at = undo_body
+            .find("checkpoints::peek_pending_rewind(&ledger)")
+            .expect("the undo live-pending refusal must exist (r41 M1)");
         let evict_at = undo_body
             .find("pool.evict(&session_id).await")
             .expect("the undo evict must exist");
         let restore_at = undo_body
             .find("checkpoints::prepare_restore(&ledger_prepare")
             .expect("the undo prepare call must exist");
+        let clear_at = undo_body
+            .find("checkpoints::clear_pending_rewind(&ledger)")
+            .expect("the undo pending cleanup must exist");
+        assert!(
+            pending_probe_at < clear_at,
+            "undo 的活暂记拒绝必须先于记录清理（r41 M1：清理只能在无活暂记时运行）"
+        );
         assert!(
             evict_at < restore_at,
             "undo 的引擎驱逐必须先于 restore（r39 minor 3：恢复窗口内的 idle persist 会写回回退态）"

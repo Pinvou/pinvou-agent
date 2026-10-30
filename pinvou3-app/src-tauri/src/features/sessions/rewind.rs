@@ -265,7 +265,14 @@ fn quarantine_and_continue(
         quarantine.display()
     );
     if let Err(error) = std::fs::rename(path, quarantine) {
-        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+        // r41 minor 6：隔离失败不得按空图继续——空图被下一次 persist 原子
+        // 落盘会整体覆盖仍在场的损坏文件，此前全部反悔记录（被截对话的唯一
+        // 保留）随之湮灭且无证据副本。fail-closed：如实报错，调用方拒绝本轮
+        // 操作，损坏文件原地保留待人工处理/重试隔离。
+        return Err(anyhow::Error::new(error).context(format!(
+            "隔离损坏的回退备份失败，拒绝按空记录继续（避免覆盖既有反悔记录）: {}",
+            path.display()
+        )));
     }
     Ok(HashMap::new())
 }

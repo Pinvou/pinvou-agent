@@ -157,10 +157,12 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   the whole headless host run, so other mutating scheduled commands fail fast
   with `scheduled_store_busy` (exit 1) instead of sitting silent behind a
   minutes-long hold; retry after the run finishes. A GUI turn or GUI
-  rewind takes none of these locks (the app's guards are process-local) — and an
+  rewind/undo takes none of these locks (the app's guards are process-local) — and an
   idle GUI engine still holding the pre-rewind transcript is equally invisible:
-  its next persist resurrects the rewound-away turns (r24 minor 5). Do not
-  rewind a session whose GUI Code session may be mid-turn or merely open.
+  its next persist resurrects the rewound-away turns (r24 minor 5); the same
+  hazard applies to `code checkpoints undo` (r41 minor 16 — the GUI evicts the
+  engine before its undo restore, the CLI structurally cannot). Do not
+  rewind/undo a session whose GUI Code session may be mid-turn or merely open.
   Deny-drift (r24 M7): work-mode (plain chat) sessions the GUI can now rewind
   are refused by `code checkpoints` (it still gates on native code sessions) —
   deny-only; a work-mode session has no CLI rewind entry at all. The aux-chat
@@ -173,10 +175,14 @@ cargo build --manifest-path pinvou-cli/Cargo.toml --bin pinvou
   rewound to the state before turn `keep+1` (so `rewind 0` clears all turns,
   and the CLI's turn axis is the native-code session's user-turn count, not a
   UI turn ordinal). A crashed rewind surfaces `pending_rewind_conflict` on a
-  different-boundary retry (r39 M2) and the shared refusal copy names the
-  per-surface remedy: desktop send reconciles automatically; headless has no
-  reconcile-on-send entry, so remove `pending_rewind.json` in the session's
-  checkpoint ledger root before retrying.
+  different-boundary retry (r39 M2) and on `checkpoints undo` (r41 M1 — undo
+  refuses while any pending is live, so its record cleanup can never orphan a
+  crashed rewind's rollback point). The refusal copies are surface-own but
+  consistent (r41 M4): both name the PENDING's real target and keep count, and
+  the remedies are per-surface — desktop send reconciles automatically; the
+  CLI's guided retry (`code checkpoints rewind` to the same checkpoint)
+  completes it; as a last resort remove `pending_rewind.json` in the
+  session's checkpoint ledger root before retrying.
   Old-binary skew (r33 minor 25): a pre-PR binary ignores `pending_rewind.json`
   and runs the stale sweep unconditionally mid-pending — the exact r26-M2 wedge;
   upgrade the binary before rewinding a session a newer GUI has touched. Similarly, `agent run
