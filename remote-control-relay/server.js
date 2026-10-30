@@ -366,12 +366,15 @@ function normalizeIp(value) {
     if (zoneAt !== -1 && !/^[0-9A-Za-z._-]+$/.test(zone)) return "";
     const expanded = expandIpv6(address);
     if (expanded === null) return "";
-    // A mapped spelling already reduced to plain IPv4; an IPv4 peer never
-    // reports a zone, so a suffix there has nothing to match.
-    if (!expanded.includes(":")) return expanded;
+    // A mapped spelling already reduced to plain IPv4, and an IPv4 peer never
+    // reports a zone: keeping the suffix would silently rename the entry to
+    // the bare dotted quad, so an inapplicable zone is rejected outright.
+    if (!expanded.includes(":")) return zoneAt === -1 ? expanded : "";
     return expanded + (zone === "" ? "" : `%${zone}`);
   }
-  if (zone !== "" || isIP(address) !== 4) return "";
+  // A dotted quad never carries a zone id: reject any % suffix, including a
+  // bare trailing one whose empty zone would slip past a zone-only check.
+  if (zoneAt !== -1 || isIP(address) !== 4) return "";
   return address;
 }
 
