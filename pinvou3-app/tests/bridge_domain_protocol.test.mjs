@@ -238,7 +238,13 @@ const expectedProtocolHashes = {
   // chat:transcript_committed guard clause in the same body (chat-events.js).
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
-  chat: '7fb864e1e16b91a481cfa72502df4a1aa9e4efba267d41b1595c9395cca0e47f',
+  // Recomputed for the r41 minor-1 pre-swap invalidation: the chat:compaction
+  // handler now computes the shrink/ownership classification AND drops the
+  // cached buffer BEFORE onSessionEvent (inside runSyncOnSession's swap the
+  // invalidation's active leg would clear a background working set's array
+  // references — notices pushed into detached arrays). Same event set, no new
+  // invoke/listen entries — only the captured handler body changed.
+  chat: '2b530f2e4995dcc9ed4c620f2faaba2218451a2c250dd40985f856410a3598db',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

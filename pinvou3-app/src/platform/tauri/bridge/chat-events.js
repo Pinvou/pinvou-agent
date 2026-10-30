@@ -61,6 +61,12 @@ function pinvouSharedtauriChatEvents() {
     const extractArtifactPaths = context.extractArtifactPaths;
     const fileMutationAction = context.fileMutationAction;
     const normalizedPath = context.normalizedPath;
+    // r39 M1：压缩收缩重同步原语（bridge.js 注入；desktop only）。失效原语与
+    // rewind 重载共用（bridge.sessions.invalidateSessionBuffer / 回退重载走的
+    // switchToSessionInternal forceDurableLoad 变体），缺席时（旧桥壳/异常装配）
+    // 退化为现状——不失效、调和门诚实隐藏，不新增崩溃面。
+    const invalidateSessionBuffer = context.invalidateSessionBuffer;
+    const switchToSessionInternal = context.switchToSessionInternal;
 
     // Stream text can arrive much faster than a WebView can paint. Publish at
     // most once per animation frame, with a bounded timer fallback for hidden
@@ -1229,8 +1235,35 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     }
   }); });
 
-  listen("chat:compaction", function (e) { onSessionEvent(e, function () {
-    if (e.payload && e.payload.session_id) turnUsageDirty[e.payload.session_id] = true; // 压缩轮 usage 含摘要请求
+  listen("chat:compaction", function (e) {
+    const compactionSid = e.payload && e.payload.session_id;
+    const prePhase = e.payload && e.payload.phase;
+    const preBefore = Number(e.payload && e.payload.messages_before);
+    const preAfter = Number(e.payload && e.payload.messages_after);
+    // r40 M1：真实活动归属必须在进入 onSessionEvent **之前**捕获——
+    // runSyncOnSession 对后台会话会临时把 state.activeSessionId 改写为事件
+    // sid（finally 恢复），handler 内读取到的恒为换入值。r39 首版在 handler
+    // 内分类：后台压缩恒走活动臂，把正在阅读/输入的用户强切到刚压缩完的
+    // 后台会话（前台抢占回归），「后台臂」沦为死代码。此捕获值语义：true
+    // 当且仅当被压缩会话在事件派发时刻就是前台会话（事件未携带 sid 的事件
+    // 不做重同步，只挂通知）。
+    const compactionOuterActive =
+      !!compactionSid && compactionSid === state.activeSessionId;
+    // r41 minor 1：缓存失效同样必须在换入域**之前**执行——
+    // invalidateSessionBuffer 的活动腿（清 live 工作集数组引用）在换入域内
+    // 会对后台 sid 误发：state.messages/chatItems 被清空后与工作集对象失联，
+    // 其后 addSystemItem 推入失联数组、finally 把失联内容持久化进孤儿对象，
+    // 通知条无处渲染。预换入失效让两条腿都自然走对：活动会话清 live 投影 +
+    // 换草稿，后台会话删缓存 + 换草稿。收缩判定也在此计算（payload 原样
+    // 可得），handler 只消费结果。
+    const compactionShrank = prePhase === "done" &&
+      (!Number.isFinite(preBefore) || !Number.isFinite(preAfter) || preBefore !== preAfter);
+    const compactionResync = compactionShrank && !!compactionSid &&
+      typeof invalidateSessionBuffer === "function" &&
+      (compactionOuterActive ? typeof switchToSessionInternal === "function" : true);
+    if (compactionResync) invalidateSessionBuffer(compactionSid);
+    onSessionEvent(e, function () {
+    if (compactionSid) turnUsageDirty[compactionSid] = true; // 压缩轮 usage 含摘要请求
     const phase = e.payload && e.payload.phase;
     const msg = e.payload && e.payload.message || "";
     const auto = e.payload && e.payload.auto ? bt("compactAuto") : "";
@@ -1245,9 +1278,30 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       before === after &&
       looksLikePruneOnly &&
       msg.indexOf("Emergency compaction") !== 0;
+    // r39 M1：真实收缩后（缓存已在换入前失效——见上）前台会话立即强制盘载
+    // 重注水：时间线按收缩后 transcript 重建，序号与账本计数重新对齐，chips
+    // 恢复渲染。done 通知条在重注水完成后补挂（盘载会整体重建时间线，先挂
+    // 会被吞掉）。后台会话不重载（r40 M1：那会把用户前台视图切走），照常
+    // 挂 done 通知条——r41 minor 1 如实：换入域内的挂载对后台是尽力而为
+    // （空桩 buffer 的通知不被切换快速路径采纳，切回盘载后消失），后台用户
+    // 以切回后的落盘时间线为准。压缩多发生在 turn 途中（上下文超限自动
+    // 触发）：盘载与在途流式并存时，未决 token 积累在 pending 缓冲、随消息
+    // 边界落在新 buffer 上，chat:done 对账兜底——宁可短暂闪动也不留陈旧
+    // 全量时间线。
+    const compactionNotice = bt("compactDone") + auto + " " + msg;
     if (phase === "start") addSystemItem(bt("compactStart") + auto + " " + msg, { compactId, compactPhase: "start" });
     else if (phase === "done" && pruneOnlyAuto) addOrMergePruneCompaction(compactId);
-    else if (phase === "done") addSystemItem(bt("compactDone") + auto + " " + msg);
+    else if (phase === "done") {
+      if (compactionResync && compactionOuterActive && typeof switchToSessionInternal === "function") {
+        // 前台臂：失效已在换入前完成，此处强制盘载重注水，通知条后补。
+        Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
+          .then(function () { addSystemItem(compactionNotice); })
+          .catch(function () {});
+      } else {
+        // 后台收缩（已预失效）/非收缩 done/原语缺席：照常挂通知。
+        addSystemItem(compactionNotice);
+      }
+    }
     else if (phase === "fail") addSystemItem(bt("compactFail") + auto + ": " + msg);
     else if (phase === "cancel") addSystemItem(bt("compactCancel") + auto + (msg ? ": " + msg : ""), { compactId, compactPhase: "cancel" });
   }); });

@@ -37,8 +37,11 @@
 //! Concurrency: `checkpoints rewind` / `undo` and `workspace checkout`
 //! serialize through a cross-process advisory lock under
 //! `~/.pinvou3/locks/` (CLI×CLI). The GUI's busy guards are process-local
-//! and cannot be observed from the CLI, so a GUI turn running on the same
-//! session is not detectable — see the `checkpoints rewind` doc comment.
+//! and cannot be observed from the CLI, so neither a GUI turn running on
+//! the same session nor an idle GUI engine holding the pre-rewind
+//! transcript is detectable — an idle engine's next persist resurrects the
+//! rewound-away turns (r24 minor 5); see the `checkpoints rewind` doc
+//! comment.
 //! - run/permissions/respond → stable honest errors: driving the ACP adapter
 //!   (async protocol client, adapter process, pending-permission store) is
 //!   bound to the product host; the pending-permission store is process-local
@@ -4149,8 +4152,10 @@ static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 /// guards (`is_turn_active`, `begin_execution_root_rewind`,
 /// `busy_peer_on_same_execution_root`) are process-local and therefore
 /// invisible to the CLI; this lock closes the CLI×CLI race, while a
-/// concurrent GUI turn on the same session remains undetectable here
-/// (documented in the command docs and `docs/pinvou-cli.md`).
+/// concurrent GUI turn — or an idle GUI engine still holding the
+/// pre-rewind transcript in memory, whose next persist resurrects the
+/// rewound-away turns — remains undetectable here (r24 minor 5;
+/// documented in the command docs and `docs/pinvou-cli.md`).
 /// Callers must keep the returned lock alive alongside its write guard.
 /// The two `{action}_lock: cannot create/open ...` closures both code
 /// mutation locks pass to `support::family_lock` (FnOnce there, so the pair
@@ -4211,7 +4216,8 @@ fn session_mutation_lock(
 /// per-session lock above cannot serialize those. This second lock (keyed by
 /// a hash of the canonical execution root) closes the preventable CLI×CLI
 /// half. The GUI-vs-CLI residual (a GUI turn or rewind in the desktop process
-/// takes no CLI lock) remains undetectable and stays documented.
+/// takes no CLI lock; an idle GUI engine's in-memory transcript persists over
+/// a CLI rewind, r24 minor 5) remains undetectable and stays documented.
 fn execution_root_lock(
     root: &Path,
     action: &str,
@@ -5632,6 +5638,12 @@ fn with_workspace_session(
 /// Native-code-session gate mirroring `resolve_code_session_roots` (the GUI's
 /// `SessionStore::is_code_session` is pub(crate); the persisted
 /// `session-agents.json` record carries the same mode flag).
+///
+/// r24 M7 deny-drift disclosure: work-mode (plain chat) sessions the GUI can
+/// now rewind are OUT of scope here — every `code checkpoints` command still
+/// gates on this native-code check and refuses them (deny-only). A work-mode
+/// session therefore has no CLI rewind entry at all; `docs/pinvou-cli.md`
+/// states the same.
 fn require_native_code_session(
     store: &SessionStore,
     agents: &SessionAgentStore,
@@ -5645,9 +5657,12 @@ fn require_native_code_session(
     // gives (`require_existing`).
     require_existing(store, session, "checkpoints")?;
     if !agents.is_code_session(session) {
+        // r29 minor 1: the refusal names the actual axes — work-mode sessions
+        // rewind in the GUI, aux sessions are out of scope everywhere.
         return Err(CliError::failed(format!(
-            "code_checkpoints_requires_native_code_session: only native code sessions support \
-             checkpoints (session {session})"
+            "code_checkpoints_requires_native_code_session: checkpoints via the CLI cover \
+             native code sessions only (session {session}); work-mode sessions rewind in the \
+             GUI, and aux sessions are out of scope everywhere"
         )));
     }
     // Round-41 review: pre-gate scheduled-run sessions here, BEFORE the
@@ -5819,9 +5834,11 @@ fn resolve_rewind_plan(
 /// sidecar backup, and invalidation of the abandoned branch snapshots.
 /// The GUI's busy gates (EnginePool turn reservation, execution-root mutex)
 /// only exist inside the running app; the cross-process advisory lock
-/// serializes CLI×CLI mutations, but a GUI turn running on the same session
-/// cannot be detected here — do not rewind a session whose GUI Code session
-/// may be mid-turn.
+/// serializes CLI×CLI mutations, but neither a GUI turn running on the
+/// same session nor an idle GUI engine holding the pre-rewind transcript
+/// (whose next persist resurrects the rewound-away turns, r24 minor 5)
+/// can be detected here — do not rewind a session whose GUI Code session
+/// may be mid-turn or merely open.
 fn checkpoints_rewind(
     session: &str,
     keep_turns: u32,
@@ -5842,26 +5859,46 @@ fn checkpoints_rewind(
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "rewind", session)?;
 
     // Stale Turn snapshot reconciliation (same source of truth as the GUI).
-    match store.rewound_turns_records(session) {
-        Ok(records) => {
-            for record in records {
-                let Some(cutoff) = parse_rfc3339_epoch_secs(&record.rewound_at) else {
-                    continue;
-                };
-                if let Err(error) = checkpoints::invalidate_stale_turn_checkpoints(
-                    &ledger,
-                    record.kept_turns,
-                    cutoff,
-                ) {
-                    note!(
-                        "[pinvou-cli] stale checkpoint reconciliation failed (cleanup only): {error:#}"
-                    );
-                }
-            }
+    // r26 M2: while a live pending exists, skip this sweep — the sidecar record
+    // is written BEFORE the truncation persists, so inside the persist-split
+    // window it is not evidence the truncation happened; invalidating on it
+    // deletes the pending's own target snapshot and wedges the guided retry
+    // (checkpoint_missing) that the error copy promises. The pending resolves
+    // first; the sweep runs on a later rewind.
+    match checkpoints::live_pending_rewind_present(&ledger) {
+        Ok(true) => {
+            note!(
+                "[pinvou-cli] live pending rewind present, skipping stale-Turn reconciliation this round"
+            );
         }
         Err(error) => {
-            note!("[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}");
+            note!(
+                "[pinvou-cli] reading the pending rewind failed (reconciliation skipped, fail-closed): {error:#}"
+            );
         }
+        Ok(false) => match store.rewound_turns_records(session) {
+            Ok(records) => {
+                for record in records {
+                    let Some(cutoff) = parse_rfc3339_epoch_secs(&record.rewound_at) else {
+                        continue;
+                    };
+                    if let Err(error) = checkpoints::invalidate_stale_turn_checkpoints(
+                        &ledger,
+                        record.kept_turns,
+                        cutoff,
+                    ) {
+                        note!(
+                            "[pinvou-cli] stale checkpoint reconciliation failed (cleanup only): {error:#}"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                note!(
+                    "[pinvou-cli] reading rewind backups failed (reconciliation skipped): {error:#}"
+                );
+            }
+        },
     }
 
     let entries = checkpoints::list_checkpoints(&ledger).map_err(|error| {
@@ -5881,12 +5918,75 @@ fn checkpoints_rewind(
     }
     let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
 
-    // 1) Restore the code snapshot (restore_checkpoint forces a PreRestore
-    //    rollback point and returns it for the undo bookkeeping).
-    let undo =
-        checkpoints::restore_checkpoint(&ledger, &execution, &checkpoint.id).map_err(|error| {
+    // 1) r19 M10: restore through the pending-rewind protocol (same as the
+    //    GUI): prepare (create/reuse PreRestore) → write pending → apply. A
+    //    crash between apply and truncate now leaves the pending marker, so a
+    //    guided retry reuses the FIRST PreRestore — the true pre-rewind state —
+    //    instead of snapshotting the already-restored tree and orphaning the
+    //    only copy of the pre-rewind state (undo would silently no-op).
+    let revision = pinvou3_lib::features::sessions::transcript_revision(&loaded.messages)
+        .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error:#}")))?;
+    // r39 M2: refuse a different-boundary rewind while a crashed pending is
+    // live, BEFORE prepare_restore. PreRestore registration can evict the
+    // pending's target at index-full (LRU orders by age and never consults
+    // pending_rewind.json), after which live_pending_rewind deletes the
+    // pending as target-missing and the r36-M2 overwrite guard reads "no
+    // pending" — the crashed boundary is silently overwritten and the new P2
+    // snapshots the half-applied worktree as its rollback point. Same boundary
+    // is not refused: that is the guided-retry path (the matcher reuses P1
+    // idempotently). Non-destructive peek; IO errors fail closed (refuse this
+    // rewind instead of reopening the eviction window).
+    // r41 M4: interpolate the PENDING's real target/keepTurns (peek is pub) —
+    // the previous copy interpolated the CURRENT attempt's target,
+    // misidentifying the hazard and prescribing "retry the same rewind" to an
+    // attempt that would hit this refusal forever; the remedy names an
+    // actionable headless step first.
+    let live_pending = checkpoints::peek_pending_rewind_target(&ledger).map_err(|error| {
+        crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+    })?;
+    if let Some((pending_target, pending_keep)) = live_pending {
+        if pending_target != checkpoint.id {
+            return Err(CliError::failed(format!(
+                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {} \
+                 (keeping {} turns) is still pending; complete or discard it first — \
+                 headless: retry `code checkpoints rewind` to that same checkpoint (the \
+                 guided retry completes it), or remove the pending marker in the session's \
+                 checkpoint ledger; desktop: sending a new message auto-reconciles it — \
+                 before rewinding to a different boundary ({})",
+                pending_target, pending_keep, checkpoint.id,
+            )));
+        }
+    }
+    // r25 MAJOR-3: the matcher's revision check is itself the commit
+    // discriminator - a completed rewind's truncate rewrites the transcript,
+    // so the revision always advances and the matcher returns None. The only
+    // bound-record shape that can reach Some (revision still matching) is the
+    // persist-split window (sidecar record written, truncation persist
+    // failed): reusing P1 there is exactly right (idempotent replay) - do not
+    // veto it as "completed, cleanup-only", or a fresh P2 snapshots the
+    // already-restored tree, orphaning P1 (the only copy of the true
+    // pre-rewind state) and silently no-op-ing undo.
+    let reuse =
+        checkpoints::matching_pending_pre_restore(&ledger, &checkpoint.id, keep_turns, &revision)
+            .map_err(|error| {
             crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
         })?;
+    let (target_meta, undo) =
+        checkpoints::prepare_restore(&ledger, &execution, &checkpoint.id, reuse.as_deref())
+            .map_err(|error| {
+                crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+            })?;
+    checkpoints::write_pending_rewind(&ledger, &checkpoint.id, keep_turns, &undo.id, &revision)
+        .map_err(|error| {
+            crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+        })?;
+    checkpoints::apply_restore(&ledger, &execution, &target_meta).map_err(|error| {
+        CliError::failed(format!(
+            "code checkpoints rewind: code may be partially restored (mixed state); retry the \
+             rewind to reuse rollback point {} and complete it: {error:#}",
+            undo.id
+        ))
+    })?;
     // 2) Truncate the transcript to the end of turn N (backs up the removed
     //    messages into the rewind sidecar, bound to the PreRestore id).
     let outcome = store
@@ -5895,10 +5995,14 @@ fn checkpoints_rewind(
             CliError::failed(format!(
                 "code checkpoints rewind: code was restored (original code kept in rollback point \
                  {}), but truncating the transcript failed: {error:#}. Retry the rewind to \
-                 complete the truncation",
-                undo.id
+                 complete the truncation (it will reuse rollback point {} and not snapshot the \
+                 restored tree)",
+                undo.id, undo.id
             ))
         })?;
+    // The rewind has fully landed (backup record bound to the PreRestore):
+    // clear the pending marker so later rewinds do not reuse it.
+    checkpoints::clear_pending_rewind(&ledger);
     // 3) Invalidate the abandoned branch snapshots (best-effort, same as GUI).
     if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns) {
         note!(
@@ -6056,16 +6160,52 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     let root = canonical_execution_root(&execution);
     let mut root_lock = execution_root_lock(&root, "undo")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "undo", session)?;
+    // r41 M1: mirror the GUI's live-pending refusal — undo's record cleanup
+    // used to clear a crashed rewind's pending unconsumed, orphaning the only
+    // in-app pointer to the true pre-crash tree (conversation restored to an
+    // older state, files at the crashed target, sidecar record binding None).
+    // Refuse until the pending is resolved (guided retry / desktop reconcile /
+    // marker removal); the post-undo clear then only ever runs with nothing
+    // live, which is exactly the replay-arm safety the r24-M2 clear wanted.
+    let live_pending = checkpoints::peek_pending_rewind_target(&ledger)
+        .map_err(|error| crate::support::store_error("code", "checkpoints undo", session, error))?;
+    if let Some((pending_target, pending_keep)) = live_pending {
+        return Err(CliError::failed(format!(
+            "pending_rewind_conflict: an unfinished rewind targeting checkpoint {} \
+             (keeping {} turns) is still pending; complete or discard it first — \
+             headless: retry `code checkpoints rewind` to that same checkpoint (the \
+             guided retry completes it), or remove the pending marker in the session's \
+             checkpoint ledger; desktop: sending a new message auto-reconciles it — \
+             before undoing an earlier rewind",
+            pending_target, pending_keep,
+        )));
+    }
     let info = resolve_undo_state(&store, &ledger, session)?.ok_or_else(|| {
+        // r29 minor 1: name the LRU-eviction cause the GUI copy names.
+        // r41 minor 16: also name the edited-transcript cause the GUI names
+        // (「对话被编辑」) — the cause lists must not diverge across surfaces.
         CliError::failed(
-            "no_undoable_rewind: nothing to undo (no rewind happened, or new turns were created \
-             after it)",
+            "no_undoable_rewind: nothing to undo (no rewind happened, new turns were created \
+             after it, the transcript was edited, or the rollback point was LRU-evicted)",
         )
     })?;
     let checkpoint_id = info.checkpoint_id.clone();
     if let Some(checkpoint_id) = checkpoint_id.as_deref() {
         checkpoints::restore_checkpoint(&ledger, &execution, checkpoint_id).map_err(|error| {
-            crate::support::store_error("code", "checkpoints undo", checkpoint_id, error)
+            // r27 M3 (r26 minor 10 copy leg-order fix): this arm restores
+            // code first and the conversation second - on failure here the
+            // conversation has NOT been restored (the truncation is still in
+            // place). r40 minor 8: the copy must not assert a state it
+            // cannot know — prepare itself may have failed with the tree
+            // untouched, and this leg cannot distinguish "nothing moved"
+            // from "partially restored" (the GUI rewind copy's honest
+            // "may be" phrasing, mirrored here).
+            CliError::failed(format!(
+                "code checkpoints undo: restoring code to rollback point {checkpoint_id} failed \
+                 before the conversation was restored (code may be partially restored — retrying \
+                 the undo re-runs the idempotent restore —, transcript still truncated); the \
+                 rollback point is kept and retrying the undo is safe: {error:#}"
+            ))
         })?;
     }
     let restored_messages = store.restore_rewound_turns(session).map_err(|error| {
@@ -6092,6 +6232,14 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
         let condition_broken = matches!(resolve_undo_state(&store, &ledger, session), Ok(None));
         undo_restore_failure(condition_broken, session, checkpoint_id.as_deref(), &detail)
     })?;
+    // r24 M2: a successful undo means the session state changed - invalidate
+    // any live pending (mirror of the GUI's explicit close-out in
+    // app/commands/checkpoints.rs). Otherwise the replay arm sees the sidecar
+    // record consumed by this undo (committed == false) and replays the FAILED
+    // rewind's older tree on the next GUI send, truncating the transcript
+    // below the state the undo just restored - silently superseding the
+    // user's undo.
+    checkpoints::clear_pending_rewind(&ledger);
     let value = serde_json::json!({
         "session": session,
         "restoredMessages": restored_messages,
@@ -6112,6 +6260,97 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
 mod tests {
     use super::*;
     use crate::ExitCode;
+
+    /// r27 M2 pin: the rewind prelude must skip the stale-Turn sweep while a
+    /// live pending exists (pending-first), probed through the pub bool
+    /// wrapper (PendingRewind is pub(crate); the CLI crate cannot name it).
+    /// Deleting the guard or reverting to the private-type match turns red.
+    #[test]
+    fn rewind_prelude_skips_stale_sweep_while_pending_live() {
+        let src = include_str!("code.rs");
+        let sweep_at = src
+            .find("rewound_turns_records(session)")
+            .expect("stale sweep must exist");
+        let guard_at = src
+            .find("live_pending_rewind_present(&ledger)")
+            .expect("the sweep must be gated on the live-pending probe (r27 M2)");
+        assert!(
+            guard_at < sweep_at,
+            "the rewind prelude must probe the live pending before the stale sweep (r27 M2)"
+        );
+    }
+
+    /// r28 M2(b) pin: the CLI rewind's reuse decision must not consult the
+    /// sidecar record (same as the GUI; a revision-matched pending can only
+    /// be the persist-split window per the r25 MAJOR-3 premise).
+    #[test]
+    fn cli_rewind_reuse_does_not_consult_the_sidecar_record() {
+        let src = include_str!("code.rs");
+        let fn_start = src
+            .find("fn checkpoints_rewind(")
+            .expect("checkpoints_rewind must exist");
+        let rest = &src[fn_start..];
+        let body_end = ["\nfn ", "\npub "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len());
+        let body = &rest[..body_end];
+        assert!(
+            !body.contains("latest_rewound_turns_record"),
+            "the CLI rewind reuse decision must not consult the sidecar record (r28 M2)"
+        );
+        // r31 MAJOR-1: the previous assert here was vacuous (the needle only
+        // occurred inside the assert literal). The NotFound/real-IO
+        // fail-closed split of matching_pending_pre_restore is now pinned
+        // behaviorally in the app crate (mod.rs, mirrored on the degraded
+        // twin); nothing falsifiable remains to assert at this layer.
+    }
+
+    /// r39 M2 pin: the CLI rewind must refuse a different-boundary rewind
+    /// while a crashed pending is live, BEFORE prepare_restore — the
+    /// PreRestore registration can evict the pending's target at index-full
+    /// (LRU never consults pending_rewind.json), after which
+    /// live_pending_rewind deletes the pending as target-missing and the
+    /// r36-M2 overwrite guard reads "no pending": the crashed boundary is
+    /// silently overwritten. Deleting the probe or moving it after
+    /// prepare_restore turns red; the non-destructive/fail-closed semantics
+    /// of the probe itself are pinned behaviorally in the app crate.
+    #[test]
+    fn cli_rewind_refuses_different_boundary_before_prepare() {
+        let src = include_str!("code.rs");
+        let fn_start = src
+            .find("fn checkpoints_rewind(")
+            .expect("checkpoints_rewind must exist");
+        let rest = &src[fn_start..];
+        let body_end = ["\nfn ", "\npub "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len());
+        let body = &rest[..body_end];
+        let prepare_at = body
+            .find("prepare_restore(&ledger")
+            .expect("prepare_restore call must exist");
+        let probe_at = body
+            .find("peek_pending_rewind_target(&ledger")
+            .expect("the different-boundary refusal must probe the live pending (r39 M2)");
+        assert!(
+            probe_at < prepare_at,
+            "the refusal must run before prepare_restore registers the evicting PreRestore (r39 M2)"
+        );
+        assert!(
+            body.contains("pending_rewind_conflict"),
+            "the refusal must carry the named error kind (r39 M2)"
+        );
+        // r41 M4: the refusal copy must interpolate the PENDING's fields, not
+        // the current attempt's target — the old copy named checkpoint X (the
+        // attempt) and advised "retry the same rewind", an unreachable loop.
+        assert!(
+            body.contains("pending.checkpoint_id, pending.keep_turns"),
+            "the refusal copy must interpolate the pending's real target/keepTurns (r41 M4)"
+        );
+    }
 
     /// Round-52 review: an unknown `--model-slot` slot used to parse fine
     /// and then be silently dropped — the add gate only checks that the

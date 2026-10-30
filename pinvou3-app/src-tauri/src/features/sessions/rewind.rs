@@ -92,16 +92,21 @@ const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 防止反复回退把 sidecar 写到无限大。
 const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
 
-/// 底座 compaction 摘要标记（`CodeWhale/crates/tui/src/core/engine/context.rs` 的
-/// `COMPACTION_SUMMARY_MARKER`，`pub(super)` 不可直接引用，app 侧用同一字面量匹配）。
+/// 底座 compaction 摘要标记（`CodeWhale/crates/tui/src/history_recognition.rs` 的
+/// `COMPACTION_SUMMARY_MARKER` / `LEGACY_COMPACTION_SUMMARY_MARKER`，`pub(crate)`
+/// 不可跨仓引用，app 侧用同一字面量匹配；r10 minor：此前只匹配 legacy 头，
+/// 新纪元压缩后「回退点之前发生过压缩」警告永不触发——现两条都匹配）。
 /// 漂移后果：底座改文案后这里不再命中，回退后不再提示「对话含压缩摘要残留」——
 /// 只是不提示，不影响回退正确性，可接受。
-const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
+const COMPACTION_SUMMARY_MARKERS: [&str; 2] = [
+    "Another language model started to solve this problem",
+    "Conversation Summary (Auto-Generated)",
+];
 
 /// 持久化的 system_prompt 是否含 compaction 摘要（截断不会触碰 system_prompt，
 /// 压缩摘要残留因此随回退一起保留，前端据此提示）。
 fn system_prompt_has_compaction_summary(system_prompt: Option<&String>) -> bool {
-    system_prompt.is_some_and(|text| text.contains(COMPACTION_SUMMARY_MARKER))
+    system_prompt.is_some_and(|text| COMPACTION_SUMMARY_MARKERS.iter().any(|m| text.contains(m)))
 }
 
 /// 一次回退被截段落的备份记录（追加进 `_rewound_turns.json`）。
@@ -260,7 +265,14 @@ fn quarantine_and_continue(
         quarantine.display()
     );
     if let Err(error) = std::fs::rename(path, quarantine) {
-        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+        // r41 minor 6：隔离失败不得按空图继续——空图被下一次 persist 原子
+        // 落盘会整体覆盖仍在场的损坏文件，此前全部反悔记录（被截对话的唯一
+        // 保留）随之湮灭且无证据副本。fail-closed：如实报错，调用方拒绝本轮
+        // 操作，损坏文件原地保留待人工处理/重试隔离。
+        return Err(anyhow::Error::new(error).context(format!(
+            "隔离损坏的回退备份失败，拒绝按空记录继续（避免覆盖既有反悔记录）: {}",
+            path.display()
+        )));
     }
     Ok(HashMap::new())
 }
@@ -314,7 +326,9 @@ impl SessionStore {
             .messages
             .iter()
             .enumerate()
-            .filter(|(_, message)| deepseek_tui::is_user_turn_prompt(message))
+            .filter(|(_, message)| {
+                crate::features::code_checkpoints::turns::counts_as_user_turn(message)
+            })
             .map(|(index, _)| index)
             .collect();
         let total_turns = turn_prompt_indices.len() as u32;
@@ -420,7 +434,9 @@ impl SessionStore {
         let current_turns = session
             .messages
             .iter()
-            .filter(|message| deepseek_tui::is_user_turn_prompt(message))
+            .filter(|message| {
+                crate::features::code_checkpoints::turns::counts_as_user_turn(message)
+            })
             .count() as u32;
         if current_turns != record.kept_turns {
             bail!(

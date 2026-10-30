@@ -159,6 +159,9 @@ function setModeLane(lane) { return pinvouSharedtauriInteraction().setModeLane(l
 function patchItemById(id, patch) { return pinvouSharedtauriInteraction().patchItemById(id, patch); }
   function pushUserEcho(text, persist) {
     const item = { type: "user", text, time: timeStr() };
+    // 前端-only 回显（persist=false，如卡片答案）不落盘、后端不计 turn——标记
+    // 供回退序号剔除（评审 M1：否则此后每个回退入口序号 +1、最后一个必失败）。
+    if (!persist) item.frontendEcho = true;
     addChatItem(item);
     let message = null;
     if (persist) {

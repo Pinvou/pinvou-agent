@@ -62,6 +62,7 @@ const hostFilePicker = readSource(
   'utf8',
 );
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
+const turnsSource = readSource(path.join(root, 'src-tauri', 'src', 'features', 'code_checkpoints', 'turns.rs'), 'utf8');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
@@ -180,6 +181,14 @@ for (const command of [
   // stash / checkout): desktop-only, the web client rejects them explicitly.
   'list_codex_workspace_branches',
   'checkout_codex_workspace_branch',
+  // r26 minor 7（反向 pin）：五个 checkpoint 命令必须留在桌面端——影子仓库
+  // 强制恢复对浏览器客户端不可辩护；分层防线（canInvoke + 命令层车道拒绝）
+  // 是现实，但策略文件的负向清单此前没有 pin，未来策略编辑会静默放行。
+  'list_checkpoints',
+  'checkpoint_diff',
+  'rewind_to_turn',
+  'rewind_undo_state',
+  'undo_last_rewind',
   // Clipboard reads are desktop-privacy surface: the paste fallback runs on
   // the desktop host only; web pastes go through the device-upload path.
   'paste_clipboard_image',
@@ -448,6 +457,80 @@ assert.match(remoteControlCommands,
 assert.match(commands,
   /pub async fn list_codex_acp_sessions_for_web[\s\S]*?acp_pool\.is_acp_metadata\(metadata\)[\s\S]*?redact_codex_session_list_item_for_web/,
   'the Web code-session list must contain ACP sessions only');
+// 评审 M1（PR668 车道 gate 调用点源码 pin）：谓词与共享缝已有 Rust 单测，但
+// 此前没有任何测试执行或钉住调用点本身——回滚头版语义（如把 !is_scheduled
+// 改回 is_code_session、删掉 web 车道的 ACP 拒绝）可全绿通过。以下 pin 让
+// 一行回滚在 JS 契约测试层必红。
+// 评审 r7 M3(c)：chat() 本体的 ACP gate 必须按调用点形状钉住（此前的 pin
+// 只锚定了常量定义，删掉 gate 本体可全绿通过）。
+assert.match(rustCommandBlock(commands, 'chat'),
+  /require_active_sid[\s\S]{0,80}if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'chat() must reject ACP sessions at its own entry (after require_active_sid) — deleting this gate must fail here (r15 M6: anchored to the entry shape, not the shared seam body)');
+// r11 M4：counts_as_user_turn 的接线点 pin——删掉 is_step_budget_notification
+// 排除（回滚为纯 is_user_turn_prompt）后序号双侧失配、调和门隐藏全部入口。
+// 快照序号的计数链走 create_turn_checkpoint → checkpoints::count_user_turns →
+// counts_as_user_turn；chat() 自身不直接调用——改为在 turns 源码上锚定排除条件
+// 本体（删掉 is_step_budget_notification 排除即回滚 r10-M3，必须变红）。
+assert.match(turnsSource,
+  /fn counts_as_user_turn[\s\S]{0,200}?is_user_turn_prompt\(message\) && !is_step_budget_notification\(message\)/,
+  'counts_as_user_turn 必须排除步数预算通知——删掉排除条件必须变红（r10-M3 接线锚）');
+
+assert.match(rustCommandBlock(commands, 'chat'),
+  /if !store\.is_scheduled_session\(&sid\)\.unwrap_or\(true\)\s*&& !crate::features::sessions::is_aux_session_id\(&sid\)\s*\{[\s\S]{0,1700}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'chat() must gate the pre-send snapshot on the alias-defeating !is_scheduled_session (r39 minor 6: one predicate with the refusal gates) and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
+assert.match(rustCommandBlock(commands, 'accept_plan'),
+  /if !store\.is_scheduled_session\(&session_id\)\.unwrap_or\(true\)\s*&& !crate::features::sessions::is_aux_session_id\(&session_id\)\s*\{[\s\S]{0,900}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  'accept_plan() must gate the pre-send snapshot on the alias-defeating !is_scheduled_session (r39 minor 6) and skip zero-tool aux side-chats — reverting either leg must fail here (window widened for the r23-M1 reconcile-gates block)');
+assert.match(rustCommandBlock(commands, 'accept_plan'),
+  /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'accept_plan() must reject ACP sessions with the shared lane-rejected literal');
+// r11 M4：apply 前 ACP 复检的接线点 pin（变异实证：删掉复检 filter 全套件绿）。
+// rewind_to_turn 与 undo_last_rewind 都必须在 restore 前调用共用复检函数。
+assert.match(rustCommandBlock(commands, 'rewind_to_turn'),
+  /reject_if_acp_peer_busy_before_apply\(/,
+  'rewind_to_turn 必须在 apply_restore 前调用 ACP 复检——删除该调用必须变红');
+assert.match(rustCommandBlock(commands, 'undo_last_rewind'),
+  /reject_if_acp_peer_busy_before_apply\(/,
+  'undo_last_rewind 必须在 restore 前调用 ACP 复检（r11 M3 对称修复）——删除该调用必须变红');
+assert.match(rustCommandBlock(remoteControlCommands, 'web_access_chat_for_session'),
+  /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'web_access_chat_for_session must reject ACP sessions before reserving a native-engine turn');
+// 评审 M2（PR668 同类 web 缝合）：edit_last_turn/compact_now 在 web 侧
+// access-policy allowlist 内而 EnginePool 不感知 ACP——edit_last_turn 的
+// reserve→truncate→resend 会为 ACP 会话 id 拉起原生引擎并改写历史；compact_now
+// 不拉起引擎（无存活引擎即失败），同门为纵深防御。与 chat() 同口径的门必须钉住。
+assert.match(rustCommandBlock(commands, 'compact_now'),
+  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'compact_now must reject ACP sessions before EnginePool rewrites their history');
+// r34 MAJOR-1 pin: compact_now must probe the execution-root rewind flag -
+// compaction's persist inside a rewind critical section resurrects the
+// truncated transcript (conversation restored, workspace still rewound).
+assert.match(rustCommandBlock(commands, 'compact_now'),
+  /is_execution_root_rewinding\(&roots\.execution\)/,
+  'compact_now must refuse while the execution root is being rewound (r34 MAJOR-1)');
+assert.match(rustCommandBlock(commands, 'edit_last_turn'),
+  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'edit_last_turn must reject ACP sessions before the reserve-truncate-resend path runs');
+// r23 变异实证补 pin：chat_with_reservation 缝内自查是「六站点」计数的一员，
+// 删除它其余外置门仍绿（纵深冗余）——接缝必须自持（评审 r9 minor 10）。
+// r37 M4: the previous pin sliced from chat()'s #[tauri::command] attribute
+// (chat_with_reservation is pub(crate), no attribute), so the slice contained
+// chat()'s own gate and stayed green even when the seam gate was deleted.
+// Anchor on the seam fn body with a bounded window instead.
+assert.match(
+  (() => {
+    const i = commands.indexOf('pub(crate) async fn chat_with_reservation(');
+    const body = commands.slice(i, commands.indexOf('\n}', i) + 2);
+    return body;
+  })(),
+  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'chat_with_reservation must self-check the ACP lane inside the seam (r37 M4: bounded-body pin, not the chat() slice)',
+);
+// r26 M4（body 声明的承接 pin）：归档列表的 ACP 过滤此前无任何测试引用、
+// 回退该行全绿——浏览器客户端会拿到 ACP 会话 id（launchpad 通道）。
+assert.match(rustCommandBlock(commands, 'web_access_list_archived_sessions'),
+  /sessions\.retain\(\|s\| !acp_pool\.is_acp\(&s\.metadata\.id\)\)/,
+  'web_access_list_archived_sessions must retain ACP sessions out of the archived list (r16 M2, r26 M4)');
 assert.match(remoteControlCommands,
   /struct WebSavedSession[\s\S]*?metadata: deepseek_tui::session_manager::SessionMetadata[\s\S]*?messages:[\s\S]*?artifacts:[\s\S]*?transcript_revision:/,
   'chunked Web session downloads must use an explicit browser field allowlist');

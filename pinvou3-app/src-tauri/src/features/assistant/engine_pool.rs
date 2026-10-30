@@ -3467,6 +3467,21 @@ impl EnginePool {
     }
 
     async fn evict_locked(&self, session_id: &str) {
+        self.evict_locked_inner(session_id, true).await;
+    }
+
+    /// r28 B1: evict a RESIDENT engine entry only. `evict`'s no-entry arm
+    /// invalidates an unsubmitted reservation — inside the snapshot prelude
+    /// that reservation is the caller's own (chat/accept_plan reserve before
+    /// the checkpoint prelude), and the restart-with-pending recovery flow has
+    /// no resident engine at all, so a plain evict there failed the user's
+    /// very next send. Absent entry = nothing to reclaim = no-op; presence is
+    /// decided under the same entries lock as evict_locked (no probe window).
+    pub async fn evict_if_present(&self, session_id: &str) {
+        self.evict_locked_inner(session_id, false).await;
+    }
+
+    async fn evict_locked_inner(&self, session_id: &str, invalidate_absent_reservation: bool) {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
         // Take the entry out of the map before matching: a temporary guard in
@@ -3480,11 +3495,13 @@ impl EnginePool {
                 self.reclaim_engine_entry(session_id, entry).await;
             }
             _ => {
-                if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
-                    // A caller can reserve before lazy spawn. Reclaim that Reserved
-                    // phase without fabricating chat:done; the guard's eventual send
-                    // will observe that its reservation was invalidated.
-                    lifecycle.invalidate_unsubmitted_reservation();
+                if invalidate_absent_reservation {
+                    if let Some(lifecycle) = self.turn_lifecycles.get(session_id) {
+                        // A caller can reserve before lazy spawn. Reclaim that Reserved
+                        // phase without fabricating chat:done; the guard's eventual send
+                        // will observe that its reservation was invalidated.
+                        lifecycle.invalidate_unsubmitted_reservation();
+                    }
                 }
             }
         }
@@ -3757,6 +3774,16 @@ impl EnginePool {
     /// M2). The pool sets it when compact_now enqueues `Op::CompactContext`
     /// (closing the enqueue→CompactionStarted window) and the forwarder's
     /// compaction terminal events clear it.
+    /// r34 MAJOR-1: read-only probe of the execution-root rewind flag. A
+    /// compaction enqueued inside a rewind critical section persists the
+    /// engine's in-memory pre-rewind history over the truncated transcript;
+    /// compact_now must probe this before enqueuing.
+    pub(crate) fn is_execution_root_rewinding(&self, execution_root: &std::path::Path) -> bool {
+        self.execution_root_rewind_flag(execution_root)
+            .lock()
+            .clone()
+    }
+
     pub(crate) fn set_compaction_in_flight(&self, session_id: &str, in_flight: bool) {
         if in_flight {
             // Round-35 M1: re-set refreshes the timestamp — the forwarder's
@@ -4097,9 +4124,17 @@ impl EnginePool {
     /// idle / not loaded → dispatch immediately, the scheduled-task wake
     /// precedent). Follows `send_user_message`'s shape minus its benchmark
     /// gate, and additionally checks out persona injection (a messaging wake
-    /// is a first-class turn, not a bare send); the session's own mode
+    /// is a first-class turn, not a bare send); the session's mode
     /// governs the turn. (Round-18 minor 20: the old "mirrors" wording
     /// overstate the equivalence.)
+    ///
+    /// r15 M4 disclosure: this dispatch path delivers a real turn to a
+    /// work-mode session but does NOT produce a snapshot — the snapshot
+    /// seam lives only at chat.rs and interaction.rs (accept_plan). The
+    /// delivered turn counts on the rewind surface (persisted user message
+    /// → counts_as_user_turn) but the UI can only offer a conversation-only
+    /// chip; workspace changes made during this turn cannot be rewound past.
+    /// Hooking this path into the snapshot seam is a tracked follow-up.
     pub(crate) async fn deliver_messaging_turn(
         &self,
         session_id: &str,

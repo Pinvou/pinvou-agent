@@ -330,11 +330,16 @@ pub async fn web_access_list_sessions(
 #[tauri::command]
 pub async fn web_access_list_archived_sessions(
     store: State<'_, SessionStore>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<super::sessions::HiddenSessionListItem>, String> {
     let mut sessions = web_session_result(
         WebSessionOperation::ListArchivedSessions,
         super::sessions::list_archived_sessions(store).await,
     )?;
+    // r16 M2: archived ACP session ids must not surface to web clients
+    // (the metadata redaction keeps the id verbatim; combined with the
+    // case-alias bypass this gives web clients a launchpad).
+    sessions.retain(|s| !acp_pool.is_acp(&s.metadata.id));
     for session in &mut sessions {
         session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
     }
@@ -814,6 +819,7 @@ pub async fn web_access_create_session_and_chat(
     restrict_tools: Option<bool>,
     manager: State<'_, RemoteControlManager>,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<WebSessionMetadata, String> {
@@ -829,6 +835,7 @@ pub async fn web_access_create_session_and_chat(
         restrict_tools,
         &manager,
         &pool,
+        &acp_pool,
         &store,
         &app,
     )
@@ -866,6 +873,7 @@ pub async fn web_access_chat(
     restrict_tools: Option<bool>,
     manager: State<'_, RemoteControlManager>,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<(), String> {
@@ -876,6 +884,7 @@ pub async fn web_access_chat(
         restrict_tools,
         &manager,
         &pool,
+        &acp_pool,
         &store,
         &app,
     )
@@ -1376,11 +1385,19 @@ async fn web_access_chat_for_session(
     restrict_tools: Option<bool>,
     manager: &RemoteControlManager,
     pool: &EnginePool,
+    acp_pool: &AcpPool,
     store: &SessionStore,
     app: &AppHandle,
 ) -> Result<(), String> {
     crate::features::sessions::validate_session_id(&session_id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
+    // ACP 会话拒绝（与桌面 chat()/accept_plan 入口同口径，共用文案常量）：web
+    // 侧列表不暴露 ACP 会话，但 id 形状合法即可直发——不经此门的话 ACP 会话
+    // 会被 chat_with_reservation 以原生引擎续跑并（车道门放宽后）对私有目录打
+    // 快照，与「ACP 车道维持排除」的不变量冲突。
+    if acp_pool.is_acp(&session_id) {
+        return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
+    }
     ensure_web_chat_session_supported(store.mode_state(&session_id).multi_agent)?;
     store
         .load(&session_id)
@@ -1407,6 +1424,7 @@ async fn web_access_chat_for_session(
                 restrict_tools,
                 turn_reservation,
                 pool,
+                acp_pool,
                 store,
                 app,
             ))
@@ -1863,11 +1881,14 @@ mod tests {
     }
 
     /// web_access_chat_for_session's session gates (validate_session_id →
-    /// multi_agent rejection → store.load existence) do not go through
-    /// list(). Auxiliary conversations (`aux-` prefixed) are filtered out of
-    /// the ordinary session list by store.list(), but all three gates pass
-    /// for them naturally — the WebUI auxChat domain (auxChatSend →
-    /// web_access_chat) is not hit by the visibility filtering.
+    /// ACP rejection → multi_agent rejection → store.load existence) do not
+    /// go through list(). Auxiliary conversations (`aux-` prefixed) are
+    /// filtered out of the ordinary session list by store.list(), but the
+    /// gates pass for them naturally — the WebUI auxChat domain (auxChatSend →
+    /// web_access_chat) is not hit by the visibility filtering. (The ACP gate
+    /// needs AcpPool, not constructible in this harness; its rejection of
+    /// external-agent ids is pinned by AcpPool::is_acp semantics — aux ids
+    /// explicitly return false there — and mirrors the desktop chat() entry.)
     #[test]
     fn web_chat_preflight_accepts_aux_sessions() {
         let _g = crate::platform::paths::tests::ENV_LOCK

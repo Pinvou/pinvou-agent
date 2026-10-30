@@ -200,7 +200,12 @@ const EXPECTED_SURFACE = {
   // window.PinvouBridgeMessages classic global and their parameters, so no
   // cluster literal gains a dep; userMessageDisplayText calls them as
   // base-local declarations.
-  sharedFnCount: 315,
+  // +1 (316): isCompactionCarrierBlocks — internal predicate of
+  // rerenderFromMessagesCore (work-mode rewind filter; references no deps,
+  // not exported from any cluster literal).
+  // +1 (317): isImageMarkerTextBlock — 仅被 rerenderFromMessagesCore 的
+  // user 分支调用（基座内局部名，不进 deps 集合），纯谓词、无副作用。
+  sharedFnCount: 317,
 };
 
 assert.equal(
