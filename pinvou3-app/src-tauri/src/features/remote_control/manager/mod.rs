@@ -1330,6 +1330,13 @@ impl RemoteControlManager {
         reservation: WebWorkspaceGrantReservation,
     ) -> bool {
         let mut inner = self.inner.lock();
+        let Some(allow_host_workspace) = inner
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.allow_host_workspace)
+        else {
+            return false;
+        };
         let Some(endpoint_id) = inner
             .endpoint
             .as_ref()
@@ -1337,9 +1344,12 @@ impl RemoteControlManager {
         else {
             return false;
         };
-        inner
-            .web_workspace_grants
-            .restore(reservation, &endpoint_id, Instant::now())
+        inner.web_workspace_grants.restore(
+            reservation,
+            &endpoint_id,
+            Instant::now(),
+            allow_host_workspace,
+        )
     }
 
     /// Keep parsed attachment contents on the desktop. The browser receives
@@ -5170,6 +5180,14 @@ mod tests {
             !body.contains("Self::settle_complete("),
             "no arm inside handle_rpc_request may bypass the settle funnels with a direct \
              Complete-cache write"
+        );
+        assert_eq!(
+            body.matches("rpc_cache.insert").count(),
+            1,
+            "the only direct rpc_cache.insert inside handle_rpc_request is the TTL sweep's \
+             placeholder write; an arm that keeps its settle call and adds an inline insert \
+             on the non-cacheable path would reintroduce replay poisoning while every \
+             existing pin stays green (Round-8 复审)"
         );
     }
 
