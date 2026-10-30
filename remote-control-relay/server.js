@@ -178,13 +178,17 @@ function send(ws, value) {
   // high-water-mark path below: one poisoned frame must terminate only this
   // socket, never crash the Relay process.
   let encoded;
+  let bytes;
   try {
     encoded = JSON.stringify(value);
+    // byteLength stays inside the same guard: stringify of JSON.parse output
+    // cannot be `undefined` today, but a future `send(ws, undefined)` call
+    // site would throw here and escape the destination-only cleanup.
+    bytes = Buffer.byteLength(encoded);
   } catch {
     terminateDestination(ws);
     return false;
   }
-  const bytes = Buffer.byteLength(encoded);
   if (bytes > WS_MAX_BUFFERED_BYTES
     || ws.bufferedAmount + bytes > WS_MAX_BUFFERED_BYTES) {
     terminateDestination(ws);
