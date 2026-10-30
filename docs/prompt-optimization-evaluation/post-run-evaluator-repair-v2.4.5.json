@@ -1,0 +1,75 @@
+{
+  "scope": "Post-run evaluator path repair only. No prompt/model/binary/settings change or new model call. Frozen raw/calibrated/reviewed records retained; all20 third-root trajectories audited uniformly.",
+  "sources": [
+    {
+      "path": "scripts/prompt_eval_repair_cases.py",
+      "measured_source": "frozen-evaluator-v2.4.5/prompt_eval_repair_cases.py",
+      "measured_sha256": "62bb953f7921fbb53db3a783730177ee024fc5c9a3f45098c08b90df10eaddf7",
+      "current_sha256": "086a2c76e166b53f29aa32f278d4328dadcf1cc574357acd89e9032c0da67f8e"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_repair.py",
+      "measured_source": "frozen-evaluator-v2.4.5/test_prompt_eval_repair.py",
+      "measured_sha256": "f0da5ef7f567f081a40fec338abc2ae0e1c24119a9e0a7a1dc1b7ac7ac451a83",
+      "current_sha256": "591adf660b6091d28ca9d3d00502aefb70f377f5d7600927b0e0af44f4dd0ec7"
+    }
+  ],
+  "controls": [
+    {
+      "name": "namespace-grader-without-fix",
+      "command": [
+        "python3",
+        "<control_python below>"
+      ],
+      "exit_code": 1,
+      "elapsed_secs": 0.164,
+      "summaries": [
+        "test_third_root_namespace_command_matches_controller_fixture (current_repair_controls.RepairControls.test_third_root_namespace_command_matches_controller_fixture) ... FAIL",
+        "Ran 1 test in 0.073s",
+        "FAILED (failures=1)"
+      ],
+      "expected_failure_confirmed": true
+    },
+    {
+      "name": "namespace-grader-fixed-controls",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_prompt_eval_repair.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.716,
+      "summaries": [
+        "Ran 10 tests in 0.641s",
+        "OK"
+      ]
+    },
+    {
+      "name": "python-full-after-grader-fix",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 23.594,
+      "summaries": [
+        "Ran 582 tests in 23.315s",
+        "OK (skipped=3)"
+      ]
+    }
+  ],
+  "control_python": "from pathlib import Path\nimport importlib.util,sys,unittest\nfrom unittest.mock import patch\nrepo=Path.cwd();sys.path.insert(0,str(repo/'scripts'))\ndef load(name,path):\n spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module\nmeasured=load('measured_repair_cases',repo/'docs/prompt-optimization-evaluation/frozen-evaluator-v2.4.5/prompt_eval_repair_cases.py')\ntests=load('current_repair_controls',repo/'scripts/tests/test_prompt_eval_repair.py')\nsuite=unittest.defaultTestLoader.loadTestsFromName('RepairControls.test_third_root_namespace_command_matches_controller_fixture',tests)\nassert suite.countTestCases()==1\nwith patch.object(tests.cases,'grade',measured.grade):result=unittest.TextTestRunner(verbosity=2).run(suite)\nsys.exit(0 if result.wasSuccessful() else 1)\n",
+  "author": "Codex (OpenAI)",
+  "model": "GPT-6 (exact variant/reasoning level unavailable)"
+}

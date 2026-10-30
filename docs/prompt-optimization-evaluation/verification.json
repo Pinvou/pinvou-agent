@@ -1,0 +1,28 @@
+{
+  "rust_tests": {
+    "passed": 241,
+    "failed": 0,
+    "suites": 14
+  },
+  "node_tests": {
+    "passed": 15,
+    "failed": 0
+  },
+  "python_audit_tests": {
+    "passed": 3,
+    "failed": 0
+  },
+  "guards": [
+    "architecture-guard.py",
+    "fork-guard.sh --fast",
+    "cargo fmt --check (three workspaces)",
+    "git diff --check (parent and CodeWhale)"
+  ],
+  "real_user_turns": {
+    "frozen_comparison": 104,
+    "scoped_followup": 24,
+    "development_probes": "excluded"
+  },
+  "worktree_branch": "codex/prompt-optimization",
+  "commit_state": "uncommitted parent and CodeWhale working-tree changes"
+}

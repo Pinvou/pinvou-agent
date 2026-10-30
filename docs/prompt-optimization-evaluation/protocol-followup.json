@@ -1,0 +1,46 @@
+{
+  "phase": "Scoped follow-up; not a new complete-suite score",
+  "turns": 24,
+  "plan_comparison": "two repeated Plan/execute families per model and variant, order reversed in second repetition",
+  "consult_browser": "two new-period follow-up turns per scenario per model, compared descriptively with retained V2.0 full-suite receipts",
+  "selection": "Reject expanded Plan reminder; retain V2.0 Plan bytes. Adopt browser host-fault stop rule and non-destructive Skill migration.",
+  "manifests": {
+    "pv20": {
+      "variant": "v2.0-plan-control",
+      "binary_sha256": "2f70090909c65cc486bd4897d4ec9a51b0fb6b251563c3e12eddcd026db45b1e",
+      "suite_sha256": "edf6caaae10bcbb3fa0d665b2cdc6bc6979635523169600d6ef3bef7c64bf2e2",
+      "model_ids": [
+        "ornith-local",
+        "glm-cloud"
+      ],
+      "scenarios": [
+        "plan_execute"
+      ],
+      "repetitions": 2,
+      "settings_policy": "configured models, isolated home, memory off, max_steps=40",
+      "host": "Pinvou windowless product runtime; GUI bridge mode/root inputs; no browser windows"
+    },
+    "pv21": {
+      "variant": "v2.1-followup",
+      "binary_sha256": "542d235949b3fe9ef88b4f522f64c2dc2f558b0d7958aa5eeec0a66d9fc284bc",
+      "suite_sha256": "edf6caaae10bcbb3fa0d665b2cdc6bc6979635523169600d6ef3bef7c64bf2e2",
+      "model_ids": [
+        "ornith-local",
+        "glm-cloud"
+      ],
+      "scenarios": [
+        "consult",
+        "plan_execute",
+        "browser_host_boundary"
+      ],
+      "repetitions": 2,
+      "settings_policy": "configured models, isolated home, memory off, max_steps=40",
+      "host": "Pinvou windowless product runtime; GUI bridge mode/root inputs; no browser windows"
+    }
+  },
+  "build_profile": "Cargo dev (unoptimized + debuginfo)",
+  "postprocessing": {
+    "scripts/audit-prompt-eval.py": "e4aa0254b436aa1569618bd2158fa738e258f4e5434bbd03df06b2bce9c42a91",
+    "scripts/summarize-prompt-eval.py": "7d24630df85500eeb00a2aa5bee64a0825d21c0a7b8d0f80221634e7e368da36"
+  }
+}

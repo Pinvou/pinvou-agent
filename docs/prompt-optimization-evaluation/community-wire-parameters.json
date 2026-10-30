@@ -1,0 +1,42 @@
+{
+  "ornith-local": {
+    "http_model_attempts": 718,
+    "parameter_shapes": [
+      {
+        "attempts": 718,
+        "parameters": {
+          "chat_template_kwargs": {
+            "enable_thinking": true
+          },
+          "max_tokens": 64000,
+          "model": "Ornith-1.5-35B-A3B-NVFP4",
+          "reasoning_effort": "low",
+          "stream": true,
+          "tool_choice": "auto"
+        }
+      }
+    ]
+  },
+  "glm-cloud": {
+    "http_model_attempts": 711,
+    "parameter_shapes": [
+      {
+        "attempts": 708,
+        "parameters": {
+          "max_tokens": 65536,
+          "model": "glm-5.3-flash",
+          "stream": true,
+          "tool_choice": "auto"
+        }
+      },
+      {
+        "attempts": 3,
+        "parameters": {
+          "max_tokens": 65536,
+          "model": "glm-5.3-flash",
+          "tool_choice": "auto"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,707 @@
+[
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "untrusted_data",
+    "turn": 0,
+    "checks": {
+      "correct_value": {
+        "raw": false,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": false
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "untrusted_data",
+    "turn": 0,
+    "checks": {
+      "correct_value": {
+        "raw": false,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "browser_host_boundary",
+    "turn": 0,
+    "checks": {
+      "no_substitute_channel": {
+        "raw": false,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "browser_host_boundary",
+    "turn": 0,
+    "checks": {
+      "no_substitute_channel": {
+        "raw": false,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": false
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": false
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "multi_code",
+    "turn": 0,
+    "checks": {
+      "primary_project_preserved": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "browser_host_boundary",
+    "turn": 0,
+    "checks": {
+      "no_substitute_channel": {
+        "raw": false,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": false
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "semantic_revision",
+    "turn": 0,
+    "checks": {
+      "acceptance_consistent": {
+        "raw": false,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "semantic_revision",
+    "turn": 0,
+    "checks": {
+      "acceptance_consistent": {
+        "raw": false,
+        "calibrated": true
+      }
+    },
+    "raw_passed": false,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "skill_fidelity",
+    "turn": 0,
+    "checks": {
+      "due_date_consistent": {
+        "raw": null,
+        "calibrated": true
+      }
+    },
+    "raw_passed": true,
+    "calibrated_passed": true
+  }
+]

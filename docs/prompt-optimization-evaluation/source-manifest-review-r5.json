@@ -1,0 +1,209 @@
+{
+  "revision": "V2.4.5-review-r5",
+  "scope": "Current fixes, delegated grading sources, guards and documentation only. Historical measured data, original frozen evaluator files and R1-R4 receipts remain unchanged. The old prompt snapshot receives only a supersession banner; its original body remains exact. Unchanged transitive sources use parent_before_revision plus the actual foundation gitlink.",
+  "parent_before_revision": "1aac7942ccf84f9c3147e26f1e59ed9ca8802b4c",
+  "foundation_head": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c",
+  "sources": [
+    {
+      "path": ".github/workflows/pr-check.yml",
+      "sha256": "97610b3357d61bd56e4db9aa8fcf7af2bb320cf58d355a761fa9a4bd2019c078"
+    },
+    {
+      "path": ".github/workflows/secret-scan.yml",
+      "sha256": "18a33ef5bae18186282e59bdedd5c2ed2ba8f73cc2b204b92bc7599371ad9515"
+    },
+    {
+      "path": ".gitleaks.toml",
+      "sha256": "a8dedcc4e11779b305c9988f6464fd541fd80252a88365ad686ef2defe7efffd"
+    },
+    {
+      "path": "CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md",
+      "sha256": "8d1c78a96745dc74056ca2fde6c8701afe76693fbd13ce4559d61f2c9a7f7d5a"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/core/engine.rs",
+      "sha256": "b200a5a8fc6615977d1d17c1093a76d0b5ba1cda8a4c8ceed2d25347013677e7"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/core/engine/tests.rs",
+      "sha256": "16a148dc45593dae21f7acd4fe5680860c5d9db3b853ad531a683a28d8ec89ba"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/core/engine/tool_catalog.rs",
+      "sha256": "fbc8ef95e521d6b8717b5b090080389c1420611041a9d08f9e6f5a9fa73e287c"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/skills/mod.rs",
+      "sha256": "56c56b1865c796e3059f2f2ad52fb7d558ec96d2b195404fcc7b6610406dcc0b"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/skills/system/tests.rs",
+      "sha256": "9ec7bba99cb5f57f19fecfcf69eb257a243a583dae7d33accd4cd5a81eb9168b"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/skills/tests.rs",
+      "sha256": "8e5d8813c0c954c7173495d6bb58db82d396782fa37c75528c449714515d07e4"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/tools/mcp_registry.rs",
+      "sha256": "3049fabb3f4bc8c951a44b92bb879b4d63e6ebfbed619525acdac98a9812d636"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/tools/skill.rs",
+      "sha256": "9578c6d011a27f6256cbe80d2fd6525c715ee1552b67bfcd5576bf774bf2c34c"
+    },
+    {
+      "path": "CodeWhale/crates/tui/src/tools/subagent/mod.rs",
+      "sha256": "4d88ac994baf82f21a7f49338d8020dcc50b2b1d99b212566f39be4acb05fcbd"
+    },
+    {
+      "path": "docs/fork-modifications.en.md",
+      "sha256": "c0abc48a3a6cb4688a07fa33be6d1a5443987eb03e5c90f8cb3e50fb3d9ff4dd"
+    },
+    {
+      "path": "docs/fork-modifications.md",
+      "sha256": "e90a3422aa0f54d030fceab8419811765cb25278e849543d2fe60a5d867ca5e9"
+    },
+    {
+      "path": "docs/fork-policy.en.md",
+      "sha256": "846f120a0480a03f52898b3b18f2b5d6d47b89e5ef43d6c17611e331795185fd"
+    },
+    {
+      "path": "docs/fork-policy.md",
+      "sha256": "50f8eb1e54b90b3450ecfa5a653b2ef4f71fe893a3eee361f1f74766dcd15eed"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/.gitattributes",
+      "sha256": "080cc5afc3968134de23e32100a89cc577602b59c01405db2900dae0f590da8e"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/README.md",
+      "sha256": "5739c2b7c6cf1f779808cd019b859c84c786be31017e8518c4b75a64a2e63e36"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/frozen-evaluator-v2.4.5/README.md",
+      "sha256": "e6ba6c917a79ea24ead93cc3501f34ee121bd432eb348738e84ca5838f5fb94c"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/prompts-v2.4.5.md",
+      "sha256": "f21c7a3f3876001ab586f4a22622ad816607cbec87c6803f9b30d17baa683c46"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/report-artifacts-v2.4.5.json",
+      "sha256": "28b32c9a0aae5e8769797424ad82732f1abb76fbec1183737397d8d4c77e3db8"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/report-v2.4.5.md",
+      "sha256": "deab1fab152aaf9e9eb9a3842437dd7f03e3fb69afee6a4fb62906f5ee5616c0"
+    },
+    {
+      "path": "docs/提示词优化-普通模式与代码模式.md",
+      "sha256": "5bbd689c1b78256be3a96e6afe871c115d4299a0d33f40b2b0387b789f4304b4"
+    },
+    {
+      "path": "pinvou-cli/crates/cli/examples/prompt_eval.rs",
+      "sha256": "cb7b02a69a9fd67f983829a6b9390c6d0374fdfbe33542dd9a78802967feced7"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/instructions-code.md",
+      "sha256": "70cd8a676723902cf4e98451059b9afa567374c54c4e178bdab474ae6e8580fe"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md",
+      "sha256": "c705511cfcee5addf9b84e963a72887e9b5b4c890b6d9fea67630d1f8d07bd92"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/instructions-work-bound.md",
+      "sha256": "482ed7f34056e7d632313e0679842b292d06fd4ae5af2582281ed24ceb1d5870"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md",
+      "sha256": "8ef9caac6199eb61041ceb2df85808363dc00a0e6d7ad34b9fd47fb62c01af20"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/mcp-servers/present_artifact_server.py",
+      "sha256": "0ffe84d66415915cd527ece18a87c53dc5cd6bc554aa111815552d25482dc53a"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/src/features/assistant/engine.rs",
+      "sha256": "1736e2c92807690b30de4867e430c7baa1bd4b871093482e0d8482bb97c8ac24"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs",
+      "sha256": "c8f499dcef54080f60e09b5aaa1b007488f1f8b95c2df420b52061b6c5d90171"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/src/features/assistant/session_policy.rs",
+      "sha256": "8aef4e5407c3428d11969e55158571acd24286ac966f285402336d83f695f74a"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs",
+      "sha256": "59641fea2b3521ae41bb562c5bee35ae40ff8a94eb69981a75352e71c395bea3"
+    },
+    {
+      "path": "pinvou3-app/tests/browser_core_protocol.test.mjs",
+      "sha256": "ee9750a8fd17c2ad24b808d57338ad103db7f56dcdd9624c0dc4c65c471a743b"
+    },
+    {
+      "path": "pinvou3-app/tests/canonical_tool_contract.test.js",
+      "sha256": "efb1459c98d41c34d3dc721a2c11ad4071b0c13147c541bcf6755cbe7e427355"
+    },
+    {
+      "path": "scripts/audit-prompt-eval.py",
+      "sha256": "184813b965a19b87832ec6c64d21bc053653e3820f7a70be8921de4c03e22132"
+    },
+    {
+      "path": "scripts/eval-prompt-community.py",
+      "sha256": "af2d30a4ece2891bde83e980b429ff2281113308e60e91d8124bbd862f99b956"
+    },
+    {
+      "path": "scripts/eval-prompt-suite.py",
+      "sha256": "5988cc3e1f2759eb315d9d6e9d7c1ad7cb715c7707e6c46d1f65e9e1fa625d01"
+    },
+    {
+      "path": "scripts/fork-guard.sh",
+      "sha256": "fd3ad99355fcd8fa26236f528f19089b785336368783a35f3bb60006aa2e8d8a"
+    },
+    {
+      "path": "scripts/prompt_eval_community_cases.py",
+      "sha256": "51ac60aef1596ef36f41793e1bf24682cdea57e7a08a3f11ab7fd080202e6f50"
+    },
+    {
+      "path": "scripts/prompt_eval_model_proxy.py",
+      "sha256": "9def9c289b2609dd288b53fa6ea53082a727fb691b3cefcae073134a31b2ba48"
+    },
+    {
+      "path": "scripts/prompt_eval_repair_cases.py",
+      "sha256": "12b218832d78a4993e4ad01a284de7929e931796ac0d9660c9faf62ff4a2ee83"
+    },
+    {
+      "path": "scripts/prompt_eval_retest_cases.py",
+      "sha256": "0188e1db6c601c026a68001ccca48bb1c1705e518dbfa132aa4103b5353171ed"
+    },
+    {
+      "path": "scripts/summarize-prompt-community.py",
+      "sha256": "d0c4bf3fa38523a9fb1236ba268c62345a3bd3d6eadae0417a6e1f986109d34b"
+    },
+    {
+      "path": "scripts/summarize-prompt-eval.py",
+      "sha256": "2cf48176035f0d2f1c62e74c39d6b8d5b5c0a2a70b2014e796d2e1645cf99b68"
+    },
+    {
+      "path": "scripts/tests/test_eval_digest_allowlist.py",
+      "sha256": "afda913266df50a2f666d3fb400860b481f2dd307e8f9d841e7e1f8cf568623b"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_community_stats.py",
+      "sha256": "1efe084fa115df8bf41856d70e45cee30be30979bd437fe2bff0feb796172a87"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_namespace.py",
+      "sha256": "0a1823b9b7a596575941b78b634cd88f95f0f8eeb2115723712eb99b47afc370"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_oracles.py",
+      "sha256": "e56bb24e50360b60858e908b52957345e1fc766ea55ac24ec5f0c8e01f2d1d17"
+    }
+  ],
+  "source_schema": "Path and SHA-256 entries, like the existing report artifact index; these values are file-content digests."
+}

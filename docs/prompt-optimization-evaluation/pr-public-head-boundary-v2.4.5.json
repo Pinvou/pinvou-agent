@@ -1,0 +1,11 @@
+{
+  "command": [
+    "bash",
+    "scripts/verify-public-submodule.sh"
+  ],
+  "exit_code": 1,
+  "expected_pending_dependency_failure": true,
+  "reason": "Parent gitlink is CodeWhale#125 review commit; protected maintenance still points to the base. Verifier is unchanged.",
+  "output": "错误：pinvou3-clean 为 6e1ee88ee8f8ea28eec7be3d8add3a591468412a，父仓 gitlink 为 50a42c38edf81e45019403d33ac05ef87da77555",
+  "transport": "Git URL rewrite uses SSH for the same GitHub repository because this host TLS transport fails; predicates are unchanged."
+}

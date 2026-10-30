@@ -1,0 +1,460 @@
+{
+  "parent_base": "0041ba29d7aae206703a5393b4d4511a58e120c9",
+  "codewhale_base": "6e1ee88ee8f8ea28eec7be3d8add3a591468412a",
+  "scope": "Deterministic integration checks; live-model outcome evidence is separate.",
+  "gates": [
+    {
+      "name": "fmt-app",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 1.672,
+      "summaries": []
+    },
+    {
+      "name": "fmt-cli",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou-cli/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 7.742,
+      "summaries": []
+    },
+    {
+      "name": "fmt-foundation",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "CodeWhale/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 5.236,
+      "summaries": []
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 2.071,
+      "summaries": []
+    },
+    {
+      "name": "fork-fast",
+      "command": [
+        "bash",
+        "scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.365,
+      "summaries": []
+    },
+    {
+      "name": "python-full",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 22.882,
+      "summaries": [
+        "Ran 551 tests in 22.584s",
+        "OK"
+      ]
+    },
+    {
+      "name": "node-full-final",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "test"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 108.999,
+      "summaries": [
+        "# tests 1436",
+        "# pass 1421",
+        "# fail 0",
+        "# skipped 15"
+      ]
+    },
+    {
+      "name": "ui-lint",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "lint:ui"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 48.474,
+      "summaries": []
+    },
+    {
+      "name": "node-lint",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "lint:node"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 5.58,
+      "summaries": []
+    },
+    {
+      "name": "ui-build",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "build:ui"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 23.338,
+      "summaries": []
+    },
+    {
+      "name": "web-build",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "build:web"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 10.648,
+      "summaries": []
+    },
+    {
+      "name": "app-full-compile",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 520.053,
+      "summaries": []
+    },
+    {
+      "name": "app-full",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 186.875,
+      "summaries": [
+        "test result: ok. 3734 passed; 0 failed; 18 ignored; 0 measured; 0 filtered out; finished in 186.24s"
+      ]
+    },
+    {
+      "name": "foundation-workspace-all-features-compile",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "CodeWhale/Cargo.toml",
+        "--workspace",
+        "--all-features",
+        "--locked",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 211.521,
+      "summaries": []
+    },
+    {
+      "name": "foundation-workspace-all-features",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "CodeWhale/Cargo.toml",
+        "--workspace",
+        "--all-features",
+        "--locked",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 1372.543,
+      "summaries": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 354 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.56s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.15s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.59s",
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s",
+        "test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 644 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.36s",
+        "test result: ok. 117 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+        "test result: ok. 125 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.98s",
+        "test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s",
+        "test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.43s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 56 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 61 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.06s",
+        "test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.95s",
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s",
+        "test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.06s",
+        "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12300 filtered out; finished in 0.00s",
+        "test result: ok. 12287 passed; 0 failed; 13 ignored; 0 measured; 0 filtered out; finished in 416.23s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 271.89s",
+        "test result: ok. 265 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 640.80s",
+        "test result: ok. 217 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+        "test result: ok. 73 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.11s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "cli-workspace-lib-compile",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou-cli/Cargo.toml",
+        "--workspace",
+        "--lib",
+        "--locked",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 77.292,
+      "summaries": []
+    },
+    {
+      "name": "cli-workspace-lib",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou-cli/Cargo.toml",
+        "--workspace",
+        "--lib",
+        "--locked",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 5.383,
+      "summaries": [
+        "test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+        "test result: ok. 231 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.17s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "knowledge-lib-compile",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou-knowledge/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--no-run"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 51.352,
+      "summaries": []
+    },
+    {
+      "name": "knowledge-lib",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou-knowledge/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 2.521,
+      "summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 119 filtered out; finished in 0.02s",
+        "test result: ok. 120 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.33s"
+      ]
+    },
+    {
+      "name": "foundation-clippy-workspace-all-features",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "CodeWhale/Cargo.toml",
+        "--workspace",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "clippy::uninlined_format_args",
+        "-A",
+        "clippy::too_many_arguments",
+        "-A",
+        "clippy::unnecessary_map_or",
+        "-A",
+        "clippy::collapsible_if",
+        "-A",
+        "clippy::assertions_on_constants"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 87.381,
+      "summaries": []
+    },
+    {
+      "name": "app-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 281.045,
+      "summaries": []
+    },
+    {
+      "name": "parent-diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.064,
+      "summaries": []
+    },
+    {
+      "name": "foundation-diff",
+      "command": [
+        "git",
+        "-C",
+        "CodeWhale",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.064,
+      "summaries": []
+    }
+  ],
+  "user_journey": {
+    "command": [
+      "bash",
+      "scripts/run-user-journey-tests.sh"
+    ],
+    "exit_code": 0,
+    "elapsed_secs": 273.062,
+    "summaries": [
+      "Ran 552 tests in 22.454s",
+      "OK",
+      "ALL USER JOURNEY SMOKES PASSED"
+    ]
+  },
+  "after_harness_repair": {
+    "python_tests_run": 553,
+    "passed": 550,
+    "skipped": 3,
+    "failures": 0,
+    "extension_interface_and_grader_controls": 8,
+    "exit_code": 0
+  },
+  "limitations": [
+    "Native Windows and macOS checks not executed on this Linux host.",
+    "Journey browser tests are mocked; healthy native model/browser/card visuals are not validated.",
+    "The recorded Foundation Clippy command uses repository-documented allowances.",
+    "Python environment skips and optional journey flags are retained; passing checks do not imply skipped E2E paths were run."
+  ],
+  "author": "Codex (OpenAI)",
+  "model": "GPT-6; exact variant/reasoning level unavailable"
+}

@@ -1,0 +1,403 @@
+{
+  "revision": "V2.4.5-review-r1",
+  "author": "Codex (OpenAI)",
+  "model": "GPT-6; exact variant/reasoning level unavailable",
+  "reviewed_parent_head": "25969fe79a062c258aa987f8e9c18c40afe831be",
+  "reviewed_foundation_head": "50a42c38edf81e45019403d33ac05ef87da77555",
+  "parent_review": "https://github.com/Pinvou/pinvou-agent/pull/799#pullrequestreview-5664886926",
+  "foundation_review": "https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5664837447",
+  "model_measurement_scope": "Historical V2.4.5 frozen sources only. No new live-model result is claimed for review wording changes.",
+  "dispositions": [
+    {
+      "id": "foundation-major-1",
+      "action": "Restore one mechanism-neutral documented-name probe when discovery cannot supply a deferred tool and access has not been denied. Schema receipt is not execution/evidence; stop failed probes. A supported exact-allowlist and denial regression exercises the real catalog/hydration code."
+    },
+    {
+      "id": "foundation-major-2",
+      "action": "Restore the same discovery/direct-probe doctrine used by the existing Goal family, retaining its supported fallback rather than extending the incompatible catalog-absence ban."
+    },
+    {
+      "id": "foundation-minors",
+      "action": "Document trusted host declaration channel and standalone default; align Registry-result carve-out; restore code-execution/match-tolerance wording; group digest entries. Document older-body migration limits and realistic peer-marker semantics without broad overwrites."
+    },
+    {
+      "id": "app-must-1",
+      "action": "Narrow generic-api-key exception to eight exact manifest paths AND four explicitly audited public digests. Positive/negative controls retain detection for another value and the same value outside allowed paths."
+    },
+    {
+      "id": "app-must-2",
+      "action": "Update every PR evidence URL to reachable current history and repair the Chinese report URL with structured path encoding."
+    },
+    {
+      "id": "app-3-through-8",
+      "action": "Use real browser error codes; restore live-evidence precedence and exact time/latest-library triggers; restore unattended anti-rewrite verbs and Plan body limits; remove shared-mode presenter leakage; clarify additional-root rule chains; register parent behavior tests."
+    },
+    {
+      "id": "app-nits",
+      "action": "Add no-rules scope-label coverage and preserve promise/discovery constraints; distinguish attribution from signatures and link the actual fresh namespace receipt. Keep the measured harness/CLI entry and user-requested poster/export artifacts; avoid an unrelated harness refactor or unsupported language ablation."
+    },
+    {
+      "id": "foundation-existing-strict-lint",
+      "action": "The production collapsible_if issue noted on the protected maintenance CI is pre-existing and outside this prompt patch. PR Clippy is verified with the documented allow list; no claim that this repairs every strict maintenance gate."
+    }
+  ],
+  "gates": [
+    {
+      "name": "foundation-forkguard",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tui",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "forkguard_",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "summary": "test result: ok. 246 passed; 0 failed; 0 ignored; 0 measured; 12055 filtered out; finished in 9.36s"
+    },
+    {
+      "name": "node-prompt-contracts",
+      "command": [
+        "node",
+        "--test",
+        "pinvou3-app/tests/browser_core_protocol.test.mjs",
+        "pinvou3-app/tests/canonical_tool_contract.test.js"
+      ],
+      "exit_code": 0,
+      "summary": "18 passed; 0 failed"
+    },
+    {
+      "name": "python-all-opt-in",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 24.144,
+      "summaries": [
+        "Ran 583 tests in 23.950s",
+        "OK"
+      ],
+      "environment": {
+        "PINVOU_EVAL_NS_SELFTEST": "1",
+        "PINVOU_GITLEAKS_BINARY": "pinned 8.30.1 binary"
+      }
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 2.072,
+      "summaries": [
+        "architecture guard passed: no architecture debt increased"
+      ]
+    },
+    {
+      "name": "lint-node",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "run",
+        "lint:node"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 5.49,
+      "summaries": []
+    },
+    {
+      "name": "node-full",
+      "command": [
+        "npm",
+        "--prefix",
+        "pinvou3-app",
+        "test"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 109.34,
+      "summaries": [
+        "# tests 1438",
+        "# pass 1423",
+        "# fail 0",
+        "# skipped 15"
+      ]
+    },
+    {
+      "name": "version",
+      "command": [
+        "node",
+        "scripts/sync-version.mjs",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.061,
+      "summaries": []
+    },
+    {
+      "name": "bundle",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "runtime_bundle",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 640.465,
+      "summaries": [
+        "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 3687 filtered out; finished in 3.61s"
+      ]
+    },
+    {
+      "name": "project-rules",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "features::assistant::platform::bridge::tests::project_rules",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.48,
+      "summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3751 filtered out; finished in 0.01s"
+      ]
+    },
+    {
+      "name": "session-policy",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "features::assistant::session_policy::",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.447,
+      "summaries": [
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 3748 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "tool-policy",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "features::assistant::tool_policy::",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.431,
+      "summaries": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3750 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "unattended",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "unattended_shield_tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.433,
+      "summaries": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 3749 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "project-rules-all",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "project_rules",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 0.44,
+      "summaries": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3747 filtered out; finished in 0.01s"
+      ]
+    },
+    {
+      "name": "foundation-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "CodeWhale/Cargo.toml",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "clippy::uninlined_format_args",
+        "-A",
+        "clippy::too_many_arguments",
+        "-A",
+        "clippy::unnecessary_map_or",
+        "-A",
+        "clippy::collapsible_if",
+        "-A",
+        "clippy::assertions_on_constants"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 135.284,
+      "summaries": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 15s"
+      ]
+    },
+    {
+      "name": "app-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 269.964,
+      "summaries": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 29s"
+      ]
+    },
+    {
+      "name": "fmt-foundation",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "CodeWhale/Cargo.toml",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 5.366,
+      "summaries": []
+    },
+    {
+      "name": "fmt-app",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_secs": 1.647,
+      "summaries": []
+    },
+    {
+      "name": "fork-fingerprints",
+      "command": [
+        "./scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "summary": "All fingerprints passed; 255 distinct forkguard names across crates (not a cfg-selected execution count)."
+    }
+  ],
+  "initial_control_failure": {
+    "result": "245 passed; 1 failed",
+    "reason": "New test omitted an eager core tool, so the existing empty-active-set fallback promoted its first deferred entry. Fixture corrected by including the normal read tool; no production workaround was made."
+  },
+  "gitleaks": {
+    "version": "8.30.1",
+    "archive_sha256": "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
+    "before": {
+      "exit_code": 1,
+      "findings": 11,
+      "rule": "generic-api-key"
+    },
+    "after_current_config_on_history": {
+      "exit_code": 0,
+      "commits_scanned": 641,
+      "findings": 0
+    },
+    "negative_control": {
+      "test": "scripts/tests/test_eval_digest_allowlist.py",
+      "passed": 1,
+      "detected_controls": 2,
+      "checks": [
+        "different value inside allowed path remains detected",
+        "audited value outside allowed path remains detected",
+        "audited value at its exact manifest path ignored"
+      ]
+    },
+    "digest_provenance": "Three unique source/document digests rehashed from current files; credential_cli value is a historical executable digest recorded in binary_hashes, with the old executable no longer retained locally."
+  },
+  "immutable_model_evidence_unchanged": true,
+  "current_foundation_head": "e4ef5570bc26e73df8b82c4ffca7200da3c8765b",
+  "app_unique_targeted_rust_cases": 79,
+  "app_overlap_note": "The initial exact project-rules filter (1 case) is included in the later broad project_rules filter (5 cases). Unique total is 65+5+4+2+3=79, not 80.",
+  "public_head_boundary": {
+    "command": [
+      "./scripts/verify-public-submodule.sh"
+    ],
+    "exit_code": 1,
+    "expected": true,
+    "maintenance_head": "6e1ee88ee8f8ea28eec7be3d8add3a591468412a",
+    "review_gitlink": "e4ef5570bc26e73df8b82c4ffca7200da3c8765b",
+    "output": "错误：pinvou3-clean 为 6e1ee88ee8f8ea28eec7be3d8add3a591468412a，父仓 gitlink 为 e4ef5570bc26e73df8b82c4ffca7200da3c8765b",
+    "transport_note": "Canonical HTTPS URL retained; process-local Git URL transport rewrite used SSH for the live public-ref lookup. No verifier predicate changed."
+  },
+  "focused_node_rerun": "18 passed /0 failed after the final browser-unavailability conclusion assertion was added; production sources unchanged from full Node run.",
+  "deferred_optional_scope": [
+    "Broader legacy Skill example schema normalization",
+    "Importable evaluator-driver refactor or binary relocation",
+    "Byte-level audit of unenumerated historical bundled bodies"
+  ]
+}

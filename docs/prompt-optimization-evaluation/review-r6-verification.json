@@ -1,0 +1,355 @@
+{
+  "revision": "V2.4.5-review-r6",
+  "date": "2026-10-29T09:36:44.238378+00:00",
+  "author": "Codex (OpenAI) / GPT-6; exact variant/reasoning level unavailable",
+  "parent_before_revision": "d3e84dcec9b19317ee29baa477571a88bf933b82",
+  "review_id": 5695272503,
+  "foundation_gitlink": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c",
+  "scope": "Parent-only CI prerequisites, grader identity and fail-closed accounting, plus reviewed instruction/documentation alignment. No new model run or changed frozen scores.",
+  "review_disposition": {
+    "B1": "Reproduced tomllib import failure with isolated CPython 3.10.19; secret-scan now sets up Python 3.x before the controls. Runtime-order regression goes red on exact reviewed workflow.",
+    "M1": "Fingerprint complete prompt_eval_* case-module graph, lateral extra_api, provenance helper and retest/repair runner adapters. Validate receipt revision before tail repair or manifest creation. Both summary CLIs and adjudication reject mixed revisions; entirely unversioned legacy data remain readable.",
+    "minor_1": "Aligned the short zh/en opening inventories. Detailed Chinese section 3 already contained fe90f72f9/f1eb10efc at reviewed head; no duplicate detailed row added.",
+    "minor_2": "CLI regression explicitly runs cargo test --example prompt_eval. The actual target was built and both options_* unit tests executed locally.",
+    "minor_3": "Five shipped Skill/reference files reflect ordinary-mode presenter availability with a healthy backend and retain discovery/startup fallback.",
+    "minor_4_5": "Restored external Chrome/screenshot substitution prohibition, explicit protected-directory closed-state denial, scheduled-job/chat-lifetime distinction, user-directory examples, tmp-panel rationale, git-log example and upload-tool absence by name.",
+    "minor_6": "Both documents now quote the exact shipped three-line unattended reminder; the old one-sentence proposal is marked superseded.",
+    "minor_7_8": "Code-consult uses complete numeric tokens. Auditor records missing sentinel/turn trace as failed checks rather than FileNotFoundError/StopIteration. Non-UTF8 sentinel bytes also produce a failed preservation check.",
+    "minor_9": "Install bubblewrap before discovery; apt retries downloads three times and still fails closed if unavailable. No isolation controls are skipped as a fallback.",
+    "minor_10": "Alternative numeric values reject attachment/untrusted/code-consult checks; integral .00 notation is accepted. Overlapping duplicate IDs remain unsettled. Lexical grading still requires disclosed human review for negations and other prose meaning; no general semantic guarantee.",
+    "minor_11": "Withdraw current per-request numeric token estimate; cost is unmeasured and backend health is explicit. Prior estimates remain historical at their own review source boundaries.",
+    "minor_12": "Restored memory UI switch/authority pointer and authorization wait, corrected Execute comment and presenter docstring. Primary-root terminology still denotes Current workspace. R1 receipt is immutable historical schema; this dated receipt supplies the current boundary."
+  },
+  "python": {
+    "exit_code": 0,
+    "elapsed_seconds": 29.13,
+    "summary": ".................................................................................................................usage: python3 -m unittest [-h] [--only-session ONLY_SESSION]\npython3 -m unittest: error: argument --only-session: expected one argument\n.....................................................................................................................................................\n----------------------------------------------------------------------\nRan 627 tests in 28.958s\n\nOK\n",
+    "log_sha256": "3d2fa310ef2c4c6d5891fbe7ce6171a582e2516bc9ebd5ad59e2e8f02258e69c",
+    "opt_ins": "digest and real namespace enabled; final numeric alternatives, missing/non-UTF8 sentinel controls",
+    "tests": 627,
+    "failed": 0,
+    "skipped": 0
+  },
+  "rust": [
+    {
+      "name": "runtime-bundle",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--no-default-features",
+        "runtime_bundle::",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 39.46,
+      "summary": [
+        "test features::runtime_bundle::platform::tests::browser_last_error_accepts_only_fresh_whitelisted_codes ... ok",
+        "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 3723 filtered out; finished in 3.65s"
+      ],
+      "log_sha256": "3b6d3bb269b0a6bcfa9c249b17d7b62586c6d9596da8589c341d3a93cb820c57",
+      "test_results": [
+        "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 3723 filtered out; finished in 3.65s"
+      ]
+    },
+    {
+      "name": "cli-example",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "pinvou-cli/Cargo.toml",
+        "-p",
+        "pinvou-cli",
+        "--example",
+        "prompt_eval",
+        "--locked"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 297.53,
+      "summary": [
+        "   Compiling thiserror v2.0.21",
+        "   Compiling thiserror-impl v2.0.21",
+        "   Compiling thiserror v1.0.69",
+        "   Compiling thiserror-impl v1.0.69",
+        "   Compiling proc-macro-error-attr v1.0.4",
+        "   Compiling proc-macro-error v1.0.4",
+        "   Compiling quick-error v2.0.1",
+        "   Compiling serde_path_to_error v0.1.20",
+        "   Compiling proc-macro-error-attr3 v3.1.1",
+        "   Compiling proc-macro-error3 v3.1.1"
+      ],
+      "log_sha256": "b49f4b842c81c196bad069274e9f994f6c2445a958235dec0be46a74d177429d",
+      "test_results": [
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "app-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--lib",
+        "--locked",
+        "--no-default-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 6.66,
+      "summary": [],
+      "log_sha256": "7607e532fa09bb35e211226542e4354a971fcb66d3ec9af0f3cca51fd2fd05d3",
+      "test_results": []
+    },
+    {
+      "name": "app-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "pinvou3-app/src-tauri/Cargo.toml",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 1.65,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    },
+    {
+      "name": "cli-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check",
+        "--manifest-path",
+        "pinvou-cli/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 8.08,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    }
+  ],
+  "rust_distinct_tests": 67,
+  "node": {
+    "command": [
+      "node",
+      "--test",
+      "pinvou3-app/tests/browser_core_protocol.test.mjs",
+      "pinvou3-app/tests/canonical_tool_contract.test.js"
+    ],
+    "exit_code": 0,
+    "summary": ", add \"type\": \"module\" to /home/test/.codex/worktrees/pr-799-followup/pinvou-agent/pinvou3-app/package.json.\n# (Use `node --trace-warnings ...` to show where the warning was created)\n# Subtest: runtime guidance does not teach retired or hidden replay tool names\nok 17 - runtime guidance does not teach retired or hidden replay tool names\n  ---\n  duration_ms: 62.848302\n  type: 'test'\n  ...\n# Subtest: runtime guidance uses live schemas and canonical app entry points\nok 18 - runtime guidance uses live schemas and canonical app entry points\n  ---\n  duration_ms: 40.540495\n  type: 'test'\n  ...\n1..18\n# tests 18\n# suites 0\n# pass 18\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 162.323093\n",
+    "log_sha256": "4ac6a7225a5f729294a03adf6d40e7b9710f87ec7bce1d78f4e49eb829d009bc",
+    "tests": 18,
+    "failed": 0,
+    "skipped": 0
+  },
+  "fast_gates": [
+    {
+      "name": "actionlint",
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "tail": ""
+    },
+    {
+      "name": "architecture",
+      "exit_code": 0,
+      "log_sha256": "de5bff130d75700fdd1ec335b56d6149a8f099986718a127dbac577fcb556ea3",
+      "tail": "architecture guard passed: no architecture debt increased\n"
+    },
+    {
+      "name": "fork-fast",
+      "exit_code": 0,
+      "log_sha256": "ee5826573a59ff7941f8caa73ffddc2680c7846443de5caf9bfd53ebdc8d2126",
+      "tail": "Replay tag scoped to provider identity          \u001b[0m\n\u001b[32m  ✓ T9 Ingress fails closed on non-Chat custom wire    \u001b[0m\n\u001b[32m  ✓ T9 Preflight validates the table's own dialect     \u001b[0m\n\u001b[32m  ✓ T9 Custom Responses encrypted-reasoning capture    \u001b[0m\n\u001b[32m  ✓ T9 Custom Responses exact-model replay             \u001b[0m\n\u001b[32m  ✓ T9 Chat wire never captures encrypted reasoning    \u001b[0m\n\u001b[32m  ✓ T9 Empty encrypted content skips without breaking the stream \u001b[0m\n\u001b[32m  ✓ T10 Tachyon effort ladder never emits high   \u001b[0m\n\u001b[32m  ✓ T10 registered-only Tachyon table survives save \u001b[0m\n\u001b[32m  ✓ APP unified 2000-step budget default           \u001b[0m\n\u001b[32m  ✓ APP 2000-step budget behavior regression       \u001b[0m\n\u001b[32m  ✓ APP chainable panic-hook registry module       \u001b[0m\n\u001b[32m  ✓ APP worker panic redaction behavior regression \u001b[0m\n\u001b[32m  ✓ CodeWhale 至少保留 64 条独立 forkguard 行为名（实际 255）\u001b[0m\n\n\u001b[32m指纹层全过 (--fast)\u001b[0m\n"
+    },
+    {
+      "name": "public-submodule",
+      "exit_code": 0,
+      "log_sha256": "31e9b79336c461476f79d4d0541ed20e84817b43e3b1d1d43db50312e548f75e",
+      "tail": "公开 CodeWhale 基线过渡期校验通过：pinvou3-clean = gitlink = f1eb10efcfe2468fde42d1724d7f5f19d54b904c；pinvou-v0.9.12-r3 钉在收口 61cb769be5b33abc64f64da4272f5b39a8b6c1fd\n"
+    }
+  ],
+  "fork_fingerprints": 283,
+  "distinct_foundation_guard_names": 255,
+  "old_source_negative_controls": [
+    {
+      "name": "secret-python",
+      "old_source": "d3e84dcec",
+      "production_files": [
+        ".github/workflows/secret-scan.yml"
+      ],
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_prompt_eval_ci.EvaluationCiContracts.test_secret_scan_sets_up_supported_python_before_importing_tomllib"
+      ],
+      "expected_red_exit_code": 1,
+      "test_source_sha256": "3c9b30d1ee1b69ce2c506cf6681c11626bde59707336bd791b05355a53f09591",
+      "log_sha256": "0e3676494f7e41e5ee53e113ba5f2d1c254387cc34511e59b5f94a4321dfa24f"
+    },
+    {
+      "name": "lateral-provenance",
+      "old_source": "d3e84dcec",
+      "production_files": [
+        "scripts/eval-prompt-community.py"
+      ],
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_prompt_eval_provenance.RepairGenerationTests.test_lateral_api_changes_revision_and_cannot_resume_after_manifest_deletion"
+      ],
+      "expected_red_exit_code": 1,
+      "test_source_sha256": "740547524af98939680a6dd675342fbd5516f6693d3736eabd3e1d5fced10ecd",
+      "log_sha256": "5f5bddd5556c075295f5d331c72127c7cd86913160ddef525b2b09f658a046d2"
+    },
+    {
+      "name": "duplicate-ids",
+      "old_source": "d3e84dcec",
+      "production_files": [
+        "scripts/audit-prompt-eval.py"
+      ],
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_prompt_eval_audit.TurnAccountingTests.test_overlapping_duplicate_ids_cannot_borrow_a_later_success"
+      ],
+      "expected_red_exit_code": 1,
+      "test_source_sha256": "51c9137ee376300328831918a45c42bd27c0fe3a9411684a72a3e00f5a50f4ba",
+      "log_sha256": "b9c46a687c0f28427f6e79ef6853a92327cfbdc67d9cdc9510b7c48cb446252f"
+    },
+    {
+      "name": "deleted-sentinel",
+      "old_source": "d3e84dcec",
+      "production_files": [
+        "scripts/audit-prompt-eval.py"
+      ],
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_prompt_eval_audit.TurnAccountingTests.test_deleted_notes_and_missing_turn_are_failed_checks_not_audit_crashes"
+      ],
+      "expected_red_exit_code": 1,
+      "test_source_sha256": "51c9137ee376300328831918a45c42bd27c0fe3a9411684a72a3e00f5a50f4ba",
+      "log_sha256": "e6ccd5e3d119dad51ae87cb1ff9901e8f9a1f68a1a3b1d89c97c571294bf6a1c"
+    },
+    {
+      "name": "numeric-near-miss",
+      "old_source": "d3e84dcec",
+      "production_files": [
+        "scripts/eval-prompt-suite.py"
+      ],
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_prompt_eval_oracles.EvaluationOracleTests.test_numeric_answers_reject_substrings_signed_and_decimal_near_misses"
+      ],
+      "expected_red_exit_code": 1,
+      "test_source_sha256": "d09f4c69dd4e45b7915511a3e66751c00d7f603b6e886b81b505f30b09b155b9",
+      "log_sha256": "b54078a8f1d26ccf254601130305054b1a1970cdb1d221d3991f666de6e4d98a"
+    },
+    {
+      "name": "code-consult",
+      "old_source": "d3e84dcec",
+      "production_files": [
+        "scripts/prompt_eval_community_cases.py"
+      ],
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_prompt_eval_oracles.EvaluationOracleTests.test_code_consult_rejects_larger_numbers_containing_the_expected_digits"
+      ],
+      "expected_red_exit_code": 1,
+      "test_source_sha256": "d09f4c69dd4e45b7915511a3e66751c00d7f603b6e886b81b505f30b09b155b9",
+      "log_sha256": "579dcc552bd3defaf901816d59d38cf26071469505b993572f31e82469d13f94"
+    },
+    {
+      "name": "example-ci",
+      "old_source": "d3e84dcec",
+      "production_files": [
+        ".github/workflows/pr-check.yml"
+      ],
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_prompt_eval_ci.EvaluationCiContracts.test_cli_regression_executes_prompt_example_unit_tests"
+      ],
+      "expected_red_exit_code": 1,
+      "test_source_sha256": "3c9b30d1ee1b69ce2c506cf6681c11626bde59707336bd791b05355a53f09591",
+      "log_sha256": "bd1c02a1df2d5c209e0885daa7fb9ffc6a6dbdcbe4a2e117a84997d37508f41c"
+    }
+  ],
+  "python310_reproduction": {
+    "version": "3.10.19",
+    "command": "python3.10 -m unittest scripts.tests.test_eval_digest_allowlist",
+    "exit_code": 1,
+    "expected_error": "ModuleNotFoundError: tomllib",
+    "log_sha256": "de671f294690218065294e3e77788fcf54b7710cf77c281550468369923f9f1a"
+  },
+  "summary_compatibility": [
+    {
+      "check": "summarize-prompt-eval.py frozen corpus",
+      "unchanged": true,
+      "stdout_sha256": "65f4cd2a82562e31022b5a2b5c9fbda0f97f65ed5392c7b84dae2e5e6160ba35"
+    },
+    {
+      "check": "summarize-prompt-community.py frozen corpus",
+      "unchanged": true,
+      "stdout_sha256": "e52a2f741ab5a0627509e7911198605e6c39b726155efb197bcfc8f0d92dd912"
+    },
+    {
+      "check": "summarize-prompt-eval.py mixed-version CLI",
+      "old_accepts_exit": 0,
+      "current_rejects_exit": 1
+    },
+    {
+      "check": "summarize-prompt-community.py mixed-version CLI",
+      "old_accepts_exit": 0,
+      "current_rejects_exit": 1
+    },
+    {
+      "check": "apply-prompt-adjudication.py mixed-version CLI",
+      "old_accepts_exit": 0,
+      "current_rejects_exit": 1
+    }
+  ],
+  "preservation": {
+    "unchanged_historical_artifacts": 100,
+    "all_previous_review_json_receipts_unchanged": true,
+    "whole_prompt_snapshot_unchanged": true,
+    "reminder_docs_byte_match": true,
+    "diff_check": "passed",
+    "artifact_hashes": 19,
+    "foundation_gitlink": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
+  },
+  "source_manifest": "source-manifest-review-r6.json",
+  "source_count": 34,
+  "local_document_links": "91 local targets verified after creating the R6 receipts",
+  "gitleaks": {
+    "status": "passed",
+    "version": "8.30.1",
+    "scope": "complete staged R6 patch; nonzero diff bytes scanned, no allowlist/rule changes",
+    "findings": 0
+  },
+  "self_review": "Checked prerequisite order, all affected grader dependencies, deleted-manifest/tail handling, cross-directory and legacy revision mixing, valid sequential reused IDs versus ambiguous overlap, missing evidence, equivalent numeric formats, instruction authority and permission boundaries, immutable measurement bytes and actual example test execution. No foundation or public product API, dependency, lockfile, VERSION or protected-reference changes.",
+  "remaining": "Native ready-PR CI remains unexecuted while GitHub registers no checks; the current account sees Actions 404 and lacks repository options. Cause is unestablished. Re-review remains required. No merge, queue, permission-policy change or old-head rerun substitutes for current CI."
+}

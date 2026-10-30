@@ -1,0 +1,145 @@
+{
+  "version": "V2.4.5",
+  "author": "Codex (OpenAI)",
+  "model": "GPT-6; exact variant/reasoning level unavailable",
+  "scope": "Current report artifact hashes, including historical supersession and append-only review notes. Frozen V2.4.5 model measurements and R1-R4 receipts retain their own sources; no R1-R5 model run is claimed. Privacy/visual-review fields retain their original inspection boundary; fresh R5 checks are separate.",
+  "pdf_pages": 8,
+  "figures": 4,
+  "formats": [
+    "Markdown",
+    "PDF",
+    "PNG",
+    "SVG"
+  ],
+  "local_report_links_valid": true,
+  "privacy_pattern_scan": {
+    "text_artifacts": 102,
+    "findings": {
+      "private_key": 0,
+      "github_pat": 0,
+      "bearer_secret": 0,
+      "jwt": 0,
+      "private_route": 0
+    },
+    "scope": "Pattern scan of public evaluation artifacts, not a claim that every possible secret can be recognized."
+  },
+  "visual_review": "All four PNG figures and all eight PDF pages inspected; PDF Chinese text extraction checked.",
+  "artifacts": [
+    {
+      "path": "prompt-optimization-evaluation/提升报告-V2.4.5.md",
+      "bytes": 17313,
+      "sha256": "603fd92deeaae81fa26a855c92dcafd95dd2c1905026f644e773765a587d3c9f"
+    },
+    {
+      "path": "prompt-optimization-evaluation/pinvou-improvement-report-v2.4.5.pdf",
+      "bytes": 1237278,
+      "sha256": "420ab3d9c1420ab4e8a2ed41a55d753db7e19053ffb9a6697a463c50c854d404"
+    },
+    {
+      "path": "prompt-optimization-evaluation/render_report_figures.py",
+      "bytes": 11757,
+      "sha256": "6ab6a91b9690f85c11239135a8ec0972b0ea33a18c444d03940e08103b637f24"
+    },
+    {
+      "path": "prompt-optimization-evaluation/render_report_pdf.py",
+      "bytes": 6288,
+      "sha256": "b8edeb261f5cbda9f56550855f6f767d3c0d874a8e3e27b92baf328d534ab945"
+    },
+    {
+      "path": "prompt-optimization-evaluation/verification-v2.4.5.json",
+      "bytes": 12858,
+      "sha256": "5a8a2fe3730210f50827ca1e1f9a1941720ee68bd281814cbfa4f1096a9ee143"
+    },
+    {
+      "path": "prompt-optimization-evaluation/README.md",
+      "bytes": 5191,
+      "sha256": "b2c04e8ddf32580f65627b57cb1f673df3bc4e907f2746c6560e46864797529a"
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/01-results.png",
+      "bytes": 207303,
+      "sha256": "90bee28c0531833477861456dcc1f1cc11781f41e4604d5bb9333ec32f464d22",
+      "pixels": [
+        2304,
+        1224
+      ]
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/01-results.svg",
+      "bytes": 130393,
+      "sha256": "9ae3b9436442f120a9916e57cd8cc03cffe9496d1329a16d89b4d22c1c92c592"
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/02-families.png",
+      "bytes": 448867,
+      "sha256": "07f5ad35c7418eaeccdff17d87e17692cacce2b8cc611652a57d058bf73671bc",
+      "pixels": [
+        2304,
+        2250
+      ]
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/02-families.svg",
+      "bytes": 275205,
+      "sha256": "3cfbf706bd60cb3876a2c7b8a99ecc2d082f0cae256d86f83dd3cadcd16b91fd"
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/03-latency.png",
+      "bytes": 186042,
+      "sha256": "89355575a985f461dd4fbac51250f4c8b3cb61db70c29c2e9f8bb27aeb899174",
+      "pixels": [
+        2304,
+        1188
+      ]
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/03-latency.svg",
+      "bytes": 141389,
+      "sha256": "dd289a706195828db1e1e2c3f7b3bd589aff138170009472150c47bf4bd1ca9c"
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/04-efficiency.png",
+      "bytes": 186730,
+      "sha256": "404b3ccbef2a0ba4c388a263e874eb788a400fca010fa2aa6bb6bf56f4b533ae",
+      "pixels": [
+        2304,
+        1188
+      ]
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/04-efficiency.svg",
+      "bytes": 134562,
+      "sha256": "4c738ed11f4a074b27d8842a83869e15c727f1a898f2fa1581c4ae4f7904c834"
+    },
+    {
+      "path": "prompt-optimization-evaluation/summary-v2.4.5-path-corrected-regression.json",
+      "bytes": 15740,
+      "sha256": "9f9a526aa1fe7ec6dc549886db6417034a1bea0384952e6a401d528939d48629"
+    },
+    {
+      "path": "prompt-optimization-evaluation/source-manifest-v2.4.5.json",
+      "bytes": 6976,
+      "sha256": "d401e0e4884b4b70fa34978309fb1d584ca2f121f695f31d8daac9798e545ebd"
+    },
+    {
+      "path": "提示词优化-普通模式与代码模式.md",
+      "bytes": 188738,
+      "sha256": "71ec11d3ae88a8777a6e4f40f622a52afd9ca6eda3218bce853b475937d67498"
+    },
+    {
+      "path": "prompt-optimization-evaluation/figures/pinvou-poster-v2.4.5.png",
+      "bytes": 1609790,
+      "sha256": "e08849121bf4f9f75ef3f0dd83f5cd520c393dcffc0bfca62d42d69fd88243b9",
+      "pixels": [
+        1086,
+        1448
+      ]
+    },
+    {
+      "path": "prompt-optimization-evaluation/report-v2.4.5.md",
+      "bytes": 14393,
+      "sha256": "deab1fab152aaf9e9eb9a3842437dd7f03e3fb69afee6a4fb62906f5ee5616c0"
+    }
+  ],
+  "publication_note": "SVG end-of-line spaces normalized without altering chart content; PDFs explicitly marked binary to preserve stream/xref bytes."
+}

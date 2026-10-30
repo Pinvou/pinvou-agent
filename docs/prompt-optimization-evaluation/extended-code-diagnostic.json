@@ -1,0 +1,182 @@
+[
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": false,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": false,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": false,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": false,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "glm-cloud",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 0,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 1,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 2,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 3,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "baseline",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": true,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  },
+  {
+    "model_id": "ornith-local",
+    "variant": "candidate",
+    "repetition": 4,
+    "scenario": "hidden_code",
+    "turn": 0,
+    "supplemental_tuple_set_bytearray_alias_tests": false,
+    "scope": "post-freeze diagnostic, not frozen primary score"
+  }
+]

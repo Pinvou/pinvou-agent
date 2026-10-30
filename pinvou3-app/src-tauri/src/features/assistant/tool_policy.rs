@@ -104,6 +104,8 @@ pub const PINVOU3_ALLOWED_TOOLS: &[&str] = &[
 /// (deny wins).
 pub const PINVOU3_ALWAYS_LOADED_TOOLS: &[&str] = &[
     // The shared instructions name this family directly. Deny rules still win.
+    // Delivery is part of ordinary-mode completion; code-mode policy hides it.
+    "mcp_pinvou3_present_artifact",
     "mcp_app-automations_create_scheduled_task",
     "mcp_app-automations_list_scheduled_tasks",
     "mcp_app-automations_read_scheduled_task",
@@ -142,6 +144,21 @@ pub fn is_pinvou3_allowed(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn artifact_delivery_is_loaded_without_widening_code_mode_tools() {
+        let name = "mcp_pinvou3_present_artifact";
+        assert!(super::PINVOU3_ALWAYS_LOADED_TOOLS.contains(&name));
+        assert!(super::is_pinvou3_allowed(name));
+        let code = crate::features::assistant::session_policy::SessionPolicy::for_mode(
+            crate::core::session_mode::SessionMode::Code,
+        );
+        assert!(code.unavailable_tools().contains(&name));
+        let plain = crate::features::assistant::session_policy::SessionPolicy::for_mode(
+            crate::core::session_mode::SessionMode::Plain,
+        );
+        assert!(!plain.unavailable_tools().contains(&name));
+    }
+
     #[test]
     fn scheduled_family_is_available_without_tool_search() {
         for verb in [
