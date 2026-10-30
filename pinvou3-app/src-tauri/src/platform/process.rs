@@ -1553,15 +1553,20 @@ mod tests {
             error.contains("subprocess tree termination requested"),
             "{error}"
         );
-        // Windows: a burst-then-exit writer is observed reaped by the
+        // Windows: a burst-then-exit writer is usually observed reaped by the
         // poll-loop probe (writes take milliseconds, the first poll is at
         // 50 ms), so the futile taskkill walk is skipped and the vacuous
         // "kill tree request failed: ... status 128" clause the walk used
-        // to produce must stay gone (round-3 M2; first caught by this
-        // test's own first native CI run). A root that dies between the
-        // probe and the walk is a genuine failure and keeps its clause.
-        #[cfg(windows)]
-        assert!(!error.contains("kill tree request failed"), "{error}");
+        // to produce stays gone (round-3 M2; first caught by this test's
+        // own first native CI run). The skip itself is pinned
+        // deterministically by
+        // `overflow_kill_notes_skip_claim_and_note_for_a_reaped_root` —
+        // this end-to-end fixture deliberately asserts nothing about the
+        // clause: the 50 ms poll is not synchronization with the child's
+        // exit, and a root that dies between the probe and the walk is a
+        // genuine production diagnostic (the request went out and failed),
+        // so rejecting the clause here would fail correct behavior on a
+        // legal ordering.
     }
 
     /// Deterministic pin of the reaped-root skip itself: with the root
