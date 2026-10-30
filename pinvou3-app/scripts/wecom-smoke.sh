@@ -87,7 +87,17 @@ WECOM_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 wecom_run() {
   local t rc tflag
-  t="$(mktemp "${TMPDIR:-/tmp}/wecom-smoke.XXXXXX")"
+  # mktemp 失败(TMPDIR 指向不可写/不存在的目录等)时 t 为空,tflag 退化成调用方
+  # 工作目录里的相对路径 .deadline,尾部的普通 rm 会把调用方同名文件删掉(评审
+  # 实测复现);EXIT 兜底 trap 的空值守卫只救 trap 自己,救不了普通路径。分配
+  # 失败/为空必须在派生任何清理路径、启动任何命令之前原路返回——本次探测按失败
+  # 收场(mktemp 自己的诊断已在 stderr 上,随 $() 的 2>&1 进入失败回显),而不是
+  # 动调用方目录(与 dingtalk-smoke.sh 同口径)。
+  t="$(mktemp "${TMPDIR:-/tmp}/wecom-smoke.XXXXXX")" || t=""
+  if [ -z "$t" ]; then
+    echo "mktemp 失败:探测临时文件分配不出来(检查 TMPDIR)" >&2
+    return 1
+  fi
   tflag="${t}.deadline"
   # 兜底清理挂在拥有临时文件的探测子壳自身,不能挂外层脚本(与 dingtalk-smoke.sh
   # 同口径):本函数总经 $( ) 调用,DWS_TMP 赋值只活在子壳里,外层永远看到空值——
@@ -106,8 +116,10 @@ wecom_run() {
     # 发出 TERM 即落「到点」标记(与 dingtalk-smoke.sh 同口径):子进程收到 TERM
     # 后优雅清理并以 0 退出时,wait 的 0 会把超时伪装成通过——到点事实必须独立
     # 于子进程最终退出码,标记存在则一律按 124 上报。标记先于 TERM 落盘:子进程
-    # 恰在到点与 TERM 之间的微窗内自行退出的形态不再漏判超时。
-    ( sleep "$WECOM_TIMEOUT" && : >"$tflag" && kill "$pid" 2>/dev/null && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    # 恰在到点与 TERM 之间的微窗内自行退出的形态不再漏判超时。落标记前先确认
+    # 捕获文件仍在:父壳被信号打断并清场后,孤儿看门狗不得凭空重建 .deadline
+    # (评审指出的中断残留);父壳仍在 wait 时捕获必在,计时语义不变(同口径)。
+    ( sleep "$WECOM_TIMEOUT" && [ -e "$t" ] && : >"$tflag" && kill "$pid" 2>/dev/null && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
