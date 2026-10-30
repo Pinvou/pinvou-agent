@@ -838,7 +838,7 @@ assert.doesNotMatch(
         "sleep 300",
         "",
       ].join("\n");
-    const mkCase = (tag, writeCli) => {
+    const mkCase = (tag) => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), `smoke-${tag}-home-`));
       const bin = path.join(home, "bin");
       fs.mkdirSync(bin, { recursive: true });
