@@ -59,6 +59,12 @@ const forbiddenPhrases = [
   "enterprise knowledge bases",
   "企业知识库",
   "企業ナレッジベース",
+  // 占位卡的裸短名也禁:禁词按整句 title/subtitle 抽取,裸短名单独写上高亮行
+  // 不会命中整句——这些正是被降级为占位卡(backendId: null)的能力名。
+  "TAPD",
+  "CNB",
+  "乐享",
+  "QQ邮箱",
 ];
 
 for (const { file, zh } of claims) {
