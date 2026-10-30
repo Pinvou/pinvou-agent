@@ -990,9 +990,9 @@ assert.match(settingsView, /async function handleEnableWebAccess\(\) \{[\s\S]{0,
   'Enable Access must start remote control without host workspace consent');
 assert.match(settingsView, /async function handleAllowHostWorkspace\(\) \{[\s\S]{0,220}startRemoteControl\(\{ allowHostWorkspace: true \}\)/,
   'host workspace access must follow an explicit allow-folders action in the desktop modal');
-assert.match(settingsView, /onClick=\{handleAllowHostWorkspace\}[\s\S]{0,260}\{remoteCopy\.allowWorkspace\}/,
+assert.match(settingsView, /onClick=\{handleAllowHostWorkspace\}[\s\S]{0,400}\{remoteCopy\.allowWorkspace\}/,
   'the allow-folders button must keep its dedicated consent handler');
-assert.match(settingsView, /onClick=\{handleEnableWebAccess\}[\s\S]{0,260}\{remoteCopy\.enable\}/,
+assert.match(settingsView, /onClick=\{handleEnableWebAccess\}[\s\S]{0,400}\{remoteCopy\.enable\}/,
   'the Enable button must use the consent-free start handler');
 assert.doesNotMatch(settingsView, /useEffect\(\(\) => \{[\s\S]{0,240}startRemoteControl/,
   'opening the remote-control modal must not silently authorize host workspace access');
@@ -1069,6 +1069,20 @@ assert.match(
   remoteControlCommands,
   /web_access_rotate\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'rotation rewrites link credentials and must stay main-WebView only',
+);
+// Round-8 复审:disable / relay_settings / list_host_files 的主 WebView gate
+// 此前没有 source-shape pin,删除任一 gate 行仍然全绿;补齐与上方四条同款。
+assert.match(remoteControlCommands, /web_access_disable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'only the main desktop WebView may stop a persistent remote endpoint');
+assert.match(
+  remoteControlCommands,
+  /web_access_relay_settings\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'relay topology discovery must stay main-WebView only',
+);
+assert.match(
+  remoteControlCommands,
+  /web_access_list_host_files\([\s\S]{0,400}require_main_webview\(&window\)\?/,
+  'host filesystem browsing must stay main-WebView only',
 );
 assert.match(remoteControlManager, /require_host_workspace_authorization\(endpoint\.config\.allow_host_workspace\)\?/,
   'workspace capabilities must fail closed until desktop authorization is persisted');
