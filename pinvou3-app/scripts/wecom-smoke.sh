@@ -184,10 +184,13 @@ if [ -n "${WECOM_TEST_DOCID:-}" ]; then
   # usage 倾倒不含 {,同样不判读成功。只查结构化错误键("error"/"success":false/非零
   # errcode),不再扫正文错误词——正文是用户文档,主题恰为「错误/权限」的合法文档会
   # 误红(与 dingtalk-smoke.sh [4] 同口径)。
-  # 错误键只查 envelope、不查正文值:返回表的 content 是「文档内容较短时直接返回的
-  # 原文」(SKILL.md:112),值为恰为 error 的合法文档曾被裸 grep 误红。正文值按 JSON
-  # 字符串语义(\" 不终止值)整体屏蔽后再查错误键;错误键仍在 envelope 其余字段上生效。
-  R_ENVELOPE="$(printf '%s' "$R" | sed -E 's/"content"[[:space:]]*:[[:space:]]*"(\\.|[^"\\])*"/"content":"[正文已屏蔽]"/g')"
+  # 错误键只查 envelope、不查正文值:返回表(SKILL.md 「返回」节)的 string 字段
+  # 都承载文档数据——content 是「文档内容较短时直接返回的原文」(SKILL.md:112),
+  # name/url/file_path 同为原文档的名称/链接/落盘路径,值为恰为 error 的合法文档
+  # 曾被裸 grep 误红。正文值按 JSON 字符串语义(\" 不终止值)整体屏蔽后再查错误键;
+  # 屏蔽不碰键名与布尔值,envelope 层错误键("error" 键/"success":false/非零
+  # errcode)照常生效。
+  R_ENVELOPE="$(printf '%s' "$R" | sed -E 's/"(content|name|url|file_path)"[[:space:]]*:[[:space:]]*"(\\.|[^"\\])*"/"\1":"[正文已屏蔽]"/g')"
   if [ "$r_rc" -eq 0 ] && [ -n "$R" ] && echo "$R" | grep -q '{' \
     && ! printf '%s\n' "$R_ENVELOPE" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false|"errcode"[[:space:]]*:[[:space:]]*[1-9]'; then
     ok "读到文档内容($(printf '%s' "$R" | wc -c | tr -d ' ') 字节)"

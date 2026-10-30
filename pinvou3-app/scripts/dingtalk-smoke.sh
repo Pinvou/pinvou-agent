@@ -201,12 +201,19 @@ if [ -n "${DINGTALK_TEST_DOC_ID:-}" ]; then
   # 必含 JSON 对象(dingtalk.rs 取首个 { 到末个 } 同口径),exit 0 的 usage/help
   # 倾倒不含 {,同样不判读成功。只查结构化错误键("error"/"success":false),
   # 不再扫正文错误词——正文是用户文档,主题恰好是「错误/权限」的合法文档会误红。
-  # 错误键只查 envelope、不查正文值:doc read 返回的 content 字段是文档原文
-  # (与 wecom-smoke [4] 同族同键),值为恰为 error 的合法文档会被裸 grep 误红。
-  # 正文值按 JSON 字符串语义(\" 不终止值)整体屏蔽后再查错误键;错误键仍在
-  # envelope 其余字段上生效。dws 的 --format json envelope 键名未在包内文档
-  # 钉死,此处按同族约定取 content——真实 CLI 若用别的键名,改这一行 sed 即可。
-  R_ENVELOPE="$(printf '%s' "$R" | sed -E 's/"content"[[:space:]]*:[[:space:]]*"(\\.|[^"\\])*"/"content":"[正文已屏蔽]"/g')"
+  # 错误键只查 envelope、不查正文值:正文是用户文档,值为恰为 error 的合法文档会
+  # 被裸 grep 误红。屏蔽键取包内文档实际钉到的正文载体键:global-reference.md 的
+  # --format json 节钉 envelope 为 {"success": true, "body": {...}}(body 为正文
+  # 载体),error-codes.md 钉错误形态 {"success": false, "code", "message"},
+  # attendance_report_common.py 钉 success/result/error 拆包契约,--fields 文档钉
+  # 顶层信封键 data/result/success/status,doc-read.md 钉 --content-format jsonml
+  # 载荷 {revision, jsonml}——各文档间并不一致,故正文类键一并屏蔽:
+  # content(与 wecom-smoke [4] 同族同键)+body+result+data+jsonml。字符串值按
+  # JSON 语义(\" 不终止值)整体屏蔽后再查错误键;屏蔽不碰键名与布尔值,envelope
+  # 层的错误键("error" 键/"success":false/"status":"error" 值形态)照常生效。
+  # 残余(保守向):jsonml 数组内的裸字符串元素不呈 key:value 形态,屏蔽不到——
+  # 数组元素恰为 error 时仍会误红(裸 grep 的 "error" 由定界引号拼出)。
+  R_ENVELOPE="$(printf '%s' "$R" | sed -E 's/"(content|body|result|data|jsonml)"[[:space:]]*:[[:space:]]*"(\\.|[^"\\])*"/"\1":"[正文已屏蔽]"/g')"
   if [ "$r_rc" -eq 0 ] && [ -n "$R" ] && echo "$R" | grep -q '{' \
     && ! printf '%s\n' "$R_ENVELOPE" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false'; then
     ok "读到文档内容($(printf '%s' "$R" | wc -c | tr -d ' ') 字节)"
