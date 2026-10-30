@@ -2607,13 +2607,48 @@ pub(crate) fn quarantine_corrupt_file_bytes(path: &Path, bytes: &[u8]) -> io::Re
 /// design), so when the complete on-disk file is the evidence, copy it whole.
 /// Permission inheritance is platform-shaped: on unix, `fs::copy` preserves
 /// permission bits and the caller repairs the source to 0600 before
-/// quarantining, so the copy inherits that mode; on Windows the repair is a
-/// documented no-op and the copy carries the source's ACL (same exposure as
-/// the source file, no widening).
+/// quarantining, so the copy inherits that mode — a caller on a path where
+/// the repair did NOT or could not run must use
+/// [`quarantine_secret_file`] instead (the copy would inherit the loose
+/// mode); on Windows the repair is a documented no-op and the copy carries
+/// the source's ACL (same exposure as the source file, no widening).
 pub(crate) fn quarantine_corrupt_file_copy(path: &Path) -> io::Result<PathBuf> {
     let quarantine = quarantine_destination(path);
     std::fs::copy(path, &quarantine)?;
     Ok(quarantine)
+}
+
+/// Quarantine a secret-bearing file whose 0600 permission repair itself
+/// failed (a backup restore can leave a foreign-owned world-readable
+/// secret at the well-known path). A plain `rename` preserves the loose
+/// mode bits, so the evidence copy would stay world-readable at its new
+/// name. Here the app owns the copy it creates: stream-copy the content
+/// (no unbounded in-memory read), tighten the copy to 0600 — the chmod
+/// that failed on the foreign-owned source succeeds on our own file —
+/// then unlink the loose original. The app's authority over the original
+/// is the parent directory's write bit, not the file's ownership.
+/// Non-regular targets (the EISDIR fixture plants a directory at the
+/// path), unreadable sources, and copy failures keep
+/// [`quarantine_corrupt_file`]'s rename semantics; if the copy lands but
+/// the unlink fails, the returned error makes the caller log that the
+/// loose file stays in place (the 0600 copy still exists as evidence).
+pub(crate) fn quarantine_secret_file(path: &Path) -> io::Result<PathBuf> {
+    let is_regular = std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_file())
+        .unwrap_or(false);
+    let quarantine = quarantine_destination(path);
+    if is_regular && std::fs::copy(path, &quarantine).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o600));
+        }
+        return match std::fs::remove_file(path) {
+            Ok(()) => Ok(quarantine),
+            Err(remove_error) => Err(remove_error),
+        };
+    }
+    quarantine_corrupt_file(path)
 }
 
 fn quarantine_destination(path: &Path) -> PathBuf {
@@ -2707,8 +2742,8 @@ pub(crate) mod tests {
     use std::path::Path;
 
     use super::{
-        atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
-        read_capped, rotate_log_if_oversized,
+        atomic_write, atomic_write_private, is_executable_file, permission_bits,
+        quarantine_corrupt_file, quarantine_secret_file, read_capped, rotate_log_if_oversized,
     };
     #[cfg(unix)]
     use super::{create_secret_file, open_private_append_file, open_private_lock_file};
@@ -3510,6 +3545,57 @@ pub(crate) mod tests {
         reader.join().unwrap();
         let final_value = std::fs::read_to_string(&target).unwrap();
         assert!(final_value == old || final_value == new);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Round-9 复审 minor:秘密文件的隔离必须是「0600 副本 + unlink 原
+    /// 件」——普通 rename 保留放宽的 mode 位,他者属主的世界可读密文件
+    /// 在隔离名下依旧裸奔。目录占位(EISDIR fixture)退回 rename。
+    #[test]
+    #[cfg(unix)]
+    fn quarantine_secret_file_copies_0600_and_unlinks_the_original() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-secret-quarantine-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let loose = root.join("web-access.json");
+        std::fs::write(&loose, b"{\"desktop_secret\":\"token\"}").unwrap();
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let quarantined =
+            quarantine_secret_file(&loose).expect("regular-file quarantine must succeed");
+        assert!(!loose.exists(), "the loose original must be unlinked");
+        assert_eq!(
+            std::fs::read(&quarantined).unwrap(),
+            b"{\"desktop_secret\":\"token\"}",
+            "the quarantined evidence must stay verbatim"
+        );
+        assert_eq!(
+            permission_bits(&quarantined).unwrap(),
+            Some(0o600),
+            "the quarantined copy must be tightened to 0600"
+        );
+        assert!(
+            quarantined
+                .to_string_lossy()
+                .contains("web-access.json.corrupt-"),
+            "the quarantine name must stay in the same directory family"
+        );
+
+        // 目录占位(读取腿 EISDIR 的真实形态)退回 rename:原件挪走,
+        // 证据保留为目录。
+        let placeholder = root.join("pending.json");
+        std::fs::create_dir_all(&placeholder).unwrap();
+        let quarantined_dir =
+            quarantine_secret_file(&placeholder).expect("directory quarantine must fall back");
+        assert!(!placeholder.exists());
+        assert!(quarantined_dir.is_dir());
         let _ = std::fs::remove_dir_all(root);
     }
 

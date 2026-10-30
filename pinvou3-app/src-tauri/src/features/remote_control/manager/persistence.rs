@@ -181,19 +181,24 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
     platform::enforce_private_permissions(&file, path).map_err(|error| {
         // Round-8 复审 minor:修复自身失败(fchmod 需要 owner 权限,
         // 备份恢复可能留下他者属主的世界可读密文件)时,不能把它一直
-        // 留在众所周知的路径上。隔离改名只需要父目录写权限,下一轮
-        // start 会用 0600 重建;隔离也失败(目录只读/Windows 文件锁)
-        // 则保持原错误——那与目录不可写同级,后续写入同样会失败。
-        match crate::platform::filesystem::quarantine_corrupt_file(path) {
+        // 留在众所周知的路径上。Round-9 复审:普通 rename 会保留放宽的
+        // mode 位,隔离副本在新名字下依旧世界可读——改走 0600 副本 +
+        // unlink 原件(隔离副本是本进程创建的,fchmod 在其上必然成功;
+        // 对原件的权限来自父目录写位,不依赖文件属主)。目录占位(EISDIR
+        // fixture)等非普通文件退回 rename 语义;隔离彻底失败(目录只读/
+        // Windows 文件锁)则保持原错误——那与目录不可写同级,后续写入
+        // 同样会失败。
+        match crate::platform::filesystem::quarantine_secret_file(path) {
             Ok(quarantined) => eprintln!(
                 "[web-access] could not restrict permissions on {} ({error}); \
-                     quarantined to {} and the next start creates a fresh 0600 file",
+                     quarantined to {} (copy tightened to 0600) and the next \
+                     start creates a fresh 0600 file",
                 path.display(),
                 quarantined.display()
             ),
             Err(quarantine_error) => eprintln!(
                 "[web-access] could not restrict permissions on {} ({error}) and the \
-                     quarantine rename also failed ({quarantine_error}); the loose file \
+                     quarantine also failed ({quarantine_error}); the loose file \
                      stays in place",
                 path.display()
             ),
@@ -435,19 +440,22 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
     // (Windows/fallback 平台该调用是显式 no-op。)
     if let Err(error) = platform::enforce_private_permissions(&file, path) {
         // Round-8 复审 minor:修复自身失败时同样把放宽权限的密文件隔离
-        // 挪离众所周知的路径(与 load_config_from 同因同策);隔离失败则
-        // 保持 Unavailable 原错误。
-        match crate::platform::filesystem::quarantine_corrupt_file(path) {
+        // 挪离众所周知的路径(与 load_config_from 同因同策)。Round-9
+        // 复审:改走 0600 副本 + unlink 原件,隔离副本不再继承放宽的
+        // mode 位(见 load_config_from 内的同名注释);非普通文件退回
+        // rename;隔离失败则保持 Unavailable 原错误。
+        match crate::platform::filesystem::quarantine_secret_file(path) {
             Ok(quarantined) => eprintln!(
                 "[web-access] could not restrict permissions on {} ({error}); \
-                 quarantined to {} and the next write creates a fresh 0600 ledger",
+                 quarantined to {} (copy tightened to 0600) and the next \
+                 write creates a fresh 0600 ledger",
                 path.display(),
                 quarantined.display()
             ),
             Err(quarantine_error) => eprintln!(
                 "[web-access] could not restrict permissions on {} ({error}) and the \
-                 quarantine rename also failed ({quarantine_error}); the loose file \
-                 stays in place",
+                     quarantine also failed ({quarantine_error}); the loose file \
+                     stays in place",
                 path.display()
             ),
         }
@@ -933,6 +941,39 @@ mod tests {
                 "{fn_name} must route its env override through normalized_env_url"
             );
             assert!(body.contains(env_name), "{fn_name} must read {env_name}");
+        }
+    }
+
+    /// Round-9 复审 minor:两个 loader 的修复失败腿必须走
+    /// `quarantine_secret_file`(0600 副本 + unlink 原件)而不是普通
+    /// `quarantine_corrupt_file`——rename 保留放宽的 mode 位,他者属主
+    /// 的世界可读密文件在隔离名下依旧裸奔。该分支的触发需要他者属主
+    /// (CI 无法驱动,与 round-8 的 review-pinned 残例同类),按本模块
+    /// 惯例用 source-contract 钉住两个调用点;helper 自身的 0600/unlink
+    /// 语义由 filesystem 模块的 executing 测试覆盖。
+    #[test]
+    fn repair_failure_legs_quarantine_secret_files() {
+        let source = include_str!("persistence.rs");
+        for fn_name in [
+            "pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, String> {",
+            "fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {",
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub(super) fn ")
+                .or_else(|| body.find("\nfn "))
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("quarantine_secret_file(path)"),
+                "{fn_name} must quarantine a failed-permission repair via quarantine_secret_file"
+            );
+            assert!(
+                !body.contains("quarantine_corrupt_file(path)"),
+                "{fn_name} must not keep the loose-mode rename on its repair-failure leg"
+            );
         }
     }
 }

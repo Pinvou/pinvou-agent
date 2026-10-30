@@ -4702,12 +4702,18 @@ mod tests {
         let valid_b = PendingRevocation::from(&test_web_config("ep_salv_b"));
         let mut invalid = serde_json::to_value(&valid_a).unwrap();
         invalid["endpoint_id"] = json!("bad id");
+        // Round-9 复审 minor:重复条目与 valid_a 同键(relay_url +
+        // endpoint_id)但 desktop_secret 不同——「保留首个」与「保留末个」
+        // 自此不再等价,钉才真正判别(旧夹具的重复条目是逐字节复制,两
+        // 种顺序行为相同,keep-first 从未被钉住)。
+        let mut duplicate = serde_json::to_value(&valid_a).unwrap();
+        duplicate["desktop_secret"] = json!("stale-keep-last-probe-secret-0123456789");
         let body = json!({
             "version": PENDING_REVOCATIONS_VERSION,
             "entries": [
                 serde_json::to_value(&valid_a).unwrap(),
                 invalid,
-                serde_json::to_value(&valid_a).unwrap(),
+                duplicate,
                 serde_json::to_value(&valid_b).unwrap(),
             ],
         });
@@ -4737,6 +4743,18 @@ mod tests {
             .collect();
         assert!(persisted_keys.contains(&pending_revocation_key(&valid_a)));
         assert!(persisted_keys.contains(&pending_revocation_key(&valid_b)));
+        // Round-9 复审 minor:同键重复条目必须保留「首个」的凭据——保留
+        // 末个会把待吊销记录换成旧密文(吊销 worker 拿旧 secret 去认证
+        // 会被拒,条目就永远悬着)。
+        let persisted_a = persisted
+            .entries
+            .iter()
+            .find(|entry| pending_revocation_key(entry) == pending_revocation_key(&valid_a))
+            .expect("the first duplicate's key must be salvaged");
+        assert_eq!(
+            persisted_a.desktop_secret, valid_a.desktop_secret,
+            "keep-first must preserve the first duplicate's credentials"
+        );
 
         let fresh = PendingRevocation::from(&test_web_config("ep_salv_c"));
         queue_pending_revocation_at(&path, fresh)
