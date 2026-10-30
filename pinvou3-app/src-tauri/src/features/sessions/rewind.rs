@@ -93,8 +93,12 @@ const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
 
 /// 底座 compaction 摘要标记。底座现行标记是 `COMPACTION_SUMMARY_MARKER`
-/// （首句 "Another language model started to solve this problem"，随摘要块写入
-/// system prompt），定义在底座 `CodeWhale/crates/tui/src/history_recognition.rs`；
+/// （首句 "Another language model started to solve this problem"，随摘要检查点
+/// 以 `Role::User` 历史消息进入对话历史并单独存于 `compaction_summary_prompt`，
+/// 稳定 system 前缀不携带检查点——底座 `core/engine.rs`
+/// `commit_compaction_checkpoint` 与 `compaction.rs`
+/// `compaction_checkpoint_message`），定义在底座
+/// `CodeWhale/crates/tui/src/history_recognition.rs`；
 /// 本字面量是底座 v0.9.6 前的旧格式标记（`LEGACY_COMPACTION_SUMMARY_MARKER`），
 /// 现仅命中旧格式会话——现行格式的会话回退后不再触发压缩残留提示，只是不提示，
 /// 不影响回退正确性，可接受。
