@@ -459,6 +459,21 @@ mod tests {
             )
             .contains("输出超出捕获上限")
         );
+        // Windows 溢出后退出路径对已回收 root 产出**无 claim** 的溢出文案:
+        // 本边界对两条锚点路径都只回固定文案、不透传 raw,该形态钉住的是
+        // 归因仍按锚点、文案仍不含内嵌输出。
+        let overflow_no_claim = privileged_helper_execution_error(
+            "恢复共享知识库",
+            "pkexec output exceeded 4194304 bytes: stdout:\nsudo: policy plugindata",
+        );
+        assert!(
+            overflow_no_claim.contains("输出超出捕获上限"),
+            "{overflow_no_claim}"
+        );
+        assert!(
+            !overflow_no_claim.contains("plugindata"),
+            "{overflow_no_claim}"
+        );
 
         // 超时错误同样内嵌捕获输出：固定前缀照旧，detail 不得进用户文案。
         let timeout_with_capture = privileged_helper_execution_error(

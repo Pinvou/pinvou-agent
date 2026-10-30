@@ -189,11 +189,14 @@ fn archive_list_stats(path: &Path) -> Result<(usize, u64), String> {
 /// 把 `7z l` 的平台层错误映射成面向用户的拒绝原因。列表输出本身越过
 /// 4 MiB 捕获上限 ≈ 条目数多到无法枚举（每条目 ~400-500 字节）：按「条
 /// 目过多」报因，而不是把平台层溢出文案（含内嵌输出）透传给用户。条目
-/// 数上限本来就是 50，这里只是让拒绝原因可读。
+/// 数上限本来就是 50，这里只是让拒绝原因可读。超时文案同样内嵌捕获输出
+/// （超时前已列出的部分列表），故同样只回固定文案、不透传 raw——两条
+/// 锚点路径都不让内嵌输出进拒绝原因。
 ///
 /// 与 connector/pkexec 边界同规则：按锚点首次出现位置取先者——子进程自
 /// 己的输出恰好含另一条锚点文本（如超时 detail 里带 "output exceeded"）
-/// 时不得翻转归因；两条路都拒绝，错的只是拒绝原因。
+/// 时不得翻转归因；两条路都拒绝，错的只是拒绝原因。其余形态（spawn /
+/// wait / readback 失败）不含捕获输出，raw 透传保留诊断价值。
 fn map_archive_list_error(error: String) -> String {
     let timeout = error.find(crate::platform::process::CAPTURE_TIMEOUT_ANCHOR);
     let overflow = error.find(crate::platform::process::CAPTURE_OVERFLOW_ANCHOR);
@@ -204,6 +207,8 @@ fn map_archive_list_error(error: String) -> String {
     };
     if overflow_first {
         String::from("7z 列表输出超出捕获上限：条目过多，已终止列举进程")
+    } else if timeout.is_some() {
+        String::from("7z 列表超时：已终止列举进程，请重试")
     } else {
         format!("7z 调用失败: {error}")
     }
@@ -344,7 +349,8 @@ mod tests {
         );
 
         // 子进程输出里含 "output exceeded" 的超时错误：溢出锚点在后，按
-        // 超时归因（既有行为是原样透传包装，这里只钉归因不翻转）。
+        // 超时归因（不得翻转）。超时 detail 内嵌已列出的部分列表，拒绝
+        // 原因只回固定超时文案，内嵌输出不得透传。
         let spoofed_timeout = map_archive_list_error(String::from(
             "7z timed out after 60s: stderr:\nlisting stopped: output exceeded quota",
         ));
@@ -352,7 +358,27 @@ mod tests {
             !spoofed_timeout.contains("条目过多"),
             "a timeout whose detail mentions the overflow anchor must not be misattributed: {spoofed_timeout}"
         );
-        assert!(spoofed_timeout.contains("7z 调用失败"));
+        assert!(
+            spoofed_timeout.contains("7z 列表超时"),
+            "a timeout must map to the fixed timeout rejection: {spoofed_timeout}"
+        );
+        assert!(
+            !spoofed_timeout.contains("listing stopped"),
+            "the embedded capture must not pass through: {spoofed_timeout}"
+        );
+
+        // 超时 detail 内嵌真实列表内容（路径/大小行）时同样不得透传。
+        let timeout_with_listing = map_archive_list_error(String::from(
+            "7z timed out after 60s: stdout:\nPath = /private/var/secret/leaked.7z\nSize = 12345",
+        ));
+        assert!(
+            timeout_with_listing.contains("7z 列表超时"),
+            "{timeout_with_listing}"
+        );
+        assert!(
+            !timeout_with_listing.contains("leaked.7z") && !timeout_with_listing.contains("Path ="),
+            "the embedded partial listing must not pass through: {timeout_with_listing}"
+        );
 
         // spawn/wait 等无锚点错误：原样透传包装。
         let plain = map_archive_list_error(String::from("spawn 7z failed: program not found"));
