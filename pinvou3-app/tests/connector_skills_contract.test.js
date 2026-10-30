@@ -558,20 +558,29 @@ const isScanScript = (f) =>
   path.basename(f).toLowerCase().endsWith(".py") &&
   !path.basename(f).startsWith("NOTICE");
 const scripts = files.filter(isScanScript);
-// 扫描目标列表具名,下方范围自检钉的就是这份被真正迭代的列表(只钉 scripts 数组
-// 会让「循环里悄悄少迭代 ...scripts」仍绿——经变异验证)。
+// 扫描目标列表具名:下方范围自检与生产调用钉的都是这份列表。
 const hostAliasTargets = [...docs, ...scripts];
-for (const f of hostAliasTargets) {
-  let hit = null;
-  for (const line of read(f).split("\n")) {
+// 单文件扫描:逐行分类,返回 {line, match} 或 null。pack 扫描与自检共用此实现。
+const scanHostAlias = (text) => {
+  for (const line of text.split("\n")) {
     const m = hostAliasHit(line);
-    if (m) {
-      hit = `${rel(f)}: 上游宿主称谓/版本差异措辞回潮（${m[0]}）: ${line.trim()}——按品悟口径改写;新的合法搭配先补 must-pass 自检再扩正则`;
-      break;
-    }
+    if (m) return { line, match: m[0] };
   }
-  if (hit) assert.fail(hit);
-}
+  return null;
+};
+// 生产扫描整链抽成函数(迭代→读→扫→命中即抛):真包内无法栽种违例文件,自检
+// 只能以合成 reader 真跑同一函数(见下方盲点自检),生产调用行则由文本钉钉住——
+// 把调用改去迭代 docs/scripts、删掉调用、掏空循环体、删掉命中判定,四处都会红。
+const scanHostAliasTargets = (targets, readText) => {
+  for (const f of targets) {
+    const hit = scanHostAlias(readText(f));
+    if (hit)
+      assert.fail(
+        `${rel(f)}: 上游宿主称谓/版本差异措辞回潮（${hit.match}）: ${hit.line.trim()}——按品悟口径改写;新的合法搭配先补 must-pass 自检再扩正则`,
+      );
+  }
+};
+scanHostAliasTargets(hostAliasTargets, read);
 // 文件范围自检(与规则 10 同款):「Wukong Agent」宿主断言的历史载体是 .py 脚本
 // docstring,.py 一旦被剔出扫描范围,上面的 must-fail 固定装置仍绿而真实防线已死。
 assert.ok(
@@ -628,6 +637,35 @@ assert.ok(!isScanScript("/pack/dws/scripts/helper.md"), "规则 12 脚本过滤�
   ]) {
     assert.equal(hostAliasHit(text), null, `规则 12 合法形态不得误伤: ${text}`);
   }
+  // 循环执行自检:以合成 reader 真跑生产扫描函数——违例目标必须抛出含触发表单的
+  // 消息,干净目标必须安静通过。这执行了「迭代→读→逐行扫→命中即抛」整条链而不只
+  // 是单行分类器:掏空循环体、删掉命中判定、在函数内把目标面收窄到任一半边
+  // (.md-only 红于 Wukong 夹具、.py-only 红于悟空运行夹具)都会在此转红。
+  // virtual 路径不落盘,reader 是注入的合成函数。
+  const virtualPy = path.join(root, "virtual", "host-alias-selfcheck.py");
+  const virtualMd = path.join(root, "virtual", "host-alias-selfcheck.md");
+  assert.doesNotThrow(
+    () => scanHostAliasTargets([virtualPy], () => "clean line, no upstream host wording\n"),
+    "规则 12 生产扫描对干净目标必须安静通过",
+  );
+  assert.throws(
+    () => scanHostAliasTargets([virtualPy], () => "ok line\n# Wukong Agent attendance report helper\n"),
+    /Wukong Agent/,
+    "规则 12 生产扫描必须对 .py 载体违例抛出(掏空循环/删命中判定此处红)",
+  );
+  assert.throws(
+    () => scanHostAliasTargets([virtualMd], () => "悟空运行环境可能是 Windows cmd / PowerShell / macOS bash\n"),
+    /悟空运行/,
+    "规则 12 生产扫描必须对 .md 载体违例抛出(目标面在函数内收窄此处红)",
+  );
+  // 迭代接线自检:真包内不能栽种违例文件,生产调用行按文本钉住——必须以
+  // hostAliasTargets 全表为迭代目标、以 read 为读取入口;行首锚定,注释提及不算
+  // (与 §8 钉脚本循环形态同款)。把调用改去迭代 docs 或 scripts、或删掉调用,这里红。
+  assert.match(
+    read(__filename),
+    /^scanHostAliasTargets\(hostAliasTargets, read\);$/m,
+    "规则 12 生产扫描必须迭代 hostAliasTargets 全表(接线改动此处红)",
+  );
 }
 
 // 13) 本地安全/完整性硬约束在场钉（2026-10-27 review 补：dws NOTICE 压缩为修改
