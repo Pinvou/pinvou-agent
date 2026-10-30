@@ -25,7 +25,7 @@ import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ArtifactCard, localizeTool, tsToolsData, tsToolWelcomeData } from '../tools/tool-common.jsx';
 import { RightDockPanel, useRightDockOcclusion } from '../../components/layout/RightDock.jsx';
-import { CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard } from '../tools/tool-renderers.jsx';
+import { ApprovalCard, CarefulBlockedCard, PlanCard, PlanStuckCard, ToolCard, UserInputCard } from '../tools/tool-renderers.jsx';
 import { cardBtnCls } from '../../shared/card-buttons.mjs';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
 import { RunningAgentsOverlay } from '../multiagent/RunningAgentsOverlay.jsx';
@@ -2979,10 +2979,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // round-47 M5: the resolver body lives in features/chat/bound-draft-mode.js
       // (shared with main.jsx's chatLaneGrantMode) — one body, no drift twin.
       const boundDraftNoticeMode = () => boundDraftNoticeModeOf(bridge, bs);
-      async function handleModeChipSwitch(target, { isPlan }) {
+      async function handleModeChipSwitch(target, { isPlan } = {}) {
         if (!bridge.available || !bridge.interaction) return;
         if (target === 'plan' && !isPlan) {
           await bridge.interaction.setPlanModeNext();
+          return;
+        }
+        // Auto（tri-mode 逐项审批档）：无一次性确认门——门只对 yolo 生效。
+        // 目标会话在 entry 捕获：await 期间切走也切的是发起会话的 mode。
+        // 桌面专属命令：Web 桥无此方法（desktop-only API），存在性守卫早退。
+        if (target === 'auto') {
+          if (typeof bridge.interaction.setSessionMode !== 'function') return;
+          await bridge.interaction.setSessionMode(activeSessionId, 'auto');
           return;
         }
         if (target !== 'yolo' || !isPlan) return;
@@ -2999,15 +3007,31 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // adjudicated session must reach the command as a parameter.
         await bridge.interaction.exitPlanToYolo(gateSid);
       }
+      // 会话级「守卫命中时询问」开关（tri-mode）：乐观翻转 + 失败回滚都在
+      // bridge（interaction.setAskOnGuardrail，setMultiAgentMode 同款模式），
+      // 这里只转发；sid 由 bridge 在 entry 捕获 live-active。
+      async function handleToggleAskOnGuardrail(enabled) {
+        if (!bridge.available || !bridge.interaction) return;
+        if (typeof bridge.interaction.setAskOnGuardrail !== 'function') return;
+        await bridge.interaction.setAskOnGuardrail(activeSessionId, enabled);
+      }
       // The plan-stuck card's Go reaches Yolo too, so it passes the same
       // one-time gate and threads the card's session id into the bridge
       // (the bridge's no-arg form reads live-active, which is both a
       // gate bypass for a bound session and the stale-active defect).
-      async function handlePlanStuckGo(itemId) {
+      async function handlePlanStuckGo(itemId, targetMode) {
         if (!bridge.available || !bridge.interaction) return;
+        // Auto 档继续（tri-mode）：不经 Yolo 确认门（门只对 yolo 生效），走
+        // planStuckGoAuto——同一条补充指令，切换目标是 Auto 而不是 Yolo。
+        const goAuto = targetMode === 'auto' && typeof bridge.interaction.planStuckGoAuto === 'function';
         const gateSid = activeSessionId;
-        if (!gateSid) { await bridge.interaction.planStuckGo(itemId); return; }
+        if (!gateSid) {
+          if (goAuto) { await bridge.interaction.planStuckGoAuto(itemId); return; }
+          await bridge.interaction.planStuckGo(itemId);
+          return;
+        }
         if (gateSid !== activeSessionIdRef.current) return;
+        if (goAuto) { await bridge.interaction.planStuckGoAuto(itemId, gateSid); return; }
         pendingChatYoloActionRef.current = { kind: 'planStuckGo', itemId };
         if (!(await chatYoloGateAllows(gateSid))) return;
         await bridge.interaction.planStuckGo(itemId, gateSid);
@@ -4284,7 +4308,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                       />
                     );
                   })()}
-                  <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch} />
+                  <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch}
+                    askOnGuardrail={bs && bs.modeState ? bs.modeState.askOnGuardrail : undefined}
+                    onToggleAskOnGuardrail={handleToggleAskOnGuardrail} />
                   {/* Scheduled run conversations expose no swarm toggle:
                       the backend's swarm_mode_available excludes them (the
                       engine always assembles plain config there), so the
@@ -5085,6 +5111,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       if (item.type === 'plan_card') return <PlanCard item={item} t={t} onPrefill={onPrefill} />;
       if (item.type === 'plan_stuck') return <PlanStuckCard item={item} t={t} onGo={onPlanStuckGo} />;
       if (item.type === 'careful_blocked') return <CarefulBlockedCard item={item} t={t} />;
+      if (item.type === 'approval') return <ApprovalCard item={item} t={t} />;
       if (item.type === 'user_input') return <UserInputCard item={item} t={t} />;
       if (item.type === 'user') {
         return <UserBubble item={item} sessionId={sessionId} editable={editable} t={t} conversationVariant={conversationVariant} onOpenSessionMention={onOpenSessionMention} knownSessionMentionIds={knownSessionMentionIds} sessionMentionDisabled={sessionMentionDisabled} />;

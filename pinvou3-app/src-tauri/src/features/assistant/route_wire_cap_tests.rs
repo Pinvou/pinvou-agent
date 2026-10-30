@@ -275,6 +275,7 @@ async fn run_turn_against_mock(
             "wire-cap-session",
             "Say ok.".to_string(),
             AppMode::Agent,
+            crate::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
             None,
             false,
         )
@@ -435,6 +436,7 @@ async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
             "wire-cap-session",
             "Say ok.".to_string(),
             AppMode::Agent,
+            crate::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
             None,
             false,
         )

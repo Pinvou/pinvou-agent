@@ -264,7 +264,10 @@ pub async fn accept_plan(
     // the session was in before entering Plan (fallback Auto) — the claim
     // already flipped the store; carry its posture on the wire.
     let accepted_mode = accepted_mode_state.mode;
-    let approval = crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(accepted_mode);
+    let approval =
+        crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(
+            accepted_mode,
+        );
     if let Err(error) = pool
         .send_reserved_user_message(
             &session_id,
@@ -494,4 +497,136 @@ pub async fn summon_pinvou(
     )
     .await
     .map_err(|e| format!("summon_pinvou: {e:#}"))
+}
+
+// ===================== 交互审批面（tri-mode safety） =====================
+
+/// 前端审批卡决策回传：allow（仅此一次）/ allow_for_session（本会话同组操作
+/// 静默放行，grouping_key 作用域）/ deny（本会话对该确切操作记住拒绝，
+/// exact approval_key 作用域）。任何决策都先摘除挂起登记（卡已收口，engine
+/// 侧审批 id 也随调用消亡，不得残留）。不再 emit 事件——前端对自己的卡做
+/// 乐观更新，静默放行/硬拒本就没有卡。
+#[tauri::command]
+pub async fn decide_approval(
+    session_id: String,
+    approval_id: String,
+    decision: String,
+    pool: State<'_, EnginePool>,
+) -> Result<(), String> {
+    use crate::features::assistant::pending_approvals;
+    // 先摘登记：拿回 approval_key / grouping_key 供缓存写入；engine 侧调用
+    // 失败（审批已超时/turn 已中断）时卡也必须消失，不能因错误返回而残留。
+    let pending = pending_approvals::remove(&session_id, &approval_id)
+        .ok_or_else(|| format!("decide_approval: approval not found: {approval_id}"))?;
+    let engine = pool
+        .handle_for(&session_id)
+        .await
+        .ok_or_else(|| "session_engine_not_running".to_string())?;
+    let result = match decision.as_str() {
+        "allow" => engine.handle.approve_tool_call(approval_id.clone()).await,
+        // 授予记在 lossy grouping_key 上：覆盖后续旗标变体（v0.8.37 语义）。
+        "allow_for_session" => {
+            pending_approvals::remember_grant(&session_id, &pending.approval_grouping_key);
+            engine.handle.approve_tool_call(approval_id.clone()).await
+        }
+        // 拒绝记在 exact approval_key 上：换参数要重新请批（#1617 语义）。
+        "deny" => {
+            pending_approvals::remember_denial(&session_id, &pending.approval_key);
+            engine.handle.deny_tool_call(approval_id.clone()).await
+        }
+        _ => {
+            return Err(format!(
+                "decide_approval: invalid decision \"{decision}\" (expected allow | allow_for_session | deny)"
+            ));
+        }
+    };
+    result.map_err(|error| format!("decide_approval({decision}): {error:#}"))
+}
+
+/// 会话当前挂起的审批卡。代码页会话 lane 随组件卸载销毁，
+/// `chat:approval_required` 不重发；remount 时调本命令还原审批卡
+/// （与 get_pending_user_inputs 同一还原思路）。
+#[tauri::command]
+pub async fn get_pending_approvals(
+    session_id: String,
+) -> Vec<crate::features::assistant::pending_approvals::PendingApproval> {
+    crate::features::assistant::pending_approvals::list(&session_id)
+}
+
+/// Tri-mode 统一模式切换：写会话 mode（`set_plan_mode_next` 同款持久化），
+/// 可选同时翻转 ask-on-guardrail；会话引擎在位时热同步底座安全姿态
+/// （`Op::ChangeMode`），否则下次发送按新 mode 组 op。返回刷新后的完整
+/// mode 状态。Plan 的 pending ticket 由 `set_mode_in_memory` 既有语义清空，
+/// 这里不重复处理。
+#[tauri::command]
+pub async fn set_session_mode(
+    session_id: String,
+    mode: SerializableMode,
+    ask_on_guardrail: Option<bool>,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<SessionModeState, String> {
+    store
+        .set_mode(&session_id, mode)
+        .map_err(|error| format!("set_session_mode({session_id}): {error:#}"))?;
+    if let Some(enabled) = ask_on_guardrail {
+        store
+            .set_ask_on_guardrail(&session_id, enabled)
+            .map_err(|error| format!("set_session_mode({session_id}): {error:#}"))?;
+    }
+    sync_engine_safety_posture(&session_id, &pool).await?;
+    let state = store.mode_state(&session_id);
+    emit_mode_changed(&app, &session_id, state.mode, state.ask_on_guardrail);
+    Ok(state)
+}
+
+/// 单独翻转会话 ask-on-guardrail（Yolo 全自动档下守卫命中弹卡还是硬拒）。
+/// 会话尚无 mode 状态条目时随全局默认（store 侧不物化条目，避免钉死 mode）。
+#[tauri::command]
+pub async fn set_ask_on_guardrail(
+    session_id: String,
+    enabled: bool,
+    store: State<'_, SessionStore>,
+    pool: State<'_, EnginePool>,
+    app: AppHandle,
+) -> Result<SessionModeState, String> {
+    store
+        .set_ask_on_guardrail(&session_id, enabled)
+        .map_err(|error| format!("set_ask_on_guardrail({session_id}): {error:#}"))?;
+    sync_engine_safety_posture(&session_id, &pool).await?;
+    let state = store.mode_state(&session_id);
+    emit_mode_changed(&app, &session_id, state.mode, state.ask_on_guardrail);
+    Ok(state)
+}
+
+/// 会话引擎在位时把新安全姿态热同步进底座（`Op::ChangeMode`）；引擎不在位
+/// 则跳过——lazy spawn 的下一次发送自会按 store 里的 mode 组 op。
+async fn sync_engine_safety_posture(
+    session_id: &str,
+    pool: &State<'_, EnginePool>,
+) -> Result<(), String> {
+    if pool.handle_for(session_id).await.is_some() {
+        pool.sync_session_safety_posture(session_id)
+            .await
+            .map_err(|error| format!("sync_session_safety_posture({session_id}): {error:#}"))?;
+    }
+    Ok(())
+}
+
+/// `chat:mode_changed` 双路广播（桌面 emit + 远程转发），payload 的 mode 为
+/// snake_case 序列化值，ask_on_guardrail 为会话解析值（无条目会话 = 全局默认）。
+fn emit_mode_changed(
+    app: &AppHandle,
+    session_id: &str,
+    mode: SerializableMode,
+    ask_on_guardrail: bool,
+) {
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "mode": mode,
+        "ask_on_guardrail": ask_on_guardrail,
+    });
+    let _ = app.emit("chat:mode_changed", payload.clone());
+    crate::features::remote_control::forward_app_event(app, "chat:mode_changed", payload);
 }

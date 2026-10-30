@@ -504,7 +504,7 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.match(
     assistantBridgeSource,
-    /build_engine_config_for_multi_agent[\s\S]{0,3200}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
+    /build_engine_config_for_multi_agent[\s\S]{0,4800}FleetRoster::load\([\s\S]{0,160}snapshot\.fleet_config\(\)[\s\S]{0,80}&cfg\.workspace/,
     '初始名册必须把全局配置与实际 execution workspace 合并，允许项目同名 profile 按底座规则覆盖',
   );
   // Wave-2 拆分后 sessions 职责分散在 mod.rs 与 mode_state/store/retention 等
@@ -897,8 +897,8 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
   assert.match(
     tauriBridgeSource,
-    /multiAgent: !!st\.multi_agent/,
-    'modeState 权威写回收敛点（applyAuthoritativeModeState）必须带 multiAgent，模式事件不得把开关状态冲掉',
+    /multiAgent: st\.multi_agent === undefined\s*\n\s*\? !!\(state\.modeState && state\.modeState\.multiAgent\)\s*\n\s*: !!st\.multi_agent/,
+    'modeState 权威写回收敛点（applyAuthoritativeModeState）必须带 multiAgent；模式事件负载不携带该字段时保留当前值（不得冲掉开关状态）',
   );
 });
 

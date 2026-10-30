@@ -591,9 +591,18 @@ const ToolOutput = ({ item, t }) => {
     // ==========================================
     // PlanStuckCard — Plan 模式 AI 撞只读保护(白名单/sandbox)的兜底卡
     // ==========================================
+    // tri-mode：继续的两个出路拆成 Auto（逐项审批，默认主按钮，不经 Yolo
+    // 确认门）与 Yolo（全自动，仍走 ChatView 的一次性确认门）。onGo 收
+    // (itemId, targetMode)；无 onGo 的旧宿主回退 bridge 直调（yolo 默认）。
     const PlanStuckCard = ({ item, t, onGo }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = item.resolved;
+      const goYolo = () => (onGo ? onGo(item.id, 'yolo') : bridge.interaction.planStuckGo(item.id));
+      const goAuto = () => (onGo
+        ? onGo(item.id, 'auto')
+        : (bridge.interaction && typeof bridge.interaction.planStuckGoAuto === 'function'
+          ? bridge.interaction.planStuckGoAuto(item.id)
+          : bridge.interaction.planStuckGo(item.id)));
       return (
         <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
           <div className={`text-[13px] leading-relaxed mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
@@ -604,7 +613,8 @@ const ToolOutput = ({ item, t }) => {
           ) : (
             <div className="flex items-center gap-2 flex-wrap">
               <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => bridge.interaction.planStuckReplan(item.id)}>{t.stuckReplan}</button>
-              <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={() => (onGo ? onGo(item.id) : bridge.interaction.planStuckGo(item.id))}>⚡ {t.stuckGo}</button>
+              <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={goAuto}>{t.stuckGoAuto}</button>
+              <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={webReadOnly} onClick={goYolo}>⚡ {t.stuckGoYolo}</button>
             </div>
           )}
         </div>
@@ -709,4 +719,93 @@ const ToolOutput = ({ item, t }) => {
       );
     };
 
-export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard };
+    // ==========================================
+    // ApprovalCard — 🛡️ tri-mode 审批卡（工具调用逐项请批）
+    // ==========================================
+    // 后端在 ask-on-guardrail 武装（或 Auto 姿态）下对可提示工具弹卡。
+    // 决策走 decide_approval：allow（仅此一次）/ allow_for_session（本会话
+    // 同组静默放行，grouping key 作用域）/ deny（本会话对该确切操作记住
+    // 拒绝，exact approval key 作用域）。乐观提交态与终态由 bridge
+    // （interaction.decideApproval）写回 item；这里只按 item 渲染。
+    const approvalInputView = (input) => {
+      if (input == null) return null;
+      if (typeof input === 'string') {
+        return { pre: input.length > 400 ? `${input.slice(0, 400)}…` : input };
+      }
+      if (typeof input !== 'object') return { pre: String(input) };
+      const keys = Object.keys(input);
+      // 小而浅的对象 → key: value 行（比 JSON 更易扫读）；否则整段 JSON 截断。
+      if (keys.length > 0 && keys.length <= 6 && keys.every((key) => {
+        const value = input[key];
+        if (value == null || typeof value === 'object') return false;
+        return String(value).length <= 80 && key.length <= 40;
+      })) {
+        return { lines: keys.map(key => [key, String(input[key])]) };
+      }
+      let text;
+      try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
+      return { pre: text.length > 400 ? `${text.slice(0, 400)}…` : text };
+    };
+    const ApprovalCard = ({ item, t, onDecide }) => {
+      const webReadOnly = multiAgentWebReadOnly();
+      const done = !!item.resolved;
+      const submitting = !done && !!item.submitting;
+      const lockButtons = submitting || webReadOnly;
+      const statusText = done
+        ? (item.statusLabel
+          || (item.cardState === 'denied' ? t.approvalDenied
+            : item.cardState === 'allowed_session' ? t.approvalAllowedSession
+            : t.approvalAllowed))
+        : submitting ? t.approvalSubmitting
+        : webReadOnly ? t.uiMultiAgent.webActionHint
+        : '';
+      const inputView = approvalInputView(item.input);
+      const decide = (decision) => {
+        if (onDecide) { onDecide(decision); return; }
+        if (bridge.available && bridge.interaction && typeof bridge.interaction.decideApproval === 'function') {
+          bridge.interaction.decideApproval(item.approvalId, decision);
+        }
+      };
+      return (
+        <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
+          <div className={`text-[14px] font-semibold mb-2 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
+            {t.approvalTitle}{' '}
+            <code className={`px-1.5 py-0.5 rounded text-[12px] font-mono bg-black/10 dark:bg-white/10`}>{item.toolName || t.uiToolRender.toolUnknown}</code>
+          </div>
+          {item.description ? (
+            <div className={`text-[13px] leading-relaxed mb-1.5 text-[#444746] dark:text-[#C4C7C5]`}>{item.description}</div>
+          ) : null}
+          {item.intentSummary ? (
+            <div className={`text-[12px] leading-relaxed mb-1.5 text-[#757575] dark:text-[#8E8E8E]`}>
+              <span className="font-medium">{t.approvalIntent}: </span>{item.intentSummary}
+            </div>
+          ) : null}
+          {inputView ? (
+            inputView.lines ? (
+              <div className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] space-y-0.5`}>
+                {inputView.lines.map(([key, value]) => (
+                  <div key={key}><span className="text-[#0B57D0] dark:text-[#8AB4F8]">{key}</span>: {value}</div>
+                ))}
+              </div>
+            ) : (
+              <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
+            )
+          ) : null}
+          <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
+          {done ? (
+            <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button type="button" className={cardBtnCls('primary') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={lockButtons} onClick={() => decide('allow')}>{t.approvalAllow}</button>
+                <button type="button" className={cardBtnCls() + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={lockButtons} onClick={() => decide('allow_for_session')}>{t.approvalAllowSession}</button>
+                <button type="button" className={cardBtnCls('danger') + ' disabled:opacity-40 disabled:cursor-not-allowed'} disabled={lockButtons} onClick={() => decide('deny')}>{t.approvalDeny}</button>
+              </div>
+              {statusText ? <div className={`mt-2 text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div> : null}
+            </>
+          )}
+        </div>
+      );
+    };
+
+export { ToolOutput, ToolCard, PlanLayer, cardBoxCls, PlanCard, PlanStuckCard, CarefulBlockedCard, UserInputCard, ApprovalCard };

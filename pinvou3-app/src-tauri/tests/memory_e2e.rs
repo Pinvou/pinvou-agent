@@ -514,6 +514,7 @@ async fn memory_llm_uses_profile_in_fresh_session() {
         "我没有在本轮告诉你我的称呼。请只根据你能看到的长期记忆，用一句话回答：你应该怎么称呼我？不要解释。"
             .to_string(),
         AppMode::Agent,
+        pinvou3_lib::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
         None,
         true,
     )
@@ -574,6 +575,7 @@ async fn memory_llm_current_instruction_overrides_memory() {
         "长期记忆里可能有默认称呼，但本轮请称呼我周老师。只回答：本轮应该称呼我什么？不要解释。"
             .to_string(),
         AppMode::Agent,
+        pinvou3_lib::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
         None,
         true,
     )
@@ -622,6 +624,7 @@ async fn memory_llm_one_off_task_does_not_create_long_term_memory() {
             "这是一次性临时任务：今天午饭我可能吃面。不要把它当长期偏好。请只回答“收到”。"
                 .to_string(),
             AppMode::Agent,
+            pinvou3_lib::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
             None,
             true,
         )

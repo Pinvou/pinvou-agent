@@ -210,7 +210,11 @@ command_protocol!(
         "submit_user_input",
         "cancel_user_input",
         "get_pending_user_inputs",
-        "summon_pinvou"
+        "summon_pinvou",
+        "decide_approval",
+        "get_pending_approvals",
+        "set_session_mode",
+        "set_ask_on_guardrail"
     ]
 );
 command_protocol!(
@@ -485,6 +489,8 @@ command_protocol!(
     "settings.rs",
     [
         "get_settings",
+        "get_ask_on_guardrail_default",
+        "set_ask_on_guardrail_default",
         "submit_feedback",
         "get_effective_model_config",
         "list_models",
