@@ -5582,14 +5582,11 @@ mod tests {
         );
     }
 
-    /// Round-9 M5: the receipt guard — apply a record (receipt lands),
-    /// corrupt the spool bytes to invalid JSON, re-drain: the poison arm
-    /// must NOT overwrite the ok:true receipt (the last-resort idempotency
-    /// defense for post-apply corruption; the round-8 guard was
-    /// mutation-proven unpinned).
     /// Round-9 M5 (#628): the receipt guard — apply a record (receipt
     /// lands), corrupt the spool bytes to invalid JSON, re-drain: the
-    /// poison arm must NOT overwrite the ok:true receipt.
+    /// poison arm must NOT overwrite the ok:true receipt (the last-resort
+    /// idempotency defense for post-apply corruption; the round-8 guard
+    /// was mutation-proven unpinned).
     #[tokio::test]
     async fn poisoned_record_never_overwrites_a_landed_ok_receipt() {
         let _home = TempHome::new();

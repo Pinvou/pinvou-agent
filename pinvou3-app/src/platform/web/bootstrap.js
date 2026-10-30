@@ -154,7 +154,7 @@
       this.webAllowedCommands = new Set();
       this.webAllowedEvents = new Set();
       // allowedCommands/allowedEvents are only assigned after policy/capability negotiation; declared null first
-      // (same falsy as the previously dynamic undefined; the existence check at line 612 is unchanged).
+      // (same falsy as the previously dynamic undefined; the consumer existence checks are unchanged).
       this.allowedCommands = null;
       this.allowedEvents = null;
       this.pendingListenerRegistrations = 0;

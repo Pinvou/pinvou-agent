@@ -622,7 +622,6 @@ def main() -> int:
     if not all_records:
         stats.add_warning("查询完成，但未得到任何记录")
 
-    # 从原始记录中提取每个用户的考勤组名称
     group_name_map = cmn.extract_group_names_from_records(all_records, user_ids)
 
     # 月度聚合（普通字段聚合 + 每日维度字段按天存储）
@@ -642,7 +641,6 @@ def main() -> int:
         except cmn.DwsCallError as e:
             stats.add_warning(f"[leave] 查询请假数据失败：{e}")
 
-    # 生成日期范围内所有日期列表
     all_dates = _generate_date_columns(start, end)
 
     # 构建表头：基础列 + 普通聚合字段（剔除"请假*"系列和按天展开字段）+ 请假展开列 + 按天展开字段

@@ -102,8 +102,7 @@ async fn collect_turn_events(
                 let t = start.elapsed().as_secs_f64();
                 // ApprovalRequired:headless harness 没有 event_forwarder 的
                 // auto-approve task,需要在这里主动调 approve_tool_call。
-                // 上游 trust_mode/auto_approve 不旁路 await_tool_approval(已知
-                // bug,见 engine.rs:298-300 注释)。
+                // 上游 trust_mode/auto_approve 不旁路 await_tool_approval(已知 bug)。
                 if let Event::ApprovalRequired { ref id, .. } = event {
                     let h = engine.handle.clone();
                     let id_clone = id.clone();

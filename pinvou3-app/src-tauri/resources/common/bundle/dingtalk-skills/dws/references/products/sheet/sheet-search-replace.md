@@ -116,5 +116,5 @@ dws sheet find --node <NODE_ID> --sheet-id <SHEET_ID> --find "SUM" --match-formu
 - `find` 的 `--match-entire-cell` 用于精确匹配：只返回单元格内容完全等于搜索文本的结果，不会匹配包含该文本的单元格（例如搜索"苹果"时，只匹配"苹果"，不匹配"苹果手机""苹果汁"等）。用户说"精确搜索/完全匹配/只搜等于XX的"时必须使用此参数
 - `find` 的 `--match-case` 默认为 true（区分大小写），设为 false 可忽略大小写
 - `find` 的 `--use-regexp` 启用后，`--find` 参数作为正则表达式处理
-- `replace` 的 `--find` 不能为空字符串，`--replace` 可以为空字符串（表示删除匹配内容）
+- `replace` 的 `--find` 不能为空字符串，`--replacement` 可以为空字符串（表示删除匹配内容）
 - `replace` 的 `--match-case` 默认为 false（不区分大小写），与 `find` 的默认行为不同

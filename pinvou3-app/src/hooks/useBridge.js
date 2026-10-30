@@ -38,10 +38,6 @@ function usePlatformCapability(capability) {
   return supported;
 }
 
-    /* ==========================================
-       自定义标题栏（无边框窗口）—— 最小化 / 最大化 / 关闭
-       ========================================== */
-
 // 只把真正的 loopback URL 视为本地端点，避免正则把
 // `https://localhost.example.com` / `http://127.0.0.10.example.com` 误判为本地。
 function baseUrlIsLoopback(baseUrl) {

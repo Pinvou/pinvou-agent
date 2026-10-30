@@ -1004,7 +1004,7 @@ def _apply_sheet_styles(
             elif row_fill is not None:
                 cell.fill = row_fill
 
-            # 数据区统一居中（参考图风格），仅对长文本（>10 字符）的非首列左对齐避免拥挤
+            # 数据区统一居中（参考图风格），仅对长文本（估算宽度 >14）的非首列左对齐避免拥挤
             if _is_numeric_value(value):
                 cell.alignment = styles["align_right"]
             else:
@@ -1119,11 +1119,9 @@ def write_excel(
     header_row = title_row_count + 1
     first_data_row = header_row + 1
 
-    # 写入表头
     for col_idx, header in enumerate(headers, start=1):
         ws.cell(row=header_row, column=col_idx, value=header)
 
-    # 写入数据
     for row_offset, row in enumerate(rows):
         excel_row = first_data_row + row_offset
         for col_idx, value in enumerate(row, start=1):
@@ -1219,17 +1217,14 @@ def write_excel_multi_sheets(
         header_row = title_row_count + 1
         first_data_row = header_row + 1
 
-        # 写入表头
         for col_idx, header in enumerate(headers, start=1):
             ws.cell(row=header_row, column=col_idx, value=header)
 
-        # 写入数据
         for row_offset, row in enumerate(rows):
             excel_row = first_data_row + row_offset
             for col_idx, value in enumerate(row, start=1):
                 ws.cell(row=excel_row, column=col_idx, value=_excel_safe(value))
 
-        # 应用统一样式
         if headers:
             _apply_sheet_styles(
                 ws, headers, rows, styles,
@@ -1469,7 +1464,7 @@ def print_summary(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 图片下载 + Excel 嵌入（detail 报表的"打卡图片"列专用）
+# 图片下载 + Excel 嵌入（detail"打卡图片"列与 checkin"图片1~9"列共用）
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 全局缓存：URL → 本地 PNG 文件路径，避免同一张图重复下载/转换
@@ -1552,7 +1547,7 @@ def download_and_convert_image(
     try:
         from io import BytesIO
         with PILImage.open(BytesIO(raw_bytes)) as img:
-            # webp 等可能是 RGBA / P 模式，统一转 RGB 再存 PNG
+            # webp 等可能是 P 模式等非 RGB/RGBA 格式，统一转 RGBA 再存 PNG
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGBA")
             img.save(local_path, format="PNG")

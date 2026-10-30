@@ -252,8 +252,7 @@ pub fn install_dependencies(
     // 1) 逐包:每装完一个包就推进 `current`,给出「正在安装 X (n/总数)」的真实进度;
     //    对 ~6 个小批次,逐包调用的额外开销可忽略。
     // 2) 流式:逐行读 brew stdout/stderr 并回调,让长尾包(libreoffice cask 数十分钟)
-    //    的「Downloading … 45%」实时可见,不再像卡死。BufReader.lines() 是阻塞读,
-    //    本函数已运行在 spawn_blocking 线程,内联读即可,无需另起线程。
+    //    的「Downloading … 45%」实时可见,不再像卡死(排空编排在 run_brew/drain_child_pipes)。
     //
     // current 是全局 1-based 序号(跨 formula 与 cask 连续),total 是本批待装总数。
     let total = formulas.len() + casks.len();

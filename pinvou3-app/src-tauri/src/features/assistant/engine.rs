@@ -2439,9 +2439,9 @@ fn format_instructions(sources: &[deepseek_tui::prompts::InstructionSource]) -> 
 ///   - `update_plan`         → strategy 层（`plan_snapshot`）
 ///   - `checklist_write` / `todo_write` → leaf task 层（`todos_snapshot`）
 ///
-/// 任一调过 + plan_phase=Planning → TurnComplete 时 emit `chat:plan_ready`。
-/// 参考底座 `tui/ui.rs:1072-1085` 的 `plan_tool_used_in_turn` 判据 +
-/// `prompts/modes/plan.md` "Use update_plan ... and checklist_write ..." 双工具引导。
+/// 任一调过 + 会话处于 Plan 模式（`SerializableMode::Plan`）→ TurnComplete 时
+/// emit `chat:plan_ready`（PlanPhase 已移除，触发判据为 forwarder 的
+/// `plan_used && state.mode == Plan`）。
 #[derive(Default)]
 struct TurnPlanTracker {
     plan_tool_used: bool,
@@ -3330,7 +3330,6 @@ mod turn_lifecycle_tests {
         drop(reservation);
         assert_eq!(lifecycle.current_turn_generation(), None);
 
-        // finish 释放闸门后回到空闲 → None。
         assert_eq!(lifecycle.current_turn_generation(), None);
 
         // on_submitted（定时任务路径，非 reservation）推进到 epoch=2。

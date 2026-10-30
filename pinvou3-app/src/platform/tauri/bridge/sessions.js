@@ -1075,8 +1075,6 @@ async function archiveSession(id) { return pinvouSharedtauriSessions().archiveSe
 
 async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().restoreArchivedSession(id); }
 
-  // 实时态有专属气泡的工具（方案卡），重建时要还原成原卡而非普通工具卡。
-
     return {
       freshBuffer,
       getBuffer,

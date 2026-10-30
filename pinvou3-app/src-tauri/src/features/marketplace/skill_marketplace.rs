@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 
 use crate::platform::paths;
 
-/// 预置技能资源:编译进二进制。每个子目录(pua/ nuwa/)是一个含 SKILL.md 的 skill。
+/// 预置技能资源:编译进二进制。每个子目录(如 government-writing/ pptx/)是一个含 SKILL.md 的 skill。
 static MARKETPLACE_DIR: Dir<'static> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/skill-marketplace");
 
@@ -957,7 +957,7 @@ impl SkillMarketplaceManager {
                 "skill '{skill_id}' belongs to builtin plugin '{owner_package}', which is part of the application and cannot be uninstalled"
             ));
         }
-        // 预置 id(pua/nuwa) → skill_name;上传技能 id 即目录名本身。
+        // 预置 id(tencent-docs-skill) → skill_name(tencent-docs);上传技能 id 即目录名本身。
         let dir_name = self
             .preset(skill_id)
             .map(|m| m.skill_name.to_string())
@@ -1110,7 +1110,7 @@ impl SkillMarketplaceManager {
 
     /// Test-only scaffolding: imports a user-uploaded zip skill package
     /// (unpack, locate SKILL.md, safety-check, install under
-    /// `bundle/skills/<name>`; the zip-entry guard is the shared
+    /// `bundles/<name>/skills/<name>`; the zip-entry guard is the shared
     /// `plugin_import::checked_zip_entry_path`, aligned with the foundation
     /// install.rs; returns the installed skill name from the frontmatter).
     /// The production zip channel is `plugin_import::import_plugin_package`
@@ -1126,8 +1126,9 @@ impl SkillMarketplaceManager {
     }
 
     /// Test-only scaffolding (see `import_package`): `display_name` is only
-    /// written into the `.installed-from=upload:<display_name>` marker (it
-    /// keeps the user's original zip name for uninstall hints). The drag-drop
+    /// recorded as the `BundleSource::Upload` payload of the bundles.json
+    /// record (it keeps the user's original zip name for uninstall hints;
+    /// the `.installed-from` marker is retired). The drag-drop
     /// bytes channel that used to pass a sanitized display name from the
     /// command layer was removed as dead code.
     #[cfg(test)]
@@ -1942,7 +1943,7 @@ fn collect_disk_files_under(
 }
 
 /// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
-/// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
+/// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pptx/SKILL.md")。
 /// 跳过 vendored 来源标注文件 SOURCE.md(非 skill 运行内容)。
 /// 同样排除 `__pycache__/` 与 `*.pyc`(判定复用
 /// `plugin_import::is_python_cache_rel_path`):include_dir! 按文件系统内嵌

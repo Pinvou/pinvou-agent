@@ -310,14 +310,14 @@ pub fn workspace_covered_by_roots(workspace: &Path, roots: &[PathBuf]) -> bool {
         .any(|root| key_is_same_or_nested(&key, &identity_key_of_display(root)))
 }
 
-/// root 的展示形态:目录存在时用 fs::canonicalize(消 symlink),不存在时
-/// 经最深已存在祖先解析(见 `resolve_through_existing_ancestor`)——目录被
-/// After a directory moves away, the intra-set invariant checks must stay
-/// decidable, and the form is idempotent over stored values (canonicalize(
-/// canonical p) == p). The shared `platform_compat_path` normalization then
-/// strips the `\\?\` verbatim prefix Windows canonicalize produces (identity
-/// on other platforms) — the same convention as
-/// `validate_codex_project_workspace`.
+/// Display form of a root: when the directory exists, use fs::canonicalize
+/// (resolving symlinks); otherwise resolve through the deepest existing
+/// ancestor (see `resolve_through_existing_ancestor`). After a directory
+/// moves away, the intra-set invariant checks must stay decidable, and the
+/// form is idempotent over stored values (canonicalize(canonical p) == p).
+/// The shared `platform_compat_path` normalization then strips the `\\?\`
+/// verbatim prefix Windows canonicalize produces (identity on other
+/// platforms) — the same convention as `validate_codex_project_workspace`.
 pub(crate) fn root_display(path: &Path) -> PathBuf {
     let canonical =
         std::fs::canonicalize(path).unwrap_or_else(|_| resolve_through_existing_ancestor(path));

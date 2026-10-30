@@ -184,8 +184,8 @@ pub fn parse(values: &[String]) -> Result<PersonasCommand, CliError> {
                 // scripts written against the older reference are already out
                 // there, breaking them buys nothing, it costs one match arm,
                 // and it cannot collide because `embedded` is not a card
-                // source. It is deliberately not re-documented — the only
-                // spelling the reference teaches is `builtin`.
+                // source. The reference's grammar is `builtin|user|all`, with
+                // `embedded` noted only as an accepted alias of `builtin`.
                 Some("builtin" | "embedded") => SourceFilter::Builtin,
                 Some("user") => SourceFilter::User,
                 Some("all") => SourceFilter::All,

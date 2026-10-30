@@ -183,7 +183,8 @@ detect_plugin(zip):
 > 现状注记（六轮评审补）：当前实现（`plugin_import.rs::detect_components`）
 > 只识别 `mcp_servers` / `skills` 两类组件（含裸技能/裸 MCP 回退），伪代码中的
 > `workflow_roots` 与 §6 的 `Workflow` 变体为 v2 草案（§1 表），`derive_bundle_kind`
-> 现行签名为 `(mcp_servers, skills, cli)`，不含 workflows。
+> 现行签名为 `(mcp_servers, skills)`，不含 workflows（CLI kind 由内置常量表
+> `BUILTIN_CLI_BUNDLES` 注册，不经内容推导）。
 
 ### 5.3 识别结果（`PluginImportReport`）
 

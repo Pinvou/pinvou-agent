@@ -555,7 +555,7 @@ impl BrowserManager {
 
     fn next_watch_retry_delay(&self) -> Duration {
         // Rust 1.99 deprecated fetch_update (renamed to try_update); the MSRV
-        // (1.89) predates the new name, so keep the old call.
+        // (1.90) predates the new name, so keep the old call.
         #[allow(deprecated)]
         let current = self
             .watch_retry_delay_ms

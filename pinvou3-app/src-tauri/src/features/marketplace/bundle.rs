@@ -17,9 +17,10 @@
 //!   （不进存储，查询时现算）——CLI 包按授权存在与否、凭据型按 credentials 必填项
 //!   是否齐（查系统凭据）、本地免凭据包恒 ready。UI 统一消费 (installed, ready) 二元组。
 //!
-//! 注册表汇总四类源：MCP manifest（`bundle/mcp-servers/<id>/manifest.json`）、
+//! 注册表汇总四类源：MCP manifest（`bundles/<id>/mcp/manifest.json`）、
 //! 预置技能（编译内嵌）、CLI 连接器（内置常量表）、已上传技能
-//! （`bundle/skills/` 带 `.installed-from=upload:` 标记）。
+//! （`bundles/<id>/skills/`，来源（`BundleSource::Upload`）与内容指纹记录在
+//! bundles.json——`.installed-from` 标记已退役）。
 
 use serde::{Deserialize, Serialize};
 

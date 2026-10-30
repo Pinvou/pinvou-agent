@@ -352,7 +352,7 @@ pub async fn rewind_to_turn(
     store: State<'_, SessionStore>,
 ) -> Result<RewindToTurnResult, String> {
     let (ledger, execution) = resolve_code_session_roots(&session_id, &store)?;
-    // 本会话忙碌门：同 restore_checkpoint，先快速检查给出友好文案，再原子占位；
+    // 本会话忙碌门：先快速检查给出友好文案，再原子占位；
     // 预约持有到编排结束（未提交，Drop 自动归还 slot）。
     if pool.is_turn_active(&session_id) {
         return Err("会话正在执行，请先停止当前任务再回退".to_string());

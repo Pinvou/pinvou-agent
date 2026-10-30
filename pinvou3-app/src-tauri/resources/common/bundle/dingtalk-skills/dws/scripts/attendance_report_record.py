@@ -251,7 +251,6 @@ def fetch_approve_list(user_ids: list[str], record_type: str, start: str, end: s
                 records = result.get("approveList", result.get("list", []))
                 if not isinstance(records, list):
                     records = []
-            # 按 tagName 过滤
             if tag_filter:
                 records = [r for r in records if r.get("tagName") == tag_filter]
             all_records.extend(records)

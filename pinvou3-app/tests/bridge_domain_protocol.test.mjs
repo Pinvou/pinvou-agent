@@ -238,7 +238,13 @@ const expectedProtocolHashes = {
   // chat:transcript_committed guard clause in the same body (chat-events.js).
   // Event names, invoke shapes and authoritative payload handling remain
   // unchanged; publication timing is intentional.
-  chat: '7fb864e1e16b91a481cfa72502df4a1aa9e4efba267d41b1595c9395cca0e47f',
+  // Recomputed for the repo-wide stale-comment cleanup: wording-only comment
+  // edits inside the captured chat-events.js listener spans (stale tool_start
+  // line number, three deleted English captions) — chat.js spans and the
+  // command surface unchanged. Recomputed again in round 3: the present_artifact
+  // comment now carries the web lane's exact `chat:tool_start` token so both
+  // bridge lanes read byte-identically.
+  chat: '44c35fd4781321ce44d8f2c0674ccafdd512233878c7e4f79e259e1bff4e6eba',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

@@ -202,7 +202,22 @@ pub(crate) use crate::platform::connector_skills::{
 /// upstream v1.0.18 (still latest; only registered local modifications
 /// differ). All replayed local normalizations are registered in the four
 /// NOTICE files. Next free slot after 0.33.
-pub const BUNDLE_VERSION: &str = concat!("0.34-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.35: model-facing text fixes inside the dws and lark skill trees from
+/// the PR #808 stale-comment sweep (no upstream sync, no code change): dws
+/// oa actionerRules count corrected 10 → 11 across oa.md /
+/// oa-process-nodes.md / approver.md / handler.md with the missing
+/// `target_connect_approval` rule documented, condition.md's example node
+/// type fixed `audit` → `handler`, form-components.md control classes
+/// corrected 五大类 → 六大类, sheet-search-replace.md documents the real
+/// `--find`/`--replacement` emptiness contract, and the five
+/// attendance_report_*.py header/state comments aligned with the code;
+/// lark-sheets-workbook.md shortcut count corrected 14 → 16. All entries
+/// are registered in NOTICE-dingtalk.md and lark-skills/NOTICE.md for the
+/// next upstream sync replay. Next free slot after 0.34.
+/// Skill trees are excluded from the content hash, so the semantic bump is
+/// required for connected users to refresh at startup (otherwise the refresh
+/// waits for the post-first-frame refresh_connector_auth_gates backfill).
+pub const BUNDLE_VERSION: &str = concat!("0.35-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /

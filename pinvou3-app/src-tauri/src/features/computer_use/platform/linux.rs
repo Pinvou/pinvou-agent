@@ -3722,8 +3722,8 @@ mod x11_live_tests {
             |keysym, pressed| {
                 assert!(!pressed, "release loop must only send releases");
                 let n = calls_for_closure.fetch_add(1, Ordering::SeqCst);
-                // Events, in order: 0xff48 (H, release fails once), retry
-                // succeeds, then 0xff1b (Esc, succeeds).
+                // Events, in order: 0xff48 (arbitrary fixture keysym, release
+                // fails once), retry succeeds, then 0xff1b (Esc, succeeds).
                 match n {
                     0 => {
                         assert_eq!(keysym, 0xff48);

@@ -563,8 +563,8 @@ mod tests {
     }
 
     /// 独立安装的 marketplace skill 没有 companion MCP，但 composer 工具菜单也
-    /// 允许直接开关它；技能开关走独立 disabled_skills.json 双 scope 持久化
-    /// （不再借道连接器文件的 skill: 前缀）。
+    /// 允许直接开关它；技能开关与连接器开关同走统一包开关 disabled_bundles.json
+    /// 双 scope 持久化（不再借道连接器文件的 skill: 前缀）。
     #[test]
     fn disabling_direct_skill_id_hides_skill() {
         with_temp_home("pinvou3-skillscope", || {

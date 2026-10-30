@@ -181,7 +181,7 @@ impl AsyncDispatchState {
 
     fn finish(&self) {
         // Rust 1.99 deprecated fetch_update (renamed to try_update); the MSRV
-        // (1.89) predates the new name, so keep the old call.
+        // (1.90) predates the new name, so keep the old call.
         #[allow(deprecated)]
         let _ = self.state.fetch_update(
             std::sync::atomic::Ordering::AcqRel,

@@ -1622,7 +1622,7 @@ fn models_edit_reports_unknown_id_before_resolving_the_credential() {
     );
 }
 
-/// pins. `models edit` must change everything EXCEPT the id.
+/// `models edit` must change everything EXCEPT the id.
 #[test]
 fn models_edit_mutates_in_place_and_preserves_the_id() {
     let _env = env_lock();

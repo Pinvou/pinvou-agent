@@ -1,11 +1,13 @@
 //! Per-session runtime mode state machine + 类型定义。
 //!
-//! `SessionModeState` / `SerializableMode` 的**类型定义**
-//! 原先在 `core/mode_state.rs`，但它们是 session 域聚合（persona/review/
-//! knowledge 四特性字段），违反 `core/README.md` 的"feature 内部类型不入 core"准则。
-//! Wave 3 将类型定义迁回此文件（行为 impl 一直在此），并由 `features::sessions`
-//! 正式 re-export，消费方一律从 `crate::features::sessions::{...}` 导入，
-//! 不再经过 `core` 垫片（避免形成 `core → features` 反向依赖）。
+//! `SessionModeState` 等 session 域聚合类型（persona/knowledge/multi-agent 等
+//! 特性字段）原先在 `core/mode_state.rs`，违反 `core/README.md` 的"feature 内部
+//! 类型不入 core"准则，Wave 3 将其定义迁回此文件（行为 impl 一直在此），并由
+//! `features::sessions` 正式 re-export，消费方一律从
+//! `crate::features::sessions::{...}` 导入。跨层协议类型仍定义在
+//! `core/mode_state.rs`：其中 `SerializableMode` 经 `features::sessions`
+//! re-export（`mod.rs` 的 `pub use`），`ModeLane`/`ModeDefaultsView` 由消费方
+//! 直接从 `crate::core::mode_state` 导入，不经 features 转出。
 //!
 //! These methods drive the `mode_states` map (mode, pending Plan ticket
 //! + claim-in-flight, persona, mounted collection). The durable subset:
@@ -66,7 +68,7 @@ pub struct MountedCollectionsSnapshot {
 /// 单 session 的 mode 状态。前端通过 `get_mode_state` 拉取，
 /// `set_plan_mode_next` / `accept_plan` 等命令修改。
 ///
-/// 上游 PhaseDef 只 derive Serialize,所以这里也只单向序列化给前端;
+/// 底座 `AppMode` 非 Serialize，经 `SerializableMode` 镜像单向序列化给前端;
 /// SessionModeState 不需要从前端 deserialize 回来(它通过 set_*_state 命令逐字段写)。
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionModeState {
@@ -87,9 +89,9 @@ pub struct SessionModeState {
     #[serde(skip)]
     pub(crate) plan_claim_in_flight: Option<String>,
     /// 该 session 挂载的本地知识集 id(会话级粘连)。`None` = 未挂载。
-    /// 挂上后每条 user 消息发送前,用消息文本对该集 `kb_retrieve`,把命中片段
-    /// 当附件一样注入(见 `commands::chat`)。与 `active_persona` 一样仅驻内存,
-    /// 不落盘——重启 app 后回到未挂载。
+    /// 挂载生效走 Agentic RAG:engine 注入 `kb_search` 工具,由模型自主检索,
+    /// 不再按消息自动注入片段(注入式已废弃,见 `commands::chat`)。与
+    /// `active_persona` 一样仅驻内存,不落盘——重启 app 后回到未挂载。
     #[serde(default)]
     pub mounted_collection: Option<i64>,
     /// 多知识库挂载事实源。旧单库字段保留给旧前端/远程端兼容读取。

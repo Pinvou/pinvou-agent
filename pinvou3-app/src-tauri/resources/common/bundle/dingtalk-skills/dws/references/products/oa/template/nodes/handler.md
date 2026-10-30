@@ -38,6 +38,7 @@
 - [`target_managers_labels`](../rules/target_managers_labels.md) — 角色标签主管
 - [`target_formcomponent_approval`](../rules/target_formcomponent_approval.md) — 表单内联系人
 - [`target_label`](../rules/target_label.md) — 角色标签
+- [`target_connect_approval`](../rules/target_connect_approval.md) — 连接器动态获取
 
 ## 示例
 

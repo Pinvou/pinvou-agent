@@ -257,6 +257,21 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 1. **SKILL.md「所有命令必须加 `--format json`」理由句更正**：原「以获取可解析输出」与 references/global-reference.md「`--format` 默认 **json**」矛盾（默认即可解析）。MUST DO 约定保留,理由改为「默认输出即 json,显式携带以防默认值变化,确保可解析」。
 
+## 2026-10-30 本地修改（PR #808 文案清扫,下次 sync 需重放）
+
+本轮为对已交付 oa 模板套件与考勤脚本的模型向文案勘误（全部为注释/说明文字，无脚本行为变化；与上方第 11 条「共 10 个 → 11 个」同类）。随 BUNDLE_VERSION 0.35 语义升位触达已连接存量装机。
+
+1. `references/products/oa.md` 「详细参考」指针行「10 种审批人选择规则」改「11 种」（与 `oa/template/rules/` 实有 11 个规则文件一致）。
+2. `references/products/oa/oa-process-nodes.md` 三处计数更正 + 新增第 11 条规则节：审批人句「支持全部 10 种 actionerRules 类型」→「11 种」；办理人句「支持 9 种（不支持 `target_matrix_approval`）」→「支持 10 种」（办理人=审批人全集减 target_matrix_approval，含 target_connect_approval）；标题「## 10 种审批人选择规则（actionerRules）」→「11 种」；文末新增「### 11. 连接器动态获取（target_connect_approval）」整节（JSON 示例、前置条件=管理后台连接器实例已发布、`actionInstanceId` 严禁编造须取真实 `G-A-INST-` 值、`staffId`/`procInstId` 运行时替换、`noneActionerAction: "admin"` 兜底），口径与 `template/rules/target_connect_approval.md` 一致。
+3. `references/products/oa/template/form-components.md` 控件分类「五大类」→「六大类」：「业务控件（6 种）」与「高级控件（3 种）」之间补「关联控件（1 种）」（总数 38 不变，1+10+17+6+1+3=38）。
+4. `references/products/oa/template/nodes/approver.md` 「支持全部 10 种选人规则」→「11 种」，规则表新增 `target_connect_approval` 行（连接器动态获取；触发语「从连接器获取审批人」「通过连接器动态审批」）。
+5. `references/products/oa/template/nodes/condition.md` 条件分支示例 JSON 中办理人节点 `"type": "audit"` 改 `"type": "handler"`（与 `template/nodes/handler.md` 文档表「`type` 固定值 `"handler"`」及其自带示例一致）。注意：同套件 `template/example/process_config.json` 仍含 6 处 `"type": "audit"`，两份示例的 node type 写法存疑待真实审批设计器导出件裁定，本轮未调和（PR #808 披露项）。
+6. `references/products/oa/template/nodes/handler.md` 规则清单新增 `target_connect_approval` 条目（与上方第 2 条办理人 10 种口径一致）。
+7. `references/products/sheet/sheet-search-replace.md` 注意事项新增边界行：`--find` 不能为空字符串，`--replacement` 可为空字符串（表示删除匹配内容）。
+8. `scripts/attendance_report_checkin.py` 头注「签到接口限制：每次最多查 100 人（与 check record 一致）」更正为「每次最多查 50 人」，不再引接口文档口径，与同文件 `MAX_USERS_PER_CHECKIN_BATCH = 50` 常量一致；删「转换为报表行」冗余行内注释。
+9. `scripts/attendance_report_common.py` 注释对齐代码：样式注释左对齐阈值描述「长文本（>10 字符）」→「长文本（估算宽度 >14）」（与实现一致）；删 `write_excel` / `write_excel_multi_sheets` 中冗余步骤注释（写入表头/写入数据/应用统一样式）；图片下载归属「detail 报表的"打卡图片"列专用」→「detail"打卡图片"列与 checkin"图片1~9"列共用」；RGBA 注释「webp 等可能是 RGBA / P 模式，统一转 RGB 再存 PNG」→「webp 等可能是 P 模式等非 RGB/RGBA 格式，统一转 RGBA 再存 PNG」（与 `convert("RGBA")` 实现一致）。
+10. `scripts/attendance_report_daily.py` / `attendance_report_monthly.py` / `attendance_report_record.py`：各删 1–2 处复述代码的行内注释（考勤组名提取/日期列表生成/tagName 过滤）。
+
 ## 同步记录（2026-10-18 → 1.0.64）
 
 本次同步自 v1.0.64 dws-skills.zip 的 mono 形态（zip 顶层与 `mono/` 内容经 diff 确认一致；`checksums.txt` 中 dws-skills.zip SHA-256 `106999fc60c713aabbcf67fc183553d62feae210bf650a148ed38670468389de` 校验 OK）。合并方法：以 v1.0.61 上游 mono 为 base、当前本地为 ours、v1.0.64 上游为 theirs 做逐文件三方合并（git merge-file），12 个冲突文件按本节登记裁定。`dws/LICENSE`、`dws/NOTICE` 与上游一致，未改动。Shortcut 总览计数经 connectors.lock 钉扎的 dws 1.0.64 linux-arm64 二进制（SHA-256 校验一致）`shortcut list --service <svc>` 逐一实测复核。

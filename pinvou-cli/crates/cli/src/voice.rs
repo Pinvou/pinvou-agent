@@ -19,7 +19,7 @@
 //!   "no speech" convention.
 //! - the NATIVE engine lane's wait budget is GUI parity by default: 300 s,
 //!   mirroring the app's `features::voice::voice_asr::transcribe` ("long
-//!   recordings can take minutes", voice_asr.rs:405), while the external-CLI
+//!   recordings can take minutes", voice_asr.rs), while the external-CLI
 //!   protocol lane keeps the 60 s default of the app's `run_local_asr_cli`;
 //!   both lanes honor the same `PINVOU3_ASR_TIMEOUT_SECS` /
 //!   `PINVOU3_DEEPSPEECH2_TIMEOUT_SECS` override (round-50 review: the
@@ -1614,7 +1614,7 @@ fn asr_timeout_secs() -> u64 {
 
 /// Native engine lane's wait budget, GUI parity: the app's native lane
 /// (`features::voice::voice_asr::transcribe`) gives the engine a generous
-/// 300 s "because long recordings can take minutes" (voice_asr.rs:405) — a
+/// 300 s "because long recordings can take minutes" (voice_asr.rs) — a
 /// 60 s cut there turns a legitimate long-recording transcription into a
 /// spurious timeout, which is exactly what this lane silently did before
 /// round-50 by reusing the external-CLI lane's default. The app constant is
@@ -2597,7 +2597,7 @@ mod review_fix_tests {
     #[test]
     fn postprocess_retry_non_empty_output_wins() {
         // The text is passed through verbatim: trimming/sanitization is the
-        // caller's job (`sanitize_postprocess_output`), not the merge's.
+        // caller's job (`sanitize_voice_postprocess_output`), not the merge's.
         let outcome = postprocess_retry_result(Ok(("corrected text".to_owned(), false)))
             .expect("a non-empty retry succeeds");
         assert_eq!(outcome.text, "corrected text");
@@ -2878,9 +2878,9 @@ content-length: {}\r\n\r\n{}",
     /// variable name plus the value to install — `Some(value)` sets it,
     /// `None` removes it — and every variable's PREVIOUS value is captured
     /// before the set and restored on drop, so a failing assert cannot leak
-    /// a fixture into sibling tests (the same RAII rule as lib.rs's
-    /// `RestoreHomeGuard`), with `ENV_LOCK` held for the guard's whole
-    /// lifetime.
+    /// a fixture into sibling tests (the same RAII rule as the gaia test in
+    /// lib.rs, which holds `ENV_LOCK` across its `TempHome` fixture), with
+    /// `ENV_LOCK` held for the guard's whole lifetime.
     struct RestoreEnvVars(
         Option<std::sync::MutexGuard<'static, ()>>,
         Vec<(&'static str, Option<std::ffi::OsString>)>,
@@ -2957,7 +2957,7 @@ content-length: {}\r\n\r\n{}",
     }
 
     /// The native engine lane's wait budget must default to the GUI's 300 s
-    /// (`voice_asr.rs:405`, "long recordings can take minutes") — borrowing
+    /// (`voice_asr.rs`, "long recordings can take minutes") — borrowing
     /// the external-CLI lane's 60 s default cut legitimate long-recording
     /// transcriptions into spurious `asr_engine_error` timeouts, undisclosed.
     /// The external-CLI lane keeps its own 60 s default, and the env override
@@ -3143,8 +3143,8 @@ content-length: {}\r\n\r\n{}",
     /// (`app/commands/voice.rs::voice_reasoning_dialect`). Before this only
     /// vllm/deepseek/qwen were covered, so a Kimi/Doubao/GLM/Minimax user
     /// could get reasoning text past the single leading `<think>` strip
-    /// (`sanitize_postprocess_output`) in CLI output where the GUI suppresses
-    /// it at the source.
+    /// (`sanitize_voice_postprocess_output`) in CLI output where the GUI
+    /// suppresses it at the source.
     #[test]
     fn reasoning_controls_cover_the_deterministic_vendor_presets() {
         use pinvou3_lib::platform::prefs::ModelPreset;
