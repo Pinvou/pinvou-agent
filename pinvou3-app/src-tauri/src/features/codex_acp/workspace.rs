@@ -908,8 +908,10 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // 的实际展开拒绝:pathspec 命中的 index 与 HEAD 条目必须恰好等
         // 于请求的文件本身。已删除文件的删除差异不受影响(两条列表恰含
         // 自身);未跟踪新文件两表皆空。ls-tree 失败按空处理:HEAD 未出
-        // 生(空仓库)时本就无已提交内容可展开,其余失败会被下方需要
-        // HEAD 的缓存臂自行失败。
+        // 生(空仓库)时本就无已提交内容可展开,此时的目录展开由 ls-files
+        // 索引腿独立拒绝(下方需要 HEAD 的 `--cached` 臂在未出生 HEAD 下
+        // 并不会失败,不能指望它兜底);有效 HEAD 下 ls-tree 失败(对象
+        // 损坏)时,需要读同一批树的 diff 臂同样产不出内容。
         if !path.exists() {
             let index_entries = git_output(&root, &["ls-files", "-z", "--", literal.as_str()])?;
             let head_entries = git_output(
@@ -932,6 +934,18 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
                 .any(|entry| entry != relative);
             if expands_beyond_request {
                 bail!("工作区差异仅支持文件路径: {relative}");
+            }
+        }
+        // Round-9 复审 BLOCKER:staged rename 的旧内容由 `--cached` 臂按
+        // 「新文件」渲染——pathspec 限定目的地时 git 无法与删除侧配对,
+        // `new file mode` 直接带出旧 blob 全文,而词法/解析腿只看得见清白
+        // 的目的地名。按完整 porcelain 解析重建 目的地→来源 映射,请求路
+        // 径是黑名单来源的改名/拷贝目标时整体拒绝。未暂存的 mv(内容以
+        // 无辜名落盘)仍属共享策略已记录的同名别名残余。改名会改写索引,
+        // diff 缓存指纹随之失效,不存在跨改名命中旧缓存条的窗口。
+        if let Some(origin) = git_staged_rename_origins(&root)?.get(&relative) {
+            if relative_path_crosses_blocked_component(origin) {
+                bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
             }
         }
         let unstaged = git_output(
@@ -1539,7 +1553,15 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
         let y = record[1] as char;
         let path = porcelain_record_path(record);
         if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
+            // Round-9 复审 BLOCKER:porcelain 的 R/C 记录是 `目的地 NUL
+            // 来源`,来源才是改名对里旧内容(黑名单名下的字节)的载体。
+            // 来源命中黑名单时,目的地条目整体不回显——它正是把旧字节
+            // 带出变更车道的载体;来源清白的改名照常列出。
+            let origin = porcelain_origin_path(records[index]);
             index += 1;
+            if relative_path_crosses_blocked_component(&origin) {
+                continue;
+            }
         }
         changes.push(WorkspaceChange {
             relative_path: path,
@@ -1551,6 +1573,47 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
     Ok(changes)
 }
 
+/// `git status --porcelain=v1 -z` 里的 R/C 改名/拷贝对:目的地 → 来源。
+/// diff 车道据此拒绝黑名单来源的改名目的地(pathspec 限定目的地时
+/// `git diff --cached` 不做改名配对,旧 blob 会以「新文件」全文渲染,
+/// 见 workspace_diff 内的 Round-9 注释)。
+fn git_staged_rename_origins(root: &Path) -> Result<HashMap<String, String>> {
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
+        .current_dir(root)
+        .args(["status", "--porcelain=v1", "-z", "--", "."])
+        .output()
+        .context("执行 git status 失败")?;
+    if !output.status.success() {
+        bail!(
+            "git status 失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let records = output.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut origins = HashMap::new();
+    let mut index = 0;
+    while index < records.len() {
+        let record = records[index];
+        index += 1;
+        if record.len() < 4 {
+            continue;
+        }
+        let is_rename =
+            matches!(record[0] as char, 'R' | 'C') || matches!(record[1] as char, 'R' | 'C');
+        if is_rename && index < records.len() {
+            let destination = porcelain_record_path(record);
+            let origin = porcelain_origin_path(records[index]);
+            index += 1;
+            if !destination.is_empty() && !origin.is_empty() {
+                origins.insert(destination, origin);
+            }
+        }
+    }
+    Ok(origins)
+}
+
 /// One `git status --porcelain=v1 -z` record's path field: `XY ` prefix
 /// stripped, bytes lossily decoded. The `\` → `/` separator rewrite is a
 /// WINDOWS-only `status` quirk (git reports Windows paths with backslash
@@ -1560,7 +1623,15 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
 /// the raw path is kept as-is (round-51 review; same doctrine as the CLI
 /// twin's round-37 note).
 fn porcelain_record_path(record: &[u8]) -> String {
-    let path = String::from_utf8_lossy(&record[3..]);
+    porcelain_origin_path(&record[3..])
+}
+
+/// A raw porcelain record path (the rename-origin record has no `XY `
+/// prefix): lossily decoded, with the same WINDOWS-only separator rewrite
+/// as `porcelain_record_path` so both halves of a rename pair stay
+/// comparable.
+fn porcelain_origin_path(record: &[u8]) -> String {
+    let path = String::from_utf8_lossy(record);
     #[cfg(windows)]
     {
         path.replace('\\', "/")
@@ -2548,6 +2619,95 @@ mod tests {
             .err()
             .expect("a staged whole-directory deletion pathspec must be refused");
         assert!(error.to_string().contains("文件路径"), "got: {error}");
+    }
+
+    /// Round-9 复审 BLOCKER:staged rename 的 porcelain 记录是
+    /// `目的地 NUL 来源`。来源在黑名单内时,变更车道不得回显目的地条目,
+    /// diff 车道必须拒绝目的地(否则 `--cached` 臂以「新文件」渲染旧
+    /// 凭据 blob 全文);来源清白的改名两条车道照常工作。
+    #[test]
+    fn workspace_lanes_refuse_staged_renames_of_credential_files() {
+        let repo = TestDir::new("rename-filter-r9");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        fs::write(repo.path().join(".env"), "AWS_SECRETKEY=supersecret\n").unwrap();
+        fs::write(repo.path().join("notes.txt"), "hello\n").unwrap();
+        run_git(repo.path(), &["add", ".env", "notes.txt"]);
+        run_git(repo.path(), &["commit", "-m", "init"]);
+        run_git(repo.path(), &["mv", ".env", "innocent.txt"]);
+
+        let changes = workspace_changes("rename-changes", repo.path()).unwrap();
+        assert!(
+            !changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "innocent.txt"),
+            "a rename destination with a blocked origin must not be listed, got: {:?}",
+            changes
+                .changes
+                .iter()
+                .map(|change| &change.relative_path)
+                .collect::<Vec<_>>()
+        );
+
+        let error = workspace_diff("rename-diff", repo.path(), "innocent.txt")
+            .err()
+            .expect("a staged rename destination with a blocked origin must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        // 对照:来源清白的改名照常列出,diff 照常服务。
+        run_git(repo.path(), &["mv", "notes.txt", "docs.txt"]);
+        let changes = workspace_changes("rename-ok", repo.path()).unwrap();
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "docs.txt"),
+            "an innocent rename must stay listed, got: {:?}",
+            changes
+                .changes
+                .iter()
+                .map(|change| &change.relative_path)
+                .collect::<Vec<_>>()
+        );
+        let diff = workspace_diff("rename-ok-diff", repo.path(), "docs.txt").unwrap();
+        assert!(diff.text.contains("hello"), "got: {}", diff.text);
+    }
+
+    /// Round-9 复审 minor:ls-files(index)腿的判别钉。HEAD 未出生时
+    /// ls-tree 降级为空,索引腿是唯一防线——删除它,`git diff --
+    /// ':(literal)src'` 会把「已暂存、未提交、随后整目录从 worktree 消
+    /// 失」的 src/.env 以 `+` 行渲染,而此前所有 fixture 的 HEAD 都含同
+    /// 批子项,索引腿被 ls-tree 腿遮蔽。
+    #[test]
+    fn workspace_diff_index_leg_refuses_staged_directory_without_head() {
+        let repo = TestDir::new("index-leg-r9");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        fs::write(repo.path().join("src/.env"), "AWS_SECRETKEY=staged\n").unwrap();
+        run_git(repo.path(), &["add", "src/.env"]);
+        fs::remove_dir_all(repo.path().join("src")).unwrap();
+        let error = workspace_diff("index-leg", repo.path(), "src")
+            .err()
+            .expect("staged directory expansion with unborn HEAD must be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+    }
+
+    /// Round-9 复审 minor:列表车道的解析腿判别钉——「链接名清白」的
+    /// 符号链接(docs -> .aws)的落点在黑名单目录上时拒绝列出。
+    #[test]
+    #[cfg(unix)]
+    fn workspace_list_refuses_blocked_resolved_landing() {
+        let root = TestDir::new("list-resolved-r9");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        std::os::unix::fs::symlink(".aws", root.path().join("docs")).unwrap();
+        let error = list_workspace(root.path(), Some("docs"))
+            .err()
+            .expect("a symlink whose resolved landing is a blocked directory must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
     /// 提示引用车道(`web_access_codex_acp_prompt` 的 workspace_references)
