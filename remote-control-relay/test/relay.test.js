@@ -1810,7 +1810,12 @@ test("the forwarded-header cap is exact at 4096 characters", async () => {
   }
 });
 
-test("shuts down with exit code 0 on repeated SIGTERM and on SIGINT", async () => {
+test("shuts down with exit code 0 on repeated SIGTERM and on SIGINT", async (t) => {
+  // On Windows Node delivers these signals by force-terminating the child
+  // without running its JavaScript shutdown handler, so the graceful-exit
+  // contract is only assertable where the handler runs; termination itself
+  // is asserted on every platform.
+  const graceful = process.platform !== "win32";
   for (const [signal, repeats] of [["SIGTERM", 2], ["SIGINT", 3]]) {
     const isolated = await spawnRelay({});
     let ws;
@@ -1821,8 +1826,15 @@ test("shuts down with exit code 0 on repeated SIGTERM and on SIGINT", async () =
       // registered.
       for (let i = 0; i < repeats; i += 1) isolated.child.kill(signal);
       await waitForExit(isolated.child, 5000);
-      assert.equal(isolated.child.exitCode, 0);
-      assert.equal(isolated.child.signalCode, null);
+      if (graceful) {
+        assert.equal(isolated.child.exitCode, 0);
+        assert.equal(isolated.child.signalCode, null);
+      } else {
+        assert.ok(
+          isolated.child.exitCode !== null || isolated.child.signalCode !== null,
+          "relay did not terminate",
+        );
+      }
       // No bind-address echo in any wording: the banner reports limits only,
       // so neither the historical "listening on <url>" nor any other URL
       // form may reappear.
