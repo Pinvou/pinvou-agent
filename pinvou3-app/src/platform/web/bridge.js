@@ -419,6 +419,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       deviceUploadDigestInvalid: "the attachment integrity digest was invalid. Try again.",
       deviceUploadIntegrityMismatch: "the attachment content was corrupted in transit. Upload it again.",
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
+      webSessionUnavailable: "This session is no longer available on the desktop. Reopen it from the session list.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
@@ -552,6 +553,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       deviceUploadDigestInvalid: "添付ファイルの整合性ダイジェストが無効です。もう一度お試しください。",
       deviceUploadIntegrityMismatch: "添付ファイルの内容が転送中に破損しました。再度アップロードしてください。",
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
+      webSessionUnavailable: "このセッションはデスクトップ側で利用できなくなりました。セッション一覧から開き直してください。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
@@ -685,6 +687,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       deviceUploadDigestInvalid: "附件完整性校验值无效，请重试",
       deviceUploadIntegrityMismatch: "附件内容在传输中损坏，请重新上传",
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
+      webSessionUnavailable: "该会话在桌面端已不可用，请从会话列表重新打开。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
@@ -2746,6 +2749,11 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     web_session_read_artifact_chunk_failed: "artifactReadFailed",
     web_session_artifact_access_failed: "artifactReadFailed",
     web_session_read_conversation_attachment_chunk_failed: "attachReadFailed",
+    // Round-9 复审:下载车道可达的 admission 层码——瞬态的
+    // web_session_unavailable 与确定态的 invalid_web_session_id 此前落兜
+    // 底,渲染原始码或后端语言的 admission 文案。
+    web_session_unavailable: "webSessionUnavailable",
+    invalid_web_session_id: "webSessionUnavailable",
   };
   function displayTurnError(err) {
     // RPC rejections arrive as Error objects (bootstrap.js wraps message.error
@@ -5423,10 +5431,11 @@ function openScheduledTaskFolder(automationId) { return pinvouSharedweb().openSc
     } catch (e) {
       // Stable wire codes fold to trilingual copy here too, so the download
       // path does not render raw machine codes (the turn-error lane maps the
-      // same table via displayTurnError).
-      const code = String((e && e.message) || e || "");
-      const copyKey = WEB_TURN_ERROR_KEYS[code];
-      addSystemItem(bt("downloadFailed") + (copyKey ? bt(copyKey) : code));
+      // same table via displayTurnError). Unmapped text goes through the
+      // same redaction as the turn lane instead of rendering raw codes or
+      // backend-language admission copy (round-9 review: the raw `code`
+      // fallback also leaked zh-only admission completions on EN/JA phones).
+      addSystemItem(bt("downloadFailed") + displayTurnError(e));
       return false;
     }
   }

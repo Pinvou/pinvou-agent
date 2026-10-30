@@ -168,6 +168,17 @@ for (const command of [
   'open_acp_agent_login_url',
   'submit_acp_agent_login_code',
   'web_access_enable',
+  // Round-9 复审:web_access_* 的管理命令同样桌面专用——手机侧的可达性
+  // 只经由主 WebView 代理 RPC(此时 require_main_webview 门按设计放行),
+  // 真正的门是策略白名单的缺席;只反钉 enable 会让「把其余命令加进
+  // access-policy.json」静默通过全部测试。(web_access_list_host_files
+  // 有意留在 Web 策略内——手机文件选择器的 RPC 由主 WebView 派发,不在
+  // 本反钉清单;require_main_webview 门在命令层单独拦 aux webview。)
+  'web_access_disable',
+  'web_access_status',
+  'web_access_rotate',
+  'web_access_revoke_host_workspace',
+  'web_access_relay_settings',
   // 上传包展示名/说明编辑写 bundles.json 并可能回写 SKILL.md：写操作桌面专用。
   'update_bundle_display_meta',
   // 回收站恢复/彻底删除与两种包导出都是桌面端写操作（原生保存对话框 + 文件系统
@@ -773,6 +784,30 @@ assert.match(webBridge, /web_session_turn_in_progress:\s*"turnAlreadyInProgress"
   'the web bridge itself must map the turn-in-progress code to product copy');
 assert.match(webBridge, /addSystemItem\(concurrentTurn[\s\S]{0,120}bt\("turnAlreadyInProgress"\)/,
   'the web-side turn admission conflict must show product copy');
+// Round-9 复审:下载车道的折叠此前零测试钉——回退码表查找或删除任一表
+// 项都全绿。钉住:下载 catch 走 displayTurnError(未识别文本进与 turn 车
+// 道相同的脱敏兜底,不再拼接原始码/admission 原文);admission 层可达的
+// 两个码在码表内;新表项三语齐备。
+assert.match(
+  webBridge,
+  /addSystemItem\(bt\("downloadFailed"\) \+ displayTurnError\(e\)\)/,
+  'the download lane must fold through displayTurnError instead of appending the raw code',
+);
+assert.doesNotMatch(
+  webBridge,
+  /copyKey \? bt\(copyKey\) : code/,
+  'the download lane must not keep the raw-code fallback',
+);
+assert.match(webBridge, /web_session_unavailable:\s*"webSessionUnavailable"/,
+  'the transient scope rejection must map to trilingual download copy');
+assert.match(webBridge, /invalid_web_session_id:\s*"webSessionUnavailable"/,
+  'the invalid-session rejection must map to trilingual download copy');
+for (const source of [webBridge]) {
+  let count = 0;
+  for (const match of source.matchAll(/webSessionUnavailable:/g)) count += 1;
+  assert.equal(count, 3,
+    'the webSessionUnavailable copy must exist in all three inline languages');
+}
 // The JS half of the edit_last_turn revision guard: dropping or renaming the
 // arg would silently degrade the stale-view protection to fail-open, and the
 // Rust-side Option param alone cannot catch it (round-4 minor).
@@ -817,9 +852,14 @@ assert.match(bridge, /web_access_load_session_chunk/);
 assert.match(bridge, /web_access_cancel_session_download/);
 assert.match(bootstrap, /areInvokeCapabilitiesReady\(\) \{ return client\.desktopCapabilitiesReady === true; \}/,
   'the shared bridge must reuse bootstrap capability-handshake state');
+const capabilitiesWaitAt = webBridge.indexOf('await waitForWebInvokeCapabilities();');
+const downloadChoiceAt = webBridge.indexOf(
+  'supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download")',
+);
+assert.ok(capabilitiesWaitAt >= 0, 'the capability wait must exist in the web bridge');
+assert.ok(downloadChoiceAt >= 0, 'the download protocol choice must exist in the web bridge');
 assert.ok(
-  bridge.indexOf('await waitForWebInvokeCapabilities();') <
-    bridge.indexOf('supportsSessionDownloadCancellation = canInvoke("web_access_cancel_session_download")'),
+  capabilitiesWaitAt < downloadChoiceAt,
   'session downloads must not choose new or legacy protocol before the desktop snapshot',
 );
 assert.match(bridge, /pinvou:web-capabilities/);
