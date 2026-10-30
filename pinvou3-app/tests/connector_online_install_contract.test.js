@@ -197,8 +197,15 @@ for (const [name, source] of [
   );
   assert.match(
     source,
-    /kill "\$pid" 2>\/dev\/null && : >"\$tflag" && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
-    `${name}: 看门狗必须在 TERM 后落「到点」标记并升级 SIGKILL(只发一次 TERM 对抗性 CLI 无界)`,
+    /sleep "\$\{?(DWS|WECOM)_TIMEOUT\}?" && : >"\$tflag" && kill "\$pid" 2>\/dev\/null && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
+    `${name}: 看门狗必须先落「到点」标记再 TERM 并在宽限后升级 SIGKILL(标记后落会漏判到点与 TERM 微窗内自退的 CLI;只发一次 TERM 对抗性 CLI 无界)`,
+  );
+  // 看门狗清理行:删掉它,看门狗子壳会活过快探针,在 PID 复用后误杀无辜进程,
+  // 迟到的 .deadline 也永不清理——此行无行为夹具背书,只能形态钉。
+  assert.match(
+    source,
+    /kill "\$wpid" 2>\/dev\/null; wait "\$wpid" 2>\/dev\/null/,
+    `${name}: 看门狗必须在 wait 后回收子壳(孤儿看门狗会在 PID 复用后误杀进程)`,
   );
   // 到点事实必须独立于子进程最终退出码:TERM 后优雅 exit 0 的 CLI 会让 wait 返回
   // 0,把超时伪装成通过(GNU timeout 同形态本就 124;行为钉见第 6 节 term-zero)。
@@ -559,10 +566,12 @@ assert.doesNotMatch(
   assert.ok(errIdx > timeoutIdx, "dingtalk-smoke.sh: [3] 超时分支必须先于错误词分支(超时的部分输出可能恰含 not found/未知)");
 }
 
-// ---- 10) wecom [4] 错误键只查 envelope,不查正文 content 值 ----
-// wecomcli-doc SKILL.md 返回表:content 是「文档内容较短时直接返回的原文」——
-// 值恰为 error 的合法文档曾被裸 grep 误红成读失败(评审 P3,真脚本 + 假 CLI 全跑)。
-// 屏蔽正文后 envelope 层的结构化错误键(errcode:3)仍必须 FAIL——屏蔽不得吞检查。
+// ---- 10) wecom [4] 错误键只查 envelope,不查正文值 ----
+// wecomcli-doc SKILL.md 返回表的 string 字段都承载文档数据:content 是「文档内容
+// 较短时直接返回的原文」——值恰为 error 的合法文档曾被裸 grep 误红成读失败(评审
+// P3,真脚本 + 假 CLI 全跑);name/url/file_path 同表 string 字段,文档名恰为
+// error 时同样误红,脚本一并屏蔽。屏蔽正文后 envelope 层的结构化错误键
+// (errcode:3)仍必须 FAIL——屏蔽不得吞检查。
 {
   const { spawnSync } = require("node:child_process");
   const os = require("node:os");
@@ -624,14 +633,30 @@ assert.doesNotMatch(
       !bad.stdout.includes("[PASS] 读到文档内容"),
       `wecom-smoke.sh: errcode:3 不得判读成功\n${bad.stdout}`,
     );
+    // 同表其余 string 字段承载文档数据:文档名/链接/落盘路径恰含 error 的合法
+    // envelope 也不得误红(屏蔽键须盖住返回表全部 string 字段)。
+    const named = runSmoke(
+      '{"url":"https://doc.example/error","name":"error","content":"ok","file_path":"/tmp/error.md","document":{},"version":"3"}',
+    );
+    assert.strictEqual(
+      named.status,
+      0,
+      `wecom-smoke.sh: name/url/file_path 含 error 的合法 envelope 不得误红(status=${named.status})\n${named.stdout}`,
+    );
+    assert.ok(
+      named.stdout.includes("[PASS] 读到文档内容"),
+      `wecom-smoke.sh: 返回表 string 字段屏蔽后读取必须 PASS\n${named.stdout}`,
+    );
   }
 }
 
-// ---- 10b) dingtalk [4] 错误键只查 envelope,不查正文 content 值(与 §10 同款) ----
+// ---- 10b) dingtalk [4] 错误键只查 envelope,不查正文值(与 §10 同款) ----
 // 真脚本 + 假 CLI 全跑:正文值恰为 error 的合法 envelope 不得误红;屏蔽不得吞掉
-// envelope 层的结构化错误键。dws 的 --format json envelope 键名未在包内文档钉死,
-// 脚本按同族(wecomcli-doc 返回表)约定取 content;此夹具与 §10 用同一 envelope
-// 形状,若真实 dws 改用别的键名,两处(脚本 sed 行 + 本夹具 payload)一起改。
+// envelope 层的结构化错误键。屏蔽键取包内文档钉到的正文载体键(--format json
+// envelope 为 {"success": true, "body": {...}}:global-reference.md;result/data
+// 为 --fields 文档与 attendance 脚本的信封键;content 与 §10 同族;jsonml 为
+// doc-read.md 载荷键)。status:"error" 值形态必须仍 FAIL——屏蔽只盖正文载体键,
+// 不得把非载体键上的错误值形态一并吞掉。
 {
   const { spawnSync } = require("node:child_process");
   const os = require("node:os");
@@ -692,6 +717,36 @@ assert.doesNotMatch(
     assert.ok(
       !bad.stdout.includes("[PASS] 读到文档内容"),
       `dingtalk-smoke.sh: envelope error 键不得判读成功\n${bad.stdout}`,
+    );
+    // 正文载体键(documented envelope 的 body):值恰为 error 时,裸 grep 的
+    // "error" 模式由值的定界引号拼出(误红);屏蔽必须盖住 body 的字符串值。
+    // (正文内文含引号的形态经 JSON 转义成 \"error\",定界引号拼不出 "error",
+    // 本就不会误红——夹具只钉真正的误红形态。)
+    const bodyCarrier = runSmoke(
+      '{"success":true,"body":"error","version":"1"}',
+    );
+    assert.strictEqual(
+      bodyCarrier.status,
+      0,
+      `dingtalk-smoke.sh: body 载体值恰为 error 的合法 envelope 不得误红(status=${bodyCarrier.status})\n${bodyCarrier.stdout}`,
+    );
+    assert.ok(
+      bodyCarrier.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: body 载体屏蔽后读取必须 PASS\n${bodyCarrier.stdout}`,
+    );
+    // 屏蔽只盖正文载体键:非载体键上的错误值形态("status":"error")必须照常
+    // FAIL——这是屏蔽不扩成「吞所有字符串值」的原因。
+    const statusValue = runSmoke(
+      '{"success":true,"body":"ok","status":"error"}',
+    );
+    assert.notStrictEqual(
+      statusValue.status,
+      0,
+      `dingtalk-smoke.sh: "status":"error" 值形态必须 FAIL(屏蔽不得盖住非载体键)\n${statusValue.stdout}`,
+    );
+    assert.ok(
+      !statusValue.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: status 值形态错误不得判读成功\n${statusValue.stdout}`,
     );
   }
 }
