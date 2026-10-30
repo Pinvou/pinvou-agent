@@ -10,6 +10,9 @@
 set -u
 # set -u 下 HOME 未设置会直接炸成 unbound variable;这里给可行动的退出码 2。
 if [ -z "${HOME:-}" ]; then echo "HOME 未设置,无法定位 dws"; exit 2; fi
+# 应用同名解析(paths.rs pinvou3_home):PINVOU3_HOME 可整体重定位数据根,
+# 只认 $HOME/.pinvou3 会漏掉重定位安装——应用已连上而冒烟报「找不到 CLI」。
+PINVOU3_ROOT="${PINVOU3_HOME:-$HOME/.pinvou3}"
 
 pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
@@ -25,9 +28,10 @@ redact(){ awk '{ l=tolower($0)
     else print }' | sed -E 's/[A-Za-z0-9_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z0-9_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
 
 # --- 定位 dws ---
-# 应用按 connectors.lock.json 把 dws 落到版本目录 ~/.pinvou3/assets/cli/dws/<version>/
-# (paths.rs assets_cli_dir);旧布局 ~/.pinvou3/connectors/<platform>/bin/ 会被
-# native_installer 迁移并清理,只作存量回退;再退到 npm 全局 shim。
+# 应用按 connectors.lock.json 把 dws 落到版本目录 <数据根>/assets/cli/dws/<version>/
+# (paths.rs assets_cli_dir,数据根支持 PINVOU3_HOME 重定位);旧布局
+# <数据根>/connectors/<platform>/bin/ 会被 native_installer 迁移并清理,
+# 只作存量回退;再退到 npm 全局 shim。
 CLI="$(command -v dws 2>/dev/null || true)"
 # 本机平台 → connectors.lock 的平台目录名与可执行名(connector_lock executable_name);
 # 只探本机平台,避免共享 HOME 时误选别的平台的二进制。
@@ -54,7 +58,7 @@ if [ -z "$CLI" ]; then
   # (pattern 的 `)` 会终止命令替换)——文档化用法是 bash scripts/dingtalk-smoke.sh,
   # 必须兼容 3.2(bash -n 两版都过,只有真跑 3.2 才暴露,已实测)。
   ver=""
-  for d in "$HOME"/.pinvou3/assets/cli/dws/*/; do
+  for d in "$PINVOU3_ROOT"/assets/cli/dws/*/; do
     db="${d%/}"; db="${db##*/}"
     case "$db" in *[!0-9.]*) continue ;; esac
     # 还须含点:裸日期目录(如 20261027)不是版本号,选它会遮住旁边的健康安装
@@ -68,9 +72,9 @@ if [ -z "$CLI" ]; then
 "
   done
   ver="$(printf '%s' "$ver" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
-  [ -n "$ver" ] && CLI="$HOME/.pinvou3/assets/cli/dws/$ver/$EXE"
+  [ -n "$ver" ] && CLI="$PINVOU3_ROOT/assets/cli/dws/$ver/$EXE"
 fi
-[ -z "$CLI" ] && [ -n "$PLAT" ] && [ -f "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && [ -x "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && CLI="$HOME/.pinvou3/connectors/$PLAT/bin/$EXE"
+[ -z "$CLI" ] && [ -n "$PLAT" ] && [ -f "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && [ -x "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && CLI="$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE"
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/dws.cmd" ] && CLI="$APPDATA/npm/dws.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/dws.cmd" ] && CLI="$HOME/AppData/Roaming/npm/dws.cmd"
 if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连接钉钉,应用会在线下载并校验)"; exit 2; fi
@@ -93,15 +97,19 @@ DWS_TIMEOUT=30
 # 归一为 124——超时诊断分支照常生效,不能把超时伪装成「结果未知」。
 DWS_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
-# Ctrl-C 中断探测时兜底清理当前临时文件(dws_run 尾部自清正常路径;裸 CLI 输出
-# 未过 redact,不应留在 $TMPDIR 供人翻看)。
-DWS_TMP=""
-trap 'rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null' EXIT
 dws_run() {
   local t rc tflag
   t="$(mktemp "${TMPDIR:-/tmp}/dws-smoke.XXXXXX")"
   tflag="${t}.deadline"
+  # 兜底清理挂在拥有临时文件的探测子壳自身,不能挂外层脚本:本函数总经 $( )
+  # 调用,DWS_TMP 赋值只活在子壳里,外层永远看到空值——外层 EXIT 上的清理会
+  # 展开成 rm -f "" ".deadline",误删调用方工作目录里的同名文件(评审实测复现;
+  # 空值守卫一并拦住 mktemp 失败时 DWS_TMP 为空的同形状)。SIGINT 同进程组送达
+  # 时,子壳死前会执行自己的 EXIT(实测 bash 3.2.57 与 5.x 同),真实捕获文件
+  # 随之清掉;SIGKILL 无能为力,泄漏面只剩 $TMPDIR 一个文件。裸 CLI 输出未过
+  # redact,不应留在 $TMPDIR 供人翻看。
   DWS_TMP="$t"
+  trap 'if [ -n "$DWS_TMP" ]; then rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null; fi' EXIT
   if [ -n "$TIMEOUT_BIN" ]; then
     "$TIMEOUT_BIN" -k "$DWS_KILL_GRACE" "$DWS_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
   else

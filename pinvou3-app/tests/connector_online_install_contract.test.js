@@ -243,14 +243,27 @@ for (const [name, source] of [
     `${name}: redact 字段形态必须接受数字后缀键`,
   );
 }
-// 4) wecom 冒烟必须扫应用自装布局:只搜 PATH 会漏掉 ~/.pinvou3/assets/cli/wecom-cli/<ver>/
+// 4) wecom 冒烟必须扫应用自装布局:只搜 PATH 会漏掉 <数据根>/assets/cli/wecom-cli/<ver>/
 //    (native_installer 落盘处),并把关不上的报错引向 npm -g 自装(NOTICE-wecom
-//    登记的哈希循环路径)。
+//    登记的哈希循环路径)。数据根走 PINVOU3_ROOT(paths.rs pinvou3_home 支持
+//    PINVOU3_HOME 整体重定位;只认 $HOME/.pinvou3 会漏掉重定位安装)。
 assert.match(
   wecomSmoke,
-  /for d in "\$HOME"\/\.pinvou3\/assets\/cli\/wecom-cli\/\*\/; do/,
-  "wecom-smoke.sh 必须扫描应用安装布局 ~/.pinvou3/assets/cli/wecom-cli/<version>/(钉循环本身,注释提及不算)",
+  /for d in "\$PINVOU3_ROOT"\/assets\/cli\/wecom-cli\/\*\/; do/,
+  "wecom-smoke.sh 必须扫描应用安装布局 <数据根>/assets/cli/wecom-cli/<version>/(钉循环本身,注释提及不算)",
 );
+// 数据根解析必须与应用同名(PINVOU3_HOME 优先、默认 $HOME/.pinvou3):钉定义行,
+// 防止回退成硬编码 $HOME/.pinvou3(重定位安装再次漏扫)。
+for (const [name, source] of [
+  ["dingtalk-smoke.sh", dingtalkSmoke],
+  ["wecom-smoke.sh", wecomSmoke],
+]) {
+  assert.match(
+    source,
+    /^PINVOU3_ROOT="\$\{PINVOU3_HOME:-\$HOME\/\.pinvou3\}"$/m,
+    `${name}: 数据根必须按应用同口径解析(PINVOU3_HOME 优先,默认 $HOME/.pinvou3)`,
+  );
+}
 assert.doesNotMatch(
   wecomSmoke,
   /npm\s+(i|install)\s+(-g|--global)\b/,
@@ -753,6 +766,174 @@ assert.doesNotMatch(
       !statusValue.stdout.includes("[PASS] 读到文档内容"),
       `dingtalk-smoke.sh: status 值形态错误不得判读成功\n${statusValue.stdout}`,
     );
+  }
+}
+
+// ---- 11) EXIT 清理所有权:调用方目录不得被碰,真实捕获由探测子壳自清 ----
+// 形态钉:兜底清理 trap 必须挂在 run 函数内部且带空值守卫。run 函数总经 $( )
+// 调用,DWS_TMP 赋值只活在探测子壳里——挂在外层脚本 EXIT 上的清理会展开成
+// rm -f "" ".deadline",把调用方工作目录里的同名文件误删(评审实测复现;
+// mktemp 失败时子壳内 DWS_TMP 同样为空,守卫拦住同形状)。
+{
+  for (const [name, source] of [
+    ["dingtalk-smoke.sh", dingtalkSmoke],
+    ["wecom-smoke.sh", wecomSmoke],
+  ]) {
+    const lines = source.split("\n");
+    const prefix = (source.match(/^([A-Z]+)_TIMEOUT=/m) || [])[1];
+    assert.ok(prefix, `${name}: 未找到 *_TIMEOUT= 预备段`);
+    const fn = `${prefix.toLowerCase()}_run`;
+    const fnStart = lines.findIndex((l) => l.startsWith(`${fn}() {`));
+    const fnEnd = lines.indexOf("}", fnStart);
+    assert.ok(fnStart >= 0 && fnEnd > fnStart, `${name}: 未找到 ${fn}() 定义`);
+    assert.doesNotMatch(
+      source,
+      /^DWS_TMP=""/m,
+      `${name}: 外层脚本不得初始化 DWS_TMP(${fn}() 总经 $() 调用,外层永远看到空值;外层 EXIT 挂清理必展开成 rm -f "" ".deadline" 误删调用方文件)`,
+    );
+    assert.doesNotMatch(
+      source,
+      /^trap .*DWS_TMP/m,
+      `${name}: 清理 trap 不得挂在外层脚本(清理必须归拥有临时文件的探测子壳)`,
+    );
+    const trapIdx = lines.findIndex((l) =>
+      /^\s*trap 'if \[ -n "\$DWS_TMP" \]; then rm -f "\$DWS_TMP" "\$\{DWS_TMP\}\.deadline" 2>\/dev\/null; fi' EXIT$/.test(l),
+    );
+    assert.ok(
+      trapIdx > fnStart && trapIdx < fnEnd,
+      `${name}: 带空值守卫的清理 trap 必须挂在 ${fn}() 内部(实得行号 ${trapIdx + 1} vs 函数 ${fnStart + 1}-${fnEnd + 1})`,
+    );
+  }
+}
+// 行为钉(真脚本 + 假 CLI,从带 .deadline 哨兵的调用目录跑,WINDOWS 外跳过):
+// 正常退出哨兵必须保留、真实捕获已清;真实 Ctrl-C 形态(信号送达整个前台进程组,
+// 非 kill 单进程)中断后两者同样——外层挂清理的旧形态两处皆反:哨兵被误删、
+// 捕获泄漏(评审实测复现)。中断前必须先证捕获文件已落盘,防夹具落在探测开始
+// 之前而空真。
+{
+  const { spawnSync, spawn } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    // spawnSync 发不了进程组信号,这里用 Atomics.wait 做同步等待(主线程可用)。
+    const sleepSync = (ms) => {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    };
+    const fakeCli = (name) =>
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        `  --version) echo "${name} 9.9.9 (fake)"; exit 0 ;;`,
+        "  auth)",
+        '    if [ "${2:-}" = show ]; then echo "authorized"; else echo \'{"authenticated":true}\'; fi',
+        "    exit 0 ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n");
+    const slowCli = (name) =>
+      [
+        "#!/usr/bin/env bash",
+        "trap '' TERM",
+        `printf '${name} 9.9.9\\n'`,
+        "sleep 300",
+        "",
+      ].join("\n");
+    const mkCase = (tag, writeCli) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), `smoke-${tag}-home-`));
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      const cap = fs.mkdtempSync(path.join(os.tmpdir(), `smoke-${tag}-cap-`));
+      const caller = fs.mkdtempSync(path.join(os.tmpdir(), `smoke-${tag}-caller-`));
+      const sentinel = path.join(caller, ".deadline");
+      fs.writeFileSync(sentinel, "caller owns this file");
+      const env = {
+        ...process.env,
+        HOME: home,
+        PATH: bin + path.delimiter + process.env.PATH,
+        TMPDIR: cap,
+      };
+      return { cap, caller, env, sentinel, bin };
+    };
+    for (const [name, script] of [
+      ["dws", "dingtalk-smoke.sh"],
+      ["wecom-cli", "wecom-smoke.sh"],
+    ]) {
+      // 正常退出:健康假 CLI 全跑 exit 0;哨兵保留;捕获清空。
+      {
+        const { cap, caller, env, sentinel, bin } = mkCase("own-normal");
+        fs.writeFileSync(path.join(bin, name), fakeCli(name));
+        fs.chmodSync(path.join(bin, name), 0o755);
+        const run = spawnSync("bash", [path.join(root, "scripts", script)], {
+          encoding: "utf8",
+          timeout: 120000,
+          killSignal: "SIGKILL",
+          cwd: caller,
+          env,
+        });
+        assert.strictEqual(
+          run.status,
+          0,
+          `${script}: 健康假 CLI 全跑必须 exit 0(基线本身挂了则哨兵/清理断言不可信,status=${run.status})\n${run.stdout}\n${run.stderr}`,
+        );
+        assert.ok(
+          fs.existsSync(sentinel),
+          `${script}: 正常退出后调用方目录的 .deadline 哨兵必须保留(外层空值 trap 形状会误删)`,
+        );
+        assert.deepEqual(
+          fs.readdirSync(cap),
+          [],
+          `${script}: 正常退出后真实捕获文件必须已清(TMPDIR 残留=探测子壳清理被破坏)`,
+        );
+      }
+      // 中断退出:slow CLI 挂在探测里,1.2s 后先发 SIGINT(真实 Ctrl-C 形态);
+      // bash ≥5.3 实测会在 wait 期间吞掉/推迟 INT 而活下来(脚本转而逐探测跑完,
+      // 各探测尾部自清),3.2 则直接死——两版上「脚本被信号打断退出」都由随后的
+      // SIGTERM 保证:父壳死于信号时,旧形态的外层 EXIT trap 会当场展开
+      // rm -f "" ".deadline" 误删哨兵,新形态父壳无 trap,哨兵必须保留。
+      {
+        const { caller, env, sentinel, bin } = mkCase("own-int");
+        fs.writeFileSync(path.join(bin, name), slowCli(name));
+        fs.chmodSync(path.join(bin, name), 0o755);
+        const child = spawn("bash", [path.join(root, "scripts", script)], {
+          cwd: caller,
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        // 主线程被 sleepSync(Atomics.wait) 阻塞时 libuv 的 exit 事件不会派发:
+        // exitCode/signalCode 恒为 null,且死掉的子进程无人收尸成僵尸——
+        // kill(pid,0) 对僵尸也成功。活性只能问 OS:ps 的状态列(Z=僵尸=已死,
+        // 空=EARCH=已消失),不能轮询 child.exitCode 也不能只看 kill(pid,0)。
+        const alive = () => {
+          try {
+            process.kill(child.pid, 0);
+          } catch {
+            return false;
+          }
+          const stat = spawnSync("ps", ["-o", "stat=", "-p", String(child.pid)], {
+            encoding: "utf8",
+          });
+          const st = (stat.stdout || "").trim();
+          return st !== "" && !st.startsWith("Z");
+        };
+        sleepSync(1200);
+        process.kill(child.pid, "SIGINT");
+        sleepSync(1000);
+        if (alive()) process.kill(child.pid, "SIGTERM");
+        const t0 = Date.now();
+        while (alive() && Date.now() - t0 < 15000) {
+          sleepSync(100);
+        }
+        if (alive()) {
+          process.kill(child.pid, "SIGKILL");
+          assert.fail(`${script}: 信号中断后 15s 内脚本进程必须退出`);
+        }
+        sleepSync(300);
+        assert.ok(
+          fs.existsSync(sentinel),
+          `${script}: 中断退出后调用方目录的 .deadline 哨兵必须保留(评审实测的外层空值 trap 形状会误删)`,
+        );
+      }
+    }
   }
 }
 
