@@ -446,6 +446,19 @@ jobs:
             frontend:
               - 'pinvou3-app/src/**'
               - 'pinvou3-app/tests/**'
+              # readme_connector_claims.test.js 读仓库根 README*.md 做连接器
+              # 宣示锚定;不列出则 README-only PR 静默跳过该 node 门禁
+              # (test_ci_gate_policy 锁定此路由)。
+              - 'README.md'
+              - 'README.zh-CN.md'
+              - 'README.ja.md'
+              # connector_online_install_contract.test.js 读 scripts/ 下的
+              # smoke 脚本与 tauri/build.js 做 floor 钉扎;不列出则
+              # scripts-only PR 静默跳过该 node 门禁(test_ci_gate_policy
+              # 锁定此路由)。
+              - 'pinvou3-app/scripts/dingtalk-smoke.sh'
+              - 'pinvou3-app/scripts/wecom-smoke.sh'
+              - 'pinvou3-app/scripts/tauri/build.js'
               # multiagent_plan_normalize.test.mjs 读取下列 Rust 源做跨语言
               # 契约断言(蜂群契约/同快照不变式/编辑重发等);不列出则
               # Rust-only 改动会静默跳过该 node 门禁(同 resources/** 的

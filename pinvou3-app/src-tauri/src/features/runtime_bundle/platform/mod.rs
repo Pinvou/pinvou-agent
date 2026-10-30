@@ -96,8 +96,7 @@ pub(crate) use crate::platform::connector_skills::{
 ///       order and skipped numbers stay safe. Skill trees are excluded
 ///       from the content hash, so the semantic bump is required for
 ///       connected users to refresh at startup.
-/// 0.27: dws doc-audit fixes, 11 findings (PR #359, registered in
-///       NOTICE-dingtalk.md). The dws skill tree is excluded from the
+/// 0.27: dws doc-audit fixes, 11 findings. The dws skill tree is excluded from the
 ///       instructions content hash like the other connector trees, so
 ///       connected installs skip re-extraction unless the semantic base
 ///       changes. Lands after 0.28 (lark-skills #365), the 0.26
@@ -141,8 +140,9 @@ pub(crate) use crate::platform::connector_skills::{
 ///       waits for the post-first-frame refresh_connector_auth_gates
 ///       backfill).
 /// 0.32: connector skill trees synced to latest upstream (wecom-cli
-///       1.2.1 skills, lark-cli 1.0.95, dws 1.0.61, tmeet 1.0.18; all
-///       registered in the trees' NOTICE files). wecom-cli min
+///       1.2.1 skills, lark-cli 1.0.95, dws 1.0.61, tmeet 1.0.18; sync
+///       records live in the lark/wecom/tmeet NOTICE ledgers, the dws
+///       NOTICE keeps only a modifications summary). wecom-cli min
 ///       acceptable version raised to 1.2.1; tmeet npm pin raised to
 ///       1.0.18. Skill trees are excluded from the content hash, so
 ///       the semantic bump is required for connected users to refresh
@@ -154,7 +154,7 @@ pub(crate) use crate::platform::connector_skills::{
 /// `calendar participant *` (`attendee` + `--attendees` is the real
 /// surface), stale P0/P1 attendance marker dropped, non-blocking auth
 /// guidance added across SKILL.md first-use pointer, global-reference.md,
-/// event.md, and the attendance_report_checkin.py error outputs (NOTICE-dingtalk.md);
+/// event.md, and the attendance_report_checkin.py error outputs;
 /// wecomcli-email send/reply body files unified
 /// to tmp/mail/ so intermediate mail bodies stop landing in the
 /// artifact-panel root (NOTICE-wecom.md); tmeet example `--meeting-id`
@@ -200,8 +200,11 @@ pub(crate) use crate::platform::connector_skills::{
 /// skill), upstream anti-injection "安全提示" sections adopted, shared
 /// version-gate text raised to 1.3.4. tmeet skills re-verified against
 /// upstream v1.0.18 (still latest; only registered local modifications
-/// differ). All replayed local normalizations are registered in the four
-/// NOTICE files. Next free slot after 0.33.
+/// differ). All replayed local normalizations are registered in the
+/// NOTICE files (lark/wecom/tmeet keep full sync ledgers; the dws
+/// NOTICE carries a modifications summary plus a git-history pointer
+/// to its pre-trim ledger — see the 2026-10 hygiene trim). Next free
+/// slot after 0.33.
 pub const BUNDLE_VERSION: &str = concat!("0.34-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。

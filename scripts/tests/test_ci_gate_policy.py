@@ -160,6 +160,94 @@ def _extract_consent_marker_read_targets(consent_test):
     return sorted(targets)
 
 
+def _extract_readme_claims_read_targets(claims_test):
+    """从 readme_connector_claims.test.js 源码派生全部仓库根 README 读取目标。
+
+    claims 表的 `file: "README*.md"` 字符串字面量即一个仓库根读取目标
+    (测试经 repoRoot 拼接读取)。未来新增 README 读取自动纳入路由锁,
+    不会 fail-open。单引号/双引号、冒号后空白都接受;派生结果为空即红
+    (claims 表形态变更须同步本提取器)——静默空结果会让路由锁整体失效。
+    """
+    targets = sorted(
+        {m[1] for m in re.findall(r"file:\s*(['\"`])([^'\"`]+)\1", claims_test)}
+    )
+    # 非字面量值 fail-closed:计算值行(`file: readmeFor(lang)`)主正则看不见,
+    # 派生结果却因其他字面量行仍非空——新增 README 读取静默逃出路由锁。逐行
+    # 检查 file 值必须为完整的引号字面量(模板串/单双引号皆可):只查开头引号
+    # 会放过 quote 打头的拼接/插值值(`file: "README" + s + ".md"` 以引号开头
+    # 却是计算值),主正则把表达式切成错误目标;模板串含 ${…} 插值同样算计算值。
+    for raw in re.findall(r"\bfile:\s*([^,}\n]+)", claims_test):
+        value = raw.strip()
+        if not re.fullmatch(r"'[^']*'|\"[^\"]*\"|`[^`]*`", value) or "${" in value:
+            raise AssertionError(
+                "claims 行 file 值不是完整的静态引号字面量,路由锁无法派生其读取目标"
+                f"(改为字面量或同步本提取器): {value}"
+            )
+    if not targets:
+        raise AssertionError(
+            "readme claims 表未派生出任何 README 读取目标——读取形态变更须同步本提取器"
+        )
+    return targets
+
+
+def _extract_install_contract_script_reads(contract_test):
+    """从 connector_online_install_contract.test.js 源码派生 scripts/ 读取目标。
+
+    `read("scripts", "x.sh")` 与任意段数的 `read("scripts", "a", "b", …)` 字面量
+    (单双引号、跨行皆可)各成一个 pinvou3-app/scripts/ 读取目标;`read("scripts", …)`
+    调用里解析不出字符串字面量即红——与 _extract_contract_read_targets 同款
+    fail-closed:提取器看不见的读取,路由锁就拦不住删除路由的回归。
+    """
+    targets = []
+    for args in re.findall(
+        r"read\(\s*['\"]scripts['\"]\s*,?\s*([^)]*)\)", contract_test, re.S
+    ):
+        parts = re.findall(r"['\"]([^'\"]*)['\"]", args)
+        if not parts:
+            raise AssertionError(f"无法解析的 scripts 读取目标: {args}")
+        targets.append("pinvou3-app/scripts/" + "/".join(parts))
+    # 非字面量首参 fail-closed:变量/模板串/表达式首参的 read(…) 主正则看不见,
+    # 派生结果却因其他字面量读取仍非空——新增读取静默逃出路由锁(经变异验证
+    # fail-open)。枚举每个 read( 调用,首参必须是完整的引号字面量(整个表达式,
+    # 不只是开头引号):quote 打头的拼接首参(如 "scr"+"ipts")骗得过开头引号
+    # 检查,主正则却照旧看不见它,读取静默逃出路由锁(评审指出的残余 fail-open;
+    # 与下方其余参数的 fullmatch 同口径)。宁可误红也不 fail-open;注释里提及
+    # read( 形态时同样须保持字面量示例形态。
+    for call_head in re.findall(
+        r"(?<![A-Za-z0-9_$.])read\s*\(\s*([^,)]*)", contract_test, re.S
+    ):
+        first = call_head.strip()
+        if not re.fullmatch(r"'[^']*'|\"[^\"]*\"", first):
+            raise AssertionError(
+                "read() 首参必须是完整的字符串字面量(开头引号检查放得过拼接/"
+                "插值首参,读取会静默逃出路由锁,改为字面量或同步本提取器): "
+                f"{first}"
+            )
+    # scripts 首参调用的其余参数必须各自是完整的引号字面量(整个表达式,不只是
+    # 开头引号):拼接/插值/计算后参会被主正则切成错误目标,而派生结果因其他
+    # 字面量读取仍非空——`read("scripts", "a" + name + ".sh")` 会静默派生出
+    # 不存在的路径,真实读取逃出路由锁(fail-open)。逐参数 fullmatch 完整引号
+    # 形态,解析不出即红(宁可误红也不 fail-open;注释里提及 read( 形态时同样
+    # 须保持字面量示例形态)。空参数(尾逗号)跳过。
+    for rest in re.findall(
+        r"read\s*\(\s*['\"]scripts['\"]\s*,\s*([^)]*)\)", contract_test, re.S
+    ):
+        for arg in rest.split(","):
+            arg = arg.strip()
+            if arg and not re.fullmatch(r"'[^']*'|\"[^\"]*\"", arg):
+                raise AssertionError(
+                    "read(\"scripts\", …) 的每个参数都必须是完整的字符串字面量"
+                    "(拼接/插值/变量参数会派生出错误目标而静默逃出路由锁,"
+                    f"改为字面量或同步本提取器): read(\"scripts\", {rest})"
+                )
+    if not targets:
+        raise AssertionError(
+            "connector_online_install_contract.test.js 未派生出任何 scripts/ 读取目标"
+            "——读取形态变更须同步本提取器"
+        )
+    return sorted(set(targets))
+
+
 def _frontend_filter_entries(workflow_text):
     """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
     changes = _changes_block(workflow_text)
@@ -835,6 +923,168 @@ class CiGatePolicyTests(unittest.TestCase):
                 _is_covered_by_trigger(target, frontend_paths),
                 f"consent marker 契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
+            )
+
+    def test_readme_claims_reads_fully_routed(self):
+        # readme_connector_claims.test.js 读取仓库根 README*.md 做连接器宣示
+        # 锚定——README-only PR 若不在 frontend filter 中,frontend-test 被
+        # 静默跳过,高亮清单漂移(删名/宣示占位卡)在该 node 门禁不可见。
+        # 从测试源码派生全部 README 读取目标逐一断言 frontend filter 覆盖;
+        # 新增读取而未路由、或已路由 README 被挪走,都会在这里失败(本套件
+        # 在 fast-gate 每个 PR 必跑)。
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
+        claims_test = (
+            ROOT / "pinvou3-app/tests/readme_connector_claims.test.js"
+        ).read_text(encoding="utf-8")
+
+        targets = _extract_readme_claims_read_targets(claims_test)
+
+        self.assertTrue(
+            targets,
+            "未能从 readme_connector_claims.test.js 解析出 README 读取目标"
+            "(claims 表 file: \"…\" 形态变更须同步 _extract_readme_claims_read_targets)",
+        )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(target, frontend_paths),
+                f"readme claims 测试读取的 {target} 未被 frontend filter 覆盖,"
+                "README-only 改动会静默跳过该 node 门禁",
+            )
+
+    def test_install_contract_script_reads_routed(self):
+        # connector_online_install_contract.test.js 读取 pinvou3-app/scripts/
+        # 下的 smoke 脚本与 tauri/build.js 做 floor/HTTPS 钉扎——scripts-only
+        # PR 若不在 frontend filter 中,frontend-test 被静默跳过,smoke floor
+        # 漂移在该 node 门禁不可见(与本 PR 新增 dingtalk-smoke.sh 同批引入,
+        # 路由缺口系 round-6 review 实证)。从测试源码派生全部 scripts/ 读取
+        # 目标逐一断言 frontend filter 覆盖;新增读取而未路由会在这里失败
+        #(本套件在 fast-gate 每个 PR 必跑)。
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
+        contract_test = (
+            ROOT
+            / "pinvou3-app/tests/connector_online_install_contract.test.js"
+        ).read_text(encoding="utf-8")
+
+        targets = _extract_install_contract_script_reads(contract_test)
+
+        self.assertTrue(
+            targets,
+            "未能从 connector_online_install_contract.test.js 解析出 scripts/"
+            " 读取目标(read(\"scripts\", …) 形态变更须同步"
+            " _extract_install_contract_script_reads)",
+        )
+        for target in targets:
+            self.assertTrue(
+                _is_covered_by_trigger(target, frontend_paths),
+                f"install contract 测试读取的 {target}"
+                " 未被 frontend filter 覆盖,scripts-only 改动会静默跳过该"
+                " node 门禁",
+            )
+
+    def test_script_read_derivation_covers_quote_and_shape_variants(self):
+        # 回归锁(round-7 review m4):scripts 派生正则此前只认双引号、单行、
+        # 恰好 1~2 段的 `read("scripts", …)`;单引号 / 跨行 / 三段写法派生出
+        # 零目标,路由锁随之静默失效(经变异验证 fail-open)。喂最小 fixture:
+        # 三种变体都必须派生出来;字面量解析不出(变量参数)必须抛错而不是
+        # 静默跳过;README 派生同样接受单引号。
+        fixture = (
+            "const a = read('scripts', 'future-smoke.sh');\n"
+            "const b = read(\n  \"scripts\",\n  \"tauri\",\n  \"build.js\",\n);\n"
+            "const c = read(\"scripts\", \"deep\", \"nested\", \"tool.mjs\");\n"
+        )
+        targets = _extract_install_contract_script_reads(fixture)
+        self.assertEqual(
+            targets,
+            [
+                "pinvou3-app/scripts/deep/nested/tool.mjs",
+                "pinvou3-app/scripts/future-smoke.sh",
+                "pinvou3-app/scripts/tauri/build.js",
+            ],
+        )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads("read(\"scripts\", scriptName)")
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads("const x = 1;")
+        # 回归锁(round-13 评审 P3):参数表达式只查开头引号会放过 quote 打头的
+        # 拼接/插值——主正则把表达式切成错误目标而派生照常非空(fail-open)。
+        # 逐参数完整字面量检查下必须抛错;全字面量的多段读取照常派生(上方
+        # fixture 已断言)。
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scripts\", \"future-\" + name + \".sh\");\n"
+                "const b = read(\"scripts\", \"tauri\", \"build.js\");\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scripts\", `future-${name}.sh`);\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scripts\", \"future-smoke.sh\" + suffix);\n"
+            )
+        self.assertEqual(
+            _extract_readme_claims_read_targets(
+                "{ file: 'README.md' }, { file: \"README.ja.md\" }"
+            ),
+            ["README.ja.md", "README.md"],
+        )
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets("const claims = [];")
+
+    def test_script_read_derivation_fails_closed_on_non_literal_first_arg(self):
+        # 回归锁(round-12 review):变量/模板串首参的 read(…) 主正则看不见,
+        # 派生结果却因其他字面量读取仍非空——新增读取静默逃出路由锁(经变异
+        # 验证 fail-open)。首参非引号字面量必须抛错;真实测试源(全部字面量
+        # 首参)必须照常派生。round-14 评审残余:quote 打头的拼接首参骗得过
+        # 开头引号检查,同样必须抛错。
+        contract_test = (
+            ROOT
+            / "pinvou3-app/tests/connector_online_install_contract.test.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "pinvou3-app/scripts/dingtalk-smoke.sh",
+            _extract_install_contract_script_reads(contract_test),
+        )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const dir = 'scripts';\n"
+                "const a = read(dir, 'future-smoke.sh');\n"
+                "const b = read(\"scripts\", \"tauri\", \"build.js\");\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(`scripts`, \"future-smoke.sh\");\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scr\" + \"ipts\", \"future-smoke.sh\");\n"
+                "const b = read(\"scripts\", \"tauri\", \"build.js\");\n"
+            )
+
+    def test_readme_claims_derivation_covers_template_literal_rows(self):
+        # 回归锁(round-12 review):claims 行的模板字面量值此前派生不出(引号类
+        # 不含反引号),计算值行静默不可见——新增 README 读取会逃出路由锁。
+        # 模板字面量现在被接受;计算值(非字面量)必须抛错而非静默跳过。
+        self.assertEqual(
+            _extract_readme_claims_read_targets(
+                "{ file: `README.de.md` }, { file: \"README.md\" }"
+            ),
+            ["README.de.md", "README.md"],
+        )
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets(
+                "{ file: readmeFor('de') }, { file: \"README.md\" }"
+            )
+        # 回归锁(round-13 评审 P3):值表达式只查开头引号会放过 quote 打头的
+        # 拼接/插值——主正则把表达式切成错误目标(fail-open)。完整字面量检查
+        # 下必须抛错;模板串含 ${…} 插值同样算计算值,必须抛错。
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets(
+                "{ file: 'README' + suffix + '.md' }, { file: \"README.md\" }"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets(
+                "{ file: `README.${lang}.md` }, { file: \"README.md\" }"
             )
 
     def test_contract_target_derivation_covers_double_quoted_reads(self):

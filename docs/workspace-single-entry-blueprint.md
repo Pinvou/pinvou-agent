@@ -222,14 +222,14 @@ key.
   (hard reject, same gate as `cwd`); nonexistent/non-directory roots are
   kept with a soft warning — the folder may be moved away and recreated
   later, and the snapshot faithfully records the user's choice at the time.
-- **Case-variant ancestor residual (round-34 should-fix 4, disclosed until the upstream promotion):** on case-insensitive filesystems (APFS/NTFS defaults) the ancestor-of-primary rejection compares case-sensitively on POSIX — a declared additional root spelled `/USERS/alice` passes both the lexical and canonical checks against a primary at `/Users/alice` because `canonicalize` preserves case and `starts_with` is byte-wise. The scheduled closure is canonicalize-at-intake on the foundation side; until then the widening direction is bounded the same way the soft-keep chain is (the model must already control a path-resolvable alias).
-- **Soft-keep residual (disclosed, over-grant direction — round-24 M1):**
+- **Case-variant ancestor residual (disclosed until the upstream promotion):** on case-insensitive filesystems (APFS/NTFS defaults) the ancestor-of-primary rejection compares case-sensitively on POSIX — a declared additional root spelled `/USERS/alice` passes both the lexical and canonical checks against a primary at `/Users/alice` because `canonicalize` preserves case and `starts_with` is byte-wise. The scheduled closure is canonicalize-at-intake on the foundation side; until then the widening direction is bounded the same way the soft-keep chain is (the model must already control a path-resolvable alias).
+- **Soft-keep residual (disclosed, over-grant direction):**
   a nonexistent root is stored at its lexical spelling and stays in
   delivery until it resolves (the moved-away-recreated contract above).
   The delivery-time re-check (`compose_workspace_roots`) judges every
   *resolvable* root against the two hard invariants (filesystem root;
-  ancestor of the primary without an endorsement — since round-40/zhuowp
-  P2 an ancestor is delivered when it is **backed by the owning project's
+  ancestor of the primary without an endorsement — since the
+  explicit-backing adjudication an ancestor is delivered when it is **backed by the owning project's
   registered roots OR explicitly granted**: `explicit_ancestor_roots`
   provenance recorded by align (§9.7) survives the backing project's
   deletion/re-rooting and persists on every durable surface — the index,
@@ -254,7 +254,7 @@ key.
   session-agents record *and* the authoritative code-session sidecar; ACP
   sessions in the session-agents index and `acp-state.json` (temporary
   sessions always store an empty snapshot). Each surface additionally
-  carries the `explicit_ancestor_roots` provenance (round-40 A1/M6): the
+  carries the `explicit_ancestor_roots` provenance (per the adjudication above): the
   align-granted ancestors ride every durable writer — sidecar setters,
   spawn full-rewrite, convergence patch — and rebind resets it with the
   replacement keychain; an index loss rebuilds it from whichever durable
@@ -278,8 +278,8 @@ key.
 - **Rebind migration** (§7): for every session whose binding moved, the
   roots under the rebound prefix are translated `from → to` (roots outside
   the prefix untouched); stationary-binding sessions whose KEYCHAIN holds a
-  `from`-prefixed root get that root translated in place too (round-29 —
-  the keychain must not keep a vanished spelling the binding never moved
+  `from`-prefixed root get that root translated in place too (the
+  keychain must not keep a vanished spelling the binding never moved
   away from).
 - **Replacement** happens only through the explicit "align to project"
   action (§9.7): the snapshot is replaced wholesale with the owning
@@ -304,7 +304,7 @@ key.
   broken-link repair when a directory moved: project roots under the
   `from` prefix shift to `to`, keychain snapshots migrate with their
   binding — and stationary-binding keychains holding `from`-prefixed roots
-  get those roots translated in place (§6's round-29 ruling) — intra-set
+  get those roots translated in place (§6's ruling) — intra-set
   constraints are revalidated per affected project with rollback on
   failure, and active-turn fences reject rebinds while a
   prompt/turn/scheduled run is in flight. The frontend two-stages the
@@ -466,9 +466,9 @@ its owning project's **full root set at that moment**.
   command layer skips both the live-engine push and the
   `session:list_changed` event, so runtime state cannot diverge from disk.
 - Over-grant windows surface instead of staying silent: a live push that
-  fails (or is refused by the post-`handle_for` busy recheck,
-  round-10/11 M1) sets `live_push_failed` on the applied outcome; a failed
-  sidecar rewrite (index committed, disk copy stale, round-10 M2) sets
+  fails (or is refused by the post-`handle_for` busy recheck) sets
+  `live_push_failed` on the applied outcome; a failed sidecar rewrite
+  (index committed, disk copy stale) sets
   `sidecar_stale`. The engine keeps the previous set until the next
   spawn/resume; a later index loss can briefly resurrect the pre-align set.
 - Store scope: the native lane writes both binding stores (agent record +

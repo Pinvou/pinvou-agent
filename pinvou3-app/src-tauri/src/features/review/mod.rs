@@ -3,9 +3,9 @@
 //! Boss 主动召唤 → 从 session messages 投影出「需求 vs 应对」→ 单次独立 LLM
 //! 审查 → 返回 personas/issues。Pinvou 只检阅、不替 Boss 决策。
 //!
-//! 设计与实证：`docs/品悟v4-常驻检阅助手设计.md` / `docs/品悟v4-召唤式实测报告.md`。
-//! 上下文策略（§4.1，实测背书）：能全喂就全喂（真实 1.2 万 token、94% 噪音不崩、
-//! 还能事实核查），超过 `FULL_FEED_CHAR_LIMIT` 才降级到确定性投影。
+//! 设计与实证：`docs/品悟v4-召唤式评审设计.md`（§6 上下文策略、§7 实证）。
+//! 上下文策略（§6，实测背书）：能全喂就全喂（实测 1.2 万 token 级高噪音
+//! 会话不崩、还能事实核查），超过 `FULL_FEED_CHAR_LIMIT` 才降级到确定性投影。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -51,8 +51,8 @@ B. recommendations = 需 **Boss 拿主意**的决策点/缺信息：选项、偏
   "confidence": 0.0
 }"#;
 
-/// 核账模式 prompt（§3，sim 验证收敛）：对同一产出物的复审，只核账、禁新增、终态。
-/// 治 tejz7cxrd5jd0 的不收敛——暴增/翻案/永久挂账/无终态。
+/// 核账模式 prompt（§5，sim 验证收敛）：对同一产出物的复审，只核账、禁新增、终态。
+/// 治复审不收敛——暴增/翻案/永久挂账/无终态。
 const RECONCILE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问。这是对**同一产出物**的复审（核账模式），不是重新自由批评。
 给你【上轮账目】（上次立的问题）+【当前产物】（已修订版本）。严格按规则核账：
 1. 逐条核对账目对照产物：**已改好的不要再列进 issues**（视为闭合）；只把**没改/没改对**的留在 issues 里，说明还差什么。
@@ -62,7 +62,7 @@ const RECONCILE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
 5. **终态**：所有账目都闭合（issues 为空）→ verdict="pass"。**pass 时 trace 必须逐条点名每笔账目的核对结论**（如"①交通：已改为巴黎直飞苏黎世✓ ②日期：已锁定5月中下旬✓ ③签证：已补主停留国原则✓"），让 Boss 看到你逐条对过产物、不是空泛放行；还有没闭合的 → verdict="continue"。
 输出只能是 JSON：{"verdict":"pass|continue","trace":"pass 时逐条交代各账目核对结论，continue 时一句话","issues":[{"severity":"low|medium|high","kind":"...","text":"...","suggestion":"..."}],"risk":"low|medium|high"}"#;
 
-/// 覆盖镜头 prompt（§coverage，多场景 sim 4abe9ae 背书）：不挑错，查"全不全"。领域无关——
+/// 覆盖镜头 prompt（§2 悟镜头，多场景 sim 实测背书）：不挑错，查"全不全"。领域无关——
 /// 让模型自判专家身份临场列该类产物的完整性维度框架，再标缺/薄弱维度。收敛靠框架有限。
 const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾问。这次专做【覆盖度检查】——不挑已有内容的对错，只看产物"全不全"。
 
@@ -85,16 +85,16 @@ const COVERAGE_PROMPT: &str = r#"你是 Pinvou，Boss 身边的独立检阅顾�
   "coverage": [{"dimension":"维度名","coverage":"weak|missing","severity":"high|medium|low","text":"缺/薄弱在哪","suggestion":"建议补什么"}]
 }"#;
 
-/// 本地审查实测 5–19s，旧版 5s 必挂；放宽到 30s（设计 §9）。
+/// 本地审查实测 5–19s，旧版 5s 必挂；放宽到 30s（设计 §3 的 5–30s 预期）。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂巴黎 session 20117 字
-/// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§4.1）。
+/// 全喂阈值（字符数；中英混 ÷1.7 ≈ token）。实测全喂 2 万字级长会话
+/// （≈1.2 万 token）不崩，所以 24000 字以内直接全喂，超过才投影降级（§6）。
 const FULL_FEED_CHAR_LIMIT: usize = 24_000;
 
 /// 产物上限（字符）。产物真相在 workspace 文件，整篇读、整篇喂——本地 256k 扛得住
 /// （实测 2 万字全喂稳）。常规产物（文档/邮件/代码）都在此内整篇喂；超此才截断+标注，
-/// 真超大产物的「不漏」解是 P1 map-reduce 分块全审（§10.10）。
+/// 真超大产物的「不漏」解是 P1 map-reduce 分块全审。
 const ARTIFACT_CHAR_LIMIT: usize = 30_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,7 +120,7 @@ pub struct PinvouIssue {
     pub suggestion: String,
 }
 
-/// Boss 决策点的推荐（§B 助决策）。topic=待决策点，pick=推荐项，why=理由。
+/// Boss 决策点的推荐（§2 recommendations 各进各篮）。topic=待决策点，pick=推荐项，why=理由。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinvouRecommendation {
     #[serde(default)]
@@ -147,7 +147,7 @@ pub struct PinvouGap {
     pub suggestion: String,
 }
 
-/// guard 后返回给前端的审查结果（§7 协议）。
+/// guard 后返回给前端的审查结果（§3 弹窗裁决）。
 #[derive(Debug, Clone, Serialize)]
 pub struct PinvouReview {
     pub personas: Vec<PinvouPersona>,
@@ -191,7 +191,7 @@ struct ModelReview {
     verdict: Option<String>,
 }
 
-/// 召唤入口：从 session messages + workspace 审查。同一产出物的复审走核账模式（§3）。
+/// 召唤入口：从 session messages + workspace 审查。同一产出物的复审走核账模式（§5）。
 pub async fn summon(
     bridge: &Pinvou3Bridge,
     messages: &[Message],
@@ -204,7 +204,7 @@ pub async fn summon(
     let artifact_path = focus
         .map(str::to_string)
         .or_else(|| last_artifact_path(messages));
-    // 覆盖体检模式(§coverage,独立入口):查产物"全不全"。复用 build_context(全喂需求+产物文件)，
+    // 覆盖体检模式(§2 悟镜头,独立入口):查产物"全不全"。复用 build_context(全喂需求+产物文件)，
     // COVERAGE_PROMPT 让模型临场列完整性框架+缺口。不走核账——体检是 Boss 主动的一次性深度动作。
     if mode == Some("coverage") {
         let raw =
@@ -231,7 +231,7 @@ pub async fn summon(
     Ok(review)
 }
 
-/// 需求/事实/对话脉络走全喂或投影（§4.1）；**产物单独读 workspace 文件真实内容**附在
+/// 需求/事实/对话脉络走全喂或投影（§6）；**产物单独读 workspace 文件真实内容**附在
 /// 末尾——修 edit_file 被忽略 + diff 流难拼最终态（产物真相在文件，不在工具调用历史）。
 fn build_context(messages: &[Message], workspace: &Path) -> String {
     let full = full_transcript(messages);
@@ -350,15 +350,15 @@ fn latest_artifact_file(messages: &[Message], workspace: &Path) -> Option<(Strin
     Some((path, bounded))
 }
 
-/// 账目是否已被 Boss 结清、核账不再核（§3）：accept=缺陷接受现状、confirmed=需核实但 Boss
+/// 账目是否已被 Boss 结清、核账不再核（§5）：accept=缺陷接受现状、confirmed=需核实但 Boss
 /// 已确认没问题。其余(modify/verify/adopt/ask/pending)都保留进核账。kind 分流后新增的 confirmed
-/// 也得跳过，否则 Boss 已确认的账会被重核→震荡（pkx4clhny5jd0 实测暴露）。
+/// 也得跳过，否则 Boss 已确认的账会被重核→震荡。
 fn is_ledger_closed(resolution: Option<&str>) -> bool {
     matches!(resolution, Some("accept") | Some("confirmed"))
 }
 
 /// 读 sidecar(`pinvou_reviews.json`)里针对同一产出物的最近一轮账目(issues)。有则进
-/// 核账模式（§3，激活原未做项「连续召唤接续」）。sidecar 由前端 recordPinvouReview 落盘，后端只读。
+/// 核账模式（§5，激活原未做项「连续召唤接续」）。sidecar 由前端 recordPinvouReview 落盘，后端只读。
 fn read_prior_ledger(
     session_id: &str,
     artifact_path: &str,
@@ -408,7 +408,7 @@ fn ledger_from_entries(
         return None;
     }
     // 读【最近一轮立账】(最近 issues 非空 entry)的账目——支持多轮立账(首轮品 + 悟后重新立账各立一批)。
-    // pass 轮 issues 空会被跳过;accept/confirmed 已结的过滤(§3,is_ledger_closed)。
+    // pass 轮 issues 空会被跳过;accept/confirmed 已结的过滤(§5,is_ledger_closed)。
     arr.iter().rev().find_map(|entry| {
         let rv = entry.get("review")?;
         if rv.get("artifact_path").and_then(Value::as_str)? != artifact_path {
@@ -432,7 +432,7 @@ fn ledger_from_entries(
     })
 }
 
-/// 核账上下文：上轮账目 + 当前产物文件真实内容（§3）。核账只对账，不喂全会话。
+/// 核账上下文：上轮账目 + 当前产物文件真实内容（§5）。核账只对账，不喂全会话。
 fn build_reconcile_context(
     prior: &[PinvouIssue],
     messages: &[Message],
@@ -481,7 +481,7 @@ fn output_language_directive(locale_tag: &str) -> Option<String> {
     ))
 }
 
-/// guard 空 trace 兜底文案,跟随 locale(§7)。模型正常会按 output_language_directive 返回本地化 trace,
+/// guard 空 trace 兜底文案,跟随 locale。模型正常会按 output_language_directive 返回本地化 trace,
 /// 这里只是它返回空时的保底,也得跟 UI 语言一致。
 fn default_trace(locale_tag: &str, clean: bool) -> String {
     match (locale_tag, clean) {
@@ -790,9 +790,9 @@ const B1_TRANSFER_PREFIXES: &[&str] = &[
     "成果物には以下の観点が不足しています",
 ];
 
-/// 确定性投影（§4.2，超长降级用）：Boss 原话全留 / request_user_input 决策 /
+/// 确定性投影（§6，超长降级用）：Boss 原话全留 / request_user_input 决策 /
 /// Web(action=search) 事实截断；丢 checklist、thinking、tool 细节。**产物不在这里**——由
-/// build_context 读 workspace 文件真实内容（修 edit_file bug，§10.10）。
+/// build_context 读 workspace 文件真实内容（修 edit_file bug，§6）。
 fn project(messages: &[Message]) -> String {
     let names = tool_name_map(messages);
     let mut boss_says = Vec::new();
@@ -874,8 +874,8 @@ fn truncate_chars(s: &str, n: usize) -> String {
 
 // ───────────────────────── runtime guard ─────────────────────────
 
-/// §7 guard：issues[].persona 必须在 personas∪alternates；空 trace 给默认。
-/// MVP 不校验 persona id 是否预注册（人格是"视角参数"，见设计 §7/§10.2）。
+/// guard：issues[].persona 必须在 personas∪alternates；空 trace 给默认。
+/// MVP 不校验 persona id 是否预注册（人格是"视角参数"）。
 fn apply_guard(raw: ModelReview, locale_tag: &str) -> PinvouReview {
     let valid: HashSet<String> = raw
         .personas
@@ -1117,7 +1117,7 @@ mod tests {
     }
 
     /// 核账跳过哪些动作的契约：只有 accept(接受现状)/confirmed(需核实已确认)算已结，其余
-    /// 都保留核。漏掉 confirmed 会让 Boss 已确认的账被重核→震荡(pkx4clhny5jd0 实测暴露)。
+    /// 都保留核。漏掉 confirmed 会让 Boss 已确认的账被重核→震荡。
     #[test]
     fn ledger_closed_only_for_accept_and_confirmed() {
         assert!(is_ledger_closed(Some("accept")));

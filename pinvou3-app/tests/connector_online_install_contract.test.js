@@ -91,12 +91,15 @@ const wecomMin = wecom.match(
   /WECOM_MIN_VERSION:\s*\(u64, u64, u64\)\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)/,
 );
 assert.ok(wecomMin, "wecom.rs must declare WECOM_MIN_VERSION as a tuple");
-const wecomMinNumeric =
-  Number(wecomMin[1]) * 10000 + Number(wecomMin[2]) * 100 + Number(wecomMin[3]);
 assert.match(
   wecomSmoke,
-  new RegExp(`>= ${wecomMinNumeric}\\)`),
+  new RegExp(`MIN_WECOM="${wecomMin[1]}\\.${wecomMin[2]}\\.${wecomMin[3]}"`),
   "wecom-smoke.sh version floor must stay in lockstep with WECOM_MIN_VERSION",
+);
+assert.match(
+  wecomSmoke,
+  /grep -qxF "\$MIN_WECOM"/,
+  "wecom-smoke.sh must compare against the pinned MIN_WECOM floor, not a drift copy",
 );
 // The gate itself must also equal the wecom-cli version pinned in the five
 // platform locks (all five are forced identical by the deepEqual above):
@@ -109,5 +112,879 @@ assert.equal(
   lockVersions["wecom-cli"],
   "WECOM_MIN_VERSION must equal the wecom-cli version pinned in the platform locks",
 );
+
+// Same lockstep for the dws manual smoke. The host has no DWS_MIN_VERSION gate
+// (it installs the exact lock version by hash), so the smoke floor follows the
+// cli_version floor declared in the bundled dws SKILL.md frontmatter, and that
+// floor must not exceed the lock pin — otherwise the smoke would reject the
+// very binary the host installs.
+const dwsSkill = read(
+  "src-tauri", "resources", "common", "bundle", "dingtalk-skills", "dws", "SKILL.md",
+);
+const dingtalkSmoke = read("scripts", "dingtalk-smoke.sh");
+const dwsFloor = dwsSkill.match(/^cli_version:\s*"?>=\s*(\d+)\.(\d+)\.(\d+)"?\s*$/m);
+assert.ok(dwsFloor, 'dws SKILL.md must declare cli_version as ">=X.Y.Z"');
+assert.match(
+  dingtalkSmoke,
+  new RegExp(`MIN_TRI="${dwsFloor[1]}\\.${dwsFloor[2]}\\.${dwsFloor[3]}"`),
+  "dingtalk-smoke.sh version floor must stay in lockstep with the dws SKILL.md cli_version",
+);
+assert.match(
+  dingtalkSmoke,
+  /grep -qxF "\$MIN_TRI"/,
+  "dingtalk-smoke.sh must compare against the pinned MIN_TRI floor, not a drift copy",
+);
+// 逐段比较而非加权 1*10000+…:加权在段 ≥100 时给出错误答案(锁钉 1.0.164 vs
+// 下限 1.1.0 → 10100 ≤ 10164 误过,而语义上下限已高于锁)。
+const seg = (v) => v.split(".").map(Number);
+const segLe = (a, b) => {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x < y;
+  }
+  return true;
+};
+assert.ok(
+  segLe(seg(`${dwsFloor[1]}.${dwsFloor[2]}.${dwsFloor[3]}`), seg(lockVersions["dws"])),
+  "dws SKILL.md cli_version floor must not exceed the dws version pinned in the platform locks",
+);
+
+// ---- 两份冒烟脚本自身的契约(floor 之外的行为钉) ----
+// 1) 版本比较必须用逐段数值排序键:丢掉 -k 键退化为字典序会把 1.0.9 排到
+//    1.0.64 之后,低于下限的 CLI 误 PASS,而 floor 字面量钉全绿。
+for (const [name, source] of [
+  ["dingtalk-smoke.sh", dingtalkSmoke],
+  ["wecom-smoke.sh", wecomSmoke],
+]) {
+  assert.match(
+    source,
+    /sort -t\. -k1,1n -k2,2n -k3,3n/,
+    `${name}: 版本比较必须保留逐段数值排序键(字典序会让 1.0.9 >= 1.0.64)`,
+  );
+  // 2) 版本号解析必须锚定含 CLI 名的行并取名字之后的点分数字:同族 lark-cli
+  //    实测在版本行之前打「a new version 1.0.96 is available」(feishu.rs 钉有
+  //    该夹具),「全文首个点分数字」会把更新号/代理 IP 读成本机版本误 PASS。
+  assert.match(
+    source,
+    /tolower\(\$0\) ~ \/(dws|wecom-cli)\//,
+    `${name}: 版本解析必须先过滤含 CLI 名字的行(更新提示/代理 IP 行不算版本)`,
+  );
+  assert.match(
+    source,
+    /if \(seen && \$i ~/,
+    `${name}: 版本号必须取 CLI 名字之后的点分数字(seen 标志)`,
+  );
+  // 3) 所有 CLI 输出回显(含 PASS 与 SKIP 行)都要过 redact:直接钉 [1] PASS 回显
+  //    与 [3] SKIP 回显的管道形态(FAIL 路径本就过 redact,按出现次数钉会被
+  //    FAIL 路径凑数而漏掉 PASS 路径——经变异验证)。
+  assert.match(
+    source,
+    /可执行: \$\(printf '%s\\n' "\$VER" \| redact \|/,
+    `${name}: [1] --version PASS 回显必须过 redact`,
+  );
+  assert.match(
+    source,
+    /域结果未知\(exit \$d_rc\): \$\(printf '%s' "\$OUT" \| redact \|/,
+    `${name}: [3] 域探测 SKIP 回显必须过 redact`,
+  );
+  // 3b) 探测限时必须有第二级强制终止:GNU timeout 缺 -k 或看门狗缺 KILL 升级时,
+  //     吞 TERM 的 CLI 会把探测拖成永久等待(源形态钉;行为钉见下方第 6 节)。
+  assert.match(
+    source,
+    /-k "\$\{?(DWS|WECOM)_KILL_GRACE\}?"/,
+    `${name}: coreutils timeout 必须带 -k 强杀宽限(吞 TERM 的 CLI 会挂住 timeout 本身)`,
+  );
+  assert.match(
+    source,
+    /sleep "\$\{?(DWS|WECOM)_TIMEOUT\}?" && \[ -e "\$t" \] && : >"\$tflag" && kill "\$pid" 2>\/dev\/null && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
+    `${name}: 看门狗必须先确认捕获仍在再落「到点」标记、先标记再 TERM 并在宽限后升级 SIGKILL(标记后落会漏判到点与 TERM 微窗内自退的 CLI;只发一次 TERM 对抗性 CLI 无界;不确认捕获会让被中断清场的探测被孤儿看门狗凭空重建 .deadline)`,
+  );
+  // 看门狗清理行:删掉它,看门狗子壳会活过快探针,在 PID 复用后误杀无辜进程,
+  // 迟到的 .deadline 也永不清理——此行无行为夹具背书,只能形态钉。
+  assert.match(
+    source,
+    /kill "\$wpid" 2>\/dev\/null; wait "\$wpid" 2>\/dev\/null/,
+    `${name}: 看门狗必须在 wait 后回收子壳(孤儿看门狗会在 PID 复用后误杀进程)`,
+  );
+  // 到点事实必须独立于子进程最终退出码:TERM 后优雅 exit 0 的 CLI 会让 wait 返回
+  // 0,把超时伪装成通过(GNU timeout 同形态本就 124;行为钉见第 6 节 term-zero)。
+  assert.match(
+    source,
+    /\[ -e "\$tflag" \] && rc=124/,
+    `${name}: 看门狗到点必须覆盖子进程最终退出码(TERM 后优雅 exit 0 不得伪装成通过)`,
+  );
+  assert.match(
+    source,
+    /\[ "\$rc" -eq 137 \] && rc=124/,
+    `${name}: KILL 死(137)必须归一为超时 124,不能伪装成「结果未知」`,
+  );
+  // 3c) 版本/连接 PASS 以探测退出 0 为前提:健康形状的输出 + 非零退出(实测
+  //     exit 7 曾全绿)不构成通过;超时 124 亦被同一前提拦截。
+  assert.match(
+    source,
+    /if \[ "\$v_rc" -eq 0 \] && \[ -n "\$TRI" \]/,
+    `${name}: [1] 版本 PASS 必须先要求探测退出 0(exit 7 + 版本形状不是通过)`,
+  );
+  assert.match(
+    source,
+    /if \[ "\$a_rc" -eq 0 \] && echo "\$AUTH"/,
+    `${name}: [2] 连接 PASS 必须先要求探测退出 0(exit 7 + authenticated:true 不是已连接)`,
+  );
+  // 3d) redact 字段形态必须含数字后缀键(accessToken2 形态曾裸过)。
+  // 首位数字类只有形态钉、没有行为夹具——这不是缺口:sed 匹配不锚定行首,键含
+  // token 时值遮蔽总能在数字后重启匹配(实测 {"2fa_token":"SECRET9"} 在两类下都
+  // 被遮蔽,首位类对泄漏行为冗余,它只定输出形状);尾部类则不然(token 后的数字
+  // 必须被尾类吃掉才能接到 ": " 值,accessToken2 夹具因此行为红)。类文本被改,
+  // 本钉(整段连写形态)即红——漏字符类必先红在这里。
+  assert.match(
+    source,
+    /\[A-Za-z0-9_-\]\*\[Tt\]\[Oo\]\[Kk\]\[Ee\]\[Nn\]\[A-Za-z0-9_-\]\*/,
+    `${name}: redact 字段形态必须接受数字后缀键`,
+  );
+}
+// 4) wecom 冒烟必须扫应用自装布局:只搜 PATH 会漏掉 <数据根>/assets/cli/wecom-cli/<ver>/
+//    (native_installer 落盘处),并把关不上的报错引向 npm -g 自装(NOTICE-wecom
+//    登记的哈希循环路径)。数据根走 PINVOU3_ROOT(paths.rs pinvou3_home 支持
+//    PINVOU3_HOME 整体重定位;只认 $HOME/.pinvou3 会漏掉重定位安装)。
+assert.match(
+  wecomSmoke,
+  /for d in "\$PINVOU3_ROOT"\/assets\/cli\/wecom-cli\/\*\/; do/,
+  "wecom-smoke.sh 必须扫描应用安装布局 <数据根>/assets/cli/wecom-cli/<version>/(钉循环本身,注释提及不算)",
+);
+// 数据根解析必须与应用同名(PINVOU3_HOME 优先、默认 $HOME/.pinvou3):钉定义行,
+// 防止回退成硬编码 $HOME/.pinvou3(重定位安装再次漏扫)。
+for (const [name, source] of [
+  ["dingtalk-smoke.sh", dingtalkSmoke],
+  ["wecom-smoke.sh", wecomSmoke],
+]) {
+  assert.match(
+    source,
+    /^PINVOU3_ROOT="\$\{PINVOU3_HOME:-\$HOME\/\.pinvou3\}"$/m,
+    `${name}: 数据根必须按应用同口径解析(PINVOU3_HOME 优先,默认 $HOME/.pinvou3)`,
+  );
+}
+assert.doesNotMatch(
+  wecomSmoke,
+  /npm\s+(i|install)\s+(-g|--global)\b/,
+  "wecom-smoke.sh 找不到 CLI 时不得再建议 npm -g 自装(绕过 lock 钉扎;缩写与全拼一并禁)",
+);
+assert.doesNotMatch(
+  dingtalkSmoke,
+  /npm\s+(i|install)\s+(-g|--global)\b/,
+  "dingtalk-smoke.sh 找不到 CLI 时不得建议 npm -g 自装(绕过 lock 钉扎)",
+);
+
+// 5) redact() 行为钉(从两份脚本源码现场抽取函数体真跑):host safe_auth_log_line
+//    四标记整行打码 + 引号 JSON 字段打码。删掉 awk 阶段/sed 阶段或换标记词,
+//    这里先红——floor 钉不覆盖脱敏。
+{
+  const { execFileSync } = require("node:child_process");
+  const extractRedact = (source, name) => {
+    const lines = source.split("\n");
+    const start = lines.findIndex((l) => l.startsWith("redact(){"));
+    assert.ok(start >= 0, `${name}: 未找到 redact(){ 定义`);
+    // 定义共 3 行(redact(){ … awk … sed …)。
+    const defn = lines.slice(start, start + 3).join("\n");
+    assert.match(defn, /access_token\|refresh_token\|authorization\|bearer/, `${name}: redact 必须覆盖 host 四标记`);
+    return defn;
+  };
+  // 每条形态都断言期望的打码标记,而不只断言 SECRET 不在输出里:只传函数定义不调用时
+  // bash 不读 stdin、输出为空,"不含 SECRET" 会空真(CI 以 spawnSync EPIPE 暴露)。
+  const leakForms = [
+    ["access_token=SECRET1", "[已脱敏"],
+    ['refresh_token: "SECRET2"', "[已脱敏"],
+    ["https://x.example/api?access_token=SECRET3&v=2", "[已脱敏"],
+    ["AUTHORIZATION: BEARER SECRET4", "[已脱敏"],
+    ["x-auth: bearer SECRET5", "[已脱敏"],
+    ['{"token": "SECRET6"}', "token=[REDACTED]"],
+    // authorization 单独成标记(前两条 bearer 形态顺带命中它,这条钉裸 authorization);
+    // 数字后缀键钉字段形态的 0-9 字符类(accessToken2 曾整段裸过)。
+    ["x-authorization: SECRET7", "[已脱敏"],
+    ['{"accessToken2": "SECRET8"}', "token=[REDACTED]"],
+  ];
+  for (const [name, source] of [
+    ["dingtalk-smoke.sh", dingtalkSmoke],
+    ["wecom-smoke.sh", wecomSmoke],
+  ]) {
+    const defn = extractRedact(source, name);
+    if (process.platform === "win32") continue; // bash 不在 PATH 的平台跳过行为段
+    const runRedact = (line) =>
+      execFileSync("bash", ["-c", `${defn}\nredact`], { input: `${line}\n` }).toString();
+    for (const [line, marker] of leakForms) {
+      const out = runRedact(line);
+      assert.ok(
+        out.includes(marker) && !out.includes("SECRET"),
+        `${name}: redact 必须把「${line}」打码为含 ${marker} 的输出,实得: ${out.trim()}`,
+      );
+    }
+    assert.equal(runRedact("plain diagnostic line"), "plain diagnostic line\n", `${name}: redact 不得改写无凭证形态的行`);
+  }
+}
+
+// ---- 6) 探测限时对吞 TERM 与 TERM 后优雅退出的 CLI 都必须有界且判超时 ----
+// GNU timeout 缺 -k:子进程无视 TERM 后 timeout 自身无限等待;看门狗只发一次
+// TERM:wait 同样无界。现场抽取两份脚本的 run 函数真跑 TERM 抗性子进程:两条
+// 路径都必须在 时限+杀宽限 内以 124 收场,且强杀前的输出保留(超时诊断可用)。
+// 另一形态:子进程收到 TERM 后优雅清理并以 0 退出——wait 的 0 不得覆盖「已到点」
+// 事实,仍须判 124(GNU timeout 同形态本就 124;看门狗分支曾实测伪装成 rc=0)。
+// spawnSync 的 timeout+SIGKILL 只是回归兜底——修回归后此测试自身数秒内结束。
+{
+  const { spawnSync, execFileSync } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    const hasTimeout =
+      execFileSync("bash", ["-c", "command -v timeout >/dev/null 2>&1 && echo yes || echo no"])
+        .toString()
+        .trim() === "yes";
+    const timeoutBin = hasTimeout
+      ? execFileSync("bash", ["-c", "command -v timeout"]).toString().trim()
+      : "";
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-probe-"));
+    const stubborn = path.join(tmp, "stubborn-cli");
+    fs.writeFileSync(
+      stubborn,
+      "#!/usr/bin/env bash\ntrap '' TERM\nprintf 'stubborn 9.9.9\\n'\nsleep 300\n",
+    );
+    fs.chmodSync(stubborn, 0o755);
+    // 优雅退出夹具必须用 sleep&wait 而非前台 sleep:bash 在前台子进程上会推迟
+    // trap 执行(那实际是「吞 TERM」形态,走 KILL 路径),wait 才会立即跑 trap。
+    const termZero = path.join(tmp, "term-zero-cli");
+    fs.writeFileSync(
+      termZero,
+      "#!/usr/bin/env bash\ntrap 'exit 0' TERM\nprintf 'term-zero 9.9.9\\n'\nsleep 300 &\nwait\n",
+    );
+    fs.chmodSync(termZero, 0o755);
+    const quick = path.join(tmp, "quick-cli");
+    fs.writeFileSync(quick, "#!/usr/bin/env bash\nprintf 'quick 1.2.3\\n'\n");
+    fs.chmodSync(quick, 0o755);
+    for (const [name, source] of [
+      ["dingtalk-smoke.sh", dingtalkSmoke],
+      ["wecom-smoke.sh", wecomSmoke],
+    ]) {
+      const lines = source.split("\n");
+      const prefix = (source.match(/^([A-Z]+)_TIMEOUT=/m) || [])[1];
+      assert.ok(prefix, `${name}: 未找到 *_TIMEOUT= 预备段`);
+      const fn = `${prefix.toLowerCase()}_run`;
+      const start = lines.findIndex((l) => l.startsWith(`${prefix}_TIMEOUT=`));
+      const fnStart = lines.findIndex((l) => l.startsWith(`${fn}() {`));
+      const end = lines.indexOf("}", fnStart);
+      assert.ok(start >= 0 && fnStart > start && end > fnStart, `${name}: run 函数抽取段不完整`);
+      const prelude = lines.slice(start, end + 1).join("\n");
+      const harness = (cli, bin) =>
+        [
+          prelude,
+          `CLI=${JSON.stringify(cli)}`,
+          `TIMEOUT_BIN=${JSON.stringify(bin)}`,
+          `${prefix}_TIMEOUT=2`,
+          `${prefix}_KILL_GRACE=1`,
+          `${fn} --version`,
+        ].join("\n");
+      const runBounded = (label, bin, cli = stubborn, marker = "stubborn 9.9.9") => {
+        const t0 = Date.now();
+        const res = spawnSync("bash", ["-c", harness(cli, bin)], {
+          encoding: "utf8",
+          timeout: 20000,
+          killSignal: "SIGKILL",
+        });
+        const elapsed = Date.now() - t0;
+        assert.strictEqual(
+          res.status,
+          124,
+          `${label}: 超时探测必须以 124 收场(status=${res.status} signal=${res.signal} err=${res.error})`,
+        );
+        assert.ok(
+          elapsed < 15000,
+          `${label}: 探测必须在时限+杀宽限内有界返回,实得 ${elapsed}ms(无界等待即回归)`,
+        );
+        assert.ok(
+          res.stdout.includes(marker),
+          `${label}: 收场前已产出的探测输出必须保留(超时诊断要能看到现场)`,
+        );
+      };
+      if (hasTimeout) runBounded(`${name} coreutils timeout 分支`, timeoutBin);
+      runBounded(`${name} 看门狗分支`, "");
+      // TERM 后优雅 exit 0:两条路径都不得把超时伪装成 rc=0(看门狗分支曾实测)。
+      if (hasTimeout) runBounded(`${name} coreutils 分支 TERM 后 exit 0 仍判超时`, timeoutBin, termZero, "term-zero 9.9.9");
+      runBounded(`${name} 看门狗分支 TERM 后 exit 0 仍判超时`, "", termZero, "term-zero 9.9.9");
+      // 后续调用对照:超时收场不得污染下一次探测(残留标记/孤儿会让快速调用挂住或失败)。
+      const after = spawnSync("bash", ["-c", harness(quick, "")], {
+        encoding: "utf8",
+        timeout: 20000,
+        killSignal: "SIGKILL",
+      });
+      assert.strictEqual(
+        after.status,
+        0,
+        `${name}: 看门狗超时后的后续快速调用必须照常成功(status=${after.status})`,
+      );
+      assert.ok(after.stdout.includes("quick 1.2.3"), `${name}: 后续快速调用的输出必须完整回放`);
+      const res = spawnSync("bash", ["-c", harness(quick, timeoutBin)], {
+        encoding: "utf8",
+        timeout: 20000,
+        killSignal: "SIGKILL",
+      });
+      assert.strictEqual(res.status, 0, `${name}: 健康子进程不得被误杀(status=${res.status})`);
+      assert.ok(res.stdout.includes("quick 1.2.3"), `${name}: 健康探测输出必须完整回放`);
+      // 分配失败(mktemp 失败/为空)必须在派生任何清理路径之前原路返回:旧形态
+      // 会把空的 t 派生成调用方目录里的相对 .deadline,尾部普通 rm 误删同名文件
+      // (评审实测复现;删掉守卫本块即红——实测旧形态此处 status=124 且哨兵被删)。
+      // 失败后换回健康 TMPDIR 的下一次调用必须照常成功(失败不得污染后续探测)。
+      const allocCaller = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-alloc-caller-"));
+      fs.writeFileSync(path.join(allocCaller, ".deadline"), "caller owns this file");
+      const runFromCaller = (env) =>
+        spawnSync("bash", ["-c", harness(quick, timeoutBin)], {
+          encoding: "utf8",
+          timeout: 20000,
+          killSignal: "SIGKILL",
+          cwd: allocCaller,
+          env,
+        });
+      const failedAlloc = runFromCaller({
+        ...process.env,
+        TMPDIR: path.join(tmp, "alloc-missing-tmpdir"),
+      });
+      assert.strictEqual(
+        failedAlloc.status,
+        1,
+        `${name}: mktemp 失败的探测必须以 1 原路返回(status=${failedAlloc.status})`,
+      );
+      assert.deepEqual(
+        fs.readdirSync(allocCaller),
+        [".deadline"],
+        `${name}: 分配失败后调用方目录必须原样(哨兵被删=清理路径未拦住空分配)`,
+      );
+      const nextAlloc = runFromCaller({ ...process.env });
+      assert.strictEqual(
+        nextAlloc.status,
+        0,
+        `${name}: 分配失败不得污染下一次正常探测(status=${nextAlloc.status})`,
+      );
+      assert.ok(
+        nextAlloc.stdout.includes("quick 1.2.3"),
+        `${name}: 分配失败后的下一次调用输出必须完整回放`,
+      );
+    }
+  }
+}
+
+// ---- 7) 探测失败(非零退出)不得发 PASS ----
+// 健康形状的输出 + exit 7 曾让两份脚本全绿退出 0(评审以假 CLI 实测复现)。
+// 真脚本 + 假 CLI 全跑:版本/连接两处都必须 FAIL,整体非 0 退出,且不得落入
+// 「全部域探测跳过」的 exit 3 掩护路径(假 CLI 域探测全 exit 0)。
+{
+  const { spawnSync } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-home-"));
+    const bin = path.join(home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(
+      path.join(bin, "dws"),
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        '  --version) echo "dws 9.9.9 (fake)"; exit 7 ;;',
+        '  auth) echo \'{"authenticated": true}\'; exit 7 ;;',
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(bin, "wecom-cli"),
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        '  --version) echo "wecom-cli 9.9.9 (fake)"; exit 7 ;;',
+        '  auth) echo "authorized"; exit 7 ;;',
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n"),
+    );
+    fs.chmodSync(path.join(bin, "dws"), 0o755);
+    fs.chmodSync(path.join(bin, "wecom-cli"), 0o755);
+    for (const name of ["dingtalk-smoke.sh", "wecom-smoke.sh"]) {
+      const res = spawnSync("bash", [path.join(root, "scripts", name)], {
+        encoding: "utf8",
+        timeout: 120000,
+        killSignal: "SIGKILL",
+        env: { ...process.env, HOME: home, PATH: bin + path.delimiter + process.env.PATH },
+      });
+      assert.notStrictEqual(
+        res.status,
+        0,
+        `${name}: exit 7 + 健康输出形状的 CLI 不得全绿退出 0`,
+      );
+      assert.notStrictEqual(
+        res.status,
+        3,
+        `${name}: 假 CLI 域探测全 exit 0,不得落入 exit 3 掩护路径`,
+      );
+      assert.ok(!res.stdout.includes("[PASS] --version"), `${name}: 版本探测非零退出不得 PASS`);
+      assert.ok(!res.stdout.includes("[PASS] 已连接"), `${name}: 连接探测非零退出不得 PASS`);
+      assert.ok(res.stdout.includes("[FAIL]"), `${name}: 非 0 退出必须伴随 FAIL 行`);
+    }
+  }
+}
+
+// ---- 8) 解析/比较/发现管道行为钉(形状钉不执行,变异不咬)----
+// 「更新提示在前行」(行内无 CLI 名)由行名过滤排除——该夹具钉的是行名过滤;
+// seen 锚由「同一行内数字在名字之前」的夹具钉住,删 seen 此处才红。比较管道
+// head→tail 或丢 -k 数值键时下限判定翻转;发现排序丢键时 1.0.9 会压过 1.0.64。
+// 全部现场 eval 真跑。
+{
+  const { execFileSync } = require("node:child_process");
+  if (process.platform !== "win32") {
+    for (const [name, source, cliName, min, below, aboveLexSmall] of [
+      ["dingtalk-smoke.sh", dingtalkSmoke, "dws", "1.0.64", "1.0.9", "1.0.164"],
+      ["wecom-smoke.sh", wecomSmoke, "wecom-cli", "1.3.4", "1.2.99", "1.3.10"],
+    ]) {
+      const runLine = (line, outVar, env) =>
+        execFileSync("bash", ["-c", `eval "$SMOKE_LINE"; printf '%s' "$${outVar}"`], {
+          env: { ...process.env, SMOKE_LINE: line, ...env },
+        }).toString();
+      const triLine = source.split("\n").find((l) => l.startsWith('TRI="$(printf'));
+      assert.ok(triLine, `${name}: 未找到 TRI 解析行`);
+      assert.strictEqual(
+        runLine(triLine, "TRI", { VER: `${cliName} ${min} (build)` }),
+        min,
+        `${name}: 健康版本行解析`,
+      );
+      assert.strictEqual(
+        runLine(triLine, "TRI", { VER: `a new version 1.0.96 is available\n${cliName} ${min}` }),
+        min,
+        `${name}: 更新提示行(数字在前、行内无 CLI 名)不得被读成本机版本——删行名过滤此处即红`,
+      );
+      // seen 锚的专属夹具:同一行内点分数字出现在 CLI 名之前——行名过滤放行该行,
+      // 只有 seen 能跳过名字前的数字取名字后的版本(独立负控实证:删 seen 此处红)。
+      assert.strictEqual(
+        runLine(triLine, "TRI", { VER: `2.5.1 available for ${cliName} needs ${min}` }),
+        min,
+        `${name}: 同行数字在名字之前仍须取名字之后的版本——删 seen 锚此处即红`,
+      );
+      assert.strictEqual(
+        runLine(triLine, "TRI", { VER: `proxy http://10.1.2.3:8080\n${cliName} ${min}` }),
+        min,
+        `${name}: 代理 IP 行不得被读成本机版本`,
+      );
+      assert.strictEqual(
+        runLine(triLine, "TRI", { VER: "unrelated text 1.2.3" }),
+        "",
+        `${name}: 无 CLI 名的行不产生版本`,
+      );
+      const geLine = source.split("\n").find((l) => l.startsWith('GE="$(printf'));
+      assert.ok(geLine, `${name}: 未找到 GE 比较行`);
+      const minVar = (geLine.match(/\$(MIN_[A-Z]+)/) || [])[1];
+      assert.ok(minVar, `${name}: GE 比较行必须引用钉扎下限变量`);
+      const runGe = (tri) => runLine(geLine, "GE", { TRI: tri, [minVar]: min });
+      assert.strictEqual(runGe(min), "yes", `${name}: 等于下限必须判过`);
+      assert.strictEqual(runGe("9.9.9"), "yes", `${name}: 远高于下限必须判过(head→tail 变异此处红)`);
+      assert.strictEqual(runGe(below), "no", `${name}: 低于下限必须判不过(head→tail 变异此处红)`);
+      assert.strictEqual(
+        runGe(aboveLexSmall),
+        "yes",
+        `${name}: 高于下限但字典序更小的段值必须判过(丢 -k 数值键此处红)`,
+      );
+      const discLine = source.split("\n").find((l) => l.includes('ver="$(printf'));
+      assert.ok(discLine, `${name}: 未找到发现排序行`);
+      const runDisc = (cands) => runLine(discLine, "ver", { ver: cands });
+      assert.strictEqual(
+        runDisc("1.0.9\n1.0.64"),
+        "1.0.64",
+        `${name}: 发现排序必须逐段数值取最高(丢键或 tail→head 此处红)`,
+      );
+      assert.strictEqual(runDisc("1.0.64\n1.0.65\n1.0.9"), "1.0.65", `${name}: 发现排序取最高版本`);
+    }
+  }
+}
+
+// ---- 9) wecom [3] 分支序:超时(124)先于权限词 ----
+// 超时探测的部分输出可能恰含「权限」——先查词会把超时误标成「域未授权」;
+// 两者都是 SKIP,但超时要求的是重跑,标注不能误导。
+{
+  const lines = wecomSmoke.split("\n");
+  const timeoutIdx = lines.findIndex((l) => l.includes('elif [ "$d_rc" -eq 124 ]'));
+  const permIdx = lines.findIndex((l) => l.includes("'权限|暂不支持|未授权'"));
+  assert.ok(timeoutIdx >= 0, "wecom-smoke.sh: 未找到 [3] 超时分支");
+  assert.ok(permIdx > timeoutIdx, "wecom-smoke.sh: [3] 超时分支必须先于权限词分支");
+}
+
+// ---- 9b) dingtalk [3] 分支序:超时(124)先于错误词(与 wecom [3] 同款) ----
+// 超时探测的部分输出可能恰含 not found/未知——先查词会把超时误标成「域不存在」
+// 硬失败;两者处置不同,超时要求的是重跑,标注不能误导。
+{
+  const lines = dingtalkSmoke.split("\n");
+  const timeoutIdx = lines.findIndex((l) => l.includes('elif [ "$d_rc" -eq 124 ]'));
+  const errIdx = lines.findIndex((l) => l.includes("'unknown command|not found|不存在|未知'"));
+  assert.ok(timeoutIdx >= 0, "dingtalk-smoke.sh: 未找到 [3] 超时分支");
+  assert.ok(errIdx > timeoutIdx, "dingtalk-smoke.sh: [3] 超时分支必须先于错误词分支(超时的部分输出可能恰含 not found/未知)");
+}
+
+// ---- 10) wecom [4] 错误键只查 envelope,不查正文值 ----
+// wecomcli-doc SKILL.md 返回表的 string 字段都承载文档数据:content 是「文档内容
+// 较短时直接返回的原文」——值恰为 error 的合法文档曾被裸 grep 误红成读失败(评审
+// P3,真脚本 + 假 CLI 全跑);name/url/file_path 同表 string 字段,文档名恰为
+// error 时同样误红,脚本一并屏蔽。屏蔽正文后 envelope 层的结构化错误键
+// (errcode:3)仍必须 FAIL——屏蔽不得吞检查。
+{
+  const { spawnSync } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    const fakeCli = (docPayload) =>
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        '  --version) echo "wecom-cli 1.3.4 (fake)"; exit 0 ;;',
+        '  auth) echo "authorized"; exit 0 ;;',
+        "  doc)",
+        '    if [ "${2:-}" = contents ]; then printf \'%s\' \'' + docPayload + "'; exit 0; fi",
+        "    exit 0 ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n");
+    const runSmoke = (docPayload) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "wecom-doc-home-"));
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "wecom-cli"), fakeCli(docPayload));
+      fs.chmodSync(path.join(bin, "wecom-cli"), 0o755);
+      return spawnSync("bash", [path.join(root, "scripts", "wecom-smoke.sh")], {
+        encoding: "utf8",
+        timeout: 120000,
+        killSignal: "SIGKILL",
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: bin + path.delimiter + process.env.PATH,
+          WECOM_TEST_DOCID: "DOC123",
+        },
+      });
+    };
+    // 合法 envelope + 正文值恰为 "error":屏蔽正文后必须判读成功,不得误红。
+    const good = runSmoke(
+      '{"url":"https://doc.example/x","name":"周报","content":"error","file_path":"","document":{},"version":"3"}',
+    );
+    assert.strictEqual(
+      good.status,
+      0,
+      `wecom-smoke.sh: 正文值为 error 的合法 envelope 不得误红(status=${good.status})\n${good.stdout}`,
+    );
+    assert.ok(
+      good.stdout.includes("[PASS] 读到文档内容"),
+      `wecom-smoke.sh: 正文屏蔽后读取必须 PASS\n${good.stdout}`,
+    );
+    // envelope 真错误键:屏蔽不得吞掉 envelope 层的结构化错误。
+    const bad = runSmoke(
+      '{"url":"https://doc.example/x","name":"t","content":"ok","file_path":"","document":{},"version":"3","errcode":3}',
+    );
+    assert.notStrictEqual(
+      bad.status,
+      0,
+      `wecom-smoke.sh: envelope errcode:3 必须 FAIL(屏蔽不得吞掉错误键)\n${bad.stdout}`,
+    );
+    assert.ok(
+      !bad.stdout.includes("[PASS] 读到文档内容"),
+      `wecom-smoke.sh: errcode:3 不得判读成功\n${bad.stdout}`,
+    );
+    // 同表其余 string 字段承载文档数据:文档名/链接/落盘路径恰含 error 的合法
+    // envelope 也不得误红(屏蔽键须盖住返回表全部 string 字段)。
+    const named = runSmoke(
+      '{"url":"https://doc.example/error","name":"error","content":"ok","file_path":"/tmp/error.md","document":{},"version":"3"}',
+    );
+    assert.strictEqual(
+      named.status,
+      0,
+      `wecom-smoke.sh: name/url/file_path 含 error 的合法 envelope 不得误红(status=${named.status})\n${named.stdout}`,
+    );
+    assert.ok(
+      named.stdout.includes("[PASS] 读到文档内容"),
+      `wecom-smoke.sh: 返回表 string 字段屏蔽后读取必须 PASS\n${named.stdout}`,
+    );
+  }
+}
+
+// ---- 10b) dingtalk [4] 错误键只查 envelope,不查正文值(与 §10 同款) ----
+// 真脚本 + 假 CLI 全跑:正文值恰为 error 的合法 envelope 不得误红;屏蔽不得吞掉
+// envelope 层的结构化错误键。屏蔽键取包内文档钉到的正文载体键(--format json
+// envelope 为 {"success": true, "body": {...}}:global-reference.md;result/data
+// 为 --fields 文档与 attendance 脚本的信封键;content 与 §10 同族;jsonml 为
+// doc-read.md 载荷键)。status:"error" 值形态必须仍 FAIL——屏蔽只盖正文载体键,
+// 不得把非载体键上的错误值形态一并吞掉。
+{
+  const { spawnSync } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    const fakeCli = (docPayload) =>
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        '  --version) echo "dws 1.0.65 (fake)"; exit 0 ;;',
+        '  auth) echo \'{"authenticated":true}\'; exit 0 ;;',
+        "  doc)",
+        '    if [ "${2:-}" = read ]; then printf \'%s\' \'' + docPayload + "'; exit 0; fi",
+        "    exit 0 ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n");
+    const runSmoke = (docPayload) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "dws-doc-home-"));
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "dws"), fakeCli(docPayload));
+      fs.chmodSync(path.join(bin, "dws"), 0o755);
+      return spawnSync("bash", [path.join(root, "scripts", "dingtalk-smoke.sh")], {
+        encoding: "utf8",
+        timeout: 120000,
+        killSignal: "SIGKILL",
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: bin + path.delimiter + process.env.PATH,
+          DINGTALK_TEST_DOC_ID: "DOC123",
+        },
+      });
+    };
+    // 合法 envelope + 正文值恰为 "error":屏蔽正文后必须判读成功,不得误红。
+    const good = runSmoke(
+      '{"url":"https://doc.example/x","name":"周报","content":"error","version":"1"}',
+    );
+    assert.strictEqual(
+      good.status,
+      0,
+      `dingtalk-smoke.sh: 正文值为 error 的合法 envelope 不得误红(status=${good.status})\n${good.stdout}`,
+    );
+    assert.ok(
+      good.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: 正文屏蔽后读取必须 PASS\n${good.stdout}`,
+    );
+    // envelope 真错误键:屏蔽不得吞掉 envelope 层的结构化错误。
+    const bad = runSmoke(
+      '{"url":"https://doc.example/x","name":"t","content":"ok","version":"1","error":"invalid node"}',
+    );
+    assert.notStrictEqual(
+      bad.status,
+      0,
+      `dingtalk-smoke.sh: envelope "error" 键必须 FAIL(屏蔽不得吞掉错误键)\n${bad.stdout}`,
+    );
+    assert.ok(
+      !bad.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: envelope error 键不得判读成功\n${bad.stdout}`,
+    );
+    // 正文载体键(documented envelope 的 body):值恰为 error 时,裸 grep 的
+    // "error" 模式由值的定界引号拼出(误红);屏蔽必须盖住 body 的字符串值。
+    // (正文内文含引号的形态经 JSON 转义成 \"error\",定界引号拼不出 "error",
+    // 本就不会误红——夹具只钉真正的误红形态。)
+    const bodyCarrier = runSmoke(
+      '{"success":true,"body":"error","version":"1"}',
+    );
+    assert.strictEqual(
+      bodyCarrier.status,
+      0,
+      `dingtalk-smoke.sh: body 载体值恰为 error 的合法 envelope 不得误红(status=${bodyCarrier.status})\n${bodyCarrier.stdout}`,
+    );
+    assert.ok(
+      bodyCarrier.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: body 载体屏蔽后读取必须 PASS\n${bodyCarrier.stdout}`,
+    );
+    // 屏蔽只盖正文载体键:非载体键上的错误值形态("status":"error")必须照常
+    // FAIL——这是屏蔽不扩成「吞所有字符串值」的原因。
+    const statusValue = runSmoke(
+      '{"success":true,"body":"ok","status":"error"}',
+    );
+    assert.notStrictEqual(
+      statusValue.status,
+      0,
+      `dingtalk-smoke.sh: "status":"error" 值形态必须 FAIL(屏蔽不得盖住非载体键)\n${statusValue.stdout}`,
+    );
+    assert.ok(
+      !statusValue.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: status 值形态错误不得判读成功\n${statusValue.stdout}`,
+    );
+  }
+}
+
+// ---- 11) EXIT 清理所有权:调用方目录不得被碰,真实捕获由探测子壳自清 ----
+// 形态钉:兜底清理 trap 必须挂在 run 函数内部且带空值守卫。run 函数总经 $( )
+// 调用,DWS_TMP 赋值只活在探测子壳里——挂在外层脚本 EXIT 上的清理会展开成
+// rm -f "" ".deadline",把调用方工作目录里的同名文件误删(评审实测复现;
+// mktemp 失败时子壳内 DWS_TMP 同样为空,守卫拦住同形状)。
+{
+  for (const [name, source] of [
+    ["dingtalk-smoke.sh", dingtalkSmoke],
+    ["wecom-smoke.sh", wecomSmoke],
+  ]) {
+    const lines = source.split("\n");
+    const prefix = (source.match(/^([A-Z]+)_TIMEOUT=/m) || [])[1];
+    assert.ok(prefix, `${name}: 未找到 *_TIMEOUT= 预备段`);
+    const fn = `${prefix.toLowerCase()}_run`;
+    const fnStart = lines.findIndex((l) => l.startsWith(`${fn}() {`));
+    const fnEnd = lines.indexOf("}", fnStart);
+    assert.ok(fnStart >= 0 && fnEnd > fnStart, `${name}: 未找到 ${fn}() 定义`);
+    assert.doesNotMatch(
+      source,
+      /^DWS_TMP=""/m,
+      `${name}: 外层脚本不得初始化 DWS_TMP(${fn}() 总经 $() 调用,外层永远看到空值;外层 EXIT 挂清理必展开成 rm -f "" ".deadline" 误删调用方文件)`,
+    );
+    assert.doesNotMatch(
+      source,
+      /^trap .*DWS_TMP/m,
+      `${name}: 清理 trap 不得挂在外层脚本(清理必须归拥有临时文件的探测子壳)`,
+    );
+    const trapIdx = lines.findIndex((l) =>
+      /^\s*trap 'if \[ -n "\$DWS_TMP" \]; then rm -f "\$DWS_TMP" "\$\{DWS_TMP\}\.deadline" 2>\/dev\/null; fi' EXIT$/.test(l),
+    );
+    assert.ok(
+      trapIdx > fnStart && trapIdx < fnEnd,
+      `${name}: 带空值守卫的清理 trap 必须挂在 ${fn}() 内部(实得行号 ${trapIdx + 1} vs 函数 ${fnStart + 1}-${fnEnd + 1})`,
+    );
+  }
+}
+// 行为钉(真脚本 + 假 CLI,从带 .deadline 哨兵的调用目录跑,WINDOWS 外跳过):
+// 正常退出哨兵必须保留、真实捕获已清。中断场景的断言边界(评审指出此前注释
+// 夸大覆盖,须与实际断言对齐):夹具对脚本进程本身发正 pid 信号(先 SIGINT,
+// 随后 SIGTERM 保证两版 bash 都收场),不发进程组信号;信号前以捕获文件落盘为
+// 就绪门,防夹具落在探测开始之前而空真;中断后只断言哨兵保留,不断言捕获清理
+// ——真实 Ctrl-C 的进程组送达形态与子壳 EXIT 清理由 §6 有界探测与 trap 形状钉
+// 覆盖,本夹具不重复背书。
+{
+  const { spawnSync, spawn } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    // spawnSync 发不了进程组信号,这里用 Atomics.wait 做同步等待(主线程可用)。
+    const sleepSync = (ms) => {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    };
+    const fakeCli = (name) =>
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        `  --version) echo "${name} 9.9.9 (fake)"; exit 0 ;;`,
+        "  auth)",
+        '    if [ "${2:-}" = show ]; then echo "authorized"; else echo \'{"authenticated":true}\'; fi',
+        "    exit 0 ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n");
+    const slowCli = (name) =>
+      [
+        "#!/usr/bin/env bash",
+        "trap '' TERM",
+        `printf '${name} 9.9.9\\n'`,
+        "sleep 300",
+        "",
+      ].join("\n");
+    const mkCase = (tag) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), `smoke-${tag}-home-`));
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      const cap = fs.mkdtempSync(path.join(os.tmpdir(), `smoke-${tag}-cap-`));
+      const caller = fs.mkdtempSync(path.join(os.tmpdir(), `smoke-${tag}-caller-`));
+      const sentinel = path.join(caller, ".deadline");
+      fs.writeFileSync(sentinel, "caller owns this file");
+      const env = {
+        ...process.env,
+        HOME: home,
+        PATH: bin + path.delimiter + process.env.PATH,
+        TMPDIR: cap,
+      };
+      return { cap, caller, env, sentinel, bin };
+    };
+    for (const [name, script] of [
+      ["dws", "dingtalk-smoke.sh"],
+      ["wecom-cli", "wecom-smoke.sh"],
+    ]) {
+      // 正常退出:健康假 CLI 全跑 exit 0;哨兵保留;捕获清空。
+      {
+        const { cap, caller, env, sentinel, bin } = mkCase("own-normal");
+        fs.writeFileSync(path.join(bin, name), fakeCli(name));
+        fs.chmodSync(path.join(bin, name), 0o755);
+        const run = spawnSync("bash", [path.join(root, "scripts", script)], {
+          encoding: "utf8",
+          timeout: 120000,
+          killSignal: "SIGKILL",
+          cwd: caller,
+          env,
+        });
+        assert.strictEqual(
+          run.status,
+          0,
+          `${script}: 健康假 CLI 全跑必须 exit 0(基线本身挂了则哨兵/清理断言不可信,status=${run.status})\n${run.stdout}\n${run.stderr}`,
+        );
+        assert.ok(
+          fs.existsSync(sentinel),
+          `${script}: 正常退出后调用方目录的 .deadline 哨兵必须保留(外层空值 trap 形状会误删)`,
+        );
+        assert.deepEqual(
+          fs.readdirSync(cap),
+          [],
+          `${script}: 正常退出后真实捕获文件必须已清(TMPDIR 残留=探测子壳清理被破坏)`,
+        );
+      }
+      // 中断退出:slow CLI 挂在探测里,先发正 pid 的 SIGINT;bash ≥5.3 实测会在
+      // wait 期间吞掉/推迟 INT 而活下来(脚本转而逐探测跑完,各探测尾部自清),
+      // 3.2 则直接死——两版上「脚本被信号打断退出」都由随后的正 pid SIGTERM 保证:
+      // 父壳死于信号时,旧形态的外层 EXIT trap 会当场展开 rm -f "" ".deadline"
+      // 误删哨兵,新形态父壳无 trap,哨兵必须保留。
+      {
+        const { cap, caller, env, sentinel, bin } = mkCase("own-int");
+        fs.writeFileSync(path.join(bin, name), slowCli(name));
+        fs.chmodSync(path.join(bin, name), 0o755);
+        const child = spawn("bash", [path.join(root, "scripts", script)], {
+          cwd: caller,
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        // 主线程被 sleepSync(Atomics.wait) 阻塞时 libuv 的 exit 事件不会派发:
+        // exitCode/signalCode 恒为 null,且死掉的子进程无人收尸成僵尸——
+        // kill(pid,0) 对僵尸也成功。活性只能问 OS:ps 的状态列(Z=僵尸=已死,
+        // 空=EARCH=已消失),不能轮询 child.exitCode 也不能只看 kill(pid,0)。
+        const alive = () => {
+          try {
+            process.kill(child.pid, 0);
+          } catch {
+            return false;
+          }
+          const stat = spawnSync("ps", ["-o", "stat=", "-p", String(child.pid)], {
+            encoding: "utf8",
+          });
+          const st = (stat.stdout || "").trim();
+          return st !== "" && !st.startsWith("Z");
+        };
+        sleepSync(1200);
+        // 就绪门:信号必须落在探测已落盘捕获之后——固定 sleep 只能等,证明不了
+        // 探测在飞,哨兵断言会因此空真(评审指出注释宣称的就绪验证此前并不存在)。
+        const readyT0 = Date.now();
+        while (fs.readdirSync(cap).length === 0 && Date.now() - readyT0 < 10000) {
+          sleepSync(100);
+        }
+        assert.ok(
+          fs.readdirSync(cap).length > 0,
+          `${script}: 信号前探测捕获必须已落盘(否则中断断言空真)`,
+        );
+        process.kill(child.pid, "SIGINT");
+        sleepSync(1000);
+        if (alive()) process.kill(child.pid, "SIGTERM");
+        const t0 = Date.now();
+        while (alive() && Date.now() - t0 < 15000) {
+          sleepSync(100);
+        }
+        if (alive()) {
+          process.kill(child.pid, "SIGKILL");
+          assert.fail(`${script}: 信号中断后 15s 内脚本进程必须退出`);
+        }
+        sleepSync(300);
+        assert.ok(
+          fs.existsSync(sentinel),
+          `${script}: 中断退出后调用方目录的 .deadline 哨兵必须保留(评审实测的外层空值 trap 形状会误删)`,
+        );
+      }
+    }
+  }
+}
 
 console.log("✓ connector first-use online install contract passed");

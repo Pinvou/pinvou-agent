@@ -1,312 +1,35 @@
-钉钉内置技能来自钉钉官方 dingtalk-workspace-cli 的 dws-skills.zip mono 形态。
+# 第三方组件声明 — 钉钉官方域技能（dws）
+
+本目录下的 `dws` 技能同步自钉钉官方开源项目 **dingtalk-workspace-cli** 的
+dws-skills.zip mono 形态。
 
 - npm package: dingtalk-workspace-cli
-- skill baseline: 1.0.64（本目录技能内容基线，2026-10-18 同步；CLI pin 已升 1.0.65，v1.0.65 dws-skills.zip 的技能同步另行进行）
-- CLI version: 1.0.65（connectors.lock.json 钉扎）
+- skill baseline: 1.0.64（本目录技能内容基线；CLI pin 已升 1.0.65）
+- CLI version: 1.0.65（`connectors.lock.json` 钉扎）
 - 各平台 dws 二进制 SHA-256 见 `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`（仓库相对路径；`<os>/<arch>` 取 macos/aarch64、macos/x86_64、linux/aarch64、linux/x86_64、windows/x86_64 五份，版本一致）
-- Linux ARM64 dws SHA-256: a03d996368cfa5ed99d9e1d96394879db1d90d384b2983e59a23bdc3cf3b0126
-- license: Apache-2.0
+- license: Apache-2.0（`dws/LICENSE` 与上游一致）
 
-来源与更新方式（新手操作手册）：
+来源与更新方式：
 
-1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.65）。
-2. 拉技能源：GitHub Releases 资产，URL 模式
-   `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（技能基线当前 v1.0.64，v1.0.65 同步另行进行；版本号带 `v` 前缀）。
-3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——品悟收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 16 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
-4. 以该 zip 的 `mono/` 为三方合并基线，按下文登记逐条重放本地修改后，保留本声明。
+1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`。
+2. 拉技能源：GitHub Releases 资产
+   `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（版本号带 `v` 前缀）；zip 真伪可对照同 Release 的 `checksums.txt`。
+3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——本应用收录 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容一致，`multi/`（多子 skill 布局）不随包分发。上游 `references/channel-login.md` 面向受控渠道评测场景，不随包分发。
 
 Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首次使用时按 lock 在线下载、校验并安装到用户目录。凭证由官方 CLI 管理。
 
-## Pinvou3 本地修改登记
-
-依据 Apache-2.0 §4(b) 登记对 `dws/SKILL.md` 的本地修改（2026-07-25）。下次升级 dws npm 版本时本节修改需重放。
-
-1. frontmatter `description` 重写：修复「在线电子表格」重复出现，删除随包 CLI 不支持且引用缺失的 AI应用入口，补入目标管理(Agoal)，并压缩为一句话触发说明。
-2. 修正脚本能力描述：`scripts/` 下无 AI 应用创建轮询脚本，删除该说法（MUST DO「脚本优先」条与「详细参考」scripts 行两处）。
-3. 修正「脚本均支持 `--dry-run` 预览、`--format json` 输出」的不实表述，改为提示各脚本参数不统一、先用 `--help` 确认 flag。
-4. 产品总览表补 `agoal`（目标管理）行，与意图决策树已有路由对齐。
-5. 压缩顶部警告块为一行（与「命令发现」节内容重复）。
-6. `--yes` 确认规则去重：删除「确认流程」三步代码块与「命令发现」节末尾重复句，确认方式合并为「危险操作确认」节开头一句。
-7. 「核心流程」删除元话术，压缩为 0-3 步（URL 预检/意图分类/歧义追问/选定产品读参考后执行）。
-8. MUST DO 参数格式括号注压缩。
-9. 「详细参考」中 best_practices 逐文件枚举压缩为单行汇总，aitable 两行合并为一行。
-
-除上述 9 条外，仓库对 `dws/` 另有两处已登记于 git 历史的本地修改，同步时同样重放：
-
-- `references/products/attendance.md`、`references/products/minutes.md`：将宿主已退役的工具名 `read_file` 改写（PR #231 时记作 `File(action="read")`，历史事实；CodeWhale v0.9.12 升级 PR #453 起 canonical 名为 `read`），下次 sync 一律使用 `read`。
-- `scripts/attendance_report_common.py`：图片缓存文件名的 URL 哈希由 MD5 改为 SHA-256（CodeQL py/weak-sensitive-data-hashing，PR #54）。
-
-## 同步记录（2026-08-16 → 1.0.58）
-
-本次同步自 v1.0.58 dws-skills.zip 的 mono 形态（zip 顶层与 mono/ 内容经 diff 确认一致）。`dws/LICENSE`、`dws/NOTICE` 与上游一致，未改动。
-
-上游结构变化（1.0.51 → 1.0.58 mono）：
-
-- references 新增：`products/event.md`、`products/hrbrain.md`、`products/markdown.md`、`products/pat.md`、`products/whiteboard.md`、`products/whiteboard/`（open-nodes-v1 全套 + recipes）、`products/oa/`（表单组件/流程节点）。上游另有 `channel-login.md`，品悟不随包分发（见下方补录第 9 条）。
-- references 删除：`recovery-guide.md`（SKILL.md「错误处理」同步移除 RECOVERY_EVENT_ID 闭环说明）。（状态注：已删，无需重放。）
-- scripts 删除：`bot_broadcast.py`、`chat_export_messages.py`、`chat_history_with_user.py`、`doc_create_and_write.py`、`extract_media_id.py`（Chat 历史导出与机器人广播下沉 Runtime）。（状态注：已删，无需重放。）
-- SKILL.md 大改：新增 Shortcut 使用原则/总览、多组织多账号（profile）、确认门禁协议、Schema 渐进查询；产品域新增 hrbrain/markdown/pat/whiteboard/event，`aiapp` 移除（标注无稳定产品参考），`agoal` 保留（mono 意图树仍路由，CLI 1.0.58 `--help` 服务列表仍含 agoal）。
-
-9 条登记重放结果（逐条）：
-
-1. description 重写 — 已重放（保持一句话触发式，压缩至 280 字符截断上限内，并纳入 1.0.58 新产品域组织大脑/Markdown/白板/事件订阅；上游新 description 未含 Agoal，本地继续补入）。
-2. 脚本能力描述修正 — 已重放（1.0.58 删除了 5 个脚本但 MUST DO 新文本仍提及「AI 应用创建轮询、文档创建后写内容」两个已不存在脚本的场景，且「详细参考」scripts 行仍列「文档创建并写入」，两处均删除该说法）。
-3. `--dry-run`/`--format json` 不实表述 — 上游已等价解决（上游删除「脚本均支持」句式，改为按脚本说明参数，无需重放）。
-4. 产品总览表补 `agoal` 行 — 已重放（1.0.58 mono 产品表仍缺 agoal 行而意图决策树仍路由 `agoal`，实测 CLI 1.0.58 仍提供 `agoal` 服务，继续对齐补入）。
-5. 压缩顶部警告块为一行 — 已重放（1.0.58 警告块引入 Schema 事实源语义，压缩为一行时保留该要点）。
-6. `--yes` 确认规则去重 — 已重放（删除「确认流程」三步代码块，确认方式并入「危险操作确认」开头一句；上游新增的「确认门禁的识别与重试协议」小节为新增语义，保留）。
-7. 「核心流程」压缩为 0-3 步 — 已重放（删除元话术；上游新增第 4 步「按任务最小化读取」的语义并入第 3 步）。
-8. MUST DO 参数格式括号注压缩 — 已重放（沿用「参数与参数值之间用空格隔开」）。
-9. best_practices 逐文件枚举压缩为单行汇总、aitable 两行合并 — 已重放（1.0.58 上游改为 14 行逐文件枚举，压缩回单行汇总；新增的 pat.md 参考行保留独立行）。
-
-另重放 git 历史登记的两处修改：`read_file`/`File(action="read")` → `read`（attendance.md 6 处、minutes.md 7 行；PR #231 时记作 `File(action="read")`（历史事实），#453/v0.9.12 起一律 `read`，与 lark/wecom/tmeet 各 NOTICE 对账注口径一致）；`attendance_report_common.py` 缓存哈希 md5 → sha256（与 PR #54 一致）。1.0.51 导入时的 4 个文件尾随空白差异（07-minutes.md/08-directory.md/calendar.md/oa.md）不再重放，跟随上游原文；对账注（2026-08-16，对账基线为 HEAD `77c19912`）：calendar.md 与 oa.md 在该基线上与上游逐字节一致；07-minutes.md 与 08-directory.md 因后续真实性审查补录的正文修改重新分叉（diff 实测差异均为内容行，无空白-only 行）。对账期间（2026-08-16 15:2x）工作区另出现一批未提交的尾随空白清理（07-minutes.md/08-directory.md/minutes.md/oa.md），不属于四轮登记范围——若保留须随提交另行登记，否则下次 sync 按本登记跟随上游原文。
-  （第六轮核验注 2026-08-16，基线 HEAD `4a42fdb9`、工作区 clean：该批尾随空白清理已不在工作区——上述 4 文件当前与上游的尾随空白行数一致（07/08/oa/minutes 分别 1/1/3/5 行，与上游同），oa.md 与上游逐字节一致，07/08/minutes 的差异均为正文行（08-directory 为 read + aisearch 链接化；07-minutes 为「开源版未引入」标注删除；minutes.md 为 read_file → read）。本对账注的「未提交清理」悬念已消除，下次 sync 直接跟随上游原文重放各登记条目即可。）
-
-## 真实性审查补录（2026-08-16，同轮次复审）
-
-同步后复审发现并修复的机械迁移问题（均在 `dws/` 内，CLI 1.0.58 实测核对）：
-
-1. `read` 工具名漏网修复 12 处：`doc/` 下 10 个子文档与 `doc/style/doc-create-workflow.md`、`sheet/sheet-comment.md` 的「必须先用 Read 工具读取」前置块（上轮仅重放了 attendance.md/minutes.md，doc/sheet 子文档漏改）。
-2. `SKILL.md` Shortcut 总览表删除「multi skill」列（`dingtalk-aitable`/`dingtalk-misc` 等 16 处 multi 形态子 skill 名，mono 收录形态不存在这些入口）；shortcut 计数经 `dws shortcut list --service <svc>` 逐一实测与 1.0.58 一致，保留。
-3. `SKILL.md` 意图决策树 aiapp 行删除「multi 布局见 `dingtalk-misc` 的 `unsupported-scripts.md`」尾注（mono 包内无该文件）。
-4. `references/products/calendar.md`：3 个脚本链接 `../scripts/` → `../../scripts/`（路径错误导致悬空）；「相关产品」中 `../../dingtalk-contact/references/contact.md` 悬空链接改为 `./contact.md`（mono 包内实际路径 `references/products/contact.md`）。
-5. `references/products/sheet.md`：删除标题「原 dingtalk-sheet/SKILL.md 正文」multi 话术；「跨产品协作」两处 `dingtalk-aitable`/`dingtalk-doc` 子 skill 引用改为指向包内 `./aitable.md`/`./doc.md`。
-6. `references/best_practices/07-minutes.md`：删除 2 处「（开源版未引入）」不实标注（`minutes_extract_todos.py`/`minutes_recent_summary.py` 均随包存在）；browse-minutes 中脚本参数 `--limit` 修正为脚本实际定义的 `--max`。
-7. `references/best_practices/`（08-directory.md、10-minutes-speaker-match.md、lite-recipes.md）：3 处「`aisearch`（开源版未引入，悟空内部产品）」改为链接 `../products/aisearch.md`（该产品参考随包存在，服务在 1.0.58 服务列表内）。
-8. `references/products/report.md` 示例表格中占位链接 `[在钉钉中查看日志](...)` 目标改为 `(<dingtalkOpenUrl>)`（与同文档操作列规则用语一致，避免悬空 `...` 目标）。
-9. 删除 `references/channel-login.md`：该文件是上游面向阿里内部受控渠道场景的配置参考，含内部评测渠道的具体 `DWS_CHANNEL` 哈希、内部 profile 名与「EI智能体评测」渠道归因，对品悟社区版用户无意义且违反「不依赖企业专属数据」的社区版公约；文件未被包内任何其他文档引用。后续 sync 若上游仍带此文件，继续不随包分发。
-
-## 第四轮结构终检补录（2026-08-16）
-
-1. `dws/SKILL.md` frontmatter 补 `metadata.requires.bins: ["dws"]` 与 `metadata.cliHelp: "dws --help"`，与 lark/wecom/tmeet 各域对齐（`dws --help` 实测存在）。下次 sync 需重放。
-2. description 加【何时用:…】防误用前缀（240 字符，≤280 上限）。下次 sync 需重放。
-
-## 第四轮本地工具依赖审查补录（2026-08-16，跨平台与 Agent 会话口径）
-
-品悟为三端应用（macOS/Linux/Windows），Windows 不保证本地 `jq`/`grep` 可用；dws 全局 `--jq` 对产品命令已生效（global-reference.md 明示）。以下修改均改为 CLI 内置能力或模型直接读取，下次 sync 需重放：
-
-1. `references/products/aitable/aitable-workflow.md`：创建确认流删除 `| tee` + 本地 `jq` 链（3 命令）改为 `--jq` 直出；list 汇总/状态过滤 3 处 `| jq` 改 `--jq`；`for ... | jq -r` 批量禁用循环改为「list --jq 列 flowId + 逐条 disable」两步，消除 shell 循环依赖。
-2. `references/products/aitable/aitable-record-history.md`：3 处 `| jq` 改 `--jq`。
-3. `references/products/aitable/aitable-record-share.md`：批量示例 `| jq` 改 `--jq`。
-4. `references/products/aitable/aitable-view-config.md`：Kanban 封面 `for` 循环 `| jq .status` 改逐视图命令 + `--jq .status`。
-5. `references/products/doc/style/doc-update-workflow.md`：读取策略表 `grep -B2 -A2`/`grep -n` 定位改为模型直接读 JSON/markdown（并给 `--jq '.. | .text? // empty'` 备选）。
-6. `references/products/event.md`：Subprocess contract 的 stdin 常驻技巧 `< <(tail -f /dev/null)`（POSIX-only）改为「Agent 会话跑批用 `--max-events`/`--duration`，或 `< /dev/null`，进程替换仅 POSIX 可用」；订阅清理条补「Agent 会话优先有界退出而非外部 kill」。`--max-events`/`--duration` 经 `dws event consume --help` 实测存在。
-
-## 第三轮盲区审查补录（2026-08-16，此前漏登记，NOTICE 对账补录）
-
-第三轮（c9c6afb3）对 `dws/` 深层 references 的以下修改此前未登记，依据 v1.0.58 mono 上游 diff 实测补录，下次 sync 需重放（均经 dws 1.0.58 `--help` 实测核对；下列裸写文件均位于 `dws/references/` 下，全称即 `references/<文件>`）：
-
-1. `capability-limits.md`：「文档权限管理 ⚠️ transitional helper 部分支持」改写为「✅ 已支持：节点级协作者管理走 `dws drive permission add/update/list/remove`（仅文档空间节点，不适用于钉盘文件）；按姓名批量授权走 `dws doc +access-grant` / `+access-change` / `+access-revoke`」（实测口径）。
-2. `field-rules.md`：field 子命令计数「4 个」改「5 个」——补 `field search-options`（搜索单选/多选字段选项）行，并注明 `list` 仅是 `field get` 的别名。
-3. `url-patterns.md` 三处：axls 条补「导出用 `dws sheet export`（单命令一站式提交→轮询→可选下载）」；「在线表格导出上游未暴露」改为「用 `dws sheet export`（axls→xlsx），单工作表纯 CSV 用 `dws sheet export-csv`」；「分享」路由表两条的 `doc permission add --user` 改为 `dws drive permission add --users`（按姓名授权用 `doc +access-grant`），区分依据同步改为 drive permission。
-4. `references/products/markdown.md`：命令表补 `markdown diff` 行，并新增「比较差异」节（`--node`/`--version`/`--version2`/`--file`/`--context` 用法与 4 种组合示例，经 `dws markdown diff --help` 实测）。
-5. `references/products/doc/doc-permission.md`（2026-08-17 计数勘误：实测为 14 行，上游原文含 14 处 `--user`、本地 0 处，原记「9 处」不准）：`--user` → `--users`（flag 实名，`dws doc permission add --help` 实测）；`--max-results` → `--limit`；角色「大小写敏感，必须全大写」改「大小写不敏感」。
-6. `references/products/doc/doc-export.md`：标题与 `--export-format` 说明由「仅 docx」改「docx（默认）/ markdown（或 md）/ pdf」，补 markdown 导出示例与「`--output` 传目录时按格式自动追加扩展名」。
-7. `references/products/event.md`：删除末尾 Full reference 节的 3 条 multi 形态断链（`skills/multi/dingtalk-event/…`），改为「命令级入参用 `dws event consume --help`、`dws event +listen-im --help` 查看；事件目录 `dws event list`（可加 `--category oa`）；单事件字段 `dws event schema <event_key> --flatten`」（mono 收录形态无 multi 目录）。
-8. `references/products/doc.md` 导出格式口径 3 处（2026-08-17 评审补充，第 6 条同源修正的传播；`dws doc export --help` 实测为 docx（默认）/markdown (.md)/pdf）：`--export-format` flag 说明行「当前仅支持 docx (默认)」改「导出格式: docx (默认) / markdown (或 md) / pdf」；「用户说下载/导出」路由条「格式转换后导出为 docx，未迁移」与末尾「严禁路由到 drive download」提示条「导出为 docx」均改为「按 `--export-format` 导出为 docx（默认）/ markdown / pdf」并指向 `./doc/doc-export.md`。
-9. （2026-08-17 第十轮独立复审补充，第 5 条 `--user` 修正的两处传播漏网）`references/products/doc.md` 权限路由摘要行「`permission add`（需 `--node` + `--user` + `--role`）」改 `--users`；`references/best_practices/04-document.md` grant-doc-access 行「`doc permission add --node <nodeId> --user <UID1,UID2> --role EDITOR`」改 `--users`。另注：`chat message list --user`、`calendar acl add --user` 等处的 `--user` 是各自命令的实名 flag，**不要**随本条误改。
-10. （2026-08-17 第十轮复审勘误）第 1 条「minutes.md 6 处」实为 7 行：`references/products/minutes.md` 的 `Read 工具`/`read_file` → `read` 共 5 处标准形态 + 2 处 `File.read` 简写（R4 行与速查表行，简写一并改写为完整形态）。
-11. （2026-08-17 第十一轮复审补充，第 6/8 条导出口径的同族传播漏网 + 二进制实测修正）`doc-export.md`「关键说明」区「当前仅支持…导出为 `docx`，在线表格导出请使用其他命令」改为「仅作用于 alidocs 文档、`--export-format` 决定 docx/markdown/pdf，axls 走 `dws sheet export`」，`--output` 目录扩展名同步改三格式口径；`doc.md` 注意事项区同款「仅支持 docx」+「当前开源 CLI 未暴露在线表格导出命令」（失实：`dws sheet export` 存在且 sheet.md/url-patterns.md 已文档化）一并改写。
-12. （2026-08-17 第十一轮复审，失效 flag 修正）`best_practices/04-document.md` export-doc-as-docx 行的 `--timeout-sec 600` 删除（实测 `unknown flag`；`doc export` 无 timeout flag，轮询窗口内置约 5 分钟）；`best_practices/06-data-analytics.md` export-aitable-to-xlsx 行「加 `--timeout-sec 900`」改写为「`--timeout-ms` 默认且上限 30000、超时返回 taskId 续等」（与 aitable-export-import.md「大表/长任务超时续等」节口径对齐，实测一致）。脚本自身的 `--timeout-sec`（aitable_export/import_via_task.py argparse 参数）不受影响，勿随本条误删。
-
-## 第六轮收官语义扫描补录（2026-08-16）
-
-按统一模式清单（上游宿主名/不存在形态措辞/npm 残留/skills 管理命令/裸 auth login/Read 工具名/api-version/假命令/multi 形态/已删文件引用/自更新指令/内部 URL 密钥）对四个技能包全量复扫，`dws/` 内修复以下残留，下次 sync 需重放：
-
-1. `scripts/` 8 个考勤脚本 docstring 的强制门禁阅读路径 `dingtalk-workspace/references/products/attendance-*.md` 改为包内相对路径 `../references/products/attendance-*.md`（上游仓库名形态在品悟包内不存在，实际文件位于 `dws/references/products/`）：attendance_report_checkin.py、attendance_report_common.py、attendance_report_daily.py、attendance_report_detail.py、attendance_report_monthly.py、attendance_schedule_export.py、attendance_schedule_import.py、attendance_vacation_balance.py。
-2. `references/products/minutes.md` 跨平台兼容性条：「悟空运行环境可能是 Windows cmd / PowerShell / macOS bash」宿主断言改为「品悟应用运行在 Windows cmd / PowerShell / macOS bash 等不同 shell 环境」（同文档其余「悟空」均为听记热词/替换示例词，非宿主口径，保留）。
-3. `references/best_practices/06-data-analytics.md` export-aitable-to-xlsx 条：「与悟空脚本路径并存」改为「与脚本路径并存」（指包内 `scripts/aitable_export_via_task.py`，非悟空平台）。
-4. `references/products/sheet/sheet-filter.md`：删除「（参照飞书 core-operations）」括注（lark 域 `lark-sheets-core-operations.md` 未随包收录，为悬空跨域参照；规范正文本身完整，删除后语义不变）。
-5. `references/products/attendance.md` 命令可用性提示：禁止性理由「不要以"开源版不支持"为由拒答」改为「不要以"命令不存在/不支持"为由拒答」（保留禁拒答语义，去除上游"开源版"形态措辞，为真实性审查补录第 6/7 条「开源版未引入」清理的漏网变体）。
-
-其余命中均为已登记豁免或合理保留：`OPENCLAW_WORKSPACE` 环境变量（scripts/import_records.py、bulk_add_fields.py 路径安全护栏，未设时回退 `os.getcwd()`，品悟内不依赖该变量亦可用，上游原样保留）；dws/tmeet 域裸 `auth login`（各自 CLI 真实教学）；`alidocs.dingtalk.com`（钉钉文档公网 URL 域名，非内部地址）。
-
-## 第七轮脚本代码安全审计（2026-08-16）
-
-对 `dws/scripts/` 全部 33 个 Python 脚本做逐脚本安全审计（路径安全 / 注入面 / 危险操作 / 数据外泄面 / 异常与退出码 / 资源占用 / 跨平台编码）。审计结论：无 shell=True、无 os.system/eval/exec/pickle、无递归删除；subprocess 全部列表形式；文件读入均有大小上限；`OPENCLAW_WORKSPACE` 白名单无 cwd 覆盖绕过。修复以下 5 类，下次 sync 需重放：
-
-1. **subprocess 解码容错（25 处，全部含 `text=True` 的调用；2026-08-17 计数勘误：原记 26，另 3 个 `text=True` 命中是 openpyxl 样式参数、非 subprocess）**：`subprocess.run(..., text=True)` 均补 `errors='replace'`。此前 Windows GBK 控制台下 dws 输出含 GBK 外字符（emoji、✓✗ 等 BMP 符号）会抛未捕获 `UnicodeDecodeError`，脚本以 traceback 崩溃且退出码不可控；`errors='replace'` 保证 stderr 信息完整、失败路径仍走受控 return-None/sys.exit。涉及 scripts/ 下 25 个脚本（全覆盖，逐调用核对无一遗漏）。
-2. **白名单符号链接绕过防护（2 处，复核勘误）**：`import_records.py` 与 `bulk_add_fields.py` 的 `resolve_safe_path` 补「relative_to 失败且目标本身是符号链接时按『路径解析到白名单外』拒绝」分支（保留原错误信息格式）。（2026-08-16 独立复审勘误：实测拦截实际由原有 `(Path.cwd()/path).resolve()` + `relative_to(allowed_root)` 逻辑提供——`resolve()` 跟随符号链接、越界即抛 ValueError，根内链接指向根外/绝对路径/`../` 在补丁前后均被拒绝，本条早先「此前放行」的表述不准；新增分支属纵深防御冗余，保留无害，sync 重放可选。）
-3. **导出文件名净化（aitable_export_via_task.py）**：服务端返回的 `fileName` 未校验直接 `Path.cwd() / file_name` 落盘，含 `../` 可越目录写、含 Windows 保留字符（`:*?"<>|`）创建失败、设备名（CON/NUL）被劫持。新增 `safe_file_name()`：截 basename、非法字符替换 `_`、设备名加 `_` 前缀；默认下载路径与轮询更新 fileName 两处接入（`--output` 显式指定时尊重用户路径）。
-4. **翻页死循环防护（report_inbox_today.py、report_received_today.py）**：`fetch_inbox` 的 cursor 翻页循环无重复游标检测，服务端异常恒定返回同一 `nextCursor` 时无限重拉 dws。补 `seen_cursors` 集合，重复游标 stderr 报错后 break。已 monkeypatch 实测恒定游标在第 2 次调用即终止。
-5. **维持原样的安全判定（登记豁免，勿在上游 sync 时"修复"回去）**：`aitable_import_via_task.py`/`upload_attachment.py`/`aitable_export_via_task.py` 的 urlopen 仅用于 CLI 返回的 OSS uploadUrl/downloadUrl 直传/直下（CLI 未封装该原语，属合理例外）；`attendance_report_common.py` 图片下载为 requests.get + sha256 缓存键、`tempfile.gettempdir()` 固定子目录但文件名为 URL sha256（不可抢注）；`OPENCLAW_WORKSPACE` 回退 `os.getcwd()` 属白名单根退化、非绕过（绝对路径语义按设计放行）。
-
-验证：全量 `python3 -m py_compile` 通过；usage-error 路径 exit code 非 0；`--help` 冒烟通过。注：第 2-4 类防护的验证为开发期一次性实测/monkeypatch（未提交可重放单测），本仓库防回归门禁仅覆盖文档口径（`connector_skills_contract.test.js` 的 python3 断言）；如需长期回归防护，后续可在 `pinvou3-app/tests/` 补脚本级单测。
-
-## PR #299 审阅代修（2026-08-17）
-
-对第七轮登记的第 2、3 条做收口修正，下次 sync 需重放：
-
-1. **`resolve_safe_path` 符号链接冗余分支删除（import_records.py、bulk_add_fields.py）**：第七轮第 2 条新增的 `target_path.is_symlink()` 分支检查的是 `resolve()` 之后的路径（恒为 False，死代码），且 NOTICE 已勘误拦截实际由 `resolve()` + `relative_to()` 提供。删除该死分支，统一为「路径超出允许范围」错误信息，注释改为说明 resolve 语义；安全属性不变（实测 `../`、绝对路径、根内符号链接指向根外仍全部拒绝）。
-2. **`safe_file_name` 截断改为按 UTF-8 字节（aitable_export_via_task.py）**：原实现两处缺陷——扩展名本身超 200 字符时 `200 - ext_len` 为负索引、截断后反而更长；按字符数截断 200 对中文名无效（200 中文字符约 600 字节，仍超 macOS 255 字节限制）。改为按 UTF-8 字节截断到 200 字节，扩展名 ≤20 字节时保留、超长扩展名按无主名扩展整体截断；docstring 同步更正。
-
-### 第七轮文档层走查类补登记（2026-08-16，独立复审补录）
-
-第七轮同批 commit 还包含以下文档层改动（此前未登记，依据上游 v1.0.58 zip diff 实测，下次 sync 需逐条重放）：
-
-- **裸 `python` → `python3` 改写（55 处/19 个 references 文件，上游 v1.0.58 原文均为裸 `python`；2026-08-17 计数勘误：原记「约 50 处/17 个」为低估）**：`references/` 下全部命令示例统一为 `python3 scripts/...`（品悟宿主无裸 `python`，实测 command not found）。脚本自身 docstring 中的 usage 示例仍为上游原文裸 `python`，属已知豁免（模型按 SKILL.md 调用约定执行，不按 docstring）。
-- **SKILL.md 新增「脚本调用约定」节**：统一 `python3` 调用、`scripts/...` 相对路径须拼完整路径、不假设 CWD（上游 SKILL.md 无此节）。
-- **attendance-report.md**：「报表类型（四选一）」改「五选一」（补签到报表项，`attendance_report_record.py` 覆盖考勤记录/签到报表两型）；「不适用于」指引的三处命令指针修正（`attendance check record`→`attendance record get`、班次查询补 `attendance class search` 并将排班导出导向 attendance-schedule.md 工作流）。
-
-## PR #299 审阅代修（2026-08-18）
-
-协作者复审阻塞项收口，下次 sync 需重放：
-
-1. **`safe_file_name` 补 Windows 尾随点/全点名规整（aitable_export_via_task.py）**：Win32 剥离末组件尾随点/空格——`"report.xlsx."` 落盘被静默改名为 `report.xlsx`（与回显 savedPath 不一致）；`"..."` 等全点名是目录别名、`write_bytes` 抛 `PermissionError`；超长字节截断也可能切在点上留下新尾点。修复：字符替换后 `rstrip(". ")`、剥空后回退 `export_result.bin`（取代原先仅判 `"."`/`".."` 的分支）、设备名判断与字节截断之后各再规整一次。补可重放纯函数单测 `scripts/tests/test_dws_safe_file_name.py`（fast-gate `unittest discover` 自动执行）——第七轮登记注「第 3 条仅一次性实测」自此有持久化回归防护。
-
-## dws 文档审计修复（2026-08-27）
-
-钉钉 dws 技能包文档审计（11 项已核验发现）修复登记，下次 sync 需重放。全部为文档修复与孤儿登记，**不改任何 scripts 行为、不改发送类操作确认策略**（mail send/DING app 型无确认为产品决策，pending）：
-
-1. **`SKILL.md` 严格禁止 curl 条补唯一例外**：aitable 导入/导出链路返回的预签名 `uploadUrl`/`downloadUrl`（`import upload` 凭证、`export data` 下载地址）允许 curl 直传/直下并链接 aitable-export-import.md——消除与 aitable-export-import.md:123/:144、capability-limits.md:25 的矛盾。
-2. **`SKILL.md` 批量上限调和**：「单次批量操作不超过 30 条」改为「直接调用 dws 批量接口（如 `record update`）单次 ≤30 条；使用 `scripts/import_records.py` 时按脚本默认 50/批（DEFAULT_BATCH_SIZE=50，上限 100）」——与脚本实际及 06-data-analytics.md 推荐路径一致，未改脚本。
-3. **`SKILL.md`「详细参考」scripts 行删除「机器人消息」字样**：与 MUST DO「Chat 历史导出与机器人广播已完全下沉 Runtime，不再发布兼容脚本」对齐（上游 1.0.58 已删 5 个相关脚本）。
-4. **`SKILL.md` 产品总览表补 `dev` 行并入链 dev.md**；意图决策树 AI 应用行由「当前无稳定产品参考」改为「产品参考以 dev.md 为准（勿猜 aiapp 等未列出命令，命令以 `dws dev --help` 实测为准）」——消除 dev.md（212 行完整参考）零入链与「无稳定参考」断言的矛盾，保留防幻觉意图。
-5. **`references/best_practices/03-meeting.md` 两处 `--room-group-id` 删除改写**（两准则节 + schedule-meeting recipe 行）：`calendar_schedule_meeting.py` argparse 无该参数（仅 --title/--start/--end/--desc/--users/--book-room/--dry-run）；限范围订房改为「先 `room list-groups` 解析 group-id，再手工 `room search --group-id ... --available` 选定后 `room add`」，并在两处显式注明脚本不支持分组限定。
-6. **搜房失败退出码口径改文档（方案 a）**：03-meeting.md 表 1 行与 calendar.md 自动化脚本表的「返回非零退出码」改为「打印 `⚠ 该时段无空闲会议室` 警告并正常退出（exit 0），上层须检查输出中的 ⚠ 标记」——实现（calendar_schedule_meeting.py:157-159 无空房路径）本就告警后退出 0；改脚本为非零退出属行为变更影响面大（多处以退出 0 为正常完成契约），故选文档对齐实现。
-7. **`references/products/oa.md` oa_batch_approve.py 用法补确认语义**：无 `--yes` 且非 `--dry-run` 时脚本 `input()` 交互确认，Agent 非交互环境裸跑 EOFError；补「先向用户确认、同意后加 --yes；--dry-run 仅预览」，示例补 `--yes`。
-8. **oa 审批写命令 Flags 块补 `--yes`**（oa.md approve/reject/revoke 三处）：revoke/reject 属危险操作确认表（SKILL.md:168-169，即本 PR 补入 dev 行后的行号），Flags 漏列与示例不一致；同步在 simple.md 撤销审批示例补 `--yes` + CAUTION 块（消除与 oa.md/SKILL.md 冲突）。
-9. **`references/products/attendance-report.md` 配套脚本表 detail 行补参数**：`[--inspect] [--no-images] [--image-size WxH]`（脚本 argparse 实有，默认嵌入打卡图片 80x120）。
-10. **孤儿参考入链（保守，不删文件）**：simple.md 经 oa.md 自动化脚本节尾注入链（标注速查形态、完整口径以 oa.md 为准）；dev.md 经第 4 条入链。
-11. **孤儿脚本登记（保守，不删上游文件）**：mail.md 文末新增「自动化脚本」表登记 mail_send_with_cc.py / mail_unread_summary.py；report.md 原空「自动化脚本」表补登 report_inbox_today.py / report_received_today.py（后者标注为上游重复发布的等价脚本）。minutes_list_parse.py 为内部共享库不登记。
-12. **观察项（不合并）**：`report_inbox_today.py` 与 `report_received_today.py` 为近逐字节双胞胎（仅 docstring 文件名差异，diff 实测），上游文件不合并；后续 sync 关注上游是否收敛为单文件，若收敛则同步删除另一份并更新 report.md 登记表。
-
-版本登记：SKILL.md frontmatter `cli_version: ">=1.0.15"` → `">=1.0.58"`（与 NOTICE 头部登记的当前 dws CLI 版号 1.0.58 对齐；本次为纯文档修订，无运行时语义变更）。
-
-## PR #359 评审修复（2026-08-28）
-
-协作者评审（JensenChen28 / zhuowp）阻塞项修复登记，下次 sync 需重放：
-
-1. **确认门禁命令示例统一补 `--yes`（oa.md 6 处、simple.md 2 处）**：approve/reject 的 Example 行与核心工作流 4a/4b/5 原裸跑，与本包既定契约（SKILL.md 危险操作确认表、oa.md 各节 CAUTION、Flags 表 `--yes  跳过确认（用户已同意后使用）`）矛盾，也与本 PR 第一批对 simple.md revoke 的修法不一致。CLI 实测（v1.0.58 darwin-arm64，lock SHA 校验一致）：`revoke` 非 TTY 不带 `--yes` 在触达 API 前即 `reason: confirmation_required` 失败；`approve`/`reject` CLI 侧不强制门禁（假 ID 直达 token 解析报错），但技能层「不可逆决策先确认、同意后加 `--yes`」的口径不变，示例必须示范合规形态。oa.md approve/reject 的 CAUTION 措辞同步补「确认后加 `--yes`」（对齐 revoke 节既有措辞）；Usage `[flags]` 简明行保持复刻 CLI help（root 持久 flag 不出现在 help），不补。
-2. **回归扫描**：`pinvou3-app/tests/connector_skills_contract.test.js` 新增规则 7——dingtalk-skills 代码块内 `dws oa approval approve|reject|revoke` 可执行行必须含 `--yes`（`[flags]` 结尾的 help 复刻行豁免），防上游 sync 回潮。
-
-## PR #437 dws 文档审计修复 + 复审代修（2026-09-05；复审响应 2026-09-07）
-
-模型向文档全量审计（钉钉 dws 分区，81 条）修复，及复审以 v1.0.58 实机 CLI（connectors.lock 钉版二进制，SHA-256 校验一致）+ 同 tag 源码逐条核验后对「统一到错误一侧」项的方向性纠正。以文档与脚本注释/用法修改为主；脚本运行时行为仅第 7 条两处有意变更（mail_unread_summary.py 今日口径时区、attendance_report_common.py Pillow 缺失处理），其余不改行为。下次 sync 需按主题重放（flag/命令名以当版 `dws --help` 实测为准）：
-
-1. **命令/flag 名纠错**：`contact user search --keyword`→`--query`（8 处）、`contact user get --user-ids`→`--ids`、attendance `class/adjustment/overtime search --name`→`--query`、`sheet find` 统一 help 主名 `--query`（sheet-search-replace.md；sheet.md 意图表 main 既有已是 `--query` 未改动，`--find` 仅为别名）、error-codes.md `approval tasks`/`list-forms` 补 `oa` 前缀。
-2. **能力表/上限对齐 v1.0.58**：SKILL.md 批量写「硬上限 100（help 上限文案；upsert/batch-update 有 CLI 前置校验，record create/update 由服务端约束）、直连建议 ≤30」；minutes `list mine/shared/all` 默认页统一 10；`doc permission list` 默认 30；危险操作表补 `aitable workflow disable` / `advperm disable` / `advperm role-delete`、`chat group dismiss` / `group upgrade-to-external` / `clear-messages`（chat.md dismiss/clear-messages 分册同步补 CAUTION）。
-3. **弃用迁移**：best_practices/04-document.md `doc search`→`drive search` 6 处、`doc list`→`drive list` 2 处（`doc search` 实跑即打弃用警告；全量清扫见第 11 条）。
-4. **串行口径**：conventions.md 规范 #1 与「多源采集」公共模式由「`&` 并行 + `wait`」反转为「逐条串行、AI 内存合并」；「多源并行采集」更名「多源信息采集」（12 处引用与锚点同步）；mail.md「三路并发查询」8 处改「依次尝试、取首个有效结果」；minutes.md / 08-directory.md / 07-minutes.md 残留「并发/并行」措辞清扫（「交错进行」语义保留：本地分析不阻塞单条命令发起）。
-5. **收敛/去重**：doc.md↔doc/doc-update.md 写入管道去重（阈值 10000；超时不自动重试、返回「提交状态未知」错误，先回读确认再续写——按 doc_write_pipeline.go 实证，删除无源码依据的「减半重试/最小 5000/CONTENT_TRUNCATED」表述）；aisearch enterprise/behavior 类型映射表合一；aitable best-practices↔data-analysis-sop 收敛（补回「字段名来自 table get」）；attendance.md schedule import 节收敛至 attendance-schedule.md（补记 `checkBeginTime`/`checkEndTime` 不进后端 payload）；simple.md devdoc 段收敛至 devdoc.md。
-6. **置信度单一事实源**：发言人阈值与确认语义统一指 minutes.md「发言人识别与总结执行链路」Step 5（07-minutes.md 与 10-minutes-speaker-match.md 不另设阈值）。
-7. **脚本配套**：mail_unread_summary.py 今日截断 `Z`→`+08:00`（原写法漏本地 0-8 点邮件）；attendance_report_common.py Pillow 缺失不再自动 pip install、告警后降级为「打卡图片」超链接兜底（报表照常产出；初稿曾误改为「提示后退出」，终态见第 12 条）；aitable_export_via_task.py `--max-polls` help 纠偏（实为轮询次数上限，脚本 ：185 消费）；attendance_report_daily/monthly.py 计数注释纠正（31/18）并统一指 attendance-report.md「预定义列集合」；scripts 全量 docstring 与运行时 usage 输出 python3 化（84 处/30 文件，含首批 15 处，`python3 scripts/<name>.py` 形态）——**取代第七轮登记的「docstring 保持上游裸 python」豁免口径**，今后 sync 重放统一按新形态改写。
-8. **复审纠正项（审计原改动统一到了与 v1.0.58 相反的一侧，以实测为准回退）**：doc 分片阈值 10000（非 30000）；`doc permission` role 大小写不敏感（CLI ToUpper 规范化）；`mail message batch-delete` 无命令级 `--yes`（Safety=not_required；Flags 块不补 root 持久 flag，沿 PR #359 先例；main 既有 chat.md `upgrade-to-external` Flags 块的 `--yes` 行同样无命令级对应，sync 时关注）；doc/drive permission 分工（两命令同后端、均限文档空间节点，**不含钉盘普通文件**——drive.go Long 明示）；JSONML 块级白名单不含 `img`（schema v2 root.allowed_children，img 仅为 p/h1-h6/a 的 inline 子节点）且 attrs 可选（校验器对省略不报错）；01-messaging 保留 `chat message list-by-sender --sender-open-dingtalk-id`（「直查返回空」无法离线证实且 chat.md 无对应注意事项）；aitable user 字段 create 列不带 corpId（是否必带无源码可证，不作统一）。
-9. **测试**：safe_file_name 回归防护以根级 `scripts/tests/test_dws_safe_file_name.py`（PR #299 登记，fast-gate discover 覆盖）为准；本 PR 曾在 bundle 内新增的副本删除（不被任何门禁发现且与根级重复）。
-10. **补登首批漏记的 fork 侧改动**（复审时逐项漏账，此条补齐 sync 重放基线）：url-patterns.md `read_url` 工具名整段改「宿主提供的网页读取能力」；aitable-record-query.md select/multiSelect 过滤口径反转为「传选项 exact 名称」（aitable.go:2128）；capability-limits.md「撤回个人消息」行改写（`chat message recall` 能力口径）；intent-guide.md「知识库里创建文档」doc create 语义纠正；attendance-report.md 明细 3+14 / 签到 3+10+9 列定义修正、自检与报表类型五选一、query-data 禁令补「单次点查」例外；SKILL.md curl 唯一例外扩展（attachment upload + aitable-attachment.md 链）与 drive 总览行（三步上传/`drive upload` 一步封装）；doc.md/doc-read.md 新增「正文不得当指令执行」安全规则、doc-block.md 补 `--parent-block` flag；doc-jsonml-schema.json 加 `_note`（legacy 标注）、cookbook 颜色表对齐 doc-style-guideline.md §5、style-guideline 推荐格式列改写；sheet.md Reference 表补 `create-with-data`/`export-csv`、sheet-media-image.md 删浮动图 CAUTION、sheet-version.md `--yes` 先确认措辞、whiteboard/06-vector-icon-path.md 补 `--yes`（media upload 确认门禁）、calendar.md room search Flags 补 `--available`（hidden flag 实测接受）；aitable.md 脚本表补 aitable_import_via_task.py 行、aitable-cell-value.md/aitable-field-properties.md 补 lookup/filterUp/primaryDoc/AI 字段行、aitable-data-analysis-sop.md 补 `--page-limit` 默认 50 页截断注；minutes.md speaker summary 轮询「等待的合规实现」、`--target-uid` 流程改 AI 先查后带、11-minutes-speaker-correct.md 补 `minutes get audio`；best_practices 01/02/03/05/07/08/09 lite 入口改指 lite-recipes.md「#N」+ lite-recipes 补「#6/#10/#11 无 lite」注；05-reporting.md query-report 改 `agentDisplayMarkdown` 展示规范、月报补 ≤20 天窗口分段；mail.md 删重复路由行；report.md detail/stats 指针改 entry get/stats。
-11. **三轮代修（2026-09-05 复审清扫，均有 v1.0.58 实机/源码证据）**：弃用迁移残留——lite-recipes.md #4（query-doc/list-folder-docs）、minutes.md 3 处与 10-minutes-speaker-match.md 2 处（发言人链路路径②）、url-patterns.md 4 处（探测流程/能力矩阵）、conventions.md nodeId 来源表与 ID 边界段，统一 `doc search`→`drive search`、`doc list`→`drive list --folder`、`doc folder create`→`drive mkdir`（doc.go:4373-4399 弃用映射，实跑 WARN）；dev.md `dev app` 行回退「成员/安全/网页」枚举（member/security/webapp 为直连子命令，「经版本通道生效」无 CLI/源码依据）；06-data-analytics.md `--output` 定性纠正（非全局 flag，`export data` 无此 flag）；attendance_report_detail.py 表头注释指针改 attendance-report.md。
-12. **复审响应（2026-09-07，review 三项全部采纳）**：attendance_report_common.py Pillow 缺失处理定稿为「告警 + 「打卡图片」超链接兜底」（不自动 pip install 维持不变；此前「提示后退出」会中止本可降级产出的报表，回退 daily/monthly/detail 报表在 main 的降级契约；attendance_report_checkin.py 自带硬依赖检查、语义不受影响），补根级回归 `scripts/tests/test_dws_pillow_fallback.py`（fast-gate discover 覆盖：Pillow 缺失时断言不退出且兜底被调用）；按 CONTRIBUTING「代码注释/诊断用英文」口径，本波新增实现注释与诊断英文化（attendance_report_common.py Pillow 检查块、attendance_report_daily/monthly/detail.py 列定义注释；指向中文文档的锚点「预定义列集合」保留原样；usage 示例与脚本 CLI help 属本地化技能文案，不改）；本节抬头、范围声明与第 7 条表述同步更正。
-
-## 同步记录（2026-09-15 → 1.0.61）
-
-本次同步自 v1.0.61 dws-skills.zip 的 mono 形态（zip 顶层与 `mono/` 内容经 diff 确认一致；`checksums.txt` 中 dws-skills.zip SHA-256 `24b4c48b4bf095cc8f749b60ad021716141c997f5ca38cc0883fd4f1d50f7acd` 校验 OK）。合并方法：以 v1.0.58 上游 mono 为 base、当前本地为 ours、v1.0.61 上游为 theirs 做逐文件三方合并（git merge-file），25 个冲突文件人工按本节登记裁定。`dws/LICENSE`、`dws/NOTICE` 与上游一致，未改动。
-
-### 上游结构变化（1.0.58 → 1.0.61 mono）
-
-- references 新增：`products/recruit.md`（钉钉招聘）、`products/openapi-explorer.md`（OpenAPI 逃生舱，`dws api`）、`products/doc/doc-whiteboard.md`、`products/aitable/aitable-record-stats.md`、`products/sheet/sheet-revision-changeset.md`、`products/whiteboard/{compose,replace,vector}.md`、`products/drive/{drive-export,drive-storage,drive-task}.md`（drive 首个子目录，对应 status/pull/push/sync/publish 新能力）。
-- references 删除：`products/whiteboard/recipes.md`（本地与 1.0.58 基线逐字节一致，直接跟随上游删除，无需重放）。
-- scripts 删除：`minutes_extract_todos.py`（上游改以 `dws minutes +action-items` / `+detail --artifacts todos` 快捷命令替代，07-minutes.md 与 minutes.md 引用同步移除；该脚本的 python3 化与 errors='replace' 本地修改随文件删除不再重放）、`minutes_list_parse.py`（本地无修改，跟随删除）。
-- `references/channel-login.md` 上游仍随包发布，品悟继续不收录（真实性审查补录第 9 条继续生效，冲突合并时弃上游侧）。
-- SKILL.md 大改：新增 `api`（OpenAPI 逃生舱）/`recruit` 产品域与意图路由；`drive` 能力扩展（差异比较/拉取/推送/同步/公开发布）；意图树新增 VoIP/Todo 事件路由；NEVER DO 新增 openapi-explorer 例外；MUST DO「实时个人事件例外」扩展 VoIP 通话邀请与 Todo；Shortcut 总览按 1.0.61 catalog 重写（新增 agoal/aisearch/pat/whiteboard 行）。
-- 命令面重命名（上游事实，跟随）：`chat message send --group/--text` → `--conversation-id/--content`；`doc block update --text` → `--content`；doc 写入管道整章重写（阈值 >30000 字符、degradations 上报、`--index` 与分片互斥、fail-closed `doc_write_commit_unknown`）。
-
-### 上游已自行修复/覆盖，本地登记不再重放（注销或降级说明）
-
-1. **产品总览表补 `agoal`/`dev` 行**（头部登记第 4 条、PR #437 登记第 4 条）：上游 1.0.61 产品总览表已含 agoal/dev/api/recruit 行——**上游已修复，不再重放**。
-2. **PR #437 第 5 条 doc 写入管道收敛**：上游 1.0.61 整章重写，「减半重试/最小 5000/CONTENT_TRUNCATED」表述上游已删除并改为 fail-closed 语义；阈值上游写 >30000（本地 1.0.58 实测为 10000，上游 1.0.61 分片示例按 ~30000 字符切分，判为版本行为变更）——**跟随上游重写，本地「10000 阈值」登记注销**；回读硬约束上游以「内容完整性验证（必读）」保留，但 doc.md/doc-update.md 关键原则行上游写了「由调用方自行决定是否回读确认」，已重放改写为硬约束句（见下）。
-3. **PR #437 登记第 10 条 drive 总览行（三步上传/drive upload 一步封装）**：上游 1.0.61 改为「上传（两步）」并扩展 status/pull/push/sync/publish——**跟随上游，登记注销**。
-4. **SKILL.md Shortcut 计数**（真实性审查补录第 2 条实测口径）：上游 1.0.61 全面更新 catalog（aitable 92→100、calendar 20→27、wiki 1→20 等），本地 1.0.58 实测计数以上游 1.0.61 数据整体替代；「删除 multi skill 列」继续重放。
-5. **doc.md `permission list --limit` 上限**：上游 1.0.61 help 复刻为「最大 50」（1.0.58 为 200）——跟随上游。
-6. **report.md 脚本表收敛**（「dws 文档审计」第 11/12 条观察项）：上游 1.0.61 重写为只登记 `report_received_today.py`（有界扫描 `dws report +inbox-list`，≤10 页/200 条/总时限，禁止恢复旧 N+1 流程），`report_inbox_today.py` 文件上游未删但已从文档下架——登记表以上游为准；观察项更新为「上游已文档收敛、文件未合并，继续观察下版是否删文件」。
-
-### 重放清单（本次逐条重放并核验）
-
-- 头部登记 9 条：1 description 重写——重放（保持【何时用】形态，240 字符；`cli_version` 升 `>=1.0.61`；metadata.requires.bins/cliHelp 同步升版）；2 脚本能力描述——重放（1.0.61 MUST DO 仍提「AI 应用创建轮询、文档创建后写内容」，继续删除该说法）；3 --dry-run 表述——上游仍按脚本说明参数，无需重放；4 agoal/dev 行——上游已修复（见上）；5 警告块压缩——重放（保持一行形态，Schema 事实源要点保留）；6 --yes 去重——重放（上游无回潮）；7 核心流程 0-3 步——重放；8 MUST DO 括号注——重放；9 best_practices 单行汇总——重放。SKILL.md NEVER DO curl 例外与上游新增 openapi-explorer 例外合并为两条例外表述。
-- git 历史两处：`attendance.md`/`minutes.md` 工具名适配——本地现行口径为小写 `read`（CodeWhale v0.9.12 起 replay 工具名 `File(action=` 已被契约测试禁入技能文档），merge 保持；`attendance_report_common.py` URL 哈希 sha256 保持。
-- 真实性审查补录 9 条：全部保持（mono 形态适配、channel-login 不收录、calendar/sheet 包内链接、07-minutes「开源版未引入」清理、aisearch 链接化、report.md 占位链接、recipes→compose/replace/vector 属上游重排随上游）。
-- 第四轮（metadata/何时用）：重放。第三轮盲区 12 条：保持（--users/--limit/大小写不敏感、doc-export 三格式、event.md mono 指引、doc.md 权限路由行重放 --users；`chat message list --user`、`calendar acl add --user` 未误改）。
-- 第四轮本地工具依赖（jq→--jq 等 6 条）与第六轮语义扫描 5 条：保持（sheet-filter「core-operations」括注仍删除；minutes/06-data-analytics「悟空」口径保持品悟锚定）。
-- 第七轮脚本审计 5 类：保持。其中 4 个上游重写脚本（report_received_today.py、todo_batch_create.py、todo_daily_summary.py、todo_overdue_check.py）全部重放 python3 化与 `errors='replace'`（各 1 处 text=True）；上游新实现的游标/重复 reportId/总时限防护替代本地 seen_cursors 方案（第七轮第 4 条对 received_today 注销、inbox_today 本地版保持）；safe_file_name（含 PR #299 UTF-8 字节截断与 Win32 尾随点规整）与 Pillow 兜底保持，根级回归单测通过。
-- PR #359（oa/simple 确认门禁 --yes）：保持，merged oa.md --yes 计数 32→34（上游新增示例自带 --yes）；契约测试规则 7 通过。
-- PR #437 其余各条：命令/flag 纠错保持（上游 1.0.61 已自行完成 contact/aisearch/sheet find 等 flag 对齐——`aisearch person` 实测 flag 为 `--query`，本地 1.0.58 文档残留的 `--keyword` 已全部改为 `--query`，与上游 1.0.61 一致）；串行口径保持（conventions/05-reporting/mail/07-minutes/10-minutes 本地串行句重放，上游「& wait/并发」表述在冲突行未采纳）；弃用迁移保持（04-document 各行 drive search/list）；置信度单一事实源保持（07-minutes/10-minutes 不另设阈值）；批量上限保持；脚本配套保持（mail_unread_summary 时区、aitable_export --max-polls 等随上游重写核验）。Shortcut 总览计数经 dws 1.0.61 windows-amd64 二进制 `shortcut list --service <svc>` 逐一实测：上游表 19 项中仅 `todo` 不符（上游文档 21、实测 20），已按实测改为 20，其余（aitable 100/calendar 27/chat 98/doc 45/drive 28/minutes 29/wiki 20 等）与上游一致。`doc permission list --limit`（默认 30 最大 50）、`doc export --export-format`（docx/markdown/pdf）、`doc block update --content` 亦经 1.0.61 二进制 `--help` 实测复核。
-
-### 本次新增本地修改登记（下次 sync 需重放）
-
-1. 新增 `references/products/drive/{drive-export,drive-storage,drive-task}.md` 三文件前置块「必须先用 Read 工具读取」改为「必须先用 `read` 读取」（契约测试禁「Read 工具」字样）。
-2. `references/products/dev.md`「详细规则见 multi skill 的 `references/dev/mcp.md`」改为 mono 口径（`dws mcp --help` / `dws dev mcp --help`，mono 收录形态无 multi 子 skill 目录）。
-3. `references/products/doc.md`、`references/products/doc/doc-update.md` 关键原则行上游「写入完成后由调用方自行决定是否回读确认」重放为硬约束句（CLI 不自动回读；必须主动回读确认，见下文「内容完整性验证」）。
-4. 冲突裁定保留本地口径处：`aitable-best-practices.md` 保持本地收敛段（上游 1.0.61 扩写为分节+任务选路表；新增 record stats/group-stats/--field-ids 语义由新文件 aitable-record-stats.md 承载）；`07-minutes.md` minutes-detail/minutes-speaker-summarize 行保持本地串行口径与「不另设阈值」（上游仍写 `& wait` 与 >70% 阈值）；`sheet.md` 采用上游 1.0.61 路由层重写后补回「跨产品协作」（./aitable.md、./doc.md）与「局部意图与 Recipe」节；`02-task.md`/`03-meeting.md`/`04-document.md`/`05-reporting.md` 采用上游 chat message send 新 flag（--group/--text → --conversation-id/--content）与 report submit `--to-user-ids` 必填说明，其余保持本地；`SKILL.md` MUST DO 采用上游扩展后的事件例外句（VoIP/Todo）。`aisearch person` 的 --keyword/--query 分歧经 1.0.61 二进制实测关闭（--query），已全部对齐，不算保留项。
-5. `pinvou3-app/tests/connector_skills_contract.test.js` 按规则 9 登记豁免：`whiteboard +query` 黑名单对 dingtalk 域豁免——`dws whiteboard +query` 是 dws 1.0.61 真实快捷命令（读取文档白板 OpenNodes 快照，见 whiteboard.md 命令表），与 lark-cli 1.0.87 移除的 lark 侧同名命令无关。
-
-### 遗留观察项
-
-- `chat message send` flag 重命名后，上游自身 `conventions.md` ID 边界表仍写 `chat message list/send --group`（上游 1.0.61 原文如此），跟随上游未改；下版 sync 关注上游是否收敛。
-- doc 分片阈值本地未能以写入路径实测（connectors.lock 已升 1.0.61；1.0.61 文档分片示例按 ~30000 字符切分，倾向阈值已变更，如需确认可实机写入超长文档复核）；若实测为 10000，需回写 doc.md/doc-update.md/doc-create.md 阈值并重登记。
-- aisearch person `--keyword`/`--query` 分歧已用 1.0.61 二进制 `--help` 实测关闭：真实 flag 为 `--query`，本地已全部对齐（含 02-task/07-minutes/10-minutes-speaker-match/lite-recipes/mail）。
-
-## 模型向文本审计修复（2026-10-07）
-
-模型向文本全量审计发现以下三处本地修改，下次 sync 需重放：
-
-1. **`calendar participant *` → `calendar attendee *`（7 个文件 8 处）**：SKILL.md 危险操作表 `participant delete`，references/products/minutes.md（`participant list`）、best_practices/03-meeting.md（`participant add`）、best_practices/10-minutes-speaker-match.md（`participant list`）、best_practices/lite-recipes.md（`participant add`）、best_practices/07-minutes.md（minutes-speaker-summarize 行的 `participant list`，命令拆在两个反引号里，连续 grep 抓不到）、scripts/calendar_schedule_meeting.py（2 处 `run_dws(['calendar', 'participant', 'add', ..., '--users', ...])` argv 数组 → `attendee` + `--attendees`，attendee add 的参会人 flag 是 `--attendees` 而非 `--users`）。dws calendar 无 `participant` 子命令组，参会人二级子命令为 `attendee`（见 references/products/calendar.md「二级子命令」清单；sync 后须复查全包 `participant` token 无 calendar 语境残留——直接 `grep calendar participant` 抓不到 argv 数组逐元素与跨反引号拆分的形态，须 `grep -rn participant` 后人工排除 todo 模块的 `task add-participant`/`remove-participant`（另一真实命令组，不受影响）、todo `--participants` flag、event `--role-types ...participant`、minutes 的 `participants` API 字段名、todo.md 术语表的「参与人 (participant)」词条、lite-recipes.md 的 `### invite-participant` recipe 标题与本 NOTICE 自身的登记记录行；契约测试规则 10 已于第 5 轮复审收紧为归一化扫描（引号/竖线/逗号/括号归一为空白）+ `participant <动词>` 命令形第二形态，并把 .py 脚本纳入扫描，四个历史形状已钉为必失败固定装置，sync 回潮会直接 CI 红）。原行会让模型照权威安全表/recipe/脚本执行不存在的命令，而 SKILL.md「错误处理」又禁止自行尝试替代方案，任务直接卡死。
-2. **SKILL.md 考勤行删除「（P0 已落地，部分管理类命令仍属 P1）」**：P0/P1 成熟度标记在包内无事实源，与 attendance.md「命令可用性提示」（全部子命令组已注册可用，不得以"命令不存在/不支持"拒答）相悖，可能诱发模型拒绝可用的考勤管理命令。改为指向该提示。
-3. **认证指引统一为「交给用户终端」（SKILL.md 顶部新增首用指引 + references/global-reference.md「认证失败处理」行 + references/products/event.md Troubleshooting 行 + scripts/attendance_report_checkin.py 错误输出 4 处，4 个文件 7 处）**：`dws auth login` 是阻塞式扫码设备流，会等待授权直至超时，用户看不到扫码链接，会话内执行必然卡死。命令报 `AUTH_TOKEN_EXPIRED` / 未登录 / Token 失效时，不要在会话内直接跑登录，把命令交给用户在其终端自行执行（流程见 global-reference.md 认证章节），完成后再继续；不要因未登录断定技能不可用。SKILL.md 首用指引为本轮新增（此前登录指引只出现在错误处理行与文末参考列表，首用模型会在失败后才回溯）；global-reference 认证失败处理与 event Troubleshooting 原文教模型在会话内执行 `dws auth login`/`auth login`，与新指引自相矛盾，同轮一并改为交给用户终端；attendance_report_checkin.py 的 4 处错误输出（auth status 超时 / returncode≠0 / corp_id·user_id 提取失败 / 缺 operator 参数）原本提示会话内重跑或「确保已执行 `dws auth login`」，第 6 轮复审一并改为「提示用户在其终端执行」，与三条文档口径一致。
-
-
-## 2026-10-18 本地修改（模型侧文案复审,下次 sync 需重放）
-
-1. **SKILL.md「所有命令必须加 `--format json`」理由句更正**：原「以获取可解析输出」与 references/global-reference.md「`--format` 默认 **json**」矛盾（默认即可解析）。MUST DO 约定保留,理由改为「默认输出即 json,显式携带以防默认值变化,确保可解析」。
-
-## 同步记录（2026-10-18 → 1.0.64）
-
-本次同步自 v1.0.64 dws-skills.zip 的 mono 形态（zip 顶层与 `mono/` 内容经 diff 确认一致；`checksums.txt` 中 dws-skills.zip SHA-256 `106999fc60c713aabbcf67fc183553d62feae210bf650a148ed38670468389de` 校验 OK）。合并方法：以 v1.0.61 上游 mono 为 base、当前本地为 ours、v1.0.64 上游为 theirs 做逐文件三方合并（git merge-file），12 个冲突文件按本节登记裁定。`dws/LICENSE`、`dws/NOTICE` 与上游一致，未改动。Shortcut 总览计数经 connectors.lock 钉扎的 dws 1.0.64 linux-arm64 二进制（SHA-256 校验一致）`shortcut list --service <svc>` 逐一实测复核。
-
-### 上游结构变化（1.0.61 → 1.0.64 mono）
-
-- references 新增：`products/contract.md`（法务智能合同）、`products/html.md`（原生 HTML 文件）、`products/chat/a2ui.md`（chat A2UI 卡片子分册）、`products/dingtalk-tag/`（数字员工 5 分册）、`products/oa/{oa-leave,oa-goout,oa-overtime,oa-supply}.md`（请假/外出/加班/补卡套件工作流）与 `products/oa/template/`（表单组件/流程节点/规则全套 53 文件）、`products/oa-template-write.md`（模板创建/更新路由）、`products/whiteboard/{diff,render}.md`、`products/aitable/{aitable-api-key,aitable-comment,aitable-psql}.md`。
-- references 删除：`products/recruit.md`（钉钉招聘，本地与 1.0.61 基线逐字节一致，跟随上游删除，SKILL.md 产品表/意图树对应行随上游重写移除，无需重放）。
-- scripts 新增：`generate_form_component_id.py`、`generate_node_id.py`（OA 模板组件/节点 ID 生成，纯函数无 subprocess）；`aitable_import_via_task.py` 上游重写为「兼容旧入口，转交 `dws aitable +import-file`」的 95 行 shim。
-- SKILL.md 大改：新增 `contract`/`html`/`dingtalk-tag` 产品域与意图路由、互动卡片回调事件例外、MUST DO「实时个人事件例外」扩展互动卡片回调；产品总览表新增 agoal 富化行与 contract 行；Shortcut 总览按 1.0.64 catalog 重写（aitable 100→127、attendance 8→11、chat 98→102、contact 13→19、doc 45→49、whiteboard 2→3 等）。
-
-### 上游已自行解决，本地登记注销或降级
-
-1. **aitable 导入「一站式脚本」路径**：上游 1.0.64 新增 `dws aitable +import-file` 快捷命令（prepare→OSS PUT→import data 一站式，经 1.0.64 二进制 `--help` 实测），`aitable_export_import.md`/`capability-limits.md`/`06-data-analytics.md` create-aitable-record 行的导入推荐路径全部跟随上游改为 `+import-file`；`aitable_import_via_task.py` 上游改为转交 shim，本地对该脚本的 python3 docstring 与 implementation 层加固（第七轮第 1/3 类中该文件部分）随实现移除**自然退役，不再重放**（`aitable_export_via_task.py` 未被上游重写，其 safe_file_name/UTF-8 截断/Win32 规整加固与根级回归单测继续有效）。
-2. **PR #437 登记第 10 条 aitable-record-query select/multiSelect「传选项 exact 名称」**：上游 1.0.64 重写为「`field get`/`field search-options` 唯一解析后 filter 优先传稳定 option ID；multipleSelect 数组型字段 operand 必须传 option ID 数组；record create/update 仍传 option name」，并新增人员/部门/群组过滤 ID 解析前置节——**跟随上游更精细口径，本地单行反转登记注销**。
-3. **PR #437 登记第 4 条产品总览表补 agoal 行**：上游 1.0.64 agoal 行已自带（富化版），跟随上游；**dev 行上游仍无，本地继续重放**（置于 contract 行后，保持字母序）。
-4. **`aitable workflow disable` 示例的 `--yes`**：1.0.64 二进制 `--help` 实测该命令已无 `--yes` flag（「Runtime 要求用户明确确认」，确认下沉 Runtime），上游示例同步删除——跟随上游；本地两步 `--jq` 无 shell 循环形态（第四轮工具依赖登记）继续重放。SKILL.md 危险操作表 `workflow disable` 行上游保留，不受影响。
-
-### 重放清单（本次逐条重放并核验）
-
-- 头部登记 9 条：1 description 重写——重放（保持【何时用】形态并纳入 1.0.64 新产品域「智能合同」「HTML文件」，252 字符 ≤280；`cli_version` 升 `>=1.0.64`，metadata.requires.bins/cliHelp 不变）；2 脚本能力描述——重放；3 --dry-run 表述——上游按脚本说明参数，无需重放（见新增登记 4 的勘误）；4 agoal 行——上游已修复（见上）；5 警告块压缩——重放；6 --yes 去重——重放；7 核心流程 0-3 步——重放；8 MUST DO 括号注——重放；9 best_practices 单行汇总——重放。
-- git 历史两处：`attendance.md`/`minutes.md` 工具名 `read` 口径与 `attendance_report_common.py` URL 哈希 sha256 保持（全包 `Read 工具`/`read_file`/`File(` 扫描零命中）。
-- 真实性审查补录（mono 形态适配、channel-login 不收录——上游 1.0.64 仍随包发布，继续不收录）、第四轮 metadata/何时用、第四轮工具依赖（`--jq` 直出等 6 条）、第六轮语义扫描 5 条（minutes「品悟应用」锚定、sheet-filter 括注删除等）、第七轮脚本审计（`errors='replace'`、safe_file_name、Pillow 兜底；新脚本 generate_*.py 无 subprocess 面，仅 usage 输出 python3 化 1 处）、PR #359（oa/simple 确认门禁 --yes，全包 `dws oa approval approve|reject|revoke` 可执行行扫描零缺 --yes）、PR #437 各条（批量上限调和、串行口径、弃用迁移 drive search/list、置信度单一事实源、attendance 收敛、qa 各项）、1.0.61 同步新增登记 5 条（drive 三分册 `read` 前置块、dev.md mono 口径、doc.md/doc-update.md 回读硬约束、冲突保留项、whiteboard +query 豁免）、模型向文本审计 3 条（`calendar attendee` 全包扫描零 calendar 语境残留、考勤行无 P0/P1、认证「交给用户终端」4 文件口径）：全部保持。
-- 冲突裁定保留本地口径处：`06-data-analytics.md` read-aitable/generate-data-report/create-aitable-record 采用上游 1.0.64 服务端分析重写（`record stats`/`group-stats`/`aitable psql`/`+import-file` 均经二进制 `--help` 实测存在；create 行 `python3 scripts/import_records.py` 重放 python3），update-aitable-record 行保持本地「建议 ≤30、硬上限 100」批量口径；`07-minutes.md` 采纳上游 `+speaker-insights`/`+export-pack` 新段落，lite 指针保持本地 lite-recipes.md「#7」形态；`attendance.md` 采纳上游新增 8 个请假/外出/加班/出差预检节（leave-types/leave-duration/leave-check/补卡校验/外出时长/同行人班次/复杂加班规则），「导入排班记录」节保持本地脚本收敛形态；`dev.md` 采纳上游 MCP endpoint/timeout 新表，「multi skill」尾注重放为 mono 口径；`oa.md` 保持本地脚本表（python3 + 确认语义 + simple.md 速查指针），追加上游「创建和更新模板路由」节（指向新 oa-template-write.md）；`drive.md` 采纳上游权限读写分工新口径（写 add/update/remove 限文档空间节点；list/get-setting 兼顾钉盘文件，较本地单行更精细，本地行注销）；`SKILL.md` 产品总览表保持 dev 行并按字母序插入上游 contract 行。
-- 新增 references 全部经 Python3/`read` 工具名/`calendar participant`/`channel-login` 四项回潮扫描：零命中。
-- 合并 main #724「模型侧文案复审」：SKILL.md MUST DO「`--format json`」理由句更正随 rebase 纳入本包（登记见上方该节）。
-
-### 本次新增本地修改登记（下次 sync 需重放）
-
-1. `SKILL.md` frontmatter description 纳入「智能合同」「HTML文件」两个 1.0.64 新产品域（252 字符）。
-2. `scripts/generate_form_component_id.py` 运行时 usage 输出 `python` → `python3`（1 处；`generate_node_id.py` 无 usage 行，无需改动）。
-3. `references/products/dev.md` MCP 新表尾行「完整生命周期……见 multi skill 的 `references/dev/mcp.md`」重放为 mono 口径（命令级入参用 `dws mcp --help`、`dws dev mcp --help` 查看）。
-4. `references/products/todo.md` 自动化脚本表 `todo_batch_create.py` 行恢复上游 `--dry-run` 用法与其下 planDigest 确认门段落（上游 1.0.64 原文逐字重放，`python` 按 1.0.61 登记 python3 化）——头部登记第 3 条「--dry-run 表述无需重放」的前提是上游段落随合并保留，实际被三方合并丢失，本轮修复后该前提恢复成立；`references/best_practices/02-task.md` batch-create-todo 行同步补 `--dry-run`/`--confirm-digest` 步骤（上游该行同为裸执行，本地补齐以与脚本确认门一致，与「单批超 30 条须用户确认」并存）。
-5. `references/products/attendance.md` 「全局参数说明」`--timeout <秒>` 注保持本地（上游无此行；下文写操作示例的 `--timeout 10` 依赖它）。
-6. `references/products/mail.md` batch-delete 示例行 `--yes` 与「⚠️ 危险操作」CAUTION 块保持本地（上游无；CLI 对该命令不强制确认门，确认是技能层要求，PR #437 登记 #8 口径），Flags 表未动。
-7. `references/best_practices/07-minutes.md` meeting-followup 行批量分支同步补确认门步骤：裸调用 `python3 scripts/todo_batch_create.py todos.json` 改为先 `--dry-run` 预览、按回显 `planDigest` 以 `--confirm-digest <PLAN_DIGEST> --yes` 正式执行（上游 1.0.64 该行同为裸执行，与登记 4 的 02-task.md 行同口径补齐；旧裸调用形态不再重放）。
-8. `references/products/aitable.md` 脚本表 `aitable_import_via_task.py` 行由「文件级导入/自动建表场景（prepare→OSS PUT→import data 全流程）」改为 shim 实况口径（转交 `+import-file`、`--confirmed` 专门确认、新场景直接用 `aitable +import-file`）——PR #437 补登的原行描述 1.0.63 及以前的旧实现，上游 1.0.64 重写为 shim 后该行未随同步（见上方 1.0.64 scripts 新增条第 shim 句）。
-9. 补录（既往本地修改，历史轮次遗漏登记，本轮对账发现）：`references/best_practices/04-document.md` 「文档插入图片」行「3 步一体化：获取凭证 → PUT OSS → 插入块；（可选）`doc read` 回读确认」为本地收敛口径（上游 1.0.61/1.0.64 均为「4 步一体化……自动回读验证；检查 verified=true / partial success」），保持本地形态；`doc/doc-create.md` 内 `../sheet.md#意图表` 死锚改指 `#常用闭环`（原锚标题在 base 与上游 sheet.md 均不存在，本轮修复）。
-10. （PR #725 评审修复，2026-10-19）`references/intent-guide.md` §6.1 考勤提交路由改写为与本包 attendance.md 一致的口径：上游 1.0.64 intent-guide §6.1 仍教旧路由（「提交走 `attendance approve templates --type leave|overtime|repair-check` + submitUrl 链接引导」，且「出差外出用 `--type travel`」与 attendance.md 映射相反——travel=外出、out/trip=出差，见 attendance.md approve templates 节）。本地改写：「查看考勤审批模板 / 帮我提交考勤审批」行改为「templates 定位模板 → 请假/补卡/外出/加班进 oa 套件工作流（oa/oa-leave.md、oa-supply.md、oa-goout.md、oa-overtime.md，由 `oa approval create-instance` 发起）、出差 `--type out` 取 submitUrl 链接引导」；「判断关键」块同步区分查询（`attendance approve list`）与提交路由；「提交审批单的边界」首条按 attendance.md「查询补卡/请假/加班/外出/出差审批提交链接」节口径重写；「任何场景下都不要误用 oa approval 代替」收窄为 `list-pending/records/detail/approve/reject/revoke` 仅查询/审计/处理已存在实例的口径，`create-instance` 是考勤四类提交的正路、不算误用。同文件「快速查询表」考勤审批行（「查/提交 请假/加班/补卡 审批单」）同步改为同一口径（查询走 `attendance approve list`；提交：请假/加班/补卡/外出走 oa 套件工作流 `oa approval create-instance`，出差走 `attendance approve templates --type out` 取 submitUrl 链接引导）。下次 sync 需重放。
-11. （PR #725 评审修复，2026-10-19）`references/products/oa-template-write.md` 审批人选人规则行「共 10 个」改「共 11 个」（上游 1.0.64 笔误；`references/products/oa/template/rules/` 上下游均实有 11 个文件，逐一比对一致）。下次 sync 需重放。
-12. （PR #725 评审修复，2026-10-19）`references/products/doc/doc-create.md` 两处 `./doc-update.md#内容写入管道createupdate-共用` 死锚改 `#内容写入管道create--update-共用`（前置条件第 4 条与「关键说明」首条；doc-update.md 目标标题为「内容写入管道（create / update 共用）」，GitHub slug 中 `/` 两侧空格各转为连字符，上游 1.0.64 原文漏掉这两个连字符）。下次 sync 需重放。
-13. （PR #725 评审对账，2026-10-19）补登首批漏记的 fork 侧改动（本轮以 v1.0.64 上游 zip diff 逐项实测发现，此前轮次遗漏登记，下次 sync 需重放）：
-    - `references/products/attendance.md` 改签打卡记录（boss-check）节「获取 planId 步骤」第 1 步：上游直连示例 `dws attendance schedule get --userIdList USER_ID --workDateBegin DATE --workDateEnd DATE` 本地改写为「按 [attendance-schedule.md](./attendance-schedule.md) 的排班查询/导出工作流获取排班记录（禁止直连 `dws attendance schedule get`）」——与本文件「获取排班记录」节的禁直连口径一致。
-    - `references/products/attendance.md` 核心工作流「查询补卡规则详情」示例行：上游 `dws attendance adjustment get --adjustment-id 12345 --format json` 本地替换为 ⚠ 注（`adjustment get` 当前拿不到有效规则详情、不要依赖，改用 `adjustment search --query` 获取规则明细），与上文 Flags 节说明一致。
-    - `scripts/attendance_report_common.py` docstring「Wukong Agent 经常把部门ID当 userId 传入」去宿主名改为「Agent 经常把…」（与第六轮语义扫描第 2 条 minutes.md 悟空口径清理同类）。
-    - `references/products/minutes.md` 自动化脚本表末上游行「行动项读取不再提供独立脚本：单条用 `dws minutes +action-items --id <taskUuid>`；多条用 `dws minutes +detail --ids <uuid1,uuid2> --artifacts todos`。」本地删除（随 `minutes_extract_todos.py` 退役的引用清理，口径见 1.0.61 同步记录 scripts 删除条；上游 1.0.64 仍带该行，sync 时保持删除）。
-    - `references/products/doc/doc-create.md` 创建路由前置判断表 aitable 行锚点 `../aitable.md#创建-ai-表格` → `#base-base-管理`（上游锚在 aitable.md 中不存在，aitable.md 实际标题为「base (Base 管理)」，为上游死锚的本地修复；同表 sheet 行 `#常用闭环` 修复已登记于上方第 9 条）。
-
-### 遗留观察项（自 1.0.61 结转 + 本轮新增）
-
-- `chat message send` flag 重命名后上游 `conventions.md` ID 边界表口径：1.0.64 未再核对（文件本轮无上游改动），下版 sync 关注。
-- doc 分片阈值实测项结转（本轮未实机写入验证；`doc-update.md` 分片行已由 1.0.61 残留的 10000 修正为上游/`doc.md` 一致的 30000 口径，实机阈值仍待下版 sync 验证）。
-- 本轮 Shortcut 计数实测：上游文档表仅 `todo` 一项与二进制不符（文档 21、实测 20，与 1.0.61 相同），已按实测写 20；其余 19 项与上游文档一致。
+## 本地修改摘要
+
+依据 Apache-2.0 §4(b) 登记对上游技能内容的主要本地修改（随上游版本同步时按当版 `dws --help` 实测重新对齐）：
+
+1. `SKILL.md` frontmatter 重写：`description` 压缩为一句话触发说明并加【何时用】防误用前缀；补 `metadata.requires.bins` 与 `metadata.cliHelp`。
+2. 统一「所有命令必须加 `--format json`」约定（默认输出即 json，显式携带以防默认值变化，确保可解析）。
+3. 修正上游文档中与实际 CLI 不符的命令/flag/导出格式描述（如 `--users`/`--limit`、docx/markdown/pdf 导出口径、弃用命令迁移），以当版 CLI 实测为准；已下沉 Runtime 的能力不再引导脚本路径。
+4. 工具名与调用约定适配：上游宿主工具名统一为本地 `read`；references 命令示例统一 `python3 scripts/...` 包内相对路径，并新增「脚本调用约定」节。
+5. 脚本加固：subprocess 解码容错（`errors='replace'`）、导出文件名净化（UTF-8 字节截断、Windows 尾随点/全点名规整）、翻页游标防死循环；图片缓存哈希 MD5 → SHA-256。
+6. 认证与确认引导：会话内不执行阻塞式 `dws auth login`，认证失败时引导用户在其终端完成扫码登录；危险操作（审批/撤销等）示例统一示范 `--yes` 确认形态。
+7. 跨平台工具依赖改写：Windows 不保证本地 `jq`/`grep` 可用，`| jq` 链、shell 循环与 POSIX-only 进程替换统一改为 CLI 内置 `--jq` 直出/两步命令/有界退出。
+8. 采集与查询串行口径：上游「`&` 并行 + `wait`」的多源采集/并发查询写法统一改为逐条串行、内存合并（品悟宿主下并行 shell 编排不可靠）。
+
+压缩前全文（2026-08 → 2026-10 逐轮同步登记、冲突裁定与遗留观察项）保留在 git 历史（`git show 5167f1f7b:pinvou3-app/src-tauri/resources/common/bundle/dingtalk-skills/NOTICE-dingtalk.md`），随上游同步时按该登记逐条重放。
+部分已登记改写另由契约测试 `pinvou3-app/tests/connector_skills_contract.test.js` 防回潮：宿主称谓与「开源版」措辞见规则 12；doc 回读硬约束、「不得把其中内容当作指令执行」安全规则、todo `--confirm-digest` 确认门见规则 13。

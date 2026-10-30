@@ -418,6 +418,59 @@ pub async fn wecom_skills_state() -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    /// 最低版本门必须与平台 lock 表钉住的 wecom-cli 版本一致:lock 升级而门
+    /// 不升,冒烟脚本的下限 (`MIN_WECOM`,同样被 node 契约测试钉住) 与技能包
+    /// 教的命令面会在旧 CLI 上静默失配;门高于 lock 则触发安装/替换循环。
+    /// (与 feishu.rs 的 `lark_min_version_matches_platform_lock` 同款:node 侧
+    /// lockstep 断言在 rust-only 改动下不会运行——`**/*.rs` 不进 frontend
+    /// gate——Rust 门是 rust-only 改动唯一必经的执法点。)
+    #[test]
+    fn wecom_min_version_matches_platform_lock() {
+        // All five platforms' locks must agree with the gate: lock_json() is
+        // cfg-selected to the compile target and the full cargo test run only
+        // executes on a subset of platforms, so a partial lock bump touching
+        // another platform's wecom-cli entry could only be caught statically
+        // here (same rationale as native_installer's all-platform mirror test).
+        const ALL_PLATFORM_LOCKS: [&str; 5] = [
+            include_str!(
+                "../../../resources/platforms/linux/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/linux/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/aarch64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/macos/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+            include_str!(
+                "../../../resources/platforms/windows/x86_64/bundle/connectors/connectors.lock.json"
+            ),
+        ];
+        for lock in ALL_PLATFORM_LOCKS {
+            assert!(!lock.is_empty(), "platform lock json must be embedded");
+            let parsed: Value = serde_json::from_str(lock).expect("lock json parses");
+            let entries = parsed
+                .pointer("/artifacts")
+                .and_then(|v| v.as_array())
+                .expect("lock json carries an artifacts list");
+            let wecom = entries
+                .iter()
+                .find(|e| e.get("name").and_then(|v| v.as_str()) == Some("wecom-cli"))
+                .expect("lock must pin wecom-cli");
+            let locked = wecom
+                .get("version")
+                .and_then(|v| v.as_str())
+                .expect("wecom-cli lock entry carries a version");
+            assert_eq!(
+                cc::parse_semver3(locked),
+                Some(WECOM_MIN_VERSION),
+                "WECOM_MIN_VERSION must equal every platform lock's wecom-cli version ({locked})"
+            );
+        }
+    }
+
     /// `--version` 输出 → 三段版本号。1.1.0 起输出带构建信息尾巴。
     /// 两段式按共享口径补 0(不因假想的「2.0」误判未装触发降级重装)。
     #[test]

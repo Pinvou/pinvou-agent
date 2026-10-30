@@ -1663,29 +1663,29 @@ fn llm_recent_work_accepts_delivery_completion_status() {
 fn delivery_tool_summary_keeps_artifact_path_after_long_content() {
     assert!(is_delivery_tool(
         "File",
-        &json!({"action": "patch", "path": "italy_travel_guide.md"})
+        &json!({"action": "patch", "path": "trip_itinerary.md"})
     ));
     let summary = summarize_tool_start(
         "write_file",
         &json!({
             "content": "正文".repeat(2000),
-            "path": "italy_travel_guide.md"
+            "path": "trip_itinerary.md"
         }),
     );
     assert!(summary.contains("name=write_file"));
-    assert!(summary.contains("path=italy_travel_guide.md"));
+    assert!(summary.contains("path=trip_itinerary.md"));
     assert!(!summary.contains("正文正文正文"));
 
     let presented = summarize_tool_start(
         "mcp_pinvou3_present_artifact",
         &json!({
-            "path": "/home/dev/.pinvou3/sessions/tvqydl2b6sjd0/workspace/italy_travel_guide.md",
-            "title": "意大利12天深度慢游攻略",
-            "description": "罗马、佛罗伦萨、威尼斯行程规划"
+            "path": "/home/dev/.pinvou3/sessions/session-fixture-01/workspace/trip_itinerary.md",
+            "title": "行程规划示例文档",
+            "description": "多城市行程规划示例"
         }),
     );
-    assert!(presented.contains("italy_travel_guide.md"));
-    assert!(presented.contains("意大利12天深度慢游攻略"));
+    assert!(presented.contains("trip_itinerary.md"));
+    assert!(presented.contains("行程规划示例文档"));
 }
 
 #[test]

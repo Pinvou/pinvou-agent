@@ -46,7 +46,7 @@ Thumbs.db
 # Secrets
 .env
 .env*
-# 内置共享 key(明文 export,模板见 .builtin-secrets.env.example)
+# 官方构建签名凭据(官方构建环境注入,任何情况下不得提交)
 scripts/.builtin-secrets.env
 *.pem
 
@@ -87,8 +87,6 @@ pinvou3-app/src-tauri/icon-source-new.png
 # Obsidian 笔记本配置
 .obsidian/
 
-# 客户资料包:原始截图是中间产物(由 _tooling/shoot.js 再生成),只提交 shots-web/
-资料包/shots/
 pinvou3-app/src-tauri/resources/bge-m3/
 
 # 本地下载的测试浏览器(Chrome for Testing),不提交
