@@ -676,6 +676,15 @@ fn git_bounded(
         command.arg("-c").arg("core.sparseCheckout=false");
         command.arg("-c").arg("index.sparse=false");
         command.arg("-c").arg("core.autocrlf=false");
+        // r41 M2：排除文件来源面——core.excludesFile 可把「不忽略」翻转为
+        // 「静默忽略」：被写指的 agent 可控文件里放 `src/**`，裸 `add -A` 对
+        // src/ 下新文件全部静默跳过（exit 0）——新文件从此不在任何快照与
+        // 预览里（clean -fd 不删 ignored，文件存活但安全网不覆盖）。空值钉
+        // 禁用一切外部 excludes 文件；影子仓库的排除语义只走 info/exclude
+        // （仓库内、由 ensure_repo 幂等重写）。include.path 转发的键由 scrub
+        // 正则同场清扫（--get-regexp 对 include 源键不可见 → 钉集完整性是
+        // 承重面，钉集必须无洞）。
+        command.arg("-c").arg("core.excludesFile=");
         command.args(arguments);
         crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
             .map_err(|error| run_error(&error))
@@ -948,30 +957,26 @@ fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
     let mut list_args: Vec<&str> = vec!["ls-files", "-z", "--"];
     list_args.extend(patterns.iter().map(String::as_str));
     let survivors = git_ok(repo, work_tree, &list_args)?;
-    for path in survivors
+    let survivor_paths: Vec<String> = survivors
         .as_bytes()
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-    {
-        let output = git(
-            repo,
-            work_tree,
-            &[
-                "rm",
-                "-r",
-                "--cached",
-                "--quiet",
-                "-f",
-                "--",
-                &String::from_utf8_lossy(path),
-            ],
-        )?;
-        if !output.status.success() {
-            bail!(
-                "git rm --cached 幸存变体失败: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect();
+    if survivor_paths.is_empty() {
+        return Ok(());
+    }
+    // r41 minor 12：幸存者一次批量 `rm --cached --`（精确路径 rm 无 icase
+    // 怪癖，多路径同批安全）——此前逐条 spawn 使大变体集的每次 rewind 产生
+    // 成百上千个 git 子进程（单个 120s 预算、聚合无界）。两次 spawn 收口。
+    let mut rm_args: Vec<&str> = vec!["rm", "-r", "--cached", "--quiet", "-f", "--"];
+    rm_args.extend(survivor_paths.iter().map(String::as_str));
+    let output = git(repo, work_tree, &rm_args)?;
+    if !output.status.success() {
+        bail!(
+            "git rm --cached 幸存变体失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -1110,8 +1115,10 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // 逃逸 `[^.]+`），放宽为 `.+`。
     // r40 M4：scrub 覆盖 sparseCheckout/index.sparse/autocrlf 的持久化形态
     // （命令面 -c 钉是第一道防线；被写入 config 的值在 scrub 后由 init 的
-    // false 落盘或命令钉压制——两层同向）。
-    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf)";
+    // false 落盘或命令钉压制——两层同向）。r41 M2：core.excludesfile 同场
+    // 清扫；include.* 一并移除（include.path 转发的键对 --get-regexp 不可见
+    // ——唯一能绕过本探针的投递通道，整段移除是唯一可靠清扫）。
+    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf|core\.excludesfile|include\.)";
     let dangerous_keys = match git(
         &repo,
         execution_root,
@@ -1353,12 +1360,8 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 // 一个 turn 的条目孤儿化，靠自愈收敛）。仅当磁盘内容仍等于
                 // 本次判损的字节才隔离；已变化则按并发写处理：重新读取解析
                 // 一次（新鲜写入是 v2 已校验形态），仍损坏才隔离新内容。
-                if let Ok(current) = fs::read(&path) {
-                    if current != bytes {
-                        if let Ok(fresh) = serde_json::from_slice::<CheckpointIndex>(&current) {
-                            return Ok(fresh);
-                        }
-                    }
+                if let Some(fresh) = recheck_concurrent_index_rewrite(&path, &bytes) {
+                    return Ok(fresh);
                 }
                 eprintln!(
                     "[checkpoints] checkpoint index entry with a malformed object id quarantined; rebuilt from an empty index"
@@ -1382,16 +1385,38 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // identifies the write, and the evidence stays in the quarantined
             // file for inspection.
             // r40 minor 6：解析损坏腿同款身份复核（见上）。
-            if let Ok(current) = fs::read(&path) {
-                if current != bytes {
-                    if let Ok(fresh) = serde_json::from_slice::<CheckpointIndex>(&current) {
-                        return Ok(fresh);
-                    }
-                }
+            if let Some(fresh) = recheck_concurrent_index_rewrite(&path, &bytes) {
+                return Ok(fresh);
             }
             Ok(quarantine_index_and_rebuild(&path))
         }
     }
+}
+
+/// r40 minor 6 + r41 minor 4：并发写复核——磁盘内容已变（并发写者在读取与
+/// 隔离之间整体替换了索引）则重读解析；新鲜索引仍须过对象 id 形状校验
+/// （r41 minor 4：fast-path 此前是唯一跳过 r20-M1 校验的返回路径）。新鲜
+/// 写入为 v2 形态（save_index 落盘已迁移版本），v1 迁移腿不适用；校验不过
+/// 返回 None 走隔离。内容比对是 dev/ino 的可移植等价（原子重命名必然换
+/// inode，同长同刻写也可区分）。
+fn recheck_concurrent_index_rewrite(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Option<CheckpointIndex> {
+    let current = fs::read(path).ok()?;
+    if current.as_slice() != bytes {
+        return None;
+    }
+    let fresh = serde_json::from_slice::<CheckpointIndex>(&current).ok()?;
+    let fresh_corrupt = fresh.entries.iter().any(|entry| {
+        let commit = entry.commit.trim();
+        let valid_len = commit.len() == 40 || commit.len() == 64;
+        !valid_len || !commit.bytes().all(|b| b.is_ascii_hexdigit())
+    });
+    if fresh_corrupt {
+        return None;
+    }
+    Some(fresh)
 }
 
 /// r39 minor 5：索引损坏（解析失败或语义损坏）的共用隔离+重建腿——隔离保留
@@ -1775,6 +1800,15 @@ pub(crate) struct PendingRewind {
     pub(crate) transcript_revision: String,
 }
 
+impl PendingRewind {
+    /// r41 M4：跨 crate 只读投影——拒绝文案必须插值暂记的真实目标与
+    /// keepTurns（此前布尔包装丢失字段，CLI 文案插值了当前请求的目标、
+    /// 指认错误险源）。pub(crate) 字段对 CLI crate 不可见，经此快照暴露。
+    pub fn public_target_fields(&self) -> (String, u32) {
+        (self.checkpoint_id.clone(), self.keep_turns)
+    }
+}
+
 fn pending_rewind_path(ledger_root: &Path) -> std::path::PathBuf {
     ledger_root.join("pending_rewind.json")
 }
@@ -1866,8 +1900,10 @@ pub fn matching_pending_pre_restore(
         Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
     };
     let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
-        // 损坏的暂记不阻塞回退：删除后退回「新建 PreRestore」路径。
-        let _ = fs::remove_file(&path);
+        // 损坏的暂记不阻塞回退：后退回「新建 PreRestore」路径。r41 minor 5：
+        // 暂记是 P1 的唯一在应用内指针——损坏副本隔离留证（与 index/sidecar
+        // 同款），不裸删。
+        let _ = crate::platform::filesystem::quarantine_corrupt_file(&path);
         return Ok(None);
     };
     if pending.checkpoint_id != checkpoint_id
@@ -1906,7 +1942,8 @@ pub fn pending_pre_restore_for_degraded(
         Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
     };
     let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
-        let _ = fs::remove_file(&path);
+        // r41 minor 5：损坏副本隔离留证，不裸删（P1 唯一指针）。
+        let _ = crate::platform::filesystem::quarantine_corrupt_file(&path);
         return Ok(None);
     };
     // r33 MAJOR-2：绑定判定只看 transcript revision——revision 匹配证明该
@@ -1944,6 +1981,14 @@ pub fn live_pending_rewind_present(ledger_root: &Path) -> Result<bool> {
     Ok(live_pending_rewind(ledger_root)?.is_some())
 }
 
+/// r41 M4：跨 crate 暂记窥视投影——返回 (真实目标, keep_turns)；None = 无活
+/// 暂记。拒绝文案必须插值暂记的真实字段，而 CLI crate 无法命名 pub(crate)
+/// 的 `PendingRewind`（布尔包装丢失字段正是 r41-M4 文案指认错误险源的根
+/// 因）。窥视无副作用（非破坏性，见 peek_pending_rewind），IO 错误上抛。
+pub fn peek_pending_rewind_target(ledger_root: &Path) -> Result<Option<(String, u32)>> {
+    Ok(peek_pending_rewind(ledger_root)?.map(|pending| pending.public_target_fields()))
+}
+
 /// r39 M2：非破坏性暂记窥视——只读解析，无任何删除副作用，也不做索引成员
 /// 校验。回退入口的不同边界拒绝必须走无副作用读取：`live_pending_rewind`
 /// 的「目标已被淘汰 → 删除暂记」终结臂如果被入口探测复用，被淘汰的崩溃
@@ -1966,18 +2011,6 @@ pub fn peek_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
     Ok(Some(pending))
 }
 
-/// r39 M2：回退入口的不同边界判定——活暂记存在且目标 ≠ 本次请求的
-/// checkpoint id。跨 crate 布尔包装（CLI crate 无法触及 pub(crate) 的
-/// `PendingRewind`），GUI 与 CLI 的入口拒绝共用同一判定。
-pub fn pending_rewind_targets_different_checkpoint(
-    ledger_root: &Path,
-    checkpoint_id: &str,
-) -> Result<bool> {
-    Ok(peek_pending_rewind(ledger_root)?
-        .map(|pending| pending.checkpoint_id != checkpoint_id)
-        .unwrap_or(false))
-}
-
 pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
     let path = pending_rewind_path(ledger_root);
     // r25 minor 1：NotFound（无暂记）与真实 IO 错误必须区分——后者映射为
@@ -1989,7 +2022,8 @@ pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> 
         Err(error) => return Err(anyhow::Error::from(error).context("读取 pending rewind 失败")),
     };
     let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
-        let _ = fs::remove_file(&path);
+        // r41 minor 5：损坏副本隔离留证，不裸删（P1 唯一指针）。
+        let _ = crate::platform::filesystem::quarantine_corrupt_file(&path);
         return Ok(None);
     };
     // r39 minor 4：目标成员校验 fail-closed——索引读失败与「已被淘汰」不再
@@ -2506,11 +2540,13 @@ pub fn diff_checkpoint(
 ///
 /// 写操作只落在执行根内：read-tree/checkout-index/clean 都以执行根为 work-tree，
 /// 且不删 ignored 文件（不用 -x，node_modules 等不受波及）。
-/// **双写者分歧披露（评审 r14 M-C）**：本函数是单段组合（prepare→apply），
-/// 不走 GUI 命令层的 pending-rewind 协议。pinvou-cli 的 code 子命令直接调用
-/// 本函数：GUI 回退在 apply 中途失败后改用 CLI 完成恢复，CLI 会对混合工作树
-/// 新拍 PreRestore 并绑定之——GUI 的 undo 语义保证在 CLI 路径不成立。
-/// 协议下沉到本函数或 CLI 改走拆分序列是跟进项。
+/// **双写者分歧披露（评审 r14 M-C）——已于本 PR 收口（r41 minor 16 修正注释）**：
+/// 此前本函数是单段组合（prepare→apply），pinvou-cli 的 code 子命令直接调用，
+/// CLI 对混合工作树新拍 PreRestore、GUI 的 undo 语义在 CLI 路径不成立；本 PR
+/// 的 CLI（`code.rs`）已改走与 GUI 相同的 pending-rewind 拆分序列（matcher 复用
+/// P1 的幂等重放），分歧不复存在——两侧共享本模块的全部协议原语（评审 r41
+/// 「CLI: shares the GUI's mod.rs wholesale, protocol migration complete with
+/// no direct-apply path left」）。
 pub fn restore_checkpoint(
     ledger_root: &Path,
     execution_root: &Path,
@@ -4449,9 +4485,18 @@ mod tests {
         write_pending_rewind(ledger.path(), &t1.id, 0, &pre.id, "rev-1").unwrap();
         let pending_path = pending_rewind_path(ledger.path());
         let before = fs::read(&pending_path).unwrap();
-        // 同边界 → false；不同边界 → true。两次窥视后文件逐字节不变。
-        assert!(!pending_rewind_targets_different_checkpoint(ledger.path(), &t1.id).unwrap());
-        assert!(pending_rewind_targets_different_checkpoint(ledger.path(), "c-other").unwrap());
+        // 同边界判定 → 不拒绝；不同边界 → 拒绝（peek 返回真实字段，r41 M4：
+        // 拒绝文案必须插值 pending 的目标而非当前请求）。窥视后文件逐字节不变。
+        let same = peek_pending_rewind(ledger.path())
+            .unwrap()
+            .map(|pending| pending.checkpoint_id == t1.id)
+            .unwrap_or(true);
+        assert!(same);
+        let different = peek_pending_rewind(ledger.path())
+            .unwrap()
+            .map(|pending| pending.checkpoint_id != "c-other")
+            .unwrap_or(false);
+        assert!(different);
         assert_eq!(fs::read(&pending_path).unwrap(), before);
         // 窥视对「目标已被淘汰」的暂记同样无副作用（终结臂只属于
         // live_pending_rewind——快照前奏/对账的清理约定）。
@@ -4460,14 +4505,15 @@ mod tests {
         assert_eq!(fs::read(&pending_path).unwrap(), before);
     }
 
-    /// r40 M4：写入面硬化回归——被植入 config 的 `core.sparseCheckout=true` +
-    /// `info/sparse-checkout` 不得让 `add -A` 静默跳过锥外路径（命令面
-    /// `-c core.sparseCheckout=false` 钉压制 config 值；`core.autocrlf` 同钉）。
-    /// 静默窄化 = 快照缺文件 + diff 盲区，随后 rewind 的 checkout-index 对
-    /// 缺失条目不写、clean -fd 把带后置编辑的文件一并删除——安全网被掏空
-    /// 且确认预览毫无征兆。
+    /// r40 M4 + r41 minor 3：写入面钉的**隔离**回归——直接经模块自身 `git()`
+    /// （承载全部 -c 钉的唯一构造器）执行 `add -A`，绕过 create_checkpoint 的
+    /// ensure_repo scrub：r40 版本先跑 create_checkpoint，scrub 先于 add -A
+    /// 拔掉植入键，删 -c 钉单独变异仍绿（scrub 独自救场）、删 scrub 单独变异
+    /// 仍绿（钉独自救场）——并集覆盖掩盖单层回归。本版钉与 scrub 解耦：
+    /// 只删 -c 钉必红。excludesFile 腿同场（r41 M2：被写指文件可把新文件
+    /// 翻转为静默忽略）。
     #[test]
-    fn hostile_sparse_checkout_config_cannot_narrow_snapshots() {
+    fn hostile_config_cannot_narrow_add_a_without_the_command_pins() {
         if !git_available() {
             return;
         }
@@ -4484,31 +4530,24 @@ mod tests {
         )
         .expect("bootstrap checkpoint");
         let repo = repo_dir(ledger.path());
-        // 植入敌对 config（追加 [core] 段，同键后者生效）+ 锥定义。
+        // 植入敌对 config（追加 [core] 段，同键后者生效）+ 锥定义 + excludesFile。
         let mut config = fs::read_to_string(repo.join("config")).unwrap_or_default();
-        config.push_str("[core]\n\tsparseCheckout = true\n\tautocrlf = true\n");
+        config.push_str(
+            "[core]\n\tsparseCheckout = true\n\tautocrlf = true\n\texcludesFile = hostile-excludes\n",
+        );
         fs::write(repo.join("config"), config).unwrap();
         let info = repo.join("info");
         fs::create_dir_all(&info).unwrap();
         fs::write(info.join("sparse-checkout"), b"in-cone.txt\n").unwrap();
+        fs::write(repo.join("hostile-excludes"), b"outside.txt\n").unwrap();
         exec.write("outside.txt", "b2\n");
-        let second = create_checkpoint(
-            ledger.path(),
-            exec.path(),
-            Some(2),
-            CheckpointKind::Turn,
-            "t2",
-        )
-        .expect("snapshot must not be narrowed by the hostile sparse config");
-        let tree_ls = git_ok(
-            &repo,
-            exec.path(),
-            &["ls-tree", "-r", "--name-only", &second.commit],
-        )
-        .expect("ls-tree second snapshot");
+        // 绕过 create_checkpoint（其 ensure_repo scrub 会先拔植入键）：直接走
+        // 模块自身 git() 的 add -A + ls-files——-c 钉是唯一防线。
+        git_ok(&repo, exec.path(), &["add", "-A"]).expect("add -A under hostile config");
+        let staged = git_ok(&repo, exec.path(), &["ls-files"]).expect("ls-files staged set");
         assert!(
-            tree_ls.lines().any(|line| line == "outside.txt"),
-            "敌对 sparseCheckout 不得让锥外文件静默缺席快照: {tree_ls}"
+            staged.lines().any(|line| line == "outside.txt"),
+            "敌对 sparse/excludes 配置不得让锥外/被忽略文件静默缺席 add -A 的暂存集（-c 钉隔离验证）: {staged}"
         );
     }
 

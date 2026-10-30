@@ -5936,16 +5936,26 @@ fn checkpoints_rewind(
     // is not refused: that is the guided-retry path (the matcher reuses P1
     // idempotently). Non-destructive peek; IO errors fail closed (refuse this
     // rewind instead of reopening the eviction window).
-    if checkpoints::pending_rewind_targets_different_checkpoint(&ledger, &checkpoint.id).map_err(
-        |error| crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error),
-    )? {
-        return Err(CliError::failed(format!(
-            "pending_rewind_conflict: an unfinished rewind (checkpoint {}) is still pending; \
-             complete it first — desktop: send a new message to auto-reconcile, or retry the \
-             same rewind; headless: remove the pending marker in the session's checkpoint \
-             ledger — before rewinding to a different boundary",
-            checkpoint.id,
-        )));
+    // r41 M4: interpolate the PENDING's real target/keepTurns (peek is pub) —
+    // the previous copy interpolated the CURRENT attempt's target,
+    // misidentifying the hazard and prescribing "retry the same rewind" to an
+    // attempt that would hit this refusal forever; the remedy names an
+    // actionable headless step first.
+    let live_pending = checkpoints::peek_pending_rewind_target(&ledger).map_err(|error| {
+        crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+    })?;
+    if let Some((pending_target, pending_keep)) = live_pending {
+        if pending_target != checkpoint.id {
+            return Err(CliError::failed(format!(
+                "pending_rewind_conflict: an unfinished rewind targeting checkpoint {} \
+                 (keeping {} turns) is still pending; complete or discard it first — \
+                 headless: retry `code checkpoints rewind` to that same checkpoint (the \
+                 guided retry completes it), or remove the pending marker in the session's \
+                 checkpoint ledger; desktop: sending a new message auto-reconciles it — \
+                 before rewinding to a different boundary ({})",
+                pending_target, pending_keep, checkpoint.id,
+            )));
+        }
     }
     // r25 MAJOR-3: the matcher's revision check is itself the commit
     // discriminator - a completed rewind's truncate rewrites the transcript,
@@ -6150,11 +6160,33 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     let root = canonical_execution_root(&execution);
     let mut root_lock = execution_root_lock(&root, "undo")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "undo", session)?;
+    // r41 M1: mirror the GUI's live-pending refusal — undo's record cleanup
+    // used to clear a crashed rewind's pending unconsumed, orphaning the only
+    // in-app pointer to the true pre-crash tree (conversation restored to an
+    // older state, files at the crashed target, sidecar record binding None).
+    // Refuse until the pending is resolved (guided retry / desktop reconcile /
+    // marker removal); the post-undo clear then only ever runs with nothing
+    // live, which is exactly the replay-arm safety the r24-M2 clear wanted.
+    let live_pending = checkpoints::peek_pending_rewind_target(&ledger)
+        .map_err(|error| crate::support::store_error("code", "checkpoints undo", session, error))?;
+    if let Some((pending_target, pending_keep)) = live_pending {
+        return Err(CliError::failed(format!(
+            "pending_rewind_conflict: an unfinished rewind targeting checkpoint {} \
+             (keeping {} turns) is still pending; complete or discard it first — \
+             headless: retry `code checkpoints rewind` to that same checkpoint (the \
+             guided retry completes it), or remove the pending marker in the session's \
+             checkpoint ledger; desktop: sending a new message auto-reconciles it — \
+             before undoing an earlier rewind",
+            pending_target, pending_keep,
+        )));
+    }
     let info = resolve_undo_state(&store, &ledger, session)?.ok_or_else(|| {
         // r29 minor 1: name the LRU-eviction cause the GUI copy names.
+        // r41 minor 16: also name the edited-transcript cause the GUI names
+        // (「对话被编辑」) — the cause lists must not diverge across surfaces.
         CliError::failed(
             "no_undoable_rewind: nothing to undo (no rewind happened, new turns were created \
-             after it, or the rollback point was LRU-evicted)",
+             after it, the transcript was edited, or the rollback point was LRU-evicted)",
         )
     })?;
     let checkpoint_id = info.checkpoint_id.clone();
@@ -6301,7 +6333,7 @@ mod tests {
             .find("prepare_restore(&ledger")
             .expect("prepare_restore call must exist");
         let probe_at = body
-            .find("pending_rewind_targets_different_checkpoint(&ledger")
+            .find("peek_pending_rewind_target(&ledger")
             .expect("the different-boundary refusal must probe the live pending (r39 M2)");
         assert!(
             probe_at < prepare_at,
@@ -6310,6 +6342,13 @@ mod tests {
         assert!(
             body.contains("pending_rewind_conflict"),
             "the refusal must carry the named error kind (r39 M2)"
+        );
+        // r41 M4: the refusal copy must interpolate the PENDING's fields, not
+        // the current attempt's target — the old copy named checkpoint X (the
+        // attempt) and advised "retry the same rewind", an unreachable loop.
+        assert!(
+            body.contains("pending.checkpoint_id, pending.keep_turns"),
+            "the refusal copy must interpolate the pending's real target/keepTurns (r41 M4)"
         );
     }
 
