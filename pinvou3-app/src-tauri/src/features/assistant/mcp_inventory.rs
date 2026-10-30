@@ -163,7 +163,12 @@ mod tests {
         let tools = [tool("weather", "Weather", true)];
         assert!(render_inventory(&tools, &["weather".into()], &[]).contains(r#""enabled":false"#));
         assert!(render_inventory(&tools, &[], &[]).contains(r#""enabled":true"#));
-        assert!(render_inventory(&tools, &["weather".into()], &[]).contains(r#""enabled":false"#));
+        // Exact serialized entry shape (field order and no extra fields),
+        // previously pinned by the removed union_unavailable_entry test.
+        assert!(
+            render_inventory(&tools, &["weather".into()], &[])
+                .contains(r#"{"id":"weather","name":"Weather","enabled":false}"#)
+        );
     }
 
     /// 第三方清单名不经过上传展示名的写入校验（只有 Upload 来源在落盘时
@@ -183,23 +188,6 @@ mod tests {
         assert!(
             !reminder.contains(&"长".repeat(MAX_DISPLAY_NAME_CHARS + 1)),
             "截断后不得残留超长原文"
-        );
-    }
-
-    /// Render-layer pin: an entry passed in the unavailable union (toggle off ∪
-    /// hidden) must report enabled=false — a package hidden by visibility alone
-    /// with its toggle still on is no exception, otherwise the snapshot
-    /// contradicts the session-side materialization/allowlist. The union source
-    /// of turn_reminder (scope → `unavailable_bundles_for`) is pinned end-to-end
-    /// by the bridge-level `hidden_bundle_gates_snapshot_and_tool_allowlist_alike`;
-    /// this test pins only the render decision itself.
-    #[test]
-    fn union_unavailable_entry_reports_disabled() {
-        let tools = [tool("pptx", "PPT 生成", true)];
-        let reminder = render_inventory(&tools, &["pptx".into()], &[]);
-        assert!(
-            reminder.contains(r#"{"id":"pptx","name":"PPT 生成","enabled":false}"#),
-            "仅隐藏（开关开）的包必须报 enabled=false: {reminder}"
         );
     }
 

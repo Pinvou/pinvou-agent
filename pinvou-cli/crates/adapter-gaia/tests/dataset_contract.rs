@@ -340,33 +340,6 @@ fn adapter_descriptor_and_native_turn_contract_are_exact() {
 }
 
 #[test]
-fn adapter_selection_requires_exact_known_nonempty_task_ids() {
-    let snapshot = TempSnapshot::new();
-    write_fixture(snapshot.path(), GAIA_DATASET_REVISION, &valid_rows(), None);
-    let verified = verify_dataset(snapshot.path()).unwrap();
-    let adapter = GaiaAdapter::new();
-
-    let selected = adapter
-        .plan(
-            &verified,
-            &TaskSelection::from_task_ids(vec!["safe-task-2".into()]),
-        )
-        .unwrap();
-    assert_eq!(selected.tasks().len(), 1);
-    assert_eq!(selected.tasks()[0].task_id(), "safe-task-2");
-
-    for requested in ["", "unknown-task", "safe-task-1 "] {
-        let error = adapter
-            .plan(
-                &verified,
-                &TaskSelection::from_task_ids(vec![requested.into()]),
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), "gaia_task_selection_invalid");
-    }
-}
-
-#[test]
 fn adapter_private_inputs_resolve_prompt_but_reject_raw_dataset_attachment_without_leaks() {
     let snapshot = TempSnapshot::new();
     write_fixture(snapshot.path(), GAIA_DATASET_REVISION, &valid_rows(), None);

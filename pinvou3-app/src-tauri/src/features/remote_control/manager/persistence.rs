@@ -185,15 +185,6 @@ pub struct RelaySettings {
     pub public_base_url: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct RelaySettingsInfo {
-    pub relay_url: String,
-    pub public_base_url: String,
-    pub custom: bool,
-    pub default_relay_url: String,
-    pub default_public_base_url: String,
-}
-
 pub(super) fn relay_settings_path() -> PathBuf {
     paths::pinvou3_home().join("web-relay.json")
 }

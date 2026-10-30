@@ -5468,6 +5468,7 @@ mod tests {
         // fallback depends on when the process env is read, which is
         // non-deterministic under the parallel suite; the fallback semantics
         // themselves are covered by the marketplace plain_deny_all_* tests).
+        // plain disables my-skill → contains a deny rule pointing at the script
         crate::features::marketplace::scope::save_disabled_bundles_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
@@ -5475,10 +5476,13 @@ mod tests {
         .unwrap();
         let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
+            rs.ask_rules.iter().any(|r| r
+                .command
+                .as_deref()
+                .is_some_and(|c| c.starts_with("python ") && c.contains("run.py"))
+                && r.action == codewhale_execpolicy::PermissionAction::Deny),
+            "disabled skill script should have a deny rule: {:?}",
             rs.ask_rules
-                .iter()
-                .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
-            "after plain disables an installed skill, the script deny ruleset must be present"
         );
         // Since the v3 rollback, safety-net rules are command-only (the File
         // path face was removed): mkfs-style fallback denies are always
@@ -5497,23 +5501,6 @@ mod tests {
         assert!(
             rs.denied_prefixes.iter().any(|p| p.starts_with("mkfs")),
             "safety-net rules should be promoted into denied_prefixes"
-        );
-
-        // plain disables my-skill → contains a deny rule pointing at the script
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            ConnectorScope::Plain,
-            &["my-skill".to_string()],
-        )
-        .unwrap();
-        let rs = bridge.scope_deny_ruleset("sess-plain");
-        assert!(
-            rs.ask_rules.iter().any(|r| r
-                .command
-                .as_deref()
-                .is_some_and(|c| c.starts_with("python ") && c.contains("run.py"))
-                && r.action == codewhale_execpolicy::PermissionAction::Deny),
-            "disabled skill script should have a deny rule: {:?}",
-            rs.ask_rules
         );
 
         // Re-enabled → script rule disappears (same computation as the hot

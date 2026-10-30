@@ -11,7 +11,7 @@
  *     invalidates staging;
  *   - interaction bridge: an explicit switch on a bound draft writes the code
  *     lane global default and stages the choice; unbound drafts keep
- *     work/design lane semantics.
+ *     work/code lane semantics.
  * The harness mirrors the vm injection surface of
  * chat_draft_workspace_logic.test.mjs.
  */
@@ -294,11 +294,9 @@ test('setDraftMode：未绑定草稿维持本 lane 语义且不暂存（回归�
   assert.deepEqual(rt.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
   assert.equal(rt.state.pendingDraftMode, null, '未绑定草稿不引入暂存语义');
 
-  // The legacy design value folds into work (#428 merge); the code lane stays separate.
-  const rtDesign = loadFeature('interaction', null, { modeLane: 'design' });
-  await rtDesign.api.setDraftMode('plan');
-  assert.deepEqual(rtDesign.invokeArgs('set_mode_default'), [{ lane: 'work', mode: 'plan' }]);
-
+  // The legacy design lane value cannot reach this helper: the single modeLane
+  // write site normalizes to work/code (#428 merge), so only the code lane
+  // needs its own sub-case.
   const rtCode = loadFeature('interaction', null, { modeLane: 'code' });
   await rtCode.api.setDraftMode('plan');
   assert.deepEqual(rtCode.invokeArgs('set_mode_default'), [{ lane: 'code', mode: 'plan' }]);

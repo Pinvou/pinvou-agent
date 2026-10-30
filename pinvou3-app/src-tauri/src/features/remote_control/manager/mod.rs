@@ -25,10 +25,6 @@ use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
 // upstream by the file-access boundary split. This module no longer re-exports
 // that surface; callers reach it via `remote_control::file_access`.
 
-// `RelaySettingsInfo` is part of the public `manager::` surface (re-exported by
-// the parent `remote_control` module); it now lives in `persistence`.
-pub use persistence::RelaySettingsInfo;
-
 // Persistent config / RPC ledger / pending revocation / relay settings helpers
 // are pure and stateless; the facade calls them by name.
 #[cfg(test)]
@@ -36,10 +32,9 @@ use persistence::atomic_write_private_json;
 use persistence::{
     acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
     eligible_pending_revocations, fresh_config, load_config, load_or_initialize_rpc_ledger,
-    load_pending_revocations, load_relay_settings, new_stream_epoch, pairing_info,
-    pending_revocation_key, persist_config, persist_rpc_ledger, process_lock_path, public_url,
-    queue_pending_revocation, remote_public_base_url, remote_relay_ws_url, remove_config,
-    remove_rpc_ledger, validate_config,
+    load_pending_revocations, new_stream_epoch, pairing_info, pending_revocation_key,
+    persist_config, persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
+    remote_relay_ws_url, remove_config, remove_rpc_ledger, validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event
@@ -909,16 +904,6 @@ impl RemoteControlManager {
         Ok(pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
             "Web access endpoint failed to rotate".to_string()
         })?))
-    }
-
-    pub fn relay_settings(&self) -> RelaySettingsInfo {
-        RelaySettingsInfo {
-            relay_url: remote_relay_ws_url(),
-            public_base_url: remote_public_base_url(),
-            custom: load_relay_settings().is_some(),
-            default_relay_url: DEFAULT_RELAY_WS_URL.to_string(),
-            default_public_base_url: DEFAULT_PUBLIC_BASE_URL.to_string(),
-        }
     }
 
     /// 注入原生代码会话判定闭包；之后带代码会话 id 的事件不再转发到远程 WebUI。

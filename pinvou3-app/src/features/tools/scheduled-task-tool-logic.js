@@ -15,7 +15,6 @@
  */
 
 export const SCHEDULED_TASK_CREATE_TOOL = 'mcp_app-automations_create_scheduled_task';
-export const SCHEDULED_TASK_READ_TOOL = 'mcp_app-automations_read_scheduled_task';
 export const SCHEDULED_TASK_LIST_TOOL = 'mcp_app-automations_list_scheduled_tasks';
 export const SCHEDULED_TASK_UPDATE_TOOL = 'mcp_app-automations_update_scheduled_task';
 export const SCHEDULED_TASK_DELETE_TOOL = 'mcp_app-automations_delete_scheduled_task';
