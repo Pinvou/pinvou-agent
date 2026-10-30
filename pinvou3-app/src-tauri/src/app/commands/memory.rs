@@ -86,7 +86,13 @@ fn runtime_snapshot_best_effort(
     match sid.map(|sid| crate::features::memory::runtime_snapshot(&sid)) {
         Some(Ok(snapshot)) => (Some(snapshot), None),
         Some(Err(error)) => {
-            let detail = format!("render runtime memory: {error}");
+            // Round-8 复审:警告/详情文本随成功载荷出站（命令均在 Web 访问
+            // 策略内），统一过共享的 redact_storage_prefix 折叠存储根前缀
+            // （platform/paths.rs 文档口径；io.rs display_redacted 同一实现）。
+            // 本文件其余三处错误文本同批加固。
+            let detail = crate::platform::paths::redact_storage_prefix(&format!(
+                "render runtime memory: {error}"
+            ));
             eprintln!("[memory] {detail}");
             (
                 None,
@@ -288,7 +294,9 @@ fn refresh_memory_snapshot_document(
             &never,
             runtime.as_ref(),
         ) {
-            let detail = format!("write memory snapshot: {error}");
+            let detail = crate::platform::paths::redact_storage_prefix(&format!(
+                "write memory snapshot: {error}"
+            ));
             eprintln!("[memory] {detail}");
             warnings.push(memory_warning(
                 "snapshot_refresh_failed",
@@ -324,7 +332,8 @@ fn load_memory_source<T: Default>(
             value
         }
         Err(error) => {
-            let detail = format!("load {source}: {error}");
+            let detail =
+                crate::platform::paths::redact_storage_prefix(&format!("load {source}: {error}"));
             eprintln!("[memory] {detail}");
             let code = "memory_source_unavailable";
             warnings.push(memory_warning(code, source, detail));
@@ -462,7 +471,9 @@ pub async fn get_memory_overview(
                 crate::features::memory::display_redacted(&path)
             }
             Err(error) => {
-                let detail = format!("write memory snapshot: {error}");
+                let detail = crate::platform::paths::redact_storage_prefix(&format!(
+                    "write memory snapshot: {error}"
+                ));
                 eprintln!("[memory] {detail}");
                 warnings.push(memory_warning(
                     "snapshot_refresh_failed",
