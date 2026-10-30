@@ -135,7 +135,11 @@ impl ProbeError {
     /// 钉住。分型必须吃原始错误——先包装后分型会让前缀匹配永远落空,降级
     /// 分支随之失效(本轮修掉的回归)。两个锚点都在 platform 的**固定前缀**
     /// 里、必然先于内嵌的捕获输出出现,故按首次出现位置取先者——即便子进程
-    /// 自己的输出里也含另一条锚点文本,也不会误报超时。
+    /// 自己的输出里也含另一条锚点文本,也不会误报超时。超时与溢出统一在
+    /// 胜出锚点后按 detail 分隔符剪切(见 [`withhold_captured_output`]):
+    /// 溢出剪切不得依赖 tree-termination claim 子句的存在——Windows 溢出
+    /// 后退出路径对已回收 root 合法地产出无 claim 的溢出文案,剪不掉就
+    /// 会把捕获输出原样放进 webview/日志。
     fn classify(raw: String) -> Self {
         if raw.starts_with("spawn ") {
             // spawn 失败没有子进程,错误串不含捕获输出,原样保留。
@@ -150,11 +154,12 @@ impl ProbeError {
             };
             if prefer_timeout {
                 Self::Timeout(withhold_captured_output(&raw, timeout))
-            } else if overflow.is_some() {
-                Self::Other(withhold_captured_output(&raw, None))
+            } else if let Some(overflow) = overflow {
+                Self::Other(withhold_captured_output(&raw, Some(overflow)))
             } else {
-                // wait error 等无捕获输出的错误:原样保留(kill/reap 附加
-                // 子句是平台侧固定文本,不含子进程输出)。
+                // wait error / capture readback 失败等无捕获输出的错误:原样
+                // 保留(kill/reap 附加子句与 readback 的 io error 都是平台侧
+                // 固定文本,不含子进程输出)。
                 Self::Other(raw)
             }
         }
@@ -177,28 +182,28 @@ impl ProbeError {
 }
 
 /// 把 platform::process 错误里内嵌的子进程捕获输出剪掉,只保留固定前缀
-/// (命令名 + 超时/溢出锚点子句)。捕获输出可能含身份/凭证信息,而
-/// ProbeError 的文案会进 webview(bundle_readiness 卡片、断开登录确认)与
-/// 应用日志;feishu/wecom/dingtalk/tmeet 状态命令的既有约定是 raw 输出
-/// 不得越出本层(feishu_status「只回布尔」注释)。剪切点取 detail 之前的
-/// 最后一个固定子句,对任意子进程输出稳健;kill/reap 附加子句随 detail
-/// 一并剪去——那是平台层诊断,探测分型文案不需要。格式漂移时(找不到
-/// 剪切锚点)保守保留原文:格式由 platform/process.rs 与本文件 fixture
-/// 测试两端钉住,漂移会先在测试里炸出来。
-fn withhold_captured_output(raw: &str, timeout_anchor: Option<usize>) -> String {
-    if let Some(anchor) = timeout_anchor {
-        // 剪切点 = 超时子句后第一个 ": ",即 detail 的起点
-        // ("{program} timed out after {n}s: {detail}")。
-        if let Some(colon) = raw[anchor..].find(": ") {
-            return raw[..anchor + colon].trim_end().to_string();
-        }
-        return raw.to_string();
+/// (命令名 + 超时/溢出锚点子句 + 溢出路径的 tree-termination claim)。
+/// 捕获输出可能含身份/凭证信息,而 ProbeError 的文案会进 webview
+/// (bundle_readiness 卡片、断开登录确认)与应用日志;feishu/wecom/dingtalk/
+/// tmeet 状态命令的既有约定是 raw 输出不得越出本层(feishu_status「只回
+/// 布尔」注释)。剪切点 = 胜出锚点后第一个 ": ",即 detail 的起点:
+/// 超时格式 `"{program} timed out after {n}s: {detail}{reap}{kill}"`、溢出
+/// 格式 `"{program} output exceeded {n} bytes{tree_claim}: {detail}{kill}"`,
+/// 锚点与 ": " 之间的 `{n}s` / `bytes` / tree_claim(可为空,Windows 溢出
+/// 后退出路径不产 claim)都不含 ": ",故该剪切点对**每一条**溢出产出形态
+/// 成立,不依赖 claim 子句的存在(kill/reap 附加子句随 detail 一并剪去
+/// ——那是平台层诊断,探测分型文案不需要)。格式漂移时(找不到剪切锚点)
+/// 保守保留原文:格式由 platform/process.rs 与本文件 fixture 测试两端钉
+/// 住,漂移会先在测试里炸出来。
+fn withhold_captured_output(raw: &str, anchor: Option<usize>) -> String {
+    match anchor {
+        Some(anchor) => match raw[anchor..].find(": ") {
+            Some(colon) => raw[..anchor + colon].trim_end().to_string(),
+            // 格式漂移(锚点后找不到 detail 分隔符):保守保留原文。
+            None => raw.to_string(),
+        },
+        None => raw.to_string(),
     }
-    const OVERFLOW_CLAIM: &str = "; subprocess tree termination requested";
-    if let Some(pos) = raw.find(OVERFLOW_CLAIM) {
-        return raw[..pos + OVERFLOW_CLAIM.len()].to_string();
-    }
-    raw.to_string()
 }
 
 /// 跑探测命令并保留**分型后的错误**,供断开登录路径按类降级。
@@ -1128,6 +1133,21 @@ mod tests {
         assert!(!message.contains("timed out after 1s"), "{message}");
         assert!(!message.contains("refresh_token"), "{message}");
         assert!(!message.contains("secret-token-2"), "{message}");
+
+        // Windows 溢出后退出路径对已回收 root 合法地产出**无 claim** 的溢出
+        // 文案(overflow_kill_notes 返回空 claim):剪切必须仍成立,否则该
+        // 形态的捕获输出原样越过边界进 webview/日志。
+        let overflow_no_claim = ProbeError::classify(String::from(
+            "lark-cli output exceeded 4194304 bytes: stderr:\naccess_token=secret-token-3",
+        ));
+        assert!(matches!(overflow_no_claim, ProbeError::Other(_)));
+        let message = overflow_no_claim.message();
+        assert!(
+            message.contains("lark-cli output exceeded 4194304 bytes"),
+            "{message}"
+        );
+        assert!(!message.contains("access_token"), "{message}");
+        assert!(!message.contains("secret-token-3"), "{message}");
 
         // 无捕获输出的错误(wait error + 附加子句)原样保留。
         let wait_error = ProbeError::classify(String::from(
