@@ -1041,7 +1041,44 @@ mod tests {
         );
     }
 
+    /// Round-8 复审:validate_web_rpc_scope 里三个姊妹瞬时分类(多 agent
+    /// 模式裁决、Session store 未就绪、会话读取失败)——workspace-grant
+    /// 腿已有专用分类钉,这三处此前翻转成 Deterministic 全套仍绿,重试
+    /// 会把陈旧拒绝写进回放缓存(重放投毒类回归)。源码契约钉把回归
+    /// 变成红灯:三处构造必须保持 Transient。
     #[test]
+    fn web_scope_sibling_transient_classifications_stay_transient() {
+        let source = include_str!("rpc.rs");
+        let start = source
+            .find("pub(super) fn validate_web_rpc_scope(")
+            .expect("validate_web_rpc_scope must exist");
+        let tail = &source[start..];
+        let end = ["\nfn ", "\npub(super) fn ", "\npub fn ", "#[cfg(test)]"]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("validate_web_rpc_scope must be followed by another item");
+        let body = &tail[..end];
+        assert!(
+            body.contains("validate_multi_agent_session_web_scope(app, command, session_id)")
+                && body.contains(".map_err(WebScopeRejection::Transient)?"),
+            "the multi-agent session-scope rejection is desktop-side mutable state and \
+             must stay transient (retry must get a fresh verdict, not a cached stale one)"
+        );
+        assert!(
+            body.contains(
+                "WebScopeRejection::Transient(\"Session store is not ready\".to_string())"
+            ),
+            "a not-ready session store is a transient condition and must never be \
+             cached as a terminal completion"
+        );
+        assert!(
+            body.contains("WebScopeRejection::Transient(\"web_session_unavailable\".to_string())"),
+            "a failed session load may be transient filesystem unavailability and must \
+             never be cached as a terminal completion"
+        );
+    }
+
     /// Round-7 复审 m4:workspaceHandle 腿的拒绝分类直接钉住——形状违规
     /// 确定性(可缓存),句柄词法裁决(grant 生命周期)一律瞬时、绝不入
     /// 缓存。该分类点此前只能经携带 AppHandle 的整门到达,翻转成
