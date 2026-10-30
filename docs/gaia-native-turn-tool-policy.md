@@ -2,9 +2,9 @@
 
 状态：已实施（exact canonical 工具名 allowlist）
 
-版本：v1.1
+版本：v1.2
 
-日期：2026-08-13（v1.1 更新于 2026-08-18）
+日期：2026-08-13（v1.1 更新于 2026-08-18，v1.2 更新于 2026-10-30）
 
 ## 目标
 
@@ -91,7 +91,7 @@ vision backend 才能加入 offline profile，否则图片分析固定返回能�
 ### `pinvou-read-only-web/v1`
 
 产品冒烟与基准评测使用的 headless 只读公网面，工具面与 `pinvou-gaia-public-web/v1`
-完全一致（同样的 6 个工具与只读 dispatch）。它**不是产品工具面**：真实产品面是
+完全一致（同样的 6 个工具，均为只读）。它**不是产品工具面**：真实产品面是
 `tool_policy::PINVOU3_ALLOWED_TOOLS`；想要产品等价的基准路径，就让 headless 任务
 不带 eval 策略运行。
 

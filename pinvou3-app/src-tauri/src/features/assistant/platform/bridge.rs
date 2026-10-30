@@ -1149,12 +1149,12 @@ impl Pinvou3Bridge {
     ///
     /// The foundation still enumerates `PROJECT_CONTEXT_FILES`, but the
     /// app's static prompt-composer override makes the foundation treat the
-    /// embedder as owning context: the automatic scan returns empty
-    /// (`load_project_context`) and the workspace context pack stays off
-    /// (also gated on `!static_composer_installed`;
-    /// `project_context_pack_enabled = false` is belt-and-suspenders). No
-    /// automatic injection; the app side fills the gap within the security
-    /// boundary here. Behavioral semantics:
+    /// embedder as owning context: the automatic scan
+    /// (`load_project_context_with_parents`) returns empty and the
+    /// workspace context pack stays off (also gated on
+    /// `!static_composer_installed`; `project_context_pack_enabled = false`
+    /// is belt-and-suspenders). No automatic injection; the app side fills
+    /// the gap within the security boundary here. Behavioral semantics:
     ///   - injection order root→cwd (ancestors first, project root last),
     ///     matching codex/claude convention — the closer a rule is to the
     ///     project root, the later it appears in the prompt;

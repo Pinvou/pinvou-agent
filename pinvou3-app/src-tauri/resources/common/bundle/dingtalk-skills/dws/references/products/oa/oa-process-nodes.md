@@ -50,7 +50,7 @@
 | `actionerRules` | Array | 是 |
 | `activateType` | String | 是 |
 
-支持 9 种 actionerRules（不支持 `target_matrix_approval`）。
+支持 10 种 actionerRules（不支持 `target_matrix_approval`）。
 
 ### 4. 抄送人节点（notifier）
 

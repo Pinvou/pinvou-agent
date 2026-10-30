@@ -1,5 +1,5 @@
-//! 一次性 dump: 复现 pinvou3 新建 session 时,底座 `Engine::new` 在
-//! `core/engine.rs:458` 拼出来的真实 system prompt。
+//! 一次性 dump: 复现 pinvou3 新建 session 时,底座 `Engine::new`
+//! (CodeWhale `crates/tui/src/core/engine.rs`) 拼出来的真实 system prompt。
 //!
 //! 不 spawn engine(避免连 vLLM/起 turn loop),只复刻 prompt 拼装环节:
 //!   1. bridge.boot()                                  -> ensure_dirs + load prefs

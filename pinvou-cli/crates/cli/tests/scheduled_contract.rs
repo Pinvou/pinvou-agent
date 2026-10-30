@@ -1047,8 +1047,8 @@ fn create_refuses_non_yolo_modes_like_the_app() {
 /// A run record that is valid JSON but wrong-shaped (a required field
 /// missing, typed wrong, or carrying a value the foundation's typed fields
 /// cannot decode) must fail the listing with the malformed-record error
-/// instead of rendering a phantom run — the typed serde decode in
-/// `run_from_value` is the gate.
+/// instead of rendering a phantom run — the foundation's typed serde decode
+/// (`AutomationManager::list_runs` → `read_run_file`) is the gate.
 #[test]
 fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
     let _env_guard = env_lock();
