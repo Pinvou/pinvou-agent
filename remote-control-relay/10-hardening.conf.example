@@ -9,8 +9,9 @@
 # spelling of an address matches, whatever form the runtime reports the peer
 # in. An IPv6 zone-id suffix (fe80::1%eth0) is matched verbatim against the
 # suffix the peer's own address reports — the suffix is this host's interface
-# name for the connection, so use the spelling the runtime reports; an
-# IPv4-mapped spelling never carries a zone. A trusted proxy must set
+# name for the connection, so use the spelling the runtime reports; a suffix
+# cannot apply to a dotted quad or to an IPv4-mapped spelling (which reduces
+# to one), and an entry carrying one aborts startup. A trusted proxy must set
 # these forwarding headers itself; a proxy that forwards client-supplied
 # values lets senders pick their own rate-limit identity.
 #

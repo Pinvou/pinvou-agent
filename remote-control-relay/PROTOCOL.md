@@ -262,8 +262,9 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
   runtime reports a peer in. A zone-id entry such as `fe80::1%eth0` matches
   only a peer whose reported address carries the identical suffix, compared
   verbatim — the suffix is the relay host's own interface name for that
-  connection, so use the spelling the runtime reports; an IPv4-mapped
-  spelling never carries a zone. A blank value means an
+  connection, so use the spelling the runtime reports; a suffix cannot apply
+  to a dotted quad or to an IPv4-mapped spelling (which reduces to one), and
+  an entry carrying one is rejected at startup. A blank value means an
   empty set: an empty
   `PINVOU_REMOTE_ALLOWED_PROXY_IPS` admits every source, and an empty
   `PINVOU_REMOTE_TRUSTED_PROXY_IPS` trusts no proxy. A direct peer on
