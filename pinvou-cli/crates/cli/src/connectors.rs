@@ -3320,49 +3320,45 @@ fn finish_connect_side_effects(spec: &VendorSpec, consent_show: bool) -> Result<
     // scope layer logs nothing on write failure, so the error carries the
     // reason.
     let outcome = sync_consent_after_connect(spec.id, consent_show)?;
-    // Round-7 review P2: a declined write here is a RELIED-UPON consent, not
-    // a no-op — the gates found another connect's standing ledger and this
-    // connect completed on top of it. Commit the relied-upon grant so that
-    // (possibly still in-flight) operation's pending compensating revoke
-    // stops matching: without the commit, its late materialization failure
-    // would strip the grant + ledger this successful connect relied on. The
-    // commit re-validates under the write lock: a teardown + regrant
-    // mid-window keeps a newer owner's compensation armed
-    // ([`ReliedGrantCommit::Superseded`] — a tokenless newer grant no revoke
-    // can match, left untouched, the newer consent covers this connect).
-    // REQUIRED (rounds 8 and 11): a grant that is GONE by commit time, a
-    // grant that now stands under a newer PENDING token (that operation's
-    // compensation is still armed and can still strip this connect's
-    // consent), or a persist that fails means the completed connect's
-    // consent does not stand — the connect fails instead of reporting a
-    // connection whose consent computes (or can be computed) OFF.
-    if !outcome.granted && !outcome.relied_grant_token.is_empty() {
-        use pinvou3_lib::features::marketplace::ReliedGrantCommit;
-        match pinvou3_lib::features::marketplace::commit_relied_connect_grant(
-            spec.id,
-            &outcome.relied_grant_token,
-        ) {
-            Ok(ReliedGrantCommit::NotRelied | ReliedGrantCommit::Committed) => {}
-            Ok(ReliedGrantCommit::Superseded) => note!(
-                "pinvou: connectors connect: the relied-upon connect grant was replaced by a newer owner's committed consent; leaving it untouched"
-            ),
-            Ok(ReliedGrantCommit::ReplacementPending) => {
-                return Err(CliError::failed(format!(
-                    "pinvou: connectors connect: {} — the completed connect's consent is not secured; reconnect to retry",
-                    pinvou3_lib::features::marketplace::RELIED_GRANT_REPLACEMENT_PENDING_CAUSE
-                )));
-            }
-            Ok(ReliedGrantCommit::GrantLost) => {
-                return Err(CliError::failed(format!(
-                    "pinvou: connectors connect: {} — the completed connect's consent is gone; reconnect to retry",
-                    pinvou3_lib::features::marketplace::RELIED_GRANT_LOST_CAUSE
-                )));
-            }
-            Err(error) => {
-                return Err(CliError::failed(format!(
-                    "pinvou: connectors connect: committing the relied-upon connect grant failed: {error}"
-                )));
-            }
+    // Round-7 review P2, generalized by the round-12 review (P2 + P3): the
+    // gate write here is this connect's ONLY consent write, so ITS outcome is
+    // the completion's whole claim set (no tail — `None`) via
+    // `complete_connect_grant`. Three shapes reach it: a fresh own grant is
+    // FINALIZED (its token cleared while it stands — the round-12 P3; the
+    // CLI's fresh completion used to skip the commit entirely, leaving its
+    // token indistinguishable from an in-flight owner's); a declined write
+    // over standing consent — the relied token EMPTY included, i.e. already-
+    // committed tokenless consent — is committed/validated (the round-12 P2:
+    // the old empty-token short-circuit reported success while a newer
+    // owner's still-armed compensating revoke stood behind it); a write that
+    // neither granted nor relied (`show == false`) stood on nothing —
+    // `NotRelied`, nothing to secure. REQUIRED (rounds 8 and 11): a grant
+    // that is GONE by completion time, or one that now stands under a newer
+    // PENDING token (that operation's compensation is still armed and can
+    // still strip this connect's consent), fails the connect instead of
+    // reporting a connection whose consent computes (or can be computed) OFF.
+    use pinvou3_lib::features::marketplace::ReliedGrantCommit;
+    match pinvou3_lib::features::marketplace::complete_connect_grant(spec.id, &outcome, None) {
+        Ok(ReliedGrantCommit::NotRelied | ReliedGrantCommit::Committed) => {}
+        Ok(ReliedGrantCommit::Superseded) => note!(
+            "pinvou: connectors connect: the relied-upon connect grant was replaced by a newer owner's committed consent; leaving it untouched"
+        ),
+        Ok(ReliedGrantCommit::ReplacementPending) => {
+            return Err(CliError::failed(format!(
+                "pinvou: connectors connect: {} — the completed connect's consent is not secured; reconnect to retry",
+                pinvou3_lib::features::marketplace::RELIED_GRANT_REPLACEMENT_PENDING_CAUSE
+            )));
+        }
+        Ok(ReliedGrantCommit::GrantLost) => {
+            return Err(CliError::failed(format!(
+                "pinvou: connectors connect: {} — the completed connect's consent is gone; reconnect to retry",
+                pinvou3_lib::features::marketplace::RELIED_GRANT_LOST_CAUSE
+            )));
+        }
+        Err(error) => {
+            return Err(CliError::failed(format!(
+                "pinvou: connectors connect: committing the relied-upon connect grant failed: {error}"
+            )));
         }
     }
     Ok(outcome.granted)

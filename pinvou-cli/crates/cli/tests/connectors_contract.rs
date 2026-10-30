@@ -1801,6 +1801,16 @@ fn connect_grants_the_code_scope_enabled_after_a_fresh_connection() {
         }
     }
 
+    // Round-12 review P3, CLI parity: the fresh completion FINALIZES its own
+    // grant — the ownership token is cleared, so the completed connect stops
+    // looking like an in-flight owner (whose compensating revoke is armed) to
+    // later operations. (Reverting the finish side effects' completion call
+    // leaves the token standing and turns this leg red.)
+    assert!(
+        persisted["connect_grant_tokens"]["dingtalk"].is_null(),
+        "the fresh completion must finalize its own ownership token: {persisted}"
+    );
+
     // And the deliberately divergent mirror write: no asset pins on the CLI
     // connect — this lane writes a bare `installed_now` record with
     // `source=Builtin`, while the GUI's connect records a pin only after
@@ -1891,6 +1901,81 @@ fn connect_over_standing_consent_commits_the_relied_grant() {
     assert!(
         ledgered,
         "the relied-upon ledger pair must survive B's connect: {persisted}"
+    );
+}
+
+/// Round-12 review P2, CLI parity of the committed-tokenless starting
+/// condition: a connect whose gate observes ALREADY-COMMITTED consent
+/// (tokenless — the reliance capture carries the decision with an EMPTY
+/// token) must still run the completion validation on it instead of
+/// short-circuiting to a blind success. Nothing intervenes here, so the
+/// completion stands on the permanent tokenless consent (`Superseded` —
+/// exit 0) and writes NOTHING: the grant and its ledger pairs survive, and
+/// no ownership token is added. (Short-circuiting the empty capture to
+/// `NotRelied` — the pre-fix behavior — passes this test too; the
+/// discriminating legs live in the app-side
+/// `completion_over_committed_tokenless_consent_validates_the_final_state`
+/// pin, whose teardown variant turns the blind success into a real
+/// off-computation. This test pins the CLI's no-false-decline and no-write
+/// direction of the same validation.)
+#[test]
+#[cfg(unix)]
+fn connect_over_committed_tokenless_consent_stands_on_it() {
+    let _env = common::env_lock();
+    let home = HomeGuard::new("connect-commit-tokenless");
+    let bin = fake_bin_dir("connect-commit-tokenless");
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_CONNECT_FAKE);
+    let _path = VendorCliGuard::new_at(bin.clone());
+
+    // The committed shape: grant + sync-ledger pairs, NO ownership token —
+    // exactly what a completed (finalized) earlier connect leaves behind.
+    let disabled = home.disabled_bundles_file();
+    if let Some(parent) = disabled.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(
+        &disabled,
+        r#"{"scopes":{},"hidden_scopes":{},"default_off_scopes":{},"initialized":[],"install_default_synced":["plain:dingtalk","code:dingtalk"],"connect_granted":["dingtalk"]}"#,
+    )
+    .unwrap();
+
+    let value = run_json(&[
+        "pinvou",
+        "connectors",
+        "connect",
+        "dingtalk",
+        "--timeout",
+        "30",
+    ]);
+    assert_eq!(value["connected"], true, "{value}");
+    assert_eq!(
+        value["consent_granted"], false,
+        "the declined write still surfaces consent_granted=false: {value}"
+    );
+
+    let persisted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
+            .expect("disabled_bundles.json stays valid JSON");
+    assert!(
+        persisted["connect_granted"]
+            .as_array()
+            .expect("connect_granted persists")
+            .iter()
+            .any(|id| id.as_str() == Some("dingtalk")),
+        "the standing grant must survive the completion: {persisted}"
+    );
+    assert!(
+        persisted["install_default_synced"]
+            .as_array()
+            .expect("sync ledger persists")
+            .iter()
+            .any(|entry| entry.as_str() == Some("plain:dingtalk")),
+        "the standing ledger pair must survive the completion: {persisted}"
+    );
+    assert!(
+        persisted["connect_grant_tokens"]["dingtalk"].is_null(),
+        "the completion must stand on the tokenless consent without adding \
+         an ownership token: {persisted}"
     );
 }
 
