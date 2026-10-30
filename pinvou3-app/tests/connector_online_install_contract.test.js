@@ -253,8 +253,13 @@ assert.match(
 );
 assert.doesNotMatch(
   wecomSmoke,
-  /npm i -g/,
-  "wecom-smoke.sh 找不到 CLI 时不得再建议 npm -g 自装(绕过 lock 钉扎)",
+  /npm\s+(i|install)\s+(-g|--global)\b/,
+  "wecom-smoke.sh 找不到 CLI 时不得再建议 npm -g 自装(绕过 lock 钉扎;缩写与全拼一并禁)",
+);
+assert.doesNotMatch(
+  dingtalkSmoke,
+  /npm\s+(i|install)\s+(-g|--global)\b/,
+  "dingtalk-smoke.sh 找不到 CLI 时不得建议 npm -g 自装(绕过 lock 钉扎)",
 );
 
 // 5) redact() 行为钉(从两份脚本源码现场抽取函数体真跑):host safe_auth_log_line
