@@ -10,6 +10,9 @@
 set -u
 # set -u 下 HOME 未设置会直接炸成 unbound variable;这里给可行动的退出码 2。
 if [ -z "${HOME:-}" ]; then echo "HOME 未设置,无法定位 wecom-cli"; exit 2; fi
+# 应用同名解析(paths.rs pinvou3_home,与 dingtalk-smoke.sh 同口径):
+# PINVOU3_HOME 可整体重定位数据根,只认 $HOME/.pinvou3 会漏掉重定位安装。
+PINVOU3_ROOT="${PINVOU3_HOME:-$HOME/.pinvou3}"
 
 pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
@@ -24,9 +27,10 @@ redact(){ awk '{ l=tolower($0)
     else print }' | sed -E 's/[A-Za-z0-9_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z0-9_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
 
 # --- 定位 wecom-cli(与 dingtalk-smoke.sh 同口径) ---
-# 应用按 connectors.lock.json 把 wecom-cli 落到版本目录 ~/.pinvou3/assets/cli/wecom-cli/<version>/
-# (paths.rs assets_cli_dir;native_installer 用 connector_lock::executable_name,Windows 带 .exe);
-# 旧布局 ~/.pinvou3/connectors/<platform>/bin/ 只作存量回退;再退到 npm 全局 shim。
+# 应用按 connectors.lock.json 把 wecom-cli 落到版本目录 <数据根>/assets/cli/wecom-cli/<version>/
+# (paths.rs assets_cli_dir,数据根支持 PINVOU3_HOME 重定位;native_installer 用
+# connector_lock::executable_name,Windows 带 .exe);
+# 旧布局 <数据根>/connectors/<platform>/bin/ 只作存量回退;再退到 npm 全局 shim。
 # 只搜 PATH 会漏掉应用自己装的 CLI,并把用户引向 npm -g 自装——那正是
 # wecomcli-shared 技能禁止的路径(绕过 lock 钉扎,触发哈希不符重装循环)。
 CLI="$(command -v wecom-cli 2>/dev/null || true)"
@@ -51,7 +55,7 @@ if [ -z "$CLI" ]; then
   # (排除 1.3.4.bak 改名残留与裸日期目录),且 -f -x 并举(排除同名目录)。候选在
   # 普通循环里累积再排序——stock bash 3.2 解析不了 $() 内嵌 case。
   ver=""
-  for d in "$HOME"/.pinvou3/assets/cli/wecom-cli/*/; do
+  for d in "$PINVOU3_ROOT"/assets/cli/wecom-cli/*/; do
     db="${d%/}"; db="${db##*/}"
     case "$db" in *[!0-9.]*) continue ;; esac
     case "$db" in *.*) : ;; *) continue ;; esac
@@ -61,9 +65,9 @@ if [ -z "$CLI" ]; then
 "
   done
   ver="$(printf '%s' "$ver" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
-  [ -n "$ver" ] && CLI="$HOME/.pinvou3/assets/cli/wecom-cli/$ver/$EXE"
+  [ -n "$ver" ] && CLI="$PINVOU3_ROOT/assets/cli/wecom-cli/$ver/$EXE"
 fi
-[ -z "$CLI" ] && [ -n "$PLAT" ] && [ -f "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && [ -x "$HOME/.pinvou3/connectors/$PLAT/bin/$EXE" ] && CLI="$HOME/.pinvou3/connectors/$PLAT/bin/$EXE"
+[ -z "$CLI" ] && [ -n "$PLAT" ] && [ -f "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && [ -x "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && CLI="$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE"
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/wecom-cli.cmd" ] && CLI="$APPDATA/npm/wecom-cli.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/wecom-cli" ] && CLI="$HOME/AppData/Roaming/npm/wecom-cli"
 if [ -z "$CLI" ]; then echo "找不到 wecom-cli(先在 Pinvou Agent 工具面板连接企业微信,应用会在线下载并校验;开发机自装时放进 PATH)"; exit 2; fi
@@ -81,15 +85,19 @@ WECOM_TIMEOUT=30
 # (TERM 死)都归一为 124,超时诊断分支照常生效。
 WECOM_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
-# Ctrl-C 中断探测时兜底清理当前临时文件(wecom_run 尾部自清正常路径;裸 CLI 输出
-# 未过 redact,不应留在 $TMPDIR 供人翻看)。变量名与 dingtalk-smoke.sh 保持一致。
-DWS_TMP=""
-trap 'rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null' EXIT
 wecom_run() {
   local t rc tflag
   t="$(mktemp "${TMPDIR:-/tmp}/wecom-smoke.XXXXXX")"
   tflag="${t}.deadline"
+  # 兜底清理挂在拥有临时文件的探测子壳自身,不能挂外层脚本(与 dingtalk-smoke.sh
+  # 同口径):本函数总经 $( ) 调用,DWS_TMP 赋值只活在子壳里,外层永远看到空值——
+  # 外层 EXIT 上的清理会展开成 rm -f "" ".deadline",误删调用方工作目录里的同名
+  # 文件(评审实测复现;空值守卫一并拦住 mktemp 失败时 DWS_TMP 为空的同形状)。
+  # SIGINT 同进程组送达时,子壳死前会执行自己的 EXIT(实测 bash 3.2.57 与 5.x 同),
+  # 真实捕获文件随之清掉;SIGKILL 无能为力,泄漏面只剩 $TMPDIR 一个文件。裸 CLI
+  # 输出未过 redact,不应留在 $TMPDIR 供人翻看。变量名与 dingtalk-smoke.sh 保持一致。
   DWS_TMP="$t"
+  trap 'if [ -n "$DWS_TMP" ]; then rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null; fi' EXIT
   if [ -n "$TIMEOUT_BIN" ]; then
     "$TIMEOUT_BIN" -k "$WECOM_KILL_GRACE" "$WECOM_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
   else
