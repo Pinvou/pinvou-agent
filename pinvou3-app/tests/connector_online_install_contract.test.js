@@ -197,8 +197,8 @@ for (const [name, source] of [
   );
   assert.match(
     source,
-    /sleep "\$\{?(DWS|WECOM)_TIMEOUT\}?" && : >"\$tflag" && kill "\$pid" 2>\/dev\/null && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
-    `${name}: 看门狗必须先落「到点」标记再 TERM 并在宽限后升级 SIGKILL(标记后落会漏判到点与 TERM 微窗内自退的 CLI;只发一次 TERM 对抗性 CLI 无界)`,
+    /sleep "\$\{?(DWS|WECOM)_TIMEOUT\}?" && \[ -e "\$t" \] && : >"\$tflag" && kill "\$pid" 2>\/dev\/null && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
+    `${name}: 看门狗必须先确认捕获仍在再落「到点」标记、先标记再 TERM 并在宽限后升级 SIGKILL(标记后落会漏判到点与 TERM 微窗内自退的 CLI;只发一次 TERM 对抗性 CLI 无界;不确认捕获会让被中断清场的探测被孤儿看门狗凭空重建 .deadline)`,
   );
   // 看门狗清理行:删掉它,看门狗子壳会活过快探针,在 PID 复用后误杀无辜进程,
   // 迟到的 .deadline 也永不清理——此行无行为夹具背书,只能形态钉。
@@ -426,6 +426,44 @@ assert.doesNotMatch(
       });
       assert.strictEqual(res.status, 0, `${name}: 健康子进程不得被误杀(status=${res.status})`);
       assert.ok(res.stdout.includes("quick 1.2.3"), `${name}: 健康探测输出必须完整回放`);
+      // 分配失败(mktemp 失败/为空)必须在派生任何清理路径之前原路返回:旧形态
+      // 会把空的 t 派生成调用方目录里的相对 .deadline,尾部普通 rm 误删同名文件
+      // (评审实测复现;删掉守卫本块即红——实测旧形态此处 status=124 且哨兵被删)。
+      // 失败后换回健康 TMPDIR 的下一次调用必须照常成功(失败不得污染后续探测)。
+      const allocCaller = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-alloc-caller-"));
+      fs.writeFileSync(path.join(allocCaller, ".deadline"), "caller owns this file");
+      const runFromCaller = (env) =>
+        spawnSync("bash", ["-c", harness(quick, timeoutBin)], {
+          encoding: "utf8",
+          timeout: 20000,
+          killSignal: "SIGKILL",
+          cwd: allocCaller,
+          env,
+        });
+      const failedAlloc = runFromCaller({
+        ...process.env,
+        TMPDIR: path.join(tmp, "alloc-missing-tmpdir"),
+      });
+      assert.strictEqual(
+        failedAlloc.status,
+        1,
+        `${name}: mktemp 失败的探测必须以 1 原路返回(status=${failedAlloc.status})`,
+      );
+      assert.deepEqual(
+        fs.readdirSync(allocCaller),
+        [".deadline"],
+        `${name}: 分配失败后调用方目录必须原样(哨兵被删=清理路径未拦住空分配)`,
+      );
+      const nextAlloc = runFromCaller({ ...process.env });
+      assert.strictEqual(
+        nextAlloc.status,
+        0,
+        `${name}: 分配失败不得污染下一次正常探测(status=${nextAlloc.status})`,
+      );
+      assert.ok(
+        nextAlloc.stdout.includes("quick 1.2.3"),
+        `${name}: 分配失败后的下一次调用输出必须完整回放`,
+      );
     }
   }
 }
@@ -806,10 +844,12 @@ assert.doesNotMatch(
   }
 }
 // 行为钉(真脚本 + 假 CLI,从带 .deadline 哨兵的调用目录跑,WINDOWS 外跳过):
-// 正常退出哨兵必须保留、真实捕获已清;真实 Ctrl-C 形态(信号送达整个前台进程组,
-// 非 kill 单进程)中断后两者同样——外层挂清理的旧形态两处皆反:哨兵被误删、
-// 捕获泄漏(评审实测复现)。中断前必须先证捕获文件已落盘,防夹具落在探测开始
-// 之前而空真。
+// 正常退出哨兵必须保留、真实捕获已清。中断场景的断言边界(评审指出此前注释
+// 夸大覆盖,须与实际断言对齐):夹具对脚本进程本身发正 pid 信号(先 SIGINT,
+// 随后 SIGTERM 保证两版 bash 都收场),不发进程组信号;信号前以捕获文件落盘为
+// 就绪门,防夹具落在探测开始之前而空真;中断后只断言哨兵保留,不断言捕获清理
+// ——真实 Ctrl-C 的进程组送达形态与子壳 EXIT 清理由 §6 有界探测与 trap 形状钉
+// 覆盖,本夹具不重复背书。
 {
   const { spawnSync, spawn } = require("node:child_process");
   const os = require("node:os");
@@ -885,13 +925,13 @@ assert.doesNotMatch(
           `${script}: 正常退出后真实捕获文件必须已清(TMPDIR 残留=探测子壳清理被破坏)`,
         );
       }
-      // 中断退出:slow CLI 挂在探测里,1.2s 后先发 SIGINT(真实 Ctrl-C 形态);
-      // bash ≥5.3 实测会在 wait 期间吞掉/推迟 INT 而活下来(脚本转而逐探测跑完,
-      // 各探测尾部自清),3.2 则直接死——两版上「脚本被信号打断退出」都由随后的
-      // SIGTERM 保证:父壳死于信号时,旧形态的外层 EXIT trap 会当场展开
-      // rm -f "" ".deadline" 误删哨兵,新形态父壳无 trap,哨兵必须保留。
+      // 中断退出:slow CLI 挂在探测里,先发正 pid 的 SIGINT;bash ≥5.3 实测会在
+      // wait 期间吞掉/推迟 INT 而活下来(脚本转而逐探测跑完,各探测尾部自清),
+      // 3.2 则直接死——两版上「脚本被信号打断退出」都由随后的正 pid SIGTERM 保证:
+      // 父壳死于信号时,旧形态的外层 EXIT trap 会当场展开 rm -f "" ".deadline"
+      // 误删哨兵,新形态父壳无 trap,哨兵必须保留。
       {
-        const { caller, env, sentinel, bin } = mkCase("own-int");
+        const { cap, caller, env, sentinel, bin } = mkCase("own-int");
         fs.writeFileSync(path.join(bin, name), slowCli(name));
         fs.chmodSync(path.join(bin, name), 0o755);
         const child = spawn("bash", [path.join(root, "scripts", script)], {
@@ -916,6 +956,16 @@ assert.doesNotMatch(
           return st !== "" && !st.startsWith("Z");
         };
         sleepSync(1200);
+        // 就绪门:信号必须落在探测已落盘捕获之后——固定 sleep 只能等,证明不了
+        // 探测在飞,哨兵断言会因此空真(评审指出注释宣称的就绪验证此前并不存在)。
+        const readyT0 = Date.now();
+        while (fs.readdirSync(cap).length === 0 && Date.now() - readyT0 < 10000) {
+          sleepSync(100);
+        }
+        assert.ok(
+          fs.readdirSync(cap).length > 0,
+          `${script}: 信号前探测捕获必须已落盘(否则中断断言空真)`,
+        );
         process.kill(child.pid, "SIGINT");
         sleepSync(1000);
         if (alive()) process.kill(child.pid, "SIGTERM");
