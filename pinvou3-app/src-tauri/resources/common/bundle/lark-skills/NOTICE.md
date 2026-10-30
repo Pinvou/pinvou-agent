@@ -712,6 +712,10 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 1. **lark-shared/SKILL.md description「何时用」扩围**：原描述把本技能范围限为「仅在其他 lark-* 技能遇到认证/授权/身份/配置问题时,或首次使用 lark-cli 时」,但 lark-im/drive/wiki/sheets/task 五个技能正文以「CRITICAL — 开始前 MUST 先 read」要求在任何操作前前置读取本技能,`ok==true` 输出契约、`--as` 身份、exit 10 审批等规则也是每次调用都需要的。描述是触发/路由面,窄描述会诱导模型在常规操作中降权这些规则。改为「…遇到认证/授权/身份/配置问题、**被要求前置读取**,或首次使用 lark-cli 时」(272 字)。同时存在的 lark-doc「不预读」vs 其余五技能「MUST 预读」的三种前置策略分歧,属产品策略选择,本轮未统一,仅消除描述与实际用途的矛盾。
 2. **lark-doc/SKILL.md description 画板句更正**：原文「内嵌表格、多维表格、画板先提取 token 再切对应 skill」承诺画板有对应技能路由,但正文（与包内事实）是 lark-whiteboard 技能未随包收录、走 CLI 直连。改为「内嵌表格、多维表格先提取 token 切对应 skill;画板无技能,CLI 直连」(280 字,符合包内描述长度约定)。
 
+## 2026-10-30 本地修改（PR #808 文案清扫,下次 sync 需重放）
+
+1. **lark-sheets/references/lark-sheets-workbook.md 覆盖数更正**：「本 reference 覆盖 14 个 shortcut」→「16 个」。v1.0.98 上游重写 sheets 套件新增 `+filter-view-create`/`+history-list` 等 shortcut 后,本文件的引用清单已含 16 项而总述句仍写旧值 14,自相矛盾（逐一清点与下方列表一致）。下次 sync 需重放。
+
 ### 同步记录(2026-10-18 → v1.0.98)
 
 - 基线:v1.0.95 → v1.0.98。合并方法:以 v1.0.95 上游 `skills/` 为 base、当前本地为 ours、

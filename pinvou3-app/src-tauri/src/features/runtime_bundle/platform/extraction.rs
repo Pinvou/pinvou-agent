@@ -2437,6 +2437,72 @@ mod tests {
         );
     }
 
+    /// PR #808 review P2: an existing configured home upgraded across a
+    /// skill-tree-only content change has a complete, visible connector cache
+    /// (no `dingtalk_disabled` marker + all dws dirs materialized) AND a
+    /// stale `bundle/VERSION`. The gate is `bundle_changed || !show` — the
+    /// `bundle_changed` half must alone re-apply the skills, because skill
+    /// trees are excluded from `BUNDLE_INSTRUCTIONS_HASH` and the semantic
+    /// BUNDLE_VERSION bump is their only invalidation channel. Dropping that
+    /// half would keep serving pre-upgrade reference bytes to every session
+    /// composition (including the windowless CLI host), which copies this
+    /// cache recursively.
+    #[test]
+    fn ensure_extracted_refreshes_visible_dingtalk_skills_on_version_change() {
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-refreshes_visible_dingtalk_skills_on_version_change",
+            || {
+                let bundle = super::Pinvou3Bundle::paths();
+                // Existing home: materialize the cache so the boot-time cache
+                // probe reports visible — without a version change this boot
+                // would skip apply_dingtalk_skills entirely.
+                bundle.apply_dingtalk_skills(true).unwrap();
+                let delivered = super::Pinvou3Bundle::connector_package_skills_dir("dingtalk")
+                    .join("dws")
+                    .join("references")
+                    .join("products")
+                    .join("oa")
+                    .join("template")
+                    .join("nodes")
+                    .join("condition.md");
+                assert!(delivered.is_file(), "dws condition.md must be delivered");
+                let embedded = super::DINGTALK_SKILLS_DIR
+                    .get_file("dws/references/products/oa/template/nodes/condition.md")
+                    .expect("embedded dws condition.md")
+                    .contents()
+                    .to_vec();
+                // Simulate the pre-upgrade bytes the old bundle shipped.
+                std::fs::write(&delivered, b"stale pre-upgrade example bytes\n").unwrap();
+                // VERSION still names the old bundle: only bundle_changed can
+                // drive the refresh.
+                std::fs::create_dir_all(super::paths::bundle_version_file().parent().unwrap())
+                    .unwrap();
+                std::fs::write(super::paths::bundle_version_file(), "0.0.1-stale").unwrap();
+
+                let manager = crate::features::marketplace::MarketplaceManager::with_store(
+                    crate::platform::credential_store::MemoryCredentialStore::default(),
+                );
+                bundle
+                    .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
+                    .unwrap();
+
+                assert_eq!(
+                    std::fs::read(&delivered).unwrap(),
+                    embedded,
+                    "the version bump must refresh the delivered reference bytes \
+                     even though the cache was complete and visible"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(super::paths::bundle_version_file())
+                        .unwrap()
+                        .trim(),
+                    super::BUNDLE_VERSION,
+                    "the boot must stamp the new bundle version"
+                );
+            },
+        );
+    }
+
     /// #522 回归:禁用/隐藏残留可能只存在于 scope 收敛后的单一 disabled_bundles.json
     /// (旧 disabled_connectors.json 只读保留、新写入不再产生)。探测漏掉该文件会把
     /// 「仅禁用/隐藏集有残留」的退役工具误判干净,启动清理被整体跳过,陈旧条目继续
