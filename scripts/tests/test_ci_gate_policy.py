@@ -173,12 +173,14 @@ def _extract_readme_claims_read_targets(claims_test):
     )
     # 非字面量值 fail-closed:计算值行(`file: readmeFor(lang)`)主正则看不见,
     # 派生结果却因其他字面量行仍非空——新增 README 读取静默逃出路由锁。逐行
-    # 检查 file 值必须为引号字面量(模板串/单双引号皆可),否则红。
+    # 检查 file 值必须为完整的引号字面量(模板串/单双引号皆可):只查开头引号
+    # 会放过 quote 打头的拼接/插值值(`file: "README" + s + ".md"` 以引号开头
+    # 却是计算值),主正则把表达式切成错误目标;模板串含 ${…} 插值同样算计算值。
     for raw in re.findall(r"\bfile:\s*([^,}\n]+)", claims_test):
         value = raw.strip()
-        if not value.startswith(("'", '"', "`")):
+        if not re.fullmatch(r"'[^']*'|\"[^\"]*\"|`[^`]*`", value) or "${" in value:
             raise AssertionError(
-                "claims 行 file 值不是引号字面量,路由锁无法派生其读取目标"
+                "claims 行 file 值不是完整的静态引号字面量,路由锁无法派生其读取目标"
                 f"(改为字面量或同步本提取器): {value}"
             )
     if not targets:
@@ -217,6 +219,23 @@ def _extract_install_contract_script_reads(contract_test):
                 "read() 首参不是字符串字面量,路由锁无法派生其读取目标"
                 f"(改为字面量或同步本提取器): {first}"
             )
+    # scripts 首参调用的其余参数必须各自是完整的引号字面量(整个表达式,不只是
+    # 开头引号):拼接/插值/计算后参会被主正则切成错误目标,而派生结果因其他
+    # 字面量读取仍非空——`read("scripts", "a" + name + ".sh")` 会静默派生出
+    # 不存在的路径,真实读取逃出路由锁(fail-open)。逐参数 fullmatch 完整引号
+    # 形态,解析不出即红(宁可误红也不 fail-open;注释里提及 read( 形态时同样
+    # 须保持字面量示例形态)。空参数(尾逗号)跳过。
+    for rest in re.findall(
+        r"read\s*\(\s*['\"]scripts['\"]\s*,\s*([^)]*)\)", contract_test, re.S
+    ):
+        for arg in rest.split(","):
+            arg = arg.strip()
+            if arg and not re.fullmatch(r"'[^']*'|\"[^\"]*\"", arg):
+                raise AssertionError(
+                    "read(\"scripts\", …) 的每个参数都必须是完整的字符串字面量"
+                    "(拼接/插值/变量参数会派生出错误目标而静默逃出路由锁,"
+                    f"改为字面量或同步本提取器): read(\"scripts\", {rest})"
+                )
     if not targets:
         raise AssertionError(
             "connector_online_install_contract.test.js 未派生出任何 scripts/ 读取目标"
@@ -982,6 +1001,23 @@ class CiGatePolicyTests(unittest.TestCase):
             _extract_install_contract_script_reads("read(\"scripts\", scriptName)")
         with self.assertRaises(AssertionError):
             _extract_install_contract_script_reads("const x = 1;")
+        # 回归锁(round-13 评审 P3):参数表达式只查开头引号会放过 quote 打头的
+        # 拼接/插值——主正则把表达式切成错误目标而派生照常非空(fail-open)。
+        # 逐参数完整字面量检查下必须抛错;全字面量的多段读取照常派生(上方
+        # fixture 已断言)。
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scripts\", \"future-\" + name + \".sh\");\n"
+                "const b = read(\"scripts\", \"tauri\", \"build.js\");\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scripts\", `future-${name}.sh`);\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(\"scripts\", \"future-smoke.sh\" + suffix);\n"
+            )
         self.assertEqual(
             _extract_readme_claims_read_targets(
                 "{ file: 'README.md' }, { file: \"README.ja.md\" }"
@@ -1028,6 +1064,17 @@ class CiGatePolicyTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             _extract_readme_claims_read_targets(
                 "{ file: readmeFor('de') }, { file: \"README.md\" }"
+            )
+        # 回归锁(round-13 评审 P3):值表达式只查开头引号会放过 quote 打头的
+        # 拼接/插值——主正则把表达式切成错误目标(fail-open)。完整字面量检查
+        # 下必须抛错;模板串含 ${…} 插值同样算计算值,必须抛错。
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets(
+                "{ file: 'README' + suffix + '.md' }, { file: \"README.md\" }"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets(
+                "{ file: `README.${lang}.md` }, { file: \"README.md\" }"
             )
 
     def test_contract_target_derivation_covers_double_quoted_reads(self):
