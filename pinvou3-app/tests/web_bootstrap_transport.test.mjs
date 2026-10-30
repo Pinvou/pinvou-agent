@@ -20,8 +20,15 @@ function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test'
     static CLOSING = 2;
     static CLOSED = 3;
     static instances = [];
+    // Round-9 复审:构造器抛错路径(浏览器在 URL 非法/策略阻断时真的会
+    // 抛)此前零覆盖——默认夹具的构造器不可能抛错。测试把本字段设为 N,
+    // 第 N+1 次构造(下标 ≥ N)即抛错,spawn 不注册实例。
+    static throwFrom = null;
 
     constructor(url) {
+      if (MockWebSocket.throwFrom !== null && MockWebSocket.instances.length >= MockWebSocket.throwFrom) {
+        throw new TypeError('constructor blocked by the harness');
+      }
       this.url = url;
       this.readyState = 0;
       this.listeners = new Map();
@@ -1134,3 +1141,45 @@ console.log('web bootstrap transport tests passed');
   assert.equal(client.connectionState.status, 'credentials_missing',
     'the truncated link must stay parked on the blocking card');
 }
+
+// Round-9 复审:构造器抛错路径零覆盖(noteSpeculativeFailure 在抛错臂是
+// 唯一计数点,夹具构造器此前不可能抛错)。判别场景:健康 join 后进入静
+// 默投机周期,从第二次构造开始抛错——第一个抛错的 spawn 必须把失败计入
+// 投机梯度(删除该计数,第二个抛错的 spawn 仍被视为投机,UI 永远停在
+// connected);第二个抛错的 spawn 把失败推过封顶,重连必须可见。
+{
+  const blocked = await connectWithCapabilities(['chat:delta'], () => {});
+  assert.equal(blocked.client.speculativeFailures, 0,
+    'a verified join must leave the failure ladder at zero');
+  blocked.MockWebSocket.throwFrom = 1;
+  blocked.client.lastInboundAt = Date.now() - 121_000;
+  blocked.client._livenessCheck();
+  assert.equal(blocked.MockWebSocket.instances.length, 1,
+    'the watchdog closes the joined socket before the throwing spawns');
+  takeReconnectTimer(blocked.timers).callback();
+  assert.equal(blocked.MockWebSocket.instances.length, 1,
+    'a throwing constructor must not register a socket instance');
+  assert.equal(blocked.client.speculativeFailures, 1,
+    'a thrown constructor on a speculative spawn must count the failed cycle');
+  // 第一个抛错把投机位清掉:下一次 spawn 就是可见重连,再抛错不再计数
+  // (计数只发生在投机 spawn 上)——升级不靠「推过封顶」,靠投机位清空。
+  assert.equal(blocked.client.speculativeReconnect, false,
+    'a thrown speculative spawn must clear the speculative flag');
+  assert.equal(blocked.client.connectionState.status, 'connecting',
+    'the post-throw reconnect must be visible, not silently repeated');
+  takeReconnectTimer(blocked.timers).callback();
+  assert.equal(blocked.client.speculativeFailures, 1,
+    'only speculative spawns count; the visible retry cycle does not');
+  assert.equal(blocked.client.connectionState.status, 'connecting',
+    'the visible retry stays visible across repeated throw cycles');
+}
+
+// Round-9 复审:静默窗(120s)与 CONNECTING 楔死窗(45s)此前只有单侧行
+// 为钉(探针只从一侧越过阈值,把常数调小全部探针仍然绿)——源码级钉住
+// 常量字面量,与 vm 行为钉互补;改常数必须显式重审两侧行为钉。
+assert.match(source, /const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;/);
+assert.match(source, /const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;/);
+assert.match(source, /const LIVENESS_MAX_SPECULATIVE_FAILURES = 1;/);
+assert.match(source, /const LIVENESS_CONNECT_WEDGE_TIMEOUT_MS = 45_000;/);
+assert.match(source, /const DESKTOP_GONE_FAST_RETRIES = 5;/);
+assert.match(source, /const DESKTOP_GONE_MAX_DELAY_MS = 60_000;/);
