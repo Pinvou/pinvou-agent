@@ -57,6 +57,24 @@ function waitForOutput(child, pattern, timeoutMs = 5000) {
   });
 }
 
+// A container log line is written by the relay process and delivered to this
+// process through a pipe: socket close and stderr arrival are independent
+// events, so assertions on the line must wait for it instead of assuming it
+// landed by the time the close handshake finished.
+function waitForError(isolated, pattern, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const poll = () => {
+      if (pattern.test(isolated.errors())) return resolve();
+      if (Date.now() - started > timeoutMs) {
+        return reject(new Error(`timeout waiting for stderr ${pattern}\nstderr:\n${isolated.errors()}`));
+      }
+      setTimeout(poll, 25);
+    };
+    poll();
+  });
+}
+
 function openSocket(url = wsUrl, options = {}) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, options);
@@ -1648,6 +1666,12 @@ test("survives a websocket protocol violation that emits an error event", async 
     ws.send("x".repeat(4 * 1024 * 1024 + 8));
     await waitForClose(ws);
     // The containment must stay observable: one fixed line, no frame content.
+    // The line reaches this process through a pipe that drains independently
+    // of the close handshake, so wait for the evidence before asserting it.
+    await waitForError(
+      isolated,
+      /\[relay-error\] websocket_protocol_violation code=WS_ERR_UNSUPPORTED_MESSAGE_LENGTH/u,
+    );
     assert.match(
       isolated.errors(),
       /\[relay-error\] websocket_protocol_violation code=WS_ERR_UNSUPPORTED_MESSAGE_LENGTH/u,
