@@ -1981,7 +1981,30 @@ impl AppEngine {
     pub async fn send_headless_user_message(
         &self,
         content: String,
+        mode: SerializableMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+    ) -> Result<()> {
+        let approval =
+            crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(mode);
+        self.send_reserved_user_message_impl(
+            content,
+            mode.to_app_mode(),
+            approval,
+            persona_reminder,
+            restrict_tools,
+        )
+        .await
+    }
+
+    /// Historical AppMode-level entry kept for the forced-restrict wrapper's
+    /// closure shape; posture arrives resolved (tri-mode safety).
+    #[allow(dead_code)]
+    async fn send_reserved_user_message_impl(
+        &self,
+        content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
@@ -2014,6 +2037,7 @@ impl AppEngine {
                 self.send_reserved_user_message(
                     content,
                     mode,
+                    approval,
                     persona_reminder,
                     restrict_tools,
                     expert_snapshot,
@@ -2030,6 +2054,7 @@ impl AppEngine {
         &self,
         content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         // Proof token, not the caller's `bool`: only the pool's policy
         // (`turn_restrict_tools`) can mint it (PR #433 review S2(b)). The value
@@ -2043,6 +2068,7 @@ impl AppEngine {
         let op = self.build_interactive_send_message_op(
             content,
             mode,
+            approval,
             persona_reminder,
             restrict_tools.restricts_tools_for(&self.session_id),
             expert_snapshot,
@@ -2068,6 +2094,7 @@ impl AppEngine {
         &self,
         content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
@@ -2081,6 +2108,7 @@ impl AppEngine {
                 &self.session_id,
                 content,
                 mode,
+                approval,
                 persona_reminder,
                 restrict_tools,
                 &self.workspace,
@@ -2098,6 +2126,7 @@ impl AppEngine {
                 &self.session_id,
                 content,
                 mode,
+                approval,
                 persona_reminder,
                 restrict_tools,
             )
@@ -2121,10 +2150,18 @@ impl AppEngine {
     }
 
     fn profiled_send_op(&self, content: String, profile: &ScheduledRunProfile) -> Result<Op> {
+        // Scheduled runs are unattended: the profile's own
+        // apply_scheduled_turn_policy overrides the approval fields right
+        // below, so the pre-override posture stays the historical
+        // (true, Auto) — nothing can answer a card mid-run regardless.
         let mut op = self.bridge.build_send_message_op(
             &self.session_id,
             content,
             profile.execution_mode().to_app_mode(),
+            crate::features::assistant::platform::bridge::TurnApprovalPosture {
+                auto_approve: true,
+                approval_mode: deepseek_tui::ApprovalMode::Auto,
+            },
             Some(SCHEDULED_TURN_REMINDER.to_string()),
             false,
         )?;
@@ -4135,7 +4172,7 @@ mod live_tests {
         engine
             .send_headless_user_message(
                 prompts[0].to_string(),
-                SerializableMode::Yolo.to_app_mode(),
+                SerializableMode::Yolo,
                 None,
                 false,
             )
@@ -4181,7 +4218,7 @@ mod live_tests {
                         engine
                             .send_headless_user_message(
                                 prompts[1].to_string(),
-                                SerializableMode::Yolo.to_app_mode(),
+                                SerializableMode::Yolo,
                                 None,
                                 false,
                             )

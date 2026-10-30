@@ -78,6 +78,19 @@ pub struct SessionModeState {
     pub pending_persona_body: Option<String>,
     /// 当前激活 mode。`build_send_message_op` 用这个值。
     pub mode: SerializableMode,
+    /// 会话级"守卫命中时询问"开关（tri-mode 安全模型）。开启时 execpolicy
+    /// 拒绝面 / 非旁路 holds / typed ask 命中会升级为审批卡（Ask 姿态天然
+    /// 弹卡），关闭时按姿态硬拒。默认取全局 `ask_on_guardrail_default`
+    /// （true），新会话重置。经同一 io 互斥与 mode 一起写 sidecar（存在
+    /// mode 状态里的会话才有独立开关；无条目会话跟随全局默认）。
+    #[serde(default = "default_true")]
+    pub ask_on_guardrail: bool,
+    /// accept_plan 后回到的 mode（进入 Plan 前的 mode）。仅驻内存：重启后
+    /// Plan 会话经 `resolved_default_mode` 解析，不钉进程相对值（见
+    /// `durable_mode_entry` 的理由）。`None` = 未进入过 Plan；accept 回退到
+    /// Auto（新工作车道默认）。
+    #[serde(skip)]
+    pub(crate) pre_plan_mode: Option<SerializableMode>,
     /// 当前可操作方案的服务端 ticket。新 plan_ready 会替换旧 ticket；
     /// accept/discard 必须 compare-and-consume，防多端旧卡重复执行。
     #[serde(default)]
@@ -110,10 +123,16 @@ pub struct SessionModeState {
     pub multi_agent: bool,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for SessionModeState {
     fn default() -> Self {
         Self {
             mode: SerializableMode::Yolo,
+            ask_on_guardrail: default_true(),
+            pre_plan_mode: None,
             pending_plan_id: None,
             plan_claim_in_flight: None,
             active_persona: None,
@@ -148,12 +167,18 @@ mod type_tests {
             SerializableMode::Yolo.to_app_mode(),
             AppMode::Agent
         ));
+        assert!(matches!(
+            SerializableMode::Auto.to_app_mode(),
+            AppMode::Agent
+        ));
     }
 
     #[test]
     fn serializes_to_snake_case() {
         let s = SessionModeState {
             mode: SerializableMode::Plan,
+            ask_on_guardrail: true,
+            pre_plan_mode: None,
             pending_plan_id: Some("plan-1".to_string()),
             plan_claim_in_flight: None,
             active_persona: None,
@@ -265,7 +290,12 @@ impl SessionStore {
                 .last_mode
                 .unwrap_or(SerializableMode::Plan)
         } else {
-            SerializableMode::Yolo
+            // Tri-mode safety: new unbound plain sessions start in Auto
+            // (per-call approval cards, in-workspace writes modal-free), not
+            // in full-auto Yolo. The frontend applies the work lane's global
+            // default at session materialization; the backend no longer
+            // distinguishes a plain-side lane.
+            SerializableMode::Auto
         }
     }
 
@@ -314,6 +344,14 @@ impl SessionStore {
         {
             let mut m = self.mode_states.write();
             let entry = m.entry(id.to_string()).or_default();
+            // Tri-mode safety: remember the mode Plan was entered from so
+            // `accept_plan` returns execution there (fallback Auto). A
+            // re-entry into Plan refreshes the record; leaving Plan for
+            // anything other than accept leaves the record (harmless —
+            // only accept consumes it).
+            if mode == SerializableMode::Plan && entry.mode != SerializableMode::Plan {
+                entry.pre_plan_mode = Some(entry.mode);
+            }
             entry.mode = mode;
             entry.pending_plan_id = None;
             entry.plan_claim_in_flight = None;
@@ -530,7 +568,12 @@ impl SessionStore {
             {
                 bail!("plan_not_active");
             }
-            entry.mode = SerializableMode::Yolo;
+            // Tri-mode safety: execution after plan approval returns to the
+            // mode the session was in before entering Plan (fallback Auto) —
+            // approving a plan approves the work, not full-auto permission.
+            entry.mode = entry
+                .pre_plan_mode
+                .unwrap_or(SerializableMode::Auto);
             entry.pending_plan_id = None;
             entry.plan_claim_in_flight = Some(plan_id.to_string());
             entry.clone()
@@ -558,7 +601,8 @@ impl SessionStore {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
         let entry = Self::mode_state_entry(&mut states, id, default_mode);
-        if entry.mode != SerializableMode::Yolo
+        let claimed_mode = entry.pre_plan_mode.unwrap_or(SerializableMode::Auto);
+        if entry.mode != claimed_mode
             || entry.pending_plan_id.is_some()
             || entry.plan_claim_in_flight.as_deref() != Some(plan_id)
         {
@@ -1149,18 +1193,105 @@ impl SessionStore {
     /// touching disk, and the in-memory return to Plan stays consistent with
     /// disk.
     pub(crate) fn persist_accepted_yolo_mode(&self, id: &str) {
+        // Tri-mode safety: plan approval returns to the pre-plan mode
+        // (fallback Auto), so the persisted value is whatever the in-memory
+        // claim recorded — the function name is historical.
+        let accepted_mode = {
+            let states = self.mode_states.read();
+            states
+                .get(id)
+                .map(|entry| entry.mode)
+                .unwrap_or(SerializableMode::Auto)
+        };
         let _io = self.session_mode_states_io.lock();
         self.session_mode_states
             .write()
-            .insert(id.to_string(), SerializableMode::Yolo);
+            .insert(id.to_string(), accepted_mode);
         if let Err(error) = Self::apply_session_mode_mutation_locked(
-            &[(id.to_string(), SerializableMode::Yolo)],
+            &[(id.to_string(), accepted_mode)],
             &[],
         ) {
             // The session id is deliberately kept out of the message: boot
             // logs persist to disk and must not accumulate raw session
             // identifiers (CodeQL cleartext-logging gate).
-            eprintln!("[sessions] persist accepted yolo mode failed: {error:#}");
+            eprintln!("[sessions] persist accepted plan mode failed: {error:#}");
+        }
+    }
+
+    /// Set the session's ask-on-guardrail toggle (tri-mode safety). The
+    /// toggle rides the in-memory mode-state entry and persists into its own
+    /// `_ask_on_guardrail.json` sidecar (a `HashMap<String, bool>` of
+    /// explicit overrides — sessions absent from the file follow the global
+    /// `ask_on_guardrail_default`). Same critical-section discipline as
+    /// [`Self::set_mode`]: in-memory switch plus best-effort persist under
+    /// the shared io mutex; a failed persist is logged, not surfaced — the
+    /// in-memory switch already took effect.
+    pub fn set_ask_on_guardrail(&self, id: &str, enabled: bool) -> Result<()> {
+        let _io = self.session_mode_states_io.lock();
+        let previous = {
+            let mut states = self.mode_states.write();
+            match states.get_mut(id) {
+                Some(entry) => {
+                    let previous = entry.ask_on_guardrail;
+                    entry.ask_on_guardrail = enabled;
+                    Some(previous)
+                }
+                // A session with no materialized mode entry follows the
+                // global default; do not mint an entry (and thereby pin a
+                // mode) just to store the toggle — mirrors how the draft
+                // toggle resolves before materialization.
+                None => return Ok(()),
+            }
+        };
+        if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)]) {
+            if let (Some(entry), Some(previous)) = (self.mode_states.write().get_mut(id), previous)
+            {
+                entry.ask_on_guardrail = previous;
+            }
+            eprintln!("[sessions] persist ask_on_guardrail failed: {error:#}");
+        }
+        Ok(())
+    }
+
+    /// Id-level RMW for `_ask_on_guardrail.json`; caller holds
+    /// `session_mode_states_io`.
+    pub(crate) fn apply_ask_on_guardrail_mutation_locked(
+        upserts: &[( &str, bool)],
+    ) -> Result<()> {
+        crate::features::sessions::sidecars::mutate_json_map_file(
+            "_ask_on_guardrail.json",
+            |entries: &mut std::collections::HashMap<String, bool>| {
+                let mut changed = false;
+                for (id, enabled) in upserts {
+                    if entries.get(*id) != Some(enabled) {
+                        entries.insert((*id).to_string(), *enabled);
+                        changed = true;
+                    }
+                }
+                changed
+            },
+        )
+    }
+
+    /// Boot merge of `_ask_on_guardrail.json` into the mode-state entries
+    /// (overrides only; sessions absent from the file keep the global
+    /// default). Called after `load_session_mode_states` materialized the
+    /// entries.
+    pub fn load_ask_on_guardrail_overrides(&self) {
+        let file = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            return;
+        };
+        let Ok(overrides) =
+            serde_json::from_str::<std::collections::HashMap<String, bool>>(&content)
+        else {
+            return;
+        };
+        let mut states = self.mode_states.write();
+        for (id, enabled) in overrides {
+            if let Some(entry) = states.get_mut(&id) {
+                entry.ask_on_guardrail = enabled;
+            }
         }
     }
 

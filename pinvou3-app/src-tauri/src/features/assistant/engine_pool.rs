@@ -4003,6 +4003,7 @@ impl EnginePool {
         content: String,
         display_message: Message,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         expert_candidates: Vec<String>,
@@ -4081,6 +4082,7 @@ impl EnginePool {
                 engine.send_reserved_user_message(
                     content,
                     mode,
+                    approval,
                     reminder,
                     restrict_tools,
                     expert_snapshot,
@@ -4125,13 +4127,16 @@ impl EnginePool {
             .as_ref()
             .map(|snapshot| snapshot.available_role_lines(&match_text))
             .unwrap_or_default();
-        let mode = self.store.mode_state(session_id).mode.to_app_mode();
+        let session_mode = self.store.mode_state(session_id).mode;
+        // Tri-mode safety (S-1): posture from the session's SerializableMode.
+        let approval = crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(session_mode);
         match self
             .send_reserved_user_message(
                 session_id,
                 engine_content,
                 display_message,
-                mode,
+                session_mode.to_app_mode(),
+                approval,
                 false,
                 expert_snapshot,
                 expert_candidates,

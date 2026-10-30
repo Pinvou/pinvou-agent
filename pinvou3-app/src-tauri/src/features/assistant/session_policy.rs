@@ -155,12 +155,21 @@ impl SessionPolicy {
         Some(PLAN_REMINDER)
     }
 
-    /// 审批参数（auto_approve, approval_mode）：本期两模式同为「全自动 + Auto」，
-    /// 与 D-2 前共享 op 的写死值逐字节一致（行为不变）。S-1 安全分化（
-    /// docs/code-mode-解耦与权限持久化-改动说明.md 挂起项）落地时按模式差异化，
-    /// 调用点已策略取数，无需再动共享链路。
+    /// 审批参数（auto_approve, approval_mode）——按会话的 tri-mode 安全档
+    /// 取值（S-1 落地，取代两模式写死的「全自动 + Auto」）。
+    ///
+    /// 映射表见 [`crate::core::mode_state::SerializableMode::approval_params`]；
+    /// 本方法保留调用点兼容并继续收敛「按产品轴取运行参数」的单一出处。
+    /// `ask_on_guardrail` 是会话级运行状态而非模式身份，不经本对象，由
+    /// bridge 从 mode_state 直取。
+    pub fn approval_params_for_mode(&self, mode: crate::core::mode_state::SerializableMode) -> (bool, ApprovalMode) {
+        mode.approval_params()
+    }
+
+    /// 兼容旧调用点：两模式现默认 Auto（tri-mode 新工作车道默认）。
+    /// 仅限无法拿到会话 mode 的静态路径。
     pub fn approval_params(&self) -> (bool, ApprovalMode) {
-        (true, ApprovalMode::Auto)
+        (false, ApprovalMode::Suggest)
     }
 }
 
@@ -264,17 +273,34 @@ mod tests {
         assert_eq!(plain, code, "两模式 Plan reminder 必须同文(行为不变)");
     }
 
-    /// R-2 行为不变断言：两模式审批参数均为「全自动 + Auto」，与 D-2 前共享 op
-    /// 的写死值一致；S-1 分化时改这里并补差异断言。
+    /// S-1 tri-mode 断言：审批参数按会话安全档取值——Plan=只读归一姿态
+    /// (false, Suggest)，Auto=(false, Suggest)，Yolo=(true, Bypass)；
+    /// `approval_params()`（静态兼容路径）两产品轴均为 Auto 档。
     #[test]
-    fn approval_params_are_full_auto_for_both_modes_for_now() {
-        for mode in [SessionMode::Plain, SessionMode::Code] {
-            let (auto_approve, approval_mode) = SessionPolicy::for_mode(mode).approval_params();
-            assert!(auto_approve, "{mode:?} 本期必须全自动(行为不变)");
+    fn approval_params_follow_the_tri_mode_safety_postures() {
+        use crate::core::mode_state::SerializableMode;
+        for product_mode in [SessionMode::Plain, SessionMode::Code] {
+            let policy = SessionPolicy::for_mode(product_mode);
             assert_eq!(
-                approval_mode,
-                ApprovalMode::Auto,
-                "{mode:?} 本期必须 Auto(行为不变)"
+                policy.approval_params_for_mode(SerializableMode::Plan),
+                (false, ApprovalMode::Suggest),
+                "{product_mode:?} Plan 档"
+            );
+            assert_eq!(
+                policy.approval_params_for_mode(SerializableMode::Auto),
+                (false, ApprovalMode::Suggest),
+                "{product_mode:?} Auto 档"
+            );
+            assert_eq!(
+                policy.approval_params_for_mode(SerializableMode::Yolo),
+                (true, ApprovalMode::Bypass),
+                "{product_mode:?} Yolo 档"
+            );
+            // 静态兼容路径默认 Auto 档。
+            assert_eq!(
+                policy.approval_params(),
+                (false, ApprovalMode::Suggest),
+                "{product_mode:?} 静态兼容路径默认 Auto"
             );
         }
     }
