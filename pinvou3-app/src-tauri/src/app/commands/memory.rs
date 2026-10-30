@@ -938,6 +938,56 @@ mod tests {
     }
 
     #[test]
+    fn memory_warning_details_fold_the_storage_prefix() {
+        // Round-9 复审 minor:命令级四处警告/详情文本必须过
+        // `redact_storage_prefix`。`load_memory_source` 有直接的 io::Result
+        // 注入缝,内容级钉住(error 的 Display 内嵌存储根绝对路径时,出站
+        // detail 折叠为 ~/.pinvou3 前缀);其余三处同型 format! 接线无天然
+        // 注入缝,按 source-contract 钉住函数体(删除任一处接线即红)。
+        crate::platform::test_support::with_temp_home("memory-redact-detail", || {
+            let mut warnings = Vec::new();
+            let mut sources = BTreeMap::new();
+            let error = std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{}: locked",
+                    crate::platform::paths::pinvou3_home()
+                        .join("memory")
+                        .join("pending.json")
+                        .display()
+                ),
+            );
+            let _: Vec<String> =
+                load_memory_source("pending", Err(error), &mut warnings, &mut sources);
+            assert_eq!(
+                warnings[0].detail, "load pending: ~/.pinvou3/memory/pending.json: locked",
+                "the outbound detail must fold the storage root prefix"
+            );
+        });
+
+        let source = include_str!("memory.rs");
+        for fn_name in [
+            "fn runtime_snapshot_best_effort(",
+            "fn refresh_memory_snapshot_document(",
+            "fn load_memory_source<T: Default>(",
+            "pub async fn get_memory_overview(",
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub async fn ")
+                .or_else(|| body.find("\nfn "))
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("redact_storage_prefix(&format!("),
+                "{fn_name} must fold warning details through redact_storage_prefix"
+            );
+        }
+    }
+
+    #[test]
     fn overview_source_status_distinguishes_empty_from_unavailable() {
         let mut warnings = Vec::new();
         let mut sources = BTreeMap::new();

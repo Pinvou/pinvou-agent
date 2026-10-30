@@ -1853,6 +1853,64 @@ mod tests {
         );
     }
 
+    /// Round-9 复审 minor:折叠必须发生在命令边界——helper 级测试(直接
+    /// 驱动 fold_*)看不见接线,解除任一命令体的折叠会让原生错误链(宿主
+    /// 路径/中文原文)原样过继电器,而 helper 测试仍然全绿。按本 PR 的
+    /// gate-pin 惯例用 source-contract 钉住八个命令体的折叠接线。
+    #[test]
+    fn web_command_bodies_fold_errors_at_the_boundary() {
+        let source = include_str!("remote_control.rs");
+        for (fn_name, marker) in [
+            ("pub async fn web_access_chat(", "fold_web_chat_error("),
+            (
+                "pub async fn web_access_create_session_and_chat(",
+                "fold_web_chat_error(",
+            ),
+            ("pub fn web_access_artifact_info(", "web_artifact_access("),
+            (
+                "pub fn web_access_read_artifact_text(",
+                "ensure_web_artifact_response(",
+            ),
+            (
+                "pub fn web_access_write_artifact_text(",
+                "web_artifact_access(",
+            ),
+            (
+                "pub async fn web_access_read_artifact_image_b64(",
+                "fold_web_session_error(",
+            ),
+            (
+                "pub async fn web_access_read_artifact_thumbnail(",
+                "fold_web_session_error(",
+            ),
+            (
+                "pub async fn web_access_render_artifact_visual(",
+                "fold_web_session_error(",
+            ),
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let end = [
+                "\n#[tauri::command]",
+                "\n#[cfg(test)]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\nfn ",
+            ]
+            .iter()
+            .filter_map(|delimiter| body.find(delimiter))
+            .min()
+            .unwrap_or_else(|| panic!("{fn_name} body must be terminated"));
+            let body = &body[..end];
+            assert!(
+                body.contains(marker),
+                "{fn_name} must fold its errors at the command boundary ({marker})"
+            );
+        }
+    }
+
     #[test]
     fn stable_web_error_codes_are_locked() {
         // `acpErrors.js` treats every code below as a controlled Web failure;
