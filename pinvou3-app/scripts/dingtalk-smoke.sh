@@ -93,10 +93,15 @@ DWS_TIMEOUT=30
 # 归一为 124——超时诊断分支照常生效,不能把超时伪装成「结果未知」。
 DWS_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
+# Ctrl-C 中断探测时兜底清理当前临时文件(dws_run 尾部自清正常路径;裸 CLI 输出
+# 未过 redact,不应留在 $TMPDIR 供人翻看)。
+DWS_TMP=""
+trap 'rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null' EXIT
 dws_run() {
   local t rc tflag
   t="$(mktemp "${TMPDIR:-/tmp}/dws-smoke.XXXXXX")"
   tflag="${t}.deadline"
+  DWS_TMP="$t"
   if [ -n "$TIMEOUT_BIN" ]; then
     "$TIMEOUT_BIN" -k "$DWS_KILL_GRACE" "$DWS_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
   else
@@ -104,8 +109,9 @@ dws_run() {
     local pid=$!
     # 发出 TERM 即落「到点」标记:子进程收到 TERM 后优雅清理并以 0 退出时,wait
     # 的 0 会把超时伪装成通过(GNU timeout 同形态本就返回 124)——到点事实必须
-    # 独立于子进程最终退出码,标记存在则一律按 124 上报。
-    ( sleep "$DWS_TIMEOUT" && kill "$pid" 2>/dev/null && : >"$tflag" && sleep "$DWS_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    # 独立于子进程最终退出码,标记存在则一律按 124 上报。标记先于 TERM 落盘:
+    # 子进程恰在到点与 TERM 之间的微窗内自行退出的形态不再漏判超时。
+    ( sleep "$DWS_TIMEOUT" && : >"$tflag" && kill "$pid" 2>/dev/null && sleep "$DWS_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
@@ -141,7 +147,7 @@ GE="$(printf '%s\n%s\n' "$TRI" "$MIN_TRI" | sort -t. -k1,1n -k2,2n -k3,3n | head
 # PASS 前提是探测本身成功(v_rc=0):健康形状的输出 + 非零退出(含超时 124)是
 # 「CLI 跑了但失败」,不能因输出像样就发 PASS——实测 exit 7 + 正常版本行曾全绿。
 if [ "$v_rc" -eq 0 ] && [ -n "$TRI" ]; then
-  ok "--version 可执行: $(printf '%s\n' "$VER" | redact | tr -d '\r' | head -1)"
+  ok "--version 可执行: $(printf '%s\n' "$VER" | redact | tr -d '\r' | head -1 | cut -c 1-200)"
   if [ "$GE" = yes ]; then
     ok "version >= ${MIN_TRI}: $TRI"
   else
@@ -151,7 +157,7 @@ else
   # 超时(124)与「跑不动/解析不了」的处置不同:前者是这一族 CLI 已知的挂起形态
   # (见下方 DWS_TIMEOUT 注释),提示重跑/查代理,不是「先扫码」。
   if [ "$v_rc" -eq 124 ]; then
-    no "--version 探测超时(${DWS_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示): $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+    no "--version 探测超时(${DWS_TIMEOUT}s+${DWS_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示): $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
   else
     no "--version 失败或无法解析: $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
   fi
@@ -169,7 +175,7 @@ if [ "$a_rc" -eq 0 ] && echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:
   ok "已连接(auth status authenticated=true)"
 else
   if [ "$a_rc" -eq 124 ]; then
-    no "auth 探测超时(${DWS_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 160)"
+    no "auth 探测超时(${DWS_TIMEOUT}s+${DWS_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 160)"
   elif [ "$a_rc" -ne 0 ]; then
     no "auth 探测失败(exit $a_rc;CLI 自身报错,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 160)"
   else
@@ -187,7 +193,7 @@ echo "[3] 服务域抽样探测(代表性子集,只读 --help;存在的服务 ex
 for d in doc drive calendar todo chat sheet aitable; do
   OUT="$(dws_run "$d" --help 2>&1)"; d_rc=$?
   if [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
-  elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${DWS_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
+  elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${DWS_TIMEOUT}s+${DWS_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
   elif echo "$OUT" | grep -Eqi 'unknown command|not found|不存在|未知'; then no "$d 域不存在(CLI 无此服务)"
   # SKIP 回显同样过 redact:未知退出码正是 CLI 重试/报错时可能把凭证带进输出的路径。
   else sk "$d 域结果未知(exit $d_rc): $(printf '%s' "$OUT" | redact | tr -d '\n' | head -c 60)"; fi

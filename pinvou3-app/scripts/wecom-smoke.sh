@@ -5,7 +5,7 @@
 #   bash scripts/wecom-smoke.sh
 #   WECOM_TEST_DOCID=<docid> bash scripts/wecom-smoke.sh   # 额外真实读一篇已有文档
 #
-# 退出码:有硬性检查(版本/连接)失败则非 0,可挂 CI(但需先扫码授权,故默认手动跑);
+# 退出码:有硬性检查(版本/连接/可选读文档)失败则非 0,可挂 CI(但需先扫码授权,故默认手动跑);
 # 全部域探测被跳过(瞬态首调)时 exit 3 —— 「没验证到」不等于「验证通过」。
 set -u
 # set -u 下 HOME 未设置会直接炸成 unbound variable;这里给可行动的退出码 2。
@@ -81,10 +81,15 @@ WECOM_TIMEOUT=30
 # (TERM 死)都归一为 124,超时诊断分支照常生效。
 WECOM_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
+# Ctrl-C 中断探测时兜底清理当前临时文件(wecom_run 尾部自清正常路径;裸 CLI 输出
+# 未过 redact,不应留在 $TMPDIR 供人翻看)。变量名与 dingtalk-smoke.sh 保持一致。
+DWS_TMP=""
+trap 'rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null' EXIT
 wecom_run() {
   local t rc tflag
   t="$(mktemp "${TMPDIR:-/tmp}/wecom-smoke.XXXXXX")"
   tflag="${t}.deadline"
+  DWS_TMP="$t"
   if [ -n "$TIMEOUT_BIN" ]; then
     "$TIMEOUT_BIN" -k "$WECOM_KILL_GRACE" "$WECOM_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
   else
@@ -92,8 +97,9 @@ wecom_run() {
     local pid=$!
     # 发出 TERM 即落「到点」标记(与 dingtalk-smoke.sh 同口径):子进程收到 TERM
     # 后优雅清理并以 0 退出时,wait 的 0 会把超时伪装成通过——到点事实必须独立
-    # 于子进程最终退出码,标记存在则一律按 124 上报。
-    ( sleep "$WECOM_TIMEOUT" && kill "$pid" 2>/dev/null && : >"$tflag" && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    # 于子进程最终退出码,标记存在则一律按 124 上报。标记先于 TERM 落盘:子进程
+    # 恰在到点与 TERM 之间的微窗内自行退出的形态不再漏判超时。
+    ( sleep "$WECOM_TIMEOUT" && : >"$tflag" && kill "$pid" 2>/dev/null && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
@@ -123,7 +129,7 @@ GE="$(printf '%s\n%s\n' "$TRI" "$MIN_WECOM" | sort -t. -k1,1n -k2,2n -k3,3n | he
 # PASS 前提是探测本身成功(v_rc=0,与 dingtalk-smoke.sh 同口径):健康形状的输出 +
 # 非零退出(含超时 124)是「CLI 跑了但失败」,不能因输出像样就发 PASS。
 if [ "$v_rc" -eq 0 ] && [ -n "$TRI" ]; then
-  ok "--version 可执行: $(printf '%s\n' "$VER" | redact | tr -d '\r' | head -1)"
+  ok "--version 可执行: $(printf '%s\n' "$VER" | redact | tr -d '\r' | head -1 | cut -c 1-200)"
   if [ "$GE" = yes ]; then
     ok "version >= ${MIN_WECOM}: $TRI"
   else
@@ -132,7 +138,7 @@ if [ "$v_rc" -eq 0 ] && [ -n "$TRI" ]; then
 else
   # 超时(124)与「跑不动/解析不了」的处置不同(与 dingtalk-smoke.sh 同口径)。
   if [ "$v_rc" -eq 124 ]; then
-    no "--version 探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示): $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
+    no "--version 探测超时(${WECOM_TIMEOUT}s+${WECOM_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示): $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
   else
     no "--version 失败或无法解析: $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
   fi
@@ -148,7 +154,7 @@ if [ "$a_rc" -eq 0 ] && echo "$AUTH" | tr -d '\r' | grep -xiq 'authorized'; then
   ok "已连接(auth show --status 返回 authorized)"
 else
   if [ "$a_rc" -eq 124 ]; then
-    no "auth 探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
+    no "auth 探测超时(${WECOM_TIMEOUT}s+${WECOM_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
   elif [ "$a_rc" -ne 0 ]; then
     no "auth 探测失败(exit $a_rc;CLI 自身报错,不是未授权): $(printf '%s' "$AUTH" | redact | tr -d '\n' | head -c 120)"
   else
@@ -166,7 +172,7 @@ echo "[3] 各域授权探测(只读 --help;存在的子命令 exit 0,未授权/�
 for d in contact doc chat mail disk media message meeting sheet smartpage smartsheet calendar todo slide; do
   OUT="$(wecom_run "$d" --help 2>&1)"; d_rc=$?
   if [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
-  elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${WECOM_TIMEOUT}s;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
+  elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${WECOM_TIMEOUT}s+${WECOM_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
   elif echo "$OUT" | grep -q 'unrecognized subcommand'; then no "$d 域不存在(CLI 无此子命令)"
   elif echo "$OUT" | grep -Eq '权限|暂不支持|未授权'; then sk "$d 域未授权"
   # SKIP 回显同样过 redact:未知退出码正是 CLI 重试/报错时可能把凭证带进输出的路径。
