@@ -197,8 +197,15 @@ for (const [name, source] of [
   );
   assert.match(
     source,
-    /kill "\$pid" 2>\/dev\/null && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
-    `${name}: 看门狗必须在 TERM 后升级 SIGKILL(只发一次 TERM 对抗性 CLI 无界)`,
+    /kill "\$pid" 2>\/dev\/null && : >"\$tflag" && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
+    `${name}: 看门狗必须在 TERM 后落「到点」标记并升级 SIGKILL(只发一次 TERM 对抗性 CLI 无界)`,
+  );
+  // 到点事实必须独立于子进程最终退出码:TERM 后优雅 exit 0 的 CLI 会让 wait 返回
+  // 0,把超时伪装成通过(GNU timeout 同形态本就 124;行为钉见第 6 节 term-zero)。
+  assert.match(
+    source,
+    /\[ -e "\$tflag" \] && rc=124/,
+    `${name}: 看门狗到点必须覆盖子进程最终退出码(TERM 后优雅 exit 0 不得伪装成通过)`,
   );
   assert.match(
     source,
@@ -285,10 +292,12 @@ assert.doesNotMatch(
   }
 }
 
-// ---- 6) 探测限时对吞 TERM 的 CLI 必须有界 ----
+// ---- 6) 探测限时对吞 TERM 与 TERM 后优雅退出的 CLI 都必须有界且判超时 ----
 // GNU timeout 缺 -k:子进程无视 TERM 后 timeout 自身无限等待;看门狗只发一次
 // TERM:wait 同样无界。现场抽取两份脚本的 run 函数真跑 TERM 抗性子进程:两条
 // 路径都必须在 时限+杀宽限 内以 124 收场,且强杀前的输出保留(超时诊断可用)。
+// 另一形态:子进程收到 TERM 后优雅清理并以 0 退出——wait 的 0 不得覆盖「已到点」
+// 事实,仍须判 124(GNU timeout 同形态本就 124;看门狗分支曾实测伪装成 rc=0)。
 // spawnSync 的 timeout+SIGKILL 只是回归兜底——修回归后此测试自身数秒内结束。
 {
   const { spawnSync, execFileSync } = require("node:child_process");
@@ -308,6 +317,14 @@ assert.doesNotMatch(
       "#!/usr/bin/env bash\ntrap '' TERM\nprintf 'stubborn 9.9.9\\n'\nsleep 300\n",
     );
     fs.chmodSync(stubborn, 0o755);
+    // 优雅退出夹具必须用 sleep&wait 而非前台 sleep:bash 在前台子进程上会推迟
+    // trap 执行(那实际是「吞 TERM」形态,走 KILL 路径),wait 才会立即跑 trap。
+    const termZero = path.join(tmp, "term-zero-cli");
+    fs.writeFileSync(
+      termZero,
+      "#!/usr/bin/env bash\ntrap 'exit 0' TERM\nprintf 'term-zero 9.9.9\\n'\nsleep 300 &\nwait\n",
+    );
+    fs.chmodSync(termZero, 0o755);
     const quick = path.join(tmp, "quick-cli");
     fs.writeFileSync(quick, "#!/usr/bin/env bash\nprintf 'quick 1.2.3\\n'\n");
     fs.chmodSync(quick, 0o755);
@@ -333,9 +350,9 @@ assert.doesNotMatch(
           `${prefix}_KILL_GRACE=1`,
           `${fn} --version`,
         ].join("\n");
-      const runBounded = (label, bin) => {
+      const runBounded = (label, bin, cli = stubborn, marker = "stubborn 9.9.9") => {
         const t0 = Date.now();
-        const res = spawnSync("bash", ["-c", harness(stubborn, bin)], {
+        const res = spawnSync("bash", ["-c", harness(cli, bin)], {
           encoding: "utf8",
           timeout: 20000,
           killSignal: "SIGKILL",
@@ -344,19 +361,34 @@ assert.doesNotMatch(
         assert.strictEqual(
           res.status,
           124,
-          `${label}: 吞 TERM 的子进程必须以超时 124 收场(status=${res.status} signal=${res.signal} err=${res.error})`,
+          `${label}: 超时探测必须以 124 收场(status=${res.status} signal=${res.signal} err=${res.error})`,
         );
         assert.ok(
           elapsed < 15000,
           `${label}: 探测必须在时限+杀宽限内有界返回,实得 ${elapsed}ms(无界等待即回归)`,
         );
         assert.ok(
-          res.stdout.includes("stubborn 9.9.9"),
-          `${label}: 强杀前已产出的探测输出必须保留(超时诊断要能看到现场)`,
+          res.stdout.includes(marker),
+          `${label}: 收场前已产出的探测输出必须保留(超时诊断要能看到现场)`,
         );
       };
       if (hasTimeout) runBounded(`${name} coreutils timeout 分支`, timeoutBin);
       runBounded(`${name} 看门狗分支`, "");
+      // TERM 后优雅 exit 0:两条路径都不得把超时伪装成 rc=0(看门狗分支曾实测)。
+      if (hasTimeout) runBounded(`${name} coreutils 分支 TERM 后 exit 0 仍判超时`, timeoutBin, termZero, "term-zero 9.9.9");
+      runBounded(`${name} 看门狗分支 TERM 后 exit 0 仍判超时`, "", termZero, "term-zero 9.9.9");
+      // 后续调用对照:超时收场不得污染下一次探测(残留标记/孤儿会让快速调用挂住或失败)。
+      const after = spawnSync("bash", ["-c", harness(quick, "")], {
+        encoding: "utf8",
+        timeout: 20000,
+        killSignal: "SIGKILL",
+      });
+      assert.strictEqual(
+        after.status,
+        0,
+        `${name}: 看门狗超时后的后续快速调用必须照常成功(status=${after.status})`,
+      );
+      assert.ok(after.stdout.includes("quick 1.2.3"), `${name}: 后续快速调用的输出必须完整回放`);
       const res = spawnSync("bash", ["-c", harness(quick, timeoutBin)], {
         encoding: "utf8",
         timeout: 20000,
