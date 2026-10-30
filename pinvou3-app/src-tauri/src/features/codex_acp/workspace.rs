@@ -940,9 +940,11 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // 「新文件」渲染——pathspec 限定目的地时 git 无法与删除侧配对,
         // `new file mode` 直接带出旧 blob 全文,而词法/解析腿只看得见清白
         // 的目的地名。按完整 porcelain 解析重建 目的地→来源 映射,请求路
-        // 径是黑名单来源的改名/拷贝目标时整体拒绝。未暂存的 mv(内容以
-        // 无辜名落盘)仍属共享策略已记录的同名别名残余。改名会改写索引,
-        // diff 缓存指纹随之失效,不存在跨改名命中旧缓存条的窗口。
+        // 径是黑名单来源的改名/拷贝目标时整体拒绝(检测经 -c 强制,仓库
+        // 配置 status.renames=false 拆不散改名对)。porcelain 层无改名对
+        // 的形状(cp+add、相似度低于检测阈值的改写)属共享策略已记录的同
+        // 名别名残余——git 不再持有可追随的链接。改名会改写索引,diff 缓
+        // 存指纹随之失效,不存在跨改名命中旧缓存条的窗口。
         if let Some(origin) = git_staged_rename_origins(&root)?.get(&relative) {
             if relative_path_crosses_blocked_component(origin) {
                 bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
@@ -1524,7 +1526,13 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
     crate::platform::process::strip_git_override_env(&mut command);
     let output = command
         .current_dir(root)
+        // -c status.renames=true:改名对是黑名单过滤的输入,Round-9 复审
+        // 对抗探针证实用户仓库配置 status.renames=false 会把 `git mv` 拆
+        // 成 `D`+`??`(目的地不被过滤、diff 车道照常渲染旧凭据 blob)。
+        // 检测在此强制开启,不随仓库配置漂移。
         .args([
+            "-c",
+            "status.renames=true",
             "status",
             "--porcelain=v1",
             "-z",
@@ -1552,7 +1560,7 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
         let x = record[0] as char;
         let y = record[1] as char;
         let path = porcelain_record_path(record);
-        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
+        if (matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C')) && index < records.len() {
             // Round-9 复审 BLOCKER:porcelain 的 R/C 记录是 `目的地 NUL
             // 来源`,来源才是改名对里旧内容(黑名单名下的字节)的载体。
             // 来源命中黑名单时,目的地条目整体不回显——它正是把旧字节
@@ -1582,7 +1590,8 @@ fn git_staged_rename_origins(root: &Path) -> Result<HashMap<String, String>> {
     crate::platform::process::strip_git_override_env(&mut command);
     let output = command
         .current_dir(root)
-        .args(["status", "--porcelain=v1", "-z", "--", "."])
+        // 与 git_status_entries 同理:改名检测强制开启,不随仓库配置漂移。
+        .args(["-c", "status.renames=true", "status", "--porcelain=v1", "-z", "--", "."])
         .output()
         .context("执行 git status 失败")?;
     if !output.status.success() {
@@ -2673,6 +2682,36 @@ mod tests {
         );
         let diff = workspace_diff("rename-ok-diff", repo.path(), "docs.txt").unwrap();
         assert!(diff.text.contains("hello"), "got: {}", diff.text);
+
+        // Round-9 复审对抗探针:仓库配置 status.renames=false 不得拆散改
+        // 名对(否则 `git mv` 退化为 `D`+`??`,目的地不被过滤、diff 车道
+        // 照常渲染旧凭据 blob)。检测在 spawn 层用 -c 强制,与配置漂移无关。
+        run_git(repo.path(), &["config", "status.renames", "false"]);
+        run_git(repo.path(), &["mv", "docs.txt", "moved.txt"]);
+        let changes = workspace_changes("rename-cfg", repo.path()).unwrap();
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "moved.txt"),
+            "an innocent rename must stay listed even with status.renames=false"
+        );
+        fs::write(repo.path().join(".env"), "AWS_SECRETKEY=more\n").unwrap();
+        run_git(repo.path(), &["add", ".env"]);
+        run_git(repo.path(), &["commit", "-m", "second"]);
+        run_git(repo.path(), &["mv", ".env", "harmless.txt"]);
+        let changes = workspace_changes("rename-cfg2", repo.path()).unwrap();
+        assert!(
+            !changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "harmless.txt"),
+            "a blocked rename must stay filtered even with status.renames=false"
+        );
+        let error = workspace_diff("rename-cfg2-diff", repo.path(), "harmless.txt")
+            .err()
+            .expect("a blocked rename must be refused even with status.renames=false");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
     /// Round-9 复审 minor:ls-files(index)腿的判别钉。HEAD 未出生时
