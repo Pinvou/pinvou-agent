@@ -792,6 +792,16 @@ mod tests {
             );
             assert!(check_sensitive_path(&path).is_err(), "{component}");
         }
+        // Round-8 复审 MAJOR:.git 内部(远端 URL 常内嵌 oauth2:TOKEN@
+        // 形态凭据)按嵌套路径同样拒绝;.gitignore/.github 等仅共享前缀
+        // 的不同组件不受影响(GUI 镜像同源同语义)。
+        let nested = Path::new("/home/u/repo/.git/config");
+        assert_eq!(crosses_sensitive_component(nested), Some(".git"));
+        assert!(check_sensitive_path(nested).is_err(), ".git/config");
+        assert!(
+            crosses_sensitive_component(Path::new("/home/u/repo/.gitignore")).is_none(),
+            ".gitignore is a different component and must stay readable"
+        );
         for prefix in SENSITIVE_PATH_COMPONENT_PREFIXES {
             let path = PathBuf::from("/home/u/.pinvou3/sessions/s-1/workspace")
                 .join(format!("{prefix}local"));
