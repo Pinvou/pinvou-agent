@@ -8467,7 +8467,14 @@ mod tests {
         );
 
         let ordinary = bridge
-            .build_send_message_op("gui-session", "hello".into(), AppMode::Agent, None, false)
+            .build_send_message_op(
+                "gui-session",
+                "hello".into(),
+                AppMode::Agent,
+                TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
+                None,
+                false,
+            )
             .unwrap();
         assert!(matches!(
             ordinary,
