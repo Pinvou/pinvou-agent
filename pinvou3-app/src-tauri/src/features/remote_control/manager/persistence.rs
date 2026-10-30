@@ -178,8 +178,28 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
     // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛,同时免去
     // 第二次 open 的 TOCTOU(两次打开之间路径可被换掉)。Windows/fallback
     // 平台该调用是显式 no-op。
-    platform::enforce_private_permissions(&file, path)
-        .map_err(|error| format!("restrict {}: {error}", path.display()))?;
+    platform::enforce_private_permissions(&file, path).map_err(|error| {
+        // Round-8 复审 minor:修复自身失败(fchmod 需要 owner 权限,
+        // 备份恢复可能留下他者属主的世界可读密文件)时,不能把它一直
+        // 留在众所周知的路径上。隔离改名只需要父目录写权限,下一轮
+        // start 会用 0600 重建;隔离也失败(目录只读/Windows 文件锁)
+        // 则保持原错误——那与目录不可写同级,后续写入同样会失败。
+        match crate::platform::filesystem::quarantine_corrupt_file(path) {
+            Ok(quarantined) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}); \
+                     quarantined to {} and the next start creates a fresh 0600 file",
+                path.display(),
+                quarantined.display()
+            ),
+            Err(quarantine_error) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}) and the \
+                     quarantine rename also failed ({quarantine_error}); the loose file \
+                     stays in place",
+                path.display()
+            ),
+        }
+        format!("restrict {}: {error}", path.display())
+    })?;
     let mut text = String::new();
     file.take((super::MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
         .read_to_string(&mut text)
@@ -414,6 +434,23 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
     // (两次打开之间路径可被换掉,修复的可能不是读到的那个 inode)。
     // (Windows/fallback 平台该调用是显式 no-op。)
     if let Err(error) = platform::enforce_private_permissions(&file, path) {
+        // Round-8 复审 minor:修复自身失败时同样把放宽权限的密文件隔离
+        // 挪离众所周知的路径(与 load_config_from 同因同策);隔离失败则
+        // 保持 Unavailable 原错误。
+        match crate::platform::filesystem::quarantine_corrupt_file(path) {
+            Ok(quarantined) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}); \
+                 quarantined to {} and the next write creates a fresh 0600 ledger",
+                path.display(),
+                quarantined.display()
+            ),
+            Err(quarantine_error) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}) and the \
+                 quarantine rename also failed ({quarantine_error}); the loose file \
+                 stays in place",
+                path.display()
+            ),
+        }
         return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
     }
     // 与 config 读取相同的 take() 有界读取:先按上限截断再检查,损坏/超大
