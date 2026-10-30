@@ -2695,12 +2695,14 @@ impl Pinvou3Bridge {
 
     /// Profile-aware form of [`build_engine_config_for_session_roots`]
     /// (tri-mode safety): the CALLER derives the profile from the session's
-    /// persisted mode (`SafetyRuleProfile::for_mode(store.mode_state(sid).mode)`)
-    /// and threads it in — the bridge itself holds no store. The profile
-    /// selects only WHICH safety rule families compose into the spawn-time
-    /// execpolicy initial value (see [`safety_deny_rules::SafetyRuleProfile`]);
-    /// the post-spawn arming (`EnginePool`'s `Op::ChangeMode`) separately
-    /// syncs the mode posture itself.
+    /// persisted mode and engine lane
+    /// (`SafetyRuleProfile::for_engine_lane(store.mode_state(sid).mode,
+    /// engine_is_scheduled_run)`) and threads it in — the bridge itself holds
+    /// no store. The profile selects only WHICH safety rule families compose
+    /// into the spawn-time execpolicy initial value (see
+    /// [`safety_deny_rules::SafetyRuleProfile`]); the post-spawn arming
+    /// (`EnginePool`'s `Op::ChangeMode`) separately syncs the mode posture
+    /// itself.
     pub(crate) fn build_engine_config_for_session_roots_with_profile(
         &self,
         session_id: &str,
@@ -3044,11 +3046,12 @@ impl Pinvou3Bridge {
     }
 
     /// Profile-aware form of [`scope_deny_ruleset`] (tri-mode safety): the
-    /// caller derives the profile from the session's persisted mode
-    /// (`SafetyRuleProfile::for_mode(store.mode_state(sid).mode)`) — Yolo
-    /// sessions get the Floor ruleset, Plan/Auto the Full one. The pool is
-    /// the only production caller (it owns the store); every caller without
-    /// session-mode information stays on [`scope_deny_ruleset`] (Full).
+    /// caller derives the profile from the session's persisted mode and
+    /// engine lane (`SafetyRuleProfile::for_engine_lane`) — Yolo sessions get
+    /// the Floor ruleset, Plan/Auto the Full one, and an unattended
+    /// scheduled-run engine always Full. The pool is the only production
+    /// caller (it owns the store); every caller without session-mode
+    /// information stays on [`scope_deny_ruleset`] (Full).
     pub(crate) fn scope_deny_ruleset_for_mode(
         &self,
         session_id: &str,

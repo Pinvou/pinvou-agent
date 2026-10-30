@@ -2167,7 +2167,12 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
         store.scheduled_profile(&id).expect("agent profile").mode,
         ScheduledRunMode::Agent
     );
-    assert_eq!(store.mode_state(&id).mode, SerializableMode::Yolo);
+    // Tri-mode: the scheduled profile carries the run's execution mode
+    // (Agent → AppMode::Agent) via the profile and engine state; the
+    // interactive mode-state layer has no entry for this scheduled session,
+    // so it resolves the unbound plain default — Auto, not the historical
+    // Yolo.
+    assert_eq!(store.mode_state(&id).mode, SerializableMode::Auto);
 
     let reloaded = reopen_store(&store).expect("restart after agent persistence");
     assert_eq!(
@@ -2177,7 +2182,7 @@ fn scheduled_agent_mode_round_trips_without_collapsing_profile_or_metadata() {
             .mode,
         ScheduledRunMode::Agent
     );
-    assert_eq!(reloaded.mode_state(&id).mode, SerializableMode::Yolo);
+    assert_eq!(reloaded.mode_state(&id).mode, SerializableMode::Auto);
     assert_eq!(
         reloaded
             .load(&id)
@@ -3990,23 +3995,24 @@ fn mode_switch_loop_preserves_orthogonal_state() {
     let (store, _g) = isolated_store();
     let sid = "s-loop";
 
-    // starts at the default Yolo, loaded with orthogonal state
-    assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+    // starts at the tri-mode default (unbound plain session → Auto), loaded
+    // with orthogonal state
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
     store.set_pending_persona_body(sid, Some("PENDING BODY".into()));
     store.set_mounted_collection(sid, Some(42));
     store.set_active_persona(sid, Some("expert-x".into()));
 
-    // two round trips of the loop: Yolo →(set_plan_mode_next)→ Plan
-    // →(accept/exit)→ Yolo
+    // two round trips of the loop: Auto →(set_plan_mode_next)→ Plan
+    // →(accept/exit)→ Auto
     for _ in 0..2 {
         store
             .set_mode(sid, SerializableMode::Plan)
             .expect("set chat plan mode");
         assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);
         store
-            .set_mode(sid, SerializableMode::Yolo)
-            .expect("set chat yolo mode");
-        assert_eq!(store.mode_state(sid).mode, SerializableMode::Yolo);
+            .set_mode(sid, SerializableMode::Auto)
+            .expect("set chat auto mode");
+        assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
     }
 
     // all three orthogonal fields preserved
@@ -4021,6 +4027,118 @@ fn mode_switch_loop_preserves_orthogonal_state() {
         st.active_persona.as_deref(),
         Some("expert-x"),
         "切 mode 清了人格"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tri-mode safety: the global `ask_on_guardrail_default` preference seeds
+// every fresh mode-state entry (the `mode_state` fallback AND every mint
+// site, boot included); explicit `_ask_on_guardrail.json` overrides keep
+// winning and already-materialized entries are never re-seeded in-process.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ask_on_guardrail_default_seeds_fresh_and_unmaterialized_sessions() {
+    let (store, _g) = isolated_store();
+    let sid = "s-ask-seed";
+
+    // (a) Default pref (true): a session with no entry resolves armed.
+    assert!(
+        store.mode_state(sid).ask_on_guardrail,
+        "the fallback for an unmaterialized session must follow the global default (true)"
+    );
+
+    // (b) The global "silent hard-deny" opt-out disarms a FRESH session
+    // before it has any explicit per-session state — both the read-side
+    // fallback and the mint side of an explicit set_mode.
+    store
+        .set_ask_on_guardrail_default(false)
+        .expect("persist ask_on_guardrail_default=false");
+    assert!(
+        !store.mode_state("s-ask-fresh").ask_on_guardrail,
+        "the fallback must answer ask_on_guardrail_default=false"
+    );
+    store
+        .set_mode("s-ask-mint", SerializableMode::Auto)
+        .expect("mint entry via set_mode");
+    assert!(
+        !store.mode_state("s-ask-mint").ask_on_guardrail,
+        "a fresh entry minted by set_mode must seed from ask_on_guardrail_default=false"
+    );
+
+    // (c) An explicit per-session override wins over the global opt-out.
+    store
+        .set_ask_on_guardrail("s-ask-mint", true)
+        .expect("write per-session override");
+    assert!(
+        store.mode_state("s-ask-mint").ask_on_guardrail,
+        "the explicit _ask_on_guardrail.json override must beat the global default"
+    );
+    let overrides: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(
+            crate::platform::paths::sessions_root().join("_ask_on_guardrail.json"),
+        )
+        .expect("override sidecar must exist"),
+    )
+    .expect("override sidecar must stay valid JSON");
+    assert_eq!(
+        overrides.get("s-ask-mint"),
+        Some(&true),
+        "the explicit armed choice must be durably recorded"
+    );
+}
+
+#[test]
+fn ask_on_guardrail_materialized_entry_is_not_reseeded_but_boot_mint_follows_the_pref() {
+    let (store, _g) = isolated_store();
+    let sid = "s-ask-pinned";
+
+    // Materialize while the global default is still true (fresh home pref).
+    store
+        .set_mode(sid, SerializableMode::Auto)
+        .expect("materialize entry");
+    assert!(store.mode_state(sid).ask_on_guardrail);
+    store
+        .set_ask_on_guardrail_default(false)
+        .expect("flip the global default off");
+    assert!(
+        store.mode_state(sid).ask_on_guardrail,
+        "a materialized entry must NOT be re-seeded by a later default change"
+    );
+    // …while a session still without an entry keeps seeding from the new default.
+    store
+        .set_mode("s-ask-late", SerializableMode::Auto)
+        .expect("mint entry after the flip");
+    assert!(!store.mode_state("s-ask-late").ask_on_guardrail);
+
+    // Boot remint: the durable toggle for a session absent from the override
+    // sidecar IS "follow the global default" (the field's documented
+    // semantics), so a persisted-mode session without an explicit override
+    // re-seeds from the CURRENT pref at boot, while an explicit override
+    // recorded before the flip keeps winning.
+    seed_session(&store, "s-ask-boot-armed", 0);
+    seed_session(&store, "s-ask-boot-opted", 0);
+    store
+        .set_mode("s-ask-boot-armed", SerializableMode::Auto)
+        .expect("persist armed boot session mode");
+    store
+        .set_mode("s-ask-boot-opted", SerializableMode::Auto)
+        .expect("persist opted boot session mode");
+    store
+        .set_ask_on_guardrail("s-ask-boot-opted", true)
+        .expect("record explicit override pre-flip");
+    store
+        .set_ask_on_guardrail_default(false)
+        .expect("flip the global default off before reboot");
+    let rebooted = reopen_store(&store).expect("reopen");
+    rebooted.load_ask_on_guardrail_overrides();
+    assert!(
+        !rebooted.mode_state("s-ask-boot-armed").ask_on_guardrail,
+        "boot mint of a persisted-mode session without an override must seed from the current default"
+    );
+    assert!(
+        rebooted.mode_state("s-ask-boot-opted").ask_on_guardrail,
+        "the explicit override must survive the reboot and the default flip"
     );
 }
 
@@ -4449,7 +4567,10 @@ fn ghost_ids_are_reconciled_away_on_load() {
 
 /// 蜂群开关物化 mode 条目时必须用解析出的默认 mode，不得 `or_default()`：
 /// 从未切换过 mode 的 code 会话默认是 Plan 只读，开一次开关不能把它静默
-/// 翻成 Yolo 自动批准（既覆盖 set_multi_agent，也覆盖启动恢复路径）。
+/// 翻成 Yolo 自动批准。`set_multi_agent`（谓词可用）物化 Plan；启动恢复
+/// 路径的装载先于 code-session predicate 注册（生产环境同样在 Tauri setup
+/// 钩子里才注册），物化的是无谓词进程的解析默认 Auto——两条恢复路都绝不
+/// 得回到 `or_default()` 的 Yolo。
 #[test]
 fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
     let (store, _guard) = isolated_store();
@@ -4472,7 +4593,10 @@ fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
         "code 会话开蜂群不得把默认 mode 翻成 Yolo"
     );
 
-    // 启动恢复路径：新 store 从 sidecar 恢复开关，同样不得物化 Yolo。
+    // 启动恢复路径：新 store 从 sidecar 恢复开关。启动时装载 multi-agent
+    // flag 时 code-session predicate 尚未注册（生产环境同样如此），物化的
+    // mode 条目只能解析无谓词进程的默认——tri-mode 的 Auto。钉住的不变量：
+    // 恢复绝不物化 Yolo（or_default 的旧行为），开关本身不丢。
     let reloaded = SessionStore::boot_with_scheduled_root(paths::scheduled_tasks_root())
         .expect("reboot store");
     let second_predicate_id = id.clone();
@@ -4482,8 +4606,8 @@ fn multi_agent_toggle_materializes_resolved_default_mode_not_yolo() {
     assert!(reloaded.mode_state(&id).multi_agent, "开关恢复");
     assert_eq!(
         reloaded.mode_state(&id).mode,
-        SerializableMode::Plan,
-        "启动恢复同样不得把 code 会话翻成 Yolo"
+        SerializableMode::Auto,
+        "启动恢复不得把会话物化成 Yolo（or_default 的旧行为）"
     );
 }
 
@@ -4634,8 +4758,9 @@ fn code_session_first_use_defaults_to_plan() {
     // Never used code mode (no per-session record, global last_mode=None) →
     // read-only Plan.
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
-    // plain sessions keep the Yolo status quo.
-    assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Yolo);
+    // Tri-mode: unbound plain sessions default to Auto (per-call approval
+    // cards), no longer the historical full-auto Yolo.
+    assert_eq!(store.mode_state("plain-1").mode, SerializableMode::Auto);
 }
 
 #[test]
@@ -4662,7 +4787,8 @@ fn code_session_default_follows_code_lane_default() {
 
 /// A plain chat session bound to a user working directory: its default mode
 /// aligns with the code safety posture (Plan on first use, following the code
-/// lane's global default); unbound plain sessions stay on Yolo.
+/// lane's global default); unbound plain sessions default to the tri-mode
+/// Auto.
 #[test]
 fn workspace_bound_plain_session_defaults_to_plan_like_code() {
     let (store, _g) = isolated_store();
@@ -4676,14 +4802,14 @@ fn workspace_bound_plain_session_defaults_to_plan_like_code() {
         .expect("bind");
 
     // Never used (global last_mode=None) → read-only Plan on first use;
-    // unbound plain stays Yolo.
+    // unbound plain stays on the tri-mode Auto default.
     assert_eq!(
         store.mode_state(&bound.metadata.id).mode,
         SerializableMode::Plan
     );
     assert_eq!(
         store.mode_state("plain-unbound").mode,
-        SerializableMode::Yolo
+        SerializableMode::Auto
     );
 
     // The code lane's global default applies to bound plain sessions as well.
@@ -4734,11 +4860,12 @@ fn code_mode_persists_per_session_across_restart() {
     assert_eq!(on_disk.get("code-2"), Some(&SerializableMode::Plan));
 }
 
-/// After an accepted plan is confirmed (commit), the session's Yolo joins
-/// the per-session persistence;
-/// no global lane default is touched (two-lane semantics); a failed-commit
-/// rollback writes nothing to disk, and the in-memory Plan stays consistent
-/// with disk.
+/// After an accepted plan is confirmed (commit), the accepted mode joins the
+/// per-session persistence (tri-mode: the mode Plan was entered from — here
+/// the fallback Auto, because the session entered Plan straight from its
+/// default without an explicit switch); no global lane default is touched
+/// (two-lane semantics); a failed-commit rollback writes nothing to disk,
+/// and the in-memory Plan stays consistent with disk.
 #[test]
 fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
     let (store, _g) = isolated_store();
@@ -4754,7 +4881,9 @@ fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
     let claim = store
         .claim_pending_plan("code-1", "plan-1")
         .expect("claim plan-1");
-    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
+    // Tri-mode: execution after approval returns to the pre-Plan mode — the
+    // Auto fallback here (never explicitly switched), not full-auto Yolo.
+    assert_eq!(store.mode_state("code-1").mode, SerializableMode::Auto);
     drop(claim);
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
     assert!(store.code_permission_prefs().last_mode.is_none());
@@ -4770,11 +4899,11 @@ fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
         .commit();
     assert!(store.code_permission_prefs().last_mode.is_none());
 
-    // Restart: per-session restores Yolo; a new code session falls back to
-    // the global default (untouched → Plan).
+    // Restart: per-session restores the accepted Auto; a new code session
+    // falls back to the global default (untouched → Plan).
     let reopened = reopen_store(&store).expect("reboot");
     with_code_sessions(&reopened, &["code-1", "code-2"]);
-    assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Yolo);
+    assert_eq!(reopened.mode_state("code-1").mode, SerializableMode::Auto);
     assert_eq!(reopened.mode_state("code-2").mode, SerializableMode::Plan);
 }
 

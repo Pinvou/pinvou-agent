@@ -146,6 +146,30 @@ impl Default for SessionModeState {
     }
 }
 
+impl SessionModeState {
+    /// A fresh mode-state entry for a session being materialized NOW (the
+    /// `mode_state` fallback, `mode_state_entry`, and every `or_insert_with`
+    /// mint site). Identical to [`Default::default`] except the per-session
+    /// ask-on-guardrail toggle seeds from the global
+    /// `code_permission.ask_on_guardrail_default` preference (tri-mode):
+    /// sessions absent from `_ask_on_guardrail.json` follow that global
+    /// default — hardcoding `true` here ignored the user's "silent
+    /// hard-deny" opt-out until the session got an explicit toggle write.
+    /// Explicit per-session overrides (the sidecar, merged by
+    /// `load_ask_on_guardrail_overrides` AFTER boot minting) keep winning,
+    /// and an already-materialized entry is never re-seeded by this ctor.
+    ///
+    /// ONE seeding point by construction: every fresh-entry mint site must
+    /// go through it (`Default::default()` stays for serde round-trips and
+    /// field-spread bases only).
+    fn default_for_new_session(ask_on_guardrail_default: bool) -> Self {
+        Self {
+            ask_on_guardrail: ask_on_guardrail_default,
+            ..Self::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod type_tests {
     use super::*;
@@ -257,13 +281,16 @@ impl SessionStore {
     }
 
     pub fn mode_state(&self, id: &str) -> SessionModeState {
+        // Resolved BEFORE the read lock: the global default seeds a
+        // fallback entry's ask_on_guardrail (see `default_for_new_session`).
+        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
         self.mode_states
             .read()
             .get(id)
             .cloned()
             .unwrap_or_else(|| SessionModeState {
                 mode: self.resolved_default_mode(id),
-                ..SessionModeState::default()
+                ..SessionModeState::default_for_new_session(ask_on_guardrail_default)
             })
     }
 
@@ -299,16 +326,31 @@ impl SessionStore {
         }
     }
 
+    /// The store's canonical fresh-entry mint for an id-level read-modify-
+    /// write: materializes with the caller's resolved default mode and seeds
+    /// `ask_on_guardrail` from the global preference (one seeding point —
+    /// [`Self::default_for_new_session`]). An existing entry is returned
+    /// untouched, so a later preference change never re-arms a session that
+    /// already materialized.
+    ///
+    /// Instance method (not an associated fn) precisely so the seed cannot
+    /// drift from `code_permission_prefs()`; callers already resolve
+    /// `default_mode` before taking the write lock for the same
+    /// predicate/sidecar reason documented on [`Self::clear_mode_and_persist`]
+    /// — the pref read here is a plain in-memory mirror read under its own
+    /// lock and acquires nothing else.
     pub(crate) fn mode_state_entry<'m>(
+        &self,
         states: &'m mut HashMap<String, SessionModeState>,
         id: &str,
         default_mode: SerializableMode,
     ) -> &'m mut SessionModeState {
+        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
         states
             .entry(id.to_string())
             .or_insert_with(|| SessionModeState {
                 mode: default_mode,
-                ..SessionModeState::default()
+                ..SessionModeState::default_for_new_session(ask_on_guardrail_default)
             })
     }
 
@@ -341,9 +383,17 @@ impl SessionStore {
     /// state and the durable-read cache (`session_mode_states`) without
     /// touching the sidecar file.
     fn set_mode_in_memory(&self, id: &str, mode: SerializableMode) {
+        // Fresh-entry seed resolved BEFORE the write lock (same reason as
+        // `clear_mode_and_persist`: the pref mirror read must not sit under
+        // the mode-states guard). A minted entry keeps the historical
+        // `Default` mode so the pre_plan_mode branch below behaves exactly
+        // as before — only the ask_on_guardrail seeding is new.
+        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
         {
             let mut m = self.mode_states.write();
-            let entry = m.entry(id.to_string()).or_default();
+            let entry = m
+                .entry(id.to_string())
+                .or_insert_with(|| SessionModeState::default_for_new_session(ask_on_guardrail_default));
             // Tri-mode safety: remember the mode Plan was entered from so
             // `accept_plan` returns execution there (fallback Auto). A
             // re-entry into Plan refreshes the record; leaving Plan for
@@ -416,7 +466,7 @@ impl SessionStore {
             // 与本文件其他 setter 同惯例：物化条目时用解析出的默认 mode，
             // 不得 or_default()——那会把从未切换过 mode 的 code 会话从
             // Plan 只读默认静默翻成 Yolo 自动批准。
-            let entry = Self::mode_state_entry(&mut m, id, default);
+            let entry = self.mode_state_entry(&mut m, id, default);
             let previous = entry.multi_agent;
             entry.multi_agent = enabled;
             previous
@@ -526,7 +576,7 @@ impl SessionStore {
                 if sessions_dir.join(format!("{id}.json")).is_file() {
                     // 同 set_multi_agent：物化条目用解析出的默认 mode，
                     // 避免 or_default() 把 code 会话翻成 Yolo。
-                    Self::mode_state_entry(&mut m, &id, self.resolved_default_mode(&id))
+                    self.mode_state_entry(&mut m, &id, self.resolved_default_mode(&id))
                         .multi_agent = true;
                 } else {
                     ghosts = true;
@@ -549,7 +599,7 @@ impl SessionStore {
     ) -> Option<SessionModeState> {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut states, id, default_mode);
+        let entry = self.mode_state_entry(&mut states, id, default_mode);
         if entry.mode != SerializableMode::Plan || entry.plan_claim_in_flight.is_some() {
             return None;
         }
@@ -561,7 +611,7 @@ impl SessionStore {
         let accepted_state = {
             let default_mode = self.resolved_default_mode(id);
             let mut states = self.mode_states.write();
-            let entry = Self::mode_state_entry(&mut states, id, default_mode);
+            let entry = self.mode_state_entry(&mut states, id, default_mode);
             if entry.mode != SerializableMode::Plan
                 || entry.pending_plan_id.as_deref() != Some(plan_id)
                 || entry.plan_claim_in_flight.is_some()
@@ -600,7 +650,7 @@ impl SessionStore {
     pub(crate) fn restore_pending_plan_claim(&self, id: &str, plan_id: &str) -> Result<()> {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut states, id, default_mode);
+        let entry = self.mode_state_entry(&mut states, id, default_mode);
         let claimed_mode = entry.pre_plan_mode.unwrap_or(SerializableMode::Auto);
         if entry.mode != claimed_mode
             || entry.pending_plan_id.is_some()
@@ -617,7 +667,7 @@ impl SessionStore {
     pub(crate) fn discard_pending_plan(&self, id: &str, plan_id: &str) -> Result<SessionModeState> {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let entry = Self::mode_state_entry(&mut states, id, default_mode);
+        let entry = self.mode_state_entry(&mut states, id, default_mode);
         if entry.mode != SerializableMode::Plan
             || entry.pending_plan_id.as_deref() != Some(plan_id)
             || entry.plan_claim_in_flight.is_some()
@@ -665,7 +715,7 @@ impl SessionStore {
     #[cfg(test)]
     pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
-        Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode).active_persona =
+        self.mode_state_entry(&mut self.mode_states.write(), id, default_mode).active_persona =
             persona_id;
     }
 
@@ -673,7 +723,7 @@ impl SessionStore {
     pub fn set_persona(&self, id: &str, persona_id: Option<String>, pending_body: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let state = self.mode_state_entry(&mut states, id, default_mode);
         state.active_persona = persona_id;
         state.pending_persona_body = pending_body;
     }
@@ -687,7 +737,7 @@ impl SessionStore {
     #[cfg(test)]
     pub fn set_pending_persona_body(&self, id: &str, body: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
-        Self::mode_state_entry(&mut self.mode_states.write(), id, default_mode)
+        self.mode_state_entry(&mut self.mode_states.write(), id, default_mode)
             .pending_persona_body = body;
     }
 
@@ -816,7 +866,7 @@ impl SessionStore {
     {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let state = self.mode_state_entry(&mut states, id, default_mode);
         let current = folded_collections(state);
         let mut normalized = Vec::new();
         for collection in update(current) {
@@ -1006,7 +1056,7 @@ impl SessionStore {
     {
         let default_mode = self.resolved_default_mode(id);
         let mut states = self.mode_states.write();
-        let state = Self::mode_state_entry(&mut states, id, default_mode);
+        let state = self.mode_state_entry(&mut states, id, default_mode);
         let mut normalized = Vec::new();
         for collection in update(state.mounted_remote_collections.clone()) {
             if collection.server_id.trim().is_empty()
@@ -1133,9 +1183,18 @@ impl SessionStore {
             let mut persisted = self.session_mode_states.write();
             *persisted = modes.clone();
         }
+        // Boot minting seeds the toggle from the CURRENT global default: a
+        // persisted-mode session without an explicit `_ask_on_guardrail.json`
+        // override follows the preference (overrides are merged AFTER this
+        // by `load_ask_on_guardrail_overrides`, so explicit choices win).
+        // Resolved before the write lock — the mirror read is in-memory only.
+        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
         let mut states = self.mode_states.write();
         for (id, mode) in modes {
-            states.entry(id).or_default().mode = mode;
+            states
+                .entry(id)
+                .or_insert_with(|| SessionModeState::default_for_new_session(ask_on_guardrail_default))
+                .mode = mode;
         }
     }
 

@@ -1759,10 +1759,16 @@ impl AppEngine {
         // Tri-mode safety: one mode_state read feeds both the swarm switch
         // and the safety-profile derivation threaded into the spawn config
         // (the pool's post-spawn arming separately syncs the live posture).
+        // An UNATTENDED scheduled spawn always composes the Full profile:
+        // the stored mode is an interactive posture, and deriving Floor from
+        // a stored Yolo would drop the sensitive-face mechanical gate
+        // (credential destroy/exfil/persistence) for exactly the runs nobody
+        // watches — see `SafetyRuleProfile::for_engine_lane`.
         let mode_state = store.mode_state(session_id);
         let safety_profile =
-            crate::features::assistant::safety_deny_rules::SafetyRuleProfile::for_mode(
+            crate::features::assistant::safety_deny_rules::SafetyRuleProfile::for_engine_lane(
                 mode_state.mode,
+                scheduled_unattended_spawn,
             );
         let multi_agent_enabled = scheduled_profile.is_none()
             && bridge.multi_agent_mode_available(session_id)
@@ -4377,6 +4383,55 @@ mod tests {
             span.contains("engine_config.subagents_enabled = false;"),
             "the unattended spawn must disable subagents — the deterministic \
              delegation-disable leg of the recursion shield (round-34 M4)"
+        );
+    }
+
+    /// Tri-mode safety (scheduled lane): the spawn-time ruleset profile must
+    /// derive through the ENGINE LANE (`for_engine_lane`), not the bare
+    /// `for_mode` — an unattended scheduled spawn of a stored-Yolo session
+    /// must compose Full, or the sensitive-face mechanical gate silently
+    /// disappears for unattended automations. `spawn_for_session` cannot run
+    /// in unit tests (AppHandle + live bridge), so pin the wiring: the
+    /// lane-aware derivation sits in the spawn body between the one
+    /// `mode_state` read and the profile-threading spawn-config builders.
+    #[test]
+    fn unattended_spawn_derives_the_safety_profile_through_the_engine_lane() {
+        let source = include_str!("engine.rs");
+        // Strip line comments so a commented-out call cannot satisfy the pin
+        // (same mutation class as unattended_spawn_disables_subagents_in_source).
+        let live = source
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let production = live
+            .split("mod tests {")
+            .next()
+            .expect("the production half of engine.rs present");
+        let body = production
+            .split("pub(crate) async fn spawn_for_session(")
+            .nth(1)
+            .expect("the spawn_for_session body present");
+        let mode_read_at = body
+            .find("let mode_state = store.mode_state(session_id);")
+            .expect("the spawn body must read the session mode state once");
+        let derivation_at = body
+            .find("SafetyRuleProfile::for_engine_lane(")
+            .expect("the spawn body must derive the profile through for_engine_lane");
+        let lane_at = body[derivation_at..]
+            .find("scheduled_unattended_spawn")
+            .expect("the unattended lane flag must thread the derivation");
+        let config_at = body
+            .find("build_engine_config_for_session_roots_with_profile(")
+            .expect("the profile must thread the spawn config");
+        assert!(
+            mode_read_at < derivation_at && derivation_at < config_at && lane_at > 0,
+            "ordering: mode read → lane-aware profile derivation → spawn config"
+        );
+        assert!(
+            !body.contains("SafetyRuleProfile::for_mode("),
+            "the bare mode-derived profile must not return at the spawn site \
+             (a revert re-opens the unattended Floor regression)"
         );
     }
 

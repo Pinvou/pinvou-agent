@@ -833,6 +833,31 @@ impl SafetyRuleProfile {
             | crate::core::mode_state::SerializableMode::Auto => Self::Full,
         }
     }
+
+    /// Engine-incarnation → profile: the profile a ruleset serves for a
+    /// SPECIFIC engine (spawn config, spawn arming, and every later hot
+    /// refresh of that engine's ruleset). An UNATTENDED scheduled run always
+    /// composes [`SafetyRuleProfile::Full`]: the stored session mode is an
+    /// interactive posture, and an unattended automation has no one to answer
+    /// the armed card Yolo trades the sensitive faces for — deriving Floor
+    /// from a stored Yolo would silently drop the credential-destroy /
+    /// exfil / persistence mechanical gate for exactly the runs where nobody
+    /// watches. (The unattended lane's per-turn approval policy keeps its own
+    /// task-profile gate in the forwarder; this restores the deny-ruleset
+    /// half.) Interactive engines — including interactive continuations of a
+    /// scheduled session, which spawn a fresh `scheduled_run_engine = false`
+    /// incarnation — keep the mode-derived tri-mode face.
+    #[must_use]
+    pub fn for_engine_lane(
+        mode: crate::core::mode_state::SerializableMode,
+        scheduled_run_engine: bool,
+    ) -> Self {
+        if scheduled_run_engine {
+            Self::Full
+        } else {
+            Self::for_mode(mode)
+        }
+    }
 }
 
 /// First-argument destroy/tamper commands: the former live segments 1/2
@@ -2567,6 +2592,73 @@ mod tests {
                 d.reason()
             );
         }
+    }
+
+    /// Tri-mode profile seam, engine lane: `for_engine_lane` forces Full for
+    /// a scheduled-run (unattended) engine regardless of the stored mode —
+    /// the sensitive-face mechanical gate must not depend on an interactive
+    /// posture for runs nobody watches — while an interactive engine keeps
+    /// the mode-derived face (stored Yolo → Floor).
+    #[test]
+    fn forkguard_ruleset_profile_engine_lane_forces_full_for_unattended_runs() {
+        use crate::core::mode_state::SerializableMode;
+        // Stored Yolo + unattended spawn → Full.
+        assert_eq!(
+            SafetyRuleProfile::for_engine_lane(SerializableMode::Yolo, true),
+            SafetyRuleProfile::Full,
+            "an unattended scheduled run must compose Full even from a stored Yolo"
+        );
+        // Interactive stored Yolo keeps the Floor face (the armed-card trade).
+        assert_eq!(
+            SafetyRuleProfile::for_engine_lane(SerializableMode::Yolo, false),
+            SafetyRuleProfile::Floor,
+            "an interactive Yolo session keeps the mode-derived Floor face"
+        );
+        // Plan/Auto compose Full in both lanes.
+        for mode in [SerializableMode::Plan, SerializableMode::Auto] {
+            for scheduled in [false, true] {
+                assert_eq!(
+                    SafetyRuleProfile::for_engine_lane(mode, scheduled),
+                    SafetyRuleProfile::Full,
+                    "Plan/Auto always compose Full (mode {mode:?}, scheduled {scheduled})"
+                );
+            }
+        }
+        // The unattended lane's Full composition really carries the
+        // sensitive families the Floor lane drops (sudo-off injected state).
+        let full = safety_rules_for_profile_with_home(SafetyRuleProfile::Full, false, None);
+        let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
+        let floor_commands: std::collections::HashSet<&str> =
+            floor.iter().filter_map(|r| r.command.as_deref()).collect();
+        let full_commands: std::collections::HashSet<&str> =
+            full.iter().filter_map(|r| r.command.as_deref()).collect();
+        for sensitive in ["sudo", "rm * ~/.ssh/id_rsa", "crontab -e"] {
+            assert!(
+                full_commands.contains(sensitive),
+                "the unattended Full face must keep the sensitive rule: {sensitive}"
+            );
+            assert!(
+                !floor_commands.contains(sensitive),
+                "the interactive Floor face must stay without the sensitive rule: {sensitive}"
+            );
+        }
+    }
+
+    /// Tri-mode profile seam, pinned Floor count: the Floor (Yolo lane)
+    /// composition is pinned at exactly 3,521 rules (the documented count in
+    /// `docs/fork-modifications.md` and the PR body; the Full profile pins
+    /// 8,729 in `rule_snapshot_is_stable`). Same host-independent test
+    /// composition as the Full pin: sudo state injected off, no Windows
+    /// real-home prefix. Pinning the exact number turns any silent family
+    /// drop/addition in the Floor lane red immediately.
+    #[test]
+    fn forkguard_ruleset_profile_floor_count_is_pinned() {
+        let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
+        assert_eq!(
+            floor.len(),
+            3521,
+            "Floor ruleset size drifted; confirm the change is intentional and update the pinned count"
+        );
     }
 
     #[test]

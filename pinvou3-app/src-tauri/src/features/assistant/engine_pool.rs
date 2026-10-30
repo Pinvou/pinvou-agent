@@ -4644,16 +4644,26 @@ impl EnginePool {
     }
 
     /// The session's execpolicy deny ruleset as its CURRENT tri-mode state
-    /// dictates: the safety families compose under the session's mode-derived
-    /// profile ([`SafetyRuleProfile::for_mode`]) on top of the scope gate.
-    /// Shared by the one-session refresh and the global broadcast so a
-    /// session's ruleset is built exactly one way. There is no
-    /// "mode unavailable" fallback here: the store always answers
-    /// (`mode_state` resolves the lane default), which IS the documented
-    /// fallback — callers with genuinely no store information (tests,
-    /// static fixtures) use `bridge.scope_deny_ruleset` (Full) directly.
-    fn session_scope_ruleset_for_mode(&self, session_id: &str) -> codewhale_execpolicy::Ruleset {
-        let profile = SafetyRuleProfile::for_mode(self.store.mode_state(session_id).mode);
+    /// dictates, for a SPECIFIC engine incarnation
+    /// ([`SafetyRuleProfile::for_engine_lane`]): interactive engines compose
+    /// the safety families under the session's mode-derived profile
+    /// ([`SafetyRuleProfile::for_mode`]); an unattended scheduled-run engine
+    /// always composes Full. Shared by the spawn arming, the one-session
+    /// refresh, and the global broadcast so one engine's ruleset is built
+    /// exactly one way across all of them. There is no "mode unavailable"
+    /// fallback here: the store always answers (`mode_state` resolves the
+    /// lane default), which IS the documented fallback — callers with
+    /// genuinely no store information (tests, static fixtures) use
+    /// `bridge.scope_deny_ruleset` (Full) directly.
+    fn session_scope_ruleset_for_engine(
+        &self,
+        session_id: &str,
+        engine: &AppEngine,
+    ) -> codewhale_execpolicy::Ruleset {
+        let profile = SafetyRuleProfile::for_engine_lane(
+            self.store.mode_state(session_id).mode,
+            engine.scheduled_run_engine,
+        );
         self.bridge.scope_deny_ruleset_for_mode(session_id, profile)
     }
 
@@ -4673,7 +4683,7 @@ impl EnginePool {
             if let Err(e) = engine
                 .handle
                 .send(Op::SetPermissionRuleset {
-                    ruleset: self.session_scope_ruleset_for_mode(&sid),
+                    ruleset: self.session_scope_ruleset_for_engine(&sid, &engine),
                 })
                 .await
             {
@@ -4696,7 +4706,7 @@ impl EnginePool {
         engine
             .handle
             .send(Op::SetPermissionRuleset {
-                ruleset: self.session_scope_ruleset_for_mode(session_id),
+                ruleset: self.session_scope_ruleset_for_engine(session_id, &engine),
             })
             .await
             .context(format!(
@@ -4759,7 +4769,10 @@ impl EnginePool {
             );
         }
         if let Err(error) = engine.handle.try_send(Op::SetPermissionRuleset {
-            ruleset: self.session_scope_ruleset_for_mode(session_id),
+            // Engine-lane form: an unattended scheduled spawn armed from a
+            // stored Yolo must keep the spawn config's Full ruleset, not
+            // clobber it with the mode-derived Floor.
+            ruleset: self.session_scope_ruleset_for_engine(session_id, engine),
         }) {
             log::warn!(
                 "[engine_pool] spawn arming {session_id} ruleset send failed: {error:#}"
@@ -9855,6 +9868,41 @@ mod scheduled_model_tests {
         assert!(
             !body.contains("scheduled_profile(session_id).is_some()"),
             "the spawn path must not scope the sync failure to scheduled sessions"
+        );
+    }
+
+    /// Tri-mode safety (scheduled lane): every ruleset sent to a LIVE engine
+    /// (spawn arming + both hot refreshes) must compose through the
+    /// engine-lane form, or a refresh would clobber the unattended spawn's
+    /// Full ruleset with the mode-derived Floor behind the run's back. The
+    /// pool cannot be unit-constructed (needs an AppHandle), so pin the
+    /// wiring: the lane-aware builder exists at all three send sites and the
+    /// mode-blind form is gone entirely.
+    #[test]
+    fn live_engine_ruleset_sends_route_through_the_engine_lane_profile() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        assert!(
+            !src.contains("session_scope_ruleset_for_mode("),
+            "the mode-blind ruleset builder must stay deleted (it cannot see \
+             the engine's unattended lane)"
+        );
+        let arm_body = production_body(src, "fn arm_spawned_session_safety_posture(");
+        assert!(
+            arm_body.contains("session_scope_ruleset_for_engine(session_id, engine)"),
+            "spawn arming must arm the engine's own lane composition"
+        );
+        let refresh_body = production_body(src, "async fn refresh_permission_rulesets(");
+        assert!(
+            refresh_body.contains("session_scope_ruleset_for_engine(&sid, &engine)"),
+            "the global broadcast must compose per engine incarnation"
+        );
+        let one_body = production_body(src, "async fn refresh_session_permission_ruleset(");
+        assert!(
+            one_body.contains("session_scope_ruleset_for_engine(session_id, &engine)"),
+            "the one-session refresh must compose for the live engine's lane"
         );
     }
 
