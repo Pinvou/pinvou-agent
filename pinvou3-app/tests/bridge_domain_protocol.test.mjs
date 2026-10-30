@@ -241,8 +241,10 @@ const expectedProtocolHashes = {
   // Recomputed for the repo-wide stale-comment cleanup: wording-only comment
   // edits inside the captured chat-events.js listener spans (stale tool_start
   // line number, three deleted English captions) — chat.js spans and the
-  // command surface unchanged.
-  chat: 'f81e5a4a3152024bd0c80b46b0d89f628553cc69ee8bac28960129d9260b20eb',
+  // command surface unchanged. Recomputed again in round 3: the present_artifact
+  // comment now carries the web lane's exact `chat:tool_start` token so both
+  // bridge lanes read byte-identically.
+  chat: '44c35fd4781321ce44d8f2c0674ccafdd512233878c7e4f79e259e1bff4e6eba',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

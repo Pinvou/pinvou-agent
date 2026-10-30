@@ -92,11 +92,11 @@ const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 防止反复回退把 sidecar 写到无限大。
 const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
 
-/// 底座 compaction 摘要标记。底座现行标记是 `CodeWhale/crates/tui/src/
-/// history_recognition.rs` 的 `COMPACTION_SUMMARY_MARKER`（首句 "Another language
-/// model started to solve this problem"，随摘要块写入 system prompt）；本字面量
-/// 是底座 v0.9.6 前的旧格式标记（`LEGACY_COMPACTION_SUMMARY_MARKER`），现仅命中
-/// 旧格式会话——现行格式回退后不再提示「对话含压缩摘要残留」，只是不提示，
+/// 底座 compaction 摘要标记。底座现行标记是 `COMPACTION_SUMMARY_MARKER`
+/// （首句 "Another language model started to solve this problem"，随摘要块写入
+/// system prompt），定义在底座 `CodeWhale/crates/tui/src/history_recognition.rs`；
+/// 本字面量是底座 v0.9.6 前的旧格式标记（`LEGACY_COMPACTION_SUMMARY_MARKER`），
+/// 现仅命中旧格式会话——现行格式的会话回退后不再触发压缩残留提示，只是不提示，
 /// 不影响回退正确性，可接受。
 const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
 

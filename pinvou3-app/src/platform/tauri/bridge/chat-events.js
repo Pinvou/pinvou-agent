@@ -868,7 +868,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
 
     // present_artifact 结束：成功 → 弹成品卡(点击打开);失败 → 落普通工具卡显错误,
     // 让 AI 从 tool_result 看到错误自行重试。成品卡是真工具调用,tool_use 已进
-    // messages(tool_start 时),rerenderFromMessages 按 name 还原,切会话不丢。
+    // messages(chat:tool_start),rerenderFromMessages 按 name 还原,切会话不丢。
     if (meta && isPresentArtifactTool(meta.name)) {
       if (p.success) {
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
