@@ -462,8 +462,10 @@ assert.doesNotMatch(
 }
 
 // ---- 8) 解析/比较/发现管道行为钉(形状钉不执行,变异不咬)----
-// seen 锚被删时「更新提示在前行」的输入会读进提示号;比较管道 head→tail 或丢
-// -k 数值键时下限判定翻转;发现排序丢键时 1.0.9 会压过 1.0.64。全部现场 eval 真跑。
+// 「更新提示在前行」(行内无 CLI 名)由行名过滤排除——该夹具钉的是行名过滤;
+// seen 锚由「同一行内数字在名字之前」的夹具钉住,删 seen 此处才红。比较管道
+// head→tail 或丢 -k 数值键时下限判定翻转;发现排序丢键时 1.0.9 会压过 1.0.64。
+// 全部现场 eval 真跑。
 {
   const { execFileSync } = require("node:child_process");
   if (process.platform !== "win32") {
@@ -485,7 +487,14 @@ assert.doesNotMatch(
       assert.strictEqual(
         runLine(triLine, "TRI", { VER: `a new version 1.0.96 is available\n${cliName} ${min}` }),
         min,
-        `${name}: 更新提示行(数字在前)不得被读成本机版本——删 seen 锚此处即红`,
+        `${name}: 更新提示行(数字在前、行内无 CLI 名)不得被读成本机版本——删行名过滤此处即红`,
+      );
+      // seen 锚的专属夹具:同一行内点分数字出现在 CLI 名之前——行名过滤放行该行,
+      // 只有 seen 能跳过名字前的数字取名字后的版本(独立负控实证:删 seen 此处红)。
+      assert.strictEqual(
+        runLine(triLine, "TRI", { VER: `2.5.1 available for ${cliName} needs ${min}` }),
+        min,
+        `${name}: 同行数字在名字之前仍须取名字之后的版本——删 seen 锚此处即红`,
       );
       assert.strictEqual(
         runLine(triLine, "TRI", { VER: `proxy http://10.1.2.3:8080\n${cliName} ${min}` }),
