@@ -841,6 +841,37 @@ async function connectWithCapabilities(events, listener) {
     'a failed speculative verification must escalate to the visible status');
 }
 
+// Round-8 复审:online 路径的投机 close(handleNetworkBecomeOnline 内与看门狗
+// 字节级孪生的块)必须同样给从未收到 join ack 的 socket 计失败数。缺这一行
+// 时,OS 网络切换反复打断一个收不到 join ack 的 socket,失败数停在封顶之内,
+// 重连永远保持投机,UI 永远停在 connected——与 round-5 的看门狗 wedged
+// relay 场景同罪。
+{
+  const harness = bootClient();
+  const client = harness.window.PinvouWebClient;
+  await client.policyPromise;
+  const ackless = harness.MockWebSocket.instances[0];
+  ackless.open();
+  harness.window.emit('online');
+  assert.equal(ackless.closeCalled, true,
+    'the online-triggered suspicion close must fire on an ackless socket');
+  assert.equal(client.speculativeFailures, 1,
+    'the online close must count the ackless cycle toward the failure cap');
+  assert.equal(client.speculativeReconnect, true,
+    'the first ackless cycle has only reached the cap and stays speculative');
+  takeReconnectTimer(harness.timers).callback();
+  const second = harness.MockWebSocket.instances[1];
+  second.open();
+  client.lastInboundAt = Date.now() - 121_000;
+  client._livenessCheck();
+  assert.equal(second.closeCalled, true,
+    'the further ackless cycle must still be closed to route recovery');
+  assert.equal(client.speculativeReconnect, false,
+    'a further ackless cycle past the cap must make the online-path reconnect visible');
+  assert.equal(client.connectionState.status, 'connecting',
+    'the capped online-path reconnect must surface the visible reconnecting state');
+}
+
 // 看门狗必须救出卡在 CONNECTING 的 wedge 连接:超过 wedge 窗口的 CONNECTING
 // socket 被中止走重连漏斗;窗口内的年轻 CONNECTING socket 不受影响。
 {
@@ -963,6 +994,102 @@ async function connectWithCapabilities(events, listener) {
   recovered.close();
   assert.equal(takeReconnectTimer(timers).delay, 500,
     'after a successful join the retry pace must restart fast');
+}
+
+// Round-8 复审:desktop-gone 计数必须只属于 desktop-gone 类失败——普通传输
+// 断线(无 desktop-gone/TTL 原因)在 scheduleReconnect 里把计数清零,退避
+// 回到快速档。保留 grown 值时,一次普通断线会继承离线场景的 20s+ 退避,
+// 桌面明明在线却要等满整段慢窗口。
+{
+  const { window, MockWebSocket, timers } = bootClient();
+  const client = window.PinvouWebClient;
+  await client.policyPromise;
+  const miss = (socket) => {
+    socket.open();
+    socket.message({ type: 'error', code: 'endpoint_not_found' });
+  };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    miss(MockWebSocket.instances[attempt]);
+    takeReconnectTimer(timers).callback();
+  }
+  miss(MockWebSocket.instances[5]);
+  const grown = timers.find(timer => timer.delay > 10_000 && timer.delay !== 30_000);
+  assert.equal(grown.delay, 20_000,
+    'the desktop-gone ladder must first grow past the fast window');
+  timers.splice(timers.indexOf(grown), 1);
+  grown.callback();
+  // 普通传输断线:socket 打开但从未 join,不带任何 desktop-gone/TTL 原因。
+  const takeFastTimer = () => {
+    const index = timers.findIndex(timer => timer.delay === 10_000);
+    assert.ok(index >= 0, 'expected the fast-regime reconnect timer');
+    return timers.splice(index, 1)[0];
+  };
+  const ordinary = MockWebSocket.instances[6];
+  ordinary.open();
+  ordinary.close();
+  assert.equal(client.desktopGoneRetries, 0,
+    'an ordinary transport close must reset the desktop-gone retry streak');
+  const reset = takeFastTimer();
+  assert.equal(reset.delay, 10_000,
+    'the next reconnect delay must leave the grown desktop-gone ladder for the fast regime (fast-formula cap), not the grown 20s value');
+  reset.callback();
+  const again = MockWebSocket.instances[7];
+  again.open();
+  again.close();
+  assert.equal(client.desktopGoneRetries, 0,
+    'the streak must stay reset across further ordinary closes');
+  assert.equal(takeFastTimer().delay, 10_000,
+    'the following ordinary reconnect must stay in the fast regime');
+}
+
+// Round-8 复审:desktop_offline_ttl_expired 分支必须置 reconnectForDesktopGone,
+// TTL 恢复的连续重试才能参与 desktop-gone 阶梯(20s→60s 封顶)。缺失时每次
+// TTL 关闭都按普通 ladder 清零计数,离线桌面会被 <10s 的快速重试无限打断,
+// 而既有 TTL 测试只断言 <10s 定时器存在,删该行仍全绿。
+{
+  const { window, MockWebSocket, timers } = bootClient();
+  const client = window.PinvouWebClient;
+  await client.policyPromise;
+  assert.equal(client.closedPermanently, false);
+  const ttlGone = (socket) => {
+    socket.open();
+    socket.message({
+      v: 2,
+      type: 'endpoint_revoked',
+      endpoint_id: 'endpoint_test',
+      reason: 'desktop_offline_ttl_expired',
+    });
+  };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    ttlGone(MockWebSocket.instances[attempt]);
+    const reconnect = takeReconnectTimer(timers);
+    assert.equal(reconnect.delay, 500 * 2 ** attempt,
+      'TTL-expiry retries keep the fast pace for the first attempts');
+    reconnect.callback();
+  }
+  const takeGrownTimer = () => {
+    const index = timers.findIndex(timer => timer.delay > 10_000 && timer.delay !== 30_000);
+    assert.ok(index >= 0, 'expected the grown desktop-gone reconnect timer');
+    return timers.splice(index, 1)[0];
+  };
+  ttlGone(MockWebSocket.instances[5]);
+  const doubled = takeGrownTimer();
+  assert.equal(doubled.delay, 20_000,
+    'the TTL path must join the desktop-gone ladder and double past the fast window');
+  doubled.callback();
+  ttlGone(MockWebSocket.instances[6]);
+  const quadrupled = takeGrownTimer();
+  assert.equal(quadrupled.delay, 40_000,
+    'the TTL ladder must keep doubling per attempt');
+  quadrupled.callback();
+  ttlGone(MockWebSocket.instances[7]);
+  const capped = takeGrownTimer();
+  assert.equal(capped.delay, 60_000,
+    'the TTL ladder must reach the desktop-gone cap');
+  capped.callback();
+  ttlGone(MockWebSocket.instances[8]);
+  assert.equal(takeGrownTimer().delay, 60_000,
+    'the TTL ladder must stay capped at 60s');
 }
 
 // desktop_snapshot 缺失或空 seq 不得把游标重置为 0（否则下次 join 触发全量重放）。

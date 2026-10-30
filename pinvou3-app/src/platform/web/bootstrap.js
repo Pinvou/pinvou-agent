@@ -108,12 +108,14 @@
   const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;
   const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;
   // A speculative cycle whose socket never delivered its join ack is NOT a
-  // healthy idle cycle. After this many ackless cycles the watchdog stops
-  // marking the reconnect speculative, so recovery becomes visible: each
-  // watchdog close matches its own speculativeSource, so the close-side
-  // "verification failed" branch alone can never fire, and a relay that
-  // completes the handshake but blackholes application frames would
-  // otherwise keep the UI on "connected" forever (round-5 review).
+  // healthy idle cycle. The reconnect after the first ackless cycle is still
+  // speculative (the failure count has only reached this inclusive cap);
+  // visibility begins when a further ackless cycle pushes the count past
+  // the cap, so recovery becomes visible: each watchdog close matches its
+  // own speculativeSource, so the close-side "verification failed" branch
+  // alone can never fire, and a relay that completes the handshake but
+  // blackholes application frames would otherwise keep the UI on
+  // "connected" forever (round-5 review).
   const LIVENESS_MAX_SPECULATIVE_FAILURES = 1;
   // A connect wedged past this window (browser TCP timeouts can run minutes,
   // and background tabs never fire the error event for a silent drop) gets
