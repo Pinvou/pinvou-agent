@@ -82,22 +82,27 @@ WECOM_TIMEOUT=30
 WECOM_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 wecom_run() {
-  local t rc
+  local t rc tflag
   t="$(mktemp "${TMPDIR:-/tmp}/wecom-smoke.XXXXXX")"
+  tflag="${t}.deadline"
   if [ -n "$TIMEOUT_BIN" ]; then
     "$TIMEOUT_BIN" -k "$WECOM_KILL_GRACE" "$WECOM_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
   else
     "$CLI" "$@" >"$t" 2>&1 &
     local pid=$!
-    ( sleep "$WECOM_TIMEOUT" && kill "$pid" 2>/dev/null && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    # 发出 TERM 即落「到点」标记(与 dingtalk-smoke.sh 同口径):子进程收到 TERM
+    # 后优雅清理并以 0 退出时,wait 的 0 会把超时伪装成通过——到点事实必须独立
+    # 于子进程最终退出码,标记存在则一律按 124 上报。
+    ( sleep "$WECOM_TIMEOUT" && kill "$pid" 2>/dev/null && : >"$tflag" && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+    [ -e "$tflag" ] && rc=124
   fi
   # 超时形态归一:TERM 死(143)与 KILL 死(137)都按 124 上报。
   [ "$rc" -eq 143 ] && rc=124
   [ "$rc" -eq 137 ] && rc=124
-  cat "$t"; rm -f "$t"
+  cat "$t"; rm -f "$t" "$tflag"
   return "$rc"
 }
 echo "wecom-cli = $CLI"
