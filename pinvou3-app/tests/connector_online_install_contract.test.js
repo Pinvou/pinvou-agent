@@ -225,6 +225,11 @@ for (const [name, source] of [
     `${name}: [2] 连接 PASS 必须先要求探测退出 0(exit 7 + authenticated:true 不是已连接)`,
   );
   // 3d) redact 字段形态必须含数字后缀键(accessToken2 形态曾裸过)。
+  // 首位数字类只有形态钉、没有行为夹具——这不是缺口:sed 匹配不锚定行首,键含
+  // token 时值遮蔽总能在数字后重启匹配(实测 {"2fa_token":"SECRET9"} 在两类下都
+  // 被遮蔽,首位类对泄漏行为冗余,它只定输出形状);尾部类则不然(token 后的数字
+  // 必须被尾类吃掉才能接到 ": " 值,accessToken2 夹具因此行为红)。类文本被改,
+  // 本钉(整段连写形态)即红——漏字符类必先红在这里。
   assert.match(
     source,
     /\[A-Za-z0-9_-\]\*\[Tt\]\[Oo\]\[Kk\]\[Ee\]\[Nn\]\[A-Za-z0-9_-\]\*/,
@@ -543,6 +548,17 @@ assert.doesNotMatch(
   assert.ok(permIdx > timeoutIdx, "wecom-smoke.sh: [3] 超时分支必须先于权限词分支");
 }
 
+// ---- 9b) dingtalk [3] 分支序:超时(124)先于错误词(与 wecom [3] 同款) ----
+// 超时探测的部分输出可能恰含 not found/未知——先查词会把超时误标成「域不存在」
+// 硬失败;两者处置不同,超时要求的是重跑,标注不能误导。
+{
+  const lines = dingtalkSmoke.split("\n");
+  const timeoutIdx = lines.findIndex((l) => l.includes('elif [ "$d_rc" -eq 124 ]'));
+  const errIdx = lines.findIndex((l) => l.includes("'unknown command|not found|不存在|未知'"));
+  assert.ok(timeoutIdx >= 0, "dingtalk-smoke.sh: 未找到 [3] 超时分支");
+  assert.ok(errIdx > timeoutIdx, "dingtalk-smoke.sh: [3] 超时分支必须先于错误词分支(超时的部分输出可能恰含 not found/未知)");
+}
+
 // ---- 10) wecom [4] 错误键只查 envelope,不查正文 content 值 ----
 // wecomcli-doc SKILL.md 返回表:content 是「文档内容较短时直接返回的原文」——
 // 值恰为 error 的合法文档曾被裸 grep 误红成读失败(评审 P3,真脚本 + 假 CLI 全跑)。
@@ -607,6 +623,75 @@ assert.doesNotMatch(
     assert.ok(
       !bad.stdout.includes("[PASS] 读到文档内容"),
       `wecom-smoke.sh: errcode:3 不得判读成功\n${bad.stdout}`,
+    );
+  }
+}
+
+// ---- 10b) dingtalk [4] 错误键只查 envelope,不查正文 content 值(与 §10 同款) ----
+// 真脚本 + 假 CLI 全跑:正文值恰为 error 的合法 envelope 不得误红;屏蔽不得吞掉
+// envelope 层的结构化错误键。dws 的 --format json envelope 键名未在包内文档钉死,
+// 脚本按同族(wecomcli-doc 返回表)约定取 content;此夹具与 §10 用同一 envelope
+// 形状,若真实 dws 改用别的键名,两处(脚本 sed 行 + 本夹具 payload)一起改。
+{
+  const { spawnSync } = require("node:child_process");
+  const os = require("node:os");
+  if (process.platform !== "win32") {
+    const fakeCli = (docPayload) =>
+      [
+        "#!/usr/bin/env bash",
+        'case "$1" in',
+        '  --version) echo "dws 1.0.65 (fake)"; exit 0 ;;',
+        '  auth) echo \'{"authenticated":true}\'; exit 0 ;;',
+        "  doc)",
+        '    if [ "${2:-}" = read ]; then printf \'%s\' \'' + docPayload + "'; exit 0; fi",
+        "    exit 0 ;;",
+        "  *) exit 0 ;;",
+        "esac",
+        "",
+      ].join("\n");
+    const runSmoke = (docPayload) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "dws-doc-home-"));
+      const bin = path.join(home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "dws"), fakeCli(docPayload));
+      fs.chmodSync(path.join(bin, "dws"), 0o755);
+      return spawnSync("bash", [path.join(root, "scripts", "dingtalk-smoke.sh")], {
+        encoding: "utf8",
+        timeout: 120000,
+        killSignal: "SIGKILL",
+        env: {
+          ...process.env,
+          HOME: home,
+          PATH: bin + path.delimiter + process.env.PATH,
+          DINGTALK_TEST_DOC_ID: "DOC123",
+        },
+      });
+    };
+    // 合法 envelope + 正文值恰为 "error":屏蔽正文后必须判读成功,不得误红。
+    const good = runSmoke(
+      '{"url":"https://doc.example/x","name":"周报","content":"error","version":"1"}',
+    );
+    assert.strictEqual(
+      good.status,
+      0,
+      `dingtalk-smoke.sh: 正文值为 error 的合法 envelope 不得误红(status=${good.status})\n${good.stdout}`,
+    );
+    assert.ok(
+      good.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: 正文屏蔽后读取必须 PASS\n${good.stdout}`,
+    );
+    // envelope 真错误键:屏蔽不得吞掉 envelope 层的结构化错误。
+    const bad = runSmoke(
+      '{"url":"https://doc.example/x","name":"t","content":"ok","version":"1","error":"invalid node"}',
+    );
+    assert.notStrictEqual(
+      bad.status,
+      0,
+      `dingtalk-smoke.sh: envelope "error" 键必须 FAIL(屏蔽不得吞掉错误键)\n${bad.stdout}`,
+    );
+    assert.ok(
+      !bad.stdout.includes("[PASS] 读到文档内容"),
+      `dingtalk-smoke.sh: envelope error 键不得判读成功\n${bad.stdout}`,
     );
   }
 }
