@@ -41,6 +41,14 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
     ".netrc",
     ".pgpass",
     ".npmrc",
+    // Round-8 复审 MAJOR:仓库自身的 .git 内部是手机可达工作区车道里最
+    // 常见的凭据存储(.git/config 的远端 URL 常内嵌 oauth2:TOKEN@ 形态的
+    // 凭据;FETCH_HEAD 同理),而 `.git-credentials` 这个旧式存储早被拦。
+    // 精确组件匹配只拦名字恰为 `.git` 的组件,`.gitignore`/`.github`/
+    // `.gitattributes` 等不同组件不受影响。按 code_checkpoints 的双清单
+    // 纪律:SECRET_EXCLUDES 走 gitignore 语义(.git 本就被 git 忽略),
+    // 两侧独立评估、互不推导。
+    ".git",
 ];
 
 /// 组件前缀黑名单:`.env.` 系命名(`.env.local`、`.env.production`、
@@ -308,13 +316,32 @@ mod tests {
             ".netrc",
             ".pgpass",
             ".npmrc",
+            ".git",
         ];
         for raw in blocked {
             let path = std::env::temp_dir().join("app").join(raw);
             assert!(check_sensitive_components(&path).is_err(), "{raw} 必须被拦");
         }
+        // .git 内部(config 的远端 URL 常内嵌凭据)经嵌套路径同样被拦;
+        // 仅共享前缀的 .gitignore/.github/.gitattributes 是不同组件,不受
+        // 影响。Round-8 复审 MAJOR。
+        let nested = std::env::temp_dir()
+            .join("repo")
+            .join(".git")
+            .join("config");
+        assert!(
+            check_sensitive_components(&nested).is_err(),
+            ".git/config 必须被拦"
+        );
         // 前缀仅按组件边界生效:同名前缀的普通文件不受影响。
-        for benign in ["environment.md", "envelope.txt", ".environment"] {
+        for benign in [
+            "environment.md",
+            "envelope.txt",
+            ".environment",
+            ".gitignore",
+            ".github",
+            ".gitattributes",
+        ] {
             let path = std::env::temp_dir().join("app").join(benign);
             assert!(
                 check_sensitive_components(&path).is_ok(),

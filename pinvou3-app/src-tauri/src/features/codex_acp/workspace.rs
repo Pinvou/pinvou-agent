@@ -870,8 +870,10 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
     // 通配不关递归——`git diff -- ":(literal)src"` 会把已跟踪/已暂存的
     // `src/.env` 完整补丁发给手机,而词法检查只看得到 "src" 这个无害祖先
     // 名。目录(含整仓的空 relative)目标整体拒绝:差异车道按变更车道给出
-    // 的文件路径工作,目录级差异从来不是契约功能;文件级 pathspec 不递归,
-    // 两条 git 臂由此封闭。
+    // 的文件路径工作,目录级差异从来不是契约功能;文件级 pathspec 不递
+    // 归。Round-8 复审:目录从 worktree 消失(`git rm -r`/`rm -rf`/
+    // sparse-checkout/悬空链接)时 is_dir 不再成立,由 diff 臂内的 git 侧
+    // 展开检查(pathspec 命中条目必须恰为请求文件)兜住同一泄露。
     if path.is_dir() {
         bail!("工作区差异仅支持文件路径: {relative}");
     }
@@ -898,6 +900,40 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // tracked `abx.txt`'s diff instead of its own. Same literal prefix
         // the tracked-ness oracle below uses.
         let literal = format!(":(literal){relative}");
+        // Round-8 复审 BLOCKER:上面的目录拒绝键在 worktree 存活上——
+        // `git rm -r src`/`rm -rf src`/sparse-checkout/悬空符号链接让磁盘
+        // 目录消失,is_dir 不再成立而 canonicalize 失败跳过解析腿,
+        // pathspec 仍按目录前缀递归展开,把已跟踪/已暂存的 `src/.env`
+        // 完整补丁(删除臂把旧凭据字节渲染成 `-` 行)发给手机。按 git 侧
+        // 的实际展开拒绝:pathspec 命中的 index 与 HEAD 条目必须恰好等
+        // 于请求的文件本身。已删除文件的删除差异不受影响(两条列表恰含
+        // 自身);未跟踪新文件两表皆空。ls-tree 失败按空处理:HEAD 未出
+        // 生(空仓库)时本就无已提交内容可展开,其余失败会被下方需要
+        // HEAD 的缓存臂自行失败。
+        if !path.exists() {
+            let index_entries = git_output(&root, &["ls-files", "-z", "--", literal.as_str()])?;
+            let head_entries = git_output(
+                &root,
+                &[
+                    "ls-tree",
+                    "-r",
+                    "-z",
+                    "--name-only",
+                    "HEAD",
+                    "--",
+                    literal.as_str(),
+                ],
+            )
+            .unwrap_or_default();
+            let expands_beyond_request = index_entries
+                .split('\0')
+                .chain(head_entries.split('\0'))
+                .filter(|entry| !entry.is_empty())
+                .any(|entry| entry != relative);
+            if expands_beyond_request {
+                bail!("工作区差异仅支持文件路径: {relative}");
+            }
+        }
         let unstaged = git_output(
             &root,
             &[
@@ -2340,6 +2376,38 @@ mod tests {
         assert!(preview_workspace_file(root.path(), "notes.md").is_ok());
     }
 
+    /// Round-8 复审 MAJOR:.git 内部是仓库绑定车道里最常见的凭据存储
+    /// (.git/config 的远端 URL 常内嵌 oauth2:TOKEN@ 形态凭据,旧式的
+    /// .git-credentials 早被拦而现代存储此前可读)。组件黑名单收入 .git
+    /// 后,preview/diff 对 .git 内部的词法腿在触盘前拒绝(对存在与否
+    /// 无感);仅共享前缀的 .gitignore 等普通文件不受影响。
+    #[test]
+    fn git_internals_are_refused_across_lanes() {
+        let root = TestDir::new("git-internals");
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        fs::write(
+            root.path().join(".git/config"),
+            "[remote \"origin\"]\nurl = https://oauth2:TOKEN@example.com/x.git\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+
+        let error = preview_workspace_file(root.path(), ".git/config")
+            .err()
+            .expect(".git/config preview must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        // 词法腿不触盘:不存在的 .git 内部拼写同样拒绝(无存在分叉)。
+        assert!(preview_workspace_file(root.path(), ".git/FETCH_HEAD").is_err());
+        assert!(preview_workspace_file(root.path(), ".git/nope").is_err());
+        let error = workspace_diff("git-int", root.path(), ".git/config")
+            .err()
+            .expect(".git/config diff must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        // 仅共享前缀的普通文件不受影响。
+        let preview = preview_workspace_file(root.path(), ".gitignore").unwrap();
+        assert_eq!(preview.text.as_deref(), Some("target/\n"));
+    }
+
     /// 列表与搜索静默跳过凭据组件条目（同 file_access::list_host_files 的
     /// 模式）。Round-7 复审:被点名的黑名单目录从「空列表成功」改为整体
     /// 拒绝——「成功空列表 vs 报错」的分叉本身会泄露黑名单目录的存在;
@@ -2461,6 +2529,25 @@ mod tests {
         let diff = workspace_diff("s-dir", repo, "src/innocent.txt").unwrap();
         assert!(diff.text.contains("+hello v2"), "got: {}", diff.text);
         assert!(!diff.text.contains("AWS_SECRETKEY"), "got: {}", diff.text);
+
+        // Round-8 复审 BLOCKER:整个目录从 worktree 消失(未暂存 rm -rf
+        // 与 `git add -A` 后的已暂存删除)时 is_dir 不再成立——pathspec
+        // 仍按前缀递归展开 index/HEAD 里存活的子项,必须按 git 侧展开
+        // 整体拒绝。已删除的清白文件的删除差异不受影响(ls-files/
+        // ls-tree 恰含自身)。
+        fs::remove_file(repo.join("src/innocent.txt")).unwrap();
+        let diff = workspace_diff("s-dir-del-file", repo, "src/innocent.txt").unwrap();
+        assert!(diff.text.contains("-hello v2"), "got: {}", diff.text);
+        fs::remove_dir_all(repo.join("src")).unwrap();
+        let error = workspace_diff("s-dir-rm", repo, "src")
+            .err()
+            .expect("a deleted directory pathspec must be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+        run_git(repo, &["add", "-A"]);
+        let error = workspace_diff("s-dir-rm-staged", repo, "src")
+            .err()
+            .expect("a staged whole-directory deletion pathspec must be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
     }
 
     /// 提示引用车道(`web_access_codex_acp_prompt` 的 workspace_references)
@@ -2577,6 +2664,22 @@ mod tests {
                 .map(|entry| &entry.name)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// Round-8 复审:词法腿(触盘前的 pre-stat 拒绝)对存在与否无感——
+    /// 不存在的被拦目录必须得到凭据拒绝而非「不存在」错误,否则
+    /// 「凭据拒绝 vs 不存在」的分叉本身泄露黑名单名是否存在(词法腿
+    /// 被删时解析腿对触盘 fixture 报同文,4/4 旧钉仍绿——live 突变已
+    /// 证;本钉是该腿唯一的判别钉)。
+    #[test]
+    fn list_refuses_nonexistent_blocked_directory_lexically() {
+        let root = TestDir::new("credential-list-nonexistent");
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+
+        let error = list_workspace(root.path(), Some(".aws"))
+            .err()
+            .expect("a nonexistent blocked directory must still be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
     /// Round-7 复审:列表车道解析腿——「链接名清白」的符号链接指向凭据
