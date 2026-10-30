@@ -8,7 +8,7 @@
 
 > **落地状态**（2026-09-18）：§1、§2 为现状（能力档案已退役，模式能力差量
 > 已收敛为静态表 `MODE_TABLE`）；§3 的存储已收敛为**单一 `disabled_bundles.json`**
-> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated, install_default_synced}`，键 = 包 id，见 §3.2），取代原
+> （`{scopes, hidden_scopes, default_off_scopes, initialized, project_skills_enabled, plain_defaults_migrated, install_default_synced, connect_granted, connect_grant_tokens, recovery_hold}`，键 = 包 id，见 §3.2），取代原
 > `disabled_connectors.json` + `disabled_skills.json` 双文件与 `skill:` 前缀跨文件借道；
 > companion 联动排除改由包模型现算（门控侧解析用 `bundle::skill_gating_owner`，
 > 物理嵌套感知，round-26 minor 11 精确化）。§3.1 的
@@ -91,7 +91,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"] }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"], "connect_granted": ["<包 id>"], "connect_grant_tokens": { "<包 id>": "<授权操作令牌>" }, "recovery_hold": false }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
@@ -107,13 +107,131 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 批量 enable 的整批判拒只针对 stored 中**不在**本表
 的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
 不可。`install_default_synced`（评审 #455 round-31/32）是 `"<mode>:<包 id>"`
-同步账本：install/connect/startup 三个同步变体对观察到的每个 DenyAll
-scope × 包对各记一行，**scope 仍处于未初始化时同样记账**（round-32 MAJOR
-1：fresh home 上的连接发生在 plain 物化之前，不记账则用户的**首次**启用会
-在下次启动被回填覆盖）；启动 refresh 只对账本**缺失**的对回填默认关行；用户
-enable 移除 stored 行但**保留**账本条目（使 enable 对 refresh 粘滞）；teardown
+同步账本：install 同步、connect 授权与欢迎卡/场景批量启用
+（`enable_packages_in_scope`）**三个写入变体**
+对观察到的每个 DenyAll scope × 包对各记一行，**scope 仍处于未初始化时同样
+记账**（round-32 MAJOR 1：fresh home 上的连接发生在 plain 物化之前，不记账
+则用户的**首次**启用会在下次启动被覆盖）；启动 refresh 只对**从未记账**的
+对授权；用户 enable 移除 stored 行，**保留**账本条目并为实际生效的 id 补记
+缺失的账本对（使 enable 对 refresh 粘滞）；teardown
 （`remove_bundle_from_disabled_scopes_exact`）按 scope 键**精确匹配**清除该包
-全部条目（round-32 minor 1），重装/重连因此重新同步默认关。首个版本读取时把旧的
+全部条目（round-32 minor 1），重装/重连因此重新走同意注册。
+`connect_granted`（feat/connector-connect-grants-enable）记录 CLI 连接器
+**连接动作显式授予启用**的包 id：连接手势本身就是同意，GUI 的 `*_apply_skills`
+（连接完成臂）与 CLI 的 `pinvou connectors connect` 经手势门
+`deny_first_register_connector` → `grant_connect_enable_inner` 在物化技能文件
+**之前**落地「开」——清掉旧默认关行与标记、记 `connect_granted`、写账本对。
+**例外：ima 不在此列**——§3.1 的包分类上 ima 虽属 CLI 包，但其连接卡在两个
+界面都走安装侧默认关注册（它装载的是被认领的技能包而非 CLI 连接器身份，见
+`CONNECTOR_CLAIMED_SKILLS` 认领模型），其同意同步沿用安装通道的
+`CONSENT_SYNC_FAILURE_MARKER`/`consent_persist_failed` 而非连接通道；
+CLI 的独立 `apply-skills` 维护命令没有连接手势，自 round-3 评审起走**账本门控、
+尊重裁决**的 refresh 变体（`deny_first_register_connector_refresh`，与启动
+回填同一入口）：verdict guard 见到任何 scope 的 stored 行即拒绝，无账本裁决
+cohort 不再被无手势的维护命令抬行（round-3 评审；从未同意的连接器仍收敛到
+「在线即启用」形态）。
+连接后技能物化失败则由 `revoke_connect_enable` 补偿回「从未同意」的
+fail-closed 态。授权与账本对撤除之外，补偿按 outcome 足迹重建三类形态：
+**手势实际抬行的已初始化 scope** 按精确足迹（`lifted_scopes`）重建行，标记
+只在抬行确实发现标记的 scope 重建（`lifted_markers`——round-3 评审：对无标记
+的显式裁决行补加标记会把裁决降级为可批量 enable 抬掉的安装默认）；**授权在
+未初始化时记账覆盖的 scope**（fresh-home 臂，`covered_uninitialized_scopes`）
+若在授权与补偿之间被物化——composer 整表写或他包 enable 以授权后快照初始化
+该 scope，行缺席即「开」，失败卡背后连接器已被现算为开，下次启动回填会悄悄
+完成这次启用（round-3 评审 MAJOR）——按 deny-first 注册形态（行+标记）重建；
+**授权已被消费则整个补偿跳过**（round-3 评审：窗口内的 composer 显式关闭
+命名该 id 时已移除授权并写入裁决行，其账本对必须存活使裁决防重连翻案——
+补偿若照旧撤账本、补标记反而破坏该裁决），仅保留 `recovery_hold` 重新武装。
+补偿还须**所有权可证**（round-6 评审 P2）：每次授权落盘时同步写入
+`connect_grant_tokens`（包 id → 操作令牌，与授权同一原子保存），补偿仅在
+standing 条目仍携带**本次**授权的令牌时执行——授权与补偿之间的
+teardown+重连会在同一包 id 下落一笔全新授权，按包 id 撤除会删掉后者的授权与
+账本并按前者的足迹重建抬行，把后一次成功连接翻成关闭；令牌不匹配即视为他人
+所有，陈旧补偿整体不碰（消费判定回答「授权还在吗」，所有权判定回答「还是我的
+吗」）。composer 整表写消费授权时与 teardown 清除授权时同步清除令牌。
+令牌还有第三个去向——**成功完成的提交**（round-7 评审 P2，round-12 评审
+P2/P3 收敛为声明集校验）。完成时操作只能对它能**声明**的同意背书：其一，
+**自己的授权**（门控或尾部落下的新鲜授权，`granted` 臂写下的令牌）——成功
+完成即 finalize 它，清除自己的令牌（round-12 P3：不 finalize 则已完成的
+owner 与在途 owner 不可区分，后来的操作踏着更旧令牌完成时会被误判
+`ReplacementPending`）；其二，**门控捕获的所依赖同意**（round-7 的账本短路
+捕获，含令牌为空的已提交无令牌形态——round-12 P2：空捕获不再短路成
+`NotRelied`，而仍按完成时点实况校验）。**尾部对 standing 同意的观察不入
+声明集**：尾部落日在物化之后，观察到的非自家令牌属于更新的生命周期，其
+owner 须自行完成或失败——完成对它报告 `ReplacementPending`（既不站在仍武装
+的陌生补偿背后报成功，也不解除其武装），但该观察仍**武装校验**：门控无
+身份而尾部踏着 standing 同意时（verdict cohort 行中途被消费、他操作落授权
+的窗口），完成仍须校验终态而非盲目成功。**裁决已消费同意的捕获不是
+reliance**（toggle-off 同时移除授权与令牌、仅存防翻案账本对），重连踏着
+显式关闭仍照旧成功。提交是**完成的必需步骤**（round-8 评审：此前
+best-effort 形态把丢失与失败都吞成成功），按完成时点实况分四路（写锁下
+复验，`ReliedGrantCommit`）：standing 令牌**属于声明集**则清除并提交
+（`Committed`——finalize 自己的新鲜授权，或提交门控所依赖的授权：A 授权并
+物化中，B 踏着 A 的 standing 账本连接，B 成功返回后 A 的物化失败，其补偿
+若仍按令牌匹配就会删掉 B 的成功刚刚证明可用的授权与账本——提交后该陈旧
+补偿不再匹配，B 的连接保持「开」）；standing 授权**无令牌在册**则原样保留
+（`Superseded`——无令牌授权不可能被任何补偿按令牌匹配，是已永久化的更新
+同意：一个已提交的更新 owner，或显式 enable/welcome/composer 裁决提交，
+更新的同意仍覆盖该连接器，完成可站在其上）；standing 令牌**不在声明集**
+（属于更新的**在途**操作 C）则拒绝提交、原样保留且完成必须报失败
+（`ReplacementPending`，round-11 评审 P2 + round-12 评审 P2——C 的物化尚未
+结束，其失败补偿仍可按令牌撤销这笔授权与账本，完成在其上报告成功、C 随后
+失败即得「成功卡背后现算为关」；无条件清除 C 的令牌又会把 C 自己的失败
+补偿变 no-op，fail-open，两个方向都不可取，故交还重连：重试要么站在 C 已
+提交的同意上，要么在 C 的补偿后重新授权）；**授权条目已不存在**则报告
+`GrantLost`——所依赖的同意已被在途操作的补偿、teardown 清扫或用户裁决写
+消费，完成不得再报成功（`visible:true` 会站在已计算为「关」的状态背后）。
+GUI 两个命令尾与 CLI 的 `connect` 都以显式失败交还重连——`GrantLost` 走
+connect-consent 失败文案，`ReplacementPending` 走 commit-incomplete 文案
+（连接器仍因 C 的授权保持「开」，但并发操作仍可将其撤走）。提交落盘本身
+失败同样使完成失败（所有权声明未清除，在途补偿仍匹配，报告成功即谎言）。
+令牌是唯一变动——授权、账本与行均不动，裁决规则不参与；steady state
+（提交后/消费后/legacy 库）无令牌在册，重连与维护尾由此不产生额外写盘。
+提交点与表面同权：GUI 的两个命令尾（连接与启动刷新）与 CLI 的 `connect`
+收尾副作用都按上述声明集语义完成其同意（CLI 单写表面以门控 outcome 充当
+整个声明集）；CLI 的独立 `apply-skills` 维护命令**刻意不提交**——它 app
+侧不物化任何技能，其完成不证明被依赖同意的可用性，提交反而会解除在途
+操作失败补偿的 fail-closed 武装。
+已初始化 scope 以落盘列表为唯一真相，行缺席即「开」，不重建行则失败卡背后
+连接器已被现算为开，且下次启动回填会悄悄完成这次启用；重建不越出该次手势
+实际足迹的 scope——第二次重连的授权在某 scope 未抬任何行时，其失败补偿不得
+把该 scope 用户既有的显式开降级为可被欢迎卡抬掉的默认关行（round-1 评审）；
+若补偿落盘本身也失败（授权+足迹残留），连接器会以「已同意开启」态留在失败卡
+背后，仅日志可见——这是已披露的
+best-effort 残留，下次连接幂等收敛；否则授权在手、卡片报失败，连接器却已
+被现算为开。
+两表面的同意写入同经 `deny_first_register_connector` 的两道门：owner-claim
+分歧拒绝（连接器 id 被已安装包的 companion 声明劫持时 outright 拒绝，CLI
+与 GUI 同态同果）与账本门（**有账本的对不重授**——显式关闭后的重连/重跑
+`apply-skills` 不会翻案）。打包/MCP
+**安装**仍走安装侧默认关注册，不受影响。`connect_granted` 是**全局集合**
+而非按 scope（字段注释同此披露）：一次连接手势让连接器在所有仍未初始化的
+scope 同时为「开」；反之任一 scope 的 composer 显式关闭都会移除整个授权，
+其余未初始化 scope 一并回到「关」（fail-closed 方向），plain 重开也无法恢
+复它，只有 teardown+重连可重新授权。门控经**未初始化 scope 的 DenyAll
+现算扩集**对该集合做减法（已初始化 scope 以落盘列表为准，行缺席即开；另一
+读者是 enable 路径的 `not_applied` 上报过滤，仅影响提示），所以未初始化 scope
+上连接的连接器立即可用、composer 首屏渲染为开；用户在 composer 显式关闭
+（写入行）即移除授权——显式裁决恒优先于连接默认，且**启动 refresh 永不越过
+stored 行**：`grant_connect_enable_refresh`（ledger 门控）额外要求**任何 scope
+都无该包行**才授权——无账本态下的行（legacy 迁移的显式关、连接落盘失败后的
+composer 关）即裁决，boot 回填一律不碰，只有用户自己的连接手势才可抬行
+（有账本的对即使手势也不抬——账本门先挡，且在锁内以 fresh load 复核一次，
+防 gate 前置账本探测的降级读漏看并发落账——round-1 评审）；teardown 连同
+stored/hidden/标记/账本一并清除授权，同 id 重装由重连流程重新授权。
+`recovery_hold`（round-2 评审）由每一次 corrupt/lost-store 恢复臂置位：
+store 丢失把 stored 裁决与连接账本**一起**抹掉，refresh 从此无法区分「从未
+同意」与「已同意」，故置位期间启动回填一律不授权（否则一次刷新就把所有仍
+在线的连接器翻成已授权开启），直到下一次连接手势（真实同意）清位并重新
+武装回填。已披露的不对称：清位是**一次性全局**的——任一连接器的重连都会
+重新武装回填，其后若仍有丢失期前被显式关闭的连接器在线（其 stored 裁决与
+账本已随 store 丢失湮灭），下一次启动回填会把它们一并授予为开；回填停摆
+只被推迟一次手势，对丢失裁决的完全保护需逐连接器重连（fail-closed 起点，
+方向已披露）。另一处边界：`disabled_bundles.json` 被外部整体删除且无
+`.corrupt.*`/`.unreadable.*` 旁证时，读取走 NotFound 迁移臂（R10-m3 登记
+的豁免），`recovery_hold` **不**置位——该 cohort 的下一次启动回填会把仍在线
+的连接器授予为开（本 PR 前的 main 对同一 cohort 回填默认关行、保持关闭；
+此句登记这一方向翻转）。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
 连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 scope 侧的包 id 归一
 （`to_package_id` → `skill_gating_owner`：manifest 认领优先，物理嵌套回退；
@@ -125,10 +243,22 @@ stored 包行）映射到所属包（companion → MCP/CLI 包，独立技能 �
 （DenyAll 兜底保住丢失的显式禁用），旧文件原样保留供手工恢复——否则宽升级信号会把升级装机
 误初始化成 plain 空 = 全开并在首读永久冻结（评审 #455 round-34，恢复 main 严格解析语义）。
 升级时点的 legacy cohort 有一个**已披露的不对称**（评审 #455 round-32
-minor 7）：升级时在线的内置 CLI 连接器在首次启动由账本化 refresh 回填为
-默认关（连接器有启动刷新臂），而同样在线的 legacy MCP/技能包则**原地保留
-live**——零 stored 行、零账本条目，也没有任何启动回填臂；同一"升级时在线"
-cohort 得到相反的默认姿态，此句即为二者的登记。
+minor 7；feat/connector-connect-grants-enable 起方向更新）：升级时在线的
+内置 CLI 连接器**凡无账本条目且任何 scope 均无 stored 行者**（前同意纪元
+连接、从未记账的对）在首次启动由账本化 refresh 回填为**连接启用授权**（连
+接动作即同意；连接器有启动刷新臂），而同样在线的 legacy MCP/技能包则**原
+地保留 live**——零 stored 行、零账本条目，也没有任何启动回填臂；这组「从未
+记账且无行」的升级时在线 cohort 默认姿态自此对齐为「在线即可用」，此句即
+为二者的登记。**有账本的对不在此列**：同意纪元（main 起）连接写入的账本
+条目让 ledger 门继续把它们留在升级前的状态（通常显式关闭保持关闭），直至
+teardown+重连重新授权；**无账本但迁移落了显式关行的对也不在此列**——那是
+verdict guard 管辖的裁决（见上「启动 refresh 永不越过 stored 行」），boot
+回填同样不碰（`legacy_migrated_disable_survives_the_boot_refresh` 钉死）；
+store 丢失恢复后的 cohort 见 `recovery_hold`——回填同样停摆，重连重新建立
+同意。该 cohort 的判定是「在线 + 无账本 + 任何 scope 无行」，**不区分连接
+是否经本应用发生**：绕过本应用直接完成 vendor CLI 授权（如脚本化
+`lark-cli auth login`）的连接器同样满足形态，首次启动被回填为开——这是
+「连接即可用」默认的机制性含义，此句予以显式登记（round-3 评审边界注记）。
 
 `hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
 （`marketplace/scope.rs`）：
@@ -306,10 +436,14 @@ refused, the whole install/import aborts before landing, never exposing an
 "installed but not in the disabled set" intermediate state and never letting
 the rollback uninstall destroy an existing user install (a reinstall/re-import
 overwrites the old copy in place, and a post-hoc rollback cannot restore it);
-the CLI connector enablement (`*_apply_skills` and the auth-gated refresh /
-startup backfill's skill materialization) likewise registers the DenyAll
-disabled set first and materializes skill files second, and a refusal aborts
-the connect before any skill materialization; recycle-bin restore is
+the CLI connector enablement (`*_apply_skills`, the CLI connect command, and
+the auth-gated refresh / startup backfill's skill materialization) likewise
+records its consent first — the connect ENABLE grant, behind the same
+deny-first gates on both surfaces (round-2 review: owner-claim refusal and
+the ledger gate apply to the CLI consent writes too) — and the GUI
+materializes skill files second, so a refusal aborts
+the connect before any skill materialization (the CLI connect command
+materializes nothing itself; skill unpack stays app-side); recycle-bin restore is
 deny-first the same way (uninstall already cleared the old disabled entries,
 so restore is, in governance terms, "a not-installed pack becoming available
 again", not "returning to the pre-uninstall state") — when the destination

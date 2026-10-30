@@ -691,13 +691,25 @@ pub use types::{
 // callers) are test-only now and are `cfg(test)` along with their
 // implementations.
 pub use crate::features::marketplace::scope::{
+    ConnectGrantOutcome, RELIED_GRANT_LOST_CAUSE, RELIED_GRANT_REPLACEMENT_PENDING_CAUSE,
+    ReliedGrantCommit, commit_relied_connect_grant, complete_connect_grant,
+    deny_first_register_connector, deny_first_register_connector_refresh,
     load_disabled_bundles_for, load_disabled_bundles_startup, load_hidden_bundles_for,
-    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
-    sync_deny_all_scopes_refresh, unavailable_bundles_for,
+    save_disabled_bundles_for, save_disabled_bundles_for_with_toggled_ids, save_hidden_bundles_for,
+    sync_deny_all_scopes_after_install, unavailable_bundles_for,
 };
-// The connector gate is crate-internal (skill_gate.rs is the only caller);
-// no command layer or engine surface needs it.
-pub(crate) use crate::features::marketplace::scope::deny_first_register_connector;
+// The bare grant/revoke/refresh writers stay crate-internal: every connect
+// consent write must reach them through `deny_first_register_connector` /
+// `deny_first_register_connector_refresh` (owner-claim refusal + ledger gate
+// + the refresh variant's verdict guard and recovery hold). Both GATED
+// entries are cross-crate: the gesture variant for the real connect
+// completions (GUI + CLI), the ledger-gated refresh variant for the boot
+// backfill and the CLI's standalone `apply-skills` maintenance run — a
+// command with no connect gesture behind it must never lift a stored
+// no-ledger verdict (round-3 review).
+pub(crate) use crate::features::marketplace::scope::{
+    grant_connect_enable, grant_connect_enable_refresh, revoke_connect_enable,
+};
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
 
@@ -712,15 +724,19 @@ pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabl
 pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
+    toggled_ids: &[String],
 ) -> Result<(), String> {
     // Builtin plugins cannot be disabled (docs/builtin-toolset-contract.md
     // §3.1 defense in depth): the write fails loudly instead of silently
     // filtering the id out.
     builtin::reject_builtin_ids(&connector_ids)?;
+    let toggled_ids = toggled_ids.to_vec();
     // The composer whole-list write is fail-loud (main #563's contract, restored by round-19 MAJOR 1: this PR no longer downgrades to fire-and-forget): write failures propagate via `?`.
-    tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
-        .await
-        .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
+    tokio::task::spawn_blocking(move || {
+        save_disabled_bundles_for_with_toggled_ids(scope, &connector_ids, &toggled_ids)
+    })
+    .await
+    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
     Ok(())
 }
 
