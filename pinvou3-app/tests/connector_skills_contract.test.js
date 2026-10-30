@@ -40,6 +40,18 @@ for (const relative of ["dingtalk-skills/dws/scripts/calendar_schedule_meeting.p
 const stripAnchors = (line) =>
   line.replace(/https?:\/\/\S+/g, "").replace(/`[^`]*`/g, "");
 
+// reader 身份探针:以下全部规则的 pack 扫描共用这一个 read 入口——read 被改坏
+// (如按扩展名遮蔽返回空串)时,各范围钉/非空钉仍绿而真实扫描全部失明。探针钉住
+// read 对 .md 与 .py 都返回真实内容。
+assert.ok(
+  read(bundle("dingtalk-skills", "dws", "SKILL.md")).includes("dws"),
+  "read() 必须真实返回 .md 内容(reader 被遮蔽=全部文档扫描失明)",
+);
+assert.ok(
+  read(bundle("dingtalk-skills", "dws", "scripts", "attendance_report_common.py")).includes("def "),
+  "read() 必须真实返回 .py 内容(reader 被遮蔽=.py 脚本扫描面失明)",
+);
+
 // 1) 已删除的 CLI 形态不得回潮（--api-version v2 在 lark-cli 1.0.87 移除等）
 // 叙述性提及豁免：sync 后文档说明「历史版本曾有 X，已移除」属合规内容，
 // 不是引用违例；真实引用不会自带移除语境。
@@ -212,10 +224,52 @@ const scanLarkAuthLogin = (text) => {
   return null;
 };
 
-for (const f of docs.filter((f) => repositoryRelative(path.relative(bundle("lark-skills"), f)).startsWith("lark-"))) {
-  const violation = scanLarkAuthLogin(read(f));
-  if (violation) assert.fail(`${rel(f)}: ${violation}`);
-}
+// 生产扫描整链抽成函数(与规则 12 的 scanHostAliasTargets 同款:迭代→读→扫→命中
+// 即抛)。真包内无法栽种违例文件,自检以合成 reader 真跑同一函数(下方盲点自检),
+// 生产调用行由文本钉钉住——删循环、改迭代目标、掏空循环体、删命中判定,四处都红。
+// 规则 5 曾在 PR#302 因 skills/ 重定位静默死过一轮,循环级接线必须有钉。
+const scanLarkAuthLoginTargets = (targets, readText) => {
+  for (const f of targets) {
+    const violation = scanLarkAuthLogin(readText(f));
+    if (violation) assert.fail(`${rel(f)}: ${violation}`);
+  }
+};
+const larkAuthTargets = docs.filter((f) =>
+  repositoryRelative(path.relative(bundle("lark-skills"), f)).startsWith("lark-"),
+);
+scanLarkAuthLoginTargets(larkAuthTargets, read);
+// 范围自检:目标列表不得为空且须覆盖 lark-shared(共享流程文档的合法指针形态
+// 载体);pack 前缀漂移时列表清空,整包静默跳过在此转红。
+assert.ok(larkAuthTargets.length > 0, "规则 5 扫描范围不得为空");
+assert.ok(
+  larkAuthTargets.some((f) => rel(f).includes("lark-shared")),
+  "规则 5 扫描范围必须覆盖 lark-shared(前缀漂移曾让整包静默跳过,PR#302)",
+);
+// 生产调用行接线钉(与规则 12 同款:行首锚定,注释提及不算)。
+assert.match(
+  read(__filename),
+  /^scanLarkAuthLoginTargets\(larkAuthTargets, read\);$/m,
+  "规则 5 生产扫描必须迭代 larkAuthTargets 全表(接线改动此处红)",
+);
+// 循环执行自检:合成 reader 真跑生产函数——违例目标必须抛出、干净目标必须安静
+// 通过;函数内把目标面收窄或删掉命中判定在此转红。virtual 路径不落盘,reader 注入。
+assert.doesNotThrow(
+  () =>
+    scanLarkAuthLoginTargets(
+      [path.join(root, "virtual", "lark-auth-selfcheck.md")],
+      () => "可提示用户按 lark-shared 的按需授权流程完成登录（`auth login --scope ...`）\n",
+    ),
+  "规则 5 生产扫描对干净目标必须安静通过",
+);
+assert.throws(
+  () =>
+    scanLarkAuthLoginTargets(
+      [path.join(root, "virtual", "lark-auth-selfcheck.md")],
+      () => '```bash\nlark-cli auth login --scope "docs:wiki"\n```\n',
+    ),
+    /须内联 --no-wait/,
+    "规则 5 生产扫描必须对围栏内阻塞登录抛出(掏空循环/删命中判定此处红)",
+);
 
 // 规则 5 盲点自检：七个曾漏网的历史形态（3 围栏 + 4 正文，blockquoted
 // 围栏单测）必须保持「必失败」，现行合法
@@ -319,6 +373,21 @@ for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
   const name = text.match(/name:\s*(\S+)/)?.[1];
   assert.equal(name, path.basename(path.dirname(f)), `${rel(f)}: name 与目录名不一致`);
 }
+// pack 前缀自检:每个 pack 前缀必须仍命中至少一个真实文件——PR#302 的 skills/
+// 重定位曾让整包静默跳过(`if (!match) continue` 对未命中包零声零响),前缀漂移
+// 在此转红。
+for (const prefix of Object.keys(binsByPack)) {
+  assert.ok(
+    files.some((f) => repositoryRelative(path.relative(bundle(), f)).startsWith(prefix)),
+    `规则 6 pack 前缀必须命中真实文件(前缀漂移=整包静默跳过): ${prefix}`,
+  );
+}
+// 生产循环接线钉(与规则 7 同款):循环被改迭代别的列表时,前缀钉观测不到。
+assert.match(
+  read(__filename),
+  /^for \(const f of files\.filter\(\(f\) => path\.basename\(f\) === "SKILL\.md"\)\) \{$/m,
+  "规则 6 生产循环必须迭代全部 SKILL.md(接线改动此处红)",
+);
 
 // 7) dws confirmation-gated commands (oa approval approve/reject/revoke):
 // executable examples must carry --yes (contract added in the PR#359
@@ -331,7 +400,10 @@ for (const f of files.filter((f) => path.basename(f) === "SKILL.md")) {
 // help synopses) are exempt; inline code and prose mentions outside
 // code fences are not scanned.
 const DWS_GATED_CMD = /\bdws oa approval (?:approve|reject|revoke)\b/;
-for (const f of docs.filter((f) => rel(f).includes("dingtalk-skills"))) {
+// 扫描范围具名:生产循环与下方范围自检共用同一列表(自检重推导观测不到生产
+// 循环的过滤表达式——那正是 round-11 M1 的空心形态)。
+const rule7Targets = docs.filter((f) => rel(f).includes("dingtalk-skills"));
+for (const f of rule7Targets) {
   let inFence = false;
   for (const line of read(f).split("\n")) {
     // 与规则 5 的围栏状态机同口径：blockquoted 围栏（`> ``` `）同样翻转
@@ -349,6 +421,21 @@ for (const f of docs.filter((f) => rel(f).includes("dingtalk-skills"))) {
     );
   }
 }
+// 范围自检:规则 7 的范围键漂移(如 dingtalk-skills 改名)会让循环零迭代静默失效,
+// 上面的 --yes 判定不再有任何真实输入——范围本身必须钉住(观测生产循环的同一
+// 具名列表,不得重推导)。
+assert.ok(rule7Targets.length > 0, "规则 7 扫描范围不得为空");
+assert.ok(
+  rule7Targets.some((f) => rel(f).endsWith("dws/SKILL.md")),
+  "规则 7 扫描范围必须包含 dws SKILL.md(危险操作表载体;范围键漂移=规则静默失效)",
+);
+// 生产循环接线钉(与规则 5/10/11/12 的调用行钉同款):循环改迭代别的列表时,
+// 上面的范围钉观测不到——行首锚定,注释提及不算。
+assert.match(
+  read(__filename),
+  /^for \(const f of rule7Targets\) \{$/m,
+  "规则 7 生产循环必须迭代 rule7Targets 全表(接线改动此处红)",
+);
 
 // 8) wecom smartpage→smartsheet delegation exemption contract (#366 review):
 // `database_info.id` returned by smartpage `databases get` is usable directly
@@ -440,10 +527,40 @@ const scanDwsParticipant = (text) => {
   }
   return null;
 };
-for (const f of dwsTexts) {
-  const violation = scanDwsParticipant(read(f));
-  if (violation) assert.fail(`${rel(f)}: ${violation}`);
-}
+// 生产扫描整链抽成函数(与规则 12 的 scanHostAliasTargets 同款):迭代→读→扫→命中
+// 即抛。自检以合成 reader 真跑同一函数(下方盲点自检),生产调用行由文本钉钉住。
+const scanDwsParticipantTargets = (targets, readText) => {
+  for (const f of targets) {
+    const violation = scanDwsParticipant(readText(f));
+    if (violation) assert.fail(`${rel(f)}: ${violation}`);
+  }
+};
+scanDwsParticipantTargets(dwsTexts, read);
+// 生产调用行接线钉(与规则 12 同款:行首锚定,注释提及不算)。
+assert.match(
+  read(__filename),
+  /^scanDwsParticipantTargets\(dwsTexts, read\);$/m,
+  "规则 10 生产扫描必须迭代 dwsTexts 全表(接线改动此处红)",
+);
+// 循环执行自检:合成 reader 真跑生产函数——argv 形态违例必须抛出、合法形态必须
+// 安静通过;掏空循环/删命中判定在此转红(virtual 路径不落盘,reader 注入)。
+assert.doesNotThrow(
+  () =>
+    scanDwsParticipantTargets(
+      [path.join(root, "virtual", "dws-participant-selfcheck.py")],
+      () => "dws calendar attendee add --event ev1 --attendees u1\n",
+    ),
+  "规则 10 生产扫描对干净目标必须安静通过",
+);
+assert.throws(
+  () =>
+    scanDwsParticipantTargets(
+      [path.join(root, "virtual", "dws-participant-selfcheck.py")],
+      () => "run_dws(['calendar', 'participant', 'add', '--event', ev])\n",
+    ),
+  /participant/,
+  "规则 10 生产扫描必须对 argv 形态违例抛出(掏空循环/删命中判定此处红)",
+);
 
 // 规则 10 盲点自检：四个曾漏网/曾回归的历史形状必须保持「必失败」，现行
 // 合法形态必须保持「必通过」（全部经由与 pack 扫描同一实现 scanDwsParticipant
@@ -499,13 +616,50 @@ for (const f of dwsTexts) {
 // 13 位以上；54 处占位已统一为 19 位，见 NOTICE-tmeet.md 第 20 条）。
 // `--sub-meeting-id` 是另一真实 flag（包内未规定位数），不受此规则约束。
 const scanTmeetMeetingId = (text) => text.match(/(?<![\w-])--meeting-id[=: ]+["']?\d{1,12}\b/);
-for (const f of docs.filter((f) => rel(f).includes("tmeet-skills"))) {
-  const hit = scanTmeetMeetingId(read(f));
-  assert.ok(
-    !hit,
-    `${rel(f)}: --meeting-id 示例用了会议号形态的短数字（meeting-id 为 13 位以上）: ${hit?.[0]}`,
-  );
-}
+// 生产扫描整链抽成函数(与规则 12 的 scanHostAliasTargets 同款)。规则 11 原先
+// 循环与范围均无钉:删循环、换范围键都静默绿——PR#302 的整包静默跳过形态。
+const scanTmeetMeetingIdTargets = (targets, readText) => {
+  for (const f of targets) {
+    const hit = scanTmeetMeetingId(readText(f));
+    assert.ok(
+      !hit,
+      `${rel(f)}: --meeting-id 示例用了会议号形态的短数字（meeting-id 为 13 位以上）: ${hit?.[0]}`,
+    );
+  }
+};
+const tmeetTargets = docs.filter((f) => rel(f).includes("tmeet-skills"));
+scanTmeetMeetingIdTargets(tmeetTargets, read);
+// 范围自检:列表不得为空且须覆盖技能文档(范围键漂移=整包静默跳过)。
+assert.ok(tmeetTargets.length > 0, "规则 11 扫描范围不得为空");
+assert.ok(
+  tmeetTargets.some((f) => path.basename(f) === "SKILL.md"),
+  "规则 11 扫描范围必须覆盖 tmeet 技能文档(范围键漂移曾让整包静默跳过,PR#302 形态)",
+);
+// 生产调用行接线钉(与规则 12 同款:行首锚定,注释提及不算)。
+assert.match(
+  read(__filename),
+  /^scanTmeetMeetingIdTargets\(tmeetTargets, read\);$/m,
+  "规则 11 生产扫描必须迭代 tmeetTargets 全表(接线改动此处红)",
+);
+// 循环执行自检:合成 reader 真跑生产函数——短占位违例必须抛出、19 位合法形态
+// 必须安静通过(掏空循环/删命中判定在此转红)。
+assert.doesNotThrow(
+  () =>
+    scanTmeetMeetingIdTargets(
+      [path.join(root, "virtual", "tmeet-id-selfcheck.md")],
+      () => 'tmeet meeting get --meeting-id "6953553464429888300"\n',
+    ),
+  "规则 11 生产扫描对干净目标必须安静通过",
+);
+assert.throws(
+  () =>
+    scanTmeetMeetingIdTargets(
+      [path.join(root, "virtual", "tmeet-id-selfcheck.md")],
+      () => 'tmeet meeting get --meeting-id "100000000"\n',
+    ),
+  /meeting-id/,
+  "规则 11 生产扫描必须对短占位违例抛出(掏空循环/删命中判定此处红)",
+);
 // 规则 11 盲点自检（与规则 5/10 同款，经由与 pack 扫描同一实现判定）:
 // 历史短占位必须保持「必失败」，19 位占位与合法短 flag 必须保持「必通过」。
 {
