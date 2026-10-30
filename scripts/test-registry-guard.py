@@ -119,6 +119,19 @@ REQUIRED_PINS = [
     # and the commit-persist failure carries the commit-stage marker (still
     # enabled), never the fail-closed consent-sync copy.
     "known_bundle_shortcut_captures_the_standing_reliance_token",
+    # Round-12 review P2/P3, the completion claim set: an operation whose
+    # gate captured an EMPTY token (a fresh grant a real teardown consumed,
+    # or committed tokenless consent) still validates the final state at
+    # completion — declining over a newer owner's armed pending grant
+    # (ReplacementPending), standing on permanent tokenless consent
+    # (Superseded) — while a fresh grant's completion FINALIZES its own
+    # token, and a completed owner supersedes a late relied completion
+    # (both the completed and the genuinely-pending halves pinned).
+    "teardown_regrant_between_gate_and_tail_declines_an_empty_capture_completion",
+    "completion_over_committed_tokenless_consent_validates_the_final_state",
+    "fresh_completion_finalizes_its_own_grant",
+    "completed_owner_supersedes_a_late_relied_completion",
+    "gateless_refresh_tail_validates_the_standing_consent_it_observed",
 ]
 
 
