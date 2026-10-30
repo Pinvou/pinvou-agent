@@ -100,6 +100,10 @@ pub(crate) fn volume_fold_prefix(component: &OsStr, prefix: &str) -> bool {
 /// 组件边界同时比字节版更精确：`/etc/shadowed` 不再命中 `/etc/shadow`。
 /// 前缀用尽即命中（嵌套语义）；被比较路径先耗尽分量则未命中；绝对前缀与
 /// 相对路径在首个分量（RootDir 对普通名）上必然失配，天然 fail-closed。
+/// 末分量带 `*` 的条目（黑名单清单自律，用于轮转日志等无法逐一枚举的
+/// 开放家族）在该分量位改用 [`path_component_prefix`] 做组件前缀匹配;
+/// 精确实体条目保持精确——`shadow` 若整体按前缀匹配,`shadowed` 这类
+/// 无辜同名文件会重新被拦（Round-9 复审 MAJOR）。
 pub fn path_starts_with_folded(path: &Path, prefix: &str) -> bool {
     let mut path_components = path.components();
     let mut prefix_components = Path::new(prefix).components();
@@ -107,11 +111,18 @@ pub fn path_starts_with_folded(path: &Path, prefix: &str) -> bool {
         match (prefix_components.next(), path_components.next()) {
             (None, _) => return true,
             (Some(expected), Some(actual)) => {
-                if !path_component_eq(
-                    actual.as_os_str(),
-                    expected.as_os_str().to_string_lossy().as_ref(),
-                ) {
-                    return false;
+                let expected = expected.as_os_str().to_string_lossy();
+                match expected.strip_suffix('*') {
+                    Some(base) => {
+                        if !path_component_prefix(actual.as_os_str(), base) {
+                            return false;
+                        }
+                    }
+                    None => {
+                        if !path_component_eq(actual.as_os_str(), expected.as_ref()) {
+                            return false;
+                        }
+                    }
                 }
             }
             (Some(_), None) => return false,

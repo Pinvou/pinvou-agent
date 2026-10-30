@@ -41,6 +41,14 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
     ".netrc",
     ".pgpass",
     ".npmrc",
+    // Round-9 复审 minor:同类默认凭据存储——pip 的 `.pypirc`(上传
+    // token)、HashiCorp Vault 的 `.vault-token`(裸 token 文件)、git 的
+    // `http.cookiefile`(`.gitcookies`,o/t 形态令牌)、cargo 的
+    // `credentials.toml`(registry 凭据,与既有 `credentials.json` 同型)。
+    ".pypirc",
+    ".vault-token",
+    ".gitcookies",
+    "credentials.toml",
     // Round-8 复审 MAJOR:仓库自身的 .git 内部是手机可达工作区车道里最
     // 常见的凭据存储(.git/config 的远端 URL 常内嵌 oauth2:TOKEN@ 形态的
     // 凭据;FETCH_HEAD 同理),而 `.git-credentials` 这个旧式存储早被拦。
@@ -56,17 +64,37 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
 /// 无法逐一枚举,按前缀判定。匹配经由平台感知的 `path_component_prefix`
 /// (macOS/Windows Unicode 大小写折叠,与 `path_component_eq` 同语义:
 /// ASCII 快路径 + U+017F/U+212A 简单大小写折叠,Windows/macOS 另含
-/// NTFS `$UpCase` 大写表的 U+0131 映射)。
+/// NTFS `$UpCase` 大写表的 U+0131 映射)。`.env.example`/`.env.sample`
+/// 因此同样被拦,且是有意为之(Round-9 复审 minor):示例文件常被人把
+/// 真实密钥忘在里面,模型上下文车道宁可过宽;快照车道(`code_checkpoints`
+/// 的 SECRET_EXCLUDES,gitignore 语义)对示例文件/公钥的相反判断是双清
+/// 单独立评估的既定差异,两侧互不推导。
 pub const BLOCKED_COMPONENT_PREFIXES: &[&str] = &[".env."];
 
 /// 系统敏感前缀黑名单——Unix 系统文件/虚拟文件系统路径。
 pub const BLOCKED_PREFIXES: &[&str] = &[
     "/etc/shadow",
+    // Round-9 复审 MAJOR:组件化比较把字节 starts_with 的误伤(`/etc/
+    // shadowed` 被拦)修成了组件精确,但清单成员还是字节前缀时代的写法
+    // ——真实存在的家族成员被静默放行:`shadow-`/`gshadow-` 是 passwd/
+    // useradd 落盘的哈希备份,`sudoers.tmp` 是 visudo 的工作文件,
+    // `sudoers.d/` 存放解析中的授权片段,`/var/log/auth.log` 本体是
+    // `/var/log/auth` 条目真正的目标(Debian/Ubuntu 的认证日志,adm 组
+    // 默认可读)。逐项枚举真实变体;`shadowed`/`shadowprobe` 这类无辜
+    // 同名仍按精确语义放行,不能为图省事改回字节前缀。
+    "/etc/shadow-",
     "/etc/gshadow",
+    "/etc/gshadow-",
     "/etc/sudoers",
+    "/etc/sudoers.d/",
+    "/etc/sudoers.tmp",
     "/etc/ssh/",
     "/root/",
     "/var/log/auth",
+    // 轮转日志(auth.log.1 / auth.log.2.gz / …)是无法逐一枚举的开放家
+    // 族:末分量 `*` 表示该分量按组件前缀匹配(清单自律仅用于此类条目,
+    // 语义见 path_starts_with_folded)。
+    "/var/log/auth.log*",
     "/proc/",
     "/sys/",
 ];
@@ -311,12 +339,21 @@ mod tests {
             ".env.local",
             ".env.production",
             ".env.development",
+            // Round-9 复审 minor:`.env.` 前缀对示例文件同样生效是有意之
+            // 举(示例文件常被忘进真实密钥;快照车道的相反判断见
+            // BLOCKED_COMPONENT_PREFIXES 文档)。
+            ".env.example",
             ".envrc",
             ".git-credentials",
             ".netrc",
             ".pgpass",
             ".npmrc",
             ".git",
+            // Round-9 复审 minor:同类默认凭据存储,与上面同判据。
+            ".pypirc",
+            ".vault-token",
+            ".gitcookies",
+            "credentials.toml",
         ];
         for raw in blocked {
             let path = std::env::temp_dir().join("app").join(raw);
@@ -367,8 +404,14 @@ mod tests {
     fn system_prefixes_follow_component_boundaries() {
         // 系统区前缀按组件序列比较(与 CLI mirror 同一谓语):前缀自身与其
         // 嵌套路径必须被拒;仅共享前缀字节的同名文件是普通可读文件,必须
-        // 放行——字节 starts_with 会误拒 `/var/log/auth.log` 一类路径。
-        for prefix in BLOCKED_PREFIXES {
+        // 放行——字节 starts_with 会误拒 `/etc/shadowed` 一类路径。
+        // 末分量带 `*` 的开放家族条目(轮转日志)单独驱动,`{prefix}probe`
+        // 的放行断言不适用(它自身就是前缀命中)。
+        for prefix in BLOCKED_PREFIXES
+            .iter()
+            .copied()
+            .filter(|prefix| !prefix.ends_with('*'))
+        {
             let base = Path::new(prefix);
             assert!(check_sensitive_components(base).is_err(), "{prefix}");
             assert!(
@@ -381,6 +424,47 @@ mod tests {
                     "{prefix}probe is a different file and must stay readable"
                 );
             }
+        }
+        // Round-9 复审 MAJOR:组件化改写曾把字节前缀时代的真实家族成员静
+        // 默放行——精确枚举的变体逐一拒绝,轮转家族走末分量组件前缀,
+        // 无辜同名保持放行。逐项驱动消费方判定(check_sensitive_components
+        // → canonical_system_prefix_hit),清单改写若再收窄覆盖即红。
+        for variant in [
+            "/etc/shadow-",
+            "/etc/gshadow-",
+            "/etc/sudoers.tmp",
+            "/var/log/auth.log",
+        ] {
+            assert!(
+                check_sensitive_components(Path::new(variant)).is_err(),
+                "{variant} must be refused"
+            );
+        }
+        assert!(
+            check_sensitive_components(Path::new("/etc/sudoers.d/01-admin")).is_err(),
+            "sudoers.d drop-ins must be refused"
+        );
+        for rotated in [
+            "/var/log/auth.log.1",
+            "/var/log/auth.log.2.gz",
+            "/var/log/auth.log.10",
+        ] {
+            assert!(
+                check_sensitive_components(Path::new(rotated)).is_err(),
+                "{rotated} must be refused by the rotation-family prefix"
+            );
+        }
+        for benign in [
+            "/etc/shadowed",
+            "/etc/shadowprobe",
+            "/etc/sudoersedit.md",
+            "/var/log/authprobe",
+            "/var/log/autolog.txt",
+        ] {
+            assert!(
+                check_sensitive_components(Path::new(benign)).is_ok(),
+                "{benign} is not a system-sensitive file and must stay readable"
+            );
         }
         // 大小写变体跟随平台折叠语义(纯 ASCII 比较在字节精确平台上不命中)。
         let folded = cfg!(windows) || cfg!(target_os = "macos");

@@ -812,10 +812,16 @@ mod tests {
             );
             assert!(check_sensitive_path(&path).is_err(), "{prefix} variant");
         }
-        for prefix in SENSITIVE_PATH_PREFIXES {
+        for prefix in SENSITIVE_PATH_PREFIXES
+            .iter()
+            .copied()
+            .filter(|prefix| !prefix.ends_with('*'))
+        {
             // 组件序列语义(与上游 path_starts_with_folded 同一谓语):前缀
             // 自身与其嵌套路径必须被拒;仅共享前缀字节的同名文件不是系统区
-            // 文件(`/etc/shadowprobe`、`/var/log/auth.log` 是普通可读文件)。
+            // 文件(`/etc/shadowprobe`、`/var/log/authprobe` 是普通可读
+            // 文件)。末分量带 `*` 的开放家族条目(轮转日志)单独驱动,
+            // `{prefix}probe` 的放行断言不适用。
             let base = Path::new(prefix);
             assert!(
                 check_sensitive_path(base).is_err(),
@@ -831,6 +837,38 @@ mod tests {
                     "{prefix}probe is a different file and must stay readable"
                 );
             }
+        }
+        // Round-9 复审 MAJOR(GUI 镜像同源同语义):组件化改写曾把字节前
+        // 缀时代的真实家族成员静默放行——`shadow-` 哈希备份、`sudoers.d/`
+        // 片段、`sudoers.tmp`、`auth.log` 本体及其轮转名必须经 CLI 消费方
+        // 拒绝;无辜同名保持放行。
+        for variant in [
+            "/etc/shadow-",
+            "/etc/gshadow-",
+            "/etc/sudoers.tmp",
+            "/var/log/auth.log",
+            "/var/log/auth.log.1",
+            "/var/log/auth.log.2.gz",
+        ] {
+            assert!(
+                check_sensitive_path(Path::new(variant)).is_err(),
+                "{variant} must be refused"
+            );
+        }
+        assert!(
+            check_sensitive_path(Path::new("/etc/sudoers.d/01-admin")).is_err(),
+            "sudoers.d drop-ins must be refused"
+        );
+        for benign in [
+            "/etc/shadowed",
+            "/etc/shadowprobe",
+            "/var/log/authprobe",
+            "/var/log/autolog.txt",
+        ] {
+            assert!(
+                check_sensitive_path(Path::new(benign)).is_ok(),
+                "{benign} must stay readable"
+            );
         }
         // 大小写变体语义与 GUI 镜像一致(path_policy 的平台折叠):折叠平台
         // 上 /Etc/Sudoers 必须命中;字节精确平台上是不同路径,放行
