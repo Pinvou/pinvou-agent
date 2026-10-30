@@ -1,12 +1,48 @@
 [Service]
 # Replace these loopback defaults with your reverse proxy addresses.
+# Entries must be literal IPs; anything else aborts startup
+# (proxy_ip_configuration_invalid). A blank or whitespace-only value means an
+# empty list: no source restriction for ALLOWED, no trusted proxy for
+# TRUSTED. Only an unset TRUSTED line falls back to the ALLOWED list. Entries
+# are canonicalized before matching (lowercased, IPv6 expanded to its full
+# form, IPv4-mapped spellings reduced to the embedded IPv4), so any valid
+# spelling of an address matches, whatever form the runtime reports the peer
+# in. An IPv6 zone-id suffix (fe80::1%eth0) is matched verbatim against the
+# suffix the peer's own address reports — the suffix is this host's interface
+# name for the connection, so use the spelling the runtime reports; a suffix
+# cannot apply to a dotted quad or to an IPv4-mapped spelling (which reduces
+# to one), and an entry carrying one aborts startup. A trusted proxy must set
+# these forwarding headers itself; a proxy that forwards client-supplied
+# values lets senders pick their own rate-limit identity.
+#
+# MAX_REVOKED_ENDPOINTS is clamped to what MAX_RELAY_STATE_BYTES can hold
+# (at most one tombstone per ~256 bytes). A state file holding more
+# tombstones than the clamp loads in full and every tombstone stays
+# enforced; only new revocations are refused
+# (revoked_endpoint_capacity_reached) until the file is pruned or the
+# limits are raised.
+#
+# The relay binds every IPv4 interface by default (0.0.0.0); set
+# PINVOU_REMOTE_HOST=127.0.0.1 to keep it local. Loopback peers (127.0.0.1
+# and ::1) are always admitted, whatever the allowlist says.
 Environment=PINVOU_REMOTE_ALLOWED_PROXY_IPS=127.0.0.1
 Environment=PINVOU_REMOTE_TRUSTED_PROXY_IPS=127.0.0.1
 Environment=MAX_ENDPOINTS=2000
 Environment=ENDPOINT_CREATE_LIMIT=20
 Environment=ENDPOINT_CREATE_WINDOW_MS=60000
+# Keep the 4 MiB payload default: scan and parse are linear in frame size,
+# so raising MAX_PAYLOAD_BYTES makes each frame block the event loop
+# proportionally longer (a maximal frame at 16 MiB stalls liveness probes
+# for roughly half a second). Values above 16 MiB clamp to a 16 MiB ceiling.
 Environment=MAX_PAYLOAD_BYTES=4194304
 Environment=MAX_WS_CONNECTIONS=5000
 Environment=WS_CONNECT_LIMIT=120
 Environment=WS_CONNECT_WINDOW_MS=60000
 Environment=WS_AUTH_TIMEOUT_MS=10000
+# Heartbeat pings: fallback 15000, floor 5000, ceiling 24h. A non-numeric
+# value takes the fallback; an empty or whitespace-only value parses as 0
+# and clamps to the floor, like every other numeric knob. PORT defaults to
+# 8787. The legacy spellings
+# MAX_ROOMS / ROOM_CREATE_LIMIT / ROOM_CREATE_WINDOW_MS still map onto
+# MAX_ENDPOINTS / ENDPOINT_CREATE_LIMIT / ENDPOINT_CREATE_WINDOW_MS.
+# Environment=HEARTBEAT_INTERVAL_MS=15000
