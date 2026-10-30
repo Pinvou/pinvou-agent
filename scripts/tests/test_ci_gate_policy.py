@@ -169,8 +169,18 @@ def _extract_readme_claims_read_targets(claims_test):
     (claims 表形态变更须同步本提取器)——静默空结果会让路由锁整体失效。
     """
     targets = sorted(
-        {m[1] for m in re.findall(r"file:\s*(['\"])([^'\"]+)\1", claims_test)}
+        {m[1] for m in re.findall(r"file:\s*(['\"`])([^'\"`]+)\1", claims_test)}
     )
+    # 非字面量值 fail-closed:计算值行(`file: readmeFor(lang)`)主正则看不见,
+    # 派生结果却因其他字面量行仍非空——新增 README 读取静默逃出路由锁。逐行
+    # 检查 file 值必须为引号字面量(模板串/单双引号皆可),否则红。
+    for raw in re.findall(r"\bfile:\s*([^,}\n]+)", claims_test):
+        value = raw.strip()
+        if not value.startswith(("'", '"', "`")):
+            raise AssertionError(
+                "claims 行 file 值不是引号字面量,路由锁无法派生其读取目标"
+                f"(改为字面量或同步本提取器): {value}"
+            )
     if not targets:
         raise AssertionError(
             "readme claims 表未派生出任何 README 读取目标——读取形态变更须同步本提取器"
@@ -194,6 +204,19 @@ def _extract_install_contract_script_reads(contract_test):
         if not parts:
             raise AssertionError(f"无法解析的 scripts 读取目标: {args}")
         targets.append("pinvou3-app/scripts/" + "/".join(parts))
+    # 非字面量首参 fail-closed:变量/模板串/表达式首参的 read(…) 主正则看不见,
+    # 派生结果却因其他字面量读取仍非空——新增读取静默逃出路由锁(经变异验证
+    # fail-open)。枚举每个 read( 调用,首参不是引号字面量即红(宁可误红也不
+    # fail-open;注释里提及 read( 形态时同样须保持字面量示例形态)。
+    for call_head in re.findall(
+        r"(?<![A-Za-z0-9_$.])read\s*\(\s*([^,)]*)", contract_test, re.S
+    ):
+        first = call_head.strip()
+        if not first.startswith(("'", '"')):
+            raise AssertionError(
+                "read() 首参不是字符串字面量,路由锁无法派生其读取目标"
+                f"(改为字面量或同步本提取器): {first}"
+            )
     if not targets:
         raise AssertionError(
             "connector_online_install_contract.test.js 未派生出任何 scripts/ 读取目标"
@@ -967,6 +990,45 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             _extract_readme_claims_read_targets("const claims = [];")
+
+    def test_script_read_derivation_fails_closed_on_non_literal_first_arg(self):
+        # 回归锁(round-12 review):变量/模板串首参的 read(…) 主正则看不见,
+        # 派生结果却因其他字面量读取仍非空——新增读取静默逃出路由锁(经变异
+        # 验证 fail-open)。首参非引号字面量必须抛错;真实测试源(全部字面量
+        # 首参)必须照常派生。
+        contract_test = (
+            ROOT
+            / "pinvou3-app/tests/connector_online_install_contract.test.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "pinvou3-app/scripts/dingtalk-smoke.sh",
+            _extract_install_contract_script_reads(contract_test),
+        )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const dir = 'scripts';\n"
+                "const a = read(dir, 'future-smoke.sh');\n"
+                "const b = read(\"scripts\", \"tauri\", \"build.js\");\n"
+            )
+        with self.assertRaises(AssertionError):
+            _extract_install_contract_script_reads(
+                "const a = read(`scripts`, \"future-smoke.sh\");\n"
+            )
+
+    def test_readme_claims_derivation_covers_template_literal_rows(self):
+        # 回归锁(round-12 review):claims 行的模板字面量值此前派生不出(引号类
+        # 不含反引号),计算值行静默不可见——新增 README 读取会逃出路由锁。
+        # 模板字面量现在被接受;计算值(非字面量)必须抛错而非静默跳过。
+        self.assertEqual(
+            _extract_readme_claims_read_targets(
+                "{ file: `README.de.md` }, { file: \"README.md\" }"
+            ),
+            ["README.de.md", "README.md"],
+        )
+        with self.assertRaises(AssertionError):
+            _extract_readme_claims_read_targets(
+                "{ file: readmeFor('de') }, { file: \"README.md\" }"
+            )
 
     def test_contract_target_derivation_covers_double_quoted_reads(self):
         # 回归锁:派生正则此前只匹配单引号形式,双引号的
