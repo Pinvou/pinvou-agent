@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 93 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 88 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-# Public maintenance after CodeWhale#123/#124/#129/#131/#133/#134/#135 merged.
-EXPECTED_HEAD="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
-EXPECTED_COMMITS=93
+# Review candidate: CodeWhale#131 (host-armed guardrail prompts + authority-transition notice) ahead of public maintenance.
+EXPECTED_HEAD="41eab46f2fe2f6cb27f45bc9931afd4060f7c87b"
+EXPECTED_COMMITS=88
 # Published maintenance base of this integration.
-MAINTENANCE_BASE="11cba403dc6bd6ca5c4dca55042785b03449ac8e"
+MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
 # A review candidate may lead public maintenance; this does not waive the
 # separate public-head gate or change the immutable r3 transition baseline.
@@ -87,10 +87,7 @@ fingerprints=(
   "T2|Interrupted coordination field omissions are recoverable|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_short_coordination_fields_are_inline_or_recoverable"
   "T2|Real taskless gate retains both output streams|CodeWhale/crates/tui/src/tools/tasks.rs|fn forkguard_gate_without_active_task_keeps_both_streams_recoverable"
   "T2|Taskless gate recovery declares producer boundary|CodeWhale/crates/tui/src/tools/tasks.rs|fn forkguard_taskless_gate_recovery_names_returned_summaries"
-  # 2026-11-05 批次：#124 把结构化摘要的恢复 footer 收敛到共享 helper
-  # model_context_recovery_footer（truncate.rs），context.rs 的内联文案随之迁移——
-  # 指纹钉同一文案的真实新位置，主题声明不变。
-  "T2|Engine recovery names the complete returned result|CodeWhale/crates/tui/src/tools/truncate.rs|complete returned tool result at"
+  "T2|Engine recovery names the complete returned result|CodeWhale/crates/tui/src/core/engine/context.rs|complete returned tool result at"
   "T2|Real interrupted child retains checkpoint recovery|CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_interrupted_snapshot_preserves_checkpoint_recovery"
   "T2|Complete structured output has no false recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_complete_structured_results_do_not_request_recovery"
   "T2|Structured field omissions retain recovery|CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_structured_field_cuts_still_request_recovery"
@@ -201,6 +198,20 @@ fingerprints=(
   "T2|shell 指引与执行同一 dispatcher    |CodeWhale/crates/tui/src/tools/shell/guidance.rs|pub(super) fn runtime_command_guidance()"
   "T2|指引对齐 catalog 一致性回归        |CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_shell_catalog_guidance_matches_execution"
   "T2|computer-use zoom 子栅格换算       |CodeWhale/plugins/computer-use/src/raster.mjs|export function zoomChildRaster(prev, region)"
+  "T2|Armed forced hold under Full Access resolves to prompt |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_armed_full_access_forced_hold_resolves_to_prompt"
+  "T2|Authority transition renders the host change |CodeWhale/crates/tui/src/core/authority.rs|fn forkguard_authority_transition_between_renders_the_host_change"
+  "T2|Armed deny face becomes guardrail prompt |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_deny_face_becomes_guardrail_prompt_unarmed_stays_block"
+  "T2|Turn meta authority transition renders only on change |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_turn_meta_authority_transition_renders_only_on_change"
+  "T2|Live turn meta builder reads the pending transition |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_live_turn_meta_builder_reads_the_pending_transition"
+  "T2|Armed Full Access hold prompts instead of blocking |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_full_access_hold_prompts_instead_of_blocking"
+  "T2|Armed child refuses delegated typed ask under auto approve |CodeWhale/crates/tui/src/tools/subagent/tests.rs|fn forkguard_armed_child_refuses_delegated_typed_ask_even_under_auto_approve"
+  "T2|Armed sandbox escalation prompts instead of failing closed |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_sandbox_escalation_prompts_instead_of_failing_closed"
+  "T2|Armed typed ask rule prompts instead of auto running |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_full_access_typed_ask_rule_prompts_instead_of_auto_running"
+  "T2|Armed repo-law hold prompts instead of blocking |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_repo_law_hold_prompts_instead_of_blocking"
+  "T2|Preview manifest hashes the wire authority transition |CodeWhale/crates/tui/src/core/engine/preview/tests.rs|fn forkguard_preview_manifest_hashes_the_same_authority_transition_line_the_wire_sends"
+  "T2|Turn authority install never rolls back published arming |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_turn_authority_install_never_rolls_back_published_arming"
+  "T2|ChangeMode status suffixes report arming changes |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_apply_change_mode_status_suffixes_report_the_arming_change"
+  "T2|Authority transition model notice line |CodeWhale/crates/tui/src/core/authority.rs|Authority transition (host): {} -> {}; reason: {}"
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
   "T3|ambient project authority 密封     |CodeWhale/crates/tui/src/project_context.rs|forkguard_runtime_loader_ignores_ambient_project_authority"
