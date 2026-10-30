@@ -4230,6 +4230,11 @@ mod tests {
 
     #[test]
     fn execution_root_resolver_overrides_session_workspace_only_when_hit() {
+        // Session-private roots derive from PINVOU3_HOME, and this test
+        // compares two env-dependent evaluations — hold the crate env lock
+        // so a parallel env writer cannot flip the value in between (the
+        // race surfaced as an interleave flake during the round-9 wave).
+        let (_env_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let mut bridge = fixture_bridge();
         let private = crate::platform::paths::session_workspace_dir("sess-plain");
         // No resolver injected: every session uses its session-private
