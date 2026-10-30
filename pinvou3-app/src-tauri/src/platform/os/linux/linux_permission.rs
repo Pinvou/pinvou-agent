@@ -31,12 +31,12 @@ pub fn disable_super_permission() -> Result<(), String> {
 /// faces (and `.env`) are prompt-level doctrine by design — safety_deny_rules.rs
 /// deliberately keeps read faces out of the mechanical ruleset, so the reminder
 /// restates doctrine there rather than mirroring a deny rule.
-const TURN_REMINDER_ON: &str = "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`visudo`、`crontab -e` 等持久化操作仍会被安全策略拒绝,不要尝试)。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。";
+const TURN_REMINDER_ON: &str = "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`visudo`、`crontab -e` 等持久化操作默认仍会被安全策略拒绝,不要尝试;会话开启「守卫命中时询问」时改为弹审批卡由用户决定)。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。";
 
 /// OFF-state per-turn reminder. The settings path must match the i18n labels
 /// (uiSettings.permissions + uiSettingsDetail.advancedPermission); the old
 /// 【设置→系统权限】 path pointed at a nonexistent location.
-const TURN_REMINDER_OFF: &str = "超级权限【已关闭】。**禁止用 sudo**(会被立即拒绝（execpolicy Deny）,别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 权限与环境 → 高级执行权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。";
+const TURN_REMINDER_OFF: &str = "超级权限【已关闭】。**禁止用 sudo**(别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`;命中 execpolicy Deny 规则,默认直接拒绝,会话开启「守卫命中时询问」时改为弹审批卡由用户决定)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 权限与环境 → 高级执行权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。";
 
 pub fn super_permission_turn_reminder() -> &'static str {
     if super_permission_is_enabled() {
@@ -118,6 +118,9 @@ mod tests {
             "token",
             "/etc/shadow",
             "/etc/sudoers",
+            // tri-mode doctrine: deny faces default to hard deny and become
+            // approval cards only when the session arms ask-on-guardrail.
+            "守卫命中时询问",
         ] {
             assert!(
                 TURN_REMINDER_ON.contains(anchor),
@@ -130,6 +133,7 @@ mod tests {
             "【设置 → 权限与环境 → 高级执行权限】",
             "execpolicy Deny",
             "禁止用 sudo",
+            "守卫命中时询问",
         ] {
             assert!(
                 TURN_REMINDER_OFF.contains(anchor),
