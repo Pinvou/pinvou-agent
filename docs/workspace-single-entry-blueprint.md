@@ -228,8 +228,8 @@ key.
   delivery until it resolves (the moved-away-recreated contract above).
   The delivery-time re-check (`compose_workspace_roots`) judges every
   *resolvable* root against the two hard invariants (filesystem root;
-  ancestor of the primary without an endorsement — since round-40/zhuowp
-  P2 an ancestor is delivered when it is **backed by the owning project's
+  ancestor of the primary without an endorsement — since the
+  explicit-backing adjudication an ancestor is delivered when it is **backed by the owning project's
   registered roots OR explicitly granted**: `explicit_ancestor_roots`
   provenance recorded by align (§9.7) survives the backing project's
   deletion/re-rooting and persists on every durable surface — the index,
@@ -254,7 +254,7 @@ key.
   session-agents record *and* the authoritative code-session sidecar; ACP
   sessions in the session-agents index and `acp-state.json` (temporary
   sessions always store an empty snapshot). Each surface additionally
-  carries the `explicit_ancestor_roots` provenance (round-40 A1/M6): the
+  carries the `explicit_ancestor_roots` provenance (per the adjudication above): the
   align-granted ancestors ride every durable writer — sidecar setters,
   spawn full-rewrite, convergence patch — and rebind resets it with the
   replacement keychain; an index loss rebuilds it from whichever durable
