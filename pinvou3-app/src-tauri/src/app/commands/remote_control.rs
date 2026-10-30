@@ -1869,7 +1869,10 @@ mod tests {
             ("pub fn web_access_artifact_info(", "web_artifact_access("),
             (
                 "pub fn web_access_read_artifact_text(",
-                "ensure_web_artifact_response(",
+                // 内层 web_artifact_access 才是凭据栅栏;钉外层
+                // ensure_web_artifact_response 时删掉内层仍全绿
+                // (Round-10 复审 minor)。
+                "web_artifact_access(",
             ),
             (
                 "pub fn web_access_write_artifact_text(",
@@ -1909,6 +1912,24 @@ mod tests {
                 "{fn_name} must fold its errors at the command boundary ({marker})"
             );
         }
+    }
+
+    #[test]
+    fn chat_busy_classifier_anchor_matches_its_producer() {
+        // Round-10 复审 minor:busy 分类锚定在 reservation 段,该前缀由
+        // reserve_turn 的 map_err 独家引入——改写生产者措辞或把分类器退回
+        // 裸 `session_turn_in_progress` 子串匹配,都会让手机端把硬失败
+        // 静默折成可重试的 busy(对账卡死),而字符串字面量测试仍全绿。
+        // 此处把生产者与锚点两端钉在一起。
+        let source = include_str!("remote_control.rs");
+        assert!(
+            source.contains("format!(\"reserve Web chat turn: {error:#}\")"),
+            "the producer must stamp the reservation segment the classifier anchors on"
+        );
+        assert!(
+            source.contains("contains(\"reserve Web chat turn: session_turn_in_progress\")"),
+            "the classifier must anchor on the reservation segment, not the bare marker"
+        );
     }
 
     #[test]

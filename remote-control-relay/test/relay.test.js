@@ -3,6 +3,7 @@ import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import crypto from "node:crypto";
 import { connect as netConnect } from "node:net";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -168,6 +169,63 @@ function expectStillOpen(ws, timeoutMs = 250) {
       reject(new Error("websocket closed unexpectedly"));
     };
     ws.once("close", onClose);
+  });
+}
+
+// Completes a websocket upgrade over a raw TCP socket and hands the raw
+// socket back, for probes that must send hand-crafted frames the ws client
+// would never emit. Deliberately sends no Origin header: the handshake then
+// passes pre-auth, which is exactly the surface the receiver-error path
+// guards. The key is generated per probe — a literal would be shaped like a
+// credential and trip the secret scanner.
+function upgradeRaw(port) {
+  return new Promise((resolve, reject) => {
+    const key = crypto.randomBytes(16).toString("base64");
+    const sock = netConnect(port, "127.0.0.1");
+    let buf = Buffer.alloc(0);
+    const timer = setTimeout(() => {
+      sock.destroy();
+      reject(new Error("timeout waiting for the websocket upgrade"));
+    }, 3000);
+    sock.on("data", (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      const headEnd = buf.indexOf("\r\n\r\n");
+      if (headEnd === -1) return;
+      const head = buf.subarray(0, headEnd).toString();
+      clearTimeout(timer);
+      sock.removeAllListeners("data");
+      if (/^HTTP\/1\.1 101/.test(head)) {
+        resolve(sock);
+        return;
+      }
+      sock.destroy();
+      reject(new Error(`upgrade rejected: ${head.split("\r\n")[0]}`));
+    });
+    sock.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    sock.write(
+      `GET /pinvou3/remote/ws HTTP/1.1\r\n`
+      + `Host: 127.0.0.1:${port}\r\n`
+      + `Upgrade: websocket\r\n`
+      + `Connection: Upgrade\r\n`
+      + `Sec-WebSocket-Key: ${key}\r\n`
+      + `Sec-WebSocket-Version: 13\r\n\r\n`,
+    );
+  });
+}
+
+// Resolves when the raw socket closes; rejects if it stays open past the
+// timeout, so an accept-and-stall regression fails loudly.
+function waitForRawClose(sock, timeoutMs = 3000) {
+  if (sock.destroyed) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout waiting for raw socket close")), timeoutMs);
+    sock.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
   });
 }
 
@@ -1210,6 +1268,48 @@ test("survives a desktop frame the relay cannot serialize and keeps the web clie
     }));
     assert.deepEqual((await event).payload, { marker: "after-deep" });
     assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("survives illegal websocket frames at the receiver and keeps serving", async () => {
+  const isolated = await spawnRelay();
+  try {
+    // The ws Receiver rejects frame-header violations — declared length over
+    // maxPayload, reserved opcodes — before any JSON parsing or
+    // authentication runs, and ws turns an unlistened 'error' event into
+    // ERR_UNHANDLED_ERROR, killing the process. One pre-auth frame with no
+    // Origin header must therefore terminate only the offending socket.
+
+    // 1. Oversize declared length: masked binary frame announcing 8 MiB
+    //    against the 4 MiB maxPayload; no payload bytes are needed.
+    const oversize = await upgradeRaw(isolated.port);
+    const oversizeFrame = Buffer.alloc(14);
+    oversizeFrame[0] = 0x82; // FIN + binary opcode
+    oversizeFrame[1] = 0x80; // masked, 7-bit length 0 -> 64-bit extended
+    oversizeFrame.writeBigUInt64BE(8n * 1024n * 1024n, 2);
+    crypto.randomBytes(4).copy(oversizeFrame, 10);
+    const oversizeClosed = waitForRawClose(oversize);
+    oversize.write(oversizeFrame);
+    await oversizeClosed;
+
+    // 2. Protocol violation: reserved opcode 3, six bytes, still pre-auth.
+    const reserved = await upgradeRaw(isolated.port);
+    const reservedFrame = Buffer.alloc(6);
+    reservedFrame[0] = 0x83; // FIN + reserved opcode 3
+    reservedFrame[1] = 0x80; // masked, zero length
+    crypto.randomBytes(4).copy(reservedFrame, 2);
+    const reservedClosed = waitForRawClose(reserved);
+    reserved.write(reservedFrame);
+    await reservedClosed;
+
+    // The process survived both frames and still completes handshakes.
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+    const healthy = await openSocket(isolated.wsUrl);
+    assert.equal(healthy.readyState, healthy.OPEN);
+    closeSocket(healthy);
   } finally {
     await stopRelay(isolated.child);
   }

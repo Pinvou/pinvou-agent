@@ -487,6 +487,7 @@ pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
 /// 这类对已存在落点的策略裁决也反复重跑且无法稳定重放)。`Deterministic`
 /// 的结论对同一参数永不变更,可缓存为终态;`Transient` 是触盘失败——路径
 /// 此刻不可读,缓存会把注定成功的重试永远挡住。
+#[derive(Debug)]
 pub(crate) enum BrowsablePathViolation {
     Deterministic(String),
     Transient(String),
@@ -502,7 +503,26 @@ pub(crate) fn classify_browsable_path(raw: &str) -> Result<PathBuf, BrowsablePat
             "path must be absolute: {raw}"
         )));
     }
-    let canon = normalize_validated_path(&std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone()));
+    let canon = {
+        // 与 path_policy::validate_user_path 的 Round-5 fail-closed 同口径
+        // (Round-10 复审 minor:两入口声称「拒绝语义完全一致」,这里此前
+        // 漏了 `..` 腿):canonicalize 失败(路径不存在/ELOOP 等)时的原始
+        // 拼写回退不可信——组件有界比对会把 ParentDir 当普通不匹配组件,
+        // 含 `..` 的拼写必须拒绝。纯参数拼写裁决,按确定性分类。
+        match std::fs::canonicalize(&p) {
+            Ok(resolved) => normalize_validated_path(&resolved),
+            Err(_) => {
+                if p.components()
+                    .any(|component| component == std::path::Component::ParentDir)
+                {
+                    return Err(BrowsablePathViolation::Deterministic(format!(
+                        "path must not contain '..' when it cannot be resolved: {raw}"
+                    )));
+                }
+                normalize_validated_path(&p)
+            }
+        }
+    };
     if let Err(error) = std::fs::metadata(&canon) {
         return Err(BrowsablePathViolation::Transient(format!(
             "path {} is not readable: {error}",
@@ -1024,6 +1044,33 @@ mod tests {
             err.contains("sensitive"),
             "should fail on sensitive component, got: {err}"
         );
+    }
+
+    #[test]
+    fn browsable_classifier_fails_closed_on_unresolvable_dotdot() {
+        // Round-10 复审 minor:canonicalize 失败(路径不存在)时的原始拼写
+        // 回退不可信——含 `..` 的拼写必须拒绝而非让组件黑名单把 ParentDir
+        // 当普通不匹配组件。分类必须是 Deterministic(纯参数裁决,可缓存)。
+        let scope = scoped_home_dir("dotdot");
+        let dir = scope.subdir("project");
+        let unresolvable = dir.join("missing/../notes.md");
+        assert!(
+            !unresolvable.exists(),
+            "fixture must be unresolvable for the fallback leg to run"
+        );
+        match classify_browsable_path(unresolvable.to_str().unwrap()) {
+            Err(BrowsablePathViolation::Deterministic(message)) => {
+                assert!(message.contains("'..'"), "{message}");
+            }
+            other => {
+                panic!("unresolvable '..' spelling must be a deterministic refusal: {other:?}")
+            }
+        }
+        // 同一拼写一旦真实存在,canonicalize 成功,走 resolved 分支照常放行:
+        // 钉的是回退腿,不是把合法的 `..` 拼写一概拒绝。
+        std::fs::create_dir_all(dir.join("missing")).unwrap();
+        std::fs::write(dir.join("notes.md"), b"notes").unwrap();
+        assert!(classify_browsable_path(unresolvable.to_str().unwrap()).is_ok());
     }
 
     #[test]

@@ -65,9 +65,10 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COM
 /// postprocess --text-file/--draft-file`, and `personas create/update
 /// --file`. See the module docs for the session-storage caveat: targets
 /// already proved inside session storage take the component half
-/// ([`crosses_sensitive_component`], now including the `.env.*` component
-/// prefix rule) while the *system*-prefix half (unix system areas) cannot
-/// apply to them.
+/// ([`crosses_sensitive_component`] plus, for the `.env.*` component-prefix
+/// rule, the separate [`crosses_sensitive_component_prefix`] leg wired at the
+/// [`resolve_session_artifact`] call site) while the *system*-prefix half
+/// (unix system areas) cannot apply to them.
 /// The component half of `path_policy::check_sensitive_components`.
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
@@ -839,16 +840,25 @@ mod tests {
             }
         }
         // Round-9 复审 MAJOR(GUI 镜像同源同语义):组件化改写曾把字节前
-        // 缀时代的真实家族成员静默放行——`shadow-` 哈希备份、`sudoers.d/`
-        // 片段、`sudoers.tmp`、`auth.log` 本体及其轮转名必须经 CLI 消费方
-        // 拒绝;无辜同名保持放行。
+        // 缀时代的真实家族成员静默放行——`shadow-` 哈希备份、`auth.log`
+        // 本体及其轮转名必须经 CLI 消费方拒绝;Round-10 复审 MAJOR 补上
+        // 备份家族(`.bak`/`.old`/`.pacnew`/`~`),与 GUI 共用同一清单。
+        // 无辜同名保持放行。
         for variant in [
             "/etc/shadow-",
             "/etc/gshadow-",
+            "/etc/shadow.bak",
+            "/etc/shadow.lock",
+            "/etc/gshadow.bak",
+            "/etc/sudoers.bak",
+            "/etc/sudoers.old",
+            "/etc/sudoers.pacnew",
             "/etc/sudoers.tmp",
+            "/etc/sudoers~",
             "/var/log/auth.log",
             "/var/log/auth.log.1",
             "/var/log/auth.log.2.gz",
+            "/var/log/auth.log.10",
         ] {
             assert!(
                 check_sensitive_path(Path::new(variant)).is_err(),
@@ -900,6 +910,17 @@ mod tests {
         assert!(
             !canonical_system_prefix_hit(Path::new("/private/usr/local/tool"), true),
             "unrelated /private subtrees stay unaliased"
+        );
+        // Round-10 复审 minor:别名展开覆盖 var 腿——macOS 上轮转日志的
+        // canonical 拼写是 /private/var/log/...,只钉 etc 腿时收窄别名
+        // 清单不会红。
+        assert!(
+            canonical_system_prefix_hit(Path::new("/private/var/log/auth.log.1"), true),
+            "the aliased /var spelling of the rotated auth log must hit"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/var/log/authprobe"), true),
+            "the component boundary must survive the aliased /var leg"
         );
         assert!(
             !canonical_system_prefix_hit(Path::new("/private/etc/shadow"), false),

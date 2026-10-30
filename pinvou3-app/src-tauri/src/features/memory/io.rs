@@ -2293,7 +2293,7 @@ mod tests {
 
     #[test]
     fn runtime_snapshot_payloads_carry_redacted_paths() {
-        crate::platform::test_support::with_temp_home("pinvoy-runtime-redact", || {
+        crate::platform::test_support::with_temp_home("pinvou-runtime-redact", || {
             let snapshot = disabled_runtime_snapshot("sess-redact-1").expect("disabled snapshot");
             assert!(
                 !snapshot.runtime_path.contains(

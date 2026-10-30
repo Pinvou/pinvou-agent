@@ -305,6 +305,13 @@
         if (!this.closedPermanently) this.scheduleReconnect("连接已断开，正在重试…");
       });
       socket.addEventListener("error", () => {
+        // 看门狗/网络恢复的投机关闭在半开 socket 上会先触发 error(部分
+        // 浏览器把失败的关闭握手报成 error+close):这与自然死亡不同——
+        // 验证尚未开始,既不能计入投机失败,也不能提前点亮 connecting,
+        // 否则「UI 保持 connected 直到验证失败」的语义随浏览器引擎分叉。
+        // 投机源 socket 的 error 交给 close 处理器统一收口(那边的身份门
+        // 同样不计数);非投机死亡保持原语义。
+        if (this.speculativeReconnect && socket === this.speculativeSource) return;
         this.noteSpeculativeFailure();
         // 异常断线先于 close 触发 error:desktop_offline 的专属文案同样不得
         // 被这里的 connecting 覆盖(close→scheduleReconnect 一侧有同款门),

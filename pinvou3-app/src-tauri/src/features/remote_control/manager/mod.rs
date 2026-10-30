@@ -257,9 +257,11 @@ fn revoke_host_workspace_state(inner: &mut Inner) {
     inner.web_workspace_grants.clear();
 }
 
-/// 注册类 error 帧的可操作恢复提示。版本不匹配的正确恢复路径是更新桌面
-/// 端——轮换只会铸出同一协议版本的新 endpoint,「rotate」提示在那里是
-/// 错误指引。
+/// 注册类 error 帧的可操作恢复提示。版本不匹配的正确恢复路径是升级到
+/// 匹配的最新版本——轮换只会铸出同一协议版本的新 endpoint,「rotate」
+/// 提示在那里是错误指引。同一个码覆盖两侧:桌面端过旧(默认情形)与
+/// 自建中继过旧(桌面端其实是新的)无法从码上区分,提示必须同时覆盖
+/// (Round-10 复审 minor)。
 fn relay_registration_error_reason(error_code: &str, relay_message: &str) -> String {
     match error_code {
         "invalid_access_token" | "invalid_desktop_secret" => {
@@ -269,7 +271,7 @@ fn relay_registration_error_reason(error_code: &str, relay_message: &str) -> Str
             "{relay_message}; the persisted Web access config is unusable, rotate Web access to recover"
         ),
         "unsupported_protocol_version" => format!(
-            "{relay_message}; update this desktop to the latest version to restore Web access"
+            "{relay_message}; update this desktop (and a self-hosted relay, if you run one) to the latest version to restore Web access"
         ),
         _ => relay_message.to_string(),
     }
@@ -2606,6 +2608,11 @@ impl RemoteControlManager {
                             && pending.dispatched_generation != bridge_generation
                         {
                             pending.dispatched_generation = bridge_generation.clone();
+                            // 重派发必须重置 TTL 时钟:Pending 可能是 begin
+                            // 持久化失败后的重试臂,继承最初入场的
+                            // dispatched_at 会让窗口尾部的重试几乎立刻被
+                            // TTL 扫描伪造成 rpc_timed_out。
+                            pending.dispatched_at = Instant::now();
                             RpcRequestAction::Dispatch(RpcDispatch {
                                 request_id: request_id.clone(),
                                 command: pending.command.clone(),
@@ -3860,6 +3867,42 @@ mod tests {
                     && dispatch.bridge_generation == "generation-new"
         ));
         assert!(prepare_bridge_generation(&mut inner, "generation-new").is_empty());
+    }
+
+    #[test]
+    fn a_redispatch_refreshes_the_dispatch_clock() {
+        // Round-10 复审 minor:重派发(webview 重载、begin 持久化失败后的
+        // 再派发)不刷新 dispatched_at 的话会继承最初入场的 TTL 时钟——
+        // 窗口尾部的重试几乎立刻被 TTL 扫描伪造成 rpc_timed_out。
+        let mut inner = Inner::default();
+        inner.bridge_generation = Some("generation-old".into());
+        let stale = Instant::now() - RPC_IN_FLIGHT_TTL - Duration::from_secs(10);
+        inner.rpc_cache.insert(
+            "queued".into(),
+            RpcCacheEntry::Pending(PendingRpc {
+                lease_id: "lease".into(),
+                command: "chat".into(),
+                args: json!({ "sessionId": "s1" }),
+                fingerprint: "a".repeat(64),
+                dispatched_generation: Some("generation-old".into()),
+                acknowledged_generation: None,
+                dispatched_at: stale,
+            }),
+        );
+        inner.rpc_order.push_back("queued".into());
+
+        assert_eq!(
+            prepare_bridge_generation(&mut inner, "generation-new").len(),
+            1
+        );
+        let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get("queued") else {
+            panic!("the re-armed request must stay pending");
+        };
+        assert_ne!(pending.dispatched_at, stale, "the clock must be reset");
+        assert!(
+            !rpc_in_flight_expired(pending.dispatched_at, Instant::now()),
+            "a freshly re-dispatched request must not be sweep-eligible"
+        );
     }
 
     #[test]
@@ -5400,6 +5443,53 @@ mod tests {
              non-reentrant mutex and deadlocks the revoke path",
             depth_at(emit),
             depth_at(lock)
+        );
+    }
+
+    /// 接线钉(Round-10 复审 M2):撤销的安全语义「同步失效已铸发的
+    /// workspace grants + 落盘 consent 旗标」只在命令路径的调用点生效——
+    /// `revoking_host_workspace_also_invalidates_minted_grants` 直接驱动
+    /// free helper,看不见接线。删除 `revoke_host_workspace_state(&mut
+    /// inner)` 或 `persist_config(&config)?` 会让撤销退回「只改内存、
+    /// 已铸发 grant 在 30 分钟 TTL 内仍可兑换」的 pre-fix 行为而全套件
+    /// 保持绿(突变实证:20 个 revoke 匹配测试全绿)。
+    #[test]
+    fn revoke_host_workspace_wires_grant_invalidation_and_latches_the_flag() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace(")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        assert!(
+            body.contains("persist_config(&config)?"),
+            "revoke must latch the consent flag into the persisted config"
+        );
+        assert!(
+            body.contains("revoke_host_workspace_state(&mut inner);"),
+            "revoke must invalidate already-minted workspace grants on the live state"
+        );
+        assert!(
+            body.contains("self.emit_status();"),
+            "revoke must push the refreshed status so the modal reflects the revoked row"
+        );
+    }
+
+    /// 接线钉(Round-10 复审 minor):`web_access:status` 载荷携带配对
+    /// URL 与 QR 位图(token 的载体),必须 emit_to("main") 而非广播——
+    /// 退回 `app.emit` 会把它送达 aux WebView(reader/pet),全套件不红。
+    #[test]
+    fn emit_status_scopes_the_payload_to_the_main_webview() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn emit_status(&self)")
+            .expect("emit_status must exist");
+        let body = &source[start..];
+        let body = &body[..body.find("\n    fn ").unwrap_or(body.len())];
+        assert!(
+            body.contains("self.app.emit_to(\"main\", \"web_access:status\""),
+            "web_access:status carries the pairing URL and QR; it must be scoped \
+             to the main webview, not broadcast to every webview"
         );
     }
 

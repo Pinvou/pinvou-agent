@@ -1032,6 +1032,16 @@ wss.on("connection", (ws, req) => {
   ws.authTimer.unref?.();
   ws.on("pong", () => { ws.isAlive = true; });
 
+  // The ws Receiver emits 'error' directly on frame-header-level violations
+  // (declared length over maxPayload, reserved opcodes, invalid UTF-8 close
+  // reasons) — those never reach the JSON-level guards below, and ws turns an
+  // unlistened 'error' event into ERR_UNHANDLED_ERROR, killing the process.
+  // Same contract as the send() guard: one poisoned frame terminates only
+  // this socket; the close handler then runs the endpoint bookkeeping.
+  ws.on("error", () => {
+    terminateDestination(ws);
+  });
+
   ws.on("message", (raw, isBinary) => {
     if (ws.policyClosing || ws.revokePending) return;
     if (!consumeIngress(ws, rawMessageBytes(raw))) {

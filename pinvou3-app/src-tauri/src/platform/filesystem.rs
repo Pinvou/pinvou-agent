@@ -2743,7 +2743,8 @@ pub(crate) mod tests {
 
     use super::{
         atomic_write, atomic_write_private, is_executable_file, permission_bits,
-        quarantine_corrupt_file, quarantine_secret_file, read_capped, rotate_log_if_oversized,
+        quarantine_corrupt_file, quarantine_corrupt_file_bytes, quarantine_corrupt_file_copy,
+        quarantine_secret_file, read_capped, rotate_log_if_oversized,
     };
     #[cfg(unix)]
     use super::{create_secret_file, open_private_append_file, open_private_lock_file};
@@ -3635,6 +3636,73 @@ pub(crate) mod tests {
         assert_ne!(re_quarantine, first_quarantine);
         assert_eq!(std::fs::read(&re_quarantine).unwrap(), b"corrupt A2");
         assert_eq!(std::fs::read(&first_quarantine).unwrap(), b"corrupt A");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Round-10 复审 minor:rename 失败时的两条回退腿(copy / bytes)此前零
+    // 执行测试——「quarantine fallback keeps full-file evidence」的承诺落在
+    // 未验证的代码上。unix 上能击破 rename 的形态同样击破 copy,两条腿只在
+    // Windows 锁场景可达;这里直接驱动 helper 本身,钉住证据字节与 0600 私密
+    // 落盘(两条腿都走 quarantine_destination/atomic_write_private/copy)。
+    #[test]
+    fn quarantine_fallback_legs_preserve_the_full_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-quarantine-fallback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("state.json");
+
+        // copy 腿:整份文件按字节保留。契约是调用方先把源修复到 0600、
+        // copy 按位继承——先修复再隔离,钉住继承语义。
+        std::fs::write(&source, b"corrupt-full-bytes").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let copied = quarantine_corrupt_file_copy(&source).unwrap();
+        assert!(copied.to_string_lossy().contains(".json.corrupt-"));
+        assert!(
+            source.exists(),
+            "the copy leg must leave the source in place"
+        );
+        assert_eq!(std::fs::read(&copied).unwrap(), b"corrupt-full-bytes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&copied).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "a source repaired to 0600 before the copy must not quarantine loose"
+            );
+        }
+
+        // bytes 腿:调用方有界读保留的前缀按 atomic_write_private 落盘,
+        // 原路径留给调用方的破坏性重写。
+        let bytes_quarantine = quarantine_corrupt_file_bytes(&source, b"truncated-prefix").unwrap();
+        assert_ne!(
+            bytes_quarantine, copied,
+            "same-second captures need fresh names"
+        );
+        assert_eq!(
+            std::fs::read(&bytes_quarantine).unwrap(),
+            b"truncated-prefix"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&bytes_quarantine)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "atomic_write_private must land 0600");
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
