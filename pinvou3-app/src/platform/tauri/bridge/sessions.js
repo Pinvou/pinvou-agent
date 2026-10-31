@@ -632,7 +632,7 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
           // set_plan_mode_next here; apply only a mode the user explicitly
           // staged in draft state (the one-shot YOLO confirmation gate was
           // already passed by ChatView at draft switch time).
-          if (stagedDraftMode === "plan" || stagedDraftMode === "yolo") {
+          if (["plan", "yolo", "auto"].includes(stagedDraftMode)) {
             // Use the meta.id captured at materialization, not activeSessionId:
             // during the awaits above the user may have switched away, and
             // running the mode command against the current active session would
@@ -640,7 +640,9 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
             try {
               const stagedModeState = stagedDraftMode === "plan"
                 ? await invoke("set_plan_mode_next", { sessionId: meta.id })
-                : await invoke("exit_plan_to_yolo", { sessionId: meta.id });
+                : stagedDraftMode === "yolo"
+                ? await invoke("exit_plan_to_yolo", { sessionId: meta.id })
+                : await invoke("set_session_mode", { sessionId: meta.id, mode: "auto" });
               applyAuthoritativeModeState(meta.id, stagedModeState);
             } catch (stagedModeError) {
               runSyncOnSession(meta.id, function () {
@@ -649,18 +651,22 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
             }
           }
         } else {
-        // Two-lane semantics (#428 merged design into work): the backend's
-        // plain default is always Yolo and lanes are only work/code; when the
-        // materializing session's lane global default is plan, apply it right
-        // now (the write becomes that session's own per-session record; the
-        // global default is unaffected).
+        // Two-lane semantics (#428 merged design into work): the backend
+        // resolves unbound plain sessions to Auto when no lane default
+        // applies; an explicitly chosen lane global default (plan / yolo /
+        // auto) is applied right now so it becomes that session's own
+        // per-session record (the global default is unaffected). Before the
+        // tri-mode reconciliation only "plan" was applied here, silently
+        // dropping an explicit yolo/auto work default.
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
-        // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
-        if (laneDefault === "plan") {
+        // 可能已切走，对当前 active 会话执行模式命令会改错对象。
+        if (["plan", "yolo", "auto"].includes(laneDefault)) {
           try {
-            const laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            const laneModeState = laneDefault === "plan"
+              ? await invoke("set_plan_mode_next", { sessionId: meta.id })
+              : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
             applyAuthoritativeModeState(meta.id, laneModeState);
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {

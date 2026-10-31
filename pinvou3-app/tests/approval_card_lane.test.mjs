@@ -7,7 +7,8 @@
 // 2. 源码契约（multiagent_plan_normalize 风格的 regex pin）：bridge chat-events
 //    监听器去重 + mode_changed 走统一收敛点、interaction 决策的显式 sessionId
 //    invoke 形状、sessions 切会话重放、CodexAcpView 事件表与还原路径、
-//    ChatView 的 auto 分支不经 Yolo 确认门（门只对 target==='yolo'）。
+//    ChatView 的 auto 分支不经 Yolo 确认门（门对一切进入 Yolo 的切换生效，
+//    v3.5：Auto→Yolo 直达不再绕道 Plan）。
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -193,6 +194,12 @@ try {
     (sessionsBridge.match(/await replayPendingApprovals\(id\);/g) || []).length, 2,
     'switchToSessionInternal 的快路径与慢路径都必须挂重放',
   );
+  // v3.5：物化时车道全局默认三档都应用（旧代码只认 plan，显式 yolo/auto 的
+  // work 默认被静默丢弃）；草稿兜底与后端 resolved 默认对齐为 auto。
+  assert.match(sessionsBridge, /\["plan", "yolo", "auto"\]\.includes\(laneDefault\)/,
+    '未绑定物化应用三档车道默认');
+  assert.match(sessionsBridge, /\["plan", "yolo", "auto"\]\.includes\(stagedDraftMode\)/,
+    '绑定物化应用三档暂存 mode');
 
   // CodexAcpView：事件表 + 决策 invoke 形状 + remount 还原。
   for (const event of ['chat:approval_required', 'chat:guardrail_denied', 'chat:mode_changed']) {
@@ -206,8 +213,18 @@ try {
     '还原按「查询 camelCase → 事件 snake_case」重灌（与 live 事件同一去重键）');
   assert.match(codexView, /if \(name === 'chat:mode_changed' && sessionId === activeIdRef\.current\) \{[\s\S]{0,300}?refreshNativeControls\(sessionId\)/,
     'mode_changed 经 refreshNativeControls 权威刷新（请求序号 + 归属保护）');
+  // v3.5：Auto→Yolo 直达（旧代码无此分支，Yolo 点击静默落空）；确认门对
+  // 一切进入 Yolo 的切换生效。
+  assert.match(codexView, /if \(target === 'yolo'\) \{\s*\n\s*const prefs = await refreshCodePermPrefs\(\);/,
+    '原生车道 Yolo 确认门不再绑定 isPlan');
+  assert.match(codexView, /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,200}?\} else if \(target === 'yolo'\) \{[\s\S]{0,300}?set_session_mode', \{ sessionId: activeId, mode: 'yolo' \}/,
+    'Plan 退回 exit_plan_to_yolo；Auto→Yolo 走 set_session_mode');
+  // v3.5：草稿暂存 auto 也随建会话应用（旧代码只认 plan/yolo）。
+  assert.match(codexView, /staged\.mode === 'yolo'\) \{[\s\S]{0,160}?\} else if \(staged\.mode === 'auto'\) \{[\s\S]{0,200}?set_session_mode', \{ sessionId, mode: 'auto' \}/,
+    '原生车道草稿暂存 auto 落地');
 
-  // ChatView：auto 分支在门之前直返；YOLO 确认门仍只对 target==='yolo' 生效。
+  // ChatView：auto 分支在门之前直返；YOLO 确认门对一切进入 Yolo 的切换生效
+  // （v3.5：Auto→Yolo 直达同一门 + set_session_mode，不再绕道 Plan）。
   {
     const handler = chatView.slice(
       chatView.indexOf('async function handleModeChipSwitch'),
@@ -215,11 +232,16 @@ try {
     );
     assert.ok(handler.includes('async function handleModeChipSwitch'), '切片必须命中 handleModeChipSwitch');
     const autoAt = handler.indexOf("target === 'auto'");
-    const gateAt = handler.indexOf("target !== 'yolo' || !isPlan");
+    const gateAt = handler.indexOf("if (target !== 'yolo') return;");
     assert.ok(autoAt >= 0, 'handleModeChipSwitch 必须有 auto 分支');
     assert.ok(gateAt > autoAt, 'auto 分支必须先于 Yolo 门直返（auto 永不过门）');
     assert.match(handler, /bridge\.interaction\.setSessionMode\(activeSessionId, 'auto'\)/,
       'auto 分支显式携带发起会话 sid');
+    // v3.5：门后按来路分派——Plan 退回走 exit_plan_to_yolo；Auto→Yolo 走
+    // set_session_mode（同显式 sid），消灭旧 `!isPlan` 早退的静默吞没。
+    assert.match(handler, /if \(gateSid !== activeSessionIdRef\.current\) return;/, '门后归属复检仍在');
+    assert.match(handler, /if \(isPlan\) \{[\s\S]{0,200}?exitPlanToYolo\(gateSid\);[\s\S]{0,200}?\} else if \(typeof bridge\.interaction\.setSessionMode === 'function'\) \{[\s\S]{0,200}?setSessionMode\(gateSid, 'yolo'\);/,
+      'Plan 退回 exit_plan_to_yolo；Auto→Yolo 走 set_session_mode，均过同一确认门');
     assert.match(chatView, /pendingChatYoloActionRef\.current = \{ kind: 'planStuckGo', itemId \};/,
       'plan-stuck 的 Yolo 继续仍走一次性确认门');
     // Auto 档继续：goAuto 短路在 pendingChatYoloActionRef 之前（不过门）。
@@ -230,13 +252,20 @@ try {
     const goAutoAt = planStuckHandler.indexOf("targetMode === 'auto'");
     const pendingAt = planStuckHandler.indexOf("pendingChatYoloActionRef.current = { kind: 'planStuckGo', itemId };");
     assert.ok(goAutoAt >= 0 && pendingAt > goAutoAt, 'plan-stuck 的 Auto 继续不得记录 Yolo 确认动作');
-    // chip 接线：askOnGuardrail + 开关回调。
+    // chip 接线：askOnGuardrail + 开关回调 + 草稿态禁用（无会话可写）。
     assert.match(chatView, /askOnGuardrail=\{bs && bs\.modeState \? bs\.modeState\.askOnGuardrail : undefined\}/,
       '聊天车道 chip 读取 bridge modeState 的 askOnGuardrail');
+    assert.match(chatView, /askToggleDisabled=\{!activeSessionId\}/, '草稿态（无会话）禁用守卫开关');
     assert.match(chatView, /onToggleAskOnGuardrail=\{handleToggleAskOnGuardrail\}/, '开关回调接线');
     assert.match(chatView, /bridge\.interaction\.setAskOnGuardrail\(activeSessionId, enabled\)/,
       '开关走 bridge（乐观翻转 + 失败回滚在 bridge 层）');
   }
+
+  // chat:done 终态清扫（v3.5）：后端 clear_pending 清登记后，残留 active 卡
+  // 就地落 cancelled，不再可点。
+  assert.match(chatEvents, /item\.type === "approval" && !item\.resolved[\s\S]{0,120}?item\.cardState = "cancelled";/,
+    'turn 终态清扫未决策审批卡');
+  assert.match(chatEvents, /item\.type === "approval" && item\.approvalId === approvalId/, 'live 事件按 approvalId 去重');
 
   // tool-renderers：ApprovalCard 三按钮 + PlanStuckCard 的 Auto/Yolo 双出路。
   assert.match(toolRenderers, /const ApprovalCard = \(\{ item, t, onDecide \}\) => \{/, '审批卡组件');

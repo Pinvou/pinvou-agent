@@ -2993,7 +2993,11 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           await bridge.interaction.setSessionMode(activeSessionId, 'auto');
           return;
         }
-        if (target !== 'yolo' || !isPlan) return;
+        if (target !== 'yolo') return;
+        // Yolo 确认门对 Auto → Yolo 同样生效（v3.5 修复：旧两态时代
+        // `!isPlan` 早退是死代码，tri-mode 使其成为可达的吞没点——Auto 态
+        // 点 Yolo 静默无操作，回全自动驾驶只能绕道 Plan）。Yolo→Yolo 已被
+        // chip 的 target === activeMode 早退拦下。
         const gateSid = activeSessionId;
         // Post-await re-checks live inside chatYoloGateAllows: the
         // adjudication is for the session captured at click time, and the
@@ -3005,7 +3009,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // no-arg exitPlanToYolo reads live-active at call time — a
         // render-phase mirror can lag the bridge store by one flush, so the
         // adjudicated session must reach the command as a parameter.
-        await bridge.interaction.exitPlanToYolo(gateSid);
+        if (isPlan) {
+          // Plan 退回：语义命令 exit_plan_to_yolo（立即生效）。
+          await bridge.interaction.exitPlanToYolo(gateSid);
+        } else if (typeof bridge.interaction.setSessionMode === 'function') {
+          // Auto → Yolo：统一 set_session_mode（后端同一热同步 + 广播序列）。
+          await bridge.interaction.setSessionMode(gateSid, 'yolo');
+        }
       }
       // 会话级「守卫命中时询问」开关（tri-mode）：乐观翻转 + 失败回滚都在
       // bridge（interaction.setAskOnGuardrail，setMultiAgentMode 同款模式），
@@ -4310,6 +4320,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   })()}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch}
                     askOnGuardrail={bs && bs.modeState ? bs.modeState.askOnGuardrail : undefined}
+                    askToggleDisabled={!activeSessionId}
                     onToggleAskOnGuardrail={handleToggleAskOnGuardrail} />
                   {/* Scheduled run conversations expose no swarm toggle:
                       the backend's swarm_mode_available excludes them (the

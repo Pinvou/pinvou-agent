@@ -505,6 +505,10 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       }) || null;
     });
     if (!card || card.resolved) return;
+    // 在途防重入（setMultiAgentMode 同款）：双击快过重渲染时会派发第二次
+    // decide_approval，第一次已成功后第二次只会得到 "approval not found"
+    // 并把失败提示打进会话流。
+    if (card.submitting) return;
     const previous = { resolved: !!card.resolved, cardState: card.cardState || "active" };
     runSyncOnSession(sid, function () { card.submitting = true; });
     notify();
