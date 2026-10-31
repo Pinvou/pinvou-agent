@@ -165,12 +165,6 @@ impl SessionPolicy {
     pub fn approval_params_for_mode(&self, mode: crate::core::mode_state::SerializableMode) -> (bool, ApprovalMode) {
         mode.approval_params()
     }
-
-    /// 兼容旧调用点：两模式现默认 Auto（tri-mode 新工作车道默认）。
-    /// 仅限无法拿到会话 mode 的静态路径。
-    pub fn approval_params(&self) -> (bool, ApprovalMode) {
-        (false, ApprovalMode::Suggest)
-    }
 }
 
 #[cfg(test)]
@@ -295,12 +289,6 @@ mod tests {
                 policy.approval_params_for_mode(SerializableMode::Yolo),
                 (true, ApprovalMode::Bypass),
                 "{product_mode:?} Yolo 档"
-            );
-            // 静态兼容路径默认 Auto 档。
-            assert_eq!(
-                policy.approval_params(),
-                (false, ApprovalMode::Suggest),
-                "{product_mode:?} 静态兼容路径默认 Auto"
             );
         }
     }
