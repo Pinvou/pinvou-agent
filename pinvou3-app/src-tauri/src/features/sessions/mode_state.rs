@@ -150,14 +150,14 @@ impl SessionModeState {
     /// A fresh mode-state entry for a session being materialized NOW (the
     /// `mode_state` fallback, `mode_state_entry`, and every `or_insert_with`
     /// mint site). Identical to [`Default::default`] except the per-session
-    /// ask-on-guardrail toggle seeds from the global
-    /// `code_permission.ask_on_guardrail_default` preference (tri-mode):
+    /// ask-on-guardrail toggle seeds from [`Self::ask_on_guardrail_seed`]
+    /// (explicit override first, then the global
+    /// `code_permission.ask_on_guardrail_default` preference; tri-mode):
     /// sessions absent from `_ask_on_guardrail.json` follow that global
     /// default — hardcoding `true` here ignored the user's "silent
     /// hard-deny" opt-out until the session got an explicit toggle write.
-    /// Explicit per-session overrides (the sidecar, merged by
-    /// `load_ask_on_guardrail_overrides` AFTER boot minting) keep winning,
-    /// and an already-materialized entry is never re-seeded by this ctor.
+    /// Explicit per-session overrides keep winning, and an
+    /// already-materialized entry is never re-seeded by this ctor.
     ///
     /// ONE seeding point by construction: every fresh-entry mint site must
     /// go through it (`Default::default()` stays for serde round-trips and
@@ -281,17 +281,15 @@ impl SessionStore {
     }
 
     pub fn mode_state(&self, id: &str) -> SessionModeState {
-        // Resolved BEFORE the read lock: the global default seeds a
-        // fallback entry's ask_on_guardrail (see `default_for_new_session`).
-        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
-        self.mode_states
-            .read()
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| SessionModeState {
-                mode: self.resolved_default_mode(id),
-                ..SessionModeState::default_for_new_session(ask_on_guardrail_default)
-            })
+        // Resolved BEFORE the read lock: the fallback entry's ask_on_guardrail
+        // seeds through `ask_on_guardrail_seed` (explicit override first —
+        // see `default_for_new_session`).
+        let fallback = SessionModeState {
+            mode: self.resolved_default_mode(id),
+            ask_on_guardrail: self.ask_on_guardrail_seed(id),
+            ..SessionModeState::default()
+        };
+        self.mode_states.read().get(id).cloned().unwrap_or(fallback)
     }
 
     pub(crate) fn is_code_session(&self, id: &str) -> bool {
@@ -306,10 +304,12 @@ impl SessionStore {
     /// mis-operation and injection surface; the safety posture follows the
     /// binding, not the mode), fall back to the global `code_permission.last_mode`
     /// (None = the user has never used it → read-only Plan on first use);
-    /// unbound plain sessions default to Yolo (the work lane's global default is
-    /// applied by the frontend at session materialization; the backend no longer
-    /// distinguishes a plain-side lane — design merged into work, see
-    /// `set_mode_default`).
+    /// unbound plain sessions default to Auto (tri-mode per-call approval).
+    /// An explicitly chosen work lane global default (plan/yolo/auto) is
+    /// applied by the frontend at session materialization — it becomes the
+    /// session's own record, so this resolution only covers the "no explicit
+    /// default" case; the backend itself does not distinguish a plain-side
+    /// lane (design merged into work, see `set_mode_default`).
     pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) || self.session_workspace_binding(id).is_some() {
             self.code_permission
@@ -319,9 +319,7 @@ impl SessionStore {
         } else {
             // Tri-mode safety: new unbound plain sessions start in Auto
             // (per-call approval cards, in-workspace writes modal-free), not
-            // in full-auto Yolo. The frontend applies the work lane's global
-            // default at session materialization; the backend no longer
-            // distinguishes a plain-side lane.
+            // in full-auto Yolo.
             SerializableMode::Auto
         }
     }
@@ -345,13 +343,11 @@ impl SessionStore {
         id: &str,
         default_mode: SerializableMode,
     ) -> &'m mut SessionModeState {
-        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
-        states
-            .entry(id.to_string())
-            .or_insert_with(|| SessionModeState {
-                mode: default_mode,
-                ..SessionModeState::default_for_new_session(ask_on_guardrail_default)
-            })
+        states.entry(id.to_string()).or_insert_with(|| SessionModeState {
+            mode: default_mode,
+            ask_on_guardrail: self.ask_on_guardrail_seed(id),
+            ..SessionModeState::default()
+        })
     }
 
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
@@ -384,16 +380,23 @@ impl SessionStore {
     /// touching the sidecar file.
     fn set_mode_in_memory(&self, id: &str, mode: SerializableMode) {
         // Fresh-entry seed resolved BEFORE the write lock (same reason as
-        // `clear_mode_and_persist`: the pref mirror read must not sit under
-        // the mode-states guard). A minted entry keeps the historical
-        // `Default` mode so the pre_plan_mode branch below behaves exactly
-        // as before — only the ask_on_guardrail seeding is new.
-        let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
+        // `clear_mode_and_persist`: the pref/predicate mirror reads must not
+        // sit under the mode-states guard). A minted entry resolves its mode
+        // from `resolved_default_mode` — the same default every other mint
+        // site uses, i.e. the mode the UI actually showed before this write.
+        // (Minting the historical `Default` sentinel Yolo here made a
+        // first-ever Plan write record `pre_plan_mode = Yolo`, and plan
+        // acceptance then landed in persisted full-auto — precisely what the
+        // tri-mode accept contract forbids.)
+        let resolved_default = self.resolved_default_mode(id);
+        let ask_on_guardrail_seed = self.ask_on_guardrail_seed(id);
         {
             let mut m = self.mode_states.write();
-            let entry = m
-                .entry(id.to_string())
-                .or_insert_with(|| SessionModeState::default_for_new_session(ask_on_guardrail_default));
+            let entry = m.entry(id.to_string()).or_insert_with(|| SessionModeState {
+                mode: resolved_default,
+                ask_on_guardrail: ask_on_guardrail_seed,
+                ..SessionModeState::default()
+            });
             // Tri-mode safety: remember the mode Plan was entered from so
             // `accept_plan` returns execution there (fallback Auto). A
             // re-entry into Plan refreshes the record; leaving Plan for
@@ -1183,10 +1186,11 @@ impl SessionStore {
             let mut persisted = self.session_mode_states.write();
             *persisted = modes.clone();
         }
-        // Boot minting seeds the toggle from the CURRENT global default: a
-        // persisted-mode session without an explicit `_ask_on_guardrail.json`
-        // override follows the preference (overrides are merged AFTER this
-        // by `load_ask_on_guardrail_overrides`, so explicit choices win).
+        // Boot minting seeds the toggle from the CURRENT global default: the
+        // override map is not loaded yet at this point (its file is merged
+        // AFTER this by `load_ask_on_guardrail_overrides`, which also applies
+        // explicit choices to the entries minted here). Later mints in this
+        // run go through `ask_on_guardrail_seed` and consult the loaded map.
         // Resolved before the write lock — the mirror read is in-memory only.
         let ask_on_guardrail_default = self.code_permission_prefs().ask_on_guardrail_default;
         let mut states = self.mode_states.write();
@@ -1278,13 +1282,19 @@ impl SessionStore {
     }
 
     /// Set the session's ask-on-guardrail toggle (tri-mode safety). The
-    /// toggle rides the in-memory mode-state entry and persists into its own
-    /// `_ask_on_guardrail.json` sidecar (a `HashMap<String, bool>` of
-    /// explicit overrides — sessions absent from the file follow the global
-    /// `ask_on_guardrail_default`). Same critical-section discipline as
-    /// [`Self::set_mode`]: in-memory switch plus best-effort persist under
-    /// the shared io mutex; a failed persist is logged, not surfaced — the
-    /// in-memory switch already took effect.
+    /// toggle rides the in-memory mode-state entry when one exists and
+    /// persists into its own `_ask_on_guardrail.json` sidecar (a
+    /// `HashMap<String, bool>` of explicit overrides — sessions absent from
+    /// the file follow the global `ask_on_guardrail_default`). A session
+    /// with NO materialized mode entry still records the toggle in the
+    /// sidecar and the in-memory override mirror — the toggle is durable
+    /// user intent and must not silently vanish; it does **not** mint a mode
+    /// entry (that would pin a mode the user never chose), and the next
+    /// mint consults the override via [`Self::ask_on_guardrail_seed`].
+    /// Same critical-section discipline as [`Self::set_mode`]: in-memory
+    /// switch plus best-effort persist under the shared io mutex; a failed
+    /// persist is logged, not surfaced — the in-memory switch already took
+    /// effect.
     pub fn set_ask_on_guardrail(&self, id: &str, enabled: bool) -> Result<()> {
         let _io = self.session_mode_states_io.lock();
         let previous = {
@@ -1293,29 +1303,50 @@ impl SessionStore {
                 Some(entry) => {
                     let previous = entry.ask_on_guardrail;
                     entry.ask_on_guardrail = enabled;
-                    Some(previous)
+                    previous
                 }
-                // A session with no materialized mode entry follows the
-                // global default; do not mint an entry (and thereby pin a
-                // mode) just to store the toggle — mirrors how the draft
-                // toggle resolves before materialization.
-                None => return Ok(()),
+                // No entry: record the override only (sidecar + in-memory
+                // mirror below); the current resolved toggle for this
+                // session is `ask_on_guardrail_seed(id)`, which the mirror
+                // update makes equal `enabled`. The resolved value is the
+                // rollback target on a failed persist (the entry rollback
+                // below no-ops while no entry exists).
+                None => self.ask_on_guardrail_seed(id),
             }
         };
-        if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)]) {
-            if let (Some(entry), Some(previous)) = (self.mode_states.write().get_mut(id), previous)
-            {
+        // Mirror update before the sidecar RMW: readers of a failed persist
+        // stay consistent via the rollback below.
+        self.ask_on_guardrail_overrides.write().insert(id.to_string(), enabled);
+        if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)], &[]) {
+            if let Some(entry) = self.mode_states.write().get_mut(id) {
                 entry.ask_on_guardrail = previous;
             }
+            self.ask_on_guardrail_overrides.write().insert(id.to_string(), previous);
             eprintln!("[sessions] persist ask_on_guardrail failed: {error:#}");
         }
         Ok(())
     }
 
+    /// THE ask-on-guardrail seeding point for fresh-entry mints: an explicit
+    /// per-session override (recorded by [`Self::set_ask_on_guardrail`] even
+    /// before the session had a mode entry, and mirrored from the sidecar at
+    /// boot) wins over the global `ask_on_guardrail_default` preference.
+    /// Every mint site must seed through this — seeding from the bare
+    /// preference silently dropped a toggle recorded for an entry-less
+    /// session the moment the entry materialized (or at the boot merge,
+    /// which only touches entries that already exist).
+    pub(crate) fn ask_on_guardrail_seed(&self, id: &str) -> bool {
+        if let Some(enabled) = self.ask_on_guardrail_overrides.read().get(id) {
+            return *enabled;
+        }
+        self.code_permission_prefs().ask_on_guardrail_default
+    }
+
     /// Id-level RMW for `_ask_on_guardrail.json`; caller holds
     /// `session_mode_states_io`.
     pub(crate) fn apply_ask_on_guardrail_mutation_locked(
-        upserts: &[( &str, bool)],
+        upserts: &[(&str, bool)],
+        removals: &[&str],
     ) -> Result<()> {
         crate::features::sessions::sidecars::mutate_json_map_file(
             "_ask_on_guardrail.json",
@@ -1327,15 +1358,20 @@ impl SessionStore {
                         changed = true;
                     }
                 }
+                for id in removals {
+                    changed |= entries.remove(*id).is_some();
+                }
                 changed
             },
         )
     }
 
-    /// Boot merge of `_ask_on_guardrail.json` into the mode-state entries
-    /// (overrides only; sessions absent from the file keep the global
-    /// default). Called after `load_session_mode_states` materialized the
-    /// entries.
+    /// Boot merge of `_ask_on_guardrail.json`: applies explicit toggles to
+    /// the mode-state entries boot minting materialized AND fills the
+    /// in-memory override mirror, so entries minted LATER in this run
+    /// (toggle written while entry-less, then a mode write materializes the
+    /// entry) seed through [`Self::ask_on_guardrail_seed`] and keep the
+    /// recorded choice. Called after `load_session_mode_states`.
     pub fn load_ask_on_guardrail_overrides(&self) {
         let file = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
         let Ok(content) = std::fs::read_to_string(&file) else {
@@ -1346,6 +1382,10 @@ impl SessionStore {
         else {
             return;
         };
+        {
+            let mut mirror = self.ask_on_guardrail_overrides.write();
+            *mirror = overrides.clone();
+        }
         let mut states = self.mode_states.write();
         for (id, enabled) in overrides {
             if let Some(entry) = states.get_mut(&id) {

@@ -2,17 +2,20 @@
 //!
 //! 底座 engine 在 `ask_on_guardrail` 武装（或 Auto 姿态）下对可提示工具发
 //! `Event::ApprovalRequired`。转发器不再无条件自动批准，而是经
-//! [`approval_surface_decision`] 定序处置：会话拒绝缓存 → 会话授予缓存 →
-//! 三档 mode 状态。弹卡时在本模块登记，供 `get_pending_approvals` 命令查询，
-//! 让前端 remount 后恢复审批卡（同 `pending_user_input` 的还原思路）。
+//! [`approval_surface_decision`] 定序处置：会话拒绝缓存 → Plan 防御硬拒 →
+//! 会话授予缓存 → 三档 mode 状态。弹卡时在本模块登记，供 `get_pending_approvals`
+//! 命令查询，让前端 remount 后恢复审批卡（同 `pending_user_input` 的还原思路）。
 //!
 //! 授予/拒绝缓存镜像 TUI `resolve_approval_request_disposition` 的作用域
 //! 语义（crates/tui/src/core/authority.rs）：**拒绝按 exact approval_key**
 //! （#1617，换一个参数就要重新请批），**授予按 lossy grouping_key**
 //! （v0.8.37，「本次会话允许」覆盖后续旗标变体）。force_prompt 的 hold 永不
 //! 被缓存放行——只有人当面点过的这张卡能过。全部驻内存：进程重启后 engine
-//! lazy spawn，缓存随进程消亡，无需持久化；turn 终态经 `clear_session` 兜底
-//! 清空（取消/中断时可能没有逐条决策）。
+//! lazy spawn，缓存随进程消亡，无需持久化。挂起卡在 turn 终态经
+//! `clear_pending` 兜底清空（取消/中断时可能没有逐条决策）；授予/拒绝是
+//! 会话级记忆，**跨 turn 存活**（与 TUI per-session 审批缓存一致：TUI 只在
+//! 换会话/换工作区时清），宿主侧的对应清理点是会话删除（lib.rs 会话清理
+//! 处理器里的 `clear_session`）。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -107,9 +110,19 @@ pub fn remove(session_id: &str, approval_id: &str) -> Option<PendingApproval> {
     })
 }
 
-/// turn 终态兜底清空该 session 的全部挂起与决策缓存（取消/中断时可能没有
-/// 逐条决策）。授予/拒绝是会话级记忆，随会话的 turn 终态一起消亡——下一次
-/// turn 重新请批，语义与 TUI 的 per-session 审批缓存一致。
+/// turn 终态兜底清空该 session 的挂起卡（取消/中断时可能没有逐条决策）。
+/// 授予/拒绝是会话级记忆，**不随 turn 终态消亡**——「本会话允许」必须跨
+/// turn 存活（TUI 语义：只在换会话/换工作区时清），否则按钮实为「本 turn
+/// 允许」。会话级记忆的清理点是 [`clear_session`]（会话删除）。
+pub fn clear_pending(session_id: &str) {
+    with_store(|store| {
+        store.generation = store.generation.wrapping_add(1);
+        store.by_session.remove(session_id);
+    });
+}
+
+/// 会话删除/清理时摘除该 session 的全部份额：挂起卡、授予、拒绝。授予/
+/// 拒绝按会话集合化存储，只摘自己的份额，不误撤销他人授予。
 pub fn clear_session(session_id: &str) {
     with_store(|store| {
         store.generation = store.generation.wrapping_add(1);
@@ -157,9 +170,16 @@ pub fn list(session_id: &str) -> Vec<PendingApproval> {
     })
 }
 
-/// 该会话此前是否已授予这个 lossy 操作（grouping_key 命中即放行）。
-pub fn session_granted(grouping_key: &str) -> bool {
-    with_store(|store| store.grants.contains_key(grouping_key))
+/// 该会话此前是否已授予这个 lossy 操作（grouping_key 命中即放行）。读路径
+/// 必须带 session 维度：授予是**会话级**记忆，A 会话的授予不得放行 B 会话
+/// 的同族调用（跨会话放行 = 一次点击授权整个进程，违背「本会话允许」语义）。
+pub fn session_granted(session_id: &str, grouping_key: &str) -> bool {
+    with_store(|store| {
+        store
+            .grants
+            .get(grouping_key)
+            .is_some_and(|sessions| sessions.contains(session_id))
+    })
 }
 
 /// 「本次会话允许」：授予记在 grouping_key 上（覆盖后续旗标变体，v0.8.37）。
@@ -175,8 +195,14 @@ pub fn remember_grant(session_id: &str, grouping_key: &str) {
 }
 
 /// 该会话此前是否已拒绝这个确切操作（exact approval_key 命中即拒）。
-pub fn session_denied(approval_key: &str) -> bool {
-    with_store(|store| store.denials.contains_key(approval_key))
+/// 同 [`session_granted`]：拒绝也是会话级记忆，不跨会话连坐。
+pub fn session_denied(session_id: &str, approval_key: &str) -> bool {
+    with_store(|store| {
+        store
+            .denials
+            .get(approval_key)
+            .is_some_and(|sessions| sessions.contains(session_id))
+    })
 }
 
 /// 「拒绝」记在 exact key 上（#1617：换参数要重新请批，不得连坐）。
@@ -226,15 +252,22 @@ pub enum ApprovalSurfaceDecision {
     ShowCard,
 }
 
-/// 分支顺序镜像 TUI `resolve_approval_request_disposition`（authority.rs）：
-/// 会话拒绝 > 会话授予 > 姿态判定 > 弹卡。定时任务无人值守由调用方先行
-/// 短路，不进本函数。无人值守以外的定时/多智能体会话与普通对话同序。
+/// 分支顺序以 TUI `resolve_approval_request_disposition`（authority.rs）为
+/// 基础，Plan 防御臂有意更严：**会话拒绝 > Plan 硬拒 > 会话授予 >
+/// force_prompt 弹卡 > 姿态判定**。定时任务无人值守由调用方先行短路，不进
+/// 本函数。无人值守以外的定时/多智能体会话与普通对话同序。
 ///
 /// - 拒绝缓存命中：无论什么姿态都硬拒（TUI legacy 顺序：session denial 最优先）。
+/// - Plan：底座 Plan 本应挡下工具执行，审批事件到达即异常，防御性硬拒——
+///   **先于授予缓存**。TUI legacy 顺序授予在前，但 TUI 的 Plan 流从不产生
+///   审批事件；宿主侧 turn 中途可能切到 Plan（防御语义），此刻旧授予若仍
+///   静默放行，「Plan=只读」就被缓存击穿。硬拒方向 fail-safe 且零成本。
 /// - 授予缓存命中且非 force_prompt：静默批准（force_prompt 的 hold 只有
 ///   当面点的这张卡能过，缓存不得放行）。
-/// - Plan：底座 Plan 本应挡下工具执行，审批事件到达即异常，防御性硬拒。
-/// - force_prompt：永远弹卡（武装宿主保证有人应答）。
+/// - force_prompt：永远弹卡（武装宿主保证有人应答）。注：无人武装宿主的
+///   Yolo+toggle 关下，底座各 face 在引擎门内即拒、不发 force 事件（见
+///   #131 布线），故此臂实际只在武装宿主可达，与底座
+///   `AutoDenyFullAccessPolicyHold` 不构成可达分歧。
 /// - Yolo + toggle 关：守卫命中按姿态硬拒；Yolo + toggle 开、Auto：弹卡
 ///   （Auto 姿态下每个普通可提示工具都逐次请批，toggle 只管守卫命中）。
 #[must_use]
@@ -248,11 +281,11 @@ pub fn approval_surface_decision(
     if session_denied {
         return ApprovalSurfaceDecision::Deny(ApprovalDenyReason::SessionDenied);
     }
-    if session_granted && !force_prompt {
-        return ApprovalSurfaceDecision::ApproveSilently;
-    }
     if session_mode == SerializableMode::Plan {
         return ApprovalSurfaceDecision::Deny(ApprovalDenyReason::PlanMode);
+    }
+    if session_granted && !force_prompt {
+        return ApprovalSurfaceDecision::ApproveSilently;
     }
     if force_prompt {
         return ApprovalSurfaceDecision::ShowCard;
@@ -326,21 +359,51 @@ mod tests {
     #[test]
     fn forkguard_approval_surface_grant_and_denial_scoping() {
         let session = isolate("approval-scope-test");
+        let other = isolate("approval-scope-other");
         // 授予按 grouping_key：同组变体放行，异组不连坐。
-        assert!(!session_granted("g-write"));
+        assert!(!session_granted(&session, "g-write"));
         remember_grant(&session, "g-write");
-        assert!(session_granted("g-write"));
-        assert!(!session_granted("g-rm"), "未授予的 grouping key 不放行");
+        assert!(session_granted(&session, "g-write"));
+        assert!(!session_granted(&session, "g-rm"), "未授予的 grouping key 不放行");
+
+        // 会话维度：本会话的授予/拒绝不得跨会话生效（「本会话允许」≠ 进程级放行）。
+        assert!(
+            !session_granted(&other, "g-write"),
+            "A 会话的授予不得放行 B 会话"
+        );
+        assert!(
+            !session_denied(&other, "k-rm-rf"),
+            "A 会话的拒绝不得连坐 B 会话"
+        );
 
         // 拒绝按 exact approval_key：精确参数硬拒，其它参数重新请批。
-        assert!(!session_denied("k-rm-rf"));
+        assert!(!session_denied(&session, "k-rm-rf"));
         remember_denial(&session, "k-rm-rf");
-        assert!(session_denied("k-rm-rf"));
-        assert!(!session_denied("k-rm"), "exact key 之外的调用不受拒绝连坐");
+        assert!(session_denied(&session, "k-rm-rf"));
+        assert!(!session_denied(&session, "k-rm"), "exact key 之外的调用不受拒绝连坐");
 
         // 授予与拒绝互不串作用域。
-        assert!(!session_denied("g-write"));
-        assert!(!session_granted("k-rm-rf"));
+        assert!(!session_denied(&session, "g-write"));
+        assert!(!session_granted(&session, "k-rm-rf"));
+    }
+
+    #[test]
+    fn forkguard_approval_surface_clear_pending_keeps_session_memory() {
+        let session = isolate("approval-clear-pending-test");
+        record(&session, sample("ap-1", "k-1", "g-1"));
+        remember_grant(&session, "g-1");
+        remember_denial(&session, "k-1");
+
+        // turn 终态只清挂起卡；授予/拒绝是会话级记忆，跨 turn 存活。
+        clear_pending(&session);
+        assert!(list(&session).is_empty(), "clear_pending 清挂起卡");
+        assert!(session_granted(&session, "g-1"), "授予跨 turn 存活");
+        assert!(session_denied(&session, "k-1"), "拒绝跨 turn 存活");
+
+        // 会话删除才清会话级记忆。
+        clear_session(&session);
+        assert!(!session_granted(&session, "g-1"), "会话删除清授予");
+        assert!(!session_denied(&session, "k-1"), "会话删除清拒绝");
     }
 
     #[test]
@@ -354,11 +417,12 @@ mod tests {
 
         clear_session(&session);
         assert!(list(&session).is_empty(), "clear_session 清挂起");
-        assert!(!session_denied("k-1"), "clear_session 清拒绝缓存");
+        assert!(!session_denied(&session, "k-1"), "clear_session 清拒绝缓存");
         // g-1 同时被 other 会话授予：只摘除自己的份额，不误撤销他人授予。
-        assert!(session_granted("g-1"), "他人授予不受本会话清理影响");
+        assert!(session_granted(&other, "g-1"), "他人授予不受本会话清理影响");
+        assert!(!session_granted(&session, "g-1"), "本会话授予被摘除");
         clear_session(&other);
-        assert!(!session_granted("g-1"), "最后一个授予会话清理后撤销");
+        assert!(!session_granted(&other, "g-1"), "最后一个授予会话清理后撤销");
     }
 
     /// 处置真值表（定时任务无人值守路径不在此函数，另行短路）。
@@ -392,7 +456,7 @@ mod tests {
                 true,
                 Deny(SessionDenied),
             ),
-            // 授予 + 非 force：静默批准（Plan 下不应到达；授予按 TUI legacy 顺序优先）。
+            // 授予 + 非 force：静默批准（Plan 例外见下两行）。
             (
                 SerializableMode::Auto,
                 true,
@@ -409,6 +473,17 @@ mod tests {
                 false,
                 ApproveSilently,
             ),
+            // Plan 防御臂先于授予缓存（有意比 TUI legacy 顺序更严）：
+            // turn 中途切 Plan 后，旧授予不得静默放行。
+            (
+                SerializableMode::Plan,
+                true,
+                false,
+                true,
+                false,
+                Deny(PlanMode),
+            ),
+            (SerializableMode::Plan, false, false, true, false, Deny(PlanMode)),
             // force_prompt 的 hold 不吃缓存。
             (SerializableMode::Auto, true, true, true, false, ShowCard),
             // Plan 防御性硬拒（底座本应拦截工具执行），force_prompt 也不例外。

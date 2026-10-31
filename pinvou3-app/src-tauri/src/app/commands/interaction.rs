@@ -106,7 +106,9 @@ pub async fn set_mode_default(
 /// 用户在 composer chip 选 Plan：设 mode=Plan。
 /// 下一条 chat 消息带 mode=Plan 发送，底座自动切只读工具集 + ReadOnly sandbox。
 /// 与 `set_session_mode` 统一收口：写库后走同一「姿态热同步 + chat:mode_changed」
-/// 发布序列（`publish_session_mode_change`），多端模式芯片即时收敛。
+/// 发布序列（`publish_session_mode_change`），多端模式芯片即时收敛。目标会话
+/// 先过存在性门（`ensure_mode_target_session`）——防 IPC 直调给任意 id 铸造
+/// mode 条目 + `_ask_on_guardrail.json` sidecar。
 #[tauri::command]
 pub async fn set_plan_mode_next(
     session_id: String,
@@ -114,6 +116,7 @@ pub async fn set_plan_mode_next(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<SessionModeState, String> {
+    ensure_mode_target_session("set_plan_mode_next", &session_id, &store)?;
     store
         .set_mode(&session_id, SerializableMode::Plan)
         .map_err(|error| format!("set_plan_mode_next({session_id}): {error:#}"))?;
@@ -123,7 +126,8 @@ pub async fn set_plan_mode_next(
 /// 用户在 composer chip 选 Yolo（从 Plan 退回）：mode 切 Yolo（立即生效，
 /// 一次性确认门在前端 UI 层）。与 `set_session_mode` 统一收口：写库后走
 /// 同一「姿态热同步 + chat:mode_changed」发布序列，多端模式芯片即时收敛。
-/// 对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。
+/// 对话历史天然保留，AI 在 YOLO 下能看到之前讨论的 context。目标会话先过
+/// 存在性门（同 `set_plan_mode_next`）。
 #[tauri::command]
 pub async fn exit_plan_to_yolo(
     session_id: String,
@@ -131,6 +135,7 @@ pub async fn exit_plan_to_yolo(
     pool: State<'_, EnginePool>,
     app: AppHandle,
 ) -> Result<SessionModeState, String> {
+    ensure_mode_target_session("exit_plan_to_yolo", &session_id, &store)?;
     store
         .set_mode(&session_id, SerializableMode::Yolo)
         .map_err(|error| format!("exit_plan_to_yolo({session_id}): {error:#}"))?;
@@ -522,9 +527,10 @@ pub async fn summon_pinvou(
 
 /// 前端审批卡决策回传：allow（仅此一次）/ allow_for_session（本会话同组操作
 /// 静默放行，grouping_key 作用域）/ deny（本会话对该确切操作记住拒绝，
-/// exact approval_key 作用域）。任何决策都先摘除挂起登记（卡已收口，engine
-/// 侧审批 id 也随调用消亡，不得残留）。不再 emit 事件——前端对自己的卡做
-/// 乐观更新，静默放行/硬拒本就没有卡。
+/// exact approval_key 作用域）。decision 先校验（登记摘除不可逆，非法值必须
+/// 原样 Err）；合法决策先摘除挂起登记（卡已收口，engine 侧审批 id 也随调用
+/// 消亡，不得残留），授予/拒绝缓存在 engine 调用成功后写入。不再 emit 事件
+/// ——前端对自己的卡做乐观更新，静默放行/硬拒本就没有卡。
 #[tauri::command]
 pub async fn decide_approval(
     session_id: String,
@@ -533,7 +539,15 @@ pub async fn decide_approval(
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     use crate::features::assistant::pending_approvals;
-    // 先摘登记：拿回 approval_key / grouping_key 供缓存写入；engine 侧调用
+    // 先校验 decision：登记摘除不可逆，非法 decision 若在摘除后才发现，
+    // 卡已消失而 engine 侧审批无人应答（悬挂到 turn 结束）。校验在先即
+    // 原样 Err，不产生任何副作用。
+    if !matches!(decision.as_str(), "allow" | "allow_for_session" | "deny") {
+        return Err(format!(
+            "decide_approval: invalid decision \"{decision}\" (expected allow | allow_for_session | deny)"
+        ));
+    }
+    // 再摘登记：拿回 approval_key / grouping_key 供缓存写入；engine 侧调用
     // 失败（审批已超时/turn 已中断）时卡也必须消失，不能因错误返回而残留。
     let pending = pending_approvals::remove(&session_id, &approval_id)
         .ok_or_else(|| format!("decide_approval: approval not found: {approval_id}"))?;
@@ -541,25 +555,24 @@ pub async fn decide_approval(
         .handle_for(&session_id)
         .await
         .ok_or_else(|| "session_engine_not_running".to_string())?;
-    let result = match decision.as_str() {
-        "allow" => engine.handle.approve_tool_call(approval_id.clone()).await,
-        // 授予记在 lossy grouping_key 上：覆盖后续旗标变体（v0.8.37 语义）。
-        "allow_for_session" => {
-            pending_approvals::remember_grant(&session_id, &pending.approval_grouping_key);
-            engine.handle.approve_tool_call(approval_id.clone()).await
-        }
-        // 拒绝记在 exact approval_key 上：换参数要重新请批（#1617 语义）。
-        "deny" => {
-            pending_approvals::remember_denial(&session_id, &pending.approval_key);
-            engine.handle.deny_tool_call(approval_id.clone()).await
-        }
-        _ => {
-            return Err(format!(
-                "decide_approval: invalid decision \"{decision}\" (expected allow | allow_for_session | deny)"
-            ));
-        }
+    let result = if decision == "deny" {
+        engine.handle.deny_tool_call(approval_id.clone()).await
+    } else {
+        // "allow" | "allow_for_session"（上方已校验）。
+        engine.handle.approve_tool_call(approval_id.clone()).await
     };
-    result.map_err(|error| format!("decide_approval({decision}): {error:#}"))
+    let outcome = result.map_err(|error| format!("decide_approval({decision}): {error:#}"));
+    // 授予/拒绝缓存在 engine 调用**成功后**写入：decision 在 engine 侧未生效
+    // （审批已消费/turn 已中断）时，缓存不得替一次没落地的点击放行后续调用。
+    if outcome.is_ok() && decision == "allow_for_session" {
+        // 授予记在 lossy grouping_key 上：覆盖后续旗标变体（v0.8.37 语义）。
+        pending_approvals::remember_grant(&session_id, &pending.approval_grouping_key);
+    }
+    if outcome.is_ok() && decision == "deny" {
+        // 拒绝记在 exact approval_key 上：换参数要重新请批（#1617 语义）。
+        pending_approvals::remember_denial(&session_id, &pending.approval_key);
+    }
+    outcome
 }
 
 /// 会话当前挂起的审批卡。代码页会话 lane 随组件卸载销毁，
@@ -644,13 +657,23 @@ pub(super) fn ensure_mode_target_session(
 /// 引擎不在位则跳过（lazy spawn 的下一次发送自会按 store 里的 mode 组 op）；
 /// 然后广播 `chat:mode_changed`（桌面 emit + 远程转发），多端模式芯片即时
 /// 收敛。返回刷新后的完整 mode 状态。
+///
+/// 引擎热同步失败**不**使发布失败：store 的 mode 写在此之前已经落库（命令
+/// 先写后发布），下一次发送自会按 store mode 组 op 自愈；把错误抛回只会让
+/// 前端回滚一个实际已持久化的切换、其余端滞留旧模式。失败大声记日志，广播
+/// 携带 store 权威状态照发。
 async fn publish_session_mode_change(
     session_id: &str,
     store: &SessionStore,
     pool: &EnginePool,
     app: &AppHandle,
 ) -> Result<SessionModeState, String> {
-    sync_engine_safety_posture(session_id, pool).await?;
+    if let Err(error) = sync_engine_safety_posture(session_id, pool).await {
+        eprintln!(
+            "[commands] publish_session_mode_change({session_id}): engine posture sync failed \
+             (next send re-derives from the store): {error:#}"
+        );
+    }
     let state = store.mode_state(session_id);
     emit_mode_changed(app, session_id, state.mode, state.ask_on_guardrail);
     Ok(state)

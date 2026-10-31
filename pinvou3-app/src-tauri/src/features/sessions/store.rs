@@ -293,6 +293,7 @@ impl SessionStore {
             hidden_sessions_io: Arc::new(Mutex::new(())),
             session_models_io: Arc::new(Mutex::new(())),
             session_mode_states_io: Arc::new(Mutex::new(())),
+            ask_on_guardrail_overrides: Arc::new(RwLock::new(HashMap::new())),
             list_cache: Arc::new(RwLock::new(None)),
             list_cache_generation: Arc::new(AtomicU64::new(0)),
             session_models: Arc::new(RwLock::new(HashMap::new())),

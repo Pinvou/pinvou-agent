@@ -3946,7 +3946,10 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
     let claim = store
         .claim_pending_plan(sid, "plan-1")
         .expect("claim current plan");
-    assert_eq!(claim.accepted_state().mode, SerializableMode::Yolo);
+    // 首次 Plan 写入铸条目（resolved 默认 Auto，pre_plan_mode = Some(Auto)）：
+    // accept 回 Auto——「批准方案≠批准全自动」（v3.5 对账：旧断言 Yolo 钉的
+    // 正是已修复的铸造哨兵泄漏）。
+    assert_eq!(claim.accepted_state().mode, SerializableMode::Auto);
     assert!(claim.accepted_state().pending_plan_id.is_none());
     assert!(store.claim_pending_plan(sid, "plan-1").is_err());
     drop(claim);
@@ -3959,7 +3962,7 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
         .expect("reclaim current plan")
         .commit();
     let committed = store.mode_state(sid);
-    assert_eq!(committed.mode, SerializableMode::Yolo);
+    assert_eq!(committed.mode, SerializableMode::Auto);
     assert!(committed.pending_plan_id.is_none());
     assert!(store.claim_pending_plan(sid, "plan-1").is_err());
 
@@ -3976,6 +3979,85 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
     assert_eq!(discarded.mode, SerializableMode::Plan);
     assert!(discarded.pending_plan_id.is_none());
     assert!(store.discard_pending_plan(sid, "plan-2").is_err());
+}
+
+/// Tri-mode v3.5 回归钉（评审 B2）：首次模式写入是 Plan 的未物化会话，
+/// accept 必须落 resolved 默认（Auto），不得落铸造哨兵 Yolo——「批准方案
+/// ≠批准全自动」在其最常见的 GUI 路径（芯片 Plan → 批准）上成立。显式
+/// Yolo → Plan → accept 则如约回到 Yolo（用户自己选的模式）。
+#[test]
+fn first_plan_write_accept_returns_to_resolved_default_not_yolo_sentinel() {
+    let (store, _g) = isolated_store();
+    let sid = "first-plan-accept-session";
+    // Chip 在首次切换前显示的正是这个 resolved 默认。
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
+    store
+        .set_mode(sid, SerializableMode::Plan)
+        .expect("enter plan");
+    store
+        .register_pending_plan(sid, "plan-1".to_string())
+        .expect("register plan");
+    let claim = store.claim_pending_plan(sid, "plan-1").expect("claim");
+    assert_eq!(
+        claim.accepted_state().mode,
+        SerializableMode::Auto,
+        "首次 Plan 写入后 accept 不得回到铸造哨兵 Yolo"
+    );
+    claim.commit();
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
+    // 重启不丢：accept 落定的 Auto 是持久化记录，不是哨兵回退。
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.mode_state(sid).mode, SerializableMode::Auto);
+
+    // 显式 Yolo → Plan → accept：回到用户进 Plan 前的模式。
+    let sid2 = "explicit-yolo-plan-session";
+    store
+        .set_mode(sid2, SerializableMode::Yolo)
+        .expect("explicit yolo");
+    store
+        .set_mode(sid2, SerializableMode::Plan)
+        .expect("enter plan");
+    store
+        .register_pending_plan(sid2, "plan-2".to_string())
+        .expect("register plan");
+    let claim2 = store.claim_pending_plan(sid2, "plan-2").expect("claim");
+    assert_eq!(
+        claim2.accepted_state().mode,
+        SerializableMode::Yolo,
+        "显式进 Plan 前的 Yolo 是用户选择，accept 如约返回"
+    );
+    claim2.commit();
+}
+
+/// Tri-mode v3.5（评审 M1/minor-5）：对尚无 mode 条目的会话翻转
+/// ask-on-guardrail，选择必须持久化，并在后续物化与重启后仍然生效——
+/// 不得静默丢弃用户的安全选择（也不得为存开关而钉死一个 mode）。
+#[test]
+fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
+    let (store, _g) = isolated_store();
+    let sid = "entryless-toggle-session";
+    // 无条目：解析值 = 全局默认。
+    let global_default = store.mode_state(sid).ask_on_guardrail;
+    store
+        .set_ask_on_guardrail(sid, !global_default)
+        .expect("toggle");
+    // 仍无 mode 条目物化，但 override 已可读。
+    assert_eq!(store.mode_state(sid).ask_on_guardrail, !global_default);
+    assert_eq!(
+        store.session_mode_states.read().get(sid),
+        None,
+        "toggle 不得为 entry-less 会话钉死 mode"
+    );
+    // 后续物化（模式写入铸条目）继承 override，不被全局默认冲掉。
+    store
+        .set_mode(sid, SerializableMode::Plan)
+        .expect("materialize");
+    assert_eq!(store.mode_state(sid).ask_on_guardrail, !global_default);
+    assert_eq!(store.mode_state(sid).mode, SerializableMode::Plan);
+    // 重启：sidecar 覆盖在 boot 合并后仍然生效。
+    let reopened = reopen_store(&store).expect("reboot");
+    reopened.load_ask_on_guardrail_overrides();
+    assert_eq!(reopened.mode_state(sid).ask_on_guardrail, !global_default);
 }
 
 /// Mode-switch loop (the core contract after the foundation regressed to two
@@ -4867,7 +4949,7 @@ fn code_mode_persists_per_session_across_restart() {
 /// (two-lane semantics); a failed-commit rollback writes nothing to disk,
 /// and the in-memory Plan stays consistent with disk.
 #[test]
-fn code_session_accepted_yolo_persists_on_commit_not_rollback() {
+fn code_session_accepted_mode_persists_on_commit_not_rollback() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
     // Never explicitly switched → defaults to Plan on first use.
