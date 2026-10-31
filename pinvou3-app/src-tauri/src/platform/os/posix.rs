@@ -65,13 +65,44 @@ pub fn platform_compat_path(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
-/// 比较路径组件是否等于预期字符串。
-/// Unix 上大小写敏感，linux 与 macOS 实现相同。
+/// 比较路径组件是否等于预期字符串。Linux 文件系统大小写敏感，字节精确比较；
+/// macOS 默认 APFS 卷大小写不敏感——文件系统层按 Unicode 简单大小写折叠表
+/// 解析（`ſ`→`s`、KELVIN SIGN→`k` 也在表内），所以按调用方拼写做字节比较的
+/// 词法检查（canonicalize 之前的相对路径判定）会让 `.AWS`/`id_rſa` 式变体
+/// 绕过凭据黑名单，因此与 windows_path.rs 同用
+/// `super::interface::volume_fold_eq`（ASCII 快速路径 + 非 ASCII 拼写的
+/// 折叠比较），使词法判定与卷的真实解析语义一致。注意:大小写不敏感卷上
+/// `std::fs::canonicalize`(realpath)返回的拼写是平台实现细节(macOS
+/// realpath 保留调用方拼写,不做大小写规范化),任何判定都不得依赖它——
+/// 词法与解析后两次判定都经本折叠比较,折叠是承载语义的判定,不得「简化」
+/// 回字节精确比较。
+#[cfg(target_os = "macos")]
+pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
+    super::interface::volume_fold_eq(component, expected)
+}
+
+/// 比较路径组件是否等于预期字符串（Linux 大小写敏感，字节精确）。
+#[cfg(not(target_os = "macos"))]
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
 }
 
-/// Unix 文件系统路径的稳定标识 key(大小写敏感,直接用原串)。
+/// 比较路径组件是否以预期前缀开头(`.env.` 系黑名单用)。与
+/// `path_component_eq` 同一平台语义:macOS 默认卷大小写不敏感,经
+/// `super::interface::volume_fold_prefix` 折叠;其余平台字节精确。
+#[cfg(target_os = "macos")]
+pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
+    super::interface::volume_fold_prefix(component, prefix)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
+    component.to_string_lossy().starts_with(prefix)
+}
+
+/// Unix 文件系统路径的稳定标识 key(按原串字节)。大小写不敏感卷上同一文件
+/// 可被多种拼写引用,grant 身份匹配按「不同 key」失败闭合(宁可重新授权,
+/// 不凭拼写放宽),故刻意不折叠。
 pub fn filesystem_path_identity_key(path: &str) -> String {
     path.to_string()
 }
@@ -315,9 +346,18 @@ mod tests {
     }
 
     #[test]
-    fn path_component_eq_is_case_sensitive() {
+    fn path_component_eq_case_semantics_follow_platform() {
         assert!(path_component_eq(OsStr::new("home"), "home"));
-        assert!(!path_component_eq(OsStr::new("Home"), "home"));
+        if cfg!(target_os = "macos") {
+            // macOS 默认 APFS 卷大小写不敏感；大写变体必须命中，否则凭据
+            // 黑名单被 `.AWS` 之类拼写绕过（canonicalize 输出的拼写是平台
+            // 实现细节，判定不得依赖它——比较本身经折叠即安全）。
+            assert!(path_component_eq(OsStr::new("Home"), "home"));
+            assert!(path_component_eq(OsStr::new("HOME"), "home"));
+        } else {
+            // Linux 文件系统大小写敏感，大写变体是不同组件。
+            assert!(!path_component_eq(OsStr::new("Home"), "home"));
+        }
     }
 
     #[test]

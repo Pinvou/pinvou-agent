@@ -2586,18 +2586,125 @@ pub(crate) fn reserved_target_is_unchanged(_file: &File, path: &Path) -> bool {
 /// destroy each other's evidence. Returns the quarantine path; the caller
 /// owns the refuse/log semantics.
 pub(crate) fn quarantine_corrupt_file(path: &Path) -> io::Result<PathBuf> {
+    let quarantine = quarantine_destination(path);
+    std::fs::rename(path, &quarantine)?;
+    Ok(quarantine)
+}
+
+/// Rename-free fallback for callers whose fresh-start path would otherwise
+/// overwrite or delete the corrupt original: when `rename` fails (Windows
+/// AV/backup locks, transiently immutable directories), the in-memory bytes
+/// are written to the same timestamped quarantine name so the evidence
+/// survives the caller's destructive rewrite of the original path.
+pub(crate) fn quarantine_corrupt_file_bytes(path: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+    let quarantine = quarantine_destination(path);
+    atomic_write_private(&quarantine, bytes)?;
+    Ok(quarantine)
+}
+
+/// Full-content fallback for oversize sources: the bytes-fallback above only
+/// holds what the caller's bounded read kept in memory (a truncated prefix by
+/// design), so when the complete on-disk file is the evidence, copy it whole.
+/// Permission inheritance is platform-shaped: on unix, `fs::copy` preserves
+/// permission bits and the caller repairs the source to 0600 before
+/// quarantining, so the copy inherits that mode — a caller on a path where
+/// the repair did NOT or could not run must use
+/// [`quarantine_secret_file`] instead (the copy would inherit the loose
+/// mode); on Windows the repair is a documented no-op and the copy carries
+/// the source's ACL (same exposure as the source file, no widening).
+pub(crate) fn quarantine_corrupt_file_copy(path: &Path) -> io::Result<PathBuf> {
+    let quarantine = quarantine_destination(path);
+    std::fs::copy(path, &quarantine)?;
+    Ok(quarantine)
+}
+
+/// Quarantine a secret-bearing file whose 0600 permission repair itself
+/// failed (a backup restore can leave a foreign-owned world-readable
+/// secret at the well-known path). A plain `rename` preserves the loose
+/// mode bits, so the evidence copy would stay world-readable at its new
+/// name. Here the app owns the copy it creates: stream-copy the content
+/// (no unbounded in-memory read), tighten the copy to 0600 — the chmod
+/// that failed on the foreign-owned source succeeds on our own file —
+/// then unlink the loose original. The app's authority over the original
+/// is the parent directory's write bit, not the file's ownership.
+/// Non-regular targets (the EISDIR fixture plants a directory at the
+/// path), unreadable sources, and copy failures keep
+/// [`quarantine_corrupt_file`]'s rename semantics; if the copy lands but
+/// the unlink fails, the returned error makes the caller log that the
+/// loose file stays in place (the 0600 copy still exists as evidence).
+pub(crate) fn quarantine_secret_file(path: &Path) -> io::Result<PathBuf> {
+    let is_regular = std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_file())
+        .unwrap_or(false);
+    let quarantine = quarantine_destination(path);
+    // Round-11 复审 minor:unix 腿改用 0600 create_new 直接创建副本再流
+    // 式拷贝——`fs::copy` 先按默认模式(通常 0644)落盘再收紧,证据副本
+    // 在 copy+chmod 窗口内全局可读;且收紧失败被静默吞掉,恰在本 helper
+    // 存在的修复失败路径上自相矛盾(文档声称该 chmod 必然成功)。副本
+    // 创建即 0600,后续 chmod 只是显式兜底,失败时大声记录。Windows 腿
+    // 保留 `fs::copy`:副本继承源 ACL(与源文件同暴露,无扩大),默认
+    // ACL 反而取决于目录模板,不在本次收紧范围。
+    let copy_landed = if !is_regular {
+        false
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let copy_result: io::Result<()> = (|| {
+                let mut source = std::fs::File::open(path)?;
+                let mut destination = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&quarantine)?;
+                std::io::copy(&mut source, &mut destination)?;
+                Ok(())
+            })();
+            match copy_result {
+                Ok(()) => true,
+                Err(_) => {
+                    let _ = std::fs::remove_file(&quarantine);
+                    return quarantine_corrupt_file(path);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::copy(path, &quarantine).is_ok()
+        }
+    };
+    if copy_landed {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            if let Err(error) =
+                std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o600))
+            {
+                eprintln!(
+                    "quarantine: tighten {} to 0600 failed: {error} (copy was created 0600)",
+                    quarantine.display()
+                );
+            }
+        }
+        return match std::fs::remove_file(path) {
+            Ok(()) => Ok(quarantine),
+            Err(remove_error) => Err(remove_error),
+        };
+    }
+    quarantine_corrupt_file(path)
+}
+
+fn quarantine_destination(path: &Path) -> PathBuf {
     let now = chrono::Utc::now();
     let stem = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file");
-    let quarantine = path.with_file_name(format!(
+    path.with_file_name(format!(
         "{stem}.corrupt-{}.{:09}",
         now.format("%Y%m%dT%H%M%S"),
         now.timestamp_subsec_nanos(),
-    ));
-    std::fs::rename(path, &quarantine)?;
-    Ok(quarantine)
+    ))
 }
 
 /// Append-only log/diary rotation: when `path` exceeds `max_bytes`, either
@@ -2678,8 +2785,9 @@ pub(crate) mod tests {
     use std::path::Path;
 
     use super::{
-        atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
-        read_capped, rotate_log_if_oversized,
+        atomic_write, atomic_write_private, is_executable_file, permission_bits,
+        quarantine_corrupt_file, quarantine_corrupt_file_bytes, quarantine_corrupt_file_copy,
+        quarantine_secret_file, read_capped, rotate_log_if_oversized,
     };
     #[cfg(unix)]
     use super::{create_secret_file, open_private_append_file, open_private_lock_file};
@@ -3484,6 +3592,76 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Round-9 复审 minor:秘密文件的隔离必须是「0600 副本 + unlink 原
+    /// 件」——普通 rename 保留放宽的 mode 位,他者属主的世界可读密文件
+    /// 在隔离名下依旧裸奔。目录占位(EISDIR fixture)退回 rename。
+    #[test]
+    #[cfg(unix)]
+    fn quarantine_secret_file_copies_0600_and_unlinks_the_original() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-secret-quarantine-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let loose = root.join("web-access.json");
+        std::fs::write(&loose, b"{\"desktop_secret\":\"token\"}").unwrap();
+        std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let quarantined =
+            quarantine_secret_file(&loose).expect("regular-file quarantine must succeed");
+        assert!(!loose.exists(), "the loose original must be unlinked");
+        assert_eq!(
+            std::fs::read(&quarantined).unwrap(),
+            b"{\"desktop_secret\":\"token\"}",
+            "the quarantined evidence must stay verbatim"
+        );
+        // Round-11 复审 minor(源码契约钉):副本必须以 0600 create_new 直接
+        // 创建——终态 0600 断言看不见 `fs::copy` 先按 0644 落盘再收紧的
+        // copy+chmod 窗口;回退成 copy-then-chmod 时本钉变红。unix 专属
+        // 窗口语义,Windows 腿保留 fs::copy(ACL 继承,见函数文档)。
+        #[cfg(unix)]
+        {
+            let source = include_str!("filesystem.rs");
+            let start = source
+                .find("pub(crate) fn quarantine_secret_file(")
+                .expect("quarantine_secret_file must exist");
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub(crate) fn ")
+                .expect("quarantine_secret_file body must be terminated by the next fn")];
+            assert!(
+                body.contains(".write(true)\n                    .create_new(true)\n                    .mode(0o600)"),
+                "the secret evidence copy must be created 0600, not copied loose and tightened after"
+            );
+        }
+        assert_eq!(
+            permission_bits(&quarantined).unwrap(),
+            Some(0o600),
+            "the quarantined copy must be tightened to 0600"
+        );
+        assert!(
+            quarantined
+                .to_string_lossy()
+                .contains("web-access.json.corrupt-"),
+            "the quarantine name must stay in the same directory family"
+        );
+
+        // 目录占位(读取腿 EISDIR 的真实形态)退回 rename:原件挪走,
+        // 证据保留为目录。
+        let placeholder = root.join("pending.json");
+        std::fs::create_dir_all(&placeholder).unwrap();
+        let quarantined_dir =
+            quarantine_secret_file(&placeholder).expect("directory quarantine must fall back");
+        assert!(!placeholder.exists());
+        assert!(quarantined_dir.is_dir());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn quarantine_names_stay_unique_within_one_second() {
         let root = std::env::temp_dir().join(format!(
@@ -3520,6 +3698,73 @@ pub(crate) mod tests {
         assert_ne!(re_quarantine, first_quarantine);
         assert_eq!(std::fs::read(&re_quarantine).unwrap(), b"corrupt A2");
         assert_eq!(std::fs::read(&first_quarantine).unwrap(), b"corrupt A");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // Round-10 复审 minor:rename 失败时的两条回退腿(copy / bytes)此前零
+    // 执行测试——「quarantine fallback keeps full-file evidence」的承诺落在
+    // 未验证的代码上。unix 上能击破 rename 的形态同样击破 copy,两条腿只在
+    // Windows 锁场景可达;这里直接驱动 helper 本身,钉住证据字节与 0600 私密
+    // 落盘(两条腿都走 quarantine_destination/atomic_write_private/copy)。
+    #[test]
+    fn quarantine_fallback_legs_preserve_the_full_evidence() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-quarantine-fallback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("state.json");
+
+        // copy 腿:整份文件按字节保留。契约是调用方先把源修复到 0600、
+        // copy 按位继承——先修复再隔离,钉住继承语义。
+        std::fs::write(&source, b"corrupt-full-bytes").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let copied = quarantine_corrupt_file_copy(&source).unwrap();
+        assert!(copied.to_string_lossy().contains(".json.corrupt-"));
+        assert!(
+            source.exists(),
+            "the copy leg must leave the source in place"
+        );
+        assert_eq!(std::fs::read(&copied).unwrap(), b"corrupt-full-bytes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&copied).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "a source repaired to 0600 before the copy must not quarantine loose"
+            );
+        }
+
+        // bytes 腿:调用方有界读保留的前缀按 atomic_write_private 落盘,
+        // 原路径留给调用方的破坏性重写。
+        let bytes_quarantine = quarantine_corrupt_file_bytes(&source, b"truncated-prefix").unwrap();
+        assert_ne!(
+            bytes_quarantine, copied,
+            "same-second captures need fresh names"
+        );
+        assert_eq!(
+            std::fs::read(&bytes_quarantine).unwrap(),
+            b"truncated-prefix"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&bytes_quarantine)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "atomic_write_private must land 0600");
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -271,6 +271,14 @@ fn translate_ingest_error(message: &str) -> String {
     }
     // `platform::path_policy::check_sensitive_components`.
     if let Some(rest) = message.strip_prefix("path ") {
+        // 前缀变体的分隔符更长,必须先于精确组件变体尝试,否则会把
+        // "prefix .env." 整体当成组件名回显。
+        if let Some((path, prefix)) = rest.split_once(" crosses sensitive component prefix ") {
+            return format!(
+                "{path} crosses the credential path component prefix `{prefix}`; files under \
+                 credential locations are never read into a model context"
+            );
+        }
         if let Some((path, component)) = rest.split_once(" crosses sensitive component ") {
             return format!(
                 "{path} crosses the credential path component `{component}`; files under \
@@ -485,4 +493,39 @@ fn translate_ingest_warning(warning: &str) -> String {
         }
     }
     warning.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-5 复审:前缀变体分隔符更长、必须先于精确组件变体尝试——
+    /// 顺序颠倒会把 "`prefix .env.`" 整体当组件名回显。此前的翻译臂
+    /// 没有任何单元测试钉住(上游消息形状见 path_policy 的 format!)。
+    #[test]
+    fn ingest_error_translation_splits_the_component_prefix_delimiter_first() {
+        let upstream = "path /home/u/.env.local crosses sensitive component prefix .env.";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential path component prefix `.env.`"),
+            "the prefix arm must win: {translated}"
+        );
+        assert!(
+            !translated.contains("`prefix .env.`"),
+            "the exact-component split must not echo the prefix delimiter's tail: {translated}"
+        );
+
+        let upstream = "path /home/u/keys/id_rsa crosses sensitive component id_rsa";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential path component `id_rsa`"),
+            "the exact-component arm must still fire: {translated}"
+        );
+
+        let upstream = "path /etc/shadow is in system-sensitive area";
+        assert!(
+            translate_ingest_error(upstream).contains("system-sensitive area"),
+            "the system-area arm must still fire"
+        );
+    }
 }

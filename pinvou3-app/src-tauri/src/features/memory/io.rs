@@ -44,6 +44,18 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// `cleanup_warning` 会随成功负载进入手机可读的命令响应
+/// （`update_memory_preference` / `update_work_context_memory` /
+/// `get_memory_overview` 均在 Web 访问策略内），因此警告里的宿主路径必须
+/// 脱敏：存储根前缀折叠为 `~/.pinvou3`，文件名与错误文本保留，桌面端诊断
+/// 不受影响，绝对路径不跨 relay。同一策略也用于随成功负载出站的
+/// `snapshot_path` / `runtime_path` 展示字段（内容仅作展示，无回读消费方）。
+/// Round-5 复审:委托平台共享的 `redact_storage_prefix`(remote_control
+/// 管理器同一实现),不再维护第三份平行脱敏实现。
+pub(crate) fn display_redacted(path: &Path) -> String {
+    paths::redact_storage_prefix(&path.display().to_string())
+}
+
 /// Stored-text caps per store, shared by the write path (which re-cleans every
 /// incoming text) and by organize validation (which must validate against the
 /// same cap so a passing action is not silently truncated when stored).
@@ -423,7 +435,7 @@ fn resolve_topic_authorities<T: Clone>(
             // instead of a hard error — mirroring the soft handling in
             // reconcile_topic_migration_journals_unlocked.
             if let Err(error) = fs::remove_file(&duplicate) {
-                cleanup_failures.push(format!("{}: {error}", duplicate.display()));
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&duplicate)));
             }
         }
         debug_assert!(authority_path.is_file());
@@ -597,12 +609,12 @@ where
             continue;
         }
         if let Err(error) = remove(stale) {
-            cleanup_failures.push(format!("{}: {error}", stale.display()));
+            cleanup_failures.push(format!("{}: {error}", display_redacted(&stale)));
         }
     }
     if cleanup_failures.is_empty() {
         if let Err(error) = remove(journal_path) {
-            cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+            cleanup_failures.push(format!("{}: {error}", display_redacted(&journal_path)));
         }
     }
     Ok(TopicMutation {
@@ -670,6 +682,22 @@ fn write_topic_migration_journal_unlocked(
 pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
     dir: &Path,
 ) -> io::Result<TopicReconciliation> {
+    reconcile_topic_migration_journals_unlocked_with::<T, _>(dir, |path: &Path| {
+        fs::remove_file(path)
+    })
+}
+
+/// Round-5 复审:移除动作注入缝(同 commit 车道的
+/// `commit_topic_migration_unlocked_with`),让 journal 移除失败这个脱敏点
+/// 能被跨平台确定性测试直接驱动,而不必依赖平台特定语义。
+pub(super) fn reconcile_topic_migration_journals_unlocked_with<T, F>(
+    dir: &Path,
+    remove_file: F,
+) -> io::Result<TopicReconciliation>
+where
+    T: serde::de::DeserializeOwned,
+    F: Fn(&Path) -> io::Result<()>,
+{
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -715,7 +743,7 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
                 && stable_id_with_prefix("authority", &raw) == journal.authority_hash
         });
         if !authority_valid {
-            fs::remove_file(&journal_path)?;
+            remove_file(&journal_path)?;
             continue;
         }
         let mut journal_cleanup_pending = false;
@@ -724,15 +752,15 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
             if stale == authority || !stale.exists() {
                 continue;
             }
-            if let Err(error) = fs::remove_file(&stale) {
+            if let Err(error) = remove_file(&stale) {
                 journal_cleanup_pending = true;
                 hidden_files.insert(stale.clone());
-                cleanup_failures.push(format!("{}: {error}", stale.display()));
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&stale)));
             }
         }
         if !journal_cleanup_pending {
-            if let Err(error) = fs::remove_file(&journal_path) {
-                cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+            if let Err(error) = remove_file(&journal_path) {
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&journal_path)));
             }
         }
     }
@@ -1649,7 +1677,7 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
     write_text_atomic(&path, "")?;
     Ok(RuntimeMemorySnapshot {
         session_id: session_id.to_string(),
-        runtime_path: path.display().to_string(),
+        runtime_path: display_redacted(&path),
         block: String::new(),
         items: Vec::new(),
     })
@@ -2240,4 +2268,44 @@ fn compact_pending_memory_items(items: &[PendingMemoryItem]) -> Vec<PendingMemor
         PENDING_MEMORY_ACTIVE_MAX_STORED,
         PENDING_MEMORY_RESOLVED_MAX_STORED,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_redacted_folds_storage_root_prefix() {
+        crate::platform::test_support::with_temp_home("pinvou-redact-test", || {
+            let home = crate::platform::paths::pinvou3_home();
+            let under = home.join("user/memory/snapshot.md");
+            assert_eq!(
+                display_redacted(&under),
+                "~/.pinvou3/user/memory/snapshot.md"
+            );
+            let outside = std::env::temp_dir().join("elsewhere/notes.md");
+            assert_eq!(display_redacted(&outside), outside.display().to_string());
+            // 相对路径原样保留(展示字段不构造相对路径,此处只钉不误伤)。
+            let relative = std::path::Path::new("notes.md");
+            assert_eq!(display_redacted(relative), "notes.md");
+        });
+    }
+
+    #[test]
+    fn runtime_snapshot_payloads_carry_redacted_paths() {
+        crate::platform::test_support::with_temp_home("pinvou-runtime-redact", || {
+            let snapshot = disabled_runtime_snapshot("sess-redact-1").expect("disabled snapshot");
+            assert!(
+                !snapshot.runtime_path.contains(
+                    crate::platform::paths::pinvou3_home()
+                        .display()
+                        .to_string()
+                        .as_str()
+                ),
+                "runtime_path must not leak the absolute storage root: {}",
+                snapshot.runtime_path
+            );
+            assert!(snapshot.runtime_path.starts_with("~/.pinvou3/"));
+        });
+    }
 }

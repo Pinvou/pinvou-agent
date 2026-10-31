@@ -7,17 +7,28 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = fs.readFileSync(path.join(root, 'src', 'platform', 'web', 'bootstrap.js'), 'utf8');
 
-function bootClient(policy) {
+function bootClient(policy, { hash = '#endpoint=endpoint_test&token=access_test' } = {}) {
   const storage = new Map();
   const dispatched = [];
   const timers = [];
+  const windowListeners = new Map();
   let timerId = 0;
 
   class MockWebSocket {
+    static CONNECTING = 0;
     static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
     static instances = [];
+    // Round-9 复审:构造器抛错路径(浏览器在 URL 非法/策略阻断时真的会
+    // 抛)此前零覆盖——默认夹具的构造器不可能抛错。测试把本字段设为 N,
+    // 第 N+1 次构造(下标 ≥ N)即抛错,spawn 不注册实例。
+    static throwFrom = null;
 
     constructor(url) {
+      if (MockWebSocket.throwFrom !== null && MockWebSocket.instances.length >= MockWebSocket.throwFrom) {
+        throw new TypeError('constructor blocked by the harness');
+      }
       this.url = url;
       this.readyState = 0;
       this.listeners = new Map();
@@ -67,7 +78,7 @@ function bootClient(policy) {
   const window = {
     location: {
       href: 'https://relay.test/pinvou3/remote/',
-      hash: '#endpoint=endpoint_test&token=access_test',
+      hash,
       reload() {},
     },
     crypto: {
@@ -84,14 +95,36 @@ function bootClient(policy) {
       const index = timers.findIndex(timer => timer.id === id);
       if (index >= 0) timers.splice(index, 1);
     },
+    setInterval(callback, delay) {
+      timerId += 1;
+      timers.push({ id: timerId, callback, delay });
+      return timerId;
+    },
+    clearInterval(id) {
+      const index = timers.findIndex(timer => timer.id === id);
+      if (index >= 0) timers.splice(index, 1);
+    },
+    addEventListener(name, listener) {
+      const listeners = windowListeners.get(name) || [];
+      listeners.push(listener);
+      windowListeners.set(name, listeners);
+    },
+    emit(name, event = {}) {
+      for (const listener of windowListeners.get(name) || []) listener(event);
+    },
   };
   window.window = window;
   const deterministicMath = Object.create(Math);
   deterministicMath.random = () => 0.5;
 
+  const document = {
+    currentScript: { src: 'https://relay.test/pinvou3/remote/platform/web/bootstrap.js' },
+    visibilityState: 'visible',
+  };
+
   const context = {
     window,
-    document: { currentScript: { src: 'https://relay.test/pinvou3/remote/platform/web/bootstrap.js' } },
+    document,
     sessionStorage: {
       getItem(key) { return storage.has(key) ? storage.get(key) : null; },
       setItem(key, value) { storage.set(key, String(value)); },
@@ -125,7 +158,15 @@ function bootClient(policy) {
     queueMicrotask,
   };
   vm.runInNewContext(source, context, { filename: 'platform/web/bootstrap.js' });
-  return { window, storage, dispatched, timers, MockWebSocket };
+  return { window, document, storage, dispatched, timers, MockWebSocket };
+}
+
+// 重连退避定时器（<10s）与 30s 看门狗 interval、180s RPC 超时共存于 timers，
+// 断言重连行为时必须只取出退避定时器。
+function takeReconnectTimer(timers) {
+  const index = timers.findIndex(timer => timer.delay < 10_000);
+  assert.ok(index >= 0, 'expected a pending reconnect timer');
+  return timers.splice(index, 1)[0];
 }
 
 async function connectWithCapabilities(events, listener) {
@@ -173,16 +214,18 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(firstSocket.url, 'wss://relay.test/pinvou3/remote/ws');
   firstSocket.open();
   firstSocket.message({ type: 'error', code: 'endpoint_not_found' });
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 500);
-  timers.shift().callback();
+  assert.equal(timers.filter(timer => timer.delay < 10_000).length, 1);
+  const firstReconnect = takeReconnectTimer(timers);
+  assert.equal(firstReconnect.delay, 500);
+  firstReconnect.callback();
 
   const secondSocket = MockWebSocket.instances[1];
   secondSocket.open();
   secondSocket.message({ type: 'error', code: 'endpoint_not_found' });
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 1000);
-  timers.shift().callback();
+  assert.equal(timers.filter(timer => timer.delay < 10_000).length, 1);
+  const secondReconnect = takeReconnectTimer(timers);
+  assert.equal(secondReconnect.delay, 1000);
+  secondReconnect.callback();
 
   const registeredSocket = MockWebSocket.instances[2];
   registeredSocket.open();
@@ -194,8 +237,8 @@ async function connectWithCapabilities(events, listener) {
     desktop_connected: true,
   });
   registeredSocket.close();
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 500);
+  assert.equal(timers.filter(timer => timer.delay < 10_000).length, 1);
+  assert.equal(takeReconnectTimer(timers).delay, 500);
 }
 
 {
@@ -505,4 +548,715 @@ async function connectWithCapabilities(events, listener) {
   ));
 }
 
+// TTL 到期的 endpoint_revoked 不是永久吊销（PROTOCOL.md）：桌面端可能稍后用
+// 持久凭证重建同一 endpoint，浏览器必须进入 desktop_offline 等待并走普通重连
+// 路径自动重新 join，而不是永久死路覆盖层。
+{
+  const { client, socket, timers, MockWebSocket, dispatched } = await connectWithCapabilities(['chat:delta'], () => {});
+  socket.message({
+    v: 2,
+    type: 'endpoint_revoked',
+    endpoint_id: 'endpoint_test',
+    reason: 'desktop_offline_ttl_expired',
+  });
+  assert.equal(client.closedPermanently, false,
+    'TTL expiry must not poison the tab: the desktop may recreate the endpoint');
+  assert.equal(client.desktopOnline, false);
+  assert.ok(dispatched.some(event => (
+    event.type === 'pinvou:web-connection' && event.detail.status === 'desktop_offline'
+  )), 'TTL expiry must surface the desktop-offline state');
+  assert.equal(socket.closeCalled, true, 'the expired socket must be closed normally');
+  // 退避窗口内保持 desktop_offline 专属文案(「桌面端离线,保持页面打开」):
+  // 紧随其后的 close→scheduleReconnect 不得把该状态覆盖成「连接中」,
+  // 否则在最长 60s 的退避里用户看到的是误导性的转圈。
+  assert.equal(client.connectionState.status, 'desktop_offline',
+    'the dedicated desktop-offline copy must survive the close/reconnect clobber');
+  takeReconnectTimer(timers).callback();
+  assert.equal(client.connectionState.status, 'connecting',
+    'the ordinary reconnect path takes over when the retry actually fires');
+  const rejoined = MockWebSocket.instances[1];
+  rejoined.open();
+  assert.ok(rejoined.sent.some(message => message.type === 'web_client_join'),
+    'the browser must rejoin automatically after TTL expiry');
+  rejoined.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_next',
+    desktop_connected: true,
+  });
+  assert.equal(client.joined, true);
+  assert.equal(timers.some(timer => timer.delay === 30_000), true,
+    'the liveness watchdog must keep running across a TTL-expiry reconnect');
+}
+
+// 异常断线先触发 error 再触发 close:error 监听同样不得把 desktop_offline
+// 的专属文案覆盖成「连接中」——close→scheduleReconnect 有门,round-4 复审
+// 发现 error 监听没有,离线窗口内的 TCP reset 会把诚实文案换成转圈。
+{
+  const { client, socket } = await connectWithCapabilities(['chat:delta'], () => {});
+  socket.message({
+    v: 2,
+    type: 'endpoint_revoked',
+    endpoint_id: 'endpoint_test',
+    reason: 'desktop_offline_ttl_expired',
+  });
+  assert.equal(client.connectionState.status, 'desktop_offline');
+  socket.emit('error', {});
+  assert.equal(client.connectionState.status, 'desktop_offline',
+    'an abnormal socket error during the offline window must keep the dedicated offline copy');
+
+  const healthy = await connectWithCapabilities(['chat:delta'], () => {});
+  healthy.socket.emit('error', {});
+  assert.equal(healthy.client.connectionState.status, 'connecting',
+    'an error on an ordinary socket must still escalate to the connecting state');
+}
+
+// Round-10 复审 minor:看门狗投机关闭的半开 socket 在部分浏览器上会先触发
+// error(失败的关闭握手报成 error+close)。这是关闭握手的一部分,不是验证
+// 失败——不得计入投机失败,也不得提前点亮 connecting(否则「UI 保持
+// connected 直到验证失败」随浏览器引擎分叉)。Mock 的 close 从不发 error,
+// 该交错此前不可达。
+{
+  const speculative = await connectWithCapabilities(['chat:delta'], () => {});
+  speculative.client.lastInboundAt = Date.now() - 121_000;
+  speculative.client._livenessCheck();
+  assert.equal(speculative.socket.closeCalled, true,
+    'the watchdog must have closed the silent socket');
+  assert.equal(speculative.client.speculativeReconnect, true,
+    'the first ackless cycle stays under the failure cap');
+  assert.equal(speculative.client.connectionState.status, 'connected',
+    'the reconnect after a speculative close is not visible yet');
+  speculative.socket.emit('error', {});
+  assert.equal(speculative.client.speculativeFailures, 0,
+    'an error on the speculative source is the close handshake, not a verification failure');
+  assert.equal(speculative.client.connectionState.status, 'connected',
+    'the speculative source error must not surface the connecting banner');
+}
+
+// 真正的吊销（其他 reason 或缺失 reason）保持今天的永久关闭行为。
+{
+  const revoke = async message => {
+    const harness = await connectWithCapabilities(['chat:delta'], () => {});
+    harness.socket.message(message);
+    return harness;
+  };
+  const revoked = await revoke({
+    v: 2,
+    type: 'endpoint_revoked',
+    endpoint_id: 'endpoint_test',
+    reason: 'revoked',
+  });
+  assert.equal(revoked.client.closedPermanently, true);
+  assert.equal(revoked.client.connectionState.status, 'revoked');
+  assert.equal(revoked.socket.closeCalled, true);
+  assert.equal(revoked.timers.some(timer => timer.delay < 10_000), false,
+    'a real revoke must not schedule reconnects');
+  assert.equal(revoked.timers.some(timer => timer.delay === 30_000), false,
+    'a real revoke must tear down the liveness watchdog');
+
+  const unreasoned = await revoke({ v: 2, type: 'endpoint_revoked', endpoint_id: 'endpoint_test' });
+  assert.equal(unreasoned.client.closedPermanently, true,
+    'an endpoint_revoked without a TTL reason stays a permanent revoke');
+  assert.equal(unreasoned.client.connectionState.status, 'revoked');
+}
+
+// 半开连接看门狗：OPEN 且静默超过阈值必须投机重连（游标重放使重连幂等）；
+// 有近期入站流量或 socket 未 OPEN 时不得误杀连接。staleness 只是怀疑而非证
+// 据：投机重连验证期间 UI 保持 connected、不广播 connecting；验证失败（重连
+// socket 在 join 前再断开）才清除投机状态并升级为可见的 connecting。
+{
+  const stale = await connectWithCapabilities(['chat:delta'], () => {});
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  const statusEventsBefore = stale.dispatched.filter(event => event.type === 'pinvou:web-connection').length;
+  stale.client._livenessCheck();
+  assert.equal(stale.socket.closeCalled, true,
+    'a silent OPEN socket past the liveness threshold must be speculatively closed');
+  assert.equal(stale.client.socket, null);
+  assert.equal(stale.client.joined, false);
+  assert.ok(stale.timers.find(timer => timer.delay < 10_000),
+    'the speculative close must fall back to the reconnect path');
+  assert.equal(stale.client.connectionState.status, 'connected',
+    'a speculative reconnect must keep the UI on connected while verification is pending');
+  assert.equal(stale.dispatched.filter(event => event.type === 'pinvou:web-connection').length,
+    statusEventsBefore,
+    'speculative recovery must not broadcast a reconnecting/connecting status');
+  takeReconnectTimer(stale.timers).callback();
+  // Round-5 W1a pin: the speculative spawn itself must not flip the UI to
+  // connecting — only a failed verification may.
+  assert.equal(stale.client.connectionState.status, 'connected',
+    'the speculative spawn itself must not flip the UI to connecting');
+  const rejoin = stale.MockWebSocket.instances[1];
+  rejoin.open();
+  rejoin.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_next',
+    desktop_connected: true,
+  });
+  assert.equal(rejoin.sent.some(message => message.type === 'web_client_join'), true,
+    'the speculative reconnect must rejoin');
+  assert.equal(stale.client.speculativeReconnect, false,
+    'a successful speculative rejoin must clear the speculative flag silently');
+  assert.equal(stale.client.connectionState.status, 'connected');
+  // Round-11:只有完整验证的周期(join ack + 能力快照抵达——只有真实桌
+  // 面帧能落点)才复位梯子;ack 单独不复位。改动前:ack 处复位,自铸 ack
+  // 的 relay 每周期清零梯子,把 UI 永久楔死在 connected。
+  // ack-only 周期的静默死亡计入失败(封顶内仍隐藏)。
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  assert.equal(stale.client.speculativeFailures, 1,
+    'an ack-only silent cycle counts toward the failure cap');
+  assert.equal(stale.client.speculativeReconnect, true,
+    'the first failed cycle stays under the inclusive cap');
+  takeReconnectTimer(stale.timers).callback();
+  const reverified = stale.MockWebSocket.instances[2];
+  reverified.open();
+  reverified.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_next',
+    desktop_connected: true,
+  });
+  reverified.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] } },
+  });
+  assert.equal(stale.client.speculativeFailures, 0,
+    'a fully verified cycle (ack + capability snapshot) resets the ladder');
+  assert.equal(stale.client.speculativeReconnect, false,
+    'a fully verified join clears the speculative flag');
+  // 完整验证后的静默死亡:健康的空闲循环(快照已抵达),不计失败。
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  assert.equal(stale.client.speculativeReconnect, true,
+    'a silent fully-verified cycle must not escalate');
+  // Round-6 判别(迁移到快照复位):先积一次失败,经完整验证复位,再经
+  // 历一个 ackless 周期——复位生效时 1→0→1 仍隐藏;复位缺失时 1→2 越
+  // 过封顶,该周期必须可见,断言变红。
+  takeReconnectTimer(stale.timers).callback();
+  const ackless = stale.MockWebSocket.instances[3];
+  ackless.open();
+  stale.client.lastInboundAt = Date.now() - 121_000;
+  stale.client._livenessCheck();
+  assert.equal(ackless.closeCalled, true,
+    'the ackless cycle must be closed to route recovery');
+  assert.equal(stale.client.speculativeReconnect, true,
+    'the first ackless cycle after a verified reset stays under the failure cap');
+
+  const failing = await connectWithCapabilities(['chat:delta'], () => {});
+  failing.client.lastInboundAt = Date.now() - 121_000;
+  failing.client._livenessCheck();
+  assert.equal(failing.client.connectionState.status, 'connected');
+  takeReconnectTimer(failing.timers).callback();
+  const dead = failing.MockWebSocket.instances[1];
+  dead.close();
+  assert.equal(failing.client.connectionState.status, 'connecting',
+    'a failed speculative verification must escalate to the visible reconnecting status');
+  assert.equal(failing.client.speculativeReconnect, false,
+    'a failed speculative verification must clear the speculative flag');
+
+  // Round-5 wedge pin: a relay that completes the handshake but never
+  // delivers the join ack must not wedge the UI on "connected" forever.
+  // Every watchdog close matches its own speculativeSource, so the
+  // close-side verification-failed branch can never fire; past the failure
+  // cap the reconnect becomes visible instead.
+  {
+    const wedged = await connectWithCapabilities(['chat:delta'], () => {});
+    wedged.client.lastInboundAt = Date.now() - 121_000;
+    wedged.client._livenessCheck();
+    assert.equal(wedged.client.connectionState.status, 'connected',
+      'the first cycle closes a joined socket: still a speculative idle cycle');
+    takeReconnectTimer(wedged.timers).callback();
+    const second = wedged.MockWebSocket.instances[1];
+    second.open();
+    wedged.client.lastInboundAt = Date.now() - 121_000;
+    wedged.client._livenessCheck();
+    assert.equal(second.closeCalled, true,
+      'the first ackless cycle must still be closed to route recovery');
+    assert.equal(wedged.client.speculativeReconnect, true,
+      'the first ackless cycle stays under the failure cap');
+    assert.equal(wedged.client.connectionState.status, 'connected',
+      'the second cycle is still speculative');
+    takeReconnectTimer(wedged.timers).callback();
+    const third = wedged.MockWebSocket.instances[2];
+    third.open();
+    wedged.client.lastInboundAt = Date.now() - 121_000;
+    wedged.client._livenessCheck();
+    assert.equal(third.closeCalled, true,
+      'the second ackless cycle must still be closed to route recovery');
+    assert.equal(wedged.client.speculativeReconnect, false,
+      'past the failure cap the watchdog reconnect must not be speculative');
+    assert.equal(wedged.client.connectionState.status, 'connecting',
+      'the capped watchdog reconnect must be visible, not silently repeated');
+  }
+
+  // Round-11 wedge pin: a relay that ACKS every join but never delivers the
+  // capability snapshot (the ack is minted on the relay's own code path and
+  // cannot vouch for the desktop-bound forwarding path) must escalate to
+  // visible reconnecting instead of wedging the UI on "connected" forever.
+  // Before round-11 the failure count was gated on !joined and the join ack
+  // reset it, so every cycle re-zeroed the ladder.
+  {
+    const frameless = bootClient();
+    const framelessClient = frameless.window.PinvouWebClient;
+    await framelessClient.policyPromise;
+    framelessClient.markFrontendReady();
+    await Promise.resolve();
+    framelessClient.markStateReady();
+    const first = frameless.MockWebSocket.instances[0];
+    first.open();
+    first.message({
+      v: 2,
+      type: 'web_client_joined',
+      endpoint_id: 'endpoint_test',
+      lease_id: 'lease_test',
+      desktop_connected: true,
+    });
+    assert.equal(framelessClient.connectionState.status, 'connected');
+    // Cycle 1: the ack-only socket goes silent; the close counts (snapshot
+    // still due) and reconnects speculatively.
+    framelessClient.lastInboundAt = Date.now() - 121_000;
+    framelessClient._livenessCheck();
+    assert.equal(first.closeCalled, true);
+    assert.equal(framelessClient.speculativeFailures, 1,
+      'an acked-but-frameless cycle counts toward the cap');
+    assert.equal(framelessClient.connectionState.status, 'connected',
+      'the first frameless cycle is still speculative');
+    takeReconnectTimer(frameless.timers).callback();
+    const second = frameless.MockWebSocket.instances[1];
+    second.open();
+    second.message({
+      v: 2,
+      type: 'web_client_joined',
+      endpoint_id: 'endpoint_test',
+      lease_id: 'lease_next',
+      desktop_connected: true,
+    });
+    // Cycle 2: another ack with no snapshot — the relay re-acked but must
+    // not re-zero the ladder; the cycle crosses the cap and becomes visible.
+    framelessClient.lastInboundAt = Date.now() - 121_000;
+    framelessClient._livenessCheck();
+    assert.equal(second.closeCalled, true);
+    assert.equal(framelessClient.speculativeFailures, 2,
+      'the join ack must not reset the failure ladder');
+    assert.equal(framelessClient.speculativeReconnect, false,
+      'the second frameless cycle must cross the cap');
+    assert.equal(framelessClient.connectionState.status, 'connecting',
+      'the frameless relay must escalate to visible reconnecting, not wedge on connected');
+  }
+
+  const fresh = await connectWithCapabilities(['chat:delta'], () => {});
+  fresh.client.lastInboundAt = Date.now();
+  fresh.client._livenessCheck();
+  assert.equal(fresh.socket.closeCalled, false,
+    'recent inbound traffic must keep a healthy socket');
+
+  const idle = bootClient();
+  const idleClient = idle.window.PinvouWebClient;
+  await idleClient.policyPromise;
+  idleClient._livenessCheck();
+  assert.equal(idle.MockWebSocket.instances[0].closeCalled, false,
+    'a socket that is not OPEN must be left to the connect path');
+  assert.equal(idle.timers.some(timer => timer.delay < 10_000), false);
+}
+
+// 看门狗 interval 必须真实注册并驱动 _livenessCheck，重连后不得重复注册。
+{
+  const wired = await connectWithCapabilities(['chat:delta'], () => {});
+  const watchdog = wired.timers.find(timer => timer.delay === 30_000);
+  assert.ok(watchdog, 'the liveness watchdog interval must be registered');
+  wired.client.lastInboundAt = Date.now() - 121_000;
+  watchdog.callback();
+  assert.equal(wired.socket.closeCalled, true,
+    'the registered interval must drive the liveness check');
+  takeReconnectTimer(wired.timers).callback();
+  const next = wired.MockWebSocket.instances[1];
+  next.open();
+  next.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_next',
+    desktop_connected: true,
+  });
+  assert.equal(wired.timers.filter(timer => timer.delay === 30_000).length, 1,
+    'rejoining must not register a second watchdog');
+}
+
+// 网络恢复（online 事件）：断开时立即重连并清退避；OPEN 连接视为可疑并重连。
+{
+  const offline = bootClient();
+  const offlineClient = offline.window.PinvouWebClient;
+  await offlineClient.policyPromise;
+  offline.MockWebSocket.instances[0].close();
+  const backoff = offline.timers.find(timer => timer.delay < 10_000);
+  assert.ok(backoff);
+  offlineClient.reconnectAttempt = 3;
+  offline.window.emit('online');
+  assert.equal(offline.timers.includes(backoff), false,
+    'stale backoff must be discarded when connectivity returns');
+  assert.equal(offlineClient.reconnectAttempt, 0,
+    'backoff must reset on a network change');
+  assert.equal(offline.MockWebSocket.instances.length, 2,
+    'connectivity restored must reconnect immediately');
+
+  const live = await connectWithCapabilities(['chat:delta'], () => {});
+  const broadcastsBefore = live.dispatched.filter(event => event.type === 'pinvou:web-connection').length;
+  live.window.emit('online');
+  assert.equal(live.socket.closeCalled, true,
+    'an OPEN socket must be treated as suspicion when the OS reports a network change');
+  assert.ok(live.timers.find(timer => timer.delay < 10_000),
+    'the suspicion close must schedule a reconnect');
+  assert.equal(live.client.connectionState.status, 'connected',
+    'the online-triggered suspicion close is speculative: the UI stays on connected');
+  assert.equal(live.dispatched.filter(event => event.type === 'pinvou:web-connection').length,
+    broadcastsBefore,
+    'the online-triggered speculative close must not broadcast a connecting status');
+  // A failed speculative verification still escalates.
+  takeReconnectTimer(live.timers).callback();
+  live.MockWebSocket.instances[1].close();
+  assert.equal(live.client.connectionState.status, 'connecting',
+    'a failed speculative verification must escalate to the visible status');
+}
+
+// Round-8 复审:online 路径的投机 close(handleNetworkBecomeOnline 内与看门狗
+// 字节级孪生的块)必须同样给从未收到 join ack 的 socket 计失败数。缺这一行
+// 时,OS 网络切换反复打断一个收不到 join ack 的 socket,失败数停在封顶之内,
+// 重连永远保持投机,UI 永远停在 connected——与 round-5 的看门狗 wedged
+// relay 场景同罪。
+{
+  const harness = bootClient();
+  const client = harness.window.PinvouWebClient;
+  await client.policyPromise;
+  const ackless = harness.MockWebSocket.instances[0];
+  ackless.open();
+  harness.window.emit('online');
+  assert.equal(ackless.closeCalled, true,
+    'the online-triggered suspicion close must fire on an ackless socket');
+  assert.equal(client.speculativeFailures, 1,
+    'the online close must count the ackless cycle toward the failure cap');
+  assert.equal(client.speculativeReconnect, true,
+    'the first ackless cycle has only reached the cap and stays speculative');
+  takeReconnectTimer(harness.timers).callback();
+  const second = harness.MockWebSocket.instances[1];
+  second.open();
+  client.lastInboundAt = Date.now() - 121_000;
+  client._livenessCheck();
+  assert.equal(second.closeCalled, true,
+    'the further ackless cycle must still be closed to route recovery');
+  assert.equal(client.speculativeReconnect, false,
+    'a further ackless cycle past the cap must make the online-path reconnect visible');
+  assert.equal(client.connectionState.status, 'connecting',
+    'the capped online-path reconnect must surface the visible reconnecting state');
+}
+
+// 看门狗必须救出卡在 CONNECTING 的 wedge 连接:超过 wedge 窗口的 CONNECTING
+// socket 被中止走重连漏斗;窗口内的年轻 CONNECTING socket 不受影响。
+{
+  const wedged = bootClient();
+  const wedgedClient = wedged.window.PinvouWebClient;
+  await wedgedClient.policyPromise;
+  const wedgedSocket = wedged.MockWebSocket.instances[0];
+  assert.equal(wedgedSocket.readyState, 0, 'fixture starts CONNECTING');
+  wedgedClient.connectStartedAt = Date.now() - 46_000;
+  wedgedClient._livenessCheck();
+  assert.equal(wedgedSocket.closeCalled, true,
+    'a CONNECTING socket wedged past the window must be abandoned by the watchdog');
+
+  const young = bootClient();
+  const youngClient = young.window.PinvouWebClient;
+  await youngClient.policyPromise;
+  youngClient.connectStartedAt = Date.now();
+  youngClient._livenessCheck();
+  assert.equal(young.MockWebSocket.instances[0].closeCalled, false,
+    'a young CONNECTING socket must keep its full wedge window');
+}
+
+// 页面重新可见：未连接时立即重连；不得凭空丢弃健康的 OPEN 连接（后台标签页
+// 定时器被节流，唤醒后的存活判断交给看门狗与 online 事件）。
+{
+  const hidden = bootClient();
+  const hiddenClient = hidden.window.PinvouWebClient;
+  await hiddenClient.policyPromise;
+  hidden.document.visibilityState = 'hidden';
+  hidden.MockWebSocket.instances[0].close();
+  const hiddenBackoff = hidden.timers.find(timer => timer.delay < 10_000);
+  assert.ok(hiddenBackoff);
+  hidden.window.emit('visibilitychange');
+  assert.equal(hidden.timers.includes(hiddenBackoff), true,
+    'visibility must not trigger a reconnect while the page is hidden');
+  hidden.document.visibilityState = 'visible';
+  hidden.window.emit('visibilitychange');
+  assert.equal(hidden.timers.includes(hiddenBackoff), false,
+    'becoming visible must reconnect immediately when the socket is gone');
+  assert.equal(hidden.MockWebSocket.instances.length, 2);
+
+  const live = await connectWithCapabilities(['chat:delta'], () => {});
+  live.window.emit('visibilitychange');
+  assert.equal(live.socket.closeCalled, false,
+    'becoming visible must not drop a healthy OPEN socket');
+}
+
+// online / visibilitychange 必须中止卡在 CONNECTING 的僵尸 socket：否则恢复要
+// 等浏览器 TCP 超时。关闭后走普通 close -> 重连漏斗，connect() 在 socket 存在
+// 期间早退，因此不会双重连接。
+{
+  const online = bootClient();
+  const onlineClient = online.window.PinvouWebClient;
+  await onlineClient.policyPromise;
+  const zombie = online.MockWebSocket.instances[0];
+  assert.equal(zombie.readyState, online.MockWebSocket.CONNECTING);
+  online.window.emit('online');
+  assert.equal(zombie.closeCalled, true,
+    'becoming online must abort a socket wedged in CONNECTING');
+  const reconnect = takeReconnectTimer(online.timers);
+  reconnect.callback();
+  assert.equal(online.MockWebSocket.instances.length, 2,
+    'closing the zombie must route recovery through the single reconnect funnel');
+
+  const visible = bootClient();
+  const visibleClient = visible.window.PinvouWebClient;
+  await visibleClient.policyPromise;
+  const wedged = visible.MockWebSocket.instances[0];
+  visible.document.visibilityState = 'visible';
+  visible.window.emit('visibilitychange');
+  assert.equal(wedged.closeCalled, true,
+    'becoming visible must abort a socket wedged in CONNECTING');
+  takeReconnectTimer(visible.timers).callback();
+  assert.equal(visible.MockWebSocket.instances.length, 2,
+    'the aborted socket must be replaced through the reconnect funnel');
+}
+
+// 桌面端不在类失败（endpoint_not_found / desktop_offline_ttl_expired）：前 5 次
+// 重试保持既有 ≤10s 快节奏（TTL 恢复流程要快），之后逐次翻倍、60s 封顶；成功
+// join 后计数清零，重试节奏回到最初的快速档。
+{
+  const { window, MockWebSocket, timers } = bootClient();
+  const client = window.PinvouWebClient;
+  await client.policyPromise;
+  const miss = (socket) => {
+    socket.open();
+    socket.message({ type: 'error', code: 'endpoint_not_found' });
+  };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    miss(MockWebSocket.instances[attempt]);
+    const reconnect = takeReconnectTimer(timers);
+    assert.equal(reconnect.delay, 500 * 2 ** attempt,
+      'the first desktop-gone retries must keep the historical fast pace');
+    reconnect.callback();
+  }
+  miss(MockWebSocket.instances[5]);
+  const grown = timers.find(timer => timer.delay > 10_000 && timer.delay !== 30_000);
+  assert.ok(grown, 'desktop-gone backoff must grow past the old 10s ceiling');
+  assert.equal(grown.delay, 20_000, 'the sixth desktop-gone retry must double to 20s');
+  grown.callback();
+  miss(MockWebSocket.instances[6]);
+  assert.equal(timers.some(timer => timer.delay === 40_000), true,
+    'desktop-gone backoff must keep doubling per attempt');
+  timers.find(timer => timer.delay === 40_000).callback();
+  miss(MockWebSocket.instances[7]);
+  assert.equal(timers.some(timer => timer.delay === 60_000), true,
+    'desktop-gone backoff must cap at 60s');
+  timers.find(timer => timer.delay === 60_000).callback();
+  const recovered = MockWebSocket.instances[8];
+  recovered.open();
+  recovered.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_back',
+    desktop_connected: true,
+  });
+  assert.equal(client.desktopGoneRetries, 0,
+    'a successful join must reset the desktop-gone retry counter');
+  recovered.close();
+  assert.equal(takeReconnectTimer(timers).delay, 500,
+    'after a successful join the retry pace must restart fast');
+}
+
+// Round-8 复审:desktop-gone 计数必须只属于 desktop-gone 类失败——普通传输
+// 断线(无 desktop-gone/TTL 原因)在 scheduleReconnect 里把计数清零,退避
+// 回到快速档。保留 grown 值时,一次普通断线会继承离线场景的 20s+ 退避,
+// 桌面明明在线却要等满整段慢窗口。
+{
+  const { window, MockWebSocket, timers } = bootClient();
+  const client = window.PinvouWebClient;
+  await client.policyPromise;
+  const miss = (socket) => {
+    socket.open();
+    socket.message({ type: 'error', code: 'endpoint_not_found' });
+  };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    miss(MockWebSocket.instances[attempt]);
+    takeReconnectTimer(timers).callback();
+  }
+  miss(MockWebSocket.instances[5]);
+  const grown = timers.find(timer => timer.delay > 10_000 && timer.delay !== 30_000);
+  assert.equal(grown.delay, 20_000,
+    'the desktop-gone ladder must first grow past the fast window');
+  timers.splice(timers.indexOf(grown), 1);
+  grown.callback();
+  // 普通传输断线:socket 打开但从未 join,不带任何 desktop-gone/TTL 原因。
+  const takeFastTimer = () => {
+    const index = timers.findIndex(timer => timer.delay === 10_000);
+    assert.ok(index >= 0, 'expected the fast-regime reconnect timer');
+    return timers.splice(index, 1)[0];
+  };
+  const ordinary = MockWebSocket.instances[6];
+  ordinary.open();
+  ordinary.close();
+  assert.equal(client.desktopGoneRetries, 0,
+    'an ordinary transport close must reset the desktop-gone retry streak');
+  const reset = takeFastTimer();
+  assert.equal(reset.delay, 10_000,
+    'the next reconnect delay must leave the grown desktop-gone ladder for the fast regime (fast-formula cap), not the grown 20s value');
+  reset.callback();
+  const again = MockWebSocket.instances[7];
+  again.open();
+  again.close();
+  assert.equal(client.desktopGoneRetries, 0,
+    'the streak must stay reset across further ordinary closes');
+  assert.equal(takeFastTimer().delay, 10_000,
+    'the following ordinary reconnect must stay in the fast regime');
+}
+
+// Round-8 复审:desktop_offline_ttl_expired 分支必须置 reconnectForDesktopGone,
+// TTL 恢复的连续重试才能参与 desktop-gone 阶梯(20s→60s 封顶)。缺失时每次
+// TTL 关闭都按普通 ladder 清零计数,离线桌面会被 <10s 的快速重试无限打断,
+// 而既有 TTL 测试只断言 <10s 定时器存在,删该行仍全绿。
+{
+  const { window, MockWebSocket, timers } = bootClient();
+  const client = window.PinvouWebClient;
+  await client.policyPromise;
+  assert.equal(client.closedPermanently, false);
+  const ttlGone = (socket) => {
+    socket.open();
+    socket.message({
+      v: 2,
+      type: 'endpoint_revoked',
+      endpoint_id: 'endpoint_test',
+      reason: 'desktop_offline_ttl_expired',
+    });
+  };
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    ttlGone(MockWebSocket.instances[attempt]);
+    const reconnect = takeReconnectTimer(timers);
+    assert.equal(reconnect.delay, 500 * 2 ** attempt,
+      'TTL-expiry retries keep the fast pace for the first attempts');
+    reconnect.callback();
+  }
+  const takeGrownTimer = () => {
+    const index = timers.findIndex(timer => timer.delay > 10_000 && timer.delay !== 30_000);
+    assert.ok(index >= 0, 'expected the grown desktop-gone reconnect timer');
+    return timers.splice(index, 1)[0];
+  };
+  ttlGone(MockWebSocket.instances[5]);
+  const doubled = takeGrownTimer();
+  assert.equal(doubled.delay, 20_000,
+    'the TTL path must join the desktop-gone ladder and double past the fast window');
+  doubled.callback();
+  ttlGone(MockWebSocket.instances[6]);
+  const quadrupled = takeGrownTimer();
+  assert.equal(quadrupled.delay, 40_000,
+    'the TTL ladder must keep doubling per attempt');
+  quadrupled.callback();
+  ttlGone(MockWebSocket.instances[7]);
+  const capped = takeGrownTimer();
+  assert.equal(capped.delay, 60_000,
+    'the TTL ladder must reach the desktop-gone cap');
+  capped.callback();
+  ttlGone(MockWebSocket.instances[8]);
+  assert.equal(takeGrownTimer().delay, 60_000,
+    'the TTL ladder must stay capped at 60s');
+}
+
+// desktop_snapshot 缺失或空 seq 不得把游标重置为 0（否则下次 join 触发全量重放）。
+{
+  const { client, socket } = await connectWithCapabilities(['chat:delta'], () => {});
+  const snapshot = seq => ({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    ...(seq === undefined ? {} : { seq }),
+    snapshot: { capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] } },
+  });
+  client.lastSeq = 4;
+  socket.message(snapshot());
+  assert.equal(client.lastSeq, 4, 'a snapshot without seq must keep the cursor');
+  socket.message(snapshot(null));
+  assert.equal(client.lastSeq, 4, 'Number(null) === 0 must not reset the cursor');
+  socket.message(snapshot(''));
+  assert.equal(client.lastSeq, 4, 'Number("") === 0 must not reset the cursor');
+  socket.message(snapshot(6));
+  assert.equal(client.lastSeq, 6, 'an explicit seq must still advance the cursor');
+}
+
 console.log('web bootstrap transport tests passed');
+
+// 缺凭证的截断链接必须停在阻断卡:online/visibilitychange 看门狗等恢复路径
+// 不得绕过凭证 gate,把 credentials_missing 转成注定失败的 join 重试循环
+// (非阻断小转圈覆盖阻断卡,永远连不上却一直在重试)。
+{
+  const harness = bootClient(undefined, { hash: '#endpoint=endpoint_test' });
+  const client = harness.window.PinvouWebClient;
+  await client.policyPromise;
+  assert.equal(client.connectionState.status, 'credentials_missing');
+  assert.equal(harness.MockWebSocket.instances.length, 0,
+    'a truncated link must not open a socket');
+  harness.window.emit('online');
+  await new Promise(resolve => { setImmediate(resolve); });
+  harness.window.emit('visibilitychange');
+  await new Promise(resolve => { setImmediate(resolve); });
+  assert.equal(harness.MockWebSocket.instances.length, 0,
+    'online/visible recovery must not bypass the credentials gate');
+  assert.equal(client.connectionState.status, 'credentials_missing',
+    'the truncated link must stay parked on the blocking card');
+}
+
+// Round-9 复审:构造器抛错路径零覆盖(noteSpeculativeFailure 在抛错臂是
+// 唯一计数点,夹具构造器此前不可能抛错)。判别场景:健康 join 后进入静
+// 默投机周期,从第二次构造开始抛错——第一个抛错的 spawn 必须把失败计入
+// 投机梯度(删除该计数,第二个抛错的 spawn 仍被视为投机,UI 永远停在
+// connected);第二个抛错的 spawn 把失败推过封顶,重连必须可见。
+{
+  const blocked = await connectWithCapabilities(['chat:delta'], () => {});
+  assert.equal(blocked.client.speculativeFailures, 0,
+    'a verified join must leave the failure ladder at zero');
+  blocked.MockWebSocket.throwFrom = 1;
+  blocked.client.lastInboundAt = Date.now() - 121_000;
+  blocked.client._livenessCheck();
+  assert.equal(blocked.MockWebSocket.instances.length, 1,
+    'the watchdog closes the joined socket before the throwing spawns');
+  takeReconnectTimer(blocked.timers).callback();
+  assert.equal(blocked.MockWebSocket.instances.length, 1,
+    'a throwing constructor must not register a socket instance');
+  assert.equal(blocked.client.speculativeFailures, 1,
+    'a thrown constructor on a speculative spawn must count the failed cycle');
+  // 第一个抛错把投机位清掉:下一次 spawn 就是可见重连,再抛错不再计数
+  // (计数只发生在投机 spawn 上)——升级不靠「推过封顶」,靠投机位清空。
+  assert.equal(blocked.client.speculativeReconnect, false,
+    'a thrown speculative spawn must clear the speculative flag');
+  assert.equal(blocked.client.connectionState.status, 'connecting',
+    'the post-throw reconnect must be visible, not silently repeated');
+  takeReconnectTimer(blocked.timers).callback();
+  assert.equal(blocked.client.speculativeFailures, 1,
+    'only speculative spawns count; the visible retry cycle does not');
+  assert.equal(blocked.client.connectionState.status, 'connecting',
+    'the visible retry stays visible across repeated throw cycles');
+}
+
+// Round-9 复审:静默窗(120s)与 CONNECTING 楔死窗(45s)此前只有单侧行
+// 为钉(探针只从一侧越过阈值,把常数调小全部探针仍然绿)——源码级钉住
+// 常量字面量,与 vm 行为钉互补;改常数必须显式重审两侧行为钉。
+assert.match(source, /const LIVENESS_WATCHDOG_INTERVAL_MS = 30_000;/);
+assert.match(source, /const LIVENESS_SILENCE_TIMEOUT_MS = 120_000;/);
+assert.match(source, /const LIVENESS_MAX_SPECULATIVE_FAILURES = 1;/);
+assert.match(source, /const LIVENESS_CONNECT_WEDGE_TIMEOUT_MS = 45_000;/);
+assert.match(source, /const DESKTOP_GONE_FAST_RETRIES = 5;/);
+assert.match(source, /const DESKTOP_GONE_MAX_DELAY_MS = 60_000;/);

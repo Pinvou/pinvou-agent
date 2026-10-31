@@ -43,6 +43,7 @@ and any active Web lease are unchanged.
   "type": "desktop_endpoint_registered",
   "endpoint_id": "endpoint_...",
   "web_client_connected": false,
+  "web_rejoining": false,
   "lease_id": null
 }
 ```
@@ -110,7 +111,9 @@ It accepts only these desktop-to-Web types:
 The original top-level fields are forwarded unchanged except that the Relay
 sets authoritative `v`, `endpoint_id`, and `lease_id` fields. Credential fields
 (`access_token`, `token`, `pairing_token`, `desktop_secret`) are additionally
-stripped from forwarded frames. A desktop message that explicitly targets a
+stripped from forwarded frames. That strip is top-level only: nested objects
+such as `args` or `payload` are forwarded verbatim, so endpoints must never
+embed credentials inside them. A desktop message that explicitly targets a
 stale lease is dropped so a late response cannot leak into the replacement
 client.
 
@@ -126,6 +129,12 @@ journal. The Relay holds none of that business state.
 2. After the shared UI durably hydrates its local state, it sends
    `client_ready` with `state_ready: true`. Only then may the desktop replay the
    ready-window events after the negotiated cursor and begin live delivery.
+
+A missing or non-boolean `state_ready` defaults to phase one (fail-closed):
+the client receives the capability snapshot but no business events until a
+`state_ready: true` handshake arrives. Clients that predate the two-phase
+handshake and never send the field will therefore stall at phase one against
+a current desktop; they must update their bundled UI.
 
 Within the forwarded `event` envelope, the authoritative chat-turn allowlist
 includes both `chat:user_message` (including `base_transcript_revision`) and
@@ -148,7 +157,18 @@ When the desktop disconnects, the active Web client receives:
 
 The same message with `status: "connected"` is sent after desktop reconnection.
 The desktop receives `web_client_connected` and `web_client_disconnected` with
-the corresponding lease.
+the corresponding lease. The `web_client_connected` frame (and the
+`desktop_endpoint_registered` frame, for the incumbent client) carries
+`web_rejoining: true` when the join arrived after the previous web socket had
+already died (watchdog or network recovery by the same token holder) and
+`web_rejoining: false` on a first join or a live takeover (`endpoint_replaced`).
+The desktop uses the flag to keep lease-scoped state (staged attachments,
+in-flight uploads, session downloads) across a rejoin while still discarding it
+on a takeover. Limitation: the flag is derived from relay-observed socket
+death only. When the previous web socket is still OPEN server-side (a half-open
+connection the heartbeat has not reaped yet, or a fast reconnect racing the
+close event), the join classifies as a live takeover — an app-level rejoin
+token would be needed to close that window.
 
 The desktop invalidates a link with:
 
@@ -180,9 +200,11 @@ endpoint IDs.
 ## Error codes
 
 The Relay reports rejects with a `type: "error"` message carrying a `code`.
-Codes enforced by the reject helper also close the socket with WebSocket close
-code 1008; the remaining codes are informational errors that leave the
-connection open.
+Exactly five codes are informational and leave the connection open:
+`bad_json`, `bad_message`, `binary_unsupported`, `unsupported_message_type`,
+and `desktop_offline`. Every other code in the table is a reject: the Relay
+sends the error message and then closes the socket with WebSocket close code
+1008.
 
 | Code | Trigger |
 | --- | --- |
@@ -199,7 +221,7 @@ connection open.
 | `invalid_access_token` | Desktop re-registration whose access token hash does not match the endpoint. |
 | `invalid_desktop_secret` | Desktop re-registration or revoke whose desktop secret hash does not match the endpoint. |
 | `invalid_token` | `web_client_join` whose access token hash does not match the endpoint. |
-| `bad_web_client_join` | Malformed `web_client_join`: invalid `endpoint_id` or missing access token. |
+| `bad_web_client_join` | Malformed `web_client_join`: invalid `endpoint_id`, missing or oversized access token, or the socket already authenticated. |
 | `endpoint_not_found` | Join, revoke, or forwarded message referenced an endpoint that does not exist. |
 | `stale_lease` | A Web message arrived from a socket that no longer holds the active lease. |
 | `desktop_endpoint_replaced` | A desktop message arrived from a socket already replaced by a newer registration. |
@@ -210,6 +232,15 @@ connection open.
 | `revocation_in_progress` | A second revoke arrived while one is already in progress for the endpoint. |
 | `revoke_persistence_failed` | Persisting the revoke tombstone failed; the requester is closed and the endpoint remains usable. |
 | `revoke_failed` | An unexpected error occurred while processing a revoke. |
+
+Besides reject code 1008, clients observe these WebSocket close codes: `1000`
+when the revoke requester is acknowledged with a normal close ("endpoint
+revoked"), `4001` when a replaced desktop or Web client is closed ("desktop
+endpoint replaced" or "endpoint replaced"), and `4003` when revoke or TTL
+expiry tears down the affected client ("endpoint revoked" or "endpoint
+expired"). A client whose socket the Relay terminates abruptly (frame high-
+water mark, unserializable frame, hostile upgrade, heartbeat liveness kill)
+observes the implicit `1006` abnormal-closure code on its side.
 
 ## HTTP and operational behavior
 

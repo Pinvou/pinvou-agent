@@ -157,32 +157,57 @@ const endpoints = new Map();
 const revokedEndpoints = new Map();
 const endpointCreationBuckets = new Map();
 const wsConnectionBuckets = new Map();
+// Round-11 review: receiver-error terminations are surfaced in /healthz so an
+// operator can tell "client hung up" from "endpoint keeps sending poisoned
+// frames" (the connection-level close reason is invisible to probes).
+const relayStats = { receiverErrorTerminations: 0 };
 let relayStateMutation = Promise.resolve();
 
 await loadRelayState();
 
+/// 终结单个目的地 socket 的四步清理,send() 的全部终止路径共用:
+/// stringify 失败 / 高水位 / send 回调错误 / send 同步抛错。
+function terminateDestination(ws) {
+  ws.policyClosing = true;
+  clearTimeout(ws.authTimer);
+  ws.authTimer = null;
+  try { ws.terminate(); } catch {}
+}
+
 function send(ws, value) {
   if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
-  const encoded = JSON.stringify(value);
-  const bytes = Buffer.byteLength(encoded);
+  // JSON.stringify is recursive and throws RangeError on deeply nested values
+  // that JSON.parse accepted, so a forwarded frame can be unserializable even
+  // though ingress let it through. Treat this destination exactly like the
+  // high-water-mark path below: one poisoned frame must terminate only this
+  // socket, never crash the Relay process.
+  let encoded;
+  let bytes;
+  try {
+    encoded = JSON.stringify(value);
+    // byteLength stays inside the same guard: stringify of JSON.parse output
+    // cannot be `undefined` today, but a future `send(ws, undefined)` call
+    // site would throw here and escape the destination-only cleanup.
+    bytes = Buffer.byteLength(encoded);
+  } catch {
+    terminateDestination(ws);
+    return false;
+  }
   if (bytes > WS_MAX_BUFFERED_BYTES
     || ws.bufferedAmount + bytes > WS_MAX_BUFFERED_BYTES) {
-    ws.policyClosing = true;
-    clearTimeout(ws.authTimer);
-    ws.authTimer = null;
-    try { ws.terminate(); } catch {}
+    terminateDestination(ws);
     return false;
   }
   try {
     ws.send(encoded, (error) => {
       if (!error) return;
-      ws.policyClosing = true;
-      try { ws.terminate(); } catch {}
+      terminateDestination(ws);
     });
     return true;
   } catch {
-    ws.policyClosing = true;
-    try { ws.terminate(); } catch {}
+    // 与其余三条终结路径同口径清理 authTimer:close 处理器会兜底,
+    // 但这里先行清理保持四条路径完全一致。
+    terminateDestination(ws);
     return false;
   }
 }
@@ -498,6 +523,11 @@ function withoutCredentials(message) {
     token: _token,
     pairing_token: _pairingToken,
     desktop_secret: _desktopSecret,
+    // `web_rejoining` is relay-authoritative (set only on the relay-generated
+    // informational frames); a client-supplied value must not survive
+    // forwarding where it is indistinguishable from a relay-set field at the
+    // type level (round-11 review).
+    web_rejoining: _webRejoining,
     ...safe
   } = message;
   return safe;
@@ -517,7 +547,7 @@ function desktopStatus(endpoint, status) {
   });
 }
 
-function notifyDesktopOfWeb(endpoint) {
+function notifyDesktopOfWeb(endpoint, rejoining = false) {
   if (!socketOpen(endpoint.desktop) || !socketOpen(endpoint.web)) return;
   send(endpoint.desktop, {
     v: 2,
@@ -526,6 +556,7 @@ function notifyDesktopOfWeb(endpoint) {
     lease_id: endpoint.lease_id,
     stream_epoch: endpoint.web.streamEpoch || null,
     after_seq: endpoint.web.afterSeq,
+    web_rejoining: rejoining === true,
   });
 }
 
@@ -595,6 +626,7 @@ function healthSummary() {
     ws_connection_count: wss.clients.size,
     unauthenticated_connection_count: [...wss.clients]
       .filter((ws) => ws.role === "unknown").length,
+    receiver_error_terminations: relayStats.receiverErrorTerminations,
   };
 }
 
@@ -660,7 +692,18 @@ async function serveWebUi(req, res, routePath) {
     : contentHashedAsset
       ? "public, max-age=31536000, immutable"
       : "no-cache";
-  const body = req.method === "HEAD" ? null : await readFile(path);
+  let body;
+  try {
+    body = req.method === "HEAD" ? null : await readFile(path);
+  } catch {
+    // stat 与 readFile 之间文件被换出(部署替换 web/dist 等):只终结这
+    // 一次交换。async handler 的 rejection 在 Node 默认
+    // --unhandled-rejections=throw 下会杀死整个 relay——与 Host 头守卫
+    // 同一中毒输入纪律。
+    res.writeHead(503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+    res.end("WebUI build is not available");
+    return;
+  }
   res.writeHead(200, webHeaders(MIME_TYPES.get(extension) || "application/octet-stream", cacheControl));
   res.end(body);
 }
@@ -671,7 +714,17 @@ const server = http.createServer(async (req, res) => {
     res.end("forbidden");
     return;
   }
-  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  } catch {
+    // A hostile Host header (out-of-range port) or an absolute-form request
+    // target makes the URL constructor throw. Like any other poisoned input
+    // this must terminate only this exchange, never the process.
+    res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+    res.end("bad request");
+    return;
+  }
   const routePath = stripPublicBasePath(url.pathname);
   if (isWithinPublicBasePath(url.pathname) && routePath === "/healthz") {
     res.writeHead(200, {
@@ -697,7 +750,15 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  let url;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  } catch {
+    // Same poisoned-input class as the request handler: destroy only this
+    // socket and keep the process alive.
+    socket.destroy();
+    return;
+  }
   if (!isWithinPublicBasePath(url.pathname) || stripPublicBasePath(url.pathname) !== "/ws") {
     socket.destroy();
     return;
@@ -794,10 +855,14 @@ function registerDesktop(ws, msg) {
     endpoint_id: endpointId,
     web_client_connected: socketOpen(endpoint.web),
     lease_id: socketOpen(endpoint.web) ? endpoint.lease_id : null,
+    // The incumbent web client keeps the flag from its own join: a client
+    // that rejoined while the desktop was away must not trigger the
+    // takeover wipe when the desktop re-registers.
+    web_rejoining: endpoint.web_rejoined === true,
   });
   if (socketOpen(endpoint.web)) {
     desktopStatus(endpoint, "connected");
-    notifyDesktopOfWeb(endpoint);
+    notifyDesktopOfWeb(endpoint, endpoint.web_rejoined === true);
   }
 }
 
@@ -830,6 +895,15 @@ function joinWebClient(ws, msg) {
     });
   }
 
+  // A join that arrives while the previous web socket is already gone is a
+  // rejoin (watchdog or network recovery by the same token holder), not a
+  // takeover: flag it so the desktop keeps lease-scoped state (staged
+  // attachments, in-flight uploads, session downloads) instead of wiping it
+  // on every idle reconnect.
+  const rejoining = !previousWeb && Boolean(endpoint.had_web_client);
+  endpoint.had_web_client = true;
+  endpoint.web_rejoined = rejoining;
+
   ws.streamEpoch = typeof msg.stream_epoch === "string" ? msg.stream_epoch.slice(0, 256) : null;
   ws.afterSeq = Math.max(0, Number.isSafeInteger(msg.after_seq) ? msg.after_seq : 0);
   endpoint.web = ws;
@@ -842,7 +916,7 @@ function joinWebClient(ws, msg) {
     lease_id: leaseId,
     desktop_connected: socketOpen(endpoint.desktop),
   });
-  notifyDesktopOfWeb(endpoint);
+  notifyDesktopOfWeb(endpoint, rejoining);
 
   if (previousWeb) closeSocket(previousWeb, 4001, "endpoint replaced");
 }
@@ -968,6 +1042,23 @@ wss.on("connection", (ws, req) => {
   ws.authTimer.unref?.();
   ws.on("pong", () => { ws.isAlive = true; });
 
+  // The ws Receiver emits 'error' directly on frame-header-level violations
+  // (declared length over maxPayload, reserved opcodes, invalid UTF-8 close
+  // reasons) — those never reach the JSON-level guards below, and ws turns an
+  // unlistened 'error' event into ERR_UNHANDLED_ERROR, killing the process.
+  // Same contract as the send() guard: one poisoned frame terminates only
+  // this socket; the close handler then runs the endpoint bookkeeping. The
+  // termination is loud (log + healthz counter): an operator must be able to
+  // tell "client hung up" from "endpoint keeps sending poisoned frames"
+  // (round-11 review).
+  ws.on("error", (error) => {
+    relayStats.receiverErrorTerminations += 1;
+    console.error(
+      `[relay] receiver error on ${ws.role || "unknown"} socket: ${error && error.message ? error.message : error}`,
+    );
+    terminateDestination(ws);
+  });
+
   ws.on("message", (raw, isBinary) => {
     if (ws.policyClosing || ws.revokePending) return;
     if (!consumeIngress(ws, rawMessageBytes(raw))) {
@@ -1037,6 +1128,11 @@ wss.on("connection", (ws, req) => {
       const leaseId = endpoint.lease_id;
       endpoint.web = null;
       endpoint.lease_id = null;
+      // rejoin 旗标描述的是「当前在线的 web 会话是接续会话」;该会话已死,
+      // 旗标随之失效。不重置的话,desktop 在无 web 在线时重新注册会收到
+      // web_client_connected:false + web_rejoining:true 的矛盾帧。
+      // 下一次 join 会按 had_web_client 重新计算,不受此处重置影响。
+      endpoint.web_rejoined = false;
       send(endpoint.desktop, {
         v: 2,
         type: "web_client_disconnected",

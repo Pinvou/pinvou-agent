@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 // 树杀等语义一致实现已收口，见 posix.rs 模块注释）。
 pub use super::super::posix::{
     apply_user_npm_prefix, connector_cli_command, filesystem_path_identity_key, kill_pid_tree,
-    null_device, path_component_eq, platform_compat_path, python_command,
+    null_device, path_component_eq, path_component_prefix, platform_compat_path, python_command,
 };
 
 pub fn user_home_dir() -> PathBuf {

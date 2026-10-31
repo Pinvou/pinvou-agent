@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{Duration, Utc};
 use serde_json::json;
@@ -14,9 +14,10 @@ use crate::platform::prefs::ModelPreset;
 
 use super::io::{
     commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
-    enqueue_memory_candidate, is_delivery_tool, list_preferences, load_profile,
-    pending_item_from_suggestion, recent_activity_path,
-    reconcile_topic_migration_journals_unlocked, summarize_tool_start,
+    enqueue_memory_candidate, is_delivery_tool, list_preferences, list_preferences_with_cleanup,
+    load_profile, load_work_context_with_cleanup, pending_item_from_suggestion,
+    recent_activity_path, reconcile_topic_migration_journals_unlocked,
+    reconcile_topic_migration_journals_unlocked_with, summarize_tool_start,
     topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
     write_never_memory_unlocked, write_pending_memory_unlocked, write_recent_work_unlocked,
     write_timed_memory_file,
@@ -45,7 +46,7 @@ use super::util::{
 
 struct IsolatedPinvouHome {
     root: PathBuf,
-    prev: Option<String>,
+    prev: Option<std::ffi::OsString>,
     _guard: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -501,54 +502,131 @@ fn topic_migration_lifecycle_hides_intermediate_duplicate_from_overview() {
     drop(home);
 }
 
-#[cfg(windows)]
-#[test]
-fn topic_migration_preference_pending_cleanup_stays_available_and_hides_stale_id() {
-    use std::os::windows::fs::OpenOptionsExt as _;
+// 撤权面回归钉:cleanup 警告会随 get/update 成功载荷到达手机,路径必须
+// 已折叠存储根前缀——回退成裸 display() 会把 $HOME/.pinvou3 绝对路径带过
+// relay,断言即红。提交车道用注入闭包在全平台强制清理失败(Windows 独占
+// 的 share_mode 锁与 Unix 的只读目录都不可移植,原 pin 因此从未运行过);
+// 对账车道(真实 fs::remove_file,无注入点)用目录桩让 remove_file 在
+// 全平台失败。
+fn assert_warning_is_folded(warning: &str, home: &IsolatedPinvouHome, context: &str) {
+    assert!(
+        !warning.contains(home.root.to_string_lossy().as_ref()),
+        "{context} must not carry the absolute home path: {warning}"
+    );
+    assert!(
+        warning.starts_with("~/.pinvou3"),
+        "{context} must use the redacted storage-root prefix: {warning}"
+    );
+}
 
-    let home = IsolatedPinvouHome::new("preference-pending-cleanup");
+#[test]
+fn commit_cleanup_warnings_fold_host_paths_before_the_relay() {
+    let home = IsolatedPinvouHome::new("cleanup-commit-redaction");
     let dir = paths::user_memory_preferences_dir();
     fs::create_dir_all(&dir).unwrap();
-    let old_id = stable_id_with_prefix("pref", "answer_style");
-    let old_path = dir.join(format!("{old_id}.json"));
-    write_json_atomic(
-        &old_path,
-        &preference_fixture(&old_id, "answer_style", "old preference"),
-    )
-    .unwrap();
-    let occupied = fs::OpenOptions::new()
-        .read(true)
-        .share_mode(1)
-        .open(&old_path)
-        .unwrap();
+    let stale_path = dir.join("pref-stale0000.json");
+    fs::write(&stale_path, b"{}\n").unwrap();
+    let new_path = dir.join("pref-new0001.json");
+    let value = preference_fixture("pref-new0001", "workflow_preference", "new preference");
+    let journal_path = topic_migration_journal_path(&new_path).unwrap();
 
-    let updated = update_preference(
-        &old_id,
-        MemoryTextPatch {
-            topic: Some("workflow_preference".to_string()),
-            text: Some("new preference".to_string()),
+    let mutation = commit_topic_migration_unlocked_with(
+        &journal_path,
+        &new_path,
+        &value,
+        std::slice::from_ref(&stale_path),
+        |_| true,
+        write_json_atomic_unlocked,
+        |path: &Path| {
+            if path.as_os_str() == stale_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
         },
     )
-    .unwrap()
     .unwrap();
-    assert!(updated.cleanup_warning.is_some());
-    let new_id = updated.value.id.clone();
+    let warning = mutation
+        .cleanup_warning
+        .expect("a failed stale cleanup must warn");
+    assert_warning_is_folded(&warning, &home, "stale cleanup warning");
+    assert!(
+        warning.contains("pref-stale0000.json"),
+        "the failing entry name must survive redaction: {warning}"
+    );
 
-    for _ in 0..2 {
-        let read = list_preferences_with_cleanup().unwrap();
-        assert!(read.cleanup_warning.is_some());
-        assert_eq!(read.value.len(), 1);
-        assert_eq!(read.value[0].id, new_id);
-        assert_ne!(read.value[0].id, old_id);
-    }
-    assert!(old_path.exists());
+    let mutation = commit_topic_migration_unlocked_with(
+        &journal_path,
+        &new_path,
+        &value,
+        &[],
+        |_| true,
+        write_json_atomic_unlocked,
+        |path: &Path| {
+            if path.as_os_str() == journal_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+    let warning = mutation
+        .cleanup_warning
+        .expect("a failed journal cleanup must warn");
+    assert_warning_is_folded(&warning, &home, "journal cleanup warning");
+    drop(home);
+}
 
-    drop(occupied);
+#[test]
+fn reconcile_cleanup_warnings_fold_host_paths_before_the_relay() {
+    let home = IsolatedPinvouHome::new("cleanup-reconcile-redaction");
+    let dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&dir).unwrap();
+    let stale_path = dir.join("pref-stale0000.json");
+    fs::write(&stale_path, b"{}\n").unwrap();
+    let new_path = dir.join("pref-new0001.json");
+    let value = preference_fixture("pref-new0001", "workflow_preference", "new preference");
+    let journal_path = topic_migration_journal_path(&new_path).unwrap();
+
+    // 先用注入闭包种下「stale 清理失败 → journal 留存」的状态,再把
+    // stale 换成目录桩,让对账车道的真实 fs::remove_file 全平台失败。
+    commit_topic_migration_unlocked_with(
+        &journal_path,
+        &new_path,
+        &value,
+        std::slice::from_ref(&stale_path),
+        |_| true,
+        write_json_atomic_unlocked,
+        |path: &Path| {
+            if path.as_os_str() == stale_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+    fs::remove_file(&stale_path).unwrap();
+    fs::create_dir(&stale_path).unwrap();
+
+    let read = list_preferences_with_cleanup().unwrap();
+    let warning = read
+        .cleanup_warning
+        .expect("reconcile stale cleanup failure must warn");
+    assert_warning_is_folded(&warning, &home, "reconcile cleanup warning");
+    assert!(
+        warning.contains("pref-stale0000.json"),
+        "the failing entry name must survive redaction: {warning}"
+    );
+    assert_eq!(read.value.len(), 1);
+    assert_eq!(read.value[0].id, "pref-new0001");
+
+    // 目录桩移除后自愈:重试清掉 journal,警告消失。
+    fs::remove_dir(&stale_path).unwrap();
     let read = list_preferences_with_cleanup().unwrap();
     assert!(read.cleanup_warning.is_none());
     assert_eq!(read.value.len(), 1);
-    assert_eq!(read.value[0].id, new_id);
-    assert!(!old_path.exists());
     assert!(fs::read_dir(&dir).unwrap().all(|entry| {
         !entry
             .unwrap()
@@ -559,20 +637,210 @@ fn topic_migration_preference_pending_cleanup_stays_available_and_hides_stale_id
     drop(home);
 }
 
-#[cfg(windows)]
+/// Round-5 复审:journal 移除失败这一脱敏点此前没有内容级钉住(stale 两
+/// 个点由上方两钉覆盖;把该分支回退为 `journal_path.display()` 时全部用
+/// 例仍然全绿——PR 正文「four of five」里点名的缺口)。注入闭包让
+/// journal 移除跨平台确定性失败,把 `cleanup_warning` 的脱敏钉到内容级。
 #[test]
-fn topic_migration_work_context_pending_cleanup_stays_available_and_hides_stale_id() {
-    use std::os::windows::fs::OpenOptionsExt as _;
-
-    let home = IsolatedPinvouHome::new("work-context-pending-cleanup");
-    let dir = work_context_dir();
+fn reconcile_journal_cleanup_failure_folds_host_paths_before_the_relay() {
+    let home = IsolatedPinvouHome::new("cleanup-journal-redaction");
+    let dir = paths::user_memory_preferences_dir();
     fs::create_dir_all(&dir).unwrap();
-    let old_id = stable_id_with_prefix("ctx", "role_domain");
-    let old_path = dir.join(format!("{old_id}.json"));
+    let new_path = dir.join("pref-journal0002.json");
+    let value = preference_fixture(
+        "pref-journal0002",
+        "workflow_preference",
+        "journal preference",
+    );
+    let journal_path = topic_migration_journal_path(&new_path).unwrap();
+    // commit 阶段让 stale 移除失败以留存 journal(commit 自身会在清理全部
+    // 成功时移除 journal),随后清掉 stale 文件,让对账时 stale 车道成功、
+    // 只有 journal 移除在注入闭包处确定性失败。
+    let stale_path = dir.join("pref-stale0003.json");
+    fs::write(&stale_path, b"{}\n").unwrap();
+    commit_topic_migration_unlocked_with(
+        &journal_path,
+        &new_path,
+        &value,
+        std::slice::from_ref(&stale_path),
+        |_| true,
+        write_json_atomic_unlocked,
+        |path: &Path| {
+            if path.as_os_str() == stale_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+    fs::remove_file(&stale_path).unwrap();
+
+    let read = reconcile_topic_migration_journals_unlocked_with::<PreferenceFile, _>(
+        &dir,
+        |path: &Path| {
+            if path.as_os_str() == journal_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+    let warning = read
+        .cleanup_warning
+        .expect("journal cleanup failure must warn");
+    assert_warning_is_folded(&warning, &home, "reconcile journal cleanup warning");
+    assert!(
+        warning.contains(".topic-migration-"),
+        "the failing journal's name must survive redaction: {warning}"
+    );
+    drop(home);
+}
+
+/// Round-8 复审恢复:被删除的两个 cfg(windows) 用例（share_mode 占用）是唯一
+/// 驱动公共包装层 `update_preference` / `update_work_context` 在持久 stale
+/// 清理失败下返回 cleanup_warning 并保留 stale 文件的覆盖。Unix 的只读目录
+/// 无法充当同一失败原语——只读目录会先挡住迁移自身的 journal/新文件写入
+/// （round-7 已认定其不可移植），故这里改用「正文 id ≠ 文件名 + 同名目录桩」：
+/// 桩经无条件 old_path 进入 stale_paths（无需解析），commit 的清理被真实
+/// `fs::remove_file` 以 EISDIR/ACCESS_DENIED 确定性拒绝，而写入车道不受影响；
+/// 存活的 journal 用 round-7 同款注入闭包播种，让加载车道先把目录桩隐藏。
+/// 该核心段跨平台(Round-10 复审 minor:整个用例此前 cfg(unix),Windows CI
+/// 对这条包装层警告车道零覆盖);`dir_read_only_or_skip` 只驱动只读重试段
+/// （纯读 + 软失败移除,root 环境按 helper 语义响亮跳过该段）,仅该段保持
+/// unix 门槛。
+#[test]
+fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
+    let home = IsolatedPinvouHome::new("update-stale-cleanup");
+    let prefs_dir = paths::user_memory_preferences_dir();
+    let context_dir = work_context_dir();
+    fs::create_dir_all(&prefs_dir).unwrap();
+    fs::create_dir_all(&context_dir).unwrap();
+
+    // —— preferences 半：正文 id 的载体文件 + 同名目录桩 + 播种存活的 journal ——
+    let carrier_path = prefs_dir.join("pref-holder0000.json");
     write_json_atomic(
-        &old_path,
+        &carrier_path,
+        &preference_fixture("pref-old0001", "answer_style", "old preference"),
+    )
+    .unwrap();
+    let stale_path = prefs_dir.join("pref-old0001.json");
+    fs::create_dir(&stale_path).unwrap();
+    let seed_path = prefs_dir.join("pref-seed0002.json");
+    // 与载体不同一个规范化桶（"seed_topic" 会被折叠进默认桶 answer_style，
+    // 使载体在 resolve_topic_authorities 里被当作重复项删除）。
+    let seed = preference_fixture("pref-seed0002", "document_preference", "seed preference");
+    let seed_journal = topic_migration_journal_path(&seed_path).unwrap();
+    commit_topic_migration_unlocked_with(
+        &seed_journal,
+        &seed_path,
+        &seed,
+        std::slice::from_ref(&stale_path),
+        |_| true,
+        write_json_atomic_unlocked,
+        |path: &Path| {
+            if path.as_os_str() == stale_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
+    assert!(
+        seed_journal.exists(),
+        "a failed stale cleanup must keep the journal for the retry lane"
+    );
+
+    let updated = update_preference(
+        "pref-old0001",
+        MemoryTextPatch {
+            topic: Some("workflow_preference".to_string()),
+            text: Some("new preference".to_string()),
+        },
+    )
+    .unwrap()
+    .expect("an existing preference must update");
+    let warning = updated
+        .cleanup_warning
+        .expect("a persistently failing stale cleanup must warn");
+    assert_warning_is_folded(&warning, &home, "update stale cleanup warning");
+    assert!(
+        warning.contains("pref-old0001.json"),
+        "the failing stale entry name must survive redaction: {warning}"
+    );
+    assert_eq!(updated.value.topic, "workflow_preference");
+    assert_ne!(updated.value.id, "pref-old0001");
+    assert!(stale_path.is_dir(), "the stale entry must stay on disk");
+    let new_id = stable_id_with_prefix("pref", "workflow_preference");
+    assert!(
+        topic_migration_journal_path(&prefs_dir.join(format!("{new_id}.json")))
+            .unwrap()
+            .exists(),
+        "a failed stale cleanup must keep the migration journal"
+    );
+
+    // 重试车道：stale 仍在盘上，后续加载持续告警且旧 id 保持隐藏。
+    for _ in 0..2 {
+        let read = list_preferences_with_cleanup().unwrap();
+        let warning = read
+            .cleanup_warning
+            .expect("a kept stale entry must keep warning on retry loads");
+        assert_warning_is_folded(&warning, &home, "retry load warning");
+        assert!(
+            warning.contains("pref-old0001.json"),
+            "the failing stale entry name must survive redaction: {warning}"
+        );
+        assert_eq!(read.value.len(), 2);
+        assert!(
+            read.value.iter().all(|pref| pref.id != "pref-old0001"),
+            "the stale id must stay hidden from the loaded authorities"
+        );
+    }
+
+    // 只读目录重试段：0555 让真实 remove_file 以 EACCES 继续失败；helper 在
+    // root 下恢复 0755 并返回 false，该段随之跳过（上方断言与权限无关）。
+    // 仅此段需要 unix 位语义；核心失败原语(目录桩)是跨平台的
+    // (Round-10 复审 minor)。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if crate::platform::test_support::dir_read_only_or_skip(
+            &prefs_dir,
+            "update_wrappers_persistent_stale_cleanup",
+        ) {
+            let read = list_preferences_with_cleanup().unwrap();
+            let warning = read
+                .cleanup_warning
+                .expect("a read-only directory must keep the stale cleanup failing");
+            assert_warning_is_folded(&warning, &home, "read-only retry warning");
+            assert!(stale_path.is_dir());
+        }
+        let _ = std::fs::set_permissions(&prefs_dir, std::fs::Permissions::from_mode(0o755));
+    }
+
+    // 自愈：桩移除后，重试车道清掉 journal，警告消失。
+    fs::remove_dir(&stale_path).unwrap();
+    let read = list_preferences_with_cleanup().unwrap();
+    assert!(read.cleanup_warning.is_none());
+    assert_eq!(read.value.len(), 2);
+    assert!(!carrier_path.exists());
+    assert!(!stale_path.exists());
+    assert!(fs::read_dir(&prefs_dir).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".topic-migration-")
+    }));
+
+    // —— work_context 半：同一原语驱动第二个公共包装层 ——
+    let ctx_carrier_path = context_dir.join("ctx-holder0003.json");
+    write_json_atomic(
+        &ctx_carrier_path,
         &WorkContextFile {
-            id: old_id.clone(),
+            id: "ctx-old0004".to_string(),
             kind: "work_context".to_string(),
             topic: "role_domain".to_string(),
             text: "old context".to_string(),
@@ -583,39 +851,218 @@ fn topic_migration_work_context_pending_cleanup_stays_available_and_hides_stale_
         },
     )
     .unwrap();
-    let occupied = fs::OpenOptions::new()
-        .read(true)
-        .share_mode(1)
-        .open(&old_path)
-        .unwrap();
+    let ctx_stale_path = context_dir.join("ctx-old0004.json");
+    fs::create_dir(&ctx_stale_path).unwrap();
+    let ctx_seed_path = context_dir.join("ctx-seed0005.json");
+    let ctx_seed = WorkContextFile {
+        id: "ctx-seed0005".to_string(),
+        kind: "work_context".to_string(),
+        topic: "task_pattern".to_string(),
+        text: "seed context".to_string(),
+        source: "test".to_string(),
+        confidence: 1.0,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    let ctx_seed_journal = topic_migration_journal_path(&ctx_seed_path).unwrap();
+    commit_topic_migration_unlocked_with(
+        &ctx_seed_journal,
+        &ctx_seed_path,
+        &ctx_seed,
+        std::slice::from_ref(&ctx_stale_path),
+        |_| true,
+        write_json_atomic_unlocked,
+        |path: &Path| {
+            if path.as_os_str() == ctx_stale_path.as_os_str() {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "blocked"))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .unwrap();
 
-    let updated = update_work_context(
-        &old_id,
+    let ctx_updated = update_work_context(
+        "ctx-old0004",
         MemoryTextPatch {
             topic: Some("project_context".to_string()),
             text: Some("new context".to_string()),
         },
     )
     .unwrap()
+    .expect("an existing work context entry must update");
+    let ctx_warning = ctx_updated
+        .cleanup_warning
+        .expect("a persistently failing stale cleanup must warn");
+    assert_warning_is_folded(&ctx_warning, &home, "work context stale cleanup warning");
+    assert!(
+        ctx_warning.contains("ctx-old0004.json"),
+        "the failing stale entry name must survive redaction: {ctx_warning}"
+    );
+    assert!(ctx_stale_path.is_dir(), "the stale entry must stay on disk");
+
+    let ctx_read = load_work_context_with_cleanup().unwrap();
+    let ctx_retry_warning = ctx_read
+        .cleanup_warning
+        .expect("a kept stale entry must keep warning on retry loads");
+    assert_warning_is_folded(&ctx_retry_warning, &home, "work context retry warning");
+    assert!(
+        ctx_read.value.iter().all(|item| item.id != "ctx-old0004"),
+        "the stale id must stay hidden from the loaded authorities"
+    );
+
+    fs::remove_dir(&ctx_stale_path).unwrap();
+    let ctx_read = load_work_context_with_cleanup().unwrap();
+    assert!(ctx_read.cleanup_warning.is_none());
+    assert_eq!(ctx_read.value.len(), 2);
+    drop(home);
+}
+
+/// Round-8 复审：`resolve_topic_authorities` 的重复权威脱敏点（io.rs 的
+/// `cleanup_failures.push(... display_redacted(&duplicate) ...)`）此前只有
+/// helper 级钉，把该行回退成裸 `duplicate.display()` 时无用例变红。本钉在
+/// `dir_read_only_or_skip` 的真实 0555 拒绝下（root 环境响亮跳过）用真实
+/// `fs::remove_file` 驱动重复主题清理，内容级断言失败串带 `~/.pinvou3`
+/// 折叠前缀、不含绝对临时根、保留失败文件名；权限恢复后自愈。
+#[cfg(unix)]
+#[test]
+fn duplicate_authority_cleanup_failure_folds_host_paths_before_the_relay() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let home = IsolatedPinvouHome::new("duplicate-authority-redaction");
+    let dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&dir).unwrap();
+    // 权威文件：文件名与 id 一致（canonical 排序确定性居后成为权威，与
+    // mtime 无关）；重复项：非 canonical 文件名、同主题，加载即被
+    // resolve_topic_authorities 移除，移除失败只留软警告。
+    let authority_id = stable_id_with_prefix("pref", "answer_style");
+    let authority_path = dir.join(format!("{authority_id}.json"));
+    write_json_atomic(
+        &authority_path,
+        &preference_fixture(&authority_id, "answer_style", "authoritative text"),
+    )
     .unwrap();
-    assert!(updated.cleanup_warning.is_some());
-    let new_id = updated.value.id.clone();
+    let duplicate_path = dir.join("pref-zdup0000.json");
+    write_json_atomic(
+        &duplicate_path,
+        &preference_fixture("pref-dup0000", "answer_style", "duplicate text"),
+    )
+    .unwrap();
 
-    for _ in 0..2 {
-        let read = load_work_context_with_cleanup().unwrap();
-        assert!(read.cleanup_warning.is_some());
-        assert_eq!(read.value.len(), 1);
-        assert_eq!(read.value[0].id, new_id);
-        assert_ne!(read.value[0].id, old_id);
+    // root 不受 0555 约束:helper 已恢复 0755 并响亮跳过,依赖 EACCES 的
+    // 断言按仓库对这类 fixture 的既定形式整段略过而不是把 root CI 染红
+    // (Round-10 复审 minor)。
+    if !crate::platform::test_support::dir_read_only_or_skip(
+        &dir,
+        "duplicate_authority_cleanup_failure_folds_host_paths",
+    ) {
+        return;
     }
-    assert!(old_path.exists());
+    let read = list_preferences_with_cleanup().unwrap();
+    let warning = read
+        .cleanup_warning
+        .expect("a failed duplicate cleanup must warn");
+    assert_warning_is_folded(&warning, &home, "duplicate authority cleanup warning");
+    assert!(
+        warning.contains("pref-zdup0000.json"),
+        "the failing duplicate's name must survive redaction: {warning}"
+    );
+    assert_eq!(read.value.len(), 1);
+    assert_eq!(read.value[0].id, authority_id);
+    assert!(
+        duplicate_path.exists(),
+        "the duplicate must stay on disk for the retry lane"
+    );
 
-    drop(occupied);
-    let read = load_work_context_with_cleanup().unwrap();
+    // 权限恢复后自愈：重复项被清掉，警告消失。
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
+    let read = list_preferences_with_cleanup().unwrap();
     assert!(read.cleanup_warning.is_none());
     assert_eq!(read.value.len(), 1);
-    assert_eq!(read.value[0].id, new_id);
-    assert!(!old_path.exists());
+    assert_eq!(read.value[0].id, authority_id);
+    assert!(!duplicate_path.exists());
+    drop(home);
+}
+
+/// Round-7 复审:enabled 车道 `runtime_snapshot` 的 `runtime_path` 字段此前
+/// 只有 disabled 车道的钉（io::tests::runtime_snapshot_payloads_carry_redacted_paths），
+/// 把 render.rs:236 回退成裸 `path.display()` 时没有任何用例变红。本钉走真实
+/// enabled 车道（zh-Hans + memory_enabled，与 organize 用例同款开关），内容级
+/// 断言 `runtime_path` 只带 `~/.pinvou3` 折叠前缀、绝对存储根不出现——该字段
+/// 随成功载荷出站（get_memory_overview / 写命令均在 Web 访问策略内）。
+#[test]
+fn runtime_snapshot_enabled_path_folds_host_paths_in_runtime_path() {
+    let home = IsolatedPinvouHome::new("runtime-redaction-enabled");
+    enable_memory_for_tests();
+    let snapshot = runtime_snapshot("sess-redact-enabled").expect("enabled runtime snapshot");
+    assert!(
+        !snapshot
+            .runtime_path
+            .contains(home.root.to_string_lossy().as_ref()),
+        "runtime_path must not carry the absolute home path: {}",
+        snapshot.runtime_path
+    );
+    assert!(
+        snapshot.runtime_path.starts_with("~/.pinvou3/"),
+        "runtime_path must use the redacted storage-root prefix: {}",
+        snapshot.runtime_path
+    );
+    assert!(
+        snapshot.runtime_path.contains("sess-redact-enabled"),
+        "runtime_path must still point at this session's runtime file: {}",
+        snapshot.runtime_path
+    );
+    drop(home);
+}
+
+/// Round-7 复审:快照文档结构化 JSON 的 `source_dir` 与 `files.*` 路径字段是
+/// 随「同步记忆」落盘的诊断件（render.rs 的 json! 块），未来经同步/回显通道
+/// 出站；此前没有内容级钉，回退成裸 `display()` 时全部用例仍绿。本钉解析真实
+/// `write_memory_snapshot_document` 产物中的结构化块，逐字段断言折叠前缀、
+/// 并断言整份文档不含绝对存储根拼写。
+#[test]
+fn snapshot_document_structured_paths_fold_host_prefixes() {
+    let home = IsolatedPinvouHome::new("snapshot-doc-redaction");
+    let profile = MemoryProfile {
+        version: PROFILE_VERSION,
+        ..MemoryProfile::default()
+    };
+    let path =
+        write_memory_snapshot_document(&profile, &[], &[], &[], &[], &[], &[], &[], None).unwrap();
+    let doc = fs::read_to_string(&path).unwrap();
+    let home_text = home.root.to_string_lossy().to_string();
+    assert!(
+        !doc.contains(home_text.as_str()),
+        "snapshot document must not carry the absolute storage root anywhere"
+    );
+
+    let start = doc.find("~~~json\n").expect("structured snapshot block") + "~~~json\n".len();
+    let end = start
+        + doc[start..]
+            .find("\n~~~")
+            .expect("structured block terminator");
+    let raw: serde_json::Value = serde_json::from_str(&doc[start..end]).unwrap();
+    assert_eq!(
+        raw["source_dir"].as_str().unwrap(),
+        "~/.pinvou3/user/memory",
+        "source_dir must use the redacted storage-root prefix"
+    );
+    let files = raw["files"].as_object().expect("files object");
+    assert!(
+        !files.is_empty(),
+        "the structured snapshot must enumerate the store paths"
+    );
+    for (key, value) in files {
+        let value = value.as_str().expect("file path string");
+        assert!(
+            value.starts_with("~/.pinvou3/"),
+            "files.{key} must use the redacted storage-root prefix: {value}"
+        );
+        assert!(
+            !value.contains(home_text.as_str()),
+            "files.{key} must not carry the absolute home path: {value}"
+        );
+    }
     drop(home);
 }
 
@@ -769,7 +1216,10 @@ impl IsolatedPinvouHome {
         let guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        // var_os 而非 var:非 UTF-8 的既有值按字节原样恢复,不在 Drop 时被
+        // 静默丢成 remove(Round-10 复审 minor;与 test_support 的 EnvRestore
+        // 同口径)。
+        let prev = std::env::var_os("PINVOU3_HOME");
         let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let root = std::env::temp_dir().join(format!(
             "pinvou3-memory-{name}-{}-{nanos}",

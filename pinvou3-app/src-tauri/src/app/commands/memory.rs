@@ -86,7 +86,13 @@ fn runtime_snapshot_best_effort(
     match sid.map(|sid| crate::features::memory::runtime_snapshot(&sid)) {
         Some(Ok(snapshot)) => (Some(snapshot), None),
         Some(Err(error)) => {
-            let detail = format!("render runtime memory: {error}");
+            // Round-8 复审:警告/详情文本随成功载荷出站（命令均在 Web 访问
+            // 策略内），统一过共享的 redact_storage_prefix 折叠存储根前缀
+            // （platform/paths.rs 文档口径；io.rs display_redacted 同一实现）。
+            // 本文件其余三处错误文本同批加固。
+            let detail = crate::platform::paths::redact_storage_prefix(&format!(
+                "render runtime memory: {error}"
+            ));
             eprintln!("[memory] {detail}");
             (
                 None,
@@ -288,7 +294,9 @@ fn refresh_memory_snapshot_document(
             &never,
             runtime.as_ref(),
         ) {
-            let detail = format!("write memory snapshot: {error}");
+            let detail = crate::platform::paths::redact_storage_prefix(&format!(
+                "write memory snapshot: {error}"
+            ));
             eprintln!("[memory] {detail}");
             warnings.push(memory_warning(
                 "snapshot_refresh_failed",
@@ -324,7 +332,8 @@ fn load_memory_source<T: Default>(
             value
         }
         Err(error) => {
-            let detail = format!("load {source}: {error}");
+            let detail =
+                crate::platform::paths::redact_storage_prefix(&format!("load {source}: {error}"));
             eprintln!("[memory] {detail}");
             let code = "memory_source_unavailable";
             warnings.push(memory_warning(code, source, detail));
@@ -378,8 +387,9 @@ pub async fn update_memory_profile(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryProfileState, String> {
-    let profile = crate::features::memory::update_profile(patch)
-        .map_err(|e| format!("update profile: {e}"))?;
+    let profile = crate::features::memory::update_profile(patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update profile: {e}"))
+    })?;
     let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store);
     Ok(MemoryProfileState {
         profile,
@@ -459,10 +469,12 @@ pub async fn get_memory_overview(
                         code: None,
                     },
                 );
-                path.display().to_string()
+                crate::features::memory::display_redacted(&path)
             }
             Err(error) => {
-                let detail = format!("write memory snapshot: {error}");
+                let detail = crate::platform::paths::redact_storage_prefix(&format!(
+                    "write memory snapshot: {error}"
+                ));
                 eprintln!("[memory] {detail}");
                 warnings.push(memory_warning(
                     "snapshot_refresh_failed",
@@ -576,8 +588,9 @@ pub async fn confirm_pending_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::MemoryWriteEvent>>, String> {
-    let event = crate::features::memory::confirm_pending_memory(&id)
-        .map_err(|e| format!("confirm pending memory: {e}"))?;
+    let event = crate::features::memory::confirm_pending_memory(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("confirm pending memory: {e}"))
+    })?;
     finish_memory_write(&app, session_id, &store, event.clone(), event, Vec::new())
 }
 
@@ -591,9 +604,9 @@ pub async fn ignore_pending_memory(
     // The command's contract is Option<event>: the AlreadyDecided/NotFound
     // distinction matters to organize's report wording, not to this caller,
     // which historically answers None for both.
-    let event = match crate::features::memory::ignore_pending_memory(&id)
-        .map_err(|e| format!("ignore pending memory: {e}"))?
-    {
+    let event = match crate::features::memory::ignore_pending_memory(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("ignore pending memory: {e}"))
+    })? {
         crate::features::memory::PendingIgnoreOutcome::Ignored(event) => Some(event),
         crate::features::memory::PendingIgnoreOutcome::AlreadyDecided
         | crate::features::memory::PendingIgnoreOutcome::NotFound => None,
@@ -609,8 +622,9 @@ pub async fn never_pending_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::MemoryWriteEvent>>, String> {
-    let event = crate::features::memory::never_pending_memory(&id, reason)
-        .map_err(|e| format!("never pending memory: {e}"))?;
+    let event = crate::features::memory::never_pending_memory(&id, reason).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("never pending memory: {e}"))
+    })?;
     finish_memory_write(&app, session_id, &store, event.clone(), event, Vec::new())
 }
 
@@ -621,8 +635,9 @@ pub async fn delete_memory_preference(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed = crate::features::memory::delete_preference(&id)
-        .map_err(|e| format!("delete preference: {e}"))?;
+    let changed = crate::features::memory::delete_preference(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("delete preference: {e}"))
+    })?;
     let event = changed.then(|| crate::features::memory::MemoryWriteEvent {
         kind: "preference".to_string(),
         action: "deleted".to_string(),
@@ -640,8 +655,9 @@ pub async fn update_memory_preference(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::PreferenceFile>>, String> {
-    let mutation = crate::features::memory::update_preference(&id, patch)
-        .map_err(|e| format!("update preference: {e}"))?;
+    let mutation = crate::features::memory::update_preference(&id, patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update preference: {e}"))
+    })?;
     let mut persistence_warnings = Vec::new();
     let item = mutation.map(|mutation| {
         if let Some(detail) = mutation.cleanup_warning {
@@ -672,8 +688,9 @@ pub async fn update_work_context_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::WorkContextFile>>, String> {
-    let mutation = crate::features::memory::update_work_context(&id, patch)
-        .map_err(|e| format!("update work context: {e}"))?;
+    let mutation = crate::features::memory::update_work_context(&id, patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update work context: {e}"))
+    })?;
     let mut persistence_warnings = Vec::new();
     let item = mutation.map(|mutation| {
         if let Some(detail) = mutation.cleanup_warning {
@@ -703,8 +720,9 @@ pub async fn delete_work_context_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed = crate::features::memory::delete_work_context(&id)
-        .map_err(|e| format!("delete work context: {e}"))?;
+    let changed = crate::features::memory::delete_work_context(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("delete work context: {e}"))
+    })?;
     let event = changed.then(|| crate::features::memory::MemoryWriteEvent {
         kind: "work_context".to_string(),
         action: "deleted".to_string(),
@@ -723,8 +741,9 @@ pub async fn update_timed_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::TimedMemoryItem>>, String> {
-    let item = crate::features::memory::update_timed_memory(&kind, &id, patch)
-        .map_err(|e| format!("update timed memory: {e}"))?;
+    let item = crate::features::memory::update_timed_memory(&kind, &id, patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update timed memory: {e}"))
+    })?;
     let event = item
         .as_ref()
         .map(|item| crate::features::memory::MemoryWriteEvent {
@@ -744,8 +763,9 @@ pub async fn delete_timed_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed = crate::features::memory::delete_timed_memory(&kind, &id)
-        .map_err(|e| format!("delete timed memory: {e}"))?;
+    let changed = crate::features::memory::delete_timed_memory(&kind, &id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("delete timed memory: {e}"))
+    })?;
     let event = changed.then(|| crate::features::memory::MemoryWriteEvent {
         kind,
         action: "deleted".to_string(),
@@ -755,13 +775,47 @@ pub async fn delete_timed_memory(
     finish_memory_write(&app, session_id, &store, changed, event, Vec::new())
 }
 
+/// `edit_last_turn` 的乐观并发护栏：`expected` 与当前已落盘 transcript 的
+/// revision 不一致时拒绝编辑（不动 transcript、不消费 turn）。稳定错误码与
+/// store 的 `compare_and_swap_messages`（`session_revision_conflict`）同族；
+/// load/compute 失败折叠为 `session_revision_unavailable`，原始错误链（可能
+/// 内嵌宿主路径）只进桌面日志——该护栏是 Web 编辑重发跨 Relay 的唯一入口。
+fn ensure_transcript_revision_current(
+    store: &SessionStore,
+    sid: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let saved = store.load(sid).map_err(|error| {
+        log::warn!("[edit_last_turn] load Session {sid} for revision guard: {error:#}");
+        "session_revision_unavailable".to_string()
+    })?;
+    let current =
+        crate::features::sessions::transcript_revision(&saved.messages).map_err(|error| {
+            log::warn!("[edit_last_turn] compute Session {sid} transcript revision: {error:#}");
+            "session_revision_unavailable".to_string()
+        })?;
+    if current != expected {
+        log::warn!(
+            "[edit_last_turn] Session {sid} transcript moved on: expected {expected}, current {current}"
+        );
+        return Err("session_revision_conflict".into());
+    }
+    Ok(())
+}
+
 /// 编辑/重发最后一轮 user 消息。
 /// engine 砍掉 session 末尾最近的 user+assistant 后，用 new_message 重发。
 /// 前端在调这个命令之前必须自己更新 state.messages（删最后一对，加新 user）。
+/// `expected_transcript_revision` 是可选的乐观并发护栏：Web 编辑重发传入其
+/// 所持快照的 revision，桌面端不传（None = 现行为不变）。护栏在 turn gate
+/// 内执行——占住 gate 后其他 turn 无法再提交，check-then-act 之间当前
+/// revision 不可能被推进——不匹配即拒绝，防止手机端基于过期视图砍掉桌面端
+/// 刚提交的更新一轮。
 #[tauri::command]
 pub async fn edit_last_turn(
     new_message: String,
     session_id: Option<String>,
+    expected_transcript_revision: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
 ) -> Result<(), String> {
@@ -772,6 +826,11 @@ pub async fn edit_last_turn(
     let reservation = pool
         .reserve_turn(&sid)
         .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
+    if let Some(expected) = expected_transcript_revision.as_deref() {
+        // 护栏拒绝时 reservation 在此 Drop：未提交预约自动失效，gate 立即
+        // 重开，transcript 保持原样。
+        ensure_transcript_revision_current(&store, &sid, expected)?;
+    }
     // 编辑重发只发编辑后的原文：`EditLastTurn` 不携带 route，由引擎按当前
     // 配置重推导 provider 路由（含专家 fleet 配置随配置重读）；底座重推导时
     // 会重申宿主已申报的路由限额，不因重推导退回目录猜测。蜂群契约在 spawn
@@ -798,6 +857,144 @@ pub async fn edit_last_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepseek_tui::models::{ContentBlock, Message};
+
+    fn revision_message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.into(),
+            content: vec![ContentBlock::Text {
+                text: text.into(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    /// FIX（remote-control audit）: web `edit_last_turn` 的乐观并发护栏。
+    /// 过期 revision 必须被拒绝且 transcript 保持原样；当前 revision 放行；
+    /// 不存在的会话折叠为稳定码。命令本体在护栏拒绝时 Drop 未提交预约
+    /// （gate 重开、transcript 不动），此处直接钉护栏的判定与不改写语义。
+    #[test]
+    fn edit_last_turn_revision_guard_blocks_stale_views_without_mutating() {
+        // Round-6 复审:PINVOU3_HOME 的保存/恢复改走 Drop 兜底的
+        // with_temp_home——直线式恢复在断言失败(panic 展开)时被跳过,
+        // 环境与临时目录会泄漏给本进程内所有后续测试(该 helper 的文档
+        // 明确警告这一点)。
+        crate::platform::test_support::with_temp_home("pinvou3-edit-revision-guard-test", || {
+            let root = crate::platform::paths::pinvou3_home();
+            let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                root.join("scheduled"),
+            )
+            .expect("session store");
+            let session = store
+                .create_new("model".to_string(), None, root.clone())
+                .expect("create session");
+            let sid = session.metadata.id;
+
+            // 手机端视图：只有第一轮 user 消息。
+            store
+                .update_messages(&sid, vec![revision_message("user", "first")])
+                .expect("seed stale transcript");
+            let stale_revision = crate::features::sessions::transcript_revision(
+                &store.load(&sid).expect("load stale").messages,
+            )
+            .expect("stale revision");
+
+            // 桌面端随后提交了两轮（手机视图未感知）。
+            store
+                .update_messages(
+                    &sid,
+                    vec![
+                        revision_message("user", "first"),
+                        revision_message("assistant", "done"),
+                        revision_message("user", "second"),
+                    ],
+                )
+                .expect("advance transcript");
+            let current_revision = crate::features::sessions::transcript_revision(
+                &store.load(&sid).expect("reload").messages,
+            )
+            .expect("current revision");
+            assert_ne!(stale_revision, current_revision);
+
+            // 过期视图必须被拒绝，且 transcript 不得被改动。
+            assert_eq!(
+                ensure_transcript_revision_current(&store, &sid, &stale_revision)
+                    .expect_err("stale revision must be refused"),
+                "session_revision_conflict"
+            );
+            let after_conflict = store.load(&sid).expect("load after conflict");
+            assert_eq!(
+                after_conflict.messages.len(),
+                3,
+                "guard refusal must not mutate the transcript"
+            );
+            assert_eq!(
+                crate::features::sessions::transcript_revision(&after_conflict.messages)
+                    .expect("revision after conflict"),
+                current_revision
+            );
+
+            // 持有当前 revision 的编辑放行（真正的改写仍由引擎在 gate 内执行）。
+            assert!(ensure_transcript_revision_current(&store, &sid, &current_revision).is_ok());
+
+            // 不存在的会话折叠为稳定码，宿主路径只进桌面日志。
+            assert_eq!(
+                ensure_transcript_revision_current(&store, "missing-session", &current_revision)
+                    .expect_err("missing session must be refused"),
+                "session_revision_unavailable"
+            );
+        });
+    }
+
+    #[test]
+    fn memory_warning_details_fold_the_storage_prefix() {
+        // Round-9 复审 minor:命令级四处警告/详情文本必须过
+        // `redact_storage_prefix`。`load_memory_source` 有直接的 io::Result
+        // 注入缝,内容级钉住(error 的 Display 内嵌存储根绝对路径时,出站
+        // detail 折叠为 ~/.pinvou3 前缀);其余三处同型 format! 接线无天然
+        // 注入缝,按 source-contract 钉住函数体(删除任一处接线即红)。
+        crate::platform::test_support::with_temp_home("memory-redact-detail", || {
+            let mut warnings = Vec::new();
+            let mut sources = BTreeMap::new();
+            let error = std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{}: locked",
+                    crate::platform::paths::pinvou3_home()
+                        .join("memory")
+                        .join("pending.json")
+                        .display()
+                ),
+            );
+            let _: Vec<String> =
+                load_memory_source("pending", Err(error), &mut warnings, &mut sources);
+            assert_eq!(
+                warnings[0].detail, "load pending: ~/.pinvou3/memory/pending.json: locked",
+                "the outbound detail must fold the storage root prefix"
+            );
+        });
+
+        let source = include_str!("memory.rs");
+        for fn_name in [
+            "fn runtime_snapshot_best_effort(",
+            "fn refresh_memory_snapshot_document(",
+            "fn load_memory_source<T: Default>(",
+            "pub async fn get_memory_overview(",
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub async fn ")
+                .or_else(|| body.find("\nfn "))
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("redact_storage_prefix(&format!("),
+                "{fn_name} must fold warning details through redact_storage_prefix"
+            );
+        }
+    }
 
     #[test]
     fn overview_source_status_distinguishes_empty_from_unavailable() {
@@ -867,5 +1064,90 @@ mod tests {
         .unwrap();
         assert_eq!(cleanup["code"], "memory_topic_cleanup_required");
         assert_eq!(cleanup["source"], "preferences");
+    }
+
+    /// Round-11 复审 minor(形状无关钉):memory 命令全部 web 可达,其
+    /// `Err<String>` 会原样过 relay——错误拼接必须经共享的
+    /// `redact_storage_prefix` 折叠存储根前缀(与 Round-9 修复的警告
+    /// detail 同策略;当前 std os error 的 Display 不内嵌路径,但任何一个
+    /// 未来内嵌路径的错误构造函数都会让这里成为泄露点)。唯一例外是
+    /// `reserve edit_last_turn`:原始链按既定策略只进桌面日志,Web 侧由
+    /// 稳定码折叠。逐 `map_err(|e|` 臂取窗口断言,不依赖 rustfmt 的换行
+    /// 形态(单行形态计数曾被折叠换行静默绕过——突变复跑实证)。
+    #[test]
+    fn web_visible_memory_errors_fold_the_storage_prefix() {
+        // 只扫生产半边:include_str 含测试模块自身,断言字面量会污染计数。
+        let source = include_str!("memory.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("memory.rs must keep its tests behind #[cfg(test)]");
+        let mut arms = 0;
+        let mut raw_arms = 0;
+        for (pos, _) in production.match_indices(".map_err(|e|") {
+            arms += 1;
+            let window_end = (pos + 400).min(production.len());
+            let window = &production[pos..window_end];
+            if !(window.contains("redact_storage_prefix")
+                || window.contains("reserve edit_last_turn"))
+            {
+                raw_arms += 1;
+            }
+        }
+        assert!(
+            arms >= 11,
+            "expected the ten folded error arms plus the edit_last_turn chain, found {arms}"
+        );
+        assert_eq!(
+            raw_arms, 0,
+            "every web-visible memory error arm must fold the storage prefix via \
+             redact_storage_prefix; the single allowed exception is the deliberately-raw \
+             edit_last_turn reservation chain"
+        );
+    }
+
+    /// Round-7 复审:overview 的 `snapshot_path` 展示字段随 Web 访问策略出站
+    /// （get_memory_overview 在允许清单内），回退成裸 `path.display()` 会把
+    /// 存储根绝对路径带过 relay。该字段的脱敏点（write_memory_snapshot_document
+    /// 成功臂）此前没有内容级钉。`State<'_, SessionStore>` 无法在测试中安全
+    /// 构造（tauri 2.12 的 State 字段私有、仓库未启用 tauri "test" 特性、无
+    /// mock_app 先例——checkpoints.rs 测试同款结论），故以单引用字段 newtype
+    /// 的等宽 transmute 装入 State，驱动真实命令体：空 store + 无入参 →
+    /// runtime=None → 写快照 → snapshot_path 必须是 `~/.pinvou3` 折叠形态。
+    #[test]
+    fn overview_snapshot_path_folds_host_paths_before_the_relay() {
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-overview-snapshot-path-redact",
+            || {
+                let root = crate::platform::paths::pinvou3_home();
+                let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                    root.join("scheduled"),
+                )
+                .expect("session store");
+                // SAFETY: State<'r, T> 是单引用字段的 newtype，transmute 两侧
+                // 大小由编译器静态校验一致；引用生命周期随 'r 存续到本闭包
+                // 结束，State 仅在被测命令内经 Deref 只读使用，不引入新的
+                // 别名或对齐约束。
+                let state: State<'_, SessionStore> = unsafe {
+                    std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(&store)
+                };
+                let overview = tauri::async_runtime::block_on(get_memory_overview(None, state))
+                    .expect("overview");
+                assert!(
+                    overview.sources["snapshot"].available,
+                    "a fresh home must produce a written snapshot document"
+                );
+                let home_text = root.to_string_lossy().to_string();
+                assert!(
+                    !overview.snapshot_path.contains(home_text.as_str()),
+                    "snapshot_path must not carry the absolute storage root: {}",
+                    overview.snapshot_path
+                );
+                assert_eq!(
+                    overview.snapshot_path, "~/.pinvou3/user/memory/snapshot.md",
+                    "snapshot_path must use the redacted storage-root prefix"
+                );
+            },
+        );
     }
 }

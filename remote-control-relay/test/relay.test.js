@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import crypto from "node:crypto";
+import { connect as netConnect } from "node:net";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -101,6 +104,16 @@ function nextMessage(ws, type, timeoutMs = 3000) {
   });
 }
 
+// Like nextMessage, but resolves null instead of rejecting when no matching
+// message arrives in time, so callers can branch on "the relay replied" vs
+// "the relay stayed silent".
+function nextMessageOrTimeout(ws, type, timeoutMs = 2500) {
+  return nextMessage(ws, type, timeoutMs).catch((error) => {
+    if (!String(error.message).startsWith("timeout waiting for")) throw error;
+    return null;
+  });
+}
+
 function expectNoMessage(ws, type, timeoutMs = 250) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -123,6 +136,93 @@ function waitForClose(ws, timeoutMs = 3000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("timeout waiting for websocket close")), timeoutMs);
     ws.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+function waitForCloseInfo(ws, timeoutMs = 3000) {
+  if (ws.readyState === ws.CLOSED) {
+    return Promise.resolve({ code: null, reason: "" });
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout waiting for websocket close")), timeoutMs);
+    ws.once("close", (code, reason) => {
+      clearTimeout(timer);
+      resolve({ code, reason: reason.toString() });
+    });
+  });
+}
+
+// Inverse of waitForClose, like expectNoMessage is the inverse of nextMessage:
+// resolves after timeoutMs with the socket never having closed, rejects as
+// soon as it does.
+function expectStillOpen(ws, timeoutMs = 250) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.off("close", onClose);
+      resolve();
+    }, timeoutMs);
+    const onClose = () => {
+      clearTimeout(timer);
+      reject(new Error("websocket closed unexpectedly"));
+    };
+    ws.once("close", onClose);
+  });
+}
+
+// Completes a websocket upgrade over a raw TCP socket and hands the raw
+// socket back, for probes that must send hand-crafted frames the ws client
+// would never emit. Deliberately sends no Origin header: the handshake then
+// passes pre-auth, which is exactly the surface the receiver-error path
+// guards. The key is generated per probe — a literal would be shaped like a
+// credential and trip the secret scanner.
+function upgradeRaw(port) {
+  return new Promise((resolve, reject) => {
+    const key = crypto.randomBytes(16).toString("base64");
+    const sock = netConnect(port, "127.0.0.1");
+    let buf = Buffer.alloc(0);
+    const timer = setTimeout(() => {
+      sock.destroy();
+      reject(new Error("timeout waiting for the websocket upgrade"));
+    }, 3000);
+    sock.on("data", (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      const headEnd = buf.indexOf("\r\n\r\n");
+      if (headEnd === -1) return;
+      const head = buf.subarray(0, headEnd).toString();
+      clearTimeout(timer);
+      sock.removeAllListeners("data");
+      if (/^HTTP\/1\.1 101/.test(head)) {
+        resolve(sock);
+        return;
+      }
+      sock.destroy();
+      reject(new Error(`upgrade rejected: ${head.split("\r\n")[0]}`));
+    });
+    sock.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    sock.write(
+      `GET /pinvou3/remote/ws HTTP/1.1\r\n`
+      + `Host: 127.0.0.1:${port}\r\n`
+      + `Upgrade: websocket\r\n`
+      + `Connection: Upgrade\r\n`
+      + `Sec-WebSocket-Key: ${key}\r\n`
+      + `Sec-WebSocket-Version: 13\r\n\r\n`,
+    );
+  });
+}
+
+// Resolves when the raw socket closes; rejects if it stays open past the
+// timeout, so an accept-and-stall regression fails loudly.
+function waitForRawClose(sock, timeoutMs = 3000) {
+  if (sock.destroyed) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout waiting for raw socket close")), timeoutMs);
+    sock.once("close", () => {
       clearTimeout(timer);
       resolve();
     });
@@ -267,6 +367,34 @@ test("serves the built WebUI SPA at the public base path", async () => {
   assert.equal(outside.status, 404);
 });
 
+// stat→read 之间的换出(部署替换 web/dist):readFile 失败必须以 503 应答,
+// 不得成为 async handler 的 unhandled rejection 杀死整个 relay(与 Host 头
+// 守卫同一中毒输入纪律)。用不可读的 index.html 确定性触发 read 失败
+// (root 与 Windows 忽略该权限位,场景不成立时跳过)。
+const unreadableFileScenario =
+  process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() !== 0;
+test("answers 503 when the web dist file fails between stat and read", { skip: !unreadableFileScenario }, async () => {
+  const isolatedWeb = await mkdtemp(join(tmpdir(), "pinvou-relay-webout-"));
+  await writeFile(join(isolatedWeb, "index.html"), "<!doctype html><title>temp</title>");
+  const isolated = await spawnRelay({ PINVOU_REMOTE_WEB_DIR: isolatedWeb });
+  try {
+    await chmod(join(isolatedWeb, "index.html"), 0o000);
+    const unreadable = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
+    assert.equal(unreadable.status, 503);
+    assert.equal(unreadable.headers.get("cache-control"), "no-store");
+    assert.equal(isolated.child.exitCode, null, "the relay must survive the read failure");
+
+    await chmod(join(isolatedWeb, "index.html"), 0o644);
+    const restored = await fetch(`${isolated.httpUrl}/pinvou3/remote/`);
+    assert.equal(restored.status, 200);
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await chmod(join(isolatedWeb, "index.html"), 0o644);
+    await stopRelay(isolated.child);
+    await rm(isolatedWeb, { recursive: true, force: true });
+  }
+});
+
 test("healthz exposes aggregate endpoint counters and no identifiers", async () => {
   const response = await fetch(`${httpUrl}/pinvou3/remote/healthz`);
   assert.equal(response.status, 200);
@@ -277,6 +405,7 @@ test("healthz exposes aggregate endpoint counters and no identifiers", async () 
     "desktop_open_count",
     "endpoint_count",
     "ok",
+    "receiver_error_terminations",
     "room_count",
     "unauthenticated_connection_count",
     "web_client_open_count",
@@ -301,6 +430,7 @@ test("registers a persistent endpoint and blind-forwards only v2 message types",
   assert.deepEqual(await webConnected, {
     v: 2,
     type: "web_client_connected",
+    web_rejoining: false,
     endpoint_id: endpointId,
     lease_id: web.joined.lease_id,
     stream_epoch: "epoch-a",
@@ -437,6 +567,7 @@ test("desktop can reconnect to the same endpoint within the offline TTL", async 
   assert.deepEqual(await connected, {
     v: 2,
     type: "web_client_connected",
+    web_rejoining: false,
     endpoint_id: endpointId,
     lease_id: web.joined.lease_id,
     stream_epoch: "epoch-r",
@@ -1019,4 +1150,636 @@ test("proxy allowlist keeps local health checks available", async () => {
   } finally {
     await stopRelay(isolated.child);
   }
+});
+
+// The deep frames below exercise the send() serialization guard, but open PR
+// #781 adds an ingress wire-nesting cap (MAX_WIRE_NESTING_DEPTH = 128) that
+// rejects any frame nested deeper than that as `bad_json` before JSON.parse.
+// On a tree that includes #781 the cap fires first: the relay replies to the
+// sender, keeps the sender open, and never touches the destination socket, so
+// the destination-termination assertions in these tests do not apply there.
+// The Merge Queue gates this branch against the combined tree, so probe the
+// sender first. A `bad_json` error reply means the ingress cap handled the
+// frame; verify that behavior and pass — on such a tree the send() guard this
+// PR adds remains as defense-in-depth for frames that parse but cannot be
+// serialized. Returning false means no reply arrived, i.e. the relay under
+// test has no ingress cap and the frame reached the forward path, so the
+// caller proceeds with the original assertions.
+async function deepFrameRejectedAtIngress(sender, destination, isolated) {
+  const error = await nextMessageOrTimeout(sender.ws, "error");
+  if (!error) return false;
+  assert.equal(error.code, "bad_json");
+  assert.equal(isolated.child.exitCode, null);
+  assert.equal(isolated.child.signalCode, null);
+  // #781 rejects the frame without closing anything: both sockets stay open.
+  assert.equal(sender.ws.readyState, sender.ws.OPEN);
+  assert.equal(destination.ws.readyState, destination.ws.OPEN);
+  await expectStillOpen(destination.ws);
+  return true;
+}
+
+test("survives a web frame the relay cannot serialize and keeps the desktop reconnectable", async () => {
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_deep_request_${Date.now()}`;
+  const accessToken = "access-token-deep-request-0000000000001";
+  const desktopSecret = "desktop-secret-deep-request-000000000001";
+  try {
+    const desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // ~120 KB, far below the 4 MiB ingress cap, but 20000 levels deep:
+    // JSON.parse accepts it while JSON.stringify in send() cannot.
+    const deepArgs = `${'{"a":'.repeat(20000)}1${"}".repeat(20000)}`;
+    web.ws.send(
+      `{"v":2,"type":"rpc_request","id":"deep","client_request_id":"deep",`
+      + `"command":"list_sessions","args":${deepArgs}}`,
+    );
+
+    if (await deepFrameRejectedAtIngress(web, desktop, isolated)) return;
+
+    // The unserializable destination socket is terminated; the sending web
+    // socket stays open and the frame is dropped without an error reply.
+    await waitForClose(desktop.ws);
+    assert.equal(web.ws.readyState, web.ws.OPEN);
+    await expectNoMessage(web.ws, "error");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // The endpoint still works: the desktop reconnects onto the same lease
+    // and a normal round-trip completes.
+    const reconnected = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    assert.equal(reconnected.registered.lease_id, web.joined.lease_id);
+    const forwarded = nextMessage(reconnected.ws, "rpc_request");
+    web.ws.send(JSON.stringify({
+      v: 2,
+      type: "rpc_request",
+      id: "after-deep",
+      client_request_id: "after-deep",
+      command: "list_sessions",
+      args: { offset: 1 },
+    }));
+    assert.equal((await forwarded).id, "after-deep");
+    const response = nextMessage(web.ws, "rpc_response");
+    reconnected.ws.send(JSON.stringify({
+      v: 2,
+      type: "rpc_response",
+      id: "after-deep",
+      ok: true,
+      result: [],
+    }));
+    assert.equal((await response).id, "after-deep");
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("survives a desktop frame the relay cannot serialize and keeps the web client joined", async () => {
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_deep_event_${Date.now()}`;
+  const accessToken = "access-token-deep-event-00000000000001";
+  const desktopSecret = "desktop-secret-deep-event-0000000000001";
+  try {
+    const desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const deepPayload = `${"[".repeat(20000)}0${"]".repeat(20000)}`;
+    desktop.ws.send(`{"v":2,"type":"event","payload":${deepPayload}}`);
+
+    if (await deepFrameRejectedAtIngress(desktop, web, isolated)) return;
+
+    await waitForClose(web.ws);
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+    await expectNoMessage(desktop.ws, "error");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // A fresh web client joins and the desktop forwards normally again.
+    const rejoined = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    assert.equal(rejoined.joined.desktop_connected, true);
+    const event = nextMessage(rejoined.ws, "event");
+    desktop.ws.send(JSON.stringify({
+      v: 2,
+      type: "event",
+      payload: { marker: "after-deep" },
+    }));
+    assert.deepEqual((await event).payload, { marker: "after-deep" });
+    assert.equal(isolated.child.exitCode, null);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("survives illegal websocket frames at the receiver and keeps serving", async () => {
+  const isolated = await spawnRelay();
+  try {
+    // The ws Receiver rejects frame-header violations — declared length over
+    // maxPayload, reserved opcodes — before any JSON parsing or
+    // authentication runs, and ws turns an unlistened 'error' event into
+    // ERR_UNHANDLED_ERROR, killing the process. One pre-auth frame with no
+    // Origin header must therefore terminate only the offending socket.
+
+    // 1. Oversize declared length: masked binary frame announcing 8 MiB
+    //    against the 4 MiB maxPayload; no payload bytes are needed.
+    const oversize = await upgradeRaw(isolated.port);
+    const oversizeFrame = Buffer.alloc(14);
+    oversizeFrame[0] = 0x82; // FIN + binary opcode
+    oversizeFrame[1] = 0x80; // masked, 7-bit length 0 -> 64-bit extended
+    oversizeFrame.writeBigUInt64BE(8n * 1024n * 1024n, 2);
+    crypto.randomBytes(4).copy(oversizeFrame, 10);
+    const oversizeClosed = waitForRawClose(oversize);
+    oversize.write(oversizeFrame);
+    await oversizeClosed;
+
+    // 2. Protocol violation: reserved opcode 3, six bytes, still pre-auth.
+    const reserved = await upgradeRaw(isolated.port);
+    const reservedFrame = Buffer.alloc(6);
+    reservedFrame[0] = 0x83; // FIN + reserved opcode 3
+    reservedFrame[1] = 0x80; // masked, zero length
+    crypto.randomBytes(4).copy(reservedFrame, 2);
+    const reservedClosed = waitForRawClose(reserved);
+    reserved.write(reservedFrame);
+    await reservedClosed;
+
+    // The process survived both frames and still completes handshakes.
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+    // Round-11: receiver-error terminations are loud — the healthz counter
+    // lets an operator tell "client hung up" from "endpoint keeps sending
+    // poisoned frames".
+    const health = await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`);
+    assert.equal(health.ok, true);
+    const healthBody = await health.json();
+    assert.equal(healthBody.receiver_error_terminations >= 2, true,
+      `both poisoned frames must be counted, got ${JSON.stringify(healthBody)}`);
+    const healthy = await openSocket(isolated.wsUrl);
+    assert.equal(healthy.readyState, healthy.OPEN);
+    closeSocket(healthy);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("a newer desktop registration replaces the old socket and keeps the web lease", async (t) => {
+  const endpointId = `endpoint_desktop_replace_${Date.now()}`;
+  const accessToken = "access-token-desktop-replace-000000001";
+  const desktopSecret = "desktop-secret-desktop-replace-00000001";
+  const first = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(first.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+  const replacedNotice = nextMessage(first.ws, "desktop_endpoint_replaced");
+  const replacedClose = waitForCloseInfo(first.ws);
+  const second = await registerDesktop(endpointId, accessToken, desktopSecret);
+  t.after(() => { closeSocket(web.ws); closeSocket(second.ws); });
+
+  assert.deepEqual(await replacedNotice, {
+    v: 2,
+    type: "desktop_endpoint_replaced",
+    endpoint_id: endpointId,
+  });
+  assert.equal(second.registered.web_client_connected, true);
+  assert.equal(second.registered.lease_id, web.joined.lease_id);
+  assert.deepEqual(await replacedClose, { code: 4001, reason: "desktop endpoint replaced" });
+
+  // NOTE(no deterministic late-frame pin): the relay closes the replaced
+  // socket with 4001 before any deterministic send can land in the CLOSING
+  // window — a client-side send here is dropped locally by the ws client and
+  // would pass even with the server-side `endpoint.desktop !== ws` guard
+  // deleted. The observable contract (replaced notice, 4001 close, untouched
+  // lease round-trip below) is the deterministic part; the replacement guard
+  // itself remains defense-in-depth for the replacement race.
+
+  // The untouched lease still round-trips through the replacement desktop.
+  const forwarded = nextMessage(second.ws, "rpc_request");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "after-replace",
+    client_request_id: "after-replace",
+    command: "list_sessions",
+    args: {},
+  }));
+  const received = await forwarded;
+  assert.equal(received.lease_id, web.joined.lease_id);
+  assert.equal(received.id, "after-replace");
+});
+
+// Round-11 review: `web_rejoining` is relay-authoritative (set only on the
+// relay-generated informational frames). A token-holding web client must not
+// be able to smuggle the field through a forwarded frame where it is
+// indistinguishable from a relay-set field at the type level — the desktop
+// honors it only on those relay-generated frames, and this keeps it that way.
+test("client-supplied web_rejoining does not survive forwarding", async (t) => {
+  const endpointId = `endpoint_rejoin_strip_${Date.now()}`;
+  const accessToken = "access-token-rejoin-strip-000000001";
+  const desktopSecret = "desktop-secret-rejoin-strip-00000001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+  t.after(() => { closeSocket(web.ws); closeSocket(desktop.ws); });
+
+  const forwarded = nextMessage(desktop.ws, "rpc_request");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "rejoin-smuggle",
+    client_request_id: "rejoin-smuggle",
+    command: "list_sessions",
+    args: {},
+    web_rejoining: true,
+  }));
+  const received = await forwarded;
+  assert.equal("web_rejoining" in received, false,
+    `a client-supplied web_rejoining must be stripped, got ${JSON.stringify(received)}`);
+  assert.equal(received.id, "rejoin-smuggle");
+});
+
+test("a web client keeps its lease while the desktop is offline and loses it on takeover", async (t) => {
+  const endpointId = `endpoint_offline_lease_${Date.now()}`;
+  const accessToken = "access-token-offline-lease-000000001";
+  const desktopSecret = "desktop-secret-offline-lease-00000001";
+  let secondDesktop;
+  let second;
+  t.after(() => {
+    closeSocket(web.ws);
+    closeSocket(secondDesktop?.ws);
+    closeSocket(second?.ws);
+  });
+  const firstDesktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(firstDesktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+
+  const offline = nextMessage(web.ws, "desktop_connection_state");
+  firstDesktop.ws.terminate();
+  assert.equal((await offline).status, "offline");
+
+  const offlineError = nextMessage(web.ws, "error");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "while-away",
+    client_request_id: "while-away",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await offlineError).code, "desktop_offline");
+  assert.equal(web.ws.readyState, web.ws.OPEN);
+
+  secondDesktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  assert.equal(secondDesktop.registered.lease_id, web.joined.lease_id);
+
+  const forwarded = nextMessage(secondDesktop.ws, "rpc_request");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "after-return",
+    client_request_id: "after-return",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await forwarded).lease_id, web.joined.lease_id);
+  const response = nextMessage(web.ws, "rpc_response");
+  secondDesktop.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_response",
+    id: "after-return",
+    ok: true,
+  }));
+  assert.equal((await response).id, "after-return");
+
+  // A takeover replaces the lease holder and closes it with 4001; its late
+  // frames must not reach the desktop as if they were still active traffic.
+  const replaced = nextMessage(web.ws, "endpoint_replaced");
+  const replacedClose = waitForCloseInfo(web.ws);
+  second = await joinWeb(endpointId, accessToken);
+  assert.equal((await replaced).lease_id, web.joined.lease_id);
+  assert.deepEqual(await replacedClose, { code: 4001, reason: "endpoint replaced" });
+
+  // NOTE(no deterministic late-frame pin): same as the desktop-replacement
+  // test — the takeover closes the replaced web socket before a deterministic
+  // send can land, so a client-side send would pass even without the
+  // server-side stale-lease/replacement guards. The deterministic contract is
+  // the 4001 close plus the replacement lease round-trip below.
+
+  // The replacement lease still round-trips.
+  const forwardedAgain = nextMessage(secondDesktop.ws, "rpc_request");
+  second.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "from-replacement",
+    client_request_id: "from-replacement",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await forwardedAgain).lease_id, second.joined.lease_id);
+});
+
+test("reports recoverable framing errors without closing the socket", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+
+  const binary = nextMessage(ws, "error");
+  ws.send(Buffer.from("not-json-bytes"));
+  assert.equal((await binary).code, "binary_unsupported");
+
+  const badJson = nextMessage(ws, "error");
+  ws.send("not json{");
+  assert.equal((await badJson).code, "bad_json");
+
+  const numberFrame = nextMessage(ws, "error");
+  ws.send("42");
+  assert.equal((await numberFrame).code, "bad_message");
+
+  const arrayFrame = nextMessage(ws, "error");
+  ws.send("[1,2]");
+  assert.equal((await arrayFrame).code, "bad_message");
+
+  // Every framing error above was informational: the same socket still
+  // authenticates as a desktop afterwards.
+  const endpointId = `endpoint_framing_${Date.now()}`;
+  const registered = nextMessage(ws, "desktop_endpoint_registered");
+  ws.send(JSON.stringify({
+    v: 2,
+    type: "desktop_endpoint_register",
+    endpoint_id: endpointId,
+    access_token: "access-token-framing-000000000000001",
+    desktop_secret: "desktop-secret-framing-0000000000001",
+  }));
+  assert.equal((await registered).endpoint_id, endpointId);
+  assert.equal(ws.readyState, ws.OPEN);
+});
+
+test("closes a socket that forwards before authenticating", async (t) => {
+  const ws = await openSocket();
+  t.after(() => closeSocket(ws));
+  const unauthorized = nextMessage(ws, "error");
+  const closed = waitForCloseInfo(ws);
+  ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "pre-auth",
+    client_request_id: "pre-auth",
+    command: "list_sessions",
+    args: {},
+  }));
+  assert.equal((await unauthorized).code, "authentication_required");
+  assert.deepEqual(await closed, { code: 1008, reason: "authenticate first" });
+});
+
+test("rejects a concurrent revoke while the first is still being persisted", async () => {
+  // A large tombstone state keeps the first revoke's persistence busy long
+  // enough for the second revoke to land inside the in-progress window.
+  const statePath = join(testRoot, `revoke-window-${Date.now()}.json`);
+  const tombstones = [];
+  for (let i = 0; i < 50000; i++) {
+    tombstones.push(`{"endpoint_id":"endpoint_tombstone_${i}","revoked_at":"2026-01-01T00:00:00.000Z"}`);
+  }
+  await writeFile(statePath, `{"version":1,"revoked_endpoints":[${tombstones.join(",")}]}\n`);
+  const isolated = await spawnRelay({ PINVOU_REMOTE_STATE_PATH: statePath });
+  const endpointId = `endpoint_double_revoke_${Date.now()}`;
+  const accessToken = "access-token-double-revoke-00000001";
+  const desktopSecret = "desktop-secret-double-revoke-0000001";
+  try {
+    const desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const revokedAck = nextMessage(desktop.ws, "desktop_endpoint_revoked", 10000);
+    const inProgress = nextMessage(web.ws, "error", 10000);
+    const inProgressClose = waitForCloseInfo(web.ws, 10000);
+    desktop.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: endpointId,
+      reason: "first",
+    }));
+    // Let the relay begin persisting the first revoke before racing it:
+    // a macrotask hop lets the first frame enter relayStateMutation (the
+    // in-persistence flag is set synchronously on arrival), so the race is
+    // deterministic instead of trusting a wall-clock sleep to lose.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    web.ws.send(JSON.stringify({
+      v: 2,
+      type: "desktop_endpoint_revoke",
+      endpoint_id: endpointId,
+      desktop_secret: desktopSecret,
+      reason: "second",
+    }));
+
+    assert.equal((await inProgress).code, "revocation_in_progress");
+    assert.deepEqual(
+      await inProgressClose,
+      { code: 1008, reason: "endpoint revocation is already in progress" },
+    );
+    assert.equal((await revokedAck).reason, "first");
+    await waitForClose(desktop.ws);
+
+    const persistedState = JSON.parse(await readFile(statePath, "utf8"));
+    assert.ok(persistedState.revoked_endpoints.some((entry) => entry.endpoint_id === endpointId));
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
+test("notifies the desktop when the active web client disconnects", async (t) => {
+  const endpointId = `endpoint_disconnect_notice_${Date.now()}`;
+  const accessToken = "access-token-disconnect-notice-000001";
+  const desktopSecret = "desktop-secret-disconnect-notice-0001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+  t.after(() => closeSocket(desktop.ws));
+
+  const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(web.ws);
+  assert.deepEqual(await disconnected, {
+    v: 2,
+    type: "web_client_disconnected",
+    endpoint_id: endpointId,
+    lease_id: web.joined.lease_id,
+  });
+});
+
+test("rejects a hostile Host header without killing the relay", async () => {
+  // An out-of-range port in Host makes the URL constructor throw; the relay
+  // must answer 400 and keep serving, not die on an unhandled rejection.
+  const poisoned = await new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: "127.0.0.1", port, path: "/pinvou3/remote/healthz", headers: { host: "h:99999999" } },
+      (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode));
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(poisoned, 400);
+  // The process survived and still answers a well-formed probe.
+  const healthy = await new Promise((resolve, reject) => {
+    const req = httpRequest(`${httpUrl}/pinvou3/remote/healthz`, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  assert.equal(healthy, 200);
+});
+
+test("destroys an upgrade request with a hostile Host header without killing the relay", async () => {
+  // Same poison over the upgrade path: the sync listener must not turn the
+  // throw into an uncaught exception.
+  await new Promise((resolve, reject) => {
+    const raw = netConnect(port, "127.0.0.1");
+    // Strict teardown expectation: only the relay closing/destroying the
+    // hostile socket resolves. If the socket is still alive after 1500ms the
+    // relay accepted the request and stalled it, which must fail the test.
+    const timer = setTimeout(() => {
+      raw.destroy();
+      reject(new Error("the relay neither closed nor destroyed the hostile upgrade socket within 1500ms"));
+    }, 1500);
+    raw.on("close", () => { clearTimeout(timer); resolve(); });
+    raw.on("error", () => { /* destroyed by the relay: expected */ });
+    raw.write(
+      "GET /pinvou3/remote/ws HTTP/1.1\r\n" +
+      "Host: h:99999999\r\n" +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      // No Sec-WebSocket-Key: the hostile-Host guard fires before the
+      // handshake is validated, and a credential-shaped probe value would
+      // trip the secret scanner.
+      "Sec-WebSocket-Version: 13\r\n\r\n",
+    );
+  });
+  assert.equal(relay.exitCode, null);
+  assert.equal(relay.signalCode, null);
+  // A well-formed WebSocket connection still completes afterwards.
+  const ws = await openSocket();
+  assert.equal(ws.readyState, ws.OPEN);
+  closeSocket(ws);
+});
+
+test("marks a rejoin after the web socket died, but not a takeover", async (t) => {
+  const endpointId = `endpoint_rejoin_flag_${Date.now()}`;
+  const accessToken = "access-token-rejoin-flag-00000001";
+  const desktopSecret = "desktop-secret-rejoin-flag-000001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const firstJoin = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  const first = await firstJoin;
+  assert.equal(first.web_rejoining, false);
+  t.after(() => closeSocket(desktop.ws));
+
+  // Watchdog-style recovery: the previous socket dies, then the same token
+  // holder rejoins. The desktop must see web_rejoining=true so it can keep
+  // lease-scoped state instead of wiping it.
+  const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(web.ws);
+  await disconnected;
+  const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");
+  const rejoined = await joinWeb(endpointId, accessToken);
+  const rejoin = await rejoinNotice;
+  assert.equal(rejoin.web_rejoining, true);
+  assert.notEqual(rejoin.lease_id, first.lease_id);
+
+  // A join that replaces a live client is a takeover, not a rejoin.
+  const takeoverNotice = nextMessage(desktop.ws, "web_client_connected");
+  const second = await joinWeb(endpointId, accessToken);
+  const takeover = await takeoverNotice;
+  assert.equal(takeover.web_rejoining, false);
+  assert.notEqual(takeover.lease_id, rejoin.lease_id);
+
+  // One more death-and-rejoin cycle: the flag must be recomputed to true
+  // again (the takeover reset it, the fresh rejoin sets it back).
+  const disconnectSecond = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(second.ws);
+  await disconnectSecond;
+  const reRejoinNotice = nextMessage(desktop.ws, "web_client_connected");
+  const third = await joinWeb(endpointId, accessToken);
+  const reRejoin = await reRejoinNotice;
+  assert.equal(reRejoin.web_rejoining, true);
+
+  // After a REJOIN (not a takeover) dies, a desktop re-registration must
+  // see the consistent no-web state (web_client_connected:false AND
+  // web_rejoining:false) — the rejoin flag describes the incumbent web
+  // session and dies with it; a stale true here would read as phantom
+  // lease state to preserve. This is exactly the sequence the takeover
+  // tail above cannot catch: only a death right after a rejoin leaves the
+  // stale true behind without the close-path reset.
+  const disconnectThird = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(third.ws);
+  await disconnectThird;
+  closeSocket(desktop.ws);
+  const reregistered = await registerDesktop(endpointId, accessToken, desktopSecret);
+  t.after(() => closeSocket(reregistered.ws));
+  assert.equal(reregistered.registered.web_client_connected, false);
+  assert.equal(reregistered.registered.web_rejoining, false);
+});
+
+test("forwards the incumbent rejoin flag on desktop re-registration", async (t) => {
+  const endpointId = `endpoint_rejoin_fwd_${Date.now()}`;
+  const accessToken = "access-token-rejoin-fwd-00000001";
+  const desktopSecret = "desktop-secret-rejoin-fwd-000001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const firstJoin = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  const first = await firstJoin;
+  assert.equal(first.web_rejoining, false);
+  t.after(() => closeSocket(desktop.ws));
+
+  // Web dies then rejoins: the incumbent (the rejoined socket) is flagged.
+  const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
+  closeSocket(web.ws);
+  await disconnected;
+  const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");
+  const rejoined = await joinWeb(endpointId, accessToken);
+  const rejoin = await rejoinNotice;
+  assert.equal(rejoin.web_rejoining, true);
+
+  // The desktop reconnects (relay restart / socket drop) while the rejoined
+  // web client is still online: the fresh registration must forward the
+  // incumbent's web_rejoining=true so the desktop keeps its lease-scoped
+  // state instead of wiping it. Without the passthrough the flag would
+  // default to false and the lease-churn bug (staged state wiped on every
+  // desktop reconnect) would return on exactly this path.
+  //
+  // The re-registration path ALSO notifies the fresh desktop about the
+  // incumbent web client (notifyDesktopOfWeb with the same flag). Consume
+  // that notice too: its listener must attach before the register message
+  // goes out, so the helper-free open-then-register sequence is used here
+  // instead of registerDesktop (which settles the registered frame first).
+  closeSocket(desktop.ws);
+  const reregisteredSocket = await openSocket();
+  const reregistered = nextMessage(reregisteredSocket, "desktop_endpoint_registered");
+  const renotify = nextMessage(reregisteredSocket, "web_client_connected");
+  reregisteredSocket.send(JSON.stringify({
+    v: 2,
+    type: "desktop_endpoint_register",
+    endpoint_id: endpointId,
+    access_token: accessToken,
+    desktop_secret: desktopSecret,
+  }));
+  t.after(() => closeSocket(reregisteredSocket));
+  const reregisteredFrame = await reregistered;
+  assert.equal(reregisteredFrame.web_client_connected, true);
+  assert.equal(reregisteredFrame.web_rejoining, true);
+  assert.deepEqual(await renotify, {
+    v: 2,
+    type: "web_client_connected",
+    endpoint_id: endpointId,
+    lease_id: rejoined.joined.lease_id,
+    stream_epoch: null,
+    after_seq: 0,
+    web_rejoining: true,
+  });
 });

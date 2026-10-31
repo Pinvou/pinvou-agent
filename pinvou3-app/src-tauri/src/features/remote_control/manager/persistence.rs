@@ -49,6 +49,28 @@ fn validate_ws_url(url: &str, invalid_message: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// http(s) 页面基址统一校验，与 `validate_ws_url` 同一基线。
+fn validate_http_base_url(url: &str, invalid_message: &str) -> Result<(), String> {
+    if url.len() > 2_048
+        || !(url.starts_with("http://") || url.starts_with("https://"))
+        || url.chars().any(char::is_whitespace)
+    {
+        return Err(invalid_message.to_string());
+    }
+    Ok(())
+}
+
+pub(super) fn validate_relay_settings(settings: &RelaySettings) -> Result<(), String> {
+    validate_ws_url(
+        &settings.relay_url,
+        "relay address does not normalize to a valid ws(s) URL",
+    )?;
+    validate_http_base_url(
+        &settings.public_base_url,
+        "relay address does not normalize to a valid http(s) base",
+    )
+}
+
 pub(super) fn validate_config(config: &WebAccessConfig) -> Result<(), String> {
     validate_ws_url(&config.relay_url, "Web access relay_url is invalid")?;
     if config.endpoint_id.len() < 8
@@ -148,6 +170,41 @@ pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, S
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
+    // 读取即修复,且先于任何内容读取:损坏 + 放宽权限的组合也不能把一个
+    // 世界可读的凭据文件留在盘上(备份恢复或外部工具可能把它改成组/全员
+    // 可读)。Round-6 复审:修复必须挂在**第一个**句柄上、先于
+    // `read_to_string`——非 UTF-8 的损坏内容会让读取腿先行报错返回,挂在
+    // 读取之后的修复永远不会执行,放宽权限的损坏文件就一直裸留在盘上。
+    // 与写入路径的 0600 基线保持一致;修复失败按读取错误上抛,同时免去
+    // 第二次 open 的 TOCTOU(两次打开之间路径可被换掉)。Windows/fallback
+    // 平台该调用是显式 no-op。
+    platform::enforce_private_permissions(&file, path).map_err(|error| {
+        // Round-8 复审 minor:修复自身失败(fchmod 需要 owner 权限,
+        // 备份恢复可能留下他者属主的世界可读密文件)时,不能把它一直
+        // 留在众所周知的路径上。Round-9 复审:普通 rename 会保留放宽的
+        // mode 位,隔离副本在新名字下依旧世界可读——改走 0600 副本 +
+        // unlink 原件(隔离副本是本进程创建的,fchmod 在其上必然成功;
+        // 对原件的权限来自父目录写位,不依赖文件属主)。目录占位(EISDIR
+        // fixture)等非普通文件退回 rename 语义;隔离彻底失败(目录只读/
+        // Windows 文件锁)则保持原错误——那与目录不可写同级,后续写入
+        // 同样会失败。
+        match crate::platform::filesystem::quarantine_secret_file(path) {
+            Ok(quarantined) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}); \
+                     quarantined to {} (copy tightened to 0600) and the next \
+                     start creates a fresh 0600 file",
+                path.display(),
+                quarantined.display()
+            ),
+            Err(quarantine_error) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}) and the \
+                     quarantine also failed ({quarantine_error}); the loose file \
+                     stays in place",
+                path.display()
+            ),
+        }
+        format!("restrict {}: {error}", path.display())
+    })?;
     let mut text = String::new();
     file.take((super::MAX_WEB_ACCESS_CONFIG_BYTES + 1) as u64)
         .read_to_string(&mut text)
@@ -196,21 +253,6 @@ pub struct RelaySettingsInfo {
 
 pub(super) fn relay_settings_path() -> PathBuf {
     paths::pinvou3_home().join("web-relay.json")
-}
-
-pub(super) fn validate_relay_settings(settings: &RelaySettings) -> Result<(), String> {
-    validate_ws_url(
-        &settings.relay_url,
-        "relay address does not normalize to a valid ws(s) URL",
-    )?;
-    if settings.public_base_url.len() > 2_048
-        || !(settings.public_base_url.starts_with("http://")
-            || settings.public_base_url.starts_with("https://"))
-        || settings.public_base_url.chars().any(char::is_whitespace)
-    {
-        return Err("relay address does not normalize to a valid http(s) base".to_string());
-    }
-    Ok(())
 }
 
 /// 读取失败（不存在/损坏/非法）一律回落默认 relay：设置文件不是凭据，宁可
@@ -281,31 +323,197 @@ pub(super) fn validate_pending_revocation_ledger(
     Ok(())
 }
 
-pub(super) fn load_pending_revocations() -> Result<PendingRevocationLedger, String> {
-    load_pending_revocations_from(&pending_revocations_path())
+/// replay 启动路径专用:Corrupt 的原件已在读取时隔离,按空账本继续——与
+/// queue/acknowledge 的「恢复路径不被坏文件卡死」口径一致,enable/resume/
+/// rotate 不再为一个已经清理掉的文件一次性失败(原文 parse 错误直接抛给
+/// 用户,重试虽能自愈但首因已不存在)。Unavailable 仍是瞬时 IO,照旧上抛。
+pub(super) fn load_pending_revocations_for_replay() -> Result<PendingRevocationLedger, String> {
+    match load_pending_revocations_classified(&pending_revocations_path()) {
+        RevocationLedgerLoad::Ledger(ledger) => Ok(ledger),
+        RevocationLedgerLoad::Corrupt(error) => {
+            eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
+            Ok(PendingRevocationLedger::default())
+        }
+        RevocationLedgerLoad::Unavailable(error) => Err(error),
+    }
 }
 
+/// 严格读取(Corrupt/Unavailable 都报错):生产路径全部走分类版或
+/// replay 包装;本函数只服务测试对真实磁盘文件的直接断言。
+#[cfg(test)]
 pub(super) fn load_pending_revocations_from(
     path: &Path,
 ) -> Result<PendingRevocationLedger, String> {
-    let data = match std::fs::read(path) {
-        Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PendingRevocationLedger::default());
+    match load_pending_revocations_classified(path) {
+        RevocationLedgerLoad::Ledger(ledger) => Ok(ledger),
+        RevocationLedgerLoad::Corrupt(error) | RevocationLedgerLoad::Unavailable(error) => {
+            Err(error)
         }
-        Err(error) => return Err(format!("read {}: {error}", path.display())),
+    }
+}
+
+/// Pending-revocation 账本读取的三分类:Corrupt 表示无法解析或超限的内容
+/// (没有任何条目可救;原件已在读取时隔离留证),重试无意义;可解析但未过
+/// 整体校验的账本在读取时已逐条抢救为 Ledger,不走这里。Unavailable 是瞬时
+/// IO,重试有意义。queue/acknowledge 路径靠它决定「挪开坏账本继续」还是
+/// 「上抛等重试」——停用/轮换是恢复路径,不能被一个坏文件永久卡死。
+enum RevocationLedgerLoad {
+    Ledger(PendingRevocationLedger),
+    Corrupt(String),
+    Unavailable(String),
+}
+
+/// 逐条抢救可解析但未过整体校验的账本:version 漂移、条目超限、单条损坏、
+/// 重复键都只否定各自的条目,不否定其余仍然合法的待吊销记录——整体丢弃会
+/// 让旧 endpoint 在 relay 侧保持可加入。每条沿用与正常加载相同的
+/// `validate_pending_revocation` 严格度,重复键保留首个,超出容量即止。
+fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevocationLedger {
+    let mut salvaged = PendingRevocationLedger::default();
+    let mut keys = HashSet::new();
+    for pending in &ledger.entries {
+        if salvaged.entries.len() >= super::MAX_PENDING_REVOCATIONS {
+            break;
+        }
+        if validate_pending_revocation(pending).is_err() {
+            continue;
+        }
+        if !keys.insert(pending_revocation_key(pending)) {
+            continue;
+        }
+        salvaged.entries.push_back(pending.clone());
+    }
+    salvaged
+}
+
+fn quarantine_pending_ledger(path: &Path, data: &[u8]) {
+    match crate::platform::filesystem::quarantine_corrupt_file(path) {
+        Ok(quarantined) => {
+            eprintln!(
+                "[web-access] quarantined corrupt pending-revocation ledger to {}",
+                quarantined.display()
+            );
+        }
+        Err(rename_error) => {
+            // rename 失败(Windows AV/备份锁等)不能默许证据被后续的
+            // fresh-start 写入原地覆盖/删除。先整文件复制(oversize 场景
+            // 内存中的 `data` 只有截断前缀,完整证据在盘上);复制也失败
+            // 再退回内存字节;两者皆败才降级为仅日志。
+            match crate::platform::filesystem::quarantine_corrupt_file_copy(path) {
+                Ok(quarantined) => eprintln!(
+                    "[web-access] rename failed ({rename_error}); copied corrupt pending-revocation ledger to {}",
+                    quarantined.display()
+                ),
+                Err(copy_error) => {
+                    match crate::platform::filesystem::quarantine_corrupt_file_bytes(path, data) {
+                        Ok(quarantined) => eprintln!(
+                            "[web-access] rename failed ({rename_error}, copy failed: {copy_error}); \
+                             wrote in-memory bytes of corrupt pending-revocation ledger to {}",
+                            quarantined.display()
+                        ),
+                        Err(error) => eprintln!(
+                            "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
+                            path.display()
+                        ),
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return RevocationLedgerLoad::Ledger(PendingRevocationLedger::default());
+        }
+        Err(error) => {
+            return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
+        }
     };
+    // 读取即修复,且先于任何内容读取(Round-7 复审补齐,与 load_config_from
+    // 同形):该文件持有 desktop_secret,损坏 + 放宽权限的组合也不能把世界
+    // 可读的密文件留在盘上。修复挂在**第一个**句柄上——读取腿的真实 I/O
+    // 错误(EISDIR/EACCES 等)会先行返回,挂在读取之后的修复永远不会执行,
+    // 放宽权限的损坏文件就一直裸留在盘上;同时免去第二次 open 的 TOCTOU
+    // (两次打开之间路径可被换掉,修复的可能不是读到的那个 inode)。
+    // (Windows/fallback 平台该调用是显式 no-op。)
+    if let Err(error) = platform::enforce_private_permissions(&file, path) {
+        // Round-8 复审 minor:修复自身失败时同样把放宽权限的密文件隔离
+        // 挪离众所周知的路径(与 load_config_from 同因同策)。Round-9
+        // 复审:改走 0600 副本 + unlink 原件,隔离副本不再继承放宽的
+        // mode 位(见 load_config_from 内的同名注释);非普通文件退回
+        // rename;隔离失败则保持 Unavailable 原错误。
+        match crate::platform::filesystem::quarantine_secret_file(path) {
+            Ok(quarantined) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}); \
+                 quarantined to {} (copy tightened to 0600) and the next \
+                 write creates a fresh 0600 ledger",
+                path.display(),
+                quarantined.display()
+            ),
+            Err(quarantine_error) => eprintln!(
+                "[web-access] could not restrict permissions on {} ({error}) and the \
+                     quarantine also failed ({quarantine_error}); the loose file \
+                     stays in place",
+                path.display()
+            ),
+        }
+        return RevocationLedgerLoad::Unavailable(format!("restrict {}: {error}", path.display()));
+    }
+    // 与 config 读取相同的 take() 有界读取:先按上限截断再检查,损坏/超大
+    // 文件不能触发无界分配。
+    let mut data = Vec::new();
+    if let Err(error) = file
+        .take((super::MAX_PENDING_REVOCATIONS_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut data)
+    {
+        return RevocationLedgerLoad::Unavailable(format!("read {}: {error}", path.display()));
+    }
     if data.len() > super::MAX_PENDING_REVOCATIONS_FILE_BYTES {
-        return Err(format!(
+        quarantine_pending_ledger(path, &data);
+        return RevocationLedgerLoad::Corrupt(format!(
             "pending Web revocation file is larger than {} KiB: {}",
             super::MAX_PENDING_REVOCATIONS_FILE_BYTES / 1024,
             path.display()
         ));
     }
-    let ledger: PendingRevocationLedger = serde_json::from_slice(&data)
-        .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    validate_pending_revocation_ledger(&ledger)?;
-    Ok(ledger)
+    let ledger = match serde_json::from_slice::<PendingRevocationLedger>(&data) {
+        Ok(ledger) => ledger,
+        Err(error) => {
+            // 完全不可解析:没有任何条目可救,隔离原件留证后按损坏处理
+            //(queue/acknowledge 会从空账本继续并用合法内容重写)。
+            quarantine_pending_ledger(path, &data);
+            return RevocationLedgerLoad::Corrupt(format!("parse {}: {error}", path.display()));
+        }
+    };
+    if let Err(error) = validate_pending_revocation_ledger(&ledger) {
+        // 可解析但未过整体校验(version 漂移/超限/单条损坏/重复键):逐条
+        // 抢救仍合法的条目并隔离原件,而不是整体丢弃——被丢弃的待吊销条目
+        // 会让旧 endpoint 在 relay 侧保持可加入。
+        let salvaged = salvage_pending_revocations(&ledger);
+        eprintln!(
+            "[web-access] pending-revocation ledger invalid ({error}); salvaged {} of {} entries",
+            salvaged.entries.len(),
+            ledger.entries.len()
+        );
+        quarantine_pending_ledger(path, &data);
+        // 抢救出的条目必须立刻落盘:进程崩溃在 worker ack 之前会丢掉这批
+        // 待吊销记录(隔离副本只留证据,不会被自动重放),旧 endpoint 将在
+        // relay 侧保持可加入——正是本分支要避免的结局。空抢救集按空账本
+        // 语义移除已隔离的路径,避免下一次 load 重复走隔离。落盘失败则
+        // 降级为内存态:本进程内由回放的权威账本
+        // (`pending_revocation_backlog`)接住,确认针对它整体落盘即可重建
+        // 盘上账本;进程在此之前重启则这批条目已不可恢复(与崩溃窗口同
+        // 级残余,Round-11 复审 minor 补记)。
+        if let Err(persist_error) = persist_pending_revocations_to(path, &salvaged) {
+            eprintln!(
+                "[web-access] failed to persist salvaged pending revocations: {persist_error}"
+            );
+        }
+        return RevocationLedgerLoad::Ledger(salvaged);
+    }
+    RevocationLedgerLoad::Ledger(ledger)
 }
 
 pub(super) fn persist_pending_revocations_to(
@@ -329,7 +537,18 @@ pub(super) fn queue_pending_revocation_at(
     pending: PendingRevocation,
 ) -> Result<(), String> {
     validate_pending_revocation(&pending)?;
-    let mut ledger = load_pending_revocations_from(path)?;
+    let mut ledger = match load_pending_revocations_classified(path) {
+        RevocationLedgerLoad::Ledger(ledger) => ledger,
+        RevocationLedgerLoad::Corrupt(error) => {
+            // 停用/轮换是恢复路径:Corrupt 只剩完全不可解析/超限两类(可解
+            // 析但未过验证的账本已在读取时逐条抢救并隔离原件),记录后从空
+            // 账本继续;随后的持久化会用合法内容重写,旧 endpoint 的吊销
+            // 不会被永久卡死。
+            eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
+            PendingRevocationLedger::default()
+        }
+        RevocationLedgerLoad::Unavailable(error) => return Err(error),
+    };
     let key = pending_revocation_key(&pending);
     if let Some(existing) = ledger
         .entries
@@ -355,15 +574,27 @@ pub(super) fn queue_pending_revocation_at(
     persist_pending_revocations_to(path, &ledger)
 }
 
-pub(super) fn acknowledge_pending_revocation(pending: &PendingRevocation) -> Result<(), String> {
-    acknowledge_pending_revocation_at(&pending_revocations_path(), pending)
+/// Round-11 复审 minor:回放确认的落盘原语——把调用方持有的权威账本
+/// (进程内 backlog)整体写盘,取代「重读磁盘→删一条→重写」;语义见
+/// manager `finish_pending_revocation`。空集移除文件(与 `_to` 一致)。
+pub(super) fn persist_pending_revocations(ledger: &PendingRevocationLedger) -> Result<(), String> {
+    persist_pending_revocations_to(&pending_revocations_path(), ledger)
 }
 
 pub(super) fn acknowledge_pending_revocation_at(
     path: &Path,
     pending: &PendingRevocation,
 ) -> Result<(), String> {
-    let mut ledger = load_pending_revocations_from(path)?;
+    let mut ledger = match load_pending_revocations_classified(path) {
+        RevocationLedgerLoad::Ledger(ledger) => ledger,
+        RevocationLedgerLoad::Corrupt(error) => {
+            // 与 queue 同理:吊销回放的确认不能被坏账本卡死;从空账本继续
+            // 意味着确认结果(删除条目)覆盖坏文件。
+            eprintln!("[web-access] pending-revocation ledger is corrupt, starting fresh: {error}");
+            PendingRevocationLedger::default()
+        }
+        RevocationLedgerLoad::Unavailable(error) => return Err(error),
+    };
     ledger.entries.retain(|entry| entry != pending);
     persist_pending_revocations_to(path, &ledger)
 }
@@ -387,9 +618,20 @@ pub(super) fn eligible_pending_revocations(
 }
 
 pub(super) fn load_or_initialize_rpc_ledger(endpoint_id: &str) -> Result<RpcLedger, String> {
-    let path = rpc_ledger_path();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
+    load_or_initialize_rpc_ledger_at(&rpc_ledger_path(), endpoint_id)
+}
+
+/// Path-injected variant for tests; the initialization branches still persist
+/// through the global `persist_rpc_ledger`, so tests only exercise the
+/// read/validation paths against injected paths.
+pub(super) fn load_or_initialize_rpc_ledger_at(
+    path: &Path,
+    endpoint_id: &str,
+) -> Result<RpcLedger, String> {
+    // take() 有界读取:512 条墓碑的账本远小于 1 MiB,超大文件必然损坏,
+    // 不能在解析前无界读入内存。
+    let file = match File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let ledger = RpcLedger::for_endpoint(endpoint_id);
             persist_rpc_ledger(&ledger)?;
@@ -397,6 +639,17 @@ pub(super) fn load_or_initialize_rpc_ledger(endpoint_id: &str) -> Result<RpcLedg
         }
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
+    let mut text = String::new();
+    file.take((super::MAX_RPC_LEDGER_FILE_BYTES + 1) as u64)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    if text.len() > super::MAX_RPC_LEDGER_FILE_BYTES {
+        return Err(format!(
+            "Web RPC ledger is larger than {} KiB: {}",
+            super::MAX_RPC_LEDGER_FILE_BYTES / 1024,
+            path.display()
+        ));
+    }
     let mut ledger: RpcLedger = serde_json::from_str(&text)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
     if ledger.endpoint_id != endpoint_id {
@@ -490,8 +743,34 @@ pub(super) fn remove_private_file(path: &Path) -> Result<(), String> {
     }
 }
 
+/// 环境变量覆盖的统一入口：trim 后为空或不通过校验一律返回 None（回落存储
+/// 值/内置默认），不报错——env 只是覆盖手段，宁可降级也不能因非法覆盖把
+/// Web 访问卡死。纯函数便于无环境变量的测试。
+fn normalized_env_url(
+    raw: Option<String>,
+    env_name: &str,
+    validate: impl Fn(&str) -> Result<(), String>,
+) -> Option<String> {
+    let value = raw?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Err(error) = validate(trimmed) {
+        // 运维显式设置的覆盖被丢弃时必须留痕:静默回落会让操作者以为在连
+        // 自己的 relay,实际已在存储值/内置默认上工作。
+        eprintln!("[web-access] ignoring invalid {env_name} override, falling back: {error}");
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 pub(super) fn remote_public_base_url() -> String {
-    if let Ok(url) = std::env::var("PINVOU_REMOTE_PUBLIC_URL") {
+    if let Some(url) = normalized_env_url(
+        std::env::var("PINVOU_REMOTE_PUBLIC_URL").ok(),
+        "PINVOU_REMOTE_PUBLIC_URL",
+        |url| validate_http_base_url(url, "PINVOU_REMOTE_PUBLIC_URL is invalid"),
+    ) {
         return url;
     }
     if let Some(settings) = load_relay_settings() {
@@ -501,7 +780,13 @@ pub(super) fn remote_public_base_url() -> String {
 }
 
 pub(super) fn remote_relay_ws_url() -> String {
-    if let Ok(url) = std::env::var("PINVOU_REMOTE_RELAY_WS_URL") {
+    // 与另外两个 env 覆盖同规则(trim 后为空/非法一律回落,不报错):非法
+    // 覆盖降级到存储值/内置默认,而不是把 enable 卡死在 validate_config。
+    if let Some(url) = normalized_env_url(
+        std::env::var("PINVOU_REMOTE_RELAY_WS_URL").ok(),
+        "PINVOU_REMOTE_RELAY_WS_URL",
+        |url| validate_ws_url(url, "PINVOU_REMOTE_RELAY_WS_URL is invalid"),
+    ) {
         return url;
     }
     if let Some(settings) = load_relay_settings() {
@@ -513,11 +798,14 @@ pub(super) fn remote_relay_ws_url() -> String {
 /// Development/manual-test override for the active connection only. Unlike
 /// `PINVOU_REMOTE_RELAY_WS_URL`, this value is never written to the persistent
 /// Web access config, so testing a local relay cannot strand the normal link.
+/// 非法（含空白、非 ws(s)、超长、trim 后为空）的覆盖被忽略并回落存储值。
 pub(super) fn apply_runtime_relay_override(mut config: WebAccessConfig) -> WebAccessConfig {
-    if let Ok(relay_url) = std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL") {
-        if !relay_url.trim().is_empty() {
-            config.relay_url = relay_url;
-        }
+    if let Some(relay_url) = normalized_env_url(
+        std::env::var("PINVOU_REMOTE_RUNTIME_RELAY_WS_URL").ok(),
+        "PINVOU_REMOTE_RUNTIME_RELAY_WS_URL",
+        |url| validate_ws_url(url, "PINVOU_REMOTE_RUNTIME_RELAY_WS_URL is invalid"),
+    ) {
+        config.relay_url = relay_url;
     }
     config
 }
@@ -553,4 +841,145 @@ pub(super) fn percent_encode(value: &str) -> String {
 /// parent module, so it stays `pub(super)`.
 pub(super) fn new_stream_epoch() -> String {
     format!("epoch_{}", crate::features::remote_control::short_token(24))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_url_overrides_are_trimmed_and_fail_safe() {
+        // 覆盖只在通过与设置文件相同校验时生效;非法/空值一律回落(None),
+        // 不上抛——env 覆盖宁可降级,不能卡死 Web 访问。
+        let http = |url: &str| validate_http_base_url(url, "invalid");
+        assert_eq!(
+            normalized_env_url(
+                Some("  https://relay.example.test/pinvou3/remote \n".into()),
+                "PINVOU_REMOTE_TEST_URL",
+                http
+            ),
+            Some("https://relay.example.test/pinvou3/remote".into())
+        );
+        assert_eq!(
+            normalized_env_url(
+                Some("ftp://not-http".into()),
+                "PINVOU_REMOTE_TEST_URL",
+                http
+            ),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(
+                Some("https://has space".into()),
+                "PINVOU_REMOTE_TEST_URL",
+                http
+            ),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(
+                Some(format!("https://{}", "a".repeat(2_049))),
+                "PINVOU_REMOTE_TEST_URL",
+                http
+            ),
+            None,
+            "the length cap matches the relay settings validation"
+        );
+        assert_eq!(
+            normalized_env_url(Some("   ".into()), "PINVOU_REMOTE_TEST_URL", http),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(None, "PINVOU_REMOTE_TEST_URL", http),
+            None
+        );
+
+        let ws = |url: &str| validate_ws_url(url, "invalid");
+        assert_eq!(
+            normalized_env_url(
+                Some(" ws://127.0.0.1:8787/ws ".into()),
+                "PINVOU_REMOTE_TEST_URL",
+                ws
+            ),
+            Some("ws://127.0.0.1:8787/ws".into())
+        );
+        assert_eq!(
+            normalized_env_url(Some("http://not-ws".into()), "PINVOU_REMOTE_TEST_URL", ws),
+            None
+        );
+        assert_eq!(
+            normalized_env_url(Some("".into()), "PINVOU_REMOTE_TEST_URL", ws),
+            None
+        );
+    }
+
+    /// Round-6 复审:三个 env 覆盖读取点必须全部经由 `normalized_env_url`
+    /// (trim + 校验 + 非法回落),直接回退到裸 `std::env::var` 会让非法
+    /// 覆盖静默生效。helper 级测试(上方)看不见接线,按本模块惯例用
+    /// source-contract 钉住三个调用点的函数体。
+    #[test]
+    fn env_override_readers_route_through_the_normalized_helper() {
+        let source = include_str!("persistence.rs");
+        for (fn_name, env_name) in [
+            (
+                "fn remote_public_base_url() -> String",
+                "PINVOU_REMOTE_PUBLIC_URL",
+            ),
+            (
+                "fn remote_relay_ws_url() -> String",
+                "PINVOU_REMOTE_RELAY_WS_URL",
+            ),
+            (
+                "fn apply_runtime_relay_override(mut config: WebAccessConfig)",
+                "PINVOU_REMOTE_RUNTIME_RELAY_WS_URL",
+            ),
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub(super) fn ")
+                .or_else(|| body.find("\nfn "))
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("normalized_env_url("),
+                "{fn_name} must route its env override through normalized_env_url"
+            );
+            assert!(body.contains(env_name), "{fn_name} must read {env_name}");
+        }
+    }
+
+    /// Round-9 复审 minor:两个 loader 的修复失败腿必须走
+    /// `quarantine_secret_file`(0600 副本 + unlink 原件)而不是普通
+    /// `quarantine_corrupt_file`——rename 保留放宽的 mode 位,他者属主
+    /// 的世界可读密文件在隔离名下依旧裸奔。该分支的触发需要他者属主
+    /// (CI 无法驱动,与 round-8 的 review-pinned 残例同类),按本模块
+    /// 惯例用 source-contract 钉住两个调用点;helper 自身的 0600/unlink
+    /// 语义由 filesystem 模块的 executing 测试覆盖。
+    #[test]
+    fn repair_failure_legs_quarantine_secret_files() {
+        let source = include_str!("persistence.rs");
+        for fn_name in [
+            "pub(super) fn load_config_from(path: &Path) -> Result<Option<WebAccessConfig>, String> {",
+            "fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {",
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub(super) fn ")
+                .or_else(|| body.find("\nfn "))
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("quarantine_secret_file(path)"),
+                "{fn_name} must quarantine a failed-permission repair via quarantine_secret_file"
+            );
+            assert!(
+                !body.contains("quarantine_corrupt_file(path)"),
+                "{fn_name} must not keep the loose-mode rename on its repair-failure leg"
+            );
+        }
+    }
 }

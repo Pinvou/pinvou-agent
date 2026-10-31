@@ -5,7 +5,7 @@ mod workspace_grants;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use super::protocol::{
     PROTOCOL_VERSION, WebAccessConfig, WebAccessInfo, WebAccessStatus, WebAccessStatusKind,
 };
 use super::relay_client::{self, RelayInbound, RelayOutbound, RelaySender};
+use crate::platform::paths;
 
 // Host filesystem browsing (`list_host_files` / `read_artifact_chunk` /
 // `ArtifactChunk` / `HostFileListing`) lives in `super::file_access`, extracted
@@ -34,12 +35,12 @@ pub use persistence::RelaySettingsInfo;
 #[cfg(test)]
 use persistence::atomic_write_private_json;
 use persistence::{
-    acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
-    eligible_pending_revocations, fresh_config, load_config, load_or_initialize_rpc_ledger,
-    load_pending_revocations, load_relay_settings, new_stream_epoch, pairing_info,
-    pending_revocation_key, persist_config, persist_rpc_ledger, process_lock_path, public_url,
-    queue_pending_revocation, remote_public_base_url, remote_relay_ws_url, remove_config,
-    remove_rpc_ledger, validate_config,
+    acquire_process_lock, apply_runtime_relay_override, config_path, eligible_pending_revocations,
+    fresh_config, load_config, load_config_from, load_or_initialize_rpc_ledger,
+    load_pending_revocations_for_replay, load_relay_settings, new_stream_epoch, pairing_info,
+    pending_revocation_key, persist_config, persist_pending_revocations, persist_rpc_ledger,
+    process_lock_path, public_url, queue_pending_revocation, remote_public_base_url,
+    remote_relay_ws_url, remove_config, remove_rpc_ledger, validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event
@@ -47,12 +48,14 @@ use persistence::{
 // enums (`RpcRequestAction`, `EventSource`, ...) and calls
 // the pure helpers, so the whole surface is imported by name.
 use rpc::{
-    EventSource, NewRpcAdmission, ReplayMessageContext, RpcRequestAction, bounded_rpc_completion,
-    enqueue_stream_reset, event_message, prepare_bridge_generation, prepare_new_rpc_admission,
-    prune_rpc_cache, request_conflict_completion, rpc_admission_rejection, rpc_error_completion,
-    rpc_fingerprint, rpc_in_flight_expired, rpc_response, snapshot_message, stream_reset_message,
-    subscription_filtered_replay_messages, tombstone_completion, try_enqueue_message_batch,
-    validate_bridge_generation, validate_rpc_command, validate_web_rpc_scope,
+    EventSource, NewRpcAdmission, RPC_TIMED_OUT_CODE, ReplayMessageContext, RpcRejection,
+    RpcRequestAction, WebScopeRejection, bounded_rpc_completion, enqueue_stream_reset,
+    event_message, prepare_bridge_generation, prepare_new_rpc_admission, prune_rpc_cache,
+    request_conflict_completion, rpc_admission_rejection, rpc_error_completion, rpc_fingerprint,
+    rpc_in_flight_expired, rpc_response, snapshot_message, stream_reset_message,
+    subscription_filtered_replay_messages, tombstone_completion, tombstone_completion_cacheable,
+    try_enqueue_message_batch, validate_bridge_generation, validate_rpc_command,
+    validate_web_rpc_scope,
 };
 
 // The transfer buffer helpers mutate `Inner` through borrowed guards. They are
@@ -178,9 +181,28 @@ const MAX_WEB_SESSION_DOWNLOADS: usize = 2;
 const PENDING_REVOCATIONS_VERSION: u8 = 1;
 const MAX_PENDING_REVOCATIONS: usize = 32;
 const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
+/// RPC 账本的有界读取上限:满额 512 条墓碑(每条 ≤256 字节 id + 64 位指纹)
+/// 距离 1 MiB 还有数倍余量,超出即为损坏文件,不得无界读入。
+const MAX_RPC_LEDGER_FILE_BYTES: usize = 1024 * 1024;
 const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
 const WEB_SESSION_TRANSFER_REAPER_INTERVAL: Duration = Duration::from_secs(60);
+
+/// 这些 error 码终结本次注册(relay_client 的 run_loop 停止重连),manager
+/// 需要据此做完整清理或停在带原因的 Error 状态。Relay 的 reject 帧不携带
+/// endpoint_id,`handle_relay_message` 的入口必须为它们放行;其余 error 码
+/// (含 `endpoint_not_found` 与瞬时容量/限流类)保持既有行为。本清单与
+/// relay_client::terminal_message 的 RegisterRejected/Revoked 臂保持对齐
+/// (刻意排除 `endpoint_not_found`:其 reject 帧不带 endpoint_id,入口本就
+/// 丢弃;清单放行它只会造出无消费的终结路径),对齐由 relay_client 测试
+/// `terminal_registration_code_lists_stay_aligned` 钉住。
+pub(crate) const TERMINAL_REGISTRATION_ERROR_CODES: &[&str] = &[
+    "endpoint_revoked",
+    "invalid_access_token",
+    "invalid_desktop_secret",
+    "bad_desktop_endpoint_register",
+    "unsupported_protocol_version",
+];
 
 /// 从事件 payload 提取会话 id（不同事件用不同字段名）。
 fn event_session_id(payload: &Value) -> Option<&str> {
@@ -203,6 +225,96 @@ fn should_filter_code_session_event(
         }
         None => false,
     }
+}
+
+/// 转发的 rpc_request 必须指向当前活跃的 Web lease(与 `client_ready` 的
+/// 校验一致)。无活跃 lease 时不过滤:此时主准入路径本就没有可回复的
+/// endpoint,行为与校验加入前一致。
+/// A changed lease always invalidates subscriptions: they belong to a
+/// concrete Web lease and must rebuild before `client_ready` requests a
+/// replay, otherwise old subscriptions can advance the new client's event
+/// cursor before it is ready. Staged transfers are only discarded on a
+/// takeover — the relay marks a join that arrives after the previous Web
+/// socket already died (`web_rejoining`); that client holds the same
+/// endpoint token, so a watchdog- or network-driven rejoin must keep its
+/// staged attachments, in-flight uploads, and session downloads instead of
+/// destroying them on every idle reconnect.
+fn apply_web_lease_change(inner: &mut Inner, web_rejoining: bool) {
+    inner.subscriptions.clear();
+    if !web_rejoining {
+        clear_web_attachments(inner);
+    }
+}
+
+/// 撤权的内存侧效果:同步活跃 endpoint 的授权旗标,并立刻作废已铸出的
+/// workspace grant。grant 是绑定 endpoint 的一次性句柄(30 分钟 TTL),
+/// 不清除的话,手机在撤权前铸出的 grant 在整个 TTL 窗口内仍可兑换建立
+/// host 目录会话。
+fn revoke_host_workspace_state(inner: &mut Inner) {
+    if let Some(endpoint) = inner.endpoint.as_mut() {
+        endpoint.config.allow_host_workspace = false;
+    }
+    inner.web_workspace_grants.clear();
+}
+
+/// `attachment_` 前缀 + 非空字母数字是桌面铸造的附件句柄形状
+/// (`attachment_{short_token(32)}`)。形状校验让调用方自选的任意字节
+/// 不回显进错误链(Round-11 复审 minor)。
+fn attachment_handle_is_well_formed(handle: &str) -> bool {
+    match handle.strip_prefix("attachment_") {
+        Some(body) => !body.is_empty() && body.chars().all(|c| c.is_ascii_alphanumeric()),
+        None => false,
+    }
+}
+
+/// 注册类 error 帧的可操作恢复提示。版本不匹配的正确恢复路径是升级到
+/// 匹配的最新版本——轮换只会铸出同一协议版本的新 endpoint,「rotate」
+/// 提示在那里是错误指引。同一个码覆盖两侧:桌面端过旧(默认情形)与
+/// 自建中继过旧(桌面端其实是新的)无法从码上区分,提示必须同时覆盖
+/// (Round-10 复审 minor)。
+fn relay_registration_error_reason(error_code: &str, relay_message: &str) -> String {
+    match error_code {
+        "invalid_access_token" | "invalid_desktop_secret" => {
+            format!("{relay_message}; rotate Web access to mint a fresh endpoint")
+        }
+        "bad_desktop_endpoint_register" => format!(
+            "{relay_message}; the persisted Web access config is unusable, rotate Web access to recover"
+        ),
+        "unsupported_protocol_version" => format!(
+            "{relay_message}; update this desktop (and a self-hosted relay, if you run one) to the latest version to restore Web access"
+        ),
+        _ => relay_message.to_string(),
+    }
+}
+
+/// 注册终结码的稳定恢复码:`last_error` 原文是英文(渲染进桌面状态行),
+/// SettingsView 据本码映射三语恢复文案,缺失时回退原文。分支必须与
+/// [`relay_registration_error_reason`] 一致,双方由同一测试钉住。
+fn relay_registration_error_code(error_code: &str) -> Option<&'static str> {
+    match error_code {
+        "invalid_access_token" | "invalid_desktop_secret" => Some("rotate_credentials"),
+        "bad_desktop_endpoint_register" => Some("rotate_recover_config"),
+        "unsupported_protocol_version" => Some("update_desktop"),
+        _ => None,
+    }
+}
+
+fn rpc_request_targets_active_lease(inner: &Inner, lease_id: &str) -> bool {
+    inner
+        .endpoint
+        .as_ref()
+        .and_then(|endpoint| endpoint.lease_id.as_deref())
+        .map_or(true, |active| active == lease_id)
+}
+
+/// `client_ready` 两阶段握手(PROTOCOL.md):缺失或非布尔的 `state_ready`
+/// 一律按 phase-1(未就绪)处理——桌面只协商能力与回放游标,不投递业务
+/// 事件;旧版默认 true 会让不发送该字段的客户端跳过就绪屏障。
+fn client_state_ready(value: &Value) -> bool {
+    value
+        .get("state_ready")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 const RUST_FORWARDED_EVENTS: &[&str] = &[
@@ -274,6 +386,12 @@ struct Inner {
     web_session_downloads: HashMap<String, WebSessionDownload>,
     web_session_download_order: VecDeque<String>,
     pending_revocations_in_flight: HashSet<String>,
+    /// Round-11 复审 minor:本进程的待吊销权威账本。回放时装载自磁盘,
+    /// queue 时随写盘同步追加;确认针对它整体落盘,而不是「重读磁盘→
+    /// 删一条→重写」——抢救降级(抢救落盘失败)后磁盘上没有账本,重读
+    /// 式确认会拿空账本清掉仍在内存的兄弟条目,重启后这批待吊销记录
+    /// 全部丢失(旧 endpoint 在 relay 侧保持可加入)。
+    pending_revocation_backlog: Vec<PendingRevocation>,
     /// 原生代码会话判定；None = 未注入（不过滤，启动早期行为不变）。
     code_session_predicate: Option<CodeSessionPredicate>,
 }
@@ -300,6 +418,7 @@ impl Default for Inner {
             web_session_downloads: HashMap::new(),
             web_session_download_order: VecDeque::new(),
             pending_revocations_in_flight: HashSet::new(),
+            pending_revocation_backlog: Vec::new(),
             code_session_predicate: None,
         }
     }
@@ -408,6 +527,9 @@ struct ActiveEndpoint {
     /// the later `client_ready` instant.
     fresh_baseline_seq: Option<u64>,
     last_error: Option<String>,
+    /// 与 `last_error` 成对的稳定恢复码;任何不携带码的错误写入都必须把它
+    /// 清掉,防止旧码被映射到新错误文本上。
+    last_error_code: Option<String>,
     sender: RelaySender,
 }
 
@@ -476,12 +598,25 @@ struct RpcTombstone {
     acknowledged: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PendingRevocation {
     relay_url: String,
     endpoint_id: String,
     desktop_secret: String,
+}
+
+// 手写 Debug:desktop_secret 是明文凭据,派生 Debug 会把它带进日志与 panic
+// 信息;endpoint_id/relay_url 保持可见以便定位。
+impl std::fmt::Debug for PendingRevocation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingRevocation")
+            .field("relay_url", &self.relay_url)
+            .field("endpoint_id", &self.endpoint_id)
+            .field("desktop_secret", &"[redacted]")
+            .finish()
+    }
 }
 
 impl From<&WebAccessConfig> for PendingRevocation {
@@ -775,6 +910,23 @@ fn reset_web_state(inner: &mut Inner) {
     inner.web_workspace_grants.clear();
 }
 
+/// 停用路径专用的容错读取:web-access.json 损坏或超大时按「无配置」继续,
+/// 让停用始终可用(停用随后会删除该文件)。start/resume/refresh 仍走
+/// `load_config` 的 fail-closed 语义并带具体路径报错。
+fn load_config_for_stop_at(path: &Path) -> Option<WebAccessConfig> {
+    match load_config_from(path) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("[web-access] stop ignores unreadable Web access config: {error}");
+            None
+        }
+    }
+}
+
+fn load_config_for_stop() -> Option<WebAccessConfig> {
+    load_config_for_stop_at(&config_path())
+}
+
 impl RemoteControlManager {
     pub fn new(app: AppHandle) -> Self {
         let (policy, policy_error) = match AccessPolicy::load() {
@@ -911,6 +1063,55 @@ impl RemoteControlManager {
         })?))
     }
 
+    /// 撤销本机目录授权但不断开链接:后续 workspace grant 在铸造时被拒,
+    /// 已发出的 grant 也随之立刻作废(否则一个 30 分钟 TTL 的一次性句柄
+    /// 仍可在撤权后兑换,授权旗标与实际可访问面不一致)。这是设置弹窗的
+    /// 显式撤权入口——让旧版本「开启访问」单按钮顺带写下的
+    /// allow_host_workspace 可见、可单独收回,而不必轮换或停用整条链接
+    /// (Stop 之外的唯一清除路径)。幂等:已是未授权状态时不重写凭据文件,
+    /// 但状态失效与状态刷新照常执行(重复撤权无副作用)。
+    pub fn revoke_host_workspace(&self) -> Result<WebAccessInfo, String> {
+        let _lifecycle = self.lifecycle.lock();
+        self.ensure_policy()?;
+        self.ensure_process_ownership()?;
+        // Round-11 复审 minor:状态失效不依赖配置文件——先作废内存旗标与
+        // 全部已发出的 grant,再做配置读回/落盘。web-access.json 在端点
+        // 存活期间损坏时,严格读取失败不能把撤权卡死(与 stop_current
+        // 容错读的同一理由:停用/撤权本身就是恢复手段),否则一次性
+        // grant 在剩余 TTL 内仍可兑换。落盘失败仍返回 Err,但此时状态
+        // 失效已先行,错误提示宁按已撤销一侧。
+        {
+            let mut inner = self.inner.lock();
+            revoke_host_workspace_state(&mut inner);
+        }
+        let mut config =
+            load_config()?.ok_or_else(|| "Web access is not configured".to_string())?;
+        validate_config(&config)?;
+        let latched = config.allow_host_workspace;
+        if latched {
+            config.allow_host_workspace = false;
+            persist_config(&config)?;
+        }
+        // 状态失效无条件先行(幂等重入时 grant 清空同样真实发生),状态
+        // 刷新因此一律发送;emit_status→status 会再次锁 inner,取 guard
+        // 的独立块必须先出作用域,否则 parking_lot 不可重入锁在同线程
+        // 自锁(撤销即死锁,死锁钉按括号深度判)。
+        self.emit_status();
+        let inner = self.inner.lock();
+        // Round-5 复审 minor:endpoint 未激活(resume 尚未成功/激活失败)时
+        // 撤权仍已持久化成功,按失败上报会让设置弹窗对一次真实的撤权显示
+        // 错误。返回携带配置内 endpoint_id 的非活跃信息而不是 Err。
+        match inner.endpoint.as_ref() {
+            Some(endpoint) => Ok(pairing_info(endpoint)),
+            None => Ok(WebAccessInfo {
+                endpoint_id: config.endpoint_id.clone(),
+                url: String::new(),
+                qr_data_url: None,
+                status: WebAccessStatusKind::Stopped,
+            }),
+        }
+    }
+
     pub fn relay_settings(&self) -> RelaySettingsInfo {
         RelaySettingsInfo {
             relay_url: remote_relay_ws_url(),
@@ -930,8 +1131,12 @@ impl RemoteControlManager {
     pub fn stop_current(&self) -> Result<(), String> {
         let _lifecycle = self.lifecycle.lock();
         self.ensure_process_ownership()?;
-        self.replay_pending_revocations()?;
-        let persisted = load_config()?;
+        // 停用本身就是恢复手段,损坏的持久状态不能把停用也卡死:start/resume/
+        // refresh 仍 fail-closed(带具体路径报错),这里只降级读取并继续清理。
+        if let Err(error) = self.replay_pending_revocations() {
+            eprintln!("[web-access] stop ignores pending-revocation replay failure: {error}");
+        }
+        let persisted = load_config_for_stop();
         let current_config = self
             .inner
             .lock()
@@ -944,6 +1149,7 @@ impl RemoteControlManager {
         }
         // A failed removal leaves the old config authoritative. Its queued
         // entry therefore remains dormant instead of revoking a live link.
+        // 损坏的配置文件同样会被删除:停用之后磁盘上不再残留无法解析的状态。
         remove_config()?;
         let endpoint = {
             let mut inner = self.inner.lock();
@@ -957,7 +1163,9 @@ impl RemoteControlManager {
         if let Some(endpoint) = endpoint {
             let _ = endpoint.sender.try_send(RelayOutbound::Shutdown);
         }
-        self.replay_pending_revocations()?;
+        if let Err(error) = self.replay_pending_revocations() {
+            eprintln!("[web-access] stop ignores pending-revocation replay failure: {error}");
+        }
         remove_rpc_ledger()?;
         self.emit_status();
         Ok(())
@@ -996,8 +1204,14 @@ impl RemoteControlManager {
     /// rotation/stop and must remain dormant. This makes crashes between
     /// queueing and replacing/removing `web-access.json` safe.
     fn replay_pending_revocations(&self) -> Result<(), String> {
-        let ledger = load_pending_revocations()?;
+        let ledger = load_pending_revocations_for_replay()?;
         let current = load_config()?;
+        // 回放装载的账本是本进程的权威副本(含抢救降级时只在内存里的
+        // 条目):确认针对它整体落盘,见 finish_pending_revocation。
+        {
+            let mut inner = self.inner.lock();
+            inner.pending_revocation_backlog = ledger.entries.iter().cloned().collect();
+        }
         for pending in eligible_pending_revocations(&ledger, current.as_ref()) {
             let key = pending_revocation_key(&pending);
             {
@@ -1048,13 +1262,34 @@ impl RemoteControlManager {
     ) {
         let _lifecycle = self.lifecycle.lock();
         if acknowledged {
-            if let Err(error) = acknowledge_pending_revocation(&pending) {
-                // Leave the durable entry in place. The next lifecycle replay
-                // will prove the endpoint absent and retry cleanup.
-                eprintln!(
-                    "[web-access] persist revocation acknowledgement for {} failed: {error}",
-                    pending.endpoint_id
-                );
+            // Round-11 复审 minor:确认针对进程内权威账本
+            // (`pending_revocation_backlog`)整体落盘,而不是「重读磁盘→删
+            // 一条→重写」——抢救降级后磁盘上没有账本,重读式确认会拿空
+            // 账本清掉仍在内存的兄弟条目,重启后这批待吊销记录全部丢失
+            // (旧 endpoint 在 relay 侧保持可加入)。落盘失败把全集(含本
+            // 条)放回内存,留待下个生命周期重试;回放/queue 时账本已随
+            // 盘写同步,重启亦从磁盘重建。生命周期锁串行化两个确认工人
+            // 的取-存窗口,不存在并发丢失。
+            let endpoint_id = pending.endpoint_id.clone();
+            let mut remaining = {
+                let mut inner = self.inner.lock();
+                std::mem::take(&mut inner.pending_revocation_backlog)
+            };
+            remaining.retain(|entry| entry != &pending);
+            let mut ledger = PendingRevocationLedger::default();
+            ledger.entries = remaining.iter().cloned().collect();
+            match persist_pending_revocations(&ledger) {
+                Ok(()) => {
+                    self.inner.lock().pending_revocation_backlog = remaining;
+                }
+                Err(error) => {
+                    remaining.push(pending);
+                    self.inner.lock().pending_revocation_backlog = remaining;
+                    eprintln!(
+                        "[web-access] persist revocation acknowledgement for {endpoint_id} \
+                         failed ({error}); the entry stays queued for the next lifecycle replay"
+                    );
+                }
             }
         }
         self.inner.lock().pending_revocations_in_flight.remove(&key);
@@ -1133,11 +1368,34 @@ impl RemoteControlManager {
         reservation.revalidate()
     }
 
+    /// 绑定/兑换时点的授权旗标复核:reserve 与 session 创建之间用户可能
+    /// 已撤销授权,一次性句柄的 TTL 窗口内不得让撤权前的 reservation 仍把
+    /// host 目录绑进新 session。
+    pub(crate) fn require_host_workspace_authorized(&self) -> Result<(), String> {
+        let inner = self.inner.lock();
+        let authorized = inner
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.config.allow_host_workspace);
+        if authorized {
+            Ok(())
+        } else {
+            Err("Web workspace authorization was revoked".to_string())
+        }
+    }
+
     pub(crate) fn restore_web_workspace_grant(
         &self,
         reservation: WebWorkspaceGrantReservation,
     ) -> bool {
         let mut inner = self.inner.lock();
+        let Some(allow_host_workspace) = inner
+            .endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.config.allow_host_workspace)
+        else {
+            return false;
+        };
         let Some(endpoint_id) = inner
             .endpoint
             .as_ref()
@@ -1145,9 +1403,12 @@ impl RemoteControlManager {
         else {
             return false;
         };
-        inner
-            .web_workspace_grants
-            .restore(reservation, &endpoint_id, Instant::now())
+        inner.web_workspace_grants.restore(
+            reservation,
+            &endpoint_id,
+            Instant::now(),
+            allow_host_workspace,
+        )
     }
 
     /// Keep parsed attachment contents on the desktop. The browser receives
@@ -1259,6 +1520,14 @@ impl RemoteControlManager {
         for handle in handles {
             if !unique.insert(handle.as_str()) {
                 return Err("远程控制附件句柄重复".into());
+            }
+            // Round-11 复审 minor:拒绝串只回显桌面自己铸造的形状
+            // (`attachment_<字母数字>`)。调用方字节原样进入错误链,经
+            // fold_web_chat_error 的忙碌锚点折叠后,含
+            // `reserve Web chat turn: …` 段的句柄会把硬失败伪装成瞬态
+            // 忙碌,驱动手机侧对从未准入的 turn 做远端和解。
+            if !attachment_handle_is_well_formed(handle) {
+                return Err("远程控制附件句柄不存在或已过期".into());
             }
             if !inner.web_attachments.contains_key(handle) {
                 return Err(format!("远程控制附件句柄不存在或已过期：{handle}"));
@@ -1548,6 +1817,7 @@ impl RemoteControlManager {
                 web_client_connected: endpoint.web_client_connected,
                 host_workspace_authorized: endpoint.config.allow_host_workspace,
                 last_error: endpoint.last_error.clone(),
+                last_error_code: endpoint.last_error_code.clone(),
             }
         } else {
             WebAccessStatus {
@@ -1563,6 +1833,7 @@ impl RemoteControlManager {
                     .idle_error
                     .clone()
                     .or_else(|| self.policy_error.clone()),
+                last_error_code: None,
             }
         }
     }
@@ -1665,31 +1936,12 @@ impl RemoteControlManager {
         let mut next_ledger = inner.rpc_ledger.clone();
         next_ledger.acknowledge(request_id, &fingerprint)?;
         if let Err(error) = persist_rpc_ledger(&next_ledger) {
-            // Never leave this generation in a dispatched-but-unacknowledged
-            // limbo. Return a deterministic terminal response without running
-            // the application command when the durable side-effect barrier
-            // cannot be committed.
-            let completion = rpc_error_completion(
-                "rpc_ledger_unavailable",
-                format!("cannot durably begin Web RPC: {error}"),
-            );
-            inner.rpc_cache.insert(
-                request_id.to_string(),
-                RpcCacheEntry::Complete {
-                    fingerprint,
-                    completion: completion.clone(),
-                },
-            );
-            prune_rpc_cache(&mut inner);
-            if let Some(endpoint) = inner.endpoint.as_ref() {
-                let response = rpc_response(
-                    &endpoint.config.endpoint_id,
-                    &lease_id,
-                    request_id,
-                    &completion,
-                );
-                let _ = endpoint.sender.try_send(RelayOutbound::Message(response));
-            }
+            // 持久化失败是瞬时的(磁盘满/EACCES 等),与 handle_rpc_request
+            // 的准入路径同一裁决:响应但不写 Complete 缓存。命令尚未执行,
+            // 同一 client_request_id 的重试会经 Pending 臂重派发并重走
+            // begin(settle 收口解除派发代标记);缓存成 Complete 会把这次
+            // 瞬时失败永久重放给手机(replay poisoning)。
+            Self::settle_begin_persist_failure(&mut inner, request_id, &lease_id, &error);
             return Ok(false);
         }
         inner.rpc_ledger = next_ledger;
@@ -1723,7 +1975,41 @@ impl RemoteControlManager {
                     }
                     (pending.lease_id.clone(), pending.fingerprint.clone())
                 }
-                Some(RpcCacheEntry::Complete { .. }) => return Ok(()),
+                Some(RpcCacheEntry::Complete {
+                    fingerprint,
+                    completion,
+                }) => {
+                    // Round-5 复审 M1:TTL 扫描会把仍在执行(或恰好刚完成)的
+                    // 请求先写成超时占位。真实完成必须取代占位而不是被幂等吞
+                    // 掉,否则手机重放这个 id 拿到的是过期超时(「已释放」),
+                    // 真实结果永远到不了手机。只有占位可被取代:占位被替换后
+                    // 第二次 complete 仍走幂等忽略;确定性拒绝等真终态不可被
+                    // 伪造的 complete 覆盖(命令未派发,不存在真实完成)。
+                    // 替换是有意「存而不发」:手机已收到超时终态,同
+                    // client_request_id 的主动双发会破坏单响应契约;手机
+                    // 重放该 id 时,Complete 臂会回放这里替换后的真实结果。
+                    if Self::rpc_completion_is_in_flight_timeout(completion) {
+                        let fingerprint = fingerprint.clone();
+                        inner.rpc_cache.insert(
+                            request_id.to_string(),
+                            RpcCacheEntry::Complete {
+                                fingerprint,
+                                completion: bounded_rpc_completion(
+                                    ok,
+                                    result,
+                                    error,
+                                    error_code,
+                                    error_category,
+                                ),
+                            },
+                        );
+                        // Round-7 复审:替换插入与 Pending→Complete 臂同一
+                        // 记账对称性——插入后立即按容量裁剪,避免一次 ≤2MiB
+                        // 的迟到真实结果把缓存字节顶过上限直到下一次插入。
+                        prune_rpc_cache(&mut inner);
+                    }
+                    return Ok(());
+                }
                 None => return Err(format!("unknown Web RPC request: {request_id}")),
             };
             let completion = bounded_rpc_completion(ok, result, error, error_code, error_category);
@@ -1782,6 +2068,7 @@ impl RemoteControlManager {
                 last_lease_id: None,
                 fresh_baseline_seq: None,
                 last_error: None,
+                last_error_code: None,
                 sender,
             });
         }
@@ -1820,11 +2107,15 @@ impl RemoteControlManager {
             endpoint.status = WebAccessStatusKind::ConnectingRelay;
             if connected {
                 endpoint.last_error = None;
+                endpoint.last_error_code = None;
             } else {
                 endpoint.web_client_connected = false;
                 endpoint.lease_id = None;
                 endpoint.fresh_baseline_seq = None;
                 endpoint.last_error = error;
+                // 字段契约:任何不携带码的错误写入都必须清掉旧码,防止旧恢复
+                // 码被映射到新的错误文本上(round-5 复审 minor)。
+                endpoint.last_error_code = None;
             }
         }
         self.emit_status();
@@ -1835,7 +2126,27 @@ impl RemoteControlManager {
             .get("endpoint_id")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !self.is_current_endpoint(endpoint_id) {
+        let message_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let error_code = if message_type == "error" {
+            value
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        } else {
+            ""
+        };
+        // Relay 的 reject 帧不携带 endpoint_id(作用于本 socket 的注册);
+        // relay_client 转发前会补戳本 socket 注册的 endpoint,使显式匹配
+        // gate 生效(轮换竞态中迟到的终结帧从此被丢弃,不会误伤新 endpoint)。
+        // 空 endpoint_id 的放行分支仅作为对未戳帧的纵深防御保留;其余 error
+        // 帧与所有其他消息仍要求显式匹配当前 endpoint,防止他端点帧串扰或
+        // 瞬时错误抖动状态。
+        let terminal_registration_error =
+            endpoint_id.is_empty() && TERMINAL_REGISTRATION_ERROR_CODES.contains(&error_code);
+        if !self.is_current_endpoint(endpoint_id) && !terminal_registration_error {
             return;
         }
         match value
@@ -1853,12 +2164,34 @@ impl RemoteControlManager {
             "desktop_endpoint_revoked" => self.handle_revoked(endpoint_id),
             "desktop_endpoint_replaced" => self.handle_replaced(endpoint_id),
             "error" => {
-                let error = value
+                if error_code == "endpoint_revoked" {
+                    // Relay 明确告知注册命中墓碑:reject 帧不携带 endpoint_id,
+                    // 解析当前 endpoint 后走与 desktop_endpoint_revoked 相同的
+                    // 完整清理,否则本地配置会对一个不可能成功的注册永远重试。
+                    // (先取出 id 再调用,不能把锁的临时留给 if let 整句。)
+                    let current = self
+                        .inner
+                        .lock()
+                        .endpoint
+                        .as_ref()
+                        .map(|endpoint| endpoint.config.endpoint_id.clone());
+                    if let Some(current) = current {
+                        self.handle_revoked(&current);
+                    }
+                    return;
+                }
+                let relay_message = value
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("relay rejected Web access request")
-                    .to_string();
-                self.set_endpoint_error(error);
+                    .unwrap_or("relay rejected Web access request");
+                // 注册被确定性拒绝时 run_loop 已停止重连;给出可操作的恢复
+                // 路径,并且该原因必须保持粘性(run_loop 终止路径不再发送
+                // Connection 事件,last_error 不会被「relay connection lost」
+                // 覆盖)。
+                self.set_endpoint_error_with_code(
+                    relay_registration_error_code(error_code),
+                    relay_registration_error_reason(error_code, relay_message),
+                );
             }
             _ => {}
         }
@@ -1881,9 +2214,12 @@ impl RemoteControlManager {
                     .as_ref()
                     .and_then(|endpoint| endpoint.last_lease_id.as_ref())
                     != lease_id.as_ref();
+            let web_rejoining = value
+                .get("web_rejoining")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if lease_changed {
-                inner.subscriptions.clear();
-                clear_web_attachments(&mut inner);
+                apply_web_lease_change(&mut inner, web_rejoining);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
                 return;
@@ -1903,6 +2239,7 @@ impl RemoteControlManager {
                 WebAccessStatusKind::WaitingWebClient
             };
             endpoint.last_error = None;
+            endpoint.last_error_code = None;
         }
         self.emit_status();
     }
@@ -1928,13 +2265,12 @@ impl RemoteControlManager {
                 .as_ref()
                 .and_then(|endpoint| endpoint.last_lease_id.as_deref())
                 != Some(lease_id.as_str());
+            let web_rejoining = value
+                .get("web_rejoining")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if lease_changed {
-                // Subscriptions belong to a concrete Web lease. A takeover or
-                // reload must rebuild them before `client_ready` requests a
-                // replay, otherwise old subscriptions can advance the new
-                // client's event cursor before it is ready.
-                inner.subscriptions.clear();
-                clear_web_attachments(&mut inner);
+                apply_web_lease_change(&mut inner, web_rejoining);
             }
             let Some(endpoint) = inner.endpoint.as_mut() else {
                 return;
@@ -1946,6 +2282,7 @@ impl RemoteControlManager {
             endpoint.fresh_baseline_seq = fresh_baseline_seq;
             endpoint.status = WebAccessStatusKind::WebClientConnected;
             endpoint.last_error = None;
+            endpoint.last_error_code = None;
             // A pending request may finish just after a reconnect. Route that
             // first completion to the new valid lease; a completed request is
             // still replayed from cache if the browser resends it.
@@ -2025,6 +2362,7 @@ impl RemoteControlManager {
                 "this endpoint is active in another desktop process; rotate Web access to take a new endpoint"
                     .to_string(),
             );
+            endpoint.last_error_code = None;
             reset_web_state(&mut inner);
         }
         self.emit_status();
@@ -2047,12 +2385,15 @@ impl RemoteControlManager {
         }
     }
 
-    /// Terminal-settle epilogue shared by the admission/rejection/persist-failure
-    /// branches of `handle_rpc_request`: record the completion in the RPC cache
+    /// Terminal-settle epilogue shared by the cacheable-terminal branches of
+    /// `handle_rpc_request` (deterministic rejections and acknowledged
+    /// tombstone outcomes): record the completion in the RPC cache
     /// and append the request to the journal order before pruning. Must be
     /// called while `Inner` is locked (the caller's `inner.lock()` guard);
     /// the cache insert, order push, and prune are kept one unit so no branch
     /// can forget the ordering bookkeeping that keeps replays exact.
+    /// Transient rejections and fingerprint conflicts intentionally skip this
+    /// helper so a retry re-runs admission instead of replaying them.
     fn settle_complete(
         inner: &mut Inner,
         request_id: &str,
@@ -2112,6 +2453,87 @@ impl RemoteControlManager {
         }
     }
 
+    /// 墓碑分支的结算收口:完成值计算与「是否进 Complete 缓存」的判定在这
+    /// 一个函数里,`handle_rpc_request` 的墓碑臂与测试共同消费。只有「墓碑
+    /// 自身指纹 + 已确认」的 outcome_unknown 可缓存;指纹冲突按次重算、绝不
+    /// 入缓存——缓存到墓碑指纹下会在重启后把探针的冲突重放给合法指纹,缓
+    /// 存到来方指纹下又会经 Complete 分支抢占合法指纹的重派发(见
+    /// `tombstone_completion_cacheable`)。测试直接驱动本函数钉住决策本身;
+    /// 三个接线点都只剩对它的平凡调用,改动即审。
+    fn settle_tombstone_outcome(
+        inner: &mut Inner,
+        request_id: &str,
+        fingerprint: String,
+        tombstone: &RpcTombstone,
+    ) -> RpcCompletion {
+        let completion = tombstone_completion(tombstone, &fingerprint);
+        if tombstone_completion_cacheable(tombstone, &fingerprint) {
+            Self::settle_complete(inner, request_id, fingerprint, completion.clone());
+        }
+        completion
+    }
+
+    /// 准入拒绝分支的结算收口:cacheable(确定性)拒绝进 Complete 缓存,
+    /// 瞬时拒绝(在途饱和、Session/账本暂不可用、触盘的 kb 路径校验)只应答
+    /// 本次——缓存瞬时拒绝会让同 client_request_id 的重试永远重放它,直到
+    /// FIFO 淘汰。收口理由同 [`Self::settle_tombstone_outcome`]。
+    fn settle_admission_rejection(
+        inner: &mut Inner,
+        request_id: &str,
+        fingerprint: String,
+        rejection: &RpcRejection,
+    ) -> RpcCompletion {
+        if rejection.cacheable {
+            Self::settle_complete(inner, request_id, fingerprint, rejection.completion.clone());
+        }
+        rejection.completion.clone()
+    }
+
+    /// begin(副作用屏障)分支的结算收口:账本持久化失败是瞬时的,响应但不
+    /// 进 Complete 缓存——命令尚未执行,重试会重新派发并重走 begin;缓存会
+    /// 把这一次失败永久重放(与准入路径曾有的 replay poisoning 同类)。错误
+    /// 文本在这里折叠存储根前缀:它会作为 rpc_response.error 到达手机。
+    /// Round-7 复审:收口同时解除 Pending 的派发代标记——失败后 Pending 仍
+    /// 带着当前派发代,同 id 重试会在 Pending 臂被幂等吞掉(静默直到 TTL
+    /// 占位顶成伪造超时),与上面「重试重新派发」的承诺相抵。解除后重试经
+    /// Pending 臂重派发、重走 begin;begin 失败意味着命令未被执行(WebView
+    /// 只在 begin 返回 true 后执行),重派发无双执行风险。收口理由同
+    /// [`Self::settle_tombstone_outcome`]。
+    fn settle_begin_persist_failure(
+        inner: &mut Inner,
+        request_id: &str,
+        lease_id: &str,
+        error: &str,
+    ) -> RpcCompletion {
+        let completion = rpc_error_completion(
+            "rpc_ledger_unavailable",
+            format!(
+                "cannot durably begin Web RPC: {}",
+                paths::redact_storage_prefix(error)
+            ),
+        );
+        if let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get_mut(request_id) {
+            pending.dispatched_generation = None;
+        }
+        if let Some(endpoint) = inner.endpoint.as_ref() {
+            let response = rpc_response(
+                &endpoint.config.endpoint_id,
+                lease_id,
+                request_id,
+                &completion,
+            );
+            let _ = endpoint.sender.try_send(RelayOutbound::Message(response));
+        }
+        completion
+    }
+
+    /// 是否为 TTL 扫描写入的超时占位(唯一的 `rpc_timed_out` 产出点在
+    /// `handle_rpc_request` 的扫描)。`complete_rpc` 据此允许真实完成取代
+    /// 占位;确定性拒绝等真终态码各不相同,不会被误取代。
+    fn rpc_completion_is_in_flight_timeout(completion: &RpcCompletion) -> bool {
+        !completion.ok && completion.error_code.as_deref() == Some(RPC_TIMED_OUT_CODE)
+    }
+
     fn handle_rpc_request(&self, value: &Value) {
         let request_id = value
             .get("client_request_id")
@@ -2150,23 +2572,26 @@ impl RemoteControlManager {
         };
 
         let allowed = command_error.is_none() && self.policy.commands.contains(&command);
-        let preflight_completion = if let Some(error) = command_error {
-            Some(rpc_error_completion("invalid_command", error))
+        let preflight_rejection = if let Some(error) = command_error {
+            Some(RpcRejection::deterministic(rpc_error_completion(
+                "invalid_command",
+                error,
+            )))
         } else if serde_json::to_vec(&args)
             .map(|encoded| encoded.len() > MAX_RPC_REQUEST_BYTES)
             .unwrap_or(true)
         {
-            Some(rpc_error_completion(
+            Some(RpcRejection::deterministic(rpc_error_completion(
                 "request_too_large",
                 format!(
                     "远程控制请求参数超过 {} MiB 上限",
                     MAX_RPC_REQUEST_BYTES / (1024 * 1024)
                 ),
-            ))
+            )))
         } else if allowed {
             validate_web_rpc_scope(&self.app, &command, &args)
                 .err()
-                .map(|error| rpc_error_completion("invalid_session_scope", error))
+                .map(WebScopeRejection::into_rpc_rejection)
         } else {
             None
         };
@@ -2178,8 +2603,11 @@ impl RemoteControlManager {
             let endpoint_id = endpoint.config.endpoint_id.clone();
             let sender = endpoint.sender.clone();
             let bridge_generation = inner.bridge_generation.clone();
-            // 浏览器已在 180 秒超时后放弃的卡死请求，超过 TTL 后转为终态错误，
-            // 释放 in-flight 槽位。迟到的 begin/complete 会命中 Complete 并被幂等忽略。
+            // 在途请求超过 TTL 后转为超时占位,释放 in-flight 槽位,并阻止
+            // 同 id 重放触发重派发(幂等去重仍成立)。占位不是终态真理:
+            // 真实完成晚于扫描到达时,complete_rpc 会取代占位(Round-5 复审
+            // M1),所以迟到 begin/complete 的「幂等忽略」只对已取代后的
+            // 正常完成值成立。
             let now = Instant::now();
             let expired: Vec<String> = inner
                 .rpc_cache
@@ -2201,7 +2629,7 @@ impl RemoteControlManager {
                         RpcCacheEntry::Complete {
                             fingerprint,
                             completion: rpc_error_completion(
-                                "rpc_timed_out",
+                                RPC_TIMED_OUT_CODE,
                                 "远程控制请求执行超时，已释放该请求",
                             ),
                         },
@@ -2213,6 +2641,16 @@ impl RemoteControlManager {
                 .values()
                 .filter(|entry| matches!(entry, RpcCacheEntry::Pending(_)))
                 .count();
+            // 与 client_ready 相同的 lease 校验:携带已被接替 lease 的
+            // rpc_request 是接替竞态中的迟到帧,直接忽略,不进入幂等缓存。
+            // 校验必须在准入同一把锁内:先单独验锁再准入会在两锁之间留出
+            // takeover 窗口,迟到帧仍可进入缓存并被分发。takeover 时
+            // pending RPC 会先重打新 lease 再被重投,不会误伤重投路径;
+            // 无活跃 lease 时保持原行为(主准入路径本来就没有可回复的
+            // endpoint)。
+            if !rpc_request_targets_active_lease(&inner, &lease_id) {
+                return;
+            }
             match inner.rpc_cache.get_mut(&request_id) {
                 Some(RpcCacheEntry::Pending(pending)) => {
                     if pending.fingerprint != fingerprint {
@@ -2232,6 +2670,11 @@ impl RemoteControlManager {
                             && pending.dispatched_generation != bridge_generation
                         {
                             pending.dispatched_generation = bridge_generation.clone();
+                            // 重派发必须重置 TTL 时钟:Pending 可能是 begin
+                            // 持久化失败后的重试臂,继承最初入场的
+                            // dispatched_at 会让窗口尾部的重试几乎立刻被
+                            // TTL 扫描伪造成 rpc_timed_out。
+                            pending.dispatched_at = Instant::now();
                             RpcRequestAction::Dispatch(RpcDispatch {
                                 request_id: request_id.clone(),
                                 command: pending.command.clone(),
@@ -2260,12 +2703,13 @@ impl RemoteControlManager {
                 None => {
                     if let Some(tombstone) = inner.rpc_ledger.get(&request_id).cloned() {
                         if tombstone.fingerprint != fingerprint || tombstone.acknowledged {
-                            let completion = tombstone_completion(&tombstone, &fingerprint);
-                            Self::settle_complete(
+                            // 缓存判定收口在 settle_tombstone_outcome(只有
+                            // 自身指纹+已确认可缓存,冲突按次重算)。
+                            let completion = Self::settle_tombstone_outcome(
                                 &mut inner,
                                 &request_id,
-                                tombstone.fingerprint,
-                                completion.clone(),
+                                fingerprint.clone(),
+                                &tombstone,
                             );
                             RpcRequestAction::Respond(
                                 sender,
@@ -2278,16 +2722,20 @@ impl RemoteControlManager {
                             // restart; only acknowledged tombstones become
                             // outcome_unknown.
                             let rejection = rpc_admission_rejection(
-                                preflight_completion.as_ref(),
+                                preflight_rejection.as_ref(),
                                 allowed,
                                 in_flight_count,
                             );
-                            if let Some(completion) = rejection {
-                                Self::settle_complete(
+                            if let Some(rejection) = rejection {
+                                // 瞬时拒绝(在途饱和、Session 暂不可用)只回复
+                                // 本次请求;缓存会让同 client_request_id 的重试
+                                // 永远重放这个拒绝,直到 FIFO 淘汰。结算收口在
+                                // settle_admission_rejection,测试直接钉住它。
+                                let completion = Self::settle_admission_rejection(
                                     &mut inner,
                                     &request_id,
                                     fingerprint.clone(),
-                                    completion.clone(),
+                                    &rejection,
                                 );
                                 RpcRequestAction::Respond(
                                     sender,
@@ -2310,16 +2758,16 @@ impl RemoteControlManager {
                             &inner.rpc_ledger,
                             &request_id,
                             &fingerprint,
-                            preflight_completion.as_ref(),
+                            preflight_rejection.as_ref(),
                             allowed,
                             in_flight_count,
                         ) {
-                            Ok(NewRpcAdmission::Rejected(completion)) => {
-                                Self::settle_complete(
+                            Ok(NewRpcAdmission::Rejected(rejection)) => {
+                                let completion = Self::settle_admission_rejection(
                                     &mut inner,
                                     &request_id,
                                     fingerprint.clone(),
-                                    completion.clone(),
+                                    &rejection,
                                 );
                                 RpcRequestAction::Respond(
                                     sender,
@@ -2328,15 +2776,15 @@ impl RemoteControlManager {
                             }
                             Ok(NewRpcAdmission::Durable(next_ledger)) => {
                                 if let Err(error) = persist_rpc_ledger(&next_ledger) {
+                                    // 持久化失败是瞬时的:不写响应缓存,同
+                                    // client_request_id 的重试重新走完整准入,
+                                    // 而不是永远重放这一次失败。
                                     let completion = rpc_error_completion(
                                         "rpc_ledger_unavailable",
-                                        format!("cannot durably accept Web RPC: {error}"),
-                                    );
-                                    Self::settle_complete(
-                                        &mut inner,
-                                        &request_id,
-                                        fingerprint.clone(),
-                                        completion.clone(),
+                                        format!(
+                                            "cannot durably accept Web RPC: {}",
+                                            paths::redact_storage_prefix(&error)
+                                        ),
                                     );
                                     RpcRequestAction::Respond(
                                         sender,
@@ -2361,15 +2809,13 @@ impl RemoteControlManager {
                                 }
                             }
                             Err(error) => {
+                                // 同上:账本不可用是瞬时状态,不缓存该拒绝。
                                 let completion = rpc_error_completion(
                                     "rpc_ledger_unavailable",
-                                    format!("cannot durably accept Web RPC: {error}"),
-                                );
-                                Self::settle_complete(
-                                    &mut inner,
-                                    &request_id,
-                                    fingerprint.clone(),
-                                    completion.clone(),
+                                    format!(
+                                        "cannot durably accept Web RPC: {}",
+                                        paths::redact_storage_prefix(&error)
+                                    ),
                                 );
                                 RpcRequestAction::Respond(
                                     sender,
@@ -2434,10 +2880,7 @@ impl RemoteControlManager {
             .and_then(Value::as_str)
             .filter(|epoch| !epoch.is_empty());
         let after_seq = value.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
-        let state_ready = value
-            .get("state_ready")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
+        let state_ready = client_state_ready(value);
 
         let mut capability_commands = self.policy.commands.iter().cloned().collect::<Vec<_>>();
         capability_commands.sort();
@@ -2778,11 +3221,18 @@ impl RemoteControlManager {
     }
 
     fn set_endpoint_error(&self, error: String) {
+        self.set_endpoint_error_with_code(None, error);
+    }
+
+    /// 错误文本 + 可选稳定恢复码成对写入;不携带码的错误必须清掉旧码,
+    /// 防止旧恢复文案被映射到新错误上。
+    fn set_endpoint_error_with_code(&self, code: Option<&'static str>, error: String) {
         {
             let mut inner = self.inner.lock();
             if let Some(endpoint) = inner.endpoint.as_mut() {
                 endpoint.status = WebAccessStatusKind::Error;
                 endpoint.last_error = Some(error);
+                endpoint.last_error_code = code.map(str::to_string);
             }
         }
         self.emit_status();
@@ -2790,15 +3240,18 @@ impl RemoteControlManager {
 
     fn emit_status(&self) {
         let status = self.status();
-        let _ = self.app.emit("web_access:status", status);
+        // 状态 payload 携带含 access_token 片段的配对 URL 与二维码,属于
+        // 敏感载荷,只发给主窗口(与其余 web_access:* 事件一致),不广播到
+        // 读者/宠物等辅助 WebView。
+        let _ = self.app.emit_to("main", "web_access:status", status);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::persistence::{
-        acknowledge_pending_revocation_at, load_config_from, load_pending_revocations_from,
-        queue_pending_revocation_at,
+        acknowledge_pending_revocation_at, load_config_from, load_or_initialize_rpc_ledger_at,
+        load_pending_revocations_from, queue_pending_revocation_at,
     };
     use super::rpc::{WebSessionScope, web_session_scope};
     use super::*;
@@ -3479,6 +3932,42 @@ mod tests {
     }
 
     #[test]
+    fn a_redispatch_refreshes_the_dispatch_clock() {
+        // Round-10 复审 minor:重派发(webview 重载、begin 持久化失败后的
+        // 再派发)不刷新 dispatched_at 的话会继承最初入场的 TTL 时钟——
+        // 窗口尾部的重试几乎立刻被 TTL 扫描伪造成 rpc_timed_out。
+        let mut inner = Inner::default();
+        inner.bridge_generation = Some("generation-old".into());
+        let stale = Instant::now() - RPC_IN_FLIGHT_TTL - Duration::from_secs(10);
+        inner.rpc_cache.insert(
+            "queued".into(),
+            RpcCacheEntry::Pending(PendingRpc {
+                lease_id: "lease".into(),
+                command: "chat".into(),
+                args: json!({ "sessionId": "s1" }),
+                fingerprint: "a".repeat(64),
+                dispatched_generation: Some("generation-old".into()),
+                acknowledged_generation: None,
+                dispatched_at: stale,
+            }),
+        );
+        inner.rpc_order.push_back("queued".into());
+
+        assert_eq!(
+            prepare_bridge_generation(&mut inner, "generation-new").len(),
+            1
+        );
+        let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get("queued") else {
+            panic!("the re-armed request must stay pending");
+        };
+        assert_ne!(pending.dispatched_at, stale, "the clock must be reset");
+        assert!(
+            !rpc_in_flight_expired(pending.dispatched_at, Instant::now()),
+            "a freshly re-dispatched request must not be sweep-eligible"
+        );
+    }
+
+    #[test]
     fn an_acknowledged_rpc_becomes_outcome_unknown_after_bridge_replacement() {
         let mut inner = Inner::default();
         inner.bridge_generation = Some("generation-old".into());
@@ -3563,7 +4052,10 @@ mod tests {
             .acknowledge("protected-request", &protected_fingerprint)
             .expect("acknowledge protected request");
 
-        let invalid_scope = rpc_error_completion("invalid_session_scope", "missing Session");
+        let invalid_scope = RpcRejection::deterministic(rpc_error_completion(
+            "invalid_session_scope",
+            "missing Session",
+        ));
         for index in 0..RPC_CACHE_CAPACITY {
             let fingerprint = rpc_fingerprint("rejected", &json!({ "index": index }))
                 .expect("rejected fingerprint");
@@ -3603,6 +4095,230 @@ mod tests {
             .expect("acknowledged tombstone must remain");
         assert!(protected.acknowledged);
         assert_eq!(protected.fingerprint, protected_fingerprint);
+    }
+
+    /// 接线钉:缓存判定收口在 `settle_admission_rejection` 与
+    /// `settle_tombstone_outcome`,直接驱动两个入口钉住「确定性(含已确认
+    /// 墓碑)才进 Complete 缓存;瞬时拒绝与指纹冲突绝不进」。此前的变异
+    /// 测试证明:handle_rpc_request 的接线点被改回无条件缓存时,既有的
+    /// helper 级测试仍然全绿——决策收口成单点后,这里直接钉决策。
+    #[test]
+    fn rpc_settle_entry_points_cache_only_cacheable_outcomes() {
+        let mut inner = Inner::default();
+
+        let transient = RpcRejection::transient(rpc_error_completion(
+            "too_many_in_flight_requests",
+            "正在运行的远程控制请求过多",
+        ));
+        let completion = RemoteControlManager::settle_admission_rejection(
+            &mut inner,
+            "transient-req",
+            "fp-transient".to_string(),
+            &transient,
+        );
+        assert_eq!(
+            completion.error_code.as_deref(),
+            Some("too_many_in_flight_requests")
+        );
+        assert!(
+            !inner.rpc_cache.contains_key("transient-req"),
+            "a transient rejection must never enter the completion cache"
+        );
+        assert!(
+            inner.rpc_order.is_empty(),
+            "transient rejections must not consume journal-order slots"
+        );
+
+        let deterministic = RpcRejection::deterministic(rpc_error_completion(
+            "command_not_allowed",
+            "远程控制不允许调用该命令",
+        ));
+        let completion = RemoteControlManager::settle_admission_rejection(
+            &mut inner,
+            "deterministic-req",
+            "fp-deterministic".to_string(),
+            &deterministic,
+        );
+        assert_eq!(
+            completion.error_code.as_deref(),
+            Some("command_not_allowed")
+        );
+        assert!(matches!(
+            inner.rpc_cache.get("deterministic-req"),
+            Some(RpcCacheEntry::Complete { fingerprint, .. }) if fingerprint == "fp-deterministic",
+        ));
+
+        let acknowledged = RpcTombstone {
+            request_id: "tomb-req".to_string(),
+            fingerprint: "fp-owner".to_string(),
+            acknowledged: true,
+        };
+        let outcome = RemoteControlManager::settle_tombstone_outcome(
+            &mut inner,
+            "tomb-req",
+            "fp-owner".to_string(),
+            &acknowledged,
+        );
+        assert_eq!(outcome.error_code.as_deref(), Some("outcome_unknown"));
+        assert!(matches!(
+            inner.rpc_cache.get("tomb-req"),
+            Some(RpcCacheEntry::Complete { fingerprint, .. }) if fingerprint == "fp-owner",
+        ));
+
+        // 指纹冲突:应答冲突,但两种指纹下都绝不入缓存。
+        inner.rpc_cache.remove("tomb-req");
+        let conflict = RemoteControlManager::settle_tombstone_outcome(
+            &mut inner,
+            "tomb-req",
+            "fp-probe".to_string(),
+            &acknowledged,
+        );
+        assert_eq!(conflict.error_code.as_deref(), Some("request_id_conflict"));
+        assert!(
+            !inner.rpc_cache.contains_key("tomb-req"),
+            "a fingerprint conflict must not be cached under either fingerprint"
+        );
+        assert_eq!(
+            inner
+                .rpc_order
+                .iter()
+                .filter(|request_id| *request_id == "tomb-req")
+                .count(),
+            1,
+            "the conflict must not push a second journal-order slot (the first \
+             Complete settle legitimately holds one)"
+        );
+    }
+
+    /// 接线钉:begin(副作用屏障)的账本持久化失败走 settle 收口——应答但
+    /// 绝不进 Complete 缓存(命令尚未执行,重试安全);回退成无条件缓存
+    /// (准入路径曾有过的 replay poisoning 同类)即红。错误文本还会折叠
+    /// 存储根前缀:它会作为 rpc_response.error 到达手机。
+    #[test]
+    fn begin_persist_failure_responds_without_caching() {
+        let mut inner = Inner::default();
+        inner.rpc_cache.insert(
+            "begin-req".to_string(),
+            RpcCacheEntry::Pending(PendingRpc {
+                lease_id: "lease-1".to_string(),
+                command: "get_memory_overview".to_string(),
+                args: Value::Null,
+                fingerprint: "fp-begin".to_string(),
+                dispatched_generation: Some("gen-1".to_string()),
+                acknowledged_generation: None,
+                dispatched_at: Instant::now(),
+            }),
+        );
+
+        let raw_error = format!(
+            "create {}: disk full",
+            paths::pinvou3_home()
+                .join("web-access-rpc-ledger.json")
+                .display()
+        );
+        let completion = RemoteControlManager::settle_begin_persist_failure(
+            &mut inner,
+            "begin-req",
+            "lease-1",
+            &raw_error,
+        );
+        assert_eq!(
+            completion.error_code.as_deref(),
+            Some("rpc_ledger_unavailable")
+        );
+        assert!(
+            !completion
+                .error
+                .as_deref()
+                .is_some_and(|text| text.contains(&paths::pinvou3_home().display().to_string())),
+            "the phone-visible error must not carry the absolute home path: {:?}",
+            completion.error
+        );
+        assert!(
+            matches!(
+                inner.rpc_cache.get("begin-req"),
+                Some(RpcCacheEntry::Pending(pending))
+                    if pending.acknowledged_generation.is_none()
+                        && pending.dispatched_generation.is_none(),
+            ),
+            "the pending entry must stay uncached but re-armed: the dispatch generation is \
+             cleared so a retry re-dispatches and re-runs begin (Round-7: keeping the stale \
+             generation silenced the retry until the TTL sweep fabricated a timeout)"
+        );
+
+        // 源码契约(同 revoke 死锁钉形态):begin_rpc 必须经 settle 收口应答
+        // 持久化失败,且失败分支不得再引入 Complete 缓存(旧实现的
+        // prune_rpc_cache 只在缓存路径出现)——绕过收口即红。
+        let source = include_str!("mod.rs");
+        let begin_start = source
+            .find("pub fn begin_rpc(&self, request_id: &str, generation: &str)")
+            .expect("begin_rpc must exist");
+        let begin_tail = &source[begin_start..];
+        let begin_body = &begin_tail[..begin_tail
+            .find("\n    pub fn ")
+            .expect("begin_rpc body must be terminated by the next fn")];
+        assert!(
+            begin_body.contains("settle_begin_persist_failure"),
+            "begin_rpc must route the persist failure through the settle funnel"
+        );
+        assert!(
+            !begin_body.contains("prune_rpc_cache"),
+            "begin_rpc must not cache a completion on the persist-failure path"
+        );
+    }
+
+    #[test]
+    fn only_the_sweep_timeout_completion_is_replaceable() {
+        let placeholder = rpc_error_completion(RPC_TIMED_OUT_CODE, "timed out");
+        assert!(
+            RemoteControlManager::rpc_completion_is_in_flight_timeout(&placeholder),
+            "the TTL sweep's timeout completion must be recognized as the replaceable placeholder"
+        );
+        let real =
+            bounded_rpc_completion(true, Some(serde_json::json!({ "ok": 1 })), None, None, None);
+        assert!(
+            !RemoteControlManager::rpc_completion_is_in_flight_timeout(&real),
+            "a real completion must never be replaceable"
+        );
+        let rejection = rpc_error_completion("invalid_session_scope", "rejected");
+        assert!(
+            !RemoteControlManager::rpc_completion_is_in_flight_timeout(&rejection),
+            "a deterministic rejection is a real terminal value, not a placeholder"
+        );
+        let failed = rpc_error_completion("web_session_chat_failed", "failed");
+        assert!(
+            !RemoteControlManager::rpc_completion_is_in_flight_timeout(&failed),
+            "a real command failure is a real terminal value, not a placeholder"
+        );
+    }
+
+    /// 接线钉(源码契约,同 lease gate 钉的形态):`complete_rpc` 的 Complete
+    /// 臂必须经共享谓词识别 TTL 超时占位并允许真实完成取代之——helper 级
+    /// 谓词测试钉不住「接线点被改回无条件幂等忽略」(Round-5 复审 M1 的
+    /// 病根:占位吞掉真实结果,手机重放永远拿到过期超时)。删除取代分支
+    /// 或绕开谓词即红。
+    #[test]
+    fn complete_rpc_supersedes_the_in_flight_timeout_placeholder() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn complete_rpc(")
+            .expect("complete_rpc must exist");
+        let tail = &source[start..];
+        let end = ["\n    fn ", "\n    pub fn ", "\n    #[test]"]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("complete_rpc body must be terminated by the next item");
+        let body = &tail[..end];
+        assert!(
+            body.contains("rpc_completion_is_in_flight_timeout(completion)"),
+            "the Complete arm must route the placeholder decision through the shared predicate"
+        );
+        assert!(
+            body.contains("rpc_cache.insert"),
+            "a real completion arriving after the TTL sweep must replace the placeholder, \
+             not be idempotently swallowed"
+        );
     }
 
     #[test]
@@ -4050,6 +4766,192 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_pending_revocation_ledger_does_not_block_rotation_or_stop() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-web-revocation-corrupt-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        std::fs::write(&path, b"{corrupt json").unwrap();
+
+        // 内容损坏按 Corrupt 分类:queue(停用/轮换的必经点)从空账本继续,
+        // 用合法内容覆盖坏文件——旧 endpoint 的吊销不能被坏文件永久卡死。
+        // load_pending_revocations_from 对外仍如实报错,fail-closed 语义不变。
+        let pending = test_pending_revocation("ep_retired_corrupt");
+        queue_pending_revocation_at(&path, pending.clone()).unwrap();
+        let restored = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(restored.entries, VecDeque::from([pending]));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn invalid_ledger_salvages_valid_entries_and_quarantines_the_original() {
+        // 可解析但未过整体校验的账本(此处:一条 endpoint_id 非法的坏条目 +
+        // 一条与合法条目同键的重复条目)必须逐条抢救合法条目并隔离原件,
+        // 而不是整体重写——整体丢弃会让旧 endpoint 在 relay 侧保持可加入。
+        // 重复条目与 valid_a 完全相同(同 relay_url + endpoint_id = 同键):
+        // 抢救按「重复键保留首个」跳过它——若删除键去重,抢救结果会多出
+        // 一条,本钉的条数断言即红(round-5 复审:原夹具改了 endpoint_id,
+        // 键随之不同,重复键分支从未被真正钉住)。
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-ledger-salvage-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+
+        let valid_a = PendingRevocation::from(&test_web_config("ep_salv_a"));
+        let valid_b = PendingRevocation::from(&test_web_config("ep_salv_b"));
+        let mut invalid = serde_json::to_value(&valid_a).unwrap();
+        invalid["endpoint_id"] = json!("bad id");
+        // Round-9 复审 minor:重复条目与 valid_a 同键(relay_url +
+        // endpoint_id)但 desktop_secret 不同——「保留首个」与「保留末个」
+        // 自此不再等价,钉才真正判别(旧夹具的重复条目是逐字节复制,两
+        // 种顺序行为相同,keep-first 从未被钉住)。
+        let mut duplicate = serde_json::to_value(&valid_a).unwrap();
+        duplicate["desktop_secret"] = json!("stale-keep-last-probe-secret-0123456789");
+        let body = json!({
+            "version": PENDING_REVOCATIONS_VERSION,
+            "entries": [
+                serde_json::to_value(&valid_a).unwrap(),
+                invalid,
+                duplicate,
+                serde_json::to_value(&valid_b).unwrap(),
+            ],
+        });
+        std::fs::write(&path, serde_json::to_vec(&body).unwrap()).unwrap();
+
+        // 抢救即落盘:裸 load 之后,磁盘上的账本必须已经是抢救后的合法
+        // 条目(隔离副本只留证据,不会被自动重放)——否则进程崩溃在
+        // worker ack 之前会永久丢掉这批待吊销记录。
+        let salvaged = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(
+            salvaged.entries.len(),
+            2,
+            "the two valid entries must be salvaged in memory"
+        );
+        let persisted: PendingRevocationLedger =
+            serde_json::from_slice(&std::fs::read(&path).unwrap())
+                .expect("the salvaged ledger must have been persisted as valid JSON");
+        assert_eq!(
+            persisted.entries.len(),
+            2,
+            "salvaged entries must be persisted immediately, not only in memory"
+        );
+        let persisted_keys: Vec<_> = persisted
+            .entries
+            .iter()
+            .map(pending_revocation_key)
+            .collect();
+        assert!(persisted_keys.contains(&pending_revocation_key(&valid_a)));
+        assert!(persisted_keys.contains(&pending_revocation_key(&valid_b)));
+        // Round-9 复审 minor:同键重复条目必须保留「首个」的凭据——保留
+        // 末个会把待吊销记录换成旧密文(吊销 worker 拿旧 secret 去认证
+        // 会被拒,条目就永远悬着)。
+        let persisted_a = persisted
+            .entries
+            .iter()
+            .find(|entry| pending_revocation_key(entry) == pending_revocation_key(&valid_a))
+            .expect("the first duplicate's key must be salvaged");
+        assert_eq!(
+            persisted_a.desktop_secret, valid_a.desktop_secret,
+            "keep-first must preserve the first duplicate's credentials"
+        );
+
+        let fresh = PendingRevocation::from(&test_web_config("ep_salv_c"));
+        queue_pending_revocation_at(&path, fresh)
+            .expect("queue must salvage the valid entries and continue");
+
+        let restored = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(
+            restored.entries.len(),
+            3,
+            "two salvaged entries plus the freshly queued one must survive"
+        );
+        let keys: Vec<_> = restored
+            .entries
+            .iter()
+            .map(pending_revocation_key)
+            .collect();
+        assert!(keys.contains(&pending_revocation_key(&valid_a)));
+        assert!(keys.contains(&pending_revocation_key(&valid_b)));
+        assert!(
+            directory
+                .read_dir()
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("pending.json.corrupt-")),
+            "the original invalid ledger must be quarantined for inspection"
+        );
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn unparseable_ledger_is_quarantined_before_the_fresh_start() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-ledger-quarantine-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        std::fs::write(&path, b"{corrupt json").unwrap();
+
+        let pending = PendingRevocation::from(&test_web_config("ep_quar_a"));
+        queue_pending_revocation_at(&path, pending.clone())
+            .expect("an unparseable ledger must not block the recovery path");
+        assert!(
+            directory
+                .read_dir()
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("pending.json.corrupt-")),
+            "the unparseable ledger must be quarantined, not silently overwritten"
+        );
+        let restored = load_pending_revocations_from(&path).unwrap();
+        assert_eq!(restored.entries.len(), 1);
+        assert_eq!(restored.entries[0], pending);
+        std::fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn loading_pending_revocations_repairs_world_readable_private_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-revocation-perm-repair-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        let pending = test_pending_revocation("ep_perm_repair");
+        queue_pending_revocation_at(&path, pending).unwrap();
+        // POSIX modes only exist on unix; the mode manipulation lives behind
+        // the platform adapter so this file carries no target selector.
+        if !crate::platform::test_support::force_private_file_mode(&path, 0o644) {
+            std::fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+
+        // 该文件持有 desktop_secret:load 必须恢复 0600 基线(同 config)。
+        assert!(load_pending_revocations_from(&path).is_ok());
+        assert_eq!(
+            crate::platform::test_support::permission_bits(&path),
+            Some(0o600),
+            "load must restore the private 0600 baseline for the secret-bearing ledger"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn revocation_ack_removes_only_the_matching_durable_entry() {
         let directory = std::env::temp_dir().join(format!(
             "pinvou-web-revocation-ack-{}-{}",
@@ -4113,6 +5015,26 @@ mod tests {
         ));
         assert!(relay_client::terminal_relay_message(
             &json!({ "type": "error", "code": "endpoint_not_found" }),
+            "ep_retired"
+        ));
+        // 指名他端点的 endpoint_not_found 不是本端点消失的证明:在它上面
+        // ack 会删掉仍可能存在于 relay 侧的本端点持久撤销条目。
+        assert!(!relay_client::terminal_relay_message(
+            &json!({
+                "type": "error",
+                "code": "endpoint_not_found",
+                "endpoint_id": "ep_other"
+            }),
+            "ep_retired"
+        ));
+        // endpoint_revoked 错误码证明 endpoint 已墓碑化,等价于撤销成功。
+        assert!(relay_client::terminal_relay_message(
+            &json!({ "type": "error", "code": "endpoint_revoked" }),
+            "ep_retired"
+        ));
+        // 凭据拒绝不证明 endpoint 消失:持久撤销条目不能被当作已确认删除。
+        assert!(!relay_client::terminal_relay_message(
+            &json!({ "type": "error", "code": "invalid_desktop_secret" }),
             "ep_retired"
         ));
         assert!(!relay_client::terminal_relay_message(
@@ -4280,5 +5202,778 @@ mod tests {
                 "plain session event must not be filtered: {payload}"
             );
         }
+    }
+
+    fn test_active_endpoint(lease_id: Option<&str>) -> ActiveEndpoint {
+        let (sender, _receiver) =
+            relay_client::outbound_channel(8, 64 * 1024, relay_client::MAX_RELAY_FRAME_BYTES);
+        ActiveEndpoint {
+            config: test_web_config(TEST_ENDPOINT_ID),
+            url: "http://127.0.0.1:8787/pinvou3/remote".into(),
+            status: WebAccessStatusKind::WebClientConnected,
+            web_client_connected: true,
+            client_ready: true,
+            lease_id: lease_id.map(ToOwned::to_owned),
+            last_lease_id: lease_id.map(ToOwned::to_owned),
+            fresh_baseline_seq: None,
+            last_error: None,
+            last_error_code: None,
+            sender,
+        }
+    }
+
+    #[test]
+    fn forwarded_rpc_requests_must_target_the_active_lease() {
+        let mut inner = Inner::default();
+        // 无活跃 endpoint:不过滤(主准入路径本来就没有可回复的 endpoint)。
+        assert!(rpc_request_targets_active_lease(&inner, TEST_LEASE_ID));
+
+        inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
+        assert!(rpc_request_targets_active_lease(&inner, TEST_LEASE_ID));
+        assert!(
+            !rpc_request_targets_active_lease(&inner, "lease_111111111111111111111111"),
+            "a rpc_request carrying a replaced lease is a stale takeover-race frame \
+             and must be dropped before touching the idempotency cache"
+        );
+
+        // 无活跃 lease(client 已断开)时保持原行为:不在此处过滤。
+        inner.endpoint = Some(test_active_endpoint(None));
+        assert!(rpc_request_targets_active_lease(&inner, TEST_LEASE_ID));
+    }
+
+    /// 接线钉(源码契约,同 revoke 死锁钉的形态):lease 校验必须留在准入
+    /// 锁的作用域内、且先于缓存查询——helper 级测试钉不住「接线点被删除」
+    /// (round-4 复审实测:删除调用后 helper 测试仍全绿)。删除校验、或把
+    /// 校验挪出 `inner.lock()` 之后再查询缓存,都会让本钉变红。
+    #[test]
+    fn rpc_request_lease_gate_is_wired_inside_the_admission_lock() {
+        let source = include_str!("mod.rs");
+        let handle_start = source
+            .find("fn handle_rpc_request(&self, value: &Value)")
+            .expect("handle_rpc_request must exist");
+        let body = &source[handle_start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_rpc_request body must be terminated by the next fn")];
+        let lock = body
+            .find("let mut inner = self.inner.lock()")
+            .expect("handle_rpc_request must take the admission lock");
+        let gate = body
+            .find("rpc_request_targets_active_lease(&inner, &lease_id)")
+            .expect("handle_rpc_request must consult the lease gate inside the admission lock");
+        let cache = body
+            .find("match inner.rpc_cache")
+            .expect("handle_rpc_request must consult the idempotency cache");
+        assert!(
+            lock < gate && gate < cache,
+            "the lease gate must run inside the admission lock and before the cache match \
+             (lock at {lock}, gate at {gate}, cache at {cache})"
+        );
+    }
+
+    /// 接线钉(Round-5 复审 M2):settle 收口的安全契约(瞬时拒绝绝不进
+    /// Complete 缓存、墓碑冲突绝不缓存)只在 `handle_rpc_request` 的调用
+    /// 点生效——把三个调用点改回无条件缓存/无条件结算时,helper 级测试仍
+    /// 全绿(模块内注释自证)。Round-6 复审 minor:墓碑与预检按存在性断言,
+    /// 两条 admission 臂各有一个调用点,按**计数**断言——回退任意一支
+    /// (计数掉到 1)或新增绕过收口的臂(计数超过 2)都即红;负面钉禁止
+    /// 收口漏斗之外的任何直接 `settle_complete` 进函数体。
+    #[test]
+    fn rpc_cache_settle_funnels_are_wired_in_handle_rpc_request() {
+        let source = include_str!("mod.rs");
+        let handle_start = source
+            .find("fn handle_rpc_request(&self, value: &Value)")
+            .expect("handle_rpc_request must exist");
+        let body = &source[handle_start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_rpc_request body must be terminated by the next fn")];
+        assert!(
+            body.contains("Self::settle_tombstone_outcome("),
+            "the tombstone branch must route its cache decision through settle_tombstone_outcome"
+        );
+        assert_eq!(
+            body.matches("Self::settle_admission_rejection(").count(),
+            2,
+            "both admission branches (reconstructed tombstone and fresh durable) must route \
+             their cache decision through settle_admission_rejection"
+        );
+        assert!(
+            body.contains("validate_web_rpc_scope("),
+            "the preflight must consult the web scope gate (KB paths / prompt references / session scope)"
+        );
+        assert!(
+            !body.contains("Self::settle_complete("),
+            "no arm inside handle_rpc_request may bypass the settle funnels with a direct \
+             Complete-cache write"
+        );
+        assert_eq!(
+            body.matches("rpc_cache.insert").count(),
+            1,
+            "the only direct rpc_cache.insert inside handle_rpc_request is the TTL sweep's \
+             placeholder write; an arm that keeps its settle call and adds an inline insert \
+             on the non-cacheable path would reintroduce replay poisoning while every \
+             existing pin stays green (Round-8 复审)"
+        );
+    }
+
+    /// 接线钉(Round-6 复审 M5):`web_rejoining` 标志的安全语义(重连不
+    /// 清 staged 传输、live takeover 才清)只在帧路径的调用点生效——helper
+    /// 级测试直接驱动 `apply_web_lease_change(inner, true)`,看不见接线。
+    /// 把任一调用点改回 `false`(或删除解析、让缺省 false 生效)会原样
+    /// 复原 round-2 的 staged 状态每 ~2.5 分钟被看门狗清空的回归,而全套
+    /// 件仍绿。两个到达路径(`handle_registered` 重注册转发、
+    /// `handle_web_connected` web join)都必须解析并透传该标志。
+    #[test]
+    fn web_rejoining_flag_is_wired_into_both_lease_change_call_sites() {
+        let source = include_str!("mod.rs");
+        for fn_name in [
+            "fn handle_registered(&self, value: &Value)",
+            "fn handle_web_connected(&self, value: &Value)",
+        ] {
+            let start = source
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\n    fn ")
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            assert!(
+                body.contains("get(\"web_rejoining\")"),
+                "{fn_name} must parse the web_rejoining flag from the frame"
+            );
+            assert!(
+                body.contains("apply_web_lease_change(&mut inner, web_rejoining);"),
+                "{fn_name} must pass the parsed flag (not a constant) into apply_web_lease_change"
+            );
+        }
+    }
+
+    /// 接线钉(Round-6 复审 M6):`last_error_code` 字段契约的断连半边——
+    /// 不携带码的错误写入必须清掉旧恢复码(否则旧三语恢复提示会盖在新
+    /// 错误文本之上)。connected 臂与断连臂各自清码;删除任一臂的清码
+    /// 行即红。
+    #[test]
+    fn handle_connection_clears_stale_error_code_on_both_branches() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn handle_connection(&self, endpoint_id: &str, connected: bool, error: Option<String>)")
+            .expect("handle_connection must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_connection body must be terminated by the next fn")];
+        assert_eq!(
+            body.matches("last_error_code = None").count(),
+            2,
+            "both the connected and the disconnected branch must clear the stale code"
+        );
+    }
+
+    /// 接线钉(Round-5 复审 M2 的 endpoint_revoked 半边):relay 的
+    /// endpoint_revoked 错误帧必须路由进 handle_revoked 的完整清理——
+    /// 删除该臂会让本地配置对一个不可能成功的注册永远重试,而
+    /// terminal_relay_message 的分类钉住在 relay_client 侧,看不见这条
+    /// manager 侧路由。删除臂内任一关键调用即红。
+    #[test]
+    fn relay_error_frames_route_endpoint_revoked_to_the_revoke_cleanup() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn handle_relay_message(&self, value: Value)")
+            .expect("handle_relay_message must exist");
+        let tail = &source[start..];
+        let body = &tail[..tail
+            .find("\n    fn ")
+            .expect("handle_relay_message body must be terminated by the next fn")];
+        let arm = body
+            .find("if error_code == \"endpoint_revoked\"")
+            .expect("the endpoint_revoked error arm must exist");
+        let arm_tail = &body[arm..];
+        let arm_body = &arm_tail[..arm_tail
+            .find("\n                    return;")
+            .expect("the endpoint_revoked arm must be closed by its early return")];
+        assert!(
+            arm_body.contains("handle_revoked(&current)"),
+            "the endpoint_revoked arm must run the full revoke cleanup for the current endpoint"
+        );
+    }
+
+    #[test]
+    fn web_rejoins_keep_staged_transfers_but_takeovers_do_not() {
+        let staging = std::env::temp_dir().join(format!(
+            "pinvou-webrejoin-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(8)
+        ));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("notes.txt"), b"abc").unwrap();
+
+        let mut inner = Inner::default();
+        inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
+        inner.subscriptions.insert("session_a".into());
+        let cached = cached_upload_for_test(&staging, None);
+        inner.web_attachment_order.push_back("attachment_a".into());
+        inner.web_attachments.insert("attachment_a".into(), cached);
+        inner.web_attachment_bytes = 64;
+
+        // Rejoin (same token holder, previous socket already gone): the
+        // staged transfer survives an idle-watchdog reconnect; only the
+        // lease-bound subscriptions rebuild.
+        apply_web_lease_change(&mut inner, true);
+        assert!(
+            inner.subscriptions.is_empty(),
+            "a changed lease must always rebuild subscriptions"
+        );
+        assert!(
+            inner.web_attachments.contains_key("attachment_a"),
+            "a rejoin must keep staged attachments"
+        );
+
+        // Takeover (fresh client replaces a live one): the wipe must stay so
+        // the replacing client cannot touch the previous lease's transfers.
+        apply_web_lease_change(&mut inner, false);
+        assert!(inner.web_attachments.is_empty());
+        assert!(inner.web_attachment_uploads.is_empty());
+        assert!(inner.web_session_downloads.is_empty());
+
+        std::fs::remove_dir_all(&staging).ok();
+    }
+
+    #[test]
+    fn revoking_host_workspace_also_invalidates_minted_grants() {
+        let staging = std::env::temp_dir().join(format!(
+            "pinvou-revoke-grant-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(8)
+        ));
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let mut inner = Inner::default();
+        inner.endpoint = Some(test_active_endpoint(Some(TEST_LEASE_ID)));
+        inner.endpoint.as_mut().unwrap().config.allow_host_workspace = true;
+        let identity = WebWorkspaceIdentity::capture(&staging).unwrap();
+        inner.web_workspace_grants.issue(
+            "workspace_test_handle".into(),
+            TEST_ENDPOINT_ID.into(),
+            staging.clone(),
+            identity,
+            Instant::now(),
+        );
+        assert!(inner.web_workspace_grants.contains("workspace_test_handle"));
+
+        revoke_host_workspace_state(&mut inner);
+        assert!(
+            !inner.endpoint.as_ref().unwrap().config.allow_host_workspace,
+            "the live endpoint must reflect the revoked consent"
+        );
+        assert!(
+            !inner.web_workspace_grants.contains("workspace_test_handle"),
+            "an already-minted grant must not stay redeemable after revoke"
+        );
+        std::fs::remove_dir_all(staging).ok();
+    }
+
+    #[test]
+    fn revoke_host_workspace_never_holds_inner_across_emit_status() {
+        // B1 回归钉:emit_status→status 会再次锁 inner(parking_lot 不可重入),
+        // 持 guard 调用 = 同线程自锁,撤销路径必死锁。仓库没有 mock_app 先例
+        // (见 engine_pool 同注),单测无法真构造 Manager 走命令入口,这里按
+        // web_access_contract 的做法以源码契约钉死不变量:emit_status 的括号
+        // 深度必须浅于取 inner guard 的位置——即 guard 已先出作用域。pre-fix
+        // 的「guard 与 emit_status 同块」两处同深,断言失败。
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        let open = body.find('{').expect("function body braces");
+        let lock = body.find("self.inner.lock()").expect("inner lock site");
+        let emit = body.find("self.emit_status()").expect("emit_status site");
+        let depth_at = |pos: usize| {
+            body[open..pos]
+                .chars()
+                .filter(|c| *c == '{')
+                .count()
+                .checked_sub(body[open..pos].chars().filter(|c| *c == '}').count())
+                .expect("brace depth cannot go negative in valid Rust")
+        };
+        assert!(
+            depth_at(emit) < depth_at(lock),
+            "emit_status (depth {}) must run outside the scope that took the inner \
+             guard (depth {}); holding the guard across it re-locks the same \
+             non-reentrant mutex and deadlocks the revoke path",
+            depth_at(emit),
+            depth_at(lock)
+        );
+    }
+
+    /// 接线钉(Round-10 复审 M2):撤销的安全语义「同步失效已铸发的
+    /// workspace grants + 落盘 consent 旗标」只在命令路径的调用点生效——
+    /// `revoking_host_workspace_also_invalidates_minted_grants` 直接驱动
+    /// free helper,看不见接线。删除 `revoke_host_workspace_state(&mut
+    /// inner)` 或 `persist_config(&config)?` 会让撤销退回「只改内存、
+    /// 已铸发 grant 在 30 分钟 TTL 内仍可兑换」的 pre-fix 行为而全套件
+    /// 保持绿(突变实证:20 个 revoke 匹配测试全绿)。
+    #[test]
+    fn revoke_host_workspace_wires_grant_invalidation_and_latches_the_flag() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace(")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        assert!(
+            body.contains("persist_config(&config)?"),
+            "revoke must latch the consent flag into the persisted config"
+        );
+        assert!(
+            body.contains("revoke_host_workspace_state(&mut inner);"),
+            "revoke must invalidate already-minted workspace grants on the live state"
+        );
+        assert!(
+            body.contains("self.emit_status();"),
+            "revoke must push the refreshed status so the modal reflects the revoked row"
+        );
+    }
+
+    /// 接线钉(Round-10 复审 minor):`web_access:status` 载荷携带配对
+    /// URL 与 QR 位图(token 的载体),必须 emit_to("main") 而非广播——
+    /// 退回 `app.emit` 会把它送达 aux WebView(reader/pet),全套件不红。
+    #[test]
+    fn emit_status_scopes_the_payload_to_the_main_webview() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn emit_status(&self)")
+            .expect("emit_status must exist");
+        let body = &source[start..];
+        let body = &body[..body.find("\n    fn ").unwrap_or(body.len())];
+        assert!(
+            body.contains("self.app.emit_to(\"main\", \"web_access:status\""),
+            "web_access:status carries the pairing URL and QR; it must be scoped \
+             to the main webview, not broadcast to every webview"
+        );
+    }
+
+    /// 接线钉(Round-11 复审 M2):重派发必须重置 TTL 时钟,两条臂都是
+    /// 同一契约——`handle_rpc_request` 的 Pending 臂是 begin 持久化失败
+    /// 后重试的真实通路(settle_begin_persist_failure 清掉
+    /// dispatched_generation 后必经此臂重派),`prepare_bridge_generation`
+    /// 臂已有行为钉驱动,但行为钉看不见本臂:Round-11 突变实证,删除
+    /// 本臂的时钟重置,3870 项测试全绿,窗口尾部的重试重新被 TTL 扫描
+    /// 伪造成 `rpc_timed_out`。删除任一臂的重置本钉即红。
+    #[test]
+    fn rpc_redispatch_rearms_the_dispatch_clock_in_both_arms() {
+        let source = include_str!("mod.rs");
+        let handle_start = source
+            .find("fn handle_rpc_request(&self, value: &Value)")
+            .expect("handle_rpc_request must exist");
+        let body = &source[handle_start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_rpc_request body must be terminated by the next fn")];
+        assert!(
+            body.contains("pending.dispatched_at = Instant::now();"),
+            "the Pending re-dispatch arm must re-arm the TTL clock; without it a \
+             begin-persist-failure retry inherits the original admission timestamp and \
+             is fabricated into rpc_timed_out at the window tail"
+        );
+        let rpc_source = include_str!("rpc.rs");
+        let prepare_start = rpc_source
+            .find("fn prepare_bridge_generation(")
+            .expect("prepare_bridge_generation must exist");
+        let rpc_body = &rpc_source[prepare_start..];
+        let rpc_body = &rpc_body[..rpc_body
+            .find("\npub(super) fn ")
+            .expect("prepare_bridge_generation body must be terminated by the next fn")];
+        assert!(
+            rpc_body.contains("pending.dispatched_at = Instant::now();"),
+            "the prepare_bridge_generation re-dispatch arm must re-arm the TTL clock too"
+        );
+    }
+
+    /// 接线钉(Round-11 复审):phase-one 默认(state_ready 缺省即就绪门
+    /// 生效)的修复只在 `synchronize_client_from_value` 的调用点生效——
+    /// 现有测试直接驱动 helper,看不见调用点;把调用点内联回
+    /// `unwrap_or(true)`(pre-fix 行为,省略 state_ready 的客户端可跳过
+    /// 就绪门收取业务事件)时全套件保持绿。删除调用点即红。
+    #[test]
+    fn client_ready_readiness_gate_is_wired_at_the_synchronize_call_site() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn synchronize_client_from_value(&self, value: &Value)")
+            .expect("synchronize_client_from_value must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("synchronize_client_from_value body must be terminated by the next fn")];
+        assert!(
+            body.contains("let state_ready = client_state_ready(value);"),
+            "the readiness gate must be consulted at the synchronize call site; \
+             inlining unwrap_or(true) back lets clients that omit state_ready skip it"
+        );
+    }
+
+    /// 接线钉(Round-11 复审 minor):`reserve_web_attachments` 的拒绝串
+    /// 只回显铸造形状的句柄。方法体需要 AppHandle(emit_status 依赖),
+    /// 行为钉驱动不了;删除形状门让调用方字节重新进入错误链(其中含
+    /// `reserve Web chat turn: …` 段的句柄会把硬失败伪装成瞬态忙碌)时
+    /// 本钉变红。
+    #[test]
+    fn reserve_web_attachments_echoes_only_well_formed_handles() {
+        assert!(attachment_handle_is_well_formed(
+            "attachment_aB3xY9zWq1Mn2Vb5Cd7Ef0gh"
+        ));
+        assert!(!attachment_handle_is_well_formed(
+            "attachment_reserve Web chat turn: session_turn_in_progress"
+        ));
+        assert!(!attachment_handle_is_well_formed("attachment_"));
+        assert!(!attachment_handle_is_well_formed("attachment_x<y>"));
+        assert!(!attachment_handle_is_well_formed("reserves"));
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn reserve_web_attachments(")
+            .expect("reserve_web_attachments must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    pub fn ")
+            .expect("reserve_web_attachments body must be terminated by the next fn")];
+        let gate = body
+            .find("attachment_handle_is_well_formed(handle)")
+            .expect("reserve_web_attachments must gate echoed handles on the minted shape");
+        let echo = body
+            .find("远程控制附件句柄不存在或已过期：{handle}")
+            .expect("the not-found arm must interpolate the handle");
+        assert!(
+            gate < echo,
+            "the shape gate must run before the handle is interpolated into the error chain \
+             (gate at {gate}, echo at {echo})"
+        );
+    }
+
+    /// 接线钉(Round-11 复审):restore-after-revoke 的 manager 半边——
+    /// `restore_web_workspace_grant` 必须读取**存活端点**的 consent 旗标
+    /// 传给 store(store 半边的拒绝语义已由 workspace_grants.rs 的行为钉
+    /// 判别),否则 revert 成硬编码 `true` 会复活「reserve→revoke→创建
+    /// 失败→restore 复活 grant」的时序(bind-time 复核仍在,属纵深缺口
+    /// 而非开放漏洞)。回退接线本钉即红。
+    #[test]
+    fn restore_web_workspace_grant_reads_the_live_consent_flag() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub(crate) fn restore_web_workspace_grant(")
+            .expect("restore_web_workspace_grant must exist");
+        let body = &source[start..];
+        let body = &body[..body.find("\n    pub(crate) fn ").unwrap_or_else(|| {
+            body.find("\n    fn ")
+                .expect("restore_web_workspace_grant body must be terminated by the next fn")
+        })];
+        let flag = body
+            .find("endpoint.config.allow_host_workspace")
+            .expect("restore must read the live endpoint's consent flag");
+        let pass = body
+            .find("allow_host_workspace,")
+            .expect("restore must pass the flag into the store");
+        assert!(
+            flag < pass,
+            "the consent flag read must feed the store call \
+             (flag read at {flag}, store pass at {pass})"
+        );
+    }
+
+    /// 接线钉(Round-11 复审 minor):确认必须针对进程内权威账本整体落盘
+    /// (`persist_pending_revocations`),并同步维护 backlog;回退成「重读
+    /// 磁盘→删一条→重写」(`acknowledge_pending_revocation`)会在抢救降
+    /// 级后拿空账本清掉内存里的兄弟条目。方法体需要 AppHandle,行为钉
+    /// 驱动不了,按本模块惯例以源码契约钉住。
+    #[test]
+    fn revocation_ack_persists_the_process_backlog_instead_of_rereading_disk() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn finish_pending_revocation(")
+            .expect("finish_pending_revocation must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("finish_pending_revocation body must be terminated by the next fn")];
+        assert!(
+            body.contains("persist_pending_revocations(&ledger)"),
+            "the acknowledgement must persist the caller-held backlog wholesale"
+        );
+        assert!(
+            body.contains("pending_revocation_backlog"),
+            "the acknowledgement must restore the backlog on failure and commit it on success"
+        );
+        assert!(
+            !body.contains("acknowledge_pending_revocation("),
+            "the disk-rereading acknowledgement must not come back; it drops salvaged \
+             siblings when the on-disk ledger is absent"
+        );
+    }
+
+    #[test]
+    fn registration_error_reasons_are_actionable() {
+        // 凭据被拒 → 轮换;配置不可用 → 轮换恢复;版本不匹配 → 更新桌面端
+        // (轮换无济于事);其余码原样保留 relay 文本。恢复码与原文分支必须
+        // 一致:SettingsView 据码映射三语文案,原文是回退。
+        assert!(
+            relay_registration_error_reason("invalid_access_token", "denied")
+                .contains("rotate Web access")
+        );
+        assert!(
+            relay_registration_error_reason("invalid_desktop_secret", "denied")
+                .contains("rotate Web access")
+        );
+        assert!(
+            relay_registration_error_reason("bad_desktop_endpoint_register", "rejected")
+                .contains("rotate Web access")
+        );
+        let version = relay_registration_error_reason(
+            "unsupported_protocol_version",
+            "protocol version 2 is required",
+        );
+        assert!(
+            version.contains("update this desktop"),
+            "version mismatch must point at updating, not rotating: {version}"
+        );
+        assert!(!version.contains("rotate"));
+        assert_eq!(
+            relay_registration_error_reason("endpoint_capacity_reached", "capacity"),
+            "capacity"
+        );
+
+        assert_eq!(
+            relay_registration_error_code("invalid_access_token"),
+            Some("rotate_credentials")
+        );
+        assert_eq!(
+            relay_registration_error_code("invalid_desktop_secret"),
+            Some("rotate_credentials")
+        );
+        assert_eq!(
+            relay_registration_error_code("bad_desktop_endpoint_register"),
+            Some("rotate_recover_config")
+        );
+        assert_eq!(
+            relay_registration_error_code("unsupported_protocol_version"),
+            Some("update_desktop")
+        );
+        assert_eq!(
+            relay_registration_error_code("endpoint_capacity_reached"),
+            None
+        );
+
+        // Round-7 复审:两张映射的分支对齐按终结码全表循环钉住——只往其中
+        // 一张加分支(另一张漏掉)时,该码会渲染原文且无恢复码(fail-soft
+        // 但不一致,单码独立断言抓不住)。endpoint_revoked 走 handle_revoked
+        // 的完整清理路径,两类指引都不适用,显式断言这一分区。
+        for code in TERMINAL_REGISTRATION_ERROR_CODES {
+            let recovery = relay_registration_error_code(code);
+            let hinted = relay_registration_error_reason(code, "relay said no") != "relay said no";
+            assert_eq!(
+                recovery.is_some(),
+                hinted,
+                "terminal code {code} must map to a recovery code and a reason hint together"
+            );
+            if code == &"endpoint_revoked" {
+                assert!(
+                    recovery.is_none(),
+                    "revocation is handled by the full revoke path, not a hint"
+                );
+            } else {
+                assert!(
+                    recovery.is_some(),
+                    "terminal code {code} must carry recovery guidance"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn client_ready_without_state_ready_defaults_to_phase_one() {
+        // PROTOCOL.md phase-1:缺失/非法的 state_ready 不得视为就绪,
+        // 否则不发送该字段的客户端会跳过就绪屏障直接收到业务事件。
+        assert!(!client_state_ready(&json!({})));
+        assert!(!client_state_ready(&json!({ "state_ready": false })));
+        assert!(!client_state_ready(&json!({ "state_ready": "yes" })));
+        assert!(client_state_ready(&json!({ "state_ready": true })));
+    }
+
+    #[test]
+    fn oversize_private_ledgers_fail_closed_with_a_size_error() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-ledger-bounds-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let revocations = directory.join("pending.json");
+        std::fs::write(
+            &revocations,
+            vec![b'x'; MAX_PENDING_REVOCATIONS_FILE_BYTES + 1],
+        )
+        .unwrap();
+        let error = load_pending_revocations_from(&revocations)
+            .expect_err("oversize revocation ledger must fail closed");
+        assert!(error.contains("larger than"), "unexpected error: {error}");
+
+        let ledger_path = directory.join("rpc-ledger.json");
+        std::fs::write(&ledger_path, vec![b'x'; MAX_RPC_LEDGER_FILE_BYTES + 1]).unwrap();
+        let error = load_or_initialize_rpc_ledger_at(&ledger_path, TEST_ENDPOINT_ID)
+            .expect_err("oversize RPC ledger must fail closed before parsing");
+        assert!(error.contains("larger than"), "unexpected error: {error}");
+        assert!(
+            !matches!(load_config_for_stop_at(&ledger_path), Some(_)),
+            "the stop path treats an unreadable file as no config"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn loading_a_config_repairs_world_readable_private_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-config-perm-repair-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("web-access.json");
+        let config = test_web_config("ep_perm_repair");
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        // POSIX modes only exist on unix; the mode manipulation lives behind
+        // the platform adapter so this file carries no target selector.
+        if !crate::platform::test_support::force_private_file_mode(&path, 0o644) {
+            std::fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+
+        assert_eq!(load_config_from(&path).unwrap(), Some(config));
+        assert_eq!(
+            crate::platform::test_support::permission_bits(&path),
+            Some(0o600),
+            "load must restore the private 0600 baseline after a successful parse"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stop_tolerates_a_corrupt_config_and_still_removes_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-stop-tolerant-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("web-access.json");
+        std::fs::write(&path, b"{corrupt json").unwrap();
+
+        // start/resume/refresh 仍 fail-closed;
+        assert!(load_config_from(&path).is_err());
+        // 停用路径把损坏配置按「无配置」降级,并继续删除该文件。
+        assert_eq!(load_config_for_stop_at(&path), None);
+        std::fs::remove_file(&path).unwrap();
+        assert!(!path.exists(), "stop must leave no unparsable state behind");
+        std::fs::remove_dir_all(directory).unwrap();
+
+        // Round-6 复审 minor:上面只钉住了容错读取;「降级后仍删除文件」
+        // 的接线在 stop_current 里,单元测试到不了(mock_app 缺失),按
+        // 本模块的 source-contract 惯例钉住——降级读取与删除调用必须
+        // 同时存在于 stop_current,二者缺一即红。
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn stop_current(&self)")
+            .expect("stop_current must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    pub fn ")
+            .or_else(|| body.find("\n    fn "))
+            .expect("stop_current body must be terminated by the next fn")];
+        assert!(
+            body.contains("load_config_for_stop()"),
+            "stop must degrade a corrupt config via the tolerant read"
+        );
+        assert!(
+            body.contains("remove_config()"),
+            "stop must still remove the (corrupt) config file after the tolerant read"
+        );
+    }
+
+    #[test]
+    fn pending_revocation_debug_redacts_the_desktop_secret() {
+        let pending = test_pending_revocation("ep_debug");
+        let rendered = format!("{pending:?}");
+        assert!(
+            rendered.contains("ep_debug"),
+            "non-secret fields stay visible"
+        );
+        assert!(
+            !rendered.contains(&pending.desktop_secret),
+            "the desktop secret must never appear in Debug output"
+        );
+    }
+
+    /// Round-6 复审:0600 修复必须挂在第一个句柄、先于任何内容读取——
+    /// 非 UTF-8 的损坏内容走读取腿报错返回,挂在读取之后的修复永远不会
+    /// 执行,损坏 + 放宽权限的凭据文件就一直裸留在盘上(与加载注释的
+    /// 威胁模型直接相抵)。把修复挪回读取之后或删除修复即红。
+    /// Windows/fallback 无 POSIX 模式,模式断言经 test_support 钩子跳过。
+    #[test]
+    fn corrupt_world_readable_config_is_still_repaired_on_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-config-repair-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("web-access.json");
+        // 非 UTF-8 字节:read_to_string 必然失败,模拟「损坏内容 + 放宽
+        // 权限」的组合。
+        std::fs::write(&path, [0xff_u8, 0xfe, b'{', b'\n']).unwrap();
+        let enforced = crate::platform::test_support::force_private_file_mode(&path, 0o644);
+        let outcome = load_config_from(&path);
+        assert!(outcome.is_err(), "corrupt content must still fail closed");
+        if enforced {
+            assert_eq!(
+                crate::platform::test_support::permission_bits(&path),
+                Some(0o600),
+                "the load-time repair must land on the first handle, before the failing read"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Round-7 复审 M1:账本侧的 0600 修复必须与 config 同形——挂在**第一
+    /// 个**句柄上、先于任何内容读取。账本走 read_to_end(不因非 UTF-8 而
+    /// 失败),能暴露顺序的只有读取腿的真实 I/O 错误:这里用「路径是目录」
+    /// 制造 unix 上 open 成功、read(2) 必失败的 EISDIR。修复挂在读取之后
+    /// (round-6 之前的形状)或被删除时,Unavailable 提前返回,权限保持
+    /// 放宽,本测试即红。Windows 无 POSIX 模式,模式断言经 test_support
+    /// 钩子跳过(open 目录在该平台直接失败,同样走 Unavailable)。
+    #[test]
+    fn corrupt_world_readable_ledger_is_still_repaired_on_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-ledger-repair-order-test-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        std::fs::create_dir(&path).unwrap();
+        let enforced = crate::platform::test_support::force_private_file_mode(&path, 0o755);
+        let outcome = load_pending_revocations_from(&path);
+        assert!(
+            outcome.is_err(),
+            "the read-leg I/O error must surface as unavailable"
+        );
+        if enforced {
+            assert_eq!(
+                crate::platform::test_support::permission_bits(&path),
+                Some(0o600),
+                "the load-time repair must land on the first handle, before the failing read"
+            );
+        }
+        std::fs::remove_dir_all(directory).ok();
     }
 }

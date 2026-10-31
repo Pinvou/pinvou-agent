@@ -8,10 +8,26 @@ pub use clipboard::read_clipboard_image;
 pub use path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
     external_application_path, file_url_from_path, filesystem_path_identity_key, kill_pid_tree,
-    null_device, obsidian_config_path, path_component_eq, path_identity_is_same_or_nested,
-    path_relative_suffix_under, platform_compat_path, python_command, user_home_dir,
-    validate_upload_location,
+    null_device, obsidian_config_path, path_component_eq, path_component_prefix,
+    path_identity_is_same_or_nested, path_relative_suffix_under, path_starts_with_folded,
+    platform_compat_path, python_command, user_home_dir, validate_upload_location,
 };
+// The folding primitives are consumed by the os adapters through this module
+// path (`super::interface::volume_fold_*`). macOS/Windows adapters consume
+// eq/prefix (no allowance needed there — a stopped consumer must resurface as
+// an unused-import tripwire); on the byte-exact platforms none of the aliases
+// is referenced, hence the cfg'd allowance. `volume_fold_spelling` is never
+// consumed through this re-export on any platform (its own module's eq/prefix
+// reach it directly; its İ-expansion behavior is pinned by a test in
+// `path.rs`), so it stays out of the list (round-5 review: the unconditional
+// blanket allow removed the mac/win tripwire). The E0425 class is about a
+// MISSING re-export, which stays impossible: the two consumed aliases are
+// unconditional in the list.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows")),
+    allow(unused_imports)
+)]
+pub(crate) use path::{volume_fold_eq, volume_fold_prefix};
 pub use permission::{
     disable_super_permission, enable_super_permission, super_permission_is_enabled,
     super_permission_turn_reminder,

@@ -381,3 +381,26 @@ pub(crate) fn write_test_zip(prefix: &str, entries: &[(&str, Vec<u8>)]) -> std::
     std::fs::write(&tmp, zip_buf.into_inner()).unwrap();
     tmp
 }
+
+/// Test hook for POSIX file modes: set `path` to `mode` (e.g. `0o644`) and
+/// report whether the platform enforces POSIX modes at all. Feature-side
+/// tests must not carry `cfg(target_os)`/`cfg(unix)` themselves (the
+/// architecture guard keeps platform selectors in adapter layers), so the
+/// selector lives here and callers skip the mode assertions when this
+/// returns `false` (Windows/fallback have no 0600 semantics to repair).
+/// (Round-6 复审:曾经的读侧伴生 `private_file_mode` 与既有
+/// [`permission_bits`] 语义相同,两个名字只会漂移,已删除——读侧一律用
+/// [`permission_bits`],写侧用本函数。)
+#[cfg(test)]
+pub(crate) fn force_private_file_mode(path: &std::path::Path, mode: u32) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).is_ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+        false
+    }
+}

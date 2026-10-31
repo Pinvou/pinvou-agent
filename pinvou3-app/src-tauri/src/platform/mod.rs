@@ -48,11 +48,21 @@ pub use download::redact_url_credentials_in_text;
 pub use os::filesystem_path_identity_key;
 pub use os::path_identity_is_same_or_nested;
 // Same crate-boundary shape as the re-exports above: the CLI's artifacts
-// lane answers its credential-component blacklist through the same
-// platform-aware component compare as the GUI's `path_policy` (byte-exact
-// on unix, ASCII case-insensitive on Windows) instead of a drifting
-// `cfg!(windows)` re-copy.
+// lane answers its credential blacklist through the same platform-aware
+// compares as the GUI's `path_policy` (byte-exact on Linux; Unicode
+// case-folding-aware on Windows and macOS — on those platforms the default
+// volume folds case at the filesystem layer, including the non-ASCII code
+// points that fold onto ASCII (U+017F/U+212A by simple case folding, and
+// U+0131 via NTFS's `$UpCase` uppercase table), so lexical checks that run
+// on the caller's spelling must fold to match what the volume will actually
+// resolve). The spelling `canonicalize` returns on a case-insensitive volume
+// is platform-defined (macOS realpath preserves the caller's spelling), so no
+// check may rely on it: both the lexical and the resolved-path compares go
+// through the folded predicates, which are load-bearing — do not simplify
+// them back to byte equality instead of a drifting `cfg!(windows)` re-copy.
 pub use os::path_component_eq;
+pub use os::path_component_prefix;
+pub use os::path_starts_with_folded;
 // Same crate-boundary shape as the re-exports above: the headless CLI's
 // file-persisting lanes (`artifacts write`, `feedback submit`) were the last
 // holders of a drifting local stage-then-rename copy; they now consume the

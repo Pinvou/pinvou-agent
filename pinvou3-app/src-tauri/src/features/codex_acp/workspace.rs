@@ -131,7 +131,19 @@ struct WorkspaceBaseline {
 pub fn list_workspace(root: &Path, relative_path: Option<&str>) -> Result<WorkspaceListing> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path.unwrap_or_default())?;
+    // Round-7 复审:与 preview/diff 同策略,被请求的目录本身途经凭据组件
+    // 时整体拒绝,而不是回一个空列表——「成功空列表 vs 报错」的分叉本身
+    // 会泄露黑名单目录的存在(列表与搜索不外泄其存在,见下方
+    // workspace_entry 的过滤注释;子项过滤挡不住「这个目录可列」的信号)。
+    if relative_path_crosses_blocked_component(&relative) {
+        bail!("工作区路径途经凭据文件，拒绝列出: {relative}");
+    }
     let directory = resolve_existing_path(&root, &relative, true)?;
+    // 解析腿(与 preview 车道同约束):「链接名清白」的符号链接
+    // (notes -> .aws)解析落点在黑名单目录上时同样拒绝。
+    if path_crosses_blocked_component(&directory) {
+        bail!("工作区路径途经凭据文件，拒绝列出: {relative}");
+    }
     let mut entries = Vec::new();
     for entry in fs::read_dir(&directory)
         .with_context(|| format!("读取工作目录失败: {}", directory.display()))?
@@ -190,7 +202,15 @@ pub fn search_workspace(root: &Path, query: &str) -> Result<Vec<WorkspaceEntry>>
 
 pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<WorkspacePreview> {
     let relative = normalize_relative_path(relative_path)?;
+    if relative_path_crosses_blocked_component(&relative) {
+        bail!("工作区路径途经凭据文件，拒绝读取: {relative}");
+    }
     let path = resolve_existing_path(root, &relative, false)?;
+    // 解析后的真实落点仍需过黑名单：工作区内 `notes.txt -> .env` 的链接名
+    // 本身清白，仅凭调用方拼写拦截会被符号链接绕过。
+    if path_crosses_blocked_component(&path) {
+        bail!("工作区路径途经凭据文件，拒绝读取: {relative}");
+    }
     let metadata = path
         .metadata()
         .with_context(|| format!("读取文件信息失败: {}", path.display()))?;
@@ -368,6 +388,12 @@ pub fn workspace_changes(session_id: &str, root: &Path) -> Result<WorkspaceChang
     } else {
         filesystem_changes(&root, baseline.as_ref())?
     };
+    // 凭据过滤必须先于 classify_origin:分类会对 git 工作区的 dirty 文件
+    // 读取内容并做 SHA-256 指纹,黑名单条目(如 .env)不能为了一次注定被
+    // 丢弃的回显先读一遍内容。列表与搜索不外泄凭据文件的存在(见
+    // list_workspace 的过滤注释);changes 车道同约束——名称/状态元数据
+    // 同样不得为黑名单组件回显。
+    changes.retain(|change| !relative_path_crosses_blocked_component(&change.relative_path));
     for change in &mut changes {
         change.origin = classify_origin(&root, baseline.as_ref(), &change.relative_path)?;
     }
@@ -478,6 +504,12 @@ pub fn checkout_workspace_branch(
     if !known.lines().map(str::trim).any(|name| name == branch) {
         bail!("分支不存在: {branch}");
     }
+    // Round-10 复审 minor(记录语义变化):git_status_entries 现按凭据策略
+    // 过滤 changes 车道,黑名单来源的 staged rename 目的地被丢弃——其唯一
+    // 变更就是这类改名的工作区在此处读作「干净」,走裸 checkout 快路径而
+    // 非 Stash/Commit 模式。快路径与 Carry 的 git 命令完全一致,方向 fail-
+    // safe(无数据损失),且泄露过滤必须对一切消费方生效,不能为此引入
+    // 未过滤的第二计数;分支 UI 的 dirty_count 同理低估。
     if git_status_entries(&root)?.is_empty() {
         git_output(&root, &["checkout", branch])?;
         return workspace_branches(&root);
@@ -833,8 +865,32 @@ fn diff_cache_put(session_id: &str, root: &Path, relative: &str, text: String, t
 pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Result<WorkspaceDiff> {
     let root = canonical_workspace(root)?;
     let relative = normalize_relative_path(relative_path)?;
+    // 未跟踪文件的合成差异与 git diff（含已暂存）都包含文件内容；凭据组件
+    // 文件拒绝进入差异车道，与 preview_workspace_file 同策略。
+    if relative_path_crosses_blocked_component(&relative) {
+        bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
+    }
     let path = root.join(&relative);
     ensure_path_within_workspace(&root, &path)?;
+    // Round-5 复审 BLOCKER:git pathspec 按目录前缀递归,`:(literal)` 只关
+    // 通配不关递归——`git diff -- ":(literal)src"` 会把已跟踪/已暂存的
+    // `src/.env` 完整补丁发给手机,而词法检查只看得到 "src" 这个无害祖先
+    // 名。目录(含整仓的空 relative)目标整体拒绝:差异车道按变更车道给出
+    // 的文件路径工作,目录级差异从来不是契约功能;文件级 pathspec 不递
+    // 归。Round-8 复审:目录从 worktree 消失(`git rm -r`/`rm -rf`/
+    // sparse-checkout/悬空链接)时 is_dir 不再成立,由 diff 臂内的 git 侧
+    // 展开检查(pathspec 命中条目必须恰为请求文件)兜住同一泄露。
+    if path.is_dir() {
+        bail!("工作区差异仅支持文件路径: {relative}");
+    }
+    // 解析腿(与 preview 车道同约束):落点经符号链接命中黑名单时,在任何
+    // 内容读取(含 diff 缓存的指纹哈希)之前拒绝。canonicalize 失败(已删
+    // 除的文件)保持原拼写,由下方 git 臂按词法腿处理。
+    if let Ok(landing) = std::fs::canonicalize(&path) {
+        if path_crosses_blocked_component(&landing) {
+            bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
+        }
+    }
 
     if let Some(cached) = diff_cache_get(session_id, &root, &relative) {
         return Ok(WorkspaceDiff {
@@ -850,6 +906,69 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // tracked `abx.txt`'s diff instead of its own. Same literal prefix
         // the tracked-ness oracle below uses.
         let literal = format!(":(literal){relative}");
+        // Round-8 复审 BLOCKER:上面的目录拒绝键在 worktree 存活上——
+        // `git rm -r src`/`rm -rf src`/sparse-checkout/悬空符号链接让磁盘
+        // 目录消失,is_dir 不再成立而 canonicalize 失败跳过解析腿,
+        // pathspec 仍按目录前缀递归展开,把已跟踪/已暂存的 `src/.env`
+        // 完整补丁(删除臂把旧凭据字节渲染成 `-` 行)发给手机。按 git 侧
+        // 的实际展开拒绝:pathspec 命中的 index 与 HEAD 条目必须恰好等
+        // 于请求的文件本身。已删除文件的删除差异不受影响(两条列表恰含
+        // 自身);未跟踪新文件两表皆空。ls-tree 失败按空处理:HEAD 未出
+        // 生(空仓库)时本就无已提交内容可展开,此时的目录展开由 ls-files
+        // 索引腿独立拒绝(下方需要 HEAD 的 `--cached` 臂在未出生 HEAD 下
+        // 并不会失败,不能指望它兜底);有效 HEAD 下 ls-tree 失败(对象
+        // 损坏)时,需要读同一批树的 diff 臂同样产不出内容。
+        // Round-11 复审 BLOCKER:展开检查原以 `!path.exists()` 为门——
+        // 但 `rm -rf src && echo x > src`(同名文件换目录)让 path 存在
+        // 且非目录,门把检查整个跳过,而泄露在 index/HEAD 侧:pathspec
+        // 照样按目录前缀展开出 `src/.env` 的删除补丁。走到这里 path 已
+        // 必非目录(is_dir 拒绝在其上),门没有任何正确性收益,展开检查
+        // 无条件执行(存在性只影响 canonicalize 腿,已在上方处理)。
+        let index_entries = git_output(&root, &["ls-files", "-z", "--", literal.as_str()])?;
+        let head_entries = git_output(
+            &root,
+            &[
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                "HEAD",
+                "--",
+                literal.as_str(),
+            ],
+        )
+        .unwrap_or_default();
+        let expands_beyond_request = index_entries
+            .split('\0')
+            .chain(head_entries.split('\0'))
+            .filter(|entry| !entry.is_empty())
+            .any(|entry| entry != relative);
+        if expands_beyond_request {
+            bail!("工作区差异仅支持文件路径: {relative}");
+        }
+        // Round-9 复审 BLOCKER:staged rename 的旧内容由 `--cached` 臂按
+        // 「新文件」渲染——pathspec 限定目的地时 git 无法与删除侧配对,
+        // `new file mode` 直接带出旧 blob 全文,而词法/解析腿只看得见清白
+        // 的目的地名。按 index-vs-HEAD 的改名/拷贝对重建 目的地→来源 映射,
+        // 请求路径是黑名单来源的改名/拷贝目标时整体拒绝(检测经
+        // --find-renames/--find-copies 在命令行强制,仓库 diff.renames
+        // 配置拆不散改名对)。改名对之外的无对形状属共享策略已记录的同名
+        // 别名残余——git 不再持有可追随的
+        // 链接,字节已落在一个真实的清白命名文件里,与 cp+add 及 agent
+        // 自行写入任意内容不可区分:cp+add、相似度低于检测阈值的改写
+        // (Round-9 已记),以及两个最顺手到达的无对形状——纯 `mv` 后
+        // `D .env|?? innocent.txt`、只 add 目的地侧的
+        // `D .env|A innocent.txt`(改写对只存在于 index-vs-HEAD,无对时
+        // 看不到配对)。关闭它们需要内容检查,超出本车道词法策略的范围
+        // (Round-10 复审 minor:补记形状)。case 不敏感文件系统上的
+        // Linux(非默认挂载)同理:字节精确解析腿会放行 `.ENV` 拼写
+        // (Round-10 复审 minor:环境约束记录)。改名会改写索引,diff 缓
+        // 存指纹随之失效,不存在跨改名命中旧缓存条的窗口。
+        if let Some(origin) = git_staged_rename_origins(&root)?.get(&relative) {
+            if relative_path_crosses_blocked_component(origin) {
+                bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
+            }
+        }
         let unstaged = git_output(
             &root,
             &[
@@ -951,10 +1070,20 @@ pub(super) fn resolve_workspace_references(
     let mut references = Vec::new();
     for raw in relative_paths {
         let relative = normalize_relative_path(raw)?;
+        // 词法判定与 preview 同约束:解析前的调用方拼写先过一次黑名单
+        // (注释所称的双重判定的前一半;解析后落点另有一次)。
+        if relative_path_crosses_blocked_component(&relative) {
+            bail!("工作区引用途经凭据文件，拒绝读取: {relative}");
+        }
         if !unique.insert(relative.clone()) {
             continue;
         }
         let absolute_path = resolve_existing_path(root, &relative, false)?;
+        // 凭据内容不得进入外部模型上下文：提示引用与 preview 同约束，词法
+        // 与解析后双重判定（同 preview_workspace_file）。
+        if path_crosses_blocked_component(&absolute_path) {
+            bail!("工作区引用途经凭据文件，拒绝读取: {relative}");
+        }
         let metadata = absolute_path
             .metadata()
             .with_context(|| format!("读取工作区文件失败: {}", absolute_path.display()))?;
@@ -989,6 +1118,13 @@ fn workspace_entry(root: &Path, path: PathBuf) -> Result<Option<WorkspaceEntry>>
     if name.is_empty() || (metadata.is_dir() && is_ignored_directory(&name)) {
         return Ok(None);
     }
+    let relative_path = relative_text(root, &path)?;
+    // 凭据组件条目静默跳过（同 file_access::list_host_files 的模式）：列表与
+    // 搜索不外泄其存在；读取与差异车道另行显式拒绝。相对路径以工作区根为
+    // 基准，被列入的目录本身在黑名单内时其子项同样被跳过。
+    if relative_path_crosses_blocked_component(&relative_path) {
+        return Ok(None);
+    }
     let kind = if metadata.is_dir() {
         "directory"
     } else if metadata.is_file() {
@@ -1002,7 +1138,7 @@ fn workspace_entry(root: &Path, path: PathBuf) -> Result<Option<WorkspaceEntry>>
             .is_some_and(|mut entries| entries.any(|entry| entry.is_ok()));
     Ok(Some(WorkspaceEntry {
         name,
-        relative_path: relative_text(root, &path)?,
+        relative_path,
         kind: kind.to_string(),
         size: if metadata.is_file() {
             metadata.len()
@@ -1039,6 +1175,27 @@ fn normalize_relative_path(raw: &str) -> Result<String> {
         }
     }
     Ok(parts.join("/"))
+}
+
+/// 相对路径是否途经凭据黑名单组件（`.env`、`.aws`、`id_rsa`、
+/// `credentials.json` 等逐组件精确匹配,`.env.` 系变体按组件前缀匹配——
+/// 判定细则见 `path_policy::BLOCKED_COMPONENT_PREFIXES`）。判定复用
+/// `path_policy::check_sensitive_components`（内部经平台感知
+/// `path_component_eq`/`path_component_prefix`，macOS 默认卷大小写不敏感）；
+/// 其系统前缀黑名单均以 `/` 开头，相对路径不可能命中，这里等价于纯组件
+/// 判定。
+/// 策略意图见 file_ingest::validate_browsable_path：凭据内容不得进入外部
+/// 模型上下文——codex workspace 车道与附件摄入同约束。
+fn relative_path_crosses_blocked_component(relative: &str) -> bool {
+    crate::platform::path_policy::check_sensitive_components(Path::new(relative)).is_err()
+}
+
+/// 解析后（canonicalize）的绝对路径黑名单判定：与 file_ingest::
+/// validate_browsable_path 对 canonical 路径的组件判定同约束。调用方拼写的
+/// 词法检查拦不住「链接名清白」的符号链接（`notes.txt -> .env`），解析
+/// 落点必须再过一次黑名单。
+fn path_crosses_blocked_component(path: &Path) -> bool {
+    crate::platform::path_policy::check_sensitive_components(path).is_err()
 }
 
 fn resource_path_from_uri(raw: &str) -> Result<PathBuf> {
@@ -1388,7 +1545,13 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
     crate::platform::process::strip_git_override_env(&mut command);
     let output = command
         .current_dir(root)
+        // -c status.renames=true:改名对是黑名单过滤的输入,Round-9 复审
+        // 对抗探针证实用户仓库配置 status.renames=false 会把 `git mv` 拆
+        // 成 `D`+`??`(目的地不被过滤、diff 车道照常渲染旧凭据 blob)。
+        // 检测在此强制开启,不随仓库配置漂移。
         .args([
+            "-c",
+            "status.renames=true",
             "status",
             "--porcelain=v1",
             "-z",
@@ -1416,8 +1579,16 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
         let x = record[0] as char;
         let y = record[1] as char;
         let path = porcelain_record_path(record);
-        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
+        if (matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C')) && index < records.len() {
+            // Round-9 复审 BLOCKER:porcelain 的 R/C 记录是 `目的地 NUL
+            // 来源`,来源才是改名对里旧内容(黑名单名下的字节)的载体。
+            // 来源命中黑名单时,目的地条目整体不回显——它正是把旧字节
+            // 带出变更车道的载体;来源清白的改名照常列出。
+            let origin = porcelain_origin_path(records[index]);
             index += 1;
+            if relative_path_crosses_blocked_component(&origin) {
+                continue;
+            }
         }
         changes.push(WorkspaceChange {
             relative_path: path,
@@ -1429,6 +1600,70 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
     Ok(changes)
 }
 
+/// `git status --porcelain=v1 -z` 里的 R/C 改名/拷贝对:目的地 → 来源。
+/// diff 车道据此拒绝黑名单来源的改名目的地(pathspec 限定目的地时
+/// `git diff --cached` 不做改名配对,旧 blob 会以「新文件」全文渲染,
+/// 见 workspace_diff 内的 Round-9 注释)。改名/拷贝对本就只存在于
+/// index-vs-HEAD,故映射直接取自 `diff --cached --name-status -z`:
+/// Round-11 复审 MAJOR——原先为取同一批 R/C 记录跑整仓
+/// `git status --porcelain`,把工作区+未跟踪全量遍历加到了每次 diff
+/// 缓存未命中上(活跃仓库里几乎每次查看差异都是未命中,10k 文件仓库
+/// 单次冷 status 约 0.3-2s)。`--find-renames`/`--find-copies` 在命令
+/// 行强制开启,不随仓库 diff.renames 配置漂移(与 changes 车道的
+/// status.renames 强制同理)。未出生 HEAD 下 git 与空树比较,命令照常
+/// 成功(此时不可能存在改名对,空映射即正确)。diff 输出的路径分量分
+/// 隔符在所有平台都是 `/`(status 的 Windows 反斜杠怪癖不适用于
+/// diff),`-z` 下不做 quotePath 转义。
+fn git_staged_rename_origins(root: &Path) -> Result<HashMap<String, String>> {
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    let output = command
+        .current_dir(root)
+        .args([
+            "diff",
+            "--cached",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+            "--",
+        ])
+        .output()
+        .context("执行 git diff 失败")?;
+    if !output.status.success() {
+        bail!(
+            "git diff 失败: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let fields = output.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let mut origins = HashMap::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let status = fields[index];
+        index += 1;
+        if status.is_empty() {
+            continue;
+        }
+        // 改名/拷贝记录 `R100\0<origin>\0<dest>\0`:diff 的 -z name-status
+        // 是来源在前、目的地在后(实测 `git mv a/.env a/innocent.txt` 输出
+        // `R100\0a/.env\0a/innocent.txt`),与 porcelain 的
+        // `R  dest\0origin` 两段顺序恰好相反,易踩。其余状态码
+        // (A/M/D/T/…)各带一个路径字段,原样跳过。
+        if matches!(status[0] as char, 'R' | 'C') && index + 1 < fields.len() {
+            let origin = porcelain_origin_path(fields[index]);
+            let destination = porcelain_origin_path(fields[index + 1]);
+            index += 2;
+            if !destination.is_empty() && !origin.is_empty() {
+                origins.insert(destination, origin);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    Ok(origins)
+}
+
 /// One `git status --porcelain=v1 -z` record's path field: `XY ` prefix
 /// stripped, bytes lossily decoded. The `\` → `/` separator rewrite is a
 /// WINDOWS-only `status` quirk (git reports Windows paths with backslash
@@ -1438,7 +1673,15 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
 /// the raw path is kept as-is (round-51 review; same doctrine as the CLI
 /// twin's round-37 note).
 fn porcelain_record_path(record: &[u8]) -> String {
-    let path = String::from_utf8_lossy(&record[3..]);
+    porcelain_origin_path(&record[3..])
+}
+
+/// A raw porcelain record path (the rename-origin record has no `XY `
+/// prefix): lossily decoded, with the same WINDOWS-only separator rewrite
+/// as `porcelain_record_path` so both halves of a rename pair stay
+/// comparable.
+fn porcelain_origin_path(record: &[u8]) -> String {
+    let path = String::from_utf8_lossy(record);
     #[cfg(windows)]
     {
         path.replace('\\', "/")
@@ -1522,6 +1765,11 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String> {
         .with_context(|| format!("读取未跟踪文件失败: {}", path.display()))?;
     if !canonical.starts_with(&canonical_root) {
         bail!("未跟踪路径通过符号链接越出了工作区: {}", relative);
+    }
+    // 越界链接已被上面的 containment 拦住;落在工作区内部的链接
+    // (`notes.md -> .env`)还需对解析后的落点过黑名单,与 preview 同约束。
+    if path_crosses_blocked_component(&canonical) {
+        bail!("工作区路径途经凭据文件，拒绝生成差异: {}", relative);
     }
     if file_kind(&canonical) != "text" {
         return Ok("未跟踪的二进制文件不支持差异预览。".to_string());
@@ -2094,6 +2342,22 @@ mod tests {
                 "a local untracked symlink must diff via its canonical target, got: {}",
                 diff.text
             );
+
+            // (d) Round-5 复审 M4:workspace 内指向凭据文件的未跟踪符号链接
+            // 必须按解析后的落点拒绝。此前的 git 车道夹具只钉越界与本地直读,
+            // 删掉 untracked_diff 的落点黑名单检查时本模块全部用例仍然全绿
+            // (突变实测)——git 工作区里 `notes.md -> .env` 的差异会退化为
+            // 凭据字节外泄且无红测试。
+            fs::write(repo.join(".env"), "AWS_SECRETKEY=leak\n").unwrap();
+            std::os::unix::fs::symlink(".env", repo.join("notes.md")).unwrap();
+            let error = workspace_diff("sess-untracked-symlink", repo, "notes.md")
+                .err()
+                .expect("an untracked symlink landing on a credential file must be refused");
+            let rendered = format!("{error:#}");
+            assert!(
+                rendered.contains("凭据文件"),
+                "the resolved credential landing must be refused, got: {rendered}"
+            );
         }
 
         // Bounded read: an untracked text file larger than DIFF_LIMIT is
@@ -2197,6 +2461,658 @@ mod tests {
         let preview = preview_workspace_file(root.path(), "src/main.rs").unwrap();
         assert_eq!(preview.kind, "text");
         assert_eq!(preview.text.as_deref(), Some("fn main() {}"));
+    }
+
+    /// 凭据黑名单逐组件精确匹配，`.env.` 系变体按组件前缀匹配：`.env`、
+    /// `.aws/credentials`、`sub/.ssh/id_rsa`、`.env.local` 命中；
+    /// `.environment` 是不同前缀、放行（黑名单语义与 path_policy 一致，
+    /// 不做任意子串匹配）。
+    #[test]
+    fn blocked_component_detection_is_exact_per_component() {
+        assert!(relative_path_crosses_blocked_component(".env"));
+        assert!(relative_path_crosses_blocked_component(".aws/credentials"));
+        assert!(relative_path_crosses_blocked_component("sub/.ssh/id_rsa"));
+        assert!(relative_path_crosses_blocked_component(".env.production"));
+        assert!(relative_path_crosses_blocked_component(".env.local"));
+        assert!(!relative_path_crosses_blocked_component(".environment"));
+        assert!(!relative_path_crosses_blocked_component("notes.md"));
+    }
+
+    /// workspace 车道此前没有任何凭据策略：phone 端铸造的工作区 grant 把
+    /// preview 变成授区内凭据文件的自由读取口。preview 必须显式拒绝。
+    #[test]
+    fn preview_workspace_file_rejects_credential_components() {
+        let root = TestDir::new("credential-preview");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::write(root.path().join(".aws/credentials"), "aws_key=1\n").unwrap();
+
+        let error = preview_workspace_file(root.path(), ".env")
+            .err()
+            .expect("credential file preview must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        assert!(preview_workspace_file(root.path(), ".aws/credentials").is_err());
+        // 普通文件不受影响。
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+        assert!(preview_workspace_file(root.path(), "notes.md").is_ok());
+    }
+
+    /// Round-8 复审 MAJOR:.git 内部是仓库绑定车道里最常见的凭据存储
+    /// (.git/config 的远端 URL 常内嵌 oauth2:TOKEN@ 形态凭据,旧式的
+    /// .git-credentials 早被拦而现代存储此前可读)。组件黑名单收入 .git
+    /// 后,preview/diff 对 .git 内部的词法腿在触盘前拒绝(对存在与否
+    /// 无感);仅共享前缀的 .gitignore 等普通文件不受影响。
+    #[test]
+    fn git_internals_are_refused_across_lanes() {
+        let root = TestDir::new("git-internals");
+        fs::create_dir_all(root.path().join(".git")).unwrap();
+        fs::write(
+            root.path().join(".git/config"),
+            "[remote \"origin\"]\nurl = https://oauth2:TOKEN@example.com/x.git\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".gitignore"), "target/\n").unwrap();
+
+        let error = preview_workspace_file(root.path(), ".git/config")
+            .err()
+            .expect(".git/config preview must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        // 词法腿不触盘:不存在的 .git 内部拼写同样拒绝(无存在分叉)。
+        assert!(preview_workspace_file(root.path(), ".git/FETCH_HEAD").is_err());
+        assert!(preview_workspace_file(root.path(), ".git/nope").is_err());
+        let error = workspace_diff("git-int", root.path(), ".git/config")
+            .err()
+            .expect(".git/config diff must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        // 仅共享前缀的普通文件不受影响。
+        let preview = preview_workspace_file(root.path(), ".gitignore").unwrap();
+        assert_eq!(preview.text.as_deref(), Some("target/\n"));
+    }
+
+    /// 列表与搜索静默跳过凭据组件条目（同 file_access::list_host_files 的
+    /// 模式）。Round-7 复审:被点名的黑名单目录从「空列表成功」改为整体
+    /// 拒绝——「成功空列表 vs 报错」的分叉本身会泄露黑名单目录的存在;
+    /// 拒绝在词法腿触发、不触盘,对存在与否无感(与 preview 车道同形)。
+    #[test]
+    fn list_and_search_skip_credential_components() {
+        let root = TestDir::new("credential-listing");
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        fs::write(root.path().join(".aws/credentials"), "aws_key=1\n").unwrap();
+        fs::create_dir_all(root.path().join("sub/.ssh")).unwrap();
+        fs::write(root.path().join("sub/.ssh/id_rsa"), "key\n").unwrap();
+
+        let listing = list_workspace(root.path(), None).unwrap();
+        assert!(listing.entries.iter().any(|entry| entry.name == "notes.md"));
+        assert!(
+            !listing
+                .entries
+                .iter()
+                .any(|entry| entry.name == ".env" || entry.name == ".aws"),
+            "credential entries must be skipped, got: {:?}",
+            listing.entries
+        );
+        let aws_error = list_workspace(root.path(), Some(".aws"))
+            .err()
+            .expect("a blocked directory must be refused, not listed as empty");
+        assert!(aws_error.to_string().contains("凭据"), "got: {aws_error}");
+        let sub_listing = list_workspace(root.path(), Some("sub")).unwrap();
+        assert!(!sub_listing.entries.iter().any(|entry| entry.name == ".ssh"));
+
+        let hit = search_workspace(root.path(), "id_rsa").unwrap();
+        assert!(
+            hit.is_empty(),
+            "search must not return credential paths, got: {hit:?}"
+        );
+        let hit = search_workspace(root.path(), "notes").unwrap();
+        assert!(hit.iter().any(|entry| entry.relative_path == "notes.md"));
+    }
+
+    /// 未跟踪差异与 git diff 都携带文件内容，凭据组件文件必须拒绝进入差异
+    /// 车道（非 git 工作区的未跟踪 `.env` 即可复现）。
+    #[test]
+    fn workspace_diff_rejects_credential_components() {
+        let root = TestDir::new("credential-diff");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::create_dir_all(root.path().join("sub/.ssh")).unwrap();
+        fs::write(root.path().join("sub/.ssh/id_rsa"), "key\n").unwrap();
+
+        let error = workspace_diff("s-cred", root.path(), ".env")
+            .err()
+            .expect("credential file diff must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        assert!(workspace_diff("s-cred", root.path(), "sub/.ssh/id_rsa").is_err());
+    }
+
+    /// Round-5 复审 BLOCKER:git pathspec 按目录前缀递归,`git diff --
+    /// ":(literal)src"` 会把已跟踪/已暂存的 `src/.env` 完整补丁发给手机
+    /// (词法检查只看得到无害祖先名 "src")。目录目标在差异车道整体拒绝;
+    /// 本钉在真实 git 仓库上同时锁住已跟踪未暂存与已暂存两条泄露臂,并钉
+    /// 住清白兄弟文件的差异仍然可用(功能不被一刀切)。Round-6 复审 M1:
+    /// 直接点名的凭据文件请求(最直接的敌意形状)也必须在 git 仓库上被
+    /// 两条检查腿拦住——词法腿(已删除文件 canonicalize 失败时唯一的
+    /// 防线)与解析腿。需要 git 二进制。
+    #[test]
+    fn workspace_diff_refuses_directory_pathspecs_over_tracked_credentials() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping workspace_diff_refuses_directory_pathspecs_over_tracked_credentials: git binary not available"
+            );
+            return;
+        }
+        let root = TestDir::new("credential-dir-diff");
+        let repo = root.path();
+        run_git(repo, &["init", "-b", "main", "."]);
+        run_git(repo, &["config", "user.name", "test"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(repo.join("src/.env"), "AWS_SECRETKEY=base\n").unwrap();
+        fs::write(repo.join("src/innocent.txt"), "hello\n").unwrap();
+        run_git(repo, &["add", "src/.env", "src/innocent.txt"]);
+        run_git(repo, &["commit", "-m", "init"]);
+        fs::write(repo.join("src/.env"), "AWS_SECRETKEY=dirty\n").unwrap();
+        fs::write(repo.join("src/innocent.txt"), "hello v2\n").unwrap();
+
+        // 已跟踪未暂存臂:祖先目录的 diff 不得携带凭据补丁。
+        let error = workspace_diff("s-dir", repo, "src")
+            .err()
+            .expect("a directory pathspec must be refused in the diff lane");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // Round-6 复审 M1:直接点名的凭据文件(已跟踪未暂存)必须拒绝。
+        let error = workspace_diff("s-dir-file", repo, "src/.env")
+            .err()
+            .expect("a tracked-dirty credential file diff must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        // 已暂存臂与整仓拼写:同一形状。
+        run_git(repo, &["add", "src/.env", "src/innocent.txt"]);
+        assert!(workspace_diff("s-dir", repo, "src").is_err());
+        assert!(workspace_diff("s-dir", repo, ".").is_err());
+        // 已暂存的凭据文件点名请求:同一拒绝。
+        assert!(workspace_diff("s-dir-file", repo, "src/.env").is_err());
+
+        // Round-6 复审 M1:已删除的凭据文件——canonicalize 失败,解析腿
+        // 跳过,词法腿是唯一防线;删除差异(渲染旧凭据字节为 `-` 行)同样
+        // 不得离开差异车道。
+        fs::remove_file(repo.join("src/.env")).unwrap();
+        let error = workspace_diff("s-dir-file", repo, "src/.env")
+            .err()
+            .expect("a deleted credential file's removal diff must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        // 文件级差异仍然工作:清白兄弟文件的补丁照常返回。
+        let diff = workspace_diff("s-dir", repo, "src/innocent.txt").unwrap();
+        assert!(diff.text.contains("+hello v2"), "got: {}", diff.text);
+        assert!(!diff.text.contains("AWS_SECRETKEY"), "got: {}", diff.text);
+
+        // Round-8 复审 BLOCKER:整个目录从 worktree 消失(未暂存 rm -rf
+        // 与 `git add -A` 后的已暂存删除)时 is_dir 不再成立——pathspec
+        // 仍按前缀递归展开 index/HEAD 里存活的子项,必须按 git 侧展开
+        // 整体拒绝。已删除的清白文件的删除差异不受影响(ls-files/
+        // ls-tree 恰含自身)。
+        fs::remove_file(repo.join("src/innocent.txt")).unwrap();
+        let diff = workspace_diff("s-dir-del-file", repo, "src/innocent.txt").unwrap();
+        assert!(diff.text.contains("-hello v2"), "got: {}", diff.text);
+        fs::remove_dir_all(repo.join("src")).unwrap();
+        let error = workspace_diff("s-dir-rm", repo, "src")
+            .err()
+            .expect("a deleted directory pathspec must be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+        run_git(repo, &["add", "-A"]);
+        let error = workspace_diff("s-dir-rm-staged", repo, "src")
+            .err()
+            .expect("a staged whole-directory deletion pathspec must be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+    }
+
+    /// Round-9 复审 BLOCKER:staged rename 的 porcelain 记录是
+    /// `目的地 NUL 来源`。来源在黑名单内时,变更车道不得回显目的地条目,
+    /// diff 车道必须拒绝目的地(否则 `--cached` 臂以「新文件」渲染旧
+    /// 凭据 blob 全文);来源清白的改名两条车道照常工作。
+    #[test]
+    fn workspace_lanes_refuse_staged_renames_of_credential_files() {
+        let repo = TestDir::new("rename-filter-r9");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        fs::write(repo.path().join(".env"), "AWS_SECRETKEY=supersecret\n").unwrap();
+        fs::write(repo.path().join("notes.txt"), "hello\n").unwrap();
+        run_git(repo.path(), &["add", ".env", "notes.txt"]);
+        run_git(repo.path(), &["commit", "-m", "init"]);
+        run_git(repo.path(), &["mv", ".env", "innocent.txt"]);
+
+        let changes = workspace_changes("rename-changes", repo.path()).unwrap();
+        assert!(
+            !changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "innocent.txt"),
+            "a rename destination with a blocked origin must not be listed, got: {:?}",
+            changes
+                .changes
+                .iter()
+                .map(|change| &change.relative_path)
+                .collect::<Vec<_>>()
+        );
+
+        let error = workspace_diff("rename-diff", repo.path(), "innocent.txt")
+            .err()
+            .expect("a staged rename destination with a blocked origin must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        // 对照:来源清白的改名照常列出,diff 照常服务。
+        run_git(repo.path(), &["mv", "notes.txt", "docs.txt"]);
+        let changes = workspace_changes("rename-ok", repo.path()).unwrap();
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "docs.txt"),
+            "an innocent rename must stay listed, got: {:?}",
+            changes
+                .changes
+                .iter()
+                .map(|change| &change.relative_path)
+                .collect::<Vec<_>>()
+        );
+        let diff = workspace_diff("rename-ok-diff", repo.path(), "docs.txt").unwrap();
+        assert!(diff.text.contains("hello"), "got: {}", diff.text);
+
+        // Round-9 复审对抗探针:仓库配置 status.renames=false 不得拆散改
+        // 名对(否则 `git mv` 退化为 `D`+`??`,目的地不被过滤、diff 车道
+        // 照常渲染旧凭据 blob)。检测在 spawn 层用 -c 强制,与配置漂移无关。
+        run_git(repo.path(), &["config", "status.renames", "false"]);
+        run_git(repo.path(), &["mv", "docs.txt", "moved.txt"]);
+        let changes = workspace_changes("rename-cfg", repo.path()).unwrap();
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "moved.txt"),
+            "an innocent rename must stay listed even with status.renames=false"
+        );
+        fs::write(repo.path().join(".env"), "AWS_SECRETKEY=more\n").unwrap();
+        run_git(repo.path(), &["add", ".env"]);
+        run_git(repo.path(), &["commit", "-m", "second"]);
+        run_git(repo.path(), &["mv", ".env", "harmless.txt"]);
+        let changes = workspace_changes("rename-cfg2", repo.path()).unwrap();
+        assert!(
+            !changes
+                .changes
+                .iter()
+                .any(|change| change.relative_path == "harmless.txt"),
+            "a blocked rename must stay filtered even with status.renames=false"
+        );
+        let error = workspace_diff("rename-cfg2-diff", repo.path(), "harmless.txt")
+            .err()
+            .expect("a blocked rename must be refused even with status.renames=false");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
+    /// Round-9 复审 minor:ls-files(index)腿的判别钉。HEAD 未出生时
+    /// ls-tree 降级为空,索引腿是唯一防线——删除它,`git diff --
+    /// ':(literal)src'` 会把「已暂存、未提交、随后整目录从 worktree 消
+    /// 失」的 src/.env 以 `+` 行渲染,而此前所有 fixture 的 HEAD 都含同
+    /// 批子项,索引腿被 ls-tree 腿遮蔽。
+    #[test]
+    fn workspace_diff_index_leg_refuses_staged_directory_without_head() {
+        let repo = TestDir::new("index-leg-r9");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        fs::write(repo.path().join("src/.env"), "AWS_SECRETKEY=staged\n").unwrap();
+        run_git(repo.path(), &["add", "src/.env"]);
+        fs::remove_dir_all(repo.path().join("src")).unwrap();
+        let error = workspace_diff("index-leg", repo.path(), "src")
+            .err()
+            .expect("staged directory expansion with unborn HEAD must be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+    }
+
+    /// Round-11 复审 BLOCKER:同名文件换目录的形状——`rm -rf src &&
+    /// echo x > src` 让 path 存在且非目录,展开检查原以 `!path.exists()`
+    /// 为门,整个检查被跳过,而泄露在 index/HEAD 侧:pathspec 照样按目
+    /// 录前缀展开出 `src/.env` 的删除补丁(旧凭据字节渲染成 `-` 行)。
+    /// 展开检查必须无条件执行(到达此处 path 已必非目录,门没有正确性
+    /// 收益);已暂存臂(--cached 渲染 HEAD 侧删除)同一拒绝。
+    #[test]
+    fn workspace_diff_refuses_directory_replaced_by_same_name_file() {
+        let repo = TestDir::new("dir-swap-r11");
+        run_git(repo.path(), &["init", "-b", "main", "."]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        fs::write(repo.path().join("src/.env"), "AWS_SECRETKEY=supersecret\n").unwrap();
+        fs::write(repo.path().join("src/innocent.txt"), "hello\n").unwrap();
+        run_git(repo.path(), &["add", "src/.env", "src/innocent.txt"]);
+        run_git(repo.path(), &["commit", "-m", "init"]);
+
+        // 未暂存换形:目录变同名文件,worktree 侧 path 存在。
+        fs::remove_dir_all(repo.path().join("src")).unwrap();
+        fs::write(repo.path().join("src"), "payload\n").unwrap();
+        let error = workspace_diff("dir-swap", repo.path(), "src")
+            .err()
+            .expect("a directory replaced by a same-name file must still be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // 已暂存换形:HEAD 侧的删除补丁(--cached 臂)同一拒绝。
+        run_git(repo.path(), &["add", "src"]);
+        let error = workspace_diff("dir-swap-staged", repo.path(), "src")
+            .err()
+            .expect("a staged directory-replaced-by-file pathspec must still be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // 对照一:reset 后 index/HEAD 仍把 src 记作目录(index 里存活
+        // src/.env),对「src」的请求在未暂存臂同样会展开出凭据删除补丁
+        // (`-AWS_SECRETKEY=…` 行),维持拒绝。
+        run_git(repo.path(), &["reset", "-q"]);
+        let error = workspace_diff("dir-swap-reset", repo.path(), "src")
+            .err()
+            .expect("a swapped pathspec must stay refused while the index still tracks the old directory");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // 对照二:清白新文件的 diff 照常工作(展开检查两表恰含自身)。
+        fs::write(repo.path().join("docs.txt"), "visible\n").unwrap();
+        let diff = workspace_diff("dir-swap-file", repo.path(), "docs.txt").unwrap();
+        assert!(diff.text.contains("+visible"), "got: {}", diff.text);
+        assert!(!diff.text.contains("AWS_SECRETKEY"), "got: {}", diff.text);
+    }
+
+    /// Round-11 复审 MAJOR(判别钉):diff 车道的改名映射取自
+    /// `diff --cached --name-status`,检测在 spawn 层用
+    /// --find-renames/--find-copies 强制,仓库配置 diff.renames=false
+    /// 不得拆散改名对(与 changes 车道 status.renames 强制同理)。
+    #[test]
+    fn workspace_diff_rename_map_forces_detection_despite_diff_renames_config() {
+        let repo = TestDir::new("rename-diff-cfg-r11");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        run_git(repo.path(), &["config", "diff.renames", "false"]);
+        fs::write(repo.path().join(".env"), "AWS_SECRETKEY=supersecret\n").unwrap();
+        run_git(repo.path(), &["add", ".env"]);
+        run_git(repo.path(), &["commit", "-m", "init"]);
+        run_git(repo.path(), &["mv", ".env", "harmless.txt"]);
+        let error = workspace_diff("rename-cfg-r11", repo.path(), "harmless.txt")
+            .err()
+            .expect("a blocked rename must be refused even with diff.renames=false");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
+    /// Round-9 复审 minor:列表车道的解析腿判别钉——「链接名清白」的
+    /// 符号链接(docs -> .aws)的落点在黑名单目录上时拒绝列出。
+    #[test]
+    #[cfg(unix)]
+    fn workspace_list_refuses_blocked_resolved_landing() {
+        let root = TestDir::new("list-resolved-r9");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        std::os::unix::fs::symlink(".aws", root.path().join("docs")).unwrap();
+        let error = list_workspace(root.path(), Some("docs"))
+            .err()
+            .expect("a symlink whose resolved landing is a blocked directory must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
+    /// 提示引用车道(`web_access_codex_acp_prompt` 的 workspace_references)
+    /// 与 preview 同约束:凭据内容不得经 ResourceLink 进入外部模型上下文。
+    #[test]
+    fn workspace_references_reject_credential_components() {
+        let root = TestDir::new("credential-references");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+
+        let error = resolve_workspace_references(root.path(), &[".env".to_string()])
+            .err()
+            .expect("credential prompt reference must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        // `.env.` 系变体在前缀判定处被拦(无需落盘解析)。
+        let error = resolve_workspace_references(root.path(), &[".env.production".to_string()])
+            .err()
+            .expect("env-variant prompt reference must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+        let resolved = resolve_workspace_references(root.path(), &["notes.md".to_string()])
+            .expect("ordinary references stay allowed");
+        assert_eq!(resolved.len(), 1);
+    }
+
+    /// 链接名清白的符号链接(`notes.txt -> .env`)必须在对解析后落点的
+    /// 判定处被拦:仅凭调用方拼写的词法检查会被绕过。preview 与未跟踪
+    /// 差异两条读取路径都钉住。
+    #[test]
+    #[cfg(unix)]
+    fn credential_symlink_alias_is_blocked_after_resolution() {
+        use std::os::unix::fs::symlink;
+        let root = TestDir::new("credential-symlink-alias");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+        symlink(".env", root.path().join("notes.txt")).unwrap();
+
+        let error = preview_workspace_file(root.path(), "notes.txt")
+            .err()
+            .expect("a symlink resolving onto a credential file must be rejected");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        let error = workspace_diff("s-symlink", root.path(), "notes.txt")
+            .err()
+            .expect("the untracked-diff read must refuse the resolved credential target");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        // 提示引用车道同样拦截。
+        assert!(resolve_workspace_references(root.path(), &["notes.txt".to_string()]).is_err());
+    }
+
+    /// Round-7 复审 M2:差异车道解析腿在「已跟踪文件类型变更」场景下是
+    /// 唯一防线——notes.txt 原是已跟踪普通文件,后被替换成指向 .env 的
+    /// 符号链接(脏的类型变更)。词法腿只看得到清白名;untracked 臂不
+    /// 参与(文件已跟踪);preview/untracked 的下游复检也不可达——只有
+    /// workspace_diff 级的 canonicalize 复检能拦住。删除该解析腿此前
+    /// 46/46 全绿(该腿完全无钉),本钉把回归变成红灯。
+    #[test]
+    #[cfg(unix)]
+    fn workspace_diff_resolved_leg_blocks_tracked_typechanged_symlink() {
+        use std::os::unix::fs::symlink;
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping workspace_diff_resolved_leg_blocks_tracked_typechanged_symlink: git binary not available"
+            );
+            return;
+        }
+        let root = TestDir::new("credential-typechange-diff");
+        let repo = root.path();
+        run_git(repo, &["init", "-b", "main", "."]);
+        run_git(repo, &["config", "user.name", "test"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join("notes.txt"), "hello\n").unwrap();
+        run_git(repo, &["add", "notes.txt"]);
+        run_git(repo, &["commit", "-m", "init"]);
+        fs::write(repo.join(".env"), "SECRET=1\n").unwrap();
+        fs::remove_file(repo.join("notes.txt")).unwrap();
+        symlink(".env", repo.join("notes.txt")).unwrap();
+
+        let error = workspace_diff("s-typechange", repo, "notes.txt")
+            .err()
+            .expect("a tracked file type-changed onto a credential symlink must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
+    /// Round-7 复审:列表车道对「被请求目录本身」的黑名单判定——目录级
+    /// 请求回空列表 vs 报错的分叉会泄露黑名单目录的存在,词法腿必须整体
+    /// 拒绝;清白目录照常可列,根目录列表的子项过滤保持不变。
+    #[test]
+    fn list_refuses_blocked_directory_requests() {
+        let root = TestDir::new("credential-list-dir");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        fs::write(root.path().join(".aws/credentials"), "k=v\n").unwrap();
+        fs::create_dir_all(root.path().join("docs")).unwrap();
+        fs::write(root.path().join("docs/readme.md"), "hi\n").unwrap();
+
+        let error = list_workspace(root.path(), Some(".aws"))
+            .err()
+            .expect("a blocked directory must be refused, not listed as empty");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+
+        let listing = list_workspace(root.path(), Some("docs"))
+            .expect("an ordinary directory must still list");
+        assert_eq!(listing.entries.len(), 1);
+        let listing = list_workspace(root.path(), None).expect("the root must still list");
+        assert!(
+            listing.entries.iter().all(|entry| entry.name != ".aws"),
+            "blocked children stay filtered from the root listing: {:?}",
+            listing
+                .entries
+                .iter()
+                .map(|entry| &entry.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Round-8 复审:词法腿(触盘前的 pre-stat 拒绝)对存在与否无感——
+    /// 不存在的被拦目录必须得到凭据拒绝而非「不存在」错误,否则
+    /// 「凭据拒绝 vs 不存在」的分叉本身泄露黑名单名是否存在(词法腿
+    /// 被删时解析腿对触盘 fixture 报同文,4/4 旧钉仍绿——live 突变已
+    /// 证;本钉是该腿唯一的判别钉)。
+    #[test]
+    fn list_refuses_nonexistent_blocked_directory_lexically() {
+        let root = TestDir::new("credential-list-nonexistent");
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+
+        let error = list_workspace(root.path(), Some(".aws"))
+            .err()
+            .expect("a nonexistent blocked directory must still be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
+    /// Round-7 复审:列表车道解析腿——「链接名清白」的符号链接指向凭据
+    /// 目录时同样拒绝(子项过滤挡不住「这个目录可列」的存在信号)。
+    #[test]
+    #[cfg(unix)]
+    fn list_refuses_symlinked_blocked_directories() {
+        use std::os::unix::fs::symlink;
+        let root = TestDir::new("credential-list-symlink");
+        fs::create_dir_all(root.path().join(".aws")).unwrap();
+        symlink(".aws", root.path().join("innocent-link")).unwrap();
+
+        let error = list_workspace(root.path(), Some("innocent-link"))
+            .err()
+            .expect("a clean-named symlink onto a blocked directory must be refused");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
+    }
+
+    /// changes 车道与列表/搜索同约束:黑名单组件的存在本身(名称/状态
+    /// 元数据)不得回显给手机端。
+    #[test]
+    fn workspace_changes_skip_credential_components() {
+        let root = TestDir::new("credential-changes");
+        fs::write(root.path().join("notes.md"), "hello\n").unwrap();
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+
+        let changes = workspace_changes("s-changes", root.path()).unwrap();
+        let names: Vec<&str> = changes
+            .changes
+            .iter()
+            .map(|change| change.relative_path.as_str())
+            .collect();
+        assert!(names.contains(&"notes.md"), "got: {names:?}");
+        assert!(
+            !names.iter().any(|name| name.ends_with(".env")),
+            "credential names must not leak through the changes lane: {names:?}"
+        );
+    }
+
+    /// Round-6 复审:changes 车道 git 半边的过滤排序——凭据 retain 先于
+    /// `classify_origin` 的内容读取(SHA-256/来源分类),一个不可读的脏
+    /// `.env` 不得让整个 changes 调用失败,更不得出现在列表里。上方非 git
+    /// 钉只覆盖过滤本身;本钉在真实 git 仓库上锁住排序(EACCES 腿仅
+    /// unix;Windows 无 chmod 语义,过滤断言在所有平台都成立)。
+    /// Round-7 复审 M4:排序要真实可观察,必须先采集基线——没有基线时
+    /// `classify_origin` 在任何内容读取之前就短路成 "unknown",chmod 000
+    /// 的 `.env` 根本不会被读到,把 retain 挪到分类之后测试仍然全绿
+    /// (钉住的只是过滤,不是排序)。基线在权限收紧前采集(指纹正常),
+    /// 之后 `classify_origin` 对过滤幸存的清白文件求指纹;一旦排序退化,
+    /// 不可读的 `.env` 被求指纹 → EACCES → 整个调用失败,本测试即红。
+    #[test]
+    fn workspace_changes_git_arm_filters_credentials_before_content_classification() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!(
+                "skipping workspace_changes_git_arm_filters_credentials_before_content_classification: git binary not available"
+            );
+            return;
+        }
+        // baseline 文件路径派生自 PINVOU3_HOME,与改 home 的测试并发会互相误删目录。
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let root = TestDir::new("credential-changes-git");
+        let repo = root.path();
+        run_git(repo, &["init", "-b", "main", "."]);
+        run_git(repo, &["config", "user.name", "test"]);
+        run_git(repo, &["config", "user.email", "test@example.com"]);
+        fs::write(repo.join(".env"), "SECRET=1\n").unwrap();
+        fs::write(repo.join("notes.md"), "hello\n").unwrap();
+        run_git(repo, &["add", ".env", "notes.md"]);
+        run_git(repo, &["commit", "-m", "init"]);
+        fs::write(repo.join(".env"), "SECRET=2\n").unwrap();
+        fs::write(repo.join("notes.md"), "hello v2\n").unwrap();
+        capture_baseline("s-changes-git", repo)
+            .expect("the baseline must be captured while every dirty file is readable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(repo.join(".env"), fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let changes = workspace_changes("s-changes-git", repo)
+            .expect("an unreadable dirty credential file must be filtered, not fail the lane");
+        let names: Vec<&str> = changes
+            .changes
+            .iter()
+            .map(|change| change.relative_path.as_str())
+            .collect();
+        assert!(names.contains(&"notes.md"), "got: {names:?}");
+        assert!(
+            !names.iter().any(|name| name.ends_with(".env")),
+            "credential names must not leak through the git changes arm: {names:?}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(repo.join(".env"), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let _ = fs::remove_file(baseline_path("s-changes-git"));
+    }
+
+    /// 大小写变体经真实入口的端到端钉(macOS 独有意义:APFS 默认卷大小写
+    /// 不敏感,`.ENV` 会解析到磁盘上的 `.env`;词法检查经 path_component_eq
+    /// 的 ASCII 折叠在同平台上必须拦住它)。Linux 大小写敏感,同一拼写是
+    /// 另一个不存在的文件,断言平凡成立,故仅在 macOS 上运行。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn case_variant_spellings_are_blocked_end_to_end() {
+        let root = TestDir::new("credential-case-variant");
+        fs::write(root.path().join(".env"), "SECRET=1\n").unwrap();
+
+        for spelling in [".ENV", ".Env"] {
+            let error = preview_workspace_file(root.path(), spelling)
+                .err()
+                .expect("case-variant credential spellings must be blocked");
+            assert!(
+                error.to_string().contains("凭据"),
+                "{spelling} must hit the credential gate, got: {error}"
+            );
+        }
     }
 
     #[test]

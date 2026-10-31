@@ -25,6 +25,17 @@ pub fn pinvou3_home() -> PathBuf {
     user_home_dir().join(".pinvou3")
 }
 
+/// 折叠任意文本(通常是 io::Error 的 Display,内嵌 `create /home/u/.pinvou3/…`
+/// 一类绝对路径)中的存储根前缀为 `~/.pinvou3`,供随成功载荷出站的错误文本
+/// 使用:绝对路径不得跨 relay。非前缀文本原样返回。
+pub fn redact_storage_prefix(text: &str) -> String {
+    let prefix = pinvou3_home().display().to_string();
+    if prefix.is_empty() {
+        return text.to_string();
+    }
+    text.replace(&prefix, "~/.pinvou3")
+}
+
 pub fn settings_path() -> PathBuf {
     pinvou3_home().join("settings.json")
 }
@@ -531,6 +542,20 @@ pub fn ensure_dirs() -> std::io::Result<()> {
     std::fs::create_dir_all(workspace_dir())?;
     std::fs::create_dir_all(scheduled_tasks_root())?;
     std::fs::create_dir_all(default_session_artifacts_dir())?;
+    // Round-9 复审 minor:存储根本身由上面的 create_dir_all 隐式创建,
+    // mode 位交给 umask(常见 0755)——里面的 0600 密文件对同机其他账户
+    // 只隔了一层目录。对已存在的根做一次尽力收紧到 0700;失败容忍(只
+    // 读挂载等不得阻断启动,收紧失败只影响加固深度,不改变功能)。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = pinvou3_home();
+        if let Ok(metadata) = std::fs::metadata(&home) {
+            if metadata.is_dir() {
+                let _ = std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -640,6 +665,28 @@ pub(crate) mod tests {
         // SAFETY: mkfifo on a fresh temp path; no other thread touches it.
         let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
         assert_eq!(rc, 0, "fixture: mkfifo must succeed");
+    }
+
+    /// Round-9 复审 minor:存储根在 umask 放宽(0755,备份恢复/旧安装形
+    /// 态)下也必须被 ensure_dirs 收紧到 0700——里面的 0600 密文件不能只
+    /// 靠一层世界可读目录隔挡。收紧失败容忍,但成功路径在这里钉死。
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dirs_tightens_the_storage_root_to_0700() {
+        use std::os::unix::fs::PermissionsExt as _;
+        crate::platform::test_support::with_temp_home("paths-root-mode", || {
+            let home = pinvou3_home();
+            // 预置放宽形态:显式 0755 模拟旧安装/备份恢复(umask 因环境而
+            // 异,不能依赖)。
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
+            ensure_dirs().unwrap();
+            let mode = std::fs::metadata(&home).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o700,
+                "ensure_dirs must tighten the storage root to 0700"
+            );
+        });
     }
 
     #[test]
@@ -837,5 +884,103 @@ pub(crate) mod tests {
             // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    // Round-7 复审:共享脱敏原语 `redact_storage_prefix` 此前只有调用方
+    // (memory / remote_control)的内容级钉,原语本身的语义边界没有直接用例。
+    // 以下五钉按字节语义钉住:根内绝对路径折叠、同名前缀的兄弟目录不得被
+    // 改写成「根内」形态、已折叠文本不二次折叠、同一文本多处出现全折叠、
+    // 空前缀护栏不 panic。前缀经 PINVOU3_HOME 注入(本函数每次调用现读,
+    // 无缓存);env 一律走 with_temp_home / locked_env 脚手架,断言失败时
+    // env 由 Drop 恢复,不会泄漏给进程内后续测试(Round-9 复审 minor:
+    // 直线恢复在 panic 路径会跳过)。
+
+    #[test]
+    fn redact_storage_prefix_folds_expanded_absolute_storage_root_prefix() {
+        crate::platform::test_support::with_temp_home("paths-redact-root", || {
+            let root = pinvou3_home();
+            // 根内完整展开的绝对路径必须折叠为 ~/.pinvou3 前缀。
+            let expanded = root.join("user/memory/snapshot.md").display().to_string();
+            assert_eq!(
+                redact_storage_prefix(&expanded),
+                "~/.pinvou3/user/memory/snapshot.md",
+                "an expanded absolute path under the storage root must fold"
+            );
+        });
+    }
+
+    #[test]
+    fn redact_storage_prefix_keeps_sibling_out_of_storage_root_form() {
+        crate::platform::test_support::with_temp_home("paths-redact-sibling", || {
+            // 存储根本身命名为 .pinvou3(镜像默认布局 <home>/.pinvou3),
+            // 兄弟目录 <home>/.pinvou3-evil 与根共享字符串前缀:折叠绝不能
+            // 把兄弟改写成「根内」形态(~/.pinvou3/…),否则它会伪装成存
+            // 储根内路径被模型/中继消费。with_temp_home 把 PINVOU3_HOME
+            // 指向临时目录,兄弟取同名的 `.evil` 后缀邻居(纯字符串用例,
+            // 不落盘)。
+            let root = pinvou3_home();
+            let sibling = root.parent().unwrap_or(&root).join(format!(
+                "{}.evil",
+                root.file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            ));
+            assert_eq!(
+                redact_storage_prefix(&sibling.display().to_string()),
+                "~/.pinvou3.evil",
+                "the sibling directory must keep its own name and never take the inside-root form"
+            );
+        });
+    }
+
+    #[test]
+    fn redact_storage_prefix_passes_already_folded_text_through() {
+        crate::platform::test_support::with_temp_home("paths-redact-folded", || {
+            // 已是 ~/.pinvou3 折叠形态的文本必须原样通过,不得二次折叠或改写。
+            let folded = "~/.pinvou3/user/memory/snapshot.md";
+            assert_eq!(
+                redact_storage_prefix(folded),
+                folded,
+                "already-folded text must pass through unchanged"
+            );
+        });
+    }
+
+    #[test]
+    fn redact_storage_prefix_folds_every_occurrence_in_one_text() {
+        crate::platform::test_support::with_temp_home("paths-redact-multi", || {
+            // io::Error 的 Display 可能内嵌多个绝对路径(如 rename 的 from/to),
+            // 每一处都要折叠,只折第一处会泄漏第二个绝对路径。
+            let root = pinvou3_home();
+            let text = format!(
+                "{} -> {}",
+                root.join("a.md").display(),
+                root.join("b/c.md").display()
+            );
+            assert_eq!(
+                redact_storage_prefix(&text),
+                "~/.pinvou3/a.md -> ~/.pinvou3/b/c.md",
+                "every occurrence of the storage root in one text must fold"
+            );
+        });
+    }
+
+    /// 空存储根护栏:PINVOU3_HOME 为空串时 `pinvou3_home().display()` 为空,
+    /// `redact_storage_prefix` 必须走 `prefix.is_empty()` 早退原样返回——
+    /// 若对空 prefix 做 `replace` 会把空串替换进每个字符间隙,毁掉整段文本。
+    /// 前缀由本函数内部现算、无测试可见的 prefix 参数,故经公开 API(空
+    /// PINVOU3_HOME)钉住该护栏;with_temp_home 只覆盖非空值,这里用
+    /// locked_env 手工设空串(env 仍由 Drop 恢复)。
+    #[test]
+    fn redact_storage_prefix_empty_prefix_guard_returns_input_unchanged() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: ENV_LOCK held via locked_env; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", "") };
+        let text = "/abs/path must stay.md";
+        assert_eq!(
+            redact_storage_prefix(text),
+            text,
+            "an empty storage prefix must leave the text untouched"
+        );
     }
 }

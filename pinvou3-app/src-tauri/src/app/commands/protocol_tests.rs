@@ -388,6 +388,7 @@ command_protocol!(
         "web_access_disable",
         "web_access_status",
         "web_access_rotate",
+        "web_access_revoke_host_workspace",
         "web_access_relay_settings",
         "web_access_bridge_ready",
         "web_access_rpc_begin",
@@ -817,6 +818,45 @@ fn reserved_turn_senders_hold_the_turn_gate_through_submission() {
             "{start_marker} must not drop the turn gate before submission completes",
         );
     }
+}
+
+// Round-6 review M6: the web edit_last_turn optimistic-concurrency guard is
+// only meaningful in its wiring position — checked inside the turn gate
+// (after `reserve_turn`, before the reserved submission) so a mismatched
+// revision fails safe with the uncommitted reservation dropped and the
+// transcript untouched. The helper has an executing test; the wiring does not
+// (needs a full app harness). Source-shape pin: the guard must sit between
+// the reservation and the reserved submission in the web command body.
+#[test]
+fn web_edit_last_turn_checks_the_revision_guard_inside_the_turn_gate() {
+    let source = include_str!("memory.rs");
+    let start = source
+        .find("pub async fn edit_last_turn(")
+        .expect("edit_last_turn must exist");
+    let body = &source[start..];
+    let body = &body[..body
+        .find("\n#[tauri::command]")
+        .or_else(|| body.find("\n#[cfg(test)]"))
+        .expect("edit_last_turn body must be terminated by the next command or the test module")];
+    let reserve = body
+        .find("pool\n        .reserve_turn(&sid)")
+        .or_else(|| body.find(".reserve_turn(&sid)"))
+        .expect("edit_last_turn must hold the turn gate via reserve_turn");
+    let guard = body
+        .find("ensure_transcript_revision_current(&store, &sid, expected)?")
+        .expect("edit_last_turn must run the revision guard when a revision is supplied");
+    let submit = body
+        .find("edit_last_turn_reserved(")
+        .expect("edit_last_turn must submit through the reserved path");
+    assert!(
+        reserve < guard && guard < submit,
+        "the revision guard must run inside the turn gate: after reserve_turn (a refusal drops \
+         the uncommitted reservation) and before edit_last_turn_reserved (no partial mutation)"
+    );
+    assert!(
+        body.contains("if let Some(expected) = expected_transcript_revision.as_deref()"),
+        "the guard must stay conditional on the supplied revision (old clients unaffected)"
+    );
 }
 
 // Round-36 minors 4+5: the two aux-classification surfaces an independent
