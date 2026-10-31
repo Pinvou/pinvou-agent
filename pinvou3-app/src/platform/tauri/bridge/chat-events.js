@@ -1108,6 +1108,17 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       sweepUnpairedToolMeta();
+      // tri-mode 审批卡终态清扫（与 toolMeta 未配对清扫同一口径）：turn 终态
+      // 时后端登记表已兜底清空（emit_chat_terminal → clear_pending），残留的
+      // active 卡点击只会得到 "approval not found"。终态卡就地落 cancelled，
+      // 不再可点（渲染层按 cardState 映射三语终态文案）。
+      state.chatItems.forEach(function (item) {
+        if (item && item.type === "approval" && !item.resolved) {
+          item.submitting = false;
+          item.resolved = true;
+          item.cardState = "cancelled";
+        }
+      });
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
       // skip artifacts already presented in this turn or changed repeatedly.
@@ -1276,6 +1287,65 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       reason: String(p.reason || ""),
       risk: String(p.risk || ""),
     });
+  }); });
+
+  // ── tri-mode 审批面（plan/auto/yolo + ask-on-guardrail）──────────────
+  // 审批卡同 user_input：不进 messages.json，靠 chat:approval_required 事件
+  // 弹卡 + 会话切换时 get_pending_approvals 重放（sessions.js）。按 approvalId
+  // 幂等去重（hasChatItemForTool 同款形态扫描）：后端登记表对同一审批原位
+  // 替换，事件重放不得重复出卡。
+  function hasChatItemForApproval(approvalId) {
+    return !!approvalId && state.chatItems.some(function (item) {
+      return item && item.type === "approval" && item.approvalId === approvalId;
+    });
+  }
+  listen("chat:approval_required", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    if (hasChatItemForApproval(approvalId)) return;
+    addChatItem({
+      type: "approval",
+      approvalId,
+      toolName: String(p.tool_name || ""),
+      description: String(p.description || ""),
+      intentSummary: p.intent_summary == null ? "" : String(p.intent_summary),
+      input: p.input === undefined ? null : p.input,
+      forcePrompt: !!p.force_prompt,
+      resolved: false,
+      cardState: "active",
+      submitting: false,
+      statusLabel: "",
+      time: timeStr(),
+    });
+    notify();
+  }); });
+
+  // 守卫硬拒（不出卡）：reason 是稳定英文键（后端 ApprovalDenyReason::reason_key），
+  // 前端按键映射三语文案；未知键原样透出，保证可审计。
+  listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const reason = String(p.reason || "");
+    const reasonText = reason === "session_denied" ? bt("toolGuardrailDeniedSessionDenied")
+      : reason === "plan_mode" ? bt("toolGuardrailDeniedPlan")
+      : reason === "guardrail_ask_off" ? bt("toolGuardrailDeniedAskOff")
+      : reason;
+    const text = bt("toolGuardrailDenied") + ": " + (p.tool_name ? String(p.tool_name) + " — " : "") + reasonText;
+    addSystemItem(text, {
+      guardrailDenied: true,
+      toolName: String(p.tool_name || ""),
+      reason,
+    });
+  }); });
+
+  // 权威 mode 广播（本端/远端切换都会发射）：走统一收敛点写回（epoch 保护，
+  // 在途 syncModeState 旧读作废）。负载只带 mode/ask_on_guardrail，multiAgent
+  // 由 applyAuthoritativeModeState 保留当前值。
+  listen("chat:mode_changed", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    if (!p.session_id) return;
+    applyAuthoritativeModeState(String(p.session_id), p);
+    notify();
   }); });
 
   // ── request_user_input：渲染选择卡片（不进 messages.json）─────────

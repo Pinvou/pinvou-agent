@@ -718,6 +718,26 @@ impl SessionStore {
             }
         }
 
+        // Same ghost-id reasoning for the ask-on-guardrail overrides: a dead
+        // session's toggle surviving eviction would (a) accumulate forever
+        // and (b) silently re-arm a RECYCLED id via the seeding point
+        // (`ask_on_guardrail_seed` consults this map/sidecar at mint).
+        // Durable file purge covers toggles another process persisted after
+        // boot, same as the mode purge above.
+        {
+            let mut overrides = self.ask_on_guardrail_overrides.write();
+            overrides.retain(|id, _| !contains(id.as_str()));
+        }
+        {
+            let _modes_io = self.session_mode_states_io.lock();
+            if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[], &multi_agent_refs)
+            {
+                eprintln!(
+                    "[sessions] update _ask_on_guardrail.json after retention purge failed: {error:#}"
+                );
+            }
+        }
+
         // Working-directory binding: clear the in-memory cache and best-effort
         // delete the per-session sidecar file. The normal session-deletion path
         // already removes it; this covers leftovers of a partially failed

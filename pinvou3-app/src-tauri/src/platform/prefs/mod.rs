@@ -797,7 +797,7 @@ impl Default for ChatPrefs {
 /// Not exposed in the settings UI; writes go through field-level
 /// transactions (same as PetPrefs); per-session mode is stored separately in
 /// `sessions/_session_mode_states.json` (see `features::sessions`).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CodePermissionPrefs {
     /// The code lane's global default mode (written on an explicit
@@ -806,6 +806,33 @@ pub struct CodePermissionPrefs {
     /// One-shot yolo confirmation ("full read/write of the project directory,
     /// shell execution allowed, no step-by-step approval") flag.
     pub yolo_confirmed: bool,
+    /// Tri-mode safety: the global "ask on guardrail hit" default new
+    /// sessions seed their per-session `ask_on_guardrail` from (sessions
+    /// absent from `_ask_on_guardrail.json` follow it). Default ON — the
+    /// safe posture is a card on a guardrail hit; turning it off is the
+    /// explicit "silent hard-deny" choice. Both default paths must agree on
+    /// true (serde field default for old settings.json AND
+    /// `Default::default()` for fresh installs / the container spread in
+    /// `defaults_for_system_locale`), hence the manual `Default` impl — a
+    /// derived one would materialize `false` on the fresh-install path and
+    /// silently disarm every new session's guardrail cards.
+    #[serde(default = "default_true")]
+    pub ask_on_guardrail_default: bool,
+}
+
+/// serde default for [`CodePermissionPrefs::ask_on_guardrail_default`].
+fn default_true() -> bool {
+    true
+}
+
+impl Default for CodePermissionPrefs {
+    fn default() -> Self {
+        Self {
+            last_mode: None,
+            yolo_confirmed: false,
+            ask_on_guardrail_default: default_true(),
+        }
+    }
 }
 
 /// The work lane's global default mode.
@@ -3515,11 +3542,17 @@ mod tests {
         let prefs = UserPrefs::default();
         assert!(prefs.code_permission.last_mode.is_none());
         assert!(!prefs.code_permission.yolo_confirmed);
+        // Tri-mode safety: the ask-on-guardrail default is ON on every
+        // default path — serde-missing field AND Default::default() (fresh
+        // install / container spread) — the safe posture is a card on a
+        // guardrail hit.
+        assert!(prefs.code_permission.ask_on_guardrail_default);
 
         // 旧 settings.json 没有 code_permission 字段 → serde default 兼容读出。
         let legacy: UserPrefs = serde_json::from_str(r#"{"theme":"genesis"}"#).unwrap();
         assert!(legacy.code_permission.last_mode.is_none());
         assert!(!legacy.code_permission.yolo_confirmed);
+        assert!(legacy.code_permission.ask_on_guardrail_default);
 
         // 写过的值能回读（mode 与 get_mode_state 协议同用 snake_case）。
         let json = r#"{"code_permission":{"last_mode":"yolo","yolo_confirmed":true}}"#;
@@ -3532,6 +3565,13 @@ mod tests {
         let serialized = serde_json::to_string(&parsed.code_permission).unwrap();
         assert!(serialized.contains("\"last_mode\":\"yolo\""));
         assert!(serialized.contains("\"yolo_confirmed\":true"));
+        // An explicit opt-out round-trips (and the two default paths agree:
+        // a written object without the field still reads true, above).
+        let opted_out: UserPrefs = serde_json::from_str(
+            r#"{"code_permission":{"ask_on_guardrail_default":false}}"#,
+        )
+        .unwrap();
+        assert!(!opted_out.code_permission.ask_on_guardrail_default);
     }
 
     #[test]

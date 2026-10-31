@@ -6,9 +6,10 @@
 //! - **写/删都走 pkexec**：用户拨开关 → 系统密码框 → root 写文件，零终端命令。
 //! - **No reliance on the careful hook**: the base's 5 hard blocks in
 //!   command_safety.rs (`rm -rf /` etc., consumed by the shell tool) only
-//!   fire outside the YOLO posture; pinvou3 production sessions always
-//!   auto-approve (equivalent to YOLO), so that backstop is skipped and must
-//!   not be treated as a mechanical gate. This switch only turns "sudo
+//!   fire outside the YOLO posture. pinvou3 sessions default to the Auto
+//!   posture (per-call approval cards), so the backstop does fire there;
+//!   only a session explicitly switched to YOLO skips it, and only in that
+//!   posture is it not a mechanical gate. This switch only turns "sudo
 //!   stalls on a password prompt" into "sudo runs directly".
 //!
 //! pkexec 退出码约定：
@@ -51,7 +52,7 @@ pub fn is_enabled() -> bool {
 /// 真正的开/关指令由 [`turn_reminder`] 每 turn 注入(`build_send_message_op`),
 /// 始终实时。这里只留一句指引,把状态判断交给 per-turn reminder。
 pub fn instruction_block() -> &'static str {
-    "\n## 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(交互会话的执行模式每轮附带,辅助会话不附带,实时,以那里为准;Plan 模式只读、不执行命令,无需关心此开关)。"
+    "\n## 超级权限(sudo)\n\n当前是否开启、以及对应该怎么做,见每轮对话顶部的 `<system-reminder>`(交互会话的执行模式每轮附带,辅助会话不附带,实时,以那里为准;Plan 模式只读不执行命令,无需关心此开关;Auto 模式下命中本开关的命令,开启「守卫命中时询问」时弹审批卡,否则按规则拒绝;YOLO 模式自动放行)。"
 }
 
 /// 每 turn 注入 `<system-reminder>` 的超级权限状态指令。
@@ -61,7 +62,7 @@ pub fn instruction_block() -> &'static str {
 /// no-op 的关键(静态 prompt 刷不动,就每 turn 重新注入)。
 ///
 /// **开启**:直接 sudo 一步到位,别先试裸命令(否则模型对 `/etc` 写只会裸 touch 然后放弃)。
-/// **Off**: sudo is denied (the execpolicy deny rule rejects it immediately instead of blocking until timeout); guide the user to enable the toggle.
+/// **Off**: sudo is denied by default (the execpolicy deny rule rejects it immediately instead of blocking until timeout; with the session's ask-on-guardrail switch armed, the deny face becomes an approval prompt the user decides); guide the user to enable the toggle.
 pub fn turn_reminder() -> &'static str {
     crate::platform::os::super_permission_turn_reminder()
 }

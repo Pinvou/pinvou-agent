@@ -839,44 +839,150 @@ pub(crate) fn spawn_event_forwarder(
                 Event::ApprovalRequired {
                     id,
                     tool_name,
+                    description,
+                    input,
+                    approval_key,
+                    approval_grouping_key,
+                    intent_summary,
                     approval_force_prompt,
-                    ..
                 } => {
                     // 多智能体会话与普通对话共用同一套审批语义（ADR-0006）：
                     // 只有无人值守的初始定时执行使用任务保存的批准策略；
-                    // 其余会话按普通对话处理。
-                    let should_approve = if scheduled_profile.is_some()
-                        && scheduled_unattended.load(Ordering::Acquire)
-                    {
-                        scheduled_tool_should_auto_approve(
+                    // 其余会话走 tri-mode 交互审批面（静默批准 / 硬拒 / 弹卡）。
+                    if scheduled_profile.is_some() && scheduled_unattended.load(Ordering::Acquire) {
+                        let should_approve = scheduled_tool_should_auto_approve(
                             scheduled_profile.as_ref(),
                             approval_force_prompt,
-                        )
+                        );
+                        eprintln!(
+                            "[pinvou3-app] {} tool {} id={}",
+                            if should_approve {
+                                "auto-approving"
+                            } else {
+                                "denying"
+                            },
+                            tool_name,
+                            id
+                        );
+                        let h = approve_handle.clone();
+                        let id_clone = id.clone();
+                        tokio::spawn(async move {
+                            let result = if should_approve {
+                                h.approve_tool_call(id_clone).await
+                            } else {
+                                h.deny_tool_call(id_clone).await
+                            };
+                            if let Err(e) = result {
+                                eprintln!(
+                                    "[pinvou3-app] scheduled approval decision failed: {e:#}"
+                                );
+                            }
+                        });
                     } else {
-                        true
-                    };
-                    eprintln!(
-                        "[pinvou3-app] {} tool {} id={}",
-                        if should_approve {
-                            "auto-approving"
-                        } else {
-                            "denying"
-                        },
-                        tool_name,
-                        id
-                    );
-                    let h = approve_handle.clone();
-                    let id_clone = id.clone();
-                    tokio::spawn(async move {
-                        let result = if should_approve {
-                            h.approve_tool_call(id_clone).await
-                        } else {
-                            h.deny_tool_call(id_clone).await
+                        use crate::features::assistant::pending_approvals::{
+                            ApprovalSurfaceDecision, approval_surface_decision,
                         };
-                        if let Err(e) = result {
-                            eprintln!("[pinvou3-app] scheduled approval decision failed: {e:#}");
+                        let mode_state = store.mode_state(&session_id);
+                        // 分支顺序（见 approval_surface_decision 文档）：
+                        // 拒绝缓存(exact key) > Plan 防御 > 授予缓存(grouping key)
+                        // > 三档 mode。授予/拒绝读路径带 session 维度——缓存是
+                        // 会话级记忆，不得跨会话放行/连坐。
+                        let decision = approval_surface_decision(
+                            mode_state.mode,
+                            mode_state.ask_on_guardrail,
+                            approval_force_prompt,
+                            crate::features::assistant::pending_approvals::session_granted(
+                                &session_id,
+                                &approval_grouping_key,
+                            ),
+                            crate::features::assistant::pending_approvals::session_denied(
+                                &session_id,
+                                &approval_key,
+                            ),
+                        );
+                        match decision {
+                            ApprovalSurfaceDecision::ApproveSilently => {
+                                eprintln!(
+                                    "[pinvou3-app] session-granted auto-approving tool {} id={}",
+                                    tool_name, id
+                                );
+                                let h = approve_handle.clone();
+                                let id_clone = id.clone();
+                                tokio::spawn(async move {
+                                    if let Err(error) = h.approve_tool_call(id_clone).await {
+                                        eprintln!(
+                                            "[pinvou3-app] granted approval decision failed: {error:#}"
+                                        );
+                                    }
+                                });
+                                // 不发事件：静默批准没有卡可弹，ToolCallStarted 已展示调用。
+                            }
+                            ApprovalSurfaceDecision::Deny(reason) => {
+                                eprintln!(
+                                    "[pinvou3-app] denying tool {} id={} reason={}",
+                                    tool_name,
+                                    id,
+                                    reason.reason_key()
+                                );
+                                let h = approve_handle.clone();
+                                let id_clone = id.clone();
+                                tokio::spawn(async move {
+                                    if let Err(error) = h.deny_tool_call(id_clone).await {
+                                        eprintln!(
+                                            "[pinvou3-app] guardrail deny decision failed: {error:#}"
+                                        );
+                                    }
+                                });
+                                // 硬拒通知：reason 是稳定英文键（reason_key），前端
+                                // i18n 据此映射文案；不带 input 原文，避免敏感参数进事件流。
+                                let payload = json!({
+                                    "session_id": session_id,
+                                    "tool_name": tool_name,
+                                    "reason": reason.reason_key(),
+                                });
+                                let _ = app.emit("chat:guardrail_denied", payload.clone());
+                                crate::features::remote_control::forward_app_event(
+                                    &app,
+                                    "chat:guardrail_denied",
+                                    payload,
+                                );
+                            }
+                            ApprovalSurfaceDecision::ShowCard => {
+                                // 登记挂起，供 decide_approval 收口与前端 remount 恢复卡。
+                                crate::features::assistant::pending_approvals::record(
+                                    &session_id,
+                                    crate::features::assistant::pending_approvals::PendingApproval {
+                                        approval_id: id.clone(),
+                                        tool_name: tool_name.clone(),
+                                        description: description.clone(),
+                                        input: input.clone(),
+                                        intent_summary: intent_summary.clone(),
+                                        approval_key: approval_key.clone(),
+                                        approval_grouping_key: approval_grouping_key.clone(),
+                                        force_prompt: approval_force_prompt,
+                                        created_at_ms: crate::features::assistant::pending_approvals::now_ms(),
+                                    },
+                                );
+                                let payload = json!({
+                                    "session_id": session_id,
+                                    "approval_id": id,
+                                    "tool_name": tool_name,
+                                    "description": description,
+                                    "input": input,
+                                    "intent_summary": intent_summary,
+                                    "approval_key": approval_key,
+                                    "approval_grouping_key": approval_grouping_key,
+                                    "force_prompt": approval_force_prompt,
+                                });
+                                let _ = app.emit("chat:approval_required", payload.clone());
+                                crate::features::remote_control::forward_app_event(
+                                    &app,
+                                    "chat:approval_required",
+                                    payload,
+                                );
+                            }
                         }
-                    });
+                    }
                     // 不重复 emit chat:tool_start —— 上游 ToolCallStarted（带完整 input）
                     // 已先于 ApprovalRequired fire，前端已收到正确的 args。
                     // 之前在此 emit 会用 args=null 覆盖前端 toolMeta，导致产物路径丢失。

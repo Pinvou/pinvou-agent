@@ -90,6 +90,10 @@ const codexEn = {
   nativePlanApproved:'✅ Approved', nativePlanDiscarded:'🚪 Plan discarded',
   nativePlanSuperseded:'📜 Superseded by a newer plan', nativePlanHistorical:'📜 Past plan',
   nativePlanAcceptFailed:'⚠️ accept_plan failed: ', nativePlanDiscardFailed:'⚠️ discard_plan failed: ',
+  // tri-mode approval card terminal states / guardrail hard-deny notice (reason keys mapped on the frontend).
+  nativeApprovalAllowed:'✅ Allowed', nativeApprovalAllowedSession:'✅ Allowed for this session', nativeApprovalDenied:'🚫 Denied',
+  nativeGuardrailDenied:'Guardrail denied', nativeGuardrailDeniedSession:'This exact operation was denied in this session (a changed request asks again)',
+  nativeGuardrailDeniedPlan:'Plan mode is read-only; denied', nativeGuardrailDeniedAskOff:'Ask-on-guardrail is off; denied outright',
   addAttachment:'Add attachment', commandsAvailable:'Commands reported by the Agent', commandsAfterSession:'Agent commands sync after a session is created',
   connectedSuffix:'connected', notReadySuffix:'not ready',
   notSet:'Not set', choiceTitle:'The Agent needs your choice', submit:'Submit', cancel:'Cancel', submitted:'Submitted', canceled:'Canceled', inputExpired:'This input request has expired',
@@ -204,6 +208,8 @@ export const dictEn = {
         outputs: 'Outputs',
         kbMount: 'Knowledge', kbMountTitle: 'Manage collections attached to this chat', kbMountPick: 'Pick a collection', kbMountNone: 'No collections yet — create or connect one in Knowledge', kbMountRemove: 'Remove all', kbMountRemoveOne: 'Remove this collection', kbMountEnable: 'Enable', kbMountDisable: 'Disable', kbMountEnabled: 'Enabled', kbMountDisabled: 'Disabled', kbMountCount: n => `${n} knowledge bases`,  kbMountNoModel: 'Install the embedding model first (Knowledge → Local Knowledge) to attach a local collection', kbMountNotReady: 'The embedding model is still loading or failed to load, so collections cannot be attached yet',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: 'Switch mode', modeYoloDesc: 'Act directly', modePlanDesc: 'Plan first, then execute',
+        modeAuto: 'Auto', modeAutoDesc: 'Asks per ordinary operation; workspace file writes skip confirmation',
+        modeAskOnGuardrail: 'Ask on guardrail hits', modeAskOnGuardrailDesc: 'When off, guardrail hits are denied outright without prompting',
         modeYoloConfirmTitle: 'Switch to YOLO mode?', modeYoloConfirmBody: 'In this mode the model reads and writes your project directory fully automatically and can run shell commands, without step-by-step approvals.', modeYoloConfirmHint: 'Remembered globally once confirmed — you will not be asked again.', modeYoloConfirmOk: 'Confirm', modeYoloConfirmCancel: 'Cancel',
  
         kbRescan: 'Rescan', kbScanning: 'Scanning',  kbScanNow: 'Scan this PC',
@@ -584,6 +590,10 @@ export const dictEn = {
         stuckPlanPre: '⚠️ In Plan mode the AI called', stuckPlanPost: 'but the whitelist blocked it. Plan mode is discussion-only. Two ways out:',
         handled: 'Handled',
         stuckReplan: '📋 Ask AI to re-plan',  stuckGo: 'Just do it (skip planning)',
+        stuckGoAuto: 'Continue (Auto)', stuckGoYolo: 'Continue (Yolo)',
+        approvalTitle: 'Tool call awaiting your approval', approvalIntent: 'Model intent',
+        approvalAllow: 'Allow', approvalAllowSession: 'Allow for this session', approvalDeny: 'Deny',
+        approvalAllowed: '✅ Allowed', approvalAllowedSession: '✅ Allowed for this session', approvalDenied: '🚫 Denied', approvalSubmitting: 'Submitting…',
         // Pinvou review card. 品/悟 glyphs are brand marks, kept; surrounding text follows language.
         pvLoadingPin: 'Pinvou 品 · Review', pvLoadingWu: 'Pinvou 悟 · Explore',
         pvLoadingPinSub: 'Checking point by point, hunting for issues', pvLoadingWuSub: 'Comparing completeness dimensions, finding gaps',

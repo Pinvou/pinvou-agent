@@ -51,6 +51,9 @@ try {
   assert.equal(nativeModeFallback({ last_mode: 'yolo', yolo_confirmed: true }), 'yolo', '跟随上次显式 mode');
   assert.equal(nativeModeFallback({ last_mode: 'plan', yolo_confirmed: true }), 'plan');
   assert.equal(nativeModeFallback({ last_mode: 'bogus', yolo_confirmed: false }), 'plan', '非法值兜底 Plan');
+  // tri-mode：全局默认接受 auto（逐项审批档），不塌回 Plan。
+  assert.equal(nativeModeFallback({ last_mode: 'auto', yolo_confirmed: true }), 'auto', '全局默认接受 auto');
+  assert.equal(nativeModeFallback({ last_mode: 'auto', yolo_confirmed: false }), 'auto', 'auto 与确认门无关，原样返回');
 
   // ── yolo 一次性确认门 ──────────────────────────────────────────
   assert.equal(needsYoloConfirmation(null), true, 'prefs 读取失败按未确认（安全方向）');
@@ -87,6 +90,13 @@ try {
     activeId: null, controlsSessionId: null, controlsMode: 'plan', draftMode: 'plan',
     prefs: { last_mode: 'yolo', yolo_confirmed: true },
   }), 'plan');
+  // tri-mode：auto 原样展示（会话实测 / 草稿暂存），不塌回 Plan 兜底。
+  assert.equal(resolveNativeModeValue({
+    activeId: 's1', controlsSessionId: 's1', controlsMode: 'auto', draftMode: null, prefs: null,
+  }), 'auto', '会话实测 auto 原样展示');
+  assert.equal(resolveNativeModeValue({
+    activeId: null, controlsSessionId: null, controlsMode: 'plan', draftMode: 'auto', prefs: null,
+  }), 'auto', '草稿暂存 auto 原样展示');
 
   // ── CodexAcpView.jsx 接线契约 ──────────────────────────────────
   // A staged model must remain visible throughout delayed activation. A late control
@@ -320,6 +330,44 @@ try {
   assert.match(view, /needsYoloConfirmation\(prefs\)/, '切 yolo 前过确认门');
   assert.doesNotMatch(view, /mountedId: null, mode: 'yolo'/, '不再写死 yolo 初始 mode');
   assert.doesNotMatch(view, /\|\| 'yolo'/, '不再有 || yolo 兜底');
+
+  // ── tri-mode：auto 目标永不弹一次性确认门（门只对 yolo）─────────────
+  // switchNativeMode 的确认门钉在 yolo 分支上（v3.5：不再绑定 isPlan——
+  // Auto→Yolo 直达同过一门，不再绕道 Plan）；auto 分支直调
+  // set_session_mode，不经门。取两个函数之间的源码切片做范围断言。
+  {
+    const gateBody = view.slice(
+      view.indexOf('async function switchNativeMode'),
+      view.indexOf('async function performNativeModeSwitch'),
+    );
+    assert.ok(gateBody.includes('async function switchNativeMode'), '切片必须命中 switchNativeMode');
+    assert.match(
+      gateBody,
+      /if \(target === 'yolo'\) \{[\s\S]*?needsYoloConfirmation\(prefs\)/,
+      '一次性确认门钉在 yolo 分支（对 plan/auto 来路一致生效）',
+    );
+    const performBody = view.slice(
+      view.indexOf('async function performNativeModeSwitch'),
+      view.indexOf('async function confirmPendingYoloSwitch'),
+    );
+    assert.match(
+      performBody,
+      /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,300}?\} else if \(target === 'yolo'\) \{[\s\S]{0,300}?invoke\('set_session_mode', \{ sessionId: activeId, mode: 'yolo' \}\)/,
+      'Auto→Yolo 直达分支存在（旧代码缺失，Yolo 点击静默落空）',
+    );
+    assert.match(
+      performBody,
+      /target === 'auto'[\s\S]{0,400}?invoke\('set_session_mode', \{ sessionId: activeId, mode: 'auto' \}\)/,
+      'auto 目标直调 set_session_mode（后端热同步安全姿态），不弹确认门',
+    );
+    // 会话级「守卫命中时询问」开关：显式 sessionId 命令 + chip 接线。
+    assert.match(view, /invoke\('set_ask_on_guardrail', \{ sessionId: targetSessionId, enabled: Boolean\(enabled\) \}\)/,
+      '守卫询问开关走显式 sessionId 的 set_ask_on_guardrail');
+    assert.match(view, /askOnGuardrail=\{nativeAskOnGuardrail\}/, 'chip 传入会话归属保护下的展示值');
+    assert.match(view, /onToggleAskOnGuardrail=\{toggleNativeAskOnGuardrail\}/, 'chip 开关回调接线');
+    assert.match(view, /askOnGuardrail: modeState \? modeState\.ask_on_guardrail !== false : true/,
+      '控件权威读取按 default_true 缺省，旧后端无此键不把开关翻成关');
+  }
 
   console.log('code_permission_state: ok');
 } finally {

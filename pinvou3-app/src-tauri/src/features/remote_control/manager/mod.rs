@@ -99,15 +99,25 @@ const MAX_RPC_COMMAND_BYTES: usize = 128;
 /// 模型执行或改变运行中 turn 状态的入口统一拦截——此前只拦了输入框，
 /// 编辑重发/计划裁决/取消审批/停止生成都能绕过（复核 P1）。桌面端不经本
 /// 漏斗，不受影响。
+///
+/// 权限变更类入口与执行类同罪（tri-mode 安全模型）：`decide_approval`
+/// 能批准挂起的工具执行（= 替桌面放行一轮执行），`set_session_mode`
+/// 能把会话切到 Yolo（Bypass + 自动批准），`set_ask_on_guardrail` 能把
+/// Yolo 的底线守卫从弹卡翻成静默硬拒/反之——三者都会改变会话的安全
+/// 姿态，与 `accept_plan`/`exit_plan_to_yolo` 同一拦截面。
+/// `get_pending_approvals` 是纯读（还原审批卡用），保持放行。
 const MULTI_AGENT_WEB_EXECUTION_DENYLIST: &[&str] = &[
     "accept_plan",
     "cancel_generation",
     "cancel_shell_task",
     "cancel_user_input",
     "compact_now",
+    "decide_approval",
     "discard_plan",
     "edit_last_turn",
     "exit_plan_to_yolo",
+    "set_ask_on_guardrail",
+    "set_session_mode",
     "submit_user_input",
     "summon_pinvou",
     "web_access_chat",
@@ -208,12 +218,15 @@ fn should_filter_code_session_event(
 const RUST_FORWARDED_EVENTS: &[&str] = &[
     "acp:event",
     "artifact:disk",
+    "chat:approval_required",
     "chat:compaction",
     "chat:delta",
     "chat:reasoning_start",
     "chat:reasoning_delta",
     "chat:reasoning_done",
     "chat:done",
+    "chat:guardrail_denied",
+    "chat:mode_changed",
     "chat:steer_committed",
     "chat:steer_dropped",
     "chat:plan_ready",
@@ -3756,6 +3769,9 @@ mod tests {
     /// `cancel_generation`、`cancel_shell_task` 与 `cancel_user_input` 同属改变
     /// 运行中 turn 状态的取消类入口（前者终态整个生成并级联取消子智能体，
     /// 后者可终止委派子智能体正在执行的 shell 任务），必须一并封禁。
+    /// `decide_approval`/`set_session_mode`/`set_ask_on_guardrail` 是权限
+    /// 变更类入口：批准工具执行、切 Yolo 自动批准、翻转守卫弹卡开关——
+    /// 与执行类同一拦截面；`get_pending_approvals` 是纯读，保持放行。
     #[test]
     fn multi_agent_web_denylist_blocks_execution_but_not_viewing() {
         for command in [
@@ -3770,15 +3786,19 @@ mod tests {
             "cancel_user_input",
             "compact_now",
             "summon_pinvou",
+            "decide_approval",
+            "set_session_mode",
+            "set_ask_on_guardrail",
         ] {
             assert!(
                 super::MULTI_AGENT_WEB_EXECUTION_DENYLIST.contains(&command),
-                "执行入口 {command} 必须在 Web 只读封禁表内（复核 P1）"
+                "执行/权限变更入口 {command} 必须在 Web 只读封禁表内（复核 P1）"
             );
         }
         for command in [
             "get_session_timeline",
             "get_mode_state",
+            "get_pending_approvals",
             "web_access_cancel_session_download",
             "web_access_load_session_chunk",
         ] {

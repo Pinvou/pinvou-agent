@@ -91,6 +91,10 @@ const codexZh = {
   nativePlanApproved:'✅ 已批准', nativePlanDiscarded:'🚪 已放弃此方案',
   nativePlanSuperseded:'📜 已被新方案覆盖', nativePlanHistorical:'📜 历史方案',
   nativePlanAcceptFailed:'⚠️ accept_plan 失败: ', nativePlanDiscardFailed:'⚠️ discard_plan 失败: ',
+  // tri-mode 审批卡终态 / 守卫硬拒通知（reason 稳定键在前端按键映射）。
+  nativeApprovalAllowed:'✅ 已允许', nativeApprovalAllowedSession:'✅ 本会话允许', nativeApprovalDenied:'🚫 已拒绝',
+  nativeGuardrailDenied:'守卫拦截', nativeGuardrailDeniedSession:'该会话已拒绝此操作（换参数需重新请批）',
+  nativeGuardrailDeniedPlan:'Plan 模式为只读，已拒绝', nativeGuardrailDeniedAskOff:'守卫询问已关闭，已直接拒绝',
   addAttachment:'添加附件', commandsAvailable:'Agent 上报的命令', commandsAfterSession:'创建会话后同步 Agent 命令',
   connectedSuffix:'已连接', notReadySuffix:'未就绪',
   notSet:'未设置', choiceTitle:'Agent 需要你的选择', submit:'提交', cancel:'取消', submitted:'已提交', canceled:'已取消', inputExpired:'该输入请求已过期',
@@ -205,6 +209,8 @@ export const dictZh = {
         outputs: '产出物',
         kbMount: '知识库', kbMountTitle: '管理本对话挂载的知识集', kbMountPick: '选择知识集', kbMountNone: '还没有知识集，前往「知识库」创建或连接', kbMountRemove: '移除全部', kbMountRemoveOne: '移除此知识集', kbMountEnable: '启用', kbMountDisable: '停用', kbMountEnabled: '已启用', kbMountDisabled: '已停用', kbMountCount: n => `${n} 个知识库`,  kbMountNoModel: '需先安装 Embedding 模型：前往「知识库 → 本地知识库」下载后即可挂载', kbMountNotReady: 'Embedding 模型正在加载或加载失败，暂时无法挂载知识集',
         modeYolo: 'YOLO', modePlan: 'Plan', modeSwitchTitle: '切换工作模式', modeYoloDesc: '直接动手执行', modePlanDesc: '先出方案，确认后执行',
+        modeAuto: 'Auto', modeAutoDesc: '普通操作逐项询问确认，工作区内文件写入免确认',
+        modeAskOnGuardrail: '守卫命中时询问', modeAskOnGuardrailDesc: '关闭后守卫命中将直接拒绝，不再弹卡询问',
         modeYoloConfirmTitle: '切换到 YOLO 模式？', modeYoloConfirmBody: '该模式下模型将对你的项目目录全自动读写、可执行 shell 命令，无逐步审批。', modeYoloConfirmHint: '确认后全局记住，以后切换不再提示。', modeYoloConfirmOk: '确认切换', modeYoloConfirmCancel: '取消',
  
         kbRescan: '重新扫描', kbScanning: '扫描中',  kbScanNow: '扫描本机',
@@ -586,6 +592,10 @@ export const dictZh = {
         stuckPlanPre: '⚠️ AI 在 Plan 模式调用了', stuckPlanPost: '但被白名单挡掉。Plan 模式只能讨论方案,不能动手。给你两个出路:',
         handled: '已处理',
         stuckReplan: '📋 让 AI 重出方案',  stuckGo: '直接动手(跳过方案)',
+        stuckGoAuto: '继续 (Auto)', stuckGoYolo: '继续 (Yolo)',
+        approvalTitle: '需要你审批的工具调用', approvalIntent: '模型意图',
+        approvalAllow: '允许', approvalAllowSession: '本会话允许', approvalDeny: '拒绝',
+        approvalAllowed: '✅ 已允许', approvalAllowedSession: '✅ 本会话允许', approvalDenied: '🚫 已拒绝', approvalSubmitting: '提交中…',
         // 品悟检阅卡(PinvouSummonCard/Rows/Loading)。品/悟 字形是品牌、保留;周边文案随语言。
         pvLoadingPin: 'Pinvou 品·查错检阅', pvLoadingWu: 'Pinvou 悟·发散补全',
         pvLoadingPinSub: '正在逐条核对、揪问题', pvLoadingWuSub: '正在比对完整性维度、发散补点',

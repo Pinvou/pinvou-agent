@@ -434,6 +434,7 @@ async fn code_session_real_spawn_refresh_resolves_config_expert_without_project_
             "code-a",
             "Dispatch the probe expert now.".to_string(),
             AppMode::Agent,
+            crate::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
             None,
             false,
             &project,

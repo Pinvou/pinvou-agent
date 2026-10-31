@@ -3446,3 +3446,236 @@ fn global_shortcut_persist_writes_and_lazy_parse_stay_pinned() {
         "an unparsable accelerator must fail the request only when enabling"
     );
 }
+
+// ── Tri-mode: mode 写命令的目标会话门（ensure_mode_target_session） ──────
+
+/// `set_session_mode` / `set_ask_on_guardrail` 的目标会话门：id 形状 + 会话
+/// 存在两道校验（`set_multi_agent_mode` 同款，无 aux 限制）。校验失败必须
+/// Err，且**不得**铸造 mode 条目或写 `_ask_on_guardrail.json` sidecar——
+/// 命令层在任何写动作之前调本门，这里钉住门本身的行为与无副作用。
+#[test]
+fn mode_target_gate_rejects_bogus_ids_without_side_effects() {
+    crate::platform::test_support::with_temp_home("mode-target-gate", || {
+        let store = SessionStore::boot().expect("boot");
+        let sidecar = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
+
+        // 非法 id 形状（路径逃逸字符）。
+        let error = ensure_mode_target_session("set_session_mode", "../escape", &store)
+            .expect_err("a bad id shape must be rejected");
+        assert!(error.contains("Invalid session id"), "{error}");
+
+        // 合法形状但不存在的会话。
+        let error = ensure_mode_target_session("set_ask_on_guardrail", "ghost-session", &store)
+            .expect_err("a nonexistent session must be rejected");
+        assert!(error.contains("会话不存在"), "{error}");
+
+        // 两次失败都不得留下持久化痕迹。
+        assert!(
+            store.mode_states.read().is_empty(),
+            "a rejected id must not mint a mode-state entry"
+        );
+        assert!(
+            !sidecar.exists(),
+            "a rejected id must not write the ask_on_guardrail sidecar"
+        );
+
+        // 真实存在的会话通过（plain 会话即合法目标，无 aux 限制）。
+        let chat = store
+            .create_new("mode-target-real".to_string(), None, std::env::temp_dir())
+            .expect("create chat session");
+        ensure_mode_target_session("set_session_mode", &chat.metadata.id, &store)
+            .expect("a real session passes the gate");
+    });
+}
+
+// ── Tri-mode: 会话 mode 写路径的统一发布序列（publish_session_mode_change）──
+
+/// mode 写命令的发布序列收敛：`set_plan_mode_next` / `exit_plan_to_yolo` 的
+/// 写库后必须走 `publish_session_mode_change`（此前只写 store：无引擎姿态
+/// 热同步、无 `chat:mode_changed`，多端模式芯片不收敛），`accept_plan` 在
+/// commit 之后也走同一序列（Plan 的 pending mode 在 claim 处才变成会话
+/// mode）。命令体无法在单测构造（State/AppHandle/EnginePool 均需运行时），
+/// 按 repo 惯例钉装配：门/写库/发布/commit 的相对顺序 + 旧的内联序列不再
+/// 出现在这两个 chip 命令里。
+#[test]
+fn session_mode_write_paths_publish_through_the_shared_sequence() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("interaction.rs"));
+
+    // 每条命令的写库动作之后立即是统一发布调用。
+    for (signature, label) in [
+        (
+            "pub async fn set_plan_mode_next(",
+            "set_plan_mode_next must publish through the shared sequence",
+        ),
+        (
+            "pub async fn exit_plan_to_yolo(",
+            "exit_plan_to_yolo must publish through the shared sequence",
+        ),
+        (
+            "pub async fn set_session_mode(",
+            "set_session_mode must publish through the shared sequence",
+        ),
+        (
+            "pub async fn set_ask_on_guardrail(",
+            "set_ask_on_guardrail must publish through the shared sequence",
+        ),
+    ] {
+        let body = source
+            .split(signature)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{label}: command body missing"));
+        let write_at = body
+            .find(".set_mode(")
+            .or_else(|| body.find(".set_ask_on_guardrail("))
+            .unwrap_or_else(|| panic!("{label}: store write missing"));
+        let publish_at = body
+            .find("publish_session_mode_change(")
+            .unwrap_or_else(|| panic!("{label}: publish call missing"));
+        assert!(write_at < publish_at, "{label}: write must precede publish");
+    }
+
+    // v3.5（评审 minor-4）：set_plan_mode_next / exit_plan_to_yolo 与
+    // set_session_mode 过同一目标会话存在性门，且门在写库之前——这两个命令
+    // 远程可达，缺门即可为任意 id 铸 mode 条目 + sidecar。
+    for signature in [
+        "pub async fn set_plan_mode_next(",
+        "pub async fn exit_plan_to_yolo(",
+    ] {
+        let body = source
+            .split(signature)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{signature}: command body missing"));
+        let gate_at = body
+            .find("ensure_mode_target_session(")
+            .unwrap_or_else(|| panic!("{signature}: target-session gate missing"));
+        let write_at = body
+            .find(".set_mode(")
+            .unwrap_or_else(|| panic!("{signature}: store write missing"));
+        assert!(gate_at < write_at, "{signature}: gate must precede the store write");
+    }
+
+    // accept_plan：发布必须紧跟 commit（claimed mode 在那里才最终落定），
+    // 且失败只记日志不打断已提交的 turn。
+    let body = source
+        .split("pub async fn accept_plan(")
+        .nth(1)
+        .expect("accept_plan body");
+    let commit_at = body
+        .find("spawn_blocking(move || plan_claim.commit())")
+        .expect("accept_plan commit join missing");
+    let publish_at = body
+        .find("publish_session_mode_change(")
+        .expect("accept_plan must publish the claimed mode");
+    assert!(
+        commit_at < publish_at,
+        "accept_plan must publish only after the claim commit"
+    );
+
+    // 发布序列内部顺序：引擎姿态热同步（无引擎则跳过）→ 解析新状态 → 广播。
+    let publish = source
+        .split("async fn publish_session_mode_change(")
+        .nth(1)
+        .expect("publish_session_mode_change body");
+    let sync_at = publish
+        .find("sync_engine_safety_posture(")
+        .expect("the posture sync must come first");
+    let state_at = publish
+        .find("store.mode_state(")
+        .expect("the refreshed state read must follow the sync");
+    let emit_at = publish
+        .find("emit_mode_changed(")
+        .expect("the mode_changed broadcast must follow");
+    assert!(
+        sync_at < state_at && state_at < emit_at,
+        "ordering: posture sync → refreshed state → chat:mode_changed"
+    );
+    let guard = source
+        .split("async fn sync_engine_safety_posture(")
+        .nth(1)
+        .expect("sync_engine_safety_posture body");
+    assert!(
+        guard.contains("if pool.handle_for(session_id).await.is_some()"),
+        "the posture sync must stay gated on a live engine (no engine = no \
+         emission trigger, next spawn arms the persisted posture)"
+    );
+    // v3.5（评审 minor-8）：引擎热同步失败不得吞掉 `chat:mode_changed`——
+    // store 写已落库，广播照发、错误只记日志；发布函数体内不得再出现把
+    // 同步错误 `?` 上抛的写法（上抛 = 前端回滚一个已持久化的切换）。
+    assert!(
+        !publish.contains("sync_engine_safety_posture(session_id, pool).await?"),
+        "a failed posture sync must be logged, not propagated (the store \
+         write already persisted; the next send re-derives the posture)"
+    );
+}
+
+/// v3.5（评审 minor-1/minor-2）：`decide_approval` 的副作用次序 —— decision
+/// 校验先于登记摘除（摘除不可逆，非法值必须原样 Err 不留任何痕迹），授予/
+/// 拒绝缓存在 engine 调用成功之后写入（失败的点击不得替用户放行/拒绝后续
+/// 同族调用）。命令体无法单测构造（EnginePool 句柄需运行时），按 repo 惯例
+/// 钉装配次序。
+#[test]
+fn decide_approval_side_effect_ordering_is_pinned() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("interaction.rs"));
+    let body = source
+        .split("pub async fn decide_approval(")
+        .nth(1)
+        .and_then(|rest| rest.split("pub async fn get_pending_approvals(").next())
+        .expect("decide_approval body");
+    let validate_at = body
+        .find("invalid decision")
+        .unwrap_or_else(|| panic!("decision validation missing"));
+    let remove_at = body
+        .find("pending_approvals::remove(")
+        .unwrap_or_else(|| panic!("registry removal missing"));
+    let approve_at = body
+        .find("approve_tool_call(")
+        .unwrap_or_else(|| panic!("engine approve call missing"));
+    let grant_at = body
+        .find("remember_grant(")
+        .unwrap_or_else(|| panic!("grant cache write missing"));
+    let deny_at = body
+        .find("deny_tool_call(")
+        .unwrap_or_else(|| panic!("engine deny call missing"));
+    let denial_at = body
+        .find("remember_denial(")
+        .unwrap_or_else(|| panic!("denial cache write missing"));
+    assert!(
+        validate_at < remove_at,
+        "decision must be validated before the irreversible registry removal"
+    );
+    assert!(
+        approve_at < grant_at && deny_at < denial_at,
+        "grant/denial caches must be written only after the engine call succeeded"
+    );
+}
+
+/// `chat:mode_changed` 的 payload 契约：mode 为 snake_case 序列化值，
+/// ask_on_guardrail 为会话解析值——远程端/前端按字段名收敛，形状漂移即红。
+#[test]
+fn mode_changed_payload_contract_is_pinned() {
+    let payload = mode_changed_payload("s-conv", SerializableMode::Yolo, false);
+    assert_eq!(payload["session_id"], "s-conv");
+    assert_eq!(payload["mode"], "yolo");
+    assert_eq!(payload["ask_on_guardrail"], false);
+    let payload = mode_changed_payload("s-conv", SerializableMode::Auto, true);
+    assert_eq!(payload["mode"], "auto");
+    assert_eq!(payload["ask_on_guardrail"], true);
+}

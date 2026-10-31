@@ -346,6 +346,17 @@ pub struct SessionStore {
     /// `pinned_sessions_io`): shared by set_mode / set_mode_and_persist / the
     /// retention sweep.
     session_mode_states_io: Arc<Mutex<()>>,
+    /// In-memory mirror of `_ask_on_guardrail.json`: every explicit
+    /// per-session toggle, **including sessions that have no materialized
+    /// mode entry yet** (the toggle command records intent there without
+    /// pinning a mode). Consulted by the seeding point
+    /// (`ask_on_guardrail_seed`) at every fresh-entry mint, so a toggle
+    /// written before materialization survives it and survives restart;
+    /// without this map an override for an entry-less session was silently
+    /// dropped at mint/boot-merge time. Kept in sync by
+    /// `set_ask_on_guardrail` and populated at boot by
+    /// `load_ask_on_guardrail_overrides`.
+    ask_on_guardrail_overrides: Arc<RwLock<HashMap<String, bool>>>,
     /// In-process snapshot cache of `manager.list_sessions()`. Every upstream
     /// call does a full-directory read_dir + per-file prefix parsing, and the
     /// startup paths (boot restore / retention policy / AcpPool metadata) plus

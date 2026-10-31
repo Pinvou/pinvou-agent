@@ -11,7 +11,7 @@ pub fn disable_super_permission() -> Result<(), String> {
 }
 
 pub fn super_permission_turn_reminder() -> &'static str {
-    "当前系统不支持超级权限开关。**禁止用 sudo**(应用内会被 execpolicy 直接拒绝)。需要管理员权限的操作,请引导用户使用系统提供的管理员方式(如管理员终端)执行,不要尝试提权变通。"
+    "当前系统不支持超级权限开关。**禁止用 sudo**(应用内默认被 execpolicy 直接拒绝,会话开启「守卫命中时询问」时改为弹审批卡由用户决定)。需要管理员权限的操作,请引导用户使用系统提供的管理员方式(如管理员终端)执行,不要尝试提权变通。"
 }
 
 #[cfg(test)]
@@ -19,12 +19,14 @@ mod tests {
     use super::*;
 
     /// The reminder states the real contract (sudo is execpolicy-denied on
-    /// Windows — safety_deny_rules always emits the sudo deny rules here) and
-    /// must not claim a Linux-only toggle exists. Pin the anchors.
+    /// Windows — safety_deny_rules always emits the sudo deny rules here;
+    /// the deny face defaults to hard deny and becomes an approval card only
+    /// when the session arms ask-on-guardrail) and must not claim a
+    /// Linux-only toggle exists. Pin the anchors.
     #[test]
     fn reminder_pins_sudo_denied_contract() {
         let reminder = super_permission_turn_reminder();
-        for anchor in ["禁止用 sudo", "execpolicy 直接拒绝", "管理员终端"] {
+        for anchor in ["禁止用 sudo", "execpolicy 直接拒绝", "守卫命中时询问", "管理员终端"] {
             assert!(
                 reminder.contains(anchor),
                 "reminder lost `{anchor}`: {reminder}"

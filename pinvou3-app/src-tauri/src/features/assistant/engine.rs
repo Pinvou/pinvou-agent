@@ -565,6 +565,11 @@ pub(crate) fn emit_chat_terminal(
 ) {
     // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
     crate::features::assistant::pending_user_input::clear_session(session_id);
+    // 审批卡同理：中断的 turn 里 engine 侧审批已随 turn 丢弃，挂起登记兜底
+    // 清空，残留卡不得跨 turn 存活。授予/拒绝是会话级记忆，**跨 turn 存活**
+    // （「本会话允许」的语义；TUI 同样只在换会话/换工作区时清）——它们随
+    // 会话删除在 lib.rs 会话清理处经 clear_session 摘除。
+    crate::features::assistant::pending_approvals::clear_pending(session_id);
     let payload = json!({
         "session_id": session_id,
         // Turn identity: terminal events must carry the generation so the
@@ -1753,9 +1758,23 @@ impl AppEngine {
             None
         };
         // 多智能体开关（ADR-0006）：会话开着开关时装配专家名册。
+        // Tri-mode safety: one mode_state read feeds both the swarm switch
+        // and the safety-profile derivation threaded into the spawn config
+        // (the pool's post-spawn arming separately syncs the live posture).
+        // An UNATTENDED scheduled spawn always composes the Full profile:
+        // the stored mode is an interactive posture, and deriving Floor from
+        // a stored Yolo would drop the sensitive-face mechanical gate
+        // (credential destroy/exfil/persistence) for exactly the runs nobody
+        // watches — see `SafetyRuleProfile::for_engine_lane`.
+        let mode_state = store.mode_state(session_id);
+        let safety_profile =
+            crate::features::assistant::safety_deny_rules::SafetyRuleProfile::for_engine_lane(
+                mode_state.mode,
+                scheduled_unattended_spawn,
+            );
         let multi_agent_enabled = scheduled_profile.is_none()
             && bridge.multi_agent_mode_available(session_id)
-            && store.mode_state(session_id).multi_agent;
+            && mode_state.multi_agent;
         let roots = if scheduled_profile.is_some() {
             // 定时任务保留既有 profile/fallback 解析；其 ledger 可能是用户选择的
             // automation workspace，下面不会对它执行任何旧投影删除。
@@ -1803,14 +1822,19 @@ impl AppEngine {
                 // a plain session, which inherits none of these limits. The
                 // swarm switch and the session's multi_agent switch share one
                 // source (the mode_state just read above).
-                bridge.build_engine_config_for_multi_agent(
+                bridge.build_engine_config_for_multi_agent_with_profile(
                     session_id,
                     roots,
                     snapshot,
                     multi_agent_enabled,
+                    safety_profile,
                 )
             }
-            None => bridge.build_engine_config_for_session_roots(session_id, roots),
+            None => bridge.build_engine_config_for_session_roots_with_profile(
+                session_id,
+                roots,
+                safety_profile,
+            ),
         };
         if scheduled_unattended_spawn {
             engine_config.subagents_enabled = false;
@@ -1981,7 +2005,30 @@ impl AppEngine {
     pub async fn send_headless_user_message(
         &self,
         content: String,
+        mode: SerializableMode,
+        persona_reminder: Option<String>,
+        restrict_tools: bool,
+    ) -> Result<()> {
+        let approval =
+            crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(mode);
+        self.send_reserved_user_message_impl(
+            content,
+            mode.to_app_mode(),
+            approval,
+            persona_reminder,
+            restrict_tools,
+        )
+        .await
+    }
+
+    /// Historical AppMode-level entry kept for the forced-restrict wrapper's
+    /// closure shape; posture arrives resolved (tri-mode safety).
+    #[allow(dead_code)]
+    async fn send_reserved_user_message_impl(
+        &self,
+        content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
     ) -> Result<()> {
@@ -2014,6 +2061,7 @@ impl AppEngine {
                 self.send_reserved_user_message(
                     content,
                     mode,
+                    approval,
                     persona_reminder,
                     restrict_tools,
                     expert_snapshot,
@@ -2030,6 +2078,7 @@ impl AppEngine {
         &self,
         content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         // Proof token, not the caller's `bool`: only the pool's policy
         // (`turn_restrict_tools`) can mint it (PR #433 review S2(b)). The value
@@ -2043,6 +2092,7 @@ impl AppEngine {
         let op = self.build_interactive_send_message_op(
             content,
             mode,
+            approval,
             persona_reminder,
             restrict_tools.restricts_tools_for(&self.session_id),
             expert_snapshot,
@@ -2068,6 +2118,7 @@ impl AppEngine {
         &self,
         content: String,
         mode: AppMode,
+        approval: crate::features::assistant::platform::bridge::TurnApprovalPosture,
         persona_reminder: Option<String>,
         restrict_tools: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
@@ -2081,6 +2132,7 @@ impl AppEngine {
                 &self.session_id,
                 content,
                 mode,
+                approval,
                 persona_reminder,
                 restrict_tools,
                 &self.workspace,
@@ -2098,6 +2150,7 @@ impl AppEngine {
                 &self.session_id,
                 content,
                 mode,
+                approval,
                 persona_reminder,
                 restrict_tools,
             )
@@ -2121,10 +2174,18 @@ impl AppEngine {
     }
 
     fn profiled_send_op(&self, content: String, profile: &ScheduledRunProfile) -> Result<Op> {
+        // Scheduled runs are unattended: the profile's own
+        // apply_scheduled_turn_policy overrides the approval fields right
+        // below, so the pre-override posture stays the historical
+        // (true, Auto) — nothing can answer a card mid-run regardless.
         let mut op = self.bridge.build_send_message_op(
             &self.session_id,
             content,
             profile.execution_mode().to_app_mode(),
+            crate::features::assistant::platform::bridge::TurnApprovalPosture {
+                auto_approve: true,
+                approval_mode: deepseek_tui::ApprovalMode::Auto,
+            },
             Some(SCHEDULED_TURN_REMINDER.to_string()),
             false,
         )?;
@@ -4135,7 +4196,7 @@ mod live_tests {
         engine
             .send_headless_user_message(
                 prompts[0].to_string(),
-                SerializableMode::Yolo.to_app_mode(),
+                SerializableMode::Yolo,
                 None,
                 false,
             )
@@ -4181,7 +4242,7 @@ mod live_tests {
                         engine
                             .send_headless_user_message(
                                 prompts[1].to_string(),
-                                SerializableMode::Yolo.to_app_mode(),
+                                SerializableMode::Yolo,
                                 None,
                                 false,
                             )
@@ -4324,6 +4385,55 @@ mod tests {
             span.contains("engine_config.subagents_enabled = false;"),
             "the unattended spawn must disable subagents — the deterministic \
              delegation-disable leg of the recursion shield (round-34 M4)"
+        );
+    }
+
+    /// Tri-mode safety (scheduled lane): the spawn-time ruleset profile must
+    /// derive through the ENGINE LANE (`for_engine_lane`), not the bare
+    /// `for_mode` — an unattended scheduled spawn of a stored-Yolo session
+    /// must compose Full, or the sensitive-face mechanical gate silently
+    /// disappears for unattended automations. `spawn_for_session` cannot run
+    /// in unit tests (AppHandle + live bridge), so pin the wiring: the
+    /// lane-aware derivation sits in the spawn body between the one
+    /// `mode_state` read and the profile-threading spawn-config builders.
+    #[test]
+    fn unattended_spawn_derives_the_safety_profile_through_the_engine_lane() {
+        let source = include_str!("engine.rs");
+        // Strip line comments so a commented-out call cannot satisfy the pin
+        // (same mutation class as unattended_spawn_disables_subagents_in_source).
+        let live = source
+            .split('\n')
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let production = live
+            .split("mod tests {")
+            .next()
+            .expect("the production half of engine.rs present");
+        let body = production
+            .split("pub(crate) async fn spawn_for_session(")
+            .nth(1)
+            .expect("the spawn_for_session body present");
+        let mode_read_at = body
+            .find("let mode_state = store.mode_state(session_id);")
+            .expect("the spawn body must read the session mode state once");
+        let derivation_at = body
+            .find("SafetyRuleProfile::for_engine_lane(")
+            .expect("the spawn body must derive the profile through for_engine_lane");
+        let lane_at = body[derivation_at..]
+            .find("scheduled_unattended_spawn")
+            .expect("the unattended lane flag must thread the derivation");
+        let config_at = body
+            .find("build_engine_config_for_session_roots_with_profile(")
+            .expect("the profile must thread the spawn config");
+        assert!(
+            mode_read_at < derivation_at && derivation_at < config_at && lane_at > 0,
+            "ordering: mode read → lane-aware profile derivation → spawn config"
+        );
+        assert!(
+            !body.contains("SafetyRuleProfile::for_mode("),
+            "the bare mode-derived profile must not return at the spawn site \
+             (a revert re-opens the unattended Floor regression)"
         );
     }
 

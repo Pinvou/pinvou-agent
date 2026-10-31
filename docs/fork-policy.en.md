@@ -1,16 +1,16 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-28. Public maintenance f1eb10efc contains #114/#125; parent gitlink follows the public maintenance head.
+> Updated: 2026-10-31. The public maintenance head f1eb10efc is unmoved (contains #114/#125); this tree's parent gitlink and `EXPECTED_HEAD` lead the public maintenance head and point at the review candidate 41eab46f2 (CodeWhale#131), to be re-pinned once #131 lands.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Public maintenance and parent gitlink: `f1eb10efcfe2468fde42d1724d7f5f19d54b904c` (2026-10-28). #114 merged as `fe90f72f9`, #125 as `f1eb10efc`. This follow-up changes parent references only; it does not advance maintenance.
-- Measured history: 86 commits above upstream v0.9.12 `dcd4c200f`, 71 above r1 `1fafee7e2`; 84 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
-- Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Measured drift: 525 files, +91397/-39288, net +52109; 255 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+- The public maintenance head remains `f1eb10efcfe2468fde42d1724d7f5f19d54b904c` (closed 2026-10-28, containing #114 as `fe90f72f9` and #125 as `f1eb10efc`) and is unmoved; this PR sits in a candidate window — the parent gitlink and the `EXPECTED_HEAD` in `scripts/fork-guard.sh` lead the public maintenance head and point at the review candidate `41eab46f2fe2f6cb27f45bc9931afd4060f7c87b` (CodeWhale #131, based on `f1eb10efc`). The public maintenance branch has not advanced.
+- Measured history: the public maintenance branch holds 86 commits above upstream v0.9.12 `dcd4c200f`, 84 with a DCO sign-off (the unsigned squash commits remain #107 `f27672935` and #116 `e9a7f48da1`); the candidate `41eab46f2` holds 88 commits, 86 with a sign-off — the two new commits are #131's review history (the registered single commit `998ffe27e` plus the follow-up hardening commit `41eab46f2`), and the unsigned exceptions are unchanged. Published maintenance history is preserved.
+- Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed. Inside the candidate window `scripts/verify-public-submodule.sh` stays red by design (it asserts gitlink equals the `pinvou3-clean` remote maintenance head, still `f1eb10efc`); this tree's receipt is a green `fork-guard.sh --fast` (Layers 0+1), and the registration batch after #131 lands re-pins `EXPECTED_HEAD` and the gitlink to the squash, restoring the gate to green.
+- Measured drift (`dcd4c200f..41eab46f2`): 525 files, +93293/-39351, net +53942; 268 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.

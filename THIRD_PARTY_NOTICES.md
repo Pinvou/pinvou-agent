@@ -7,7 +7,7 @@ Their original licenses remain in effect.
 
 | Component | Version or baseline | Included form | License | Upstream |
 |---|---|---|---|---|
-| CodeWhale | `pinvou-v0.9.12-r3` baseline; gitlink at maintenance head `f1eb10efc` (see `docs/fork-policy.md`) | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
+| CodeWhale | `pinvou-v0.9.12-r3` baseline; gitlink at review candidate `41eab46f2` (CodeWhale#131, ahead of maintenance head `f1eb10efc`; see `docs/fork-policy.md`) | Public Git submodule and linked Rust crates | MIT | https://github.com/Pinvou/CodeWhale |
 | DingTalk Workspace CLI (`dws`) and skills | 1.0.65 | Apache-2.0 skill sources (v1.0.64 content baseline with registered local modifications); official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | Apache-2.0 | https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli |
 | Lark CLI and skills | 1.0.98 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/larksuite/cli |
 | WeCom CLI and skills | 1.3.4 | MIT skill sources; official CLI binaries downloaded and SHA-256-verified by the app on first connector use (linux-arm64, linux-x64, darwin-arm64, darwin-x64, windows-x64) | MIT | https://github.com/WecomTeam/wecom-cli |

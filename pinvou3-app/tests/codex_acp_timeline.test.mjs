@@ -1200,7 +1200,8 @@ try {
   'extracted controls must keep explicit Code mounts local while preserving the bridge fallback');
   // 等值守卫：点击已激活模式必须早退，避免代码车道 onSwitch 路径每次点击都触发
   // 冗余 refreshNativeControls（3 次 invoke）；ChatView bridge 路径同样受益。
-  assert.ok(composerControls.includes("(target === 'plan' && isPlan) || (target === 'yolo' && !isPlan)"),
+  // tri-mode：三档（yolo/auto/plan）后早退收敛为单比较 target === activeMode。
+  assert.ok(composerControls.includes('if (target === activeMode) return;'),
   'ComposerModeChip must early-return when the clicked mode equals the active mode');
   const sharedModeSwitch = composerControls.slice(
     composerControls.indexOf('async function switchTo(target)'),
