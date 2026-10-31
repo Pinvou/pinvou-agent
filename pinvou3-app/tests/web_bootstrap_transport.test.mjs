@@ -700,54 +700,54 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(stale.client.speculativeReconnect, false,
     'a successful speculative rejoin must clear the speculative flag silently');
   assert.equal(stale.client.connectionState.status, 'connected');
-  // A verified join resets the failure ladder: the next silent cycle is
-  // speculative again instead of escalating off stale failures.
+  // Round-11:只有完整验证的周期(join ack + 能力快照抵达——只有真实桌
+  // 面帧能落点)才复位梯子;ack 单独不复位。改动前:ack 处复位,自铸 ack
+  // 的 relay 每周期清零梯子,把 UI 永久楔死在 connected。
+  // ack-only 周期的静默死亡计入失败(封顶内仍隐藏)。
   stale.client.lastInboundAt = Date.now() - 121_000;
   stale.client._livenessCheck();
+  assert.equal(stale.client.speculativeFailures, 1,
+    'an ack-only silent cycle counts toward the failure cap');
   assert.equal(stale.client.speculativeReconnect, true,
-    'a verified join must reset the speculative failure ladder');
-  // Round-6 复审:上一条断言在 failures 恒为 0 的场景里对「join 复位」
-  // 这一行不敏感(删除复位行仍然全绿)。真正的判别场景:先积一次
-  // ackless 失败(failures=1,封顶内仍隐藏),再经验证 join 复位,然后再
-  // 经历一个 ackless 周期——复位生效时 failures 1→0→1 仍是隐藏周期;
-  // 复位缺失时 1→2 越过封顶,该周期必须可见,断言变红。
-  stale.client.lastInboundAt = Date.now() - 121_000;
-  stale.client._livenessCheck();
+    'the first failed cycle stays under the inclusive cap');
   takeReconnectTimer(stale.timers).callback();
-  const ackless = stale.MockWebSocket.instances[2];
-  ackless.open();
-  stale.client.lastInboundAt = Date.now() - 121_000;
-  stale.client._livenessCheck();
-  assert.equal(ackless.closeCalled, true,
-    'the ackless cycle must be closed to route recovery');
-  assert.equal(stale.client.speculativeReconnect, true,
-    'the first ackless cycle stays under the failure cap');
-  takeReconnectTimer(stale.timers).callback();
-  const verified = stale.MockWebSocket.instances[3];
-  verified.open();
-  verified.message({
+  const reverified = stale.MockWebSocket.instances[2];
+  reverified.open();
+  reverified.message({
     v: 2,
     type: 'web_client_joined',
     endpoint_id: 'endpoint_test',
     lease_id: 'lease_next',
     desktop_connected: true,
   });
+  reverified.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: { capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] } },
+  });
+  assert.equal(stale.client.speculativeFailures, 0,
+    'a fully verified cycle (ack + capability snapshot) resets the ladder');
   assert.equal(stale.client.speculativeReconnect, false,
-    'a verified join clears the speculative flag');
-  // 验证过的 socket 静默死亡:joined 周期不计失败,下一个重连仍隐藏。
+    'a fully verified join clears the speculative flag');
+  // 完整验证后的静默死亡:健康的空闲循环(快照已抵达),不计失败。
   stale.client.lastInboundAt = Date.now() - 121_000;
   stale.client._livenessCheck();
   assert.equal(stale.client.speculativeReconnect, true,
-    'a silent joined cycle must not escalate');
+    'a silent fully-verified cycle must not escalate');
+  // Round-6 判别(迁移到快照复位):先积一次失败,经完整验证复位,再经
+  // 历一个 ackless 周期——复位生效时 1→0→1 仍隐藏;复位缺失时 1→2 越
+  // 过封顶,该周期必须可见,断言变红。
   takeReconnectTimer(stale.timers).callback();
-  const afterReset = stale.MockWebSocket.instances[4];
-  afterReset.open();
+  const ackless = stale.MockWebSocket.instances[3];
+  ackless.open();
   stale.client.lastInboundAt = Date.now() - 121_000;
   stale.client._livenessCheck();
-  assert.equal(afterReset.closeCalled, true,
-    'the post-reset ackless cycle must still be closed to route recovery');
+  assert.equal(ackless.closeCalled, true,
+    'the ackless cycle must be closed to route recovery');
   assert.equal(stale.client.speculativeReconnect, true,
-    'the verified join must have reset the failure ladder (without the reset this cycle escalates past the cap)');
+    'the first ackless cycle after a verified reset stays under the failure cap');
 
   const failing = await connectWithCapabilities(['chat:delta'], () => {});
   failing.client.lastInboundAt = Date.now() - 121_000;
@@ -794,6 +794,61 @@ async function connectWithCapabilities(events, listener) {
       'past the failure cap the watchdog reconnect must not be speculative');
     assert.equal(wedged.client.connectionState.status, 'connecting',
       'the capped watchdog reconnect must be visible, not silently repeated');
+  }
+
+  // Round-11 wedge pin: a relay that ACKS every join but never delivers the
+  // capability snapshot (the ack is minted on the relay's own code path and
+  // cannot vouch for the desktop-bound forwarding path) must escalate to
+  // visible reconnecting instead of wedging the UI on "connected" forever.
+  // Before round-11 the failure count was gated on !joined and the join ack
+  // reset it, so every cycle re-zeroed the ladder.
+  {
+    const frameless = bootClient();
+    const framelessClient = frameless.window.PinvouWebClient;
+    await framelessClient.policyPromise;
+    framelessClient.markFrontendReady();
+    await Promise.resolve();
+    framelessClient.markStateReady();
+    const first = frameless.MockWebSocket.instances[0];
+    first.open();
+    first.message({
+      v: 2,
+      type: 'web_client_joined',
+      endpoint_id: 'endpoint_test',
+      lease_id: 'lease_test',
+      desktop_connected: true,
+    });
+    assert.equal(framelessClient.connectionState.status, 'connected');
+    // Cycle 1: the ack-only socket goes silent; the close counts (snapshot
+    // still due) and reconnects speculatively.
+    framelessClient.lastInboundAt = Date.now() - 121_000;
+    framelessClient._livenessCheck();
+    assert.equal(first.closeCalled, true);
+    assert.equal(framelessClient.speculativeFailures, 1,
+      'an acked-but-frameless cycle counts toward the cap');
+    assert.equal(framelessClient.connectionState.status, 'connected',
+      'the first frameless cycle is still speculative');
+    takeReconnectTimer(frameless.timers).callback();
+    const second = frameless.MockWebSocket.instances[1];
+    second.open();
+    second.message({
+      v: 2,
+      type: 'web_client_joined',
+      endpoint_id: 'endpoint_test',
+      lease_id: 'lease_next',
+      desktop_connected: true,
+    });
+    // Cycle 2: another ack with no snapshot — the relay re-acked but must
+    // not re-zero the ladder; the cycle crosses the cap and becomes visible.
+    framelessClient.lastInboundAt = Date.now() - 121_000;
+    framelessClient._livenessCheck();
+    assert.equal(second.closeCalled, true);
+    assert.equal(framelessClient.speculativeFailures, 2,
+      'the join ack must not reset the failure ladder');
+    assert.equal(framelessClient.speculativeReconnect, false,
+      'the second frameless cycle must cross the cap');
+    assert.equal(framelessClient.connectionState.status, 'connecting',
+      'the frameless relay must escalate to visible reconnecting, not wedge on connected');
   }
 
   const fresh = await connectWithCapabilities(['chat:delta'], () => {});

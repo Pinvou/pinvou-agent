@@ -35,10 +35,10 @@ pub use persistence::RelaySettingsInfo;
 #[cfg(test)]
 use persistence::atomic_write_private_json;
 use persistence::{
-    acknowledge_pending_revocation, acquire_process_lock, apply_runtime_relay_override,
-    config_path, eligible_pending_revocations, fresh_config, load_config, load_config_from,
-    load_or_initialize_rpc_ledger, load_pending_revocations_for_replay, load_relay_settings,
-    new_stream_epoch, pairing_info, pending_revocation_key, persist_config, persist_rpc_ledger,
+    acquire_process_lock, apply_runtime_relay_override, config_path, eligible_pending_revocations,
+    fresh_config, load_config, load_config_from, load_or_initialize_rpc_ledger,
+    load_pending_revocations_for_replay, load_relay_settings, new_stream_epoch, pairing_info,
+    pending_revocation_key, persist_config, persist_pending_revocations, persist_rpc_ledger,
     process_lock_path, public_url, queue_pending_revocation, remote_public_base_url,
     remote_relay_ws_url, remove_config, remove_rpc_ledger, validate_config,
 };
@@ -257,6 +257,16 @@ fn revoke_host_workspace_state(inner: &mut Inner) {
     inner.web_workspace_grants.clear();
 }
 
+/// `attachment_` 前缀 + 非空字母数字是桌面铸造的附件句柄形状
+/// (`attachment_{short_token(32)}`)。形状校验让调用方自选的任意字节
+/// 不回显进错误链(Round-11 复审 minor)。
+fn attachment_handle_is_well_formed(handle: &str) -> bool {
+    match handle.strip_prefix("attachment_") {
+        Some(body) => !body.is_empty() && body.chars().all(|c| c.is_ascii_alphanumeric()),
+        None => false,
+    }
+}
+
 /// 注册类 error 帧的可操作恢复提示。版本不匹配的正确恢复路径是升级到
 /// 匹配的最新版本——轮换只会铸出同一协议版本的新 endpoint,「rotate」
 /// 提示在那里是错误指引。同一个码覆盖两侧:桌面端过旧(默认情形)与
@@ -376,6 +386,12 @@ struct Inner {
     web_session_downloads: HashMap<String, WebSessionDownload>,
     web_session_download_order: VecDeque<String>,
     pending_revocations_in_flight: HashSet<String>,
+    /// Round-11 复审 minor:本进程的待吊销权威账本。回放时装载自磁盘,
+    /// queue 时随写盘同步追加;确认针对它整体落盘,而不是「重读磁盘→
+    /// 删一条→重写」——抢救降级(抢救落盘失败)后磁盘上没有账本,重读
+    /// 式确认会拿空账本清掉仍在内存的兄弟条目,重启后这批待吊销记录
+    /// 全部丢失(旧 endpoint 在 relay 侧保持可加入)。
+    pending_revocation_backlog: Vec<PendingRevocation>,
     /// 原生代码会话判定；None = 未注入（不过滤，启动早期行为不变）。
     code_session_predicate: Option<CodeSessionPredicate>,
 }
@@ -402,6 +418,7 @@ impl Default for Inner {
             web_session_downloads: HashMap::new(),
             web_session_download_order: VecDeque::new(),
             pending_revocations_in_flight: HashSet::new(),
+            pending_revocation_backlog: Vec::new(),
             code_session_predicate: None,
         }
     }
@@ -1051,25 +1068,35 @@ impl RemoteControlManager {
     /// 仍可在撤权后兑换,授权旗标与实际可访问面不一致)。这是设置弹窗的
     /// 显式撤权入口——让旧版本「开启访问」单按钮顺带写下的
     /// allow_host_workspace 可见、可单独收回,而不必轮换或停用整条链接
-    /// (Stop 之外的唯一清除路径)。幂等:已是未授权状态时不重写凭据文件。
+    /// (Stop 之外的唯一清除路径)。幂等:已是未授权状态时不重写凭据文件,
+    /// 但状态失效与状态刷新照常执行(重复撤权无副作用)。
     pub fn revoke_host_workspace(&self) -> Result<WebAccessInfo, String> {
         let _lifecycle = self.lifecycle.lock();
         self.ensure_policy()?;
         self.ensure_process_ownership()?;
+        // Round-11 复审 minor:状态失效不依赖配置文件——先作废内存旗标与
+        // 全部已发出的 grant,再做配置读回/落盘。web-access.json 在端点
+        // 存活期间损坏时,严格读取失败不能把撤权卡死(与 stop_current
+        // 容错读的同一理由:停用/撤权本身就是恢复手段),否则一次性
+        // grant 在剩余 TTL 内仍可兑换。落盘失败仍返回 Err,但此时状态
+        // 失效已先行,错误提示宁按已撤销一侧。
+        {
+            let mut inner = self.inner.lock();
+            revoke_host_workspace_state(&mut inner);
+        }
         let mut config =
             load_config()?.ok_or_else(|| "Web access is not configured".to_string())?;
         validate_config(&config)?;
-        if config.allow_host_workspace {
+        let latched = config.allow_host_workspace;
+        if latched {
             config.allow_host_workspace = false;
             persist_config(&config)?;
-            {
-                let mut inner = self.inner.lock();
-                revoke_host_workspace_state(&mut inner);
-            }
-            // emit_status→status 会再次锁 inner;guard 必须先出作用域,
-            // 否则 parking_lot 不可重入锁在同线程自锁(撤销即死锁)。
-            self.emit_status();
         }
+        // 状态失效无条件先行(幂等重入时 grant 清空同样真实发生),状态
+        // 刷新因此一律发送;emit_status→status 会再次锁 inner,取 guard
+        // 的独立块必须先出作用域,否则 parking_lot 不可重入锁在同线程
+        // 自锁(撤销即死锁,死锁钉按括号深度判)。
+        self.emit_status();
         let inner = self.inner.lock();
         // Round-5 复审 minor:endpoint 未激活(resume 尚未成功/激活失败)时
         // 撤权仍已持久化成功,按失败上报会让设置弹窗对一次真实的撤权显示
@@ -1179,6 +1206,12 @@ impl RemoteControlManager {
     fn replay_pending_revocations(&self) -> Result<(), String> {
         let ledger = load_pending_revocations_for_replay()?;
         let current = load_config()?;
+        // 回放装载的账本是本进程的权威副本(含抢救降级时只在内存里的
+        // 条目):确认针对它整体落盘,见 finish_pending_revocation。
+        {
+            let mut inner = self.inner.lock();
+            inner.pending_revocation_backlog = ledger.entries.iter().cloned().collect();
+        }
         for pending in eligible_pending_revocations(&ledger, current.as_ref()) {
             let key = pending_revocation_key(&pending);
             {
@@ -1229,13 +1262,34 @@ impl RemoteControlManager {
     ) {
         let _lifecycle = self.lifecycle.lock();
         if acknowledged {
-            if let Err(error) = acknowledge_pending_revocation(&pending) {
-                // Leave the durable entry in place. The next lifecycle replay
-                // will prove the endpoint absent and retry cleanup.
-                eprintln!(
-                    "[web-access] persist revocation acknowledgement for {} failed: {error}",
-                    pending.endpoint_id
-                );
+            // Round-11 复审 minor:确认针对进程内权威账本
+            // (`pending_revocation_backlog`)整体落盘,而不是「重读磁盘→删
+            // 一条→重写」——抢救降级后磁盘上没有账本,重读式确认会拿空
+            // 账本清掉仍在内存的兄弟条目,重启后这批待吊销记录全部丢失
+            // (旧 endpoint 在 relay 侧保持可加入)。落盘失败把全集(含本
+            // 条)放回内存,留待下个生命周期重试;回放/queue 时账本已随
+            // 盘写同步,重启亦从磁盘重建。生命周期锁串行化两个确认工人
+            // 的取-存窗口,不存在并发丢失。
+            let endpoint_id = pending.endpoint_id.clone();
+            let mut remaining = {
+                let mut inner = self.inner.lock();
+                std::mem::take(&mut inner.pending_revocation_backlog)
+            };
+            remaining.retain(|entry| entry != &pending);
+            let mut ledger = PendingRevocationLedger::default();
+            ledger.entries = remaining.iter().cloned().collect();
+            match persist_pending_revocations(&ledger) {
+                Ok(()) => {
+                    self.inner.lock().pending_revocation_backlog = remaining;
+                }
+                Err(error) => {
+                    remaining.push(pending);
+                    self.inner.lock().pending_revocation_backlog = remaining;
+                    eprintln!(
+                        "[web-access] persist revocation acknowledgement for {endpoint_id} \
+                         failed ({error}); the entry stays queued for the next lifecycle replay"
+                    );
+                }
             }
         }
         self.inner.lock().pending_revocations_in_flight.remove(&key);
@@ -1466,6 +1520,14 @@ impl RemoteControlManager {
         for handle in handles {
             if !unique.insert(handle.as_str()) {
                 return Err("远程控制附件句柄重复".into());
+            }
+            // Round-11 复审 minor:拒绝串只回显桌面自己铸造的形状
+            // (`attachment_<字母数字>`)。调用方字节原样进入错误链,经
+            // fold_web_chat_error 的忙碌锚点折叠后,含
+            // `reserve Web chat turn: …` 段的句柄会把硬失败伪装成瞬态
+            // 忙碌,驱动手机侧对从未准入的 turn 做远端和解。
+            if !attachment_handle_is_well_formed(handle) {
+                return Err("远程控制附件句柄不存在或已过期".into());
             }
             if !inner.web_attachments.contains_key(handle) {
                 return Err(format!("远程控制附件句柄不存在或已过期：{handle}"));
@@ -5490,6 +5552,162 @@ mod tests {
             body.contains("self.app.emit_to(\"main\", \"web_access:status\""),
             "web_access:status carries the pairing URL and QR; it must be scoped \
              to the main webview, not broadcast to every webview"
+        );
+    }
+
+    /// 接线钉(Round-11 复审 M2):重派发必须重置 TTL 时钟,两条臂都是
+    /// 同一契约——`handle_rpc_request` 的 Pending 臂是 begin 持久化失败
+    /// 后重试的真实通路(settle_begin_persist_failure 清掉
+    /// dispatched_generation 后必经此臂重派),`prepare_bridge_generation`
+    /// 臂已有行为钉驱动,但行为钉看不见本臂:Round-11 突变实证,删除
+    /// 本臂的时钟重置,3870 项测试全绿,窗口尾部的重试重新被 TTL 扫描
+    /// 伪造成 `rpc_timed_out`。删除任一臂的重置本钉即红。
+    #[test]
+    fn rpc_redispatch_rearms_the_dispatch_clock_in_both_arms() {
+        let source = include_str!("mod.rs");
+        let handle_start = source
+            .find("fn handle_rpc_request(&self, value: &Value)")
+            .expect("handle_rpc_request must exist");
+        let body = &source[handle_start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("handle_rpc_request body must be terminated by the next fn")];
+        assert!(
+            body.contains("pending.dispatched_at = Instant::now();"),
+            "the Pending re-dispatch arm must re-arm the TTL clock; without it a \
+             begin-persist-failure retry inherits the original admission timestamp and \
+             is fabricated into rpc_timed_out at the window tail"
+        );
+        let rpc_source = include_str!("rpc.rs");
+        let prepare_start = rpc_source
+            .find("fn prepare_bridge_generation(")
+            .expect("prepare_bridge_generation must exist");
+        let rpc_body = &rpc_source[prepare_start..];
+        let rpc_body = &rpc_body[..rpc_body
+            .find("\npub(super) fn ")
+            .expect("prepare_bridge_generation body must be terminated by the next fn")];
+        assert!(
+            rpc_body.contains("pending.dispatched_at = Instant::now();"),
+            "the prepare_bridge_generation re-dispatch arm must re-arm the TTL clock too"
+        );
+    }
+
+    /// 接线钉(Round-11 复审):phase-one 默认(state_ready 缺省即就绪门
+    /// 生效)的修复只在 `synchronize_client_from_value` 的调用点生效——
+    /// 现有测试直接驱动 helper,看不见调用点;把调用点内联回
+    /// `unwrap_or(true)`(pre-fix 行为,省略 state_ready 的客户端可跳过
+    /// 就绪门收取业务事件)时全套件保持绿。删除调用点即红。
+    #[test]
+    fn client_ready_readiness_gate_is_wired_at_the_synchronize_call_site() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn synchronize_client_from_value(&self, value: &Value)")
+            .expect("synchronize_client_from_value must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("synchronize_client_from_value body must be terminated by the next fn")];
+        assert!(
+            body.contains("let state_ready = client_state_ready(value);"),
+            "the readiness gate must be consulted at the synchronize call site; \
+             inlining unwrap_or(true) back lets clients that omit state_ready skip it"
+        );
+    }
+
+    /// 接线钉(Round-11 复审 minor):`reserve_web_attachments` 的拒绝串
+    /// 只回显铸造形状的句柄。方法体需要 AppHandle(emit_status 依赖),
+    /// 行为钉驱动不了;删除形状门让调用方字节重新进入错误链(其中含
+    /// `reserve Web chat turn: …` 段的句柄会把硬失败伪装成瞬态忙碌)时
+    /// 本钉变红。
+    #[test]
+    fn reserve_web_attachments_echoes_only_well_formed_handles() {
+        assert!(attachment_handle_is_well_formed(
+            "attachment_aB3xY9zWq1Mn2Vb5Cd7Ef0gh"
+        ));
+        assert!(!attachment_handle_is_well_formed(
+            "attachment_reserve Web chat turn: session_turn_in_progress"
+        ));
+        assert!(!attachment_handle_is_well_formed("attachment_"));
+        assert!(!attachment_handle_is_well_formed("attachment_x<y>"));
+        assert!(!attachment_handle_is_well_formed("reserves"));
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn reserve_web_attachments(")
+            .expect("reserve_web_attachments must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    pub fn ")
+            .expect("reserve_web_attachments body must be terminated by the next fn")];
+        let gate = body
+            .find("attachment_handle_is_well_formed(handle)")
+            .expect("reserve_web_attachments must gate echoed handles on the minted shape");
+        let echo = body
+            .find("远程控制附件句柄不存在或已过期：{handle}")
+            .expect("the not-found arm must interpolate the handle");
+        assert!(
+            gate < echo,
+            "the shape gate must run before the handle is interpolated into the error chain \
+             (gate at {gate}, echo at {echo})"
+        );
+    }
+
+    /// 接线钉(Round-11 复审):restore-after-revoke 的 manager 半边——
+    /// `restore_web_workspace_grant` 必须读取**存活端点**的 consent 旗标
+    /// 传给 store(store 半边的拒绝语义已由 workspace_grants.rs 的行为钉
+    /// 判别),否则 revert 成硬编码 `true` 会复活「reserve→revoke→创建
+    /// 失败→restore 复活 grant」的时序(bind-time 复核仍在,属纵深缺口
+    /// 而非开放漏洞)。回退接线本钉即红。
+    #[test]
+    fn restore_web_workspace_grant_reads_the_live_consent_flag() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub(crate) fn restore_web_workspace_grant(")
+            .expect("restore_web_workspace_grant must exist");
+        let body = &source[start..];
+        let body = &body[..body.find("\n    pub(crate) fn ").unwrap_or_else(|| {
+            body.find("\n    fn ")
+                .expect("restore_web_workspace_grant body must be terminated by the next fn")
+        })];
+        let flag = body
+            .find("endpoint.config.allow_host_workspace")
+            .expect("restore must read the live endpoint's consent flag");
+        let pass = body
+            .find("allow_host_workspace,")
+            .expect("restore must pass the flag into the store");
+        assert!(
+            flag < pass,
+            "the consent flag read must feed the store call \
+             (flag read at {flag}, store pass at {pass})"
+        );
+    }
+
+    /// 接线钉(Round-11 复审 minor):确认必须针对进程内权威账本整体落盘
+    /// (`persist_pending_revocations`),并同步维护 backlog;回退成「重读
+    /// 磁盘→删一条→重写」(`acknowledge_pending_revocation`)会在抢救降
+    /// 级后拿空账本清掉内存里的兄弟条目。方法体需要 AppHandle,行为钉
+    /// 驱动不了,按本模块惯例以源码契约钉住。
+    #[test]
+    fn revocation_ack_persists_the_process_backlog_instead_of_rereading_disk() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn finish_pending_revocation(")
+            .expect("finish_pending_revocation must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("finish_pending_revocation body must be terminated by the next fn")];
+        assert!(
+            body.contains("persist_pending_revocations(&ledger)"),
+            "the acknowledgement must persist the caller-held backlog wholesale"
+        );
+        assert!(
+            body.contains("pending_revocation_backlog"),
+            "the acknowledgement must restore the backlog on failure and commit it on success"
+        );
+        assert!(
+            !body.contains("acknowledge_pending_revocation("),
+            "the disk-rereading acknowledgement must not come back; it drops salvaged \
+             siblings when the on-disk ledger is absent"
         );
     }
 

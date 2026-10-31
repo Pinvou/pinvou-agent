@@ -310,7 +310,12 @@ function hasStoredCredential(record) {
               </div>
             ) : (
               <div className={`text-[13px] px-3 py-4 rounded-xl bg-[#F1F3F4] text-[#3C4043] dark:bg-white/5 dark:text-[#C4C7C5]`}>
-                {webAccess.starting ? remoteCopy.generating : (webAccessErrorText || remoteCopy.notStarted)}
+                {/* Round-11 复审 minor:错误文本已由状态行 detail 与红色横幅
+                    各渲染一次;占位盒退回「未开启」缺省,同一句恢复提示不再
+                    在 420px 弹窗里连排三遍。 */}
+                {webAccess.starting
+                  ? remoteCopy.generating
+                  : (statusKey === 'error' ? remoteCopy.notStarted : (webAccessErrorText || remoteCopy.notStarted))}
               </div>
             )}
             {webAccessErrorText && <div className="mt-3 text-[12px] text-[#EA4335] break-all">{webAccessErrorText}</div>}

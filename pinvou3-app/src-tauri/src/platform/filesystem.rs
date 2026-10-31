@@ -2637,11 +2637,54 @@ pub(crate) fn quarantine_secret_file(path: &Path) -> io::Result<PathBuf> {
         .map(|meta| meta.file_type().is_file())
         .unwrap_or(false);
     let quarantine = quarantine_destination(path);
-    if is_regular && std::fs::copy(path, &quarantine).is_ok() {
+    // Round-11 复审 minor:unix 腿改用 0600 create_new 直接创建副本再流
+    // 式拷贝——`fs::copy` 先按默认模式(通常 0644)落盘再收紧,证据副本
+    // 在 copy+chmod 窗口内全局可读;且收紧失败被静默吞掉,恰在本 helper
+    // 存在的修复失败路径上自相矛盾(文档声称该 chmod 必然成功)。副本
+    // 创建即 0600,后续 chmod 只是显式兜底,失败时大声记录。Windows 腿
+    // 保留 `fs::copy`:副本继承源 ACL(与源文件同暴露,无扩大),默认
+    // ACL 反而取决于目录模板,不在本次收紧范围。
+    let copy_landed = if !is_regular {
+        false
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            let copy_result: io::Result<()> = (|| {
+                let mut source = std::fs::File::open(path)?;
+                let mut destination = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&quarantine)?;
+                std::io::copy(&mut source, &mut destination)?;
+                Ok(())
+            })();
+            match copy_result {
+                Ok(()) => true,
+                Err(_) => {
+                    let _ = std::fs::remove_file(&quarantine);
+                    return quarantine_corrupt_file(path);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::copy(path, &quarantine).is_ok()
+        }
+    };
+    if copy_landed {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let _ = std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o600));
+            if let Err(error) =
+                std::fs::set_permissions(&quarantine, std::fs::Permissions::from_mode(0o600))
+            {
+                eprintln!(
+                    "quarantine: tighten {} to 0600 failed: {error} (copy was created 0600)",
+                    quarantine.display()
+                );
+            }
         }
         return match std::fs::remove_file(path) {
             Ok(()) => Ok(quarantine),
@@ -3577,6 +3620,25 @@ pub(crate) mod tests {
             b"{\"desktop_secret\":\"token\"}",
             "the quarantined evidence must stay verbatim"
         );
+        // Round-11 复审 minor(源码契约钉):副本必须以 0600 create_new 直接
+        // 创建——终态 0600 断言看不见 `fs::copy` 先按 0644 落盘再收紧的
+        // copy+chmod 窗口;回退成 copy-then-chmod 时本钉变红。unix 专属
+        // 窗口语义,Windows 腿保留 fs::copy(ACL 继承,见函数文档)。
+        #[cfg(unix)]
+        {
+            let source = include_str!("filesystem.rs");
+            let start = source
+                .find("pub(crate) fn quarantine_secret_file(")
+                .expect("quarantine_secret_file must exist");
+            let body = &source[start..];
+            let body = &body[..body
+                .find("\npub(crate) fn ")
+                .expect("quarantine_secret_file body must be terminated by the next fn")];
+            assert!(
+                body.contains(".write(true)\n                    .create_new(true)\n                    .mode(0o600)"),
+                "the secret evidence copy must be created 0600, not copied loose and tightened after"
+            );
+        }
         assert_eq!(
             permission_bits(&quarantined).unwrap(),
             Some(0o600),

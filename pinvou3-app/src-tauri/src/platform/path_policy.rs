@@ -57,6 +57,31 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
     // 纪律:SECRET_EXCLUDES 走 gitignore 语义(.git 本就被 git 忽略),
     // 两侧独立评估、互不推导。
     ".git",
+    // Round-11 复审 MAJOR:云 CLI 凭据存储与 `.aws` 同级(项目自身的
+    // safety_deny_rules v3.3 清单早已把它们列为同 tier):gcloud 的
+    // ADC 刷新令牌 `application_default_credentials.json` 与 SQLite 库
+    // `credentials.db`(注意组件精确匹配下既有 `credentials.json` 条目
+    // 命不中更长的文件名)、Azure CLI 的 `msal_token_cache.json`/
+    // `accessTokens.json` 令牌缓存,以及目录名 `.azure`;`gcloud` 作为
+    // 裸目录名偏宽(`$HOME/.config/gcloud` 是标准位置),但模型上下文
+    // 车道对示例/误伤宁可过宽的既定标准(`.env.example` 被拦同理)。
+    // Round-11 复审 minor 同批:其余 distinctive 命名的默认凭据存储——
+    // s3cmd `.s3cfg`、MySQL `.my.cnf`、msmtp `.msmtprc`、rclone
+    // `rclone.conf`、Terraform `credentials.tfrc.json`。浏览器
+    // Cookies/Login Data、gh hosts.yml、Maven settings.xml、sops
+    // age keys.txt 等通用命名不进全局精确清单(会误伤任意工作区里的
+    // 同名普通文件),待目录作用域匹配能力再收(残余记录)。
+    "application_default_credentials.json",
+    "credentials.db",
+    "msal_token_cache.json",
+    "accessTokens.json",
+    ".azure",
+    "gcloud",
+    ".s3cfg",
+    ".my.cnf",
+    ".msmtprc",
+    "rclone.conf",
+    "credentials.tfrc.json",
 ];
 
 /// 组件前缀黑名单:`.env.` 系命名(`.env.local`、`.env.production`、
@@ -103,6 +128,9 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "/etc/sudoers~",
     "/proc/",
     "/sys/",
+    // Round-11 复审 minor:pam_unix 的密码历史文件(旧哈希,与 shadow
+    // 同内容级);`*` 收拢 .old/.bak 等轮转备份家族。
+    "/etc/security/opasswd*",
 ];
 
 /// macOS 把 `/etc`、`/var`、`/tmp` 符号链接到 `/private/...` 下的真实目录;
@@ -389,6 +417,63 @@ mod tests {
             assert!(
                 check_sensitive_components(&path).is_ok(),
                 "{benign} 不是凭据文件,不应被拦"
+            );
+        }
+    }
+
+    /// Round-11 复审:硬编码字面量钉住原始清单成员(`.gnupg`/`.password-
+    /// store`/`id_*` 私钥/`credentials.json`/`/root/`/`/proc/`/`/sys/`)
+    /// 与本批新增成员——逐常量循环在成员被删除时静默通过(迭代次数变少
+    /// 不红),删除任何一个条目必须在这里变红。含 `credentials.json` 精确
+    /// 匹配与 gcloud ADC 长文件名的区分(后者不再漏网)。
+    #[test]
+    fn original_entries_stay_blocked_when_deleted_from_the_constant() {
+        let blocked_components = [
+            ".ssh",
+            ".gnupg",
+            ".aws",
+            ".docker",
+            ".kube",
+            ".password-store",
+            "id_rsa",
+            "id_ed25519",
+            "id_ecdsa",
+            "id_dsa",
+            "credentials.json",
+            // Round-11 复审 MAJOR:云 CLI 凭据家族。
+            "application_default_credentials.json",
+            "credentials.db",
+            "msal_token_cache.json",
+            "accessTokens.json",
+            ".azure",
+            "gcloud",
+            ".s3cfg",
+            ".my.cnf",
+            ".msmtprc",
+            "rclone.conf",
+            "credentials.tfrc.json",
+        ];
+        for raw in blocked_components {
+            let path = std::env::temp_dir().join("home").join(raw).join("x");
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "{raw} 条目被删除时此断言必须变红"
+            );
+        }
+        let gcloud_adc = std::env::temp_dir()
+            .join("home")
+            .join(".config")
+            .join("gcloud")
+            .join("application_default_credentials.json");
+        assert!(
+            check_sensitive_components(&gcloud_adc).is_err(),
+            "gcloud ADC(双层目录名命中)必须被拦"
+        );
+        for prefix in ["/root/", "/proc/", "/sys/", "/etc/security/opasswd"] {
+            let path = Path::new(prefix).join("probe");
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "{prefix} 前缀条目被删除时此断言必须变红"
             );
         }
     }

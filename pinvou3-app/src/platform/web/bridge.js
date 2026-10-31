@@ -2787,10 +2787,14 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // 侧车道(建聊/删除/打开产物与附件)的同一码表消费:折叠码替换为三语
   // 文案而非拼接原始机器码;未识别文本保持「前缀 + 原文」的既有行为。
   // 与 displayTurnError 的差别仅在兜底:侧车道保留各自的失败前缀文案。
+  // 查表与 displayTurnError 同款 hasOwnProperty 守卫:裸原型链查找会把
+  // 恰好同名的错误文本("constructor"/"valueOf"/…)映射成非字符串真值,
+  // 渲染出 "undefined" 并吞掉真实错误(Round-11 复审 minor)。
   function wireLaneError(err, prefixKey) {
     const text = String(err && err.message ? err.message : err || "");
-    const copyKey = WEB_TURN_ERROR_KEYS[text];
-    if (copyKey) return bt(copyKey);
+    if (Object.prototype.hasOwnProperty.call(WEB_TURN_ERROR_KEYS, text)) {
+      return bt(WEB_TURN_ERROR_KEYS[text]);
+    }
     return bt(prefixKey) + text;
   }
 

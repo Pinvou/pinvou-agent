@@ -387,8 +387,9 @@ pub async fn update_memory_profile(
     session_id: Option<String>,
     store: State<'_, SessionStore>,
 ) -> Result<MemoryProfileState, String> {
-    let profile = crate::features::memory::update_profile(patch)
-        .map_err(|e| format!("update profile: {e}"))?;
+    let profile = crate::features::memory::update_profile(patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update profile: {e}"))
+    })?;
     let (runtime, warnings) = refresh_memory_runtime_best_effort(session_id, &store);
     Ok(MemoryProfileState {
         profile,
@@ -587,8 +588,9 @@ pub async fn confirm_pending_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::MemoryWriteEvent>>, String> {
-    let event = crate::features::memory::confirm_pending_memory(&id)
-        .map_err(|e| format!("confirm pending memory: {e}"))?;
+    let event = crate::features::memory::confirm_pending_memory(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("confirm pending memory: {e}"))
+    })?;
     finish_memory_write(&app, session_id, &store, event.clone(), event, Vec::new())
 }
 
@@ -602,9 +604,9 @@ pub async fn ignore_pending_memory(
     // The command's contract is Option<event>: the AlreadyDecided/NotFound
     // distinction matters to organize's report wording, not to this caller,
     // which historically answers None for both.
-    let event = match crate::features::memory::ignore_pending_memory(&id)
-        .map_err(|e| format!("ignore pending memory: {e}"))?
-    {
+    let event = match crate::features::memory::ignore_pending_memory(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("ignore pending memory: {e}"))
+    })? {
         crate::features::memory::PendingIgnoreOutcome::Ignored(event) => Some(event),
         crate::features::memory::PendingIgnoreOutcome::AlreadyDecided
         | crate::features::memory::PendingIgnoreOutcome::NotFound => None,
@@ -620,8 +622,9 @@ pub async fn never_pending_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::MemoryWriteEvent>>, String> {
-    let event = crate::features::memory::never_pending_memory(&id, reason)
-        .map_err(|e| format!("never pending memory: {e}"))?;
+    let event = crate::features::memory::never_pending_memory(&id, reason).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("never pending memory: {e}"))
+    })?;
     finish_memory_write(&app, session_id, &store, event.clone(), event, Vec::new())
 }
 
@@ -632,8 +635,9 @@ pub async fn delete_memory_preference(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed = crate::features::memory::delete_preference(&id)
-        .map_err(|e| format!("delete preference: {e}"))?;
+    let changed = crate::features::memory::delete_preference(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("delete preference: {e}"))
+    })?;
     let event = changed.then(|| crate::features::memory::MemoryWriteEvent {
         kind: "preference".to_string(),
         action: "deleted".to_string(),
@@ -651,8 +655,9 @@ pub async fn update_memory_preference(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::PreferenceFile>>, String> {
-    let mutation = crate::features::memory::update_preference(&id, patch)
-        .map_err(|e| format!("update preference: {e}"))?;
+    let mutation = crate::features::memory::update_preference(&id, patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update preference: {e}"))
+    })?;
     let mut persistence_warnings = Vec::new();
     let item = mutation.map(|mutation| {
         if let Some(detail) = mutation.cleanup_warning {
@@ -683,8 +688,9 @@ pub async fn update_work_context_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::WorkContextFile>>, String> {
-    let mutation = crate::features::memory::update_work_context(&id, patch)
-        .map_err(|e| format!("update work context: {e}"))?;
+    let mutation = crate::features::memory::update_work_context(&id, patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update work context: {e}"))
+    })?;
     let mut persistence_warnings = Vec::new();
     let item = mutation.map(|mutation| {
         if let Some(detail) = mutation.cleanup_warning {
@@ -714,8 +720,9 @@ pub async fn delete_work_context_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed = crate::features::memory::delete_work_context(&id)
-        .map_err(|e| format!("delete work context: {e}"))?;
+    let changed = crate::features::memory::delete_work_context(&id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("delete work context: {e}"))
+    })?;
     let event = changed.then(|| crate::features::memory::MemoryWriteEvent {
         kind: "work_context".to_string(),
         action: "deleted".to_string(),
@@ -734,8 +741,9 @@ pub async fn update_timed_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<Option<crate::features::memory::TimedMemoryItem>>, String> {
-    let item = crate::features::memory::update_timed_memory(&kind, &id, patch)
-        .map_err(|e| format!("update timed memory: {e}"))?;
+    let item = crate::features::memory::update_timed_memory(&kind, &id, patch).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("update timed memory: {e}"))
+    })?;
     let event = item
         .as_ref()
         .map(|item| crate::features::memory::MemoryWriteEvent {
@@ -755,8 +763,9 @@ pub async fn delete_timed_memory(
     store: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<MemoryWriteState<bool>, String> {
-    let changed = crate::features::memory::delete_timed_memory(&kind, &id)
-        .map_err(|e| format!("delete timed memory: {e}"))?;
+    let changed = crate::features::memory::delete_timed_memory(&kind, &id).map_err(|e| {
+        crate::platform::paths::redact_storage_prefix(&format!("delete timed memory: {e}"))
+    })?;
     let event = changed.then(|| crate::features::memory::MemoryWriteEvent {
         kind,
         action: "deleted".to_string(),
@@ -1055,6 +1064,46 @@ mod tests {
         .unwrap();
         assert_eq!(cleanup["code"], "memory_topic_cleanup_required");
         assert_eq!(cleanup["source"], "preferences");
+    }
+
+    /// Round-11 复审 minor(形状无关钉):memory 命令全部 web 可达,其
+    /// `Err<String>` 会原样过 relay——错误拼接必须经共享的
+    /// `redact_storage_prefix` 折叠存储根前缀(与 Round-9 修复的警告
+    /// detail 同策略;当前 std os error 的 Display 不内嵌路径,但任何一个
+    /// 未来内嵌路径的错误构造函数都会让这里成为泄露点)。唯一例外是
+    /// `reserve edit_last_turn`:原始链按既定策略只进桌面日志,Web 侧由
+    /// 稳定码折叠。逐 `map_err(|e|` 臂取窗口断言,不依赖 rustfmt 的换行
+    /// 形态(单行形态计数曾被折叠换行静默绕过——突变复跑实证)。
+    #[test]
+    fn web_visible_memory_errors_fold_the_storage_prefix() {
+        // 只扫生产半边:include_str 含测试模块自身,断言字面量会污染计数。
+        let source = include_str!("memory.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("memory.rs must keep its tests behind #[cfg(test)]");
+        let mut arms = 0;
+        let mut raw_arms = 0;
+        for (pos, _) in production.match_indices(".map_err(|e|") {
+            arms += 1;
+            let window_end = (pos + 400).min(production.len());
+            let window = &production[pos..window_end];
+            if !(window.contains("redact_storage_prefix")
+                || window.contains("reserve edit_last_turn"))
+            {
+                raw_arms += 1;
+            }
+        }
+        assert!(
+            arms >= 11,
+            "expected the ten folded error arms plus the edit_last_turn chain, found {arms}"
+        );
+        assert_eq!(
+            raw_arms, 0,
+            "every web-visible memory error arm must fold the storage prefix via \
+             redact_storage_prefix; the single allowed exception is the deliberately-raw \
+             edit_last_turn reservation chain"
+        );
     }
 
     /// Round-7 复审:overview 的 `snapshot_path` 展示字段随 Web 访问策略出站

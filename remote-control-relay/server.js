@@ -157,6 +157,10 @@ const endpoints = new Map();
 const revokedEndpoints = new Map();
 const endpointCreationBuckets = new Map();
 const wsConnectionBuckets = new Map();
+// Round-11 review: receiver-error terminations are surfaced in /healthz so an
+// operator can tell "client hung up" from "endpoint keeps sending poisoned
+// frames" (the connection-level close reason is invisible to probes).
+const relayStats = { receiverErrorTerminations: 0 };
 let relayStateMutation = Promise.resolve();
 
 await loadRelayState();
@@ -519,6 +523,11 @@ function withoutCredentials(message) {
     token: _token,
     pairing_token: _pairingToken,
     desktop_secret: _desktopSecret,
+    // `web_rejoining` is relay-authoritative (set only on the relay-generated
+    // informational frames); a client-supplied value must not survive
+    // forwarding where it is indistinguishable from a relay-set field at the
+    // type level (round-11 review).
+    web_rejoining: _webRejoining,
     ...safe
   } = message;
   return safe;
@@ -617,6 +626,7 @@ function healthSummary() {
     ws_connection_count: wss.clients.size,
     unauthenticated_connection_count: [...wss.clients]
       .filter((ws) => ws.role === "unknown").length,
+    receiver_error_terminations: relayStats.receiverErrorTerminations,
   };
 }
 
@@ -1037,8 +1047,15 @@ wss.on("connection", (ws, req) => {
   // reasons) — those never reach the JSON-level guards below, and ws turns an
   // unlistened 'error' event into ERR_UNHANDLED_ERROR, killing the process.
   // Same contract as the send() guard: one poisoned frame terminates only
-  // this socket; the close handler then runs the endpoint bookkeeping.
-  ws.on("error", () => {
+  // this socket; the close handler then runs the endpoint bookkeeping. The
+  // termination is loud (log + healthz counter): an operator must be able to
+  // tell "client hung up" from "endpoint keeps sending poisoned frames"
+  // (round-11 review).
+  ws.on("error", (error) => {
+    relayStats.receiverErrorTerminations += 1;
+    console.error(
+      `[relay] receiver error on ${ws.role || "unknown"} socket: ${error && error.message ? error.message : error}`,
+    );
     terminateDestination(ws);
   });
 

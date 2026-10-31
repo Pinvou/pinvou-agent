@@ -405,6 +405,7 @@ test("healthz exposes aggregate endpoint counters and no identifiers", async () 
     "desktop_open_count",
     "endpoint_count",
     "ok",
+    "receiver_error_terminations",
     "room_count",
     "unauthenticated_connection_count",
     "web_client_open_count",
@@ -1307,6 +1308,14 @@ test("survives illegal websocket frames at the receiver and keeps serving", asyn
     // The process survived both frames and still completes handshakes.
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
+    // Round-11: receiver-error terminations are loud — the healthz counter
+    // lets an operator tell "client hung up" from "endpoint keeps sending
+    // poisoned frames".
+    const health = await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`);
+    assert.equal(health.ok, true);
+    const healthBody = await health.json();
+    assert.equal(healthBody.receiver_error_terminations >= 2, true,
+      `both poisoned frames must be counted, got ${JSON.stringify(healthBody)}`);
     const healthy = await openSocket(isolated.wsUrl);
     assert.equal(healthy.readyState, healthy.OPEN);
     closeSocket(healthy);
@@ -1358,6 +1367,37 @@ test("a newer desktop registration replaces the old socket and keeps the web lea
   const received = await forwarded;
   assert.equal(received.lease_id, web.joined.lease_id);
   assert.equal(received.id, "after-replace");
+});
+
+// Round-11 review: `web_rejoining` is relay-authoritative (set only on the
+// relay-generated informational frames). A token-holding web client must not
+// be able to smuggle the field through a forwarded frame where it is
+// indistinguishable from a relay-set field at the type level — the desktop
+// honors it only on those relay-generated frames, and this keeps it that way.
+test("client-supplied web_rejoining does not survive forwarding", async (t) => {
+  const endpointId = `endpoint_rejoin_strip_${Date.now()}`;
+  const accessToken = "access-token-rejoin-strip-000000001";
+  const desktopSecret = "desktop-secret-rejoin-strip-00000001";
+  const desktop = await registerDesktop(endpointId, accessToken, desktopSecret);
+  const connected = nextMessage(desktop.ws, "web_client_connected");
+  const web = await joinWeb(endpointId, accessToken);
+  await connected;
+  t.after(() => { closeSocket(web.ws); closeSocket(desktop.ws); });
+
+  const forwarded = nextMessage(desktop.ws, "rpc_request");
+  web.ws.send(JSON.stringify({
+    v: 2,
+    type: "rpc_request",
+    id: "rejoin-smuggle",
+    client_request_id: "rejoin-smuggle",
+    command: "list_sessions",
+    args: {},
+    web_rejoining: true,
+  }));
+  const received = await forwarded;
+  assert.equal("web_rejoining" in received, false,
+    `a client-supplied web_rejoining must be stripped, got ${JSON.stringify(received)}`);
+  assert.equal(received.id, "rejoin-smuggle");
 });
 
 test("a web client keeps its lease while the desktop is offline and loses it on takeover", async (t) => {
