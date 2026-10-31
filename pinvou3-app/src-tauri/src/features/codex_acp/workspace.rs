@@ -918,42 +918,47 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         // 索引腿独立拒绝(下方需要 HEAD 的 `--cached` 臂在未出生 HEAD 下
         // 并不会失败,不能指望它兜底);有效 HEAD 下 ls-tree 失败(对象
         // 损坏)时,需要读同一批树的 diff 臂同样产不出内容。
-        if !path.exists() {
-            let index_entries = git_output(&root, &["ls-files", "-z", "--", literal.as_str()])?;
-            let head_entries = git_output(
-                &root,
-                &[
-                    "ls-tree",
-                    "-r",
-                    "-z",
-                    "--name-only",
-                    "HEAD",
-                    "--",
-                    literal.as_str(),
-                ],
-            )
-            .unwrap_or_default();
-            let expands_beyond_request = index_entries
-                .split('\0')
-                .chain(head_entries.split('\0'))
-                .filter(|entry| !entry.is_empty())
-                .any(|entry| entry != relative);
-            if expands_beyond_request {
-                bail!("工作区差异仅支持文件路径: {relative}");
-            }
+        // Round-11 复审 BLOCKER:展开检查原以 `!path.exists()` 为门——
+        // 但 `rm -rf src && echo x > src`(同名文件换目录)让 path 存在
+        // 且非目录,门把检查整个跳过,而泄露在 index/HEAD 侧:pathspec
+        // 照样按目录前缀展开出 `src/.env` 的删除补丁。走到这里 path 已
+        // 必非目录(is_dir 拒绝在其上),门没有任何正确性收益,展开检查
+        // 无条件执行(存在性只影响 canonicalize 腿,已在上方处理)。
+        let index_entries = git_output(&root, &["ls-files", "-z", "--", literal.as_str()])?;
+        let head_entries = git_output(
+            &root,
+            &[
+                "ls-tree",
+                "-r",
+                "-z",
+                "--name-only",
+                "HEAD",
+                "--",
+                literal.as_str(),
+            ],
+        )
+        .unwrap_or_default();
+        let expands_beyond_request = index_entries
+            .split('\0')
+            .chain(head_entries.split('\0'))
+            .filter(|entry| !entry.is_empty())
+            .any(|entry| entry != relative);
+        if expands_beyond_request {
+            bail!("工作区差异仅支持文件路径: {relative}");
         }
         // Round-9 复审 BLOCKER:staged rename 的旧内容由 `--cached` 臂按
         // 「新文件」渲染——pathspec 限定目的地时 git 无法与删除侧配对,
         // `new file mode` 直接带出旧 blob 全文,而词法/解析腿只看得见清白
-        // 的目的地名。按完整 porcelain 解析重建 目的地→来源 映射,请求路
-        // 径是黑名单来源的改名/拷贝目标时整体拒绝(检测经 -c 强制,仓库
-        // 配置 status.renames=false 拆不散改名对)。porcelain 层无改名对
-        // 的形状属共享策略已记录的同名别名残余——git 不再持有可追随的
+        // 的目的地名。按 index-vs-HEAD 的改名/拷贝对重建 目的地→来源 映射,
+        // 请求路径是黑名单来源的改名/拷贝目标时整体拒绝(检测经
+        // --find-renames/--find-copies 在命令行强制,仓库 diff.renames
+        // 配置拆不散改名对)。改名对之外的无对形状属共享策略已记录的同名
+        // 别名残余——git 不再持有可追随的
         // 链接,字节已落在一个真实的清白命名文件里,与 cp+add 及 agent
         // 自行写入任意内容不可区分:cp+add、相似度低于检测阈值的改写
         // (Round-9 已记),以及两个最顺手到达的无对形状——纯 `mv` 后
         // `D .env|?? innocent.txt`、只 add 目的地侧的
-        // `D .env|A innocent.txt`(改写对只存在于 index-vs-HEAD,-z 解析
+        // `D .env|A innocent.txt`(改写对只存在于 index-vs-HEAD,无对时
         // 看不到配对)。关闭它们需要内容检查,超出本车道词法策略的范围
         // (Round-10 复审 minor:补记形状)。case 不敏感文件系统上的
         // Linux(非默认挂载)同理:字节精确解析腿会放行 `.ENV` 拼写
@@ -1598,40 +1603,62 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
 /// `git status --porcelain=v1 -z` 里的 R/C 改名/拷贝对:目的地 → 来源。
 /// diff 车道据此拒绝黑名单来源的改名目的地(pathspec 限定目的地时
 /// `git diff --cached` 不做改名配对,旧 blob 会以「新文件」全文渲染,
-/// 见 workspace_diff 内的 Round-9 注释)。
+/// 见 workspace_diff 内的 Round-9 注释)。改名/拷贝对本就只存在于
+/// index-vs-HEAD,故映射直接取自 `diff --cached --name-status -z`:
+/// Round-11 复审 MAJOR——原先为取同一批 R/C 记录跑整仓
+/// `git status --porcelain`,把工作区+未跟踪全量遍历加到了每次 diff
+/// 缓存未命中上(活跃仓库里几乎每次查看差异都是未命中,10k 文件仓库
+/// 单次冷 status 约 0.3-2s)。`--find-renames`/`--find-copies` 在命令
+/// 行强制开启,不随仓库 diff.renames 配置漂移(与 changes 车道的
+/// status.renames 强制同理)。未出生 HEAD 下 git 与空树比较,命令照常
+/// 成功(此时不可能存在改名对,空映射即正确)。diff 输出的路径分量分
+/// 隔符在所有平台都是 `/`(status 的 Windows 反斜杠怪癖不适用于
+/// diff),`-z` 下不做 quotePath 转义。
 fn git_staged_rename_origins(root: &Path) -> Result<HashMap<String, String>> {
     let mut command = crate::platform::process::HiddenCommand::new("git");
     crate::platform::process::strip_git_override_env(&mut command);
     let output = command
         .current_dir(root)
-        // 与 git_status_entries 同理:改名检测强制开启,不随仓库配置漂移。
-        .args(["-c", "status.renames=true", "status", "--porcelain=v1", "-z", "--", "."])
+        .args([
+            "diff",
+            "--cached",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+            "--",
+        ])
         .output()
-        .context("执行 git status 失败")?;
+        .context("执行 git diff 失败")?;
     if !output.status.success() {
         bail!(
-            "git status 失败: {}",
+            "git diff 失败: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let records = output.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
+    let fields = output.stdout.split(|byte| *byte == 0).collect::<Vec<_>>();
     let mut origins = HashMap::new();
     let mut index = 0;
-    while index < records.len() {
-        let record = records[index];
+    while index < fields.len() {
+        let status = fields[index];
         index += 1;
-        if record.len() < 4 {
+        if status.is_empty() {
             continue;
         }
-        let is_rename =
-            matches!(record[0] as char, 'R' | 'C') || matches!(record[1] as char, 'R' | 'C');
-        if is_rename && index < records.len() {
-            let destination = porcelain_record_path(record);
-            let origin = porcelain_origin_path(records[index]);
-            index += 1;
+        // 改名/拷贝记录 `R100\0<origin>\0<dest>\0`:diff 的 -z name-status
+        // 是来源在前、目的地在后(实测 `git mv a/.env a/innocent.txt` 输出
+        // `R100\0a/.env\0a/innocent.txt`),与 porcelain 的
+        // `R  dest\0origin` 两段顺序恰好相反,易踩。其余状态码
+        // (A/M/D/T/…)各带一个路径字段,原样跳过。
+        if matches!(status[0] as char, 'R' | 'C') && index + 1 < fields.len() {
+            let origin = porcelain_origin_path(fields[index]);
+            let destination = porcelain_origin_path(fields[index + 1]);
+            index += 2;
             if !destination.is_empty() && !origin.is_empty() {
                 origins.insert(destination, origin);
             }
+        } else {
+            index += 1;
         }
     }
     Ok(origins)
@@ -2747,6 +2774,76 @@ mod tests {
             .err()
             .expect("staged directory expansion with unborn HEAD must be refused");
         assert!(error.to_string().contains("文件路径"), "got: {error}");
+    }
+
+    /// Round-11 复审 BLOCKER:同名文件换目录的形状——`rm -rf src &&
+    /// echo x > src` 让 path 存在且非目录,展开检查原以 `!path.exists()`
+    /// 为门,整个检查被跳过,而泄露在 index/HEAD 侧:pathspec 照样按目
+    /// 录前缀展开出 `src/.env` 的删除补丁(旧凭据字节渲染成 `-` 行)。
+    /// 展开检查必须无条件执行(到达此处 path 已必非目录,门没有正确性
+    /// 收益);已暂存臂(--cached 渲染 HEAD 侧删除)同一拒绝。
+    #[test]
+    fn workspace_diff_refuses_directory_replaced_by_same_name_file() {
+        let repo = TestDir::new("dir-swap-r11");
+        run_git(repo.path(), &["init", "-b", "main", "."]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        fs::create_dir_all(repo.path().join("src")).unwrap();
+        fs::write(repo.path().join("src/.env"), "AWS_SECRETKEY=supersecret\n").unwrap();
+        fs::write(repo.path().join("src/innocent.txt"), "hello\n").unwrap();
+        run_git(repo.path(), &["add", "src/.env", "src/innocent.txt"]);
+        run_git(repo.path(), &["commit", "-m", "init"]);
+
+        // 未暂存换形:目录变同名文件,worktree 侧 path 存在。
+        fs::remove_dir_all(repo.path().join("src")).unwrap();
+        fs::write(repo.path().join("src"), "payload\n").unwrap();
+        let error = workspace_diff("dir-swap", repo.path(), "src")
+            .err()
+            .expect("a directory replaced by a same-name file must still be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // 已暂存换形:HEAD 侧的删除补丁(--cached 臂)同一拒绝。
+        run_git(repo.path(), &["add", "src"]);
+        let error = workspace_diff("dir-swap-staged", repo.path(), "src")
+            .err()
+            .expect("a staged directory-replaced-by-file pathspec must still be refused");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // 对照一:reset 后 index/HEAD 仍把 src 记作目录(index 里存活
+        // src/.env),对「src」的请求在未暂存臂同样会展开出凭据删除补丁
+        // (`-AWS_SECRETKEY=…` 行),维持拒绝。
+        run_git(repo.path(), &["reset", "-q"]);
+        let error = workspace_diff("dir-swap-reset", repo.path(), "src")
+            .err()
+            .expect("a swapped pathspec must stay refused while the index still tracks the old directory");
+        assert!(error.to_string().contains("文件路径"), "got: {error}");
+
+        // 对照二:清白新文件的 diff 照常工作(展开检查两表恰含自身)。
+        fs::write(repo.path().join("docs.txt"), "visible\n").unwrap();
+        let diff = workspace_diff("dir-swap-file", repo.path(), "docs.txt").unwrap();
+        assert!(diff.text.contains("+visible"), "got: {}", diff.text);
+        assert!(!diff.text.contains("AWS_SECRETKEY"), "got: {}", diff.text);
+    }
+
+    /// Round-11 复审 MAJOR(判别钉):diff 车道的改名映射取自
+    /// `diff --cached --name-status`,检测在 spawn 层用
+    /// --find-renames/--find-copies 强制,仓库配置 diff.renames=false
+    /// 不得拆散改名对(与 changes 车道 status.renames 强制同理)。
+    #[test]
+    fn workspace_diff_rename_map_forces_detection_despite_diff_renames_config() {
+        let repo = TestDir::new("rename-diff-cfg-r11");
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["config", "user.name", "test"]);
+        run_git(repo.path(), &["config", "user.email", "test@example.com"]);
+        run_git(repo.path(), &["config", "diff.renames", "false"]);
+        fs::write(repo.path().join(".env"), "AWS_SECRETKEY=supersecret\n").unwrap();
+        run_git(repo.path(), &["add", ".env"]);
+        run_git(repo.path(), &["commit", "-m", "init"]);
+        run_git(repo.path(), &["mv", ".env", "harmless.txt"]);
+        let error = workspace_diff("rename-cfg-r11", repo.path(), "harmless.txt")
+            .err()
+            .expect("a blocked rename must be refused even with diff.renames=false");
+        assert!(error.to_string().contains("凭据"), "got: {error}");
     }
 
     /// Round-9 复审 minor:列表车道的解析腿判别钉——「链接名清白」的

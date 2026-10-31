@@ -502,7 +502,10 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
         // 待吊销记录(隔离副本只留证据,不会被自动重放),旧 endpoint 将在
         // relay 侧保持可加入——正是本分支要避免的结局。空抢救集按空账本
         // 语义移除已隔离的路径,避免下一次 load 重复走隔离。落盘失败则
-        // 降级为内存态(与原行为一致),由后续 queue/ack 的写入自愈。
+        // 降级为内存态:本进程内由回放的权威账本
+        // (`pending_revocation_backlog`)接住,确认针对它整体落盘即可重建
+        // 盘上账本;进程在此之前重启则这批条目已不可恢复(与崩溃窗口同
+        // 级残余,Round-11 复审 minor 补记)。
         if let Err(persist_error) = persist_pending_revocations_to(path, &salvaged) {
             eprintln!(
                 "[web-access] failed to persist salvaged pending revocations: {persist_error}"
@@ -571,8 +574,11 @@ pub(super) fn queue_pending_revocation_at(
     persist_pending_revocations_to(path, &ledger)
 }
 
-pub(super) fn acknowledge_pending_revocation(pending: &PendingRevocation) -> Result<(), String> {
-    acknowledge_pending_revocation_at(&pending_revocations_path(), pending)
+/// Round-11 复审 minor:回放确认的落盘原语——把调用方持有的权威账本
+/// (进程内 backlog)整体写盘,取代「重读磁盘→删一条→重写」;语义见
+/// manager `finish_pending_revocation`。空集移除文件(与 `_to` 一致)。
+pub(super) fn persist_pending_revocations(ledger: &PendingRevocationLedger) -> Result<(), String> {
+    persist_pending_revocations_to(&pending_revocations_path(), ledger)
 }
 
 pub(super) fn acknowledge_pending_revocation_at(

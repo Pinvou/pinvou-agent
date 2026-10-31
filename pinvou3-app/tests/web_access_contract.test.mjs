@@ -131,6 +131,29 @@ function rustCommandBlock(source, command) {
   return source.slice(start, next === -1 ? source.length : next);
 }
 
+// Round-11 复审 M4:web_access_* 管理命令的桌面专用反钉收敛为单一清单。
+// 命名空间约定:web_access_* 一律管理面(端点生命周期、配对状态、RPC 代
+// 理、bridge 就绪),除 web_access_list_host_files 外全部不进 Web 策略。
+const desktopOnlyWebAccessCommands = [
+  'web_access_enable',
+  'web_access_disable',
+  'web_access_status',
+  'web_access_rotate',
+  'web_access_revoke_host_workspace',
+  'web_access_relay_settings',
+  // Round-10 复审 minor:主 WebView 事件通道同样管理专用——进 Web 策略的
+  // 话手机可经 RPC→bridge invoke 触发 publish_frontend_event(只过
+  // policy.events 允许名单,可伪造允许事件);缺席即全部防线。
+  'web_access_publish_event',
+  // Round-11 复审 M4:RPC 代理与 bridge 就绪命令——各自 doc comment 声明
+  // desktop-only,但此前不在任何反钉/门钉清单,把它们加进 access-policy
+  // 或删掉其 require_main_webview 门都静默全绿(rpc_begin/rpc_respond 的
+  // 策略侧防线即全部防线:relay 路径的执行窗口本就是 main)。
+  'web_access_bridge_ready',
+  'web_access_rpc_begin',
+  'web_access_rpc_respond',
+];
+
 for (const command of [
   'chat',
   'ingest_file',
@@ -174,15 +197,11 @@ for (const command of [
   // access-policy.json」静默通过全部测试。(web_access_list_host_files
   // 有意留在 Web 策略内——手机文件选择器的 RPC 由主 WebView 派发,不在
   // 本反钉清单;require_main_webview 门在命令层单独拦 aux webview。)
-  'web_access_disable',
-  'web_access_status',
-  'web_access_rotate',
-  'web_access_revoke_host_workspace',
-  'web_access_relay_settings',
-  // Round-10 复审 minor:主 WebView 事件通道同样管理专用——进 Web 策略的
-  // 话手机可经 RPC→bridge invoke 触发 publish_frontend_event(只过
-  // policy.events 允许名单,可伪造允许事件);缺席即全部防线。
-  'web_access_publish_event',
+  // Round-11 复审 M4:web_access_* 管理命令收敛为单一清单,下方结构性
+  // 互斥钉按它判「其余命令」——清单与 Web 策略的并集必须覆盖
+  // remote_control.rs 里定义的每一个 web_access_* 命令,新增命令不加进
+  // 任一侧即红(结构性漏网:rpc 代理三兄弟、bridge_ready 由此兜住)。
+  ...desktopOnlyWebAccessCommands,
   // 上传包展示名/说明编辑写 bundles.json 并可能回写 SKILL.md：写操作桌面专用。
   'update_bundle_display_meta',
   // 回收站恢复/彻底删除与两种包导出都是桌面端写操作（原生保存对话框 + 文件系统
@@ -204,6 +223,43 @@ for (const command of [
   'check_dependencies',
 ]) {
   assert.equal(allowed.has(command), false, `${command} must remain desktop-only`);
+}
+
+// Round-11 复审 M4:结构性互斥钉——remote_control.rs 里定义的每一个
+// web_access_* 命令必须要么在 Web 策略里(受 positive wrapper 钉约束),
+// 要么在上面的桌面专用反钉清单里。手工反钉清单的结构性漏网
+// (web_access_bridge_ready / web_access_rpc_begin / web_access_rpc_respond
+// 曾三个全漏)由本钉永久兜住:任何新 web_access_* 命令不加进任一侧即红。
+{
+  const defined = new Set();
+  for (const match of remoteControlCommands.matchAll(/pub(?:\([\w:]+\))? (?:async )?fn (web_access_\w+)\(/g)) {
+    defined.add(match[1]);
+  }
+  assert.ok(defined.size >= 50,
+    `expected the full web_access_* command surface, found ${defined.size}`);
+  for (const command of defined) {
+    assert.ok(
+      allowed.has(command) || desktopOnlyWebAccessCommands.includes(command),
+      `${command} must be either in the web policy or explicitly anti-pinned as desktop-only`,
+    );
+  }
+  for (const command of desktopOnlyWebAccessCommands) {
+    assert.ok(defined.has(command),
+      `${command} is anti-pinned but no longer defined in remote_control.rs`);
+  }
+}
+
+// Round-11 复审 M4:事件半边的反钉——web_access:* 事件全部管理专用
+// (status 携带配对 URL/QR,rpc_request 携带代理命令与参数,
+// event_subscribe 是订阅控制)。结构化扫描 Rust 管理器与 JS 桥里的
+// web_access:* 字面量:任何一个都不允许出现在 Web 策略事件名单里,
+// 新增同名事件即被扫进(此前事件半边没有任何反向钉)。
+for (const source of [remoteControlManager, desktopRemoteControlBridge]) {
+  for (const match of source.matchAll(/"web_access:([a-z_]+)"/g)) {
+    const eventName = `web_access:${match[1]}`;
+    assert.equal(allowedEvents.has(eventName), false,
+      `${eventName} is a management channel and must never enter the web event policy`);
+  }
 }
 
 // 知识库批量导入的进度查看与继续/取消/重试/失败文件分页是一组协同命令：Web 端知识库
@@ -323,6 +379,10 @@ for (const command of [
   'web_access_chat',
   'web_access_list_sessions',
   'web_access_list_archived_sessions',
+  'web_access_create_session',
+  // Round-11 复审 M4:create_session 与 create_session_and_chat 同批——
+  // 它返回带 transcript revision 的会话元数据,静默移出策略会打断 Web
+  // 建会话与乐观并发令牌,且此前没有任何钉看到。
   'web_access_create_session_and_chat',
   'web_access_ingest_file',
   'web_access_upload_attachment_chunk',
@@ -1140,6 +1200,14 @@ assert.match(
   remoteControlCommands,
   /web_access_list_host_files\([\s\S]{0,400}require_main_webview\(&window\)\?/,
   'host filesystem browsing must stay main-WebView only',
+);
+// Round-11 复审 M4:publish_event 拿到了 Round-10 的策略反钉,但其主
+// WebView gate 行是管理命令里唯一没有 Round-8 同款 source-shape 钉的
+// ——门是桌面 aux WebView 侧的唯一防线(策略反钉护的是另一侧调用者)。
+assert.match(
+  remoteControlCommands,
+  /web_access_publish_event\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'the management event-publish channel must stay main-WebView only',
 );
 assert.match(remoteControlManager, /require_host_workspace_authorization\(endpoint\.config\.allow_host_workspace\)\?/,
   'workspace capabilities must fail closed until desktop authorization is persisted');
