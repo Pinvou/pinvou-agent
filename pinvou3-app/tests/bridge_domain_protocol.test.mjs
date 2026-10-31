@@ -242,7 +242,10 @@ const expectedProtocolHashes = {
   // listeners — chat:approval_required (approval card projection), 
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
   // (authoritative mode broadcast through applyAuthoritativeModeState).
-  chat: 'b0952ac80180966c89e2c263b5b9190b4c7f3e09fe9c248dab0100a3d4cd6572',
+  // Recomputed for the v3.5 fix wave: sessions.js materialization now also
+  // applies an explicit yolo/auto work-lane default via the existing
+  // set_session_mode command (no new command or event surface).
+  chat: '767d9494c5f450444c9e7f90226e64b38b935b3d7906ceb7d9a4b02ceb3eaffc',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -335,7 +338,10 @@ const expectedProtocolHashes = {
   // get_pending_approvals invoke (replayPendingApprovals re-projects pending
   // approval cards after a session switch, same recovery idea as
   // get_pending_user_inputs).
-  sessions: '7ca365ccf3cc2ef38b664bc86baae7fe372e6fcdf7f6523bb2efc0ece530eae2',
+  // Recomputed for the v3.5 fix wave: materialization applies an explicit
+  // yolo/auto work-lane default via the existing set_session_mode command
+  // (plan keeps set_plan_mode_next; no new command or event surface).
+  sessions: 'dd2f01ea3fe18e515456e13098b42afb49b1993a700c5a189a86cc9bff9ec2df',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.

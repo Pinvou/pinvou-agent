@@ -755,6 +755,7 @@ const ToolOutput = ({ item, t }) => {
         ? (item.statusLabel
           || (item.cardState === 'denied' ? t.approvalDenied
             : item.cardState === 'allowed_session' ? t.approvalAllowedSession
+            : item.cardState === 'cancelled' ? t.uiCancelled
             : t.approvalAllowed))
         : submitting ? t.approvalSubmitting
         : webReadOnly ? t.uiMultiAgent.webActionHint

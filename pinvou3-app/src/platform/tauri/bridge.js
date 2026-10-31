@@ -1216,19 +1216,22 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
   }
 
   // The draft-state (no active session) modeState: take the current lane's
-  // global default, falling back to yolo (aligned with the backend's plain
-  // default direction). Two-lane semantics (design merged into work, #428):
+  // global default. Two-lane semantics (design merged into work, #428):
   // the draft display = this lane's global default. A draft bound to a
   // workspace aligns with the code lane's safety posture: show the code
   // lane's global default, falling back to plan on first use (read-only is
-  // the safe side, same as the code page's draft fallback).
+  // the safe side, same as the code page's draft fallback). Unbound drafts
+  // fall back to auto (v3.5 reconciliation): that is what the backend
+  // resolves for a fresh unbound plain session (`resolved_default_mode`),
+  // so the chip no longer advertises Yolo for a session that will
+  // materialize in Auto.
   function currentDraftModeState() {
     const boundDraft = !!state.draftWorkspacePath;
     // Bound drafts always show the code lane default; unbound drafts follow the
     // current lane (design was merged into work, #428).
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
-    return { mode: d || (boundDraft ? "plan" : "yolo"), multiAgent: false };
+    return { mode: d || (boundDraft ? "plan" : "auto"), multiAgent: false };
   }
 
   // The mode a chat draft WILL run once a workspace pick binds it (review

@@ -1108,6 +1108,17 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       if (interrupted) preserveInterruptedAssistantPresentation();
       else flushAssistantMessageToHistory();
       sweepUnpairedToolMeta();
+      // tri-mode 审批卡终态清扫（与 toolMeta 未配对清扫同一口径）：turn 终态
+      // 时后端登记表已兜底清空（emit_chat_terminal → clear_pending），残留的
+      // active 卡点击只会得到 "approval not found"。终态卡就地落 cancelled，
+      // 不再可点（渲染层按 cardState 映射三语终态文案）。
+      state.chatItems.forEach(function (item) {
+        if (item && item.type === "approval" && !item.resolved) {
+          item.submitting = false;
+          item.resolved = true;
+          item.cardState = "cancelled";
+        }
+      });
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
       // skip artifacts already presented in this turn or changed repeatedly.

@@ -1639,12 +1639,15 @@ export function CodexAcpView({
       if (staged.mountedId != null) {
         await invoke('session_mount_collection', { sessionId, collectionId: staged.mountedId });
       }
-      // 暂存 mode 两个方向都要应用：默认可能是 plan（全局首次），也可能是 yolo
-      // （last_mode 记忆）；只设单方向会让反方向暂存静默失效。
+      // 暂存 mode 三个方向都要应用：plan（全局首次/last_mode 记忆）、yolo
+      // （last_mode 记忆）与 auto（tri-mode 逐项审批档）——只设部分方向会让
+      // 其余方向暂存静默失效（v3.5 补 auto：此前两分支漏掉逐项审批档）。
       if (staged.mode === 'plan') {
         await invoke('set_plan_mode_next', { sessionId });
       } else if (staged.mode === 'yolo') {
         await invoke('exit_plan_to_yolo', { sessionId });
+      } else if (staged.mode === 'auto') {
+        await invoke('set_session_mode', { sessionId, mode: 'auto' });
       }
       if (hasMultiAgentSelection) {
         await invoke('set_multi_agent_mode', {
@@ -1739,7 +1742,10 @@ export function CodexAcpView({
   /// 【确认】调 confirm_code_yolo 写入全局标志后按原路径切换；【取消】留在
   /// 当前 mode。确认是 UI 层语义，后端 exit_plan_to_yolo 不强制门控。
   async function switchNativeMode(target, { isPlan } = {}) {
-    if (target === 'yolo' && isPlan) {
+    // Yolo 一次性确认门对任何进入 Yolo 的切换生效（v3.5 修复：旧两态时代
+    // 门只挂在 plan→yolo 上；tri-mode 后 Auto → Yolo 不再绕道 Plan，
+    // 同一确认门必须覆盖直达路径）。Yolo→Yolo 由 chip 的同档早退拦下。
+    if (target === 'yolo') {
       const prefs = await refreshCodePermPrefs();
       if (needsYoloConfirmation(prefs)) {
         setPendingYoloSwitch({ draft: !activeId });
@@ -1772,6 +1778,11 @@ export function CodexAcpView({
         await invoke('set_plan_mode_next', { sessionId: activeId });
       } else if (target === 'yolo' && isPlan) {
         await invoke('exit_plan_to_yolo', { sessionId: activeId });
+      } else if (target === 'yolo') {
+        // Auto → Yolo（v3.5：旧代码此分支缺失，Yolo 点击静默落空）：统一走
+        // set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
+        // 确认门已在 switchNativeMode 施加。
+        await invoke('set_session_mode', { sessionId: activeId, mode: 'yolo' });
       } else if (target === 'auto') {
         // Auto（tri-mode 逐项审批档）：无一次性确认门（门只对 yolo）。
         // 统一走 set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
@@ -4404,6 +4415,7 @@ export function CodexAcpView({
                         busy={busy || working}
                         onSwitch={switchNativeMode}
                         askOnGuardrail={nativeAskOnGuardrail}
+                        askToggleDisabled={!activeId}
                         onToggleAskOnGuardrail={toggleNativeAskOnGuardrail}
                       />
                       {nativeModelChoices.length > 0 && (

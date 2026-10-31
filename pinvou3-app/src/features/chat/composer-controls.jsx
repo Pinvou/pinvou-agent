@@ -288,15 +288,18 @@ const ComposerKbSelector = ({
 };
 /* eslint-enable sonarjs/cognitive-complexity -- dense mounted-state normalization / explicit-lane branches; legacy view; tracked separately */
 
-// [plan/auto/yolo] composer 模式 chip（tri-mode 安全模型）：默认 Yolo，下拉可切
-// Auto（逐项审批）与 Plan（只读调研：底座 ReadOnly+只读工具集，调 update_plan
-// 出方案卡决策）。Auto/Yolo 激活时附会话级「守卫命中时询问」开关（askOnGuardrail；
-// 代码车道经显式 prop + 回调，聊天车道读 bs.modeState）。切换逻辑搬自旧 ModeHeader。
-const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, askOnGuardrail: askOnGuardrailProp, onSwitch, onToggleAskOnGuardrail }) => {
+// [plan/auto/yolo] composer 模式 chip（tri-mode 安全模型）：未绑定草稿兜底
+// Auto，下拉可切 Yolo（全自动，一次性确认门）与 Plan（只读调研：底座
+// ReadOnly+只读工具集，调 update_plan 出方案卡决策）。Auto/Yolo 激活时附
+// 会话级「守卫命中时询问」开关（askOnGuardrail；代码车道经显式 prop + 回调，
+// 聊天车道读 bs.modeState）。切换逻辑搬自旧 ModeHeader。
+const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, askOnGuardrail: askOnGuardrailProp, askToggleDisabled: askToggleDisabledProp, onSwitch, onToggleAskOnGuardrail }) => {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef(null);
   // 显式会话态驱动（代码车道）优先；否则读 bridge 聊天 active 的 mode/busy。
-  const ms = modeProp == null ? ((bs && bs.modeState) || { mode: 'yolo' }) : { mode: modeProp };
+  // 兜底 auto：与 currentDraftModeState / 后端 resolved_default_mode 的未绑定
+  // 默认一致（旧字面量 yolo 高估了新会话的自动驾驶程度）。
+  const ms = modeProp == null ? ((bs && bs.modeState) || { mode: 'auto' }) : { mode: modeProp };
   const activeMode = ms.mode === 'plan' ? 'plan' : ms.mode === 'auto' ? 'auto' : 'yolo';
   const isPlan = activeMode === 'plan';
   const busy = busyProp === undefined ? (bs && bs.busy) : busyProp;
@@ -364,7 +367,8 @@ const ComposerModeChip = ({ t, bs, compact, mode: modeProp, busy: busyProp, askO
             {showAskToggle && (
               <>
                 <div className="h-px bg-black/5 dark:bg-white/10 my-1.5 mx-2" />
-                <button type="button" data-testid="ask-on-guardrail-toggle" onClick={toggleAskOnGuardrail} disabled={typeof onToggleAskOnGuardrail !== 'function'}
+                <button type="button" data-testid="ask-on-guardrail-toggle" onClick={toggleAskOnGuardrail}
+                  disabled={typeof onToggleAskOnGuardrail !== 'function' || !!askToggleDisabledProp}
                   title={t.modeAskOnGuardrailDesc}
                   className="w-full flex items-center justify-between px-3 py-2.5 text-[13px] rounded-xl text-gray-700 dark:text-gray-200 hover:bg-black/[0.045] dark:hover:bg-white/[0.07] transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                   <span className="flex flex-col items-start min-w-0">

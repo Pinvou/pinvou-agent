@@ -332,7 +332,8 @@ try {
   assert.doesNotMatch(view, /\|\| 'yolo'/, '不再有 || yolo 兜底');
 
   // ── tri-mode：auto 目标永不弹一次性确认门（门只对 yolo）─────────────
-  // switchNativeMode 的确认门必须钉在 yolo+plan 分支内；auto 分支直调
+  // switchNativeMode 的确认门钉在 yolo 分支上（v3.5：不再绑定 isPlan——
+  // Auto→Yolo 直达同过一门，不再绕道 Plan）；auto 分支直调
   // set_session_mode，不经门。取两个函数之间的源码切片做范围断言。
   {
     const gateBody = view.slice(
@@ -342,12 +343,17 @@ try {
     assert.ok(gateBody.includes('async function switchNativeMode'), '切片必须命中 switchNativeMode');
     assert.match(
       gateBody,
-      /if \(target === 'yolo' && isPlan\) \{[\s\S]*?needsYoloConfirmation\(prefs\)/,
-      '一次性确认门必须钉在 yolo+plan 分支内（auto 目标不得过门）',
+      /if \(target === 'yolo'\) \{[\s\S]*?needsYoloConfirmation\(prefs\)/,
+      '一次性确认门钉在 yolo 分支（对 plan/auto 来路一致生效）',
     );
     const performBody = view.slice(
       view.indexOf('async function performNativeModeSwitch'),
       view.indexOf('async function confirmPendingYoloSwitch'),
+    );
+    assert.match(
+      performBody,
+      /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,300}?\} else if \(target === 'yolo'\) \{[\s\S]{0,300}?invoke\('set_session_mode', \{ sessionId: activeId, mode: 'yolo' \}\)/,
+      'Auto→Yolo 直达分支存在（旧代码缺失，Yolo 点击静默落空）',
     );
     assert.match(
       performBody,
