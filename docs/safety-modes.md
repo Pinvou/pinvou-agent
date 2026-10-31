@@ -36,6 +36,10 @@
 - Auto 是新工作车道（未绑定 plain 会话）的默认；code 会话与绑定工作区的 plain
   会话默认跟随 `code_permission.last_mode`（从未用过 → Plan）。安全姿态跟随
   工作区绑定，不跟随会话名。
+- 模式切换（桌面双车道）：任一档位进入 Yolo 都过同一条一次性确认门
+  （`chatYoloGateAllows` / 原生车道 `needsYoloConfirmation`）——Plan 退回走
+  `exit_plan_to_yolo`，Auto 直达走 `set_session_mode(yolo)`，不存在静默落空的
+  切换路径；进入 Auto/Plan 不过门。草稿态（尚无会话）守卫开关禁用。
 - Plan 流程交接（出方案 → accept → 回到进入 Plan 前的 mode）复用底座原生闭环，
   app 不自建 phase 状态机；见第 6 节 `pre_plan_mode`。
 
@@ -45,11 +49,12 @@
 
 - **默认开**。新会话的开关从全局偏好 `code_permission.ask_on_guardrail_default`
   （settings.json，默认 true）播种；`_ask_on_guardrail.json` 侧车里的显式覆盖
-  优先。只有物化了 mode 状态的会话才有独立开关；无条目会话跟随全局默认，且
-  单独翻开关不会为不存在的条目铸造 mode（不借此钉死 mode）。侧车是
-  `HashMap<String, bool>` 显式覆盖表，与 mode 共用同一 io 互斥、原子写
-  （`features/sessions/mode_state.rs`）；落盘失败只记日志不打断交互——内存
-  切换已生效；中断写入留不下截断文件，损坏文件在装载时静默跳过。
+  优先。尚无 mode 条目的会话翻开关：选择落侧车 + 内存覆盖镜像（不借此钉死
+  mode），后续物化（模式写入铸条目）与重启经播种点（`ask_on_guardrail_seed`）
+  继承该选择——显式覆盖永不静默丢弃。侧车是 `HashMap<String, bool>` 显式覆盖
+  表，与 mode 共用同一 io 互斥、原子写（`features/sessions/mode_state.rs`）；
+  落盘失败只记日志不打断交互——内存切换已生效；中断写入留不下截断文件，
+  损坏文件在装载时静默跳过。会话删除/驱逐时侧车条目随保留策略一并清除。
 - 写路径统一过存在性门（id 形状 + 会话存在，`ensure_mode_target_session`），
   防 IPC 直调给任意 id 铸条目/写侧车。
 
@@ -112,17 +117,22 @@
 底座对可提示工具发 `Event::ApprovalRequired` 后，转发器不再无条件自动批准，
 而是经纯函数 `approval_surface_decision`
 （`pinvou3-app/src-tauri/src/features/assistant/pending_approvals.rs`）定序，
-分支顺序镜像 TUI `resolve_approval_request_disposition`：
+以 TUI `resolve_approval_request_disposition` 为基础、Plan 防御臂有意更严：
 
 ```text
 会话拒绝缓存命中（exact approval_key）        → Deny(session_denied)
-会话授予缓存命中（grouping_key）且非 force_prompt → ApproveSilently（不发事件）
 Plan                                          → Deny(plan_mode)
+会话授予缓存命中（grouping_key）且非 force_prompt → ApproveSilently（不发事件）
 force_prompt（非旁路 hold）                    → ShowCard
 Yolo 且开关关                                  → Deny(guardrail_ask_off)
 其余（Yolo 开关开 / Auto）                     → ShowCard
 ```
 
+- 缓存读路径带会话维度：授予/拒绝是**会话级**记忆，A 会话的授予/拒绝不得
+  跨会话放行/连坐 B 会话（有跨会话负测试钉）。
+- Plan 防御臂先于授予缓存（与 TUI legacy 顺序的有意分歧）：TUI 的 Plan 流
+  从不产生审批事件；宿主侧 turn 中途可能切到 Plan，旧授予若仍静默放行，
+  「Plan=只读」就被缓存击穿。硬拒方向 fail-safe 且零成本。
 - 硬拒调 `deny_tool_call` 并广播 `chat:guardrail_denied`，`reason` 是稳定英文
   键（`session_denied` / `plan_mode` / `guardrail_ask_off`），前端 i18n 按键
   映射三语文案；payload 不带 input 原文，避免敏感参数进事件流。
@@ -141,16 +151,20 @@ ApprovalCard 三个决策走 `decide_approval` 命令（`app/commands/interactio
 | 本会话允许（allow_for_session） | lossy `approval_grouping_key` | 覆盖后续旗标变体（v0.8.37 语义） |
 | 拒绝（deny） | exact `approval_key` | 换一个参数要重新请批，不连坐（#1617 语义） |
 
-任何决策都先摘除挂起登记（engine 侧审批 id 随调用消亡，卡不得残留），再写缓存
-并回传 engine。授权/拒绝缓存镜像 TUI 的作用域语义，两类缓存互不串作用域；
-`clear_session` 只摘除本会话份额，不误撤销其他会话的授予。
+任何决策都先校验 decision 值（摘除登记不可逆，非法值原样 Err 不留痕迹），再
+摘除挂起登记（engine 侧审批 id 随调用消亡，卡不得残留），engine 调用**成功后**
+才写缓存——失败的点击不得替用户放行/拒绝后续同族调用。授权/拒绝缓存镜像
+TUI 的作用域语义且**按会话隔离**（跨会话不得互相放行/连坐），两类缓存互不串
+作用域；`clear_session` 只摘除本会话份额，不误撤销其他会话的授予。
 
 ### 4.3 登记簿生命周期
 
-- 挂起与两类缓存全部驻内存：进程重启后 engine lazy spawn，缓存随进程消亡，
-  无需持久化。turn 终态 `clear_session` 兜底清空该会话的挂起 + 授予 + 拒绝
-  （取消/中断时可能没有逐条决策）——授予/拒绝是 turn 级记忆，下一次 turn
-  重新请批。
+- 全部驻内存：进程重启后 engine lazy spawn，缓存随进程消亡，无需持久化。
+  turn 终态 `clear_pending` 兜底清空该会话的**挂起卡**（取消/中断时可能没有
+  逐条决策）；授予/拒绝是**会话级记忆，跨 turn 存活**（「本会话允许」的语义，
+  与 TUI 一致：TUI 只在换会话/换工作区时清），随会话删除在会话清理处理器经
+  `clear_session` 摘除。前端 turn 终态同步把未决策的审批卡就地落为终态
+  （cancelled），不再可点。
 - 前端 remount / 切回会话时经 `get_pending_approvals` 重放审批卡（与
   `get_pending_user_inputs` 同一还原思路）；事件侧按 `approval_id` 幂等去重，
   后端同 id 重放原位替换、不重复出卡。
@@ -173,6 +187,11 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   发出的规则保持 typed `Deny`，命中的族在一切审批姿态下照旧短路。武装会话对
   拒绝面的「弹卡还是静默拒」由底座 deny face 的武装映射决定（3.3 第 5 条），
   与 profile 正交。
+- **敏感/底线分族按语义不按拼写**（v3.5）：解析 `C:\Users\me\...` 拼写的逐凭据
+  **直传**面归敏感族（Full-only），与 `~`/`%userprofile%` 拼写的同族一致——
+  此前它随解析宿主家族落在 Floor，使 Yolo 姿态取决于模型恰好写出哪种拼写。
+  销毁面与裸根（整目录/整 profile）直传面在一切拼写上保持 Floor（与字面前缀
+  族的既定取舍一致，测试钉）。
 - Floor 缺敏感族是产品意图：Yolo 用敏感 deny 面换武装卡，只留「永远不合理」
   的底线（mkfs 全盘、sudoers 写等）。Yolo 会话因此确实失去了敏感族的机械门，
   这是有意的取舍而非疏漏。
@@ -195,7 +214,9 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   accept_plan 后回到它（fallback Auto）并经同一发布序列热同步；仅驻内存——
   重启后的 Plan 会话经 `resolved_default_mode` 重新解析，不把进程相对值钉进
   sidecar。headless 路径（`set_mode_and_persist`）要求落盘成功，Plan → Yolo
-  的重开漂移按失败 run 处理。
+  的重开漂移按失败 run 处理。首次模式写入即 Plan 的未物化会话，铸条目按
+  `resolved_default_mode` 解析（而非历史 Yolo 哨兵），accept 回到 chip 显示
+  过的默认（Auto）——有行为测试钉。
 - **`SerializableMode::Auto` 向后兼容**：旧侧车里的 `"plan"/"yolo"` 照常反序
   列化；`"auto"` 只由新二进制写入，旧二进制读到会整表回退 boot 缓存
   （`durable_mode_entry` 既定语义：一次性陈旧、无数据丢失）。
@@ -204,7 +225,7 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
 | 会话形态 | 默认 |
 |---|---|
 | code 会话 / 绑定工作区的 plain 会话 | `code_permission.last_mode`（None → Plan） |
-| 未绑定 plain 会话（工作车道） | Auto（前端在会话物化时套用 work 车道全局默认） |
+| 未绑定 plain 会话（工作车道） | Auto；显式选择的 work 车道全局默认（plan/yolo/auto）由前端在会话物化时套用为该会话自己的记录 |
 | 无人值守定时引擎 | 交互审批面不适用；规则档恒 Full（第 5 节） |
 
 ## 7. 模型知情（authority transition）
