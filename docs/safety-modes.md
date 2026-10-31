@@ -80,11 +80,18 @@
 5. **execpolicy 拒绝面**（denied prefixes + typed denies，匹配语义原样）：
    升级为携带匹配证据的审批。
 
+   以上武装豁免只在**可弹卡姿态**（Full Access / auto-approve）生效：Auto-Review
+   与 Never 在全部面上无条件保持拒绝——无人能应答的卡不会升起（评审修复
+   `04c1f7843` 在 deny face / repo-law / escalation 三处显式排除这两个姿态）；
+   武装 escalation 卡携带模型 justification。
+
 ### 3.4 不变式（什么不变）
 
 - **未武装逐字节等同**：`ask_on_guardrail=false`（默认）时全部守卫面与旗标前
   doctrine 逐字节一致，既有 fail-closed pin 原样绿。
-- **Never 姿态无论武装与否一律拒绝**；Auto-Review 的确定性拒绝同样无条件保留。
+- **Never 与 Auto-Review 姿态无论武装与否一律拒绝**：deny face、repo-law、
+  escalation 的武装豁免都显式排除这两个姿态（评审修复补齐），拒绝只在收据措辞
+  上可能有别，从不放行。
 - **确定性 allow/deny 永不弹卡**：定时任务无人值守的初始执行在转发器先行短路，
   按任务保存的批准策略确定性 auto-approve/deny（`forwarder.rs` 的
   `scheduled_tool_should_auto_approve` 分支，优先级原样保留）；它不走交互审批
@@ -92,9 +99,10 @@
   定时/多智能体会话与普通对话同序。
 - **composer `!` 不武装**：用户手敲的命令输入即批准（#5191），typed deny 仍
   硬拒，execpolicy/sandbox 仍是硬边界；武装只作用于模型来源调用。
-- **子代理镜像主线**：武装后 held-call 的守卫 hold 路由到父会话审批面（子代理
-  以 `waiting for user` 可见等待）；继承 auto-approve 的子代理对 delegated
-  typed-ask 也拒绝——子代理绝不静默执行武装主线要问的操作
+- **子代理镜像主线**：继承 auto-approve 的子代理对 delegated typed-ask 也
+  拒绝——子代理绝不静默执行武装主线要问的操作；held-call 的守卫 hold 路由臂
+  为 fail-safe 前瞻（Bypass 下 plan decision 把 built-in gate hold 收敛为
+  Block，今天实际可达的武装子代理面是 typed-ask 拒绝；评审修复如实标注）
   (`crates/tui/src/tools/subagent/mod.rs`)。
 
 ## 4. 审批面（interactive approval surface）
@@ -216,12 +224,14 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
 
 ## 8. 测试与登记
 
-- **底座**（CodeWhale#131）：本行为新增 13 条 `forkguard_` pin——提交
-  `998ffe27e` 7 条 + 复审加固 6 条，逐条钉住上述五个武装面、Never 恒拒、
-  授予缓存不可静默消费武装 hold、composer 不武装、子代理两个镜像面、transition
-  渲染/折叠/预览一致与武装不可回滚。forkguard 行为名总数 255 → 268；门禁命令
+- **底座**（CodeWhale#131）：本行为新增 14 条 `forkguard_` pin——提交
+  `998ffe27e` 7 条 + 复审加固 6 条 + 评审修复 1 条，逐条钉住上述五个武装面、
+  Auto-Review/Never 恒拒、授予缓存不可静默消费武装 hold、composer 不武装、
+  子代理两个镜像面、transition 渲染/折叠/预览一致与武装不可回滚。
+  forkguard 行为名总数 255 → 269；门禁命令
   `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`
-  （#131 提交时 247 过 / 0 挂，既有 fail-closed pin 原样绿）。13 条逐名：
+  （评审修复头 `04c1f7843` 实测 254 过 / 0 挂，既有 fail-closed pin 原样绿）。
+  14 条逐名：
   `forkguard_armed_full_access_forced_hold_resolves_to_prompt`、
   `forkguard_armed_full_access_hold_prompts_instead_of_blocking`、
   `forkguard_armed_repo_law_hold_prompts_instead_of_blocking`、
@@ -234,7 +244,10 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
   `forkguard_turn_meta_authority_transition_renders_only_on_change`、
   `forkguard_live_turn_meta_builder_reads_the_pending_transition`、
   `forkguard_preview_manifest_hashes_the_same_authority_transition_line_the_wire_sends`、
-  `forkguard_apply_change_mode_status_suffixes_report_the_arming_change`。
+  `forkguard_apply_change_mode_status_suffixes_report_the_arming_change`、
+  `forkguard_turn_start_detector_records_the_posture_and_renders_the_transition_once`
+  （评审修复新增，逐字节咬住 detector 的记录与一次性消费；deny-face 钉扩展
+  Auto-Review 恒拒面）。
 - **应用侧**：`forkguard_approval_surface_record_dedupes_by_approval_id` /
   `_remove_returns_entry_and_cleans_empty_session` /
   `_grant_and_denial_scoping` / `_clear_session_wipes_memory` /
