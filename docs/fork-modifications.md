@@ -73,7 +73,7 @@
 - 公开维护头仍为 `f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28 收口，#114 已合入为 `fe90f72f9`、#125 为 `f1eb10efc`），自那未动；本 PR 处于候选期——父仓 gitlink 与 `scripts/fork-guard.sh` 的 `EXPECTED_HEAD` 领先公开维护头，指向评审候选 `04c1f7843df8859bf68e02284ff6a3a5fed44081`（CodeWhale #131，基于 `f1eb10efc`）。公开维护分支未推进。
 - 实测历史：公开维护分支为上游 v0.9.12 `dcd4c200f` 之上 86 个提交、84 个带 DCO sign-off（未签名的 squash 仍是 #107 `f27672935` 与 #116 `e9a7f48da1`）；候选 `04c1f7843` 为 89 个提交、87 个带 sign-off，新增的 3 个提交即 #131 评审史（已登记单提交 `998ffe27e` + 复审加固 `41eab46f2` + 评审修复 `04c1f7843`），未签名例外不变。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件；候选窗口内 `scripts/verify-public-submodule.sh` 刻意保持红（它断言 gitlink 等于 `pinvou3-clean` 远端维护头，仍为 `f1eb10efc`），本树以 `fork-guard.sh --fast`（第 0+1 层）绿为凭据，#131 合入后的登记批把 `EXPECTED_HEAD` 与 gitlink 重钉到 squash 并恢复门禁绿。
-- 实测 drift（`dcd4c200f..04c1f7843`）：526 files, +93516/-39313，净增 54203；269 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift（`dcd4c200f..04c1f7843`）：526 files, +93516/-39313，净增 54203；269 个独立 `forkguard_*` 行为名（登记下限仍为 64）。`fork-guard.sh --fast`（第 0+1 层）在以该候选检出的树上为绿（本地子模块停留在等树的本地重建提交，第 0 层仅在实际检出 `04c1f7843` 时为绿）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
 ### 2026-10-23 批次维护集成（#115/#116/#117）
 
