@@ -565,9 +565,11 @@ pub(crate) fn emit_chat_terminal(
 ) {
     // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
     crate::features::assistant::pending_user_input::clear_session(session_id);
-    // 审批卡同理：中断的 turn 里 engine 侧审批已随 turn 丢弃，挂起登记与
-    // 会话级授予/拒绝缓存一并兜底清空，残留卡不得跨 turn 存活。
-    crate::features::assistant::pending_approvals::clear_session(session_id);
+    // 审批卡同理：中断的 turn 里 engine 侧审批已随 turn 丢弃，挂起登记兜底
+    // 清空，残留卡不得跨 turn 存活。授予/拒绝是会话级记忆，**跨 turn 存活**
+    // （「本会话允许」的语义；TUI 同样只在换会话/换工作区时清）——它们随
+    // 会话删除在 lib.rs 会话清理处经 clear_session 摘除。
+    crate::features::assistant::pending_approvals::clear_pending(session_id);
     let payload = json!({
         "session_id": session_id,
         // Turn identity: terminal events must carry the generation so the

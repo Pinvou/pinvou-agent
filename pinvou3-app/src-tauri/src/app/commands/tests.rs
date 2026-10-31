@@ -3543,6 +3543,26 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
         assert!(write_at < publish_at, "{label}: write must precede publish");
     }
 
+    // v3.5（评审 minor-4）：set_plan_mode_next / exit_plan_to_yolo 与
+    // set_session_mode 过同一目标会话存在性门，且门在写库之前——这两个命令
+    // 远程可达，缺门即可为任意 id 铸 mode 条目 + sidecar。
+    for signature in [
+        "pub async fn set_plan_mode_next(",
+        "pub async fn exit_plan_to_yolo(",
+    ] {
+        let body = source
+            .split(signature)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{signature}: command body missing"));
+        let gate_at = body
+            .find("ensure_mode_target_session(")
+            .unwrap_or_else(|| panic!("{signature}: target-session gate missing"));
+        let write_at = body
+            .find(".set_mode(")
+            .unwrap_or_else(|| panic!("{signature}: store write missing"));
+        assert!(gate_at < write_at, "{signature}: gate must precede the store write");
+    }
+
     // accept_plan：发布必须紧跟 commit（claimed mode 在那里才最终落定），
     // 且失败只记日志不打断已提交的 turn。
     let body = source
@@ -3586,6 +3606,64 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
         guard.contains("if pool.handle_for(session_id).await.is_some()"),
         "the posture sync must stay gated on a live engine (no engine = no \
          emission trigger, next spawn arms the persisted posture)"
+    );
+    // v3.5（评审 minor-8）：引擎热同步失败不得吞掉 `chat:mode_changed`——
+    // store 写已落库，广播照发、错误只记日志；发布函数体内不得再出现把
+    // 同步错误 `?` 上抛的写法（上抛 = 前端回滚一个已持久化的切换）。
+    assert!(
+        !publish.contains("sync_engine_safety_posture(session_id, pool).await?"),
+        "a failed posture sync must be logged, not propagated (the store \
+         write already persisted; the next send re-derives the posture)"
+    );
+}
+
+/// v3.5（评审 minor-1/minor-2）：`decide_approval` 的副作用次序 —— decision
+/// 校验先于登记摘除（摘除不可逆，非法值必须原样 Err 不留任何痕迹），授予/
+/// 拒绝缓存在 engine 调用成功之后写入（失败的点击不得替用户放行/拒绝后续
+/// 同族调用）。命令体无法单测构造（EnginePool 句柄需运行时），按 repo 惯例
+/// 钉装配次序。
+#[test]
+fn decide_approval_side_effect_ordering_is_pinned() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("interaction.rs"));
+    let body = source
+        .split("pub async fn decide_approval(")
+        .nth(1)
+        .and_then(|rest| rest.split("pub async fn get_pending_approvals(").next())
+        .expect("decide_approval body");
+    let validate_at = body
+        .find("invalid decision")
+        .unwrap_or_else(|| panic!("decision validation missing"));
+    let remove_at = body
+        .find("pending_approvals::remove(")
+        .unwrap_or_else(|| panic!("registry removal missing"));
+    let approve_at = body
+        .find("approve_tool_call(")
+        .unwrap_or_else(|| panic!("engine approve call missing"));
+    let grant_at = body
+        .find("remember_grant(")
+        .unwrap_or_else(|| panic!("grant cache write missing"));
+    let deny_at = body
+        .find("deny_tool_call(")
+        .unwrap_or_else(|| panic!("engine deny call missing"));
+    let denial_at = body
+        .find("remember_denial(")
+        .unwrap_or_else(|| panic!("denial cache write missing"));
+    assert!(
+        validate_at < remove_at,
+        "decision must be validated before the irreversible registry removal"
+    );
+    assert!(
+        approve_at < grant_at && deny_at < denial_at,
+        "grant/denial caches must be written only after the engine call succeeded"
     );
 }
 

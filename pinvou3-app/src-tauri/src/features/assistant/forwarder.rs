@@ -883,16 +883,20 @@ pub(crate) fn spawn_event_forwarder(
                             ApprovalSurfaceDecision, approval_surface_decision,
                         };
                         let mode_state = store.mode_state(&session_id);
-                        // 分支顺序镜像 TUI resolve_approval_request_disposition：
-                        // 拒绝缓存(exact key) > 授予缓存(grouping key) > 三档 mode。
+                        // 分支顺序（见 approval_surface_decision 文档）：
+                        // 拒绝缓存(exact key) > Plan 防御 > 授予缓存(grouping key)
+                        // > 三档 mode。授予/拒绝读路径带 session 维度——缓存是
+                        // 会话级记忆，不得跨会话放行/连坐。
                         let decision = approval_surface_decision(
                             mode_state.mode,
                             mode_state.ask_on_guardrail,
                             approval_force_prompt,
                             crate::features::assistant::pending_approvals::session_granted(
+                                &session_id,
                                 &approval_grouping_key,
                             ),
                             crate::features::assistant::pending_approvals::session_denied(
+                                &session_id,
                                 &approval_key,
                             ),
                         );
