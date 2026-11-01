@@ -22,18 +22,26 @@ sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
 # access_token/refresh_token/authorization/bearer(整行小写后匹配,大小写不敏感)
 # 的行整行打码——等号、裸冒号、URL 查询串、大写 scheme 形态一并覆盖(host 对
 # 这些形态就是整行替换);其余行再按 JSON 字段形态打码 token 值。纵深防御。
+# 评审补充(与 dingtalk-smoke.sh 同口径):泛化 token 赋值形态(api_token=…、
+# 裸 token: …、token = …)同样整行打码——此前只认四个 host 标记,带 token
+# 字样的裸赋值键会漏进失败摘录。
 redact(){ awk '{ l=tolower($0)
-    if (l ~ /access_token|refresh_token|authorization|bearer/) print "[已脱敏:含凭证形状的整行]"
+    if (l ~ /access_token|refresh_token|authorization|bearer/ || l ~ /[a-z0-9_-]*token[a-z0-9_-]*[[:space:]]*[=:]/) print "[已脱敏:含凭证形状的整行]"
     else print }' | sed -E 's/[A-Za-z0-9_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z0-9_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
 
 # --- 定位 wecom-cli(与 dingtalk-smoke.sh 同口径) ---
+# 解析顺序(评审修正,应用管理资产优先):冒烟要验证的是应用按 connectors.lock.json
+# 安装并哈希校验过的 wecom-cli,不是 PATH 上恰好同名的二进制——陈旧/恶意的
+# PATH 项会遮住 lock 钉扎资产,让冒烟给「另一个二进制」发通过。顺序:应用版本
+# 目录 → 旧布局存量 → npm 全局 shim → PATH 仅作显式开发回退(选中即大声标注;
+# [1] 的版本下限对它照常把关)。
 # 应用按 connectors.lock.json 把 wecom-cli 落到版本目录 <数据根>/assets/cli/wecom-cli/<version>/
 # (paths.rs assets_cli_dir,数据根支持 PINVOU3_HOME 重定位;native_installer 用
 # connector_lock::executable_name,Windows 带 .exe);
-# 旧布局 <数据根>/connectors/<platform>/bin/ 只作存量回退;再退到 npm 全局 shim。
+# 旧布局 <数据根>/connectors/<platform>/bin/ 只作存量回退。
 # 只搜 PATH 会漏掉应用自己装的 CLI,并把用户引向 npm -g 自装——那正是
 # wecomcli-shared 技能禁止的路径(绕过 lock 钉扎,触发哈希不符重装循环)。
-CLI="$(command -v wecom-cli 2>/dev/null || true)"
+CLI=""
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*) PLAT=windows-x64; EXE=wecom-cli.exe ;;
   Linux)
@@ -70,15 +78,25 @@ fi
 [ -z "$CLI" ] && [ -n "$PLAT" ] && [ -f "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && [ -x "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && CLI="$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE"
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/wecom-cli.cmd" ] && CLI="$APPDATA/npm/wecom-cli.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/wecom-cli" ] && CLI="$HOME/AppData/Roaming/npm/wecom-cli"
+if [ -z "$CLI" ]; then
+  # PATH 只作开发回退(评审修正,与 dingtalk-smoke.sh 同口径):前面全是应用
+  # 管理的落盘位置;走到这里说明本机没有应用资产,开发机直装才用 PATH 上的
+  # 同名二进制,并大声标注来源——它不是 lock 钉扎的那个资产,版本下限检查
+  # [1] 对它照常把关。
+  CLI="$(command -v wecom-cli 2>/dev/null || true)"
+  [ -n "$CLI" ] && echo "注意: 使用 PATH 上的 wecom-cli(开发回退,非应用管理的 lock 钉扎资产): $CLI"
+fi
 if [ -z "$CLI" ]; then echo "找不到 wecom-cli(先在 Pinvou Agent 工具面板连接企业微信,应用会在线下载并校验;开发机自装时放进 PATH)"; exit 2; fi
 
 # 探测必须限时(与 dingtalk-smoke.sh 同口径):这一族 CLI 曾实测卡在网络/代理/
 # 无 TTY 提示上无限挂起,冒烟挂着不退出比红更糟。有 coreutils timeout 用之;否则
 # bash 看门狗——子壳必须重定向到 /dev/null,否则它继承 $( ) 管道写端,快探针也要
-# 被孤儿 sleep 拖满时限(实测健康路径 9×30s;重定向后即刻返回)。CLI 输出先落临时
-# 文件再回放:两个分支的 kill 都只打得到直接子进程,@wecom/cli 的 npm 包装器是
-# execFileSync(spawn+wait)形态,被杀后 native 孙进程会握着管道写端拖住整段脚本;
-# 落盘后孙进程只握临时文件,管道随 cat 结束即 EOF。
+# 被孤儿 sleep 拖满时限(实测健康路径 9×30s;重定向后即刻返回)。非交互契约(评审
+# 补充,与 dingtalk-smoke.sh 同口径):CLI 的 stdin 接 /dev/null——探测全是只读
+# 面,继承调用方 stdin 的 CLI 可能吃掉调用方输入或在无 TTY 提示上等输入到超时。
+# CLI 输出先落临时文件再回放:被杀进程树里总有成员握着管道写端的可能,@wecom/cli
+# 的 npm 包装器是 execFileSync(spawn+wait)形态,孙进程会握着管道写端拖住整段
+# 脚本(实测 45s+ 乃至 >3min);落盘后孙进程只握临时文件,管道随 cat 结束即 EOF。
 WECOM_TIMEOUT=30
 # 与 dingtalk-smoke.sh 同口径:TERM 不是终点,吞 TERM 的 CLI 不能把探测变成永久
 # 等待。timeout 加 -k、看门狗 KILL_GRACE 后升级 SIGKILL;137(KILL 死)与 143
@@ -109,17 +127,32 @@ wecom_run() {
   DWS_TMP="$t"
   trap 'if [ -n "$DWS_TMP" ]; then rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null; fi' EXIT
   if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" -k "$WECOM_KILL_GRACE" "$WECOM_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
+    # GNU timeout 默认(非 --foreground)让命令带子进程跑在它自己的进程组里,
+    # 到点 TERM、-k 宽限 KILL 都送整组——wrapper 的孙进程一并收掉,天然满足
+    # 进程组所有权契约;勿加 --foreground(那会显式豁免子进程不被超时)。
+    "$TIMEOUT_BIN" -k "$WECOM_KILL_GRACE" "$WECOM_TIMEOUT" "$CLI" "$@" </dev/null >"$t" 2>&1; rc=$?
   else
-    "$CLI" "$@" >"$t" 2>&1 &
+    # 进程组所有权契约(评审修正,与 dingtalk-smoke.sh 同口径):set -m 让 CLI
+    # 以新进程组组长身份启动,看门狗的组信号才打得穿 wrapper(@wecom/cli 的
+    # npm 包装器是 execFileSync 形态)与它派生的 native 孙进程——只杀直接
+    # 子进程会让持凭证的孙进程活过超时。set +m 立即恢复:本函数总在 $( ) 子壳
+    # 里跑,-m 只需覆盖这一行后台派生;进程组归属在派生瞬间定型,之后关掉不影响。
+    set -m
+    "$CLI" "$@" </dev/null >"$t" 2>&1 &
     local pid=$!
+    set +m
     # 发出 TERM 即落「到点」标记(与 dingtalk-smoke.sh 同口径):子进程收到 TERM
     # 后优雅清理并以 0 退出时,wait 的 0 会把超时伪装成通过——到点事实必须独立
     # 于子进程最终退出码,标记存在则一律按 124 上报。标记先于 TERM 落盘:子进程
     # 恰在到点与 TERM 之间的微窗内自行退出的形态不再漏判超时。落标记前先确认
     # 捕获文件仍在:父壳被信号打断并清场后,孤儿看门狗不得凭空重建 .deadline
     # (评审指出的中断残留);父壳仍在 wait 时捕获必在,计时语义不变(同口径)。
-    ( sleep "$WECOM_TIMEOUT" && [ -e "$t" ] && : >"$tflag" && kill "$pid" 2>/dev/null && sleep "$WECOM_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    # TERM/KILL 都送整组(kill -TERM "-$pid":负 pid = 进程组,不带 -- 的老式
+    # 形态,bash 3.2 即支持);组信号不可用时退回单进程 kill,不比旧行为更弱。
+    ( sleep "$WECOM_TIMEOUT" && [ -e "$t" ] && : >"$tflag" || exit 0
+      kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep "$WECOM_KILL_GRACE"
+      kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null

@@ -195,10 +195,28 @@ for (const [name, source] of [
     /-k "\$\{?(DWS|WECOM)_KILL_GRACE\}?"/,
     `${name}: coreutils timeout 必须带 -k 强杀宽限(吞 TERM 的 CLI 会挂住 timeout 本身)`,
   );
+  // 3b-进程组所有权(评审 P1 修正):CLI 以 set -m 启动为自有进程组组长、
+  // stdin 接 /dev/null(非交互契约,CLI 不得吃调用方输入或等输入到超时),
+  // 派生后立即 set +m;TERM/KILL 都送整组(-$pid),组信号不可用才退回单进程。
   assert.match(
     source,
-    /sleep "\$\{?(DWS|WECOM)_TIMEOUT\}?" && \[ -e "\$t" \] && : >"\$tflag" && kill "\$pid" 2>\/dev\/null && sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?" && kill -9 "\$pid"/,
-    `${name}: 看门狗必须先确认捕获仍在再落「到点」标记、先标记再 TERM 并在宽限后升级 SIGKILL(标记后落会漏判到点与 TERM 微窗内自退的 CLI;只发一次 TERM 对抗性 CLI 无界;不确认捕获会让被中断清场的探测被孤儿看门狗凭空重建 .deadline)`,
+    /set -m\s*\n\s*"\$CLI" "\$@" <\/dev\/null >"\$t" 2>&1 &\s*\n\s*local pid=\$!\s*\n\s*set \+m/,
+    `${name}: CLI 必须以 set -m 自有进程组启动、stdin 接 /dev/null,派生后立即 set +m`,
+  );
+  assert.match(
+    source,
+    /"\$TIMEOUT_BIN" -k "\$\{?(DWS|WECOM)_KILL_GRACE\}?" "\$\{?(DWS|WECOM)_TIMEOUT\}?" "\$CLI" "\$@" <\/dev\/null >"\$t" 2>&1/,
+    `${name}: coreutils timeout 分支同样必须接 /dev/null stdin(默认组杀语义满足所有权契约,勿加 --foreground)`,
+  );
+  assert.match(
+    source,
+    /sleep "\$\{?(DWS|WECOM)_TIMEOUT\}?" && \[ -e "\$t" \] && : >"\$tflag" \|\| exit 0\s*\n\s*kill -TERM "-\$pid" 2>\/dev\/null \|\| kill -TERM "\$pid"/,
+    `${name}: 看门狗必须先确认捕获仍在再落「到点」标记,TERM 送整组(-$pid;只杀直接子进程会让 wrapper 的孙进程活过超时),组信号不可用退回单进程`,
+  );
+  assert.match(
+    source,
+    /sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?"\s*\n\s*kill -KILL "-\$pid" 2>\/dev\/null \|\| kill -KILL "\$pid"/,
+    `${name}: KILL 升级必须同样送整组(吞 TERM 的孙进程只有组 KILL 收得到)`,
   );
   // 看门狗清理行:删掉它,看门狗子壳会活过快探针,在 PID 复用后误杀无辜进程,
   // 迟到的 .deadline 也永不清理——此行无行为夹具背书,只能形态钉。
@@ -275,6 +293,29 @@ assert.doesNotMatch(
   "dingtalk-smoke.sh 找不到 CLI 时不得建议 npm -g 自装(绕过 lock 钉扎)",
 );
 
+// ---- 4b) 解析顺序:应用管理资产优先,PATH 只作显式开发回退 ----
+// 冒烟要验证的是应用按 connectors.lock.json 安装并哈希校验过的二进制;PATH 上的
+// 同名项(陈旧/恶意)曾排在资产之前,可遮住 lock 钉扎资产让冒烟给「另一个二进制」
+// 发通过。钉:版本目录扫描循环必须先于 PATH 解析出现,且 PATH 回退选中时必须
+// 带来源标注(把解析挪回 PATH 优先、或删掉标注,此处即红)。
+for (const [name, source] of [
+  ["dingtalk-smoke.sh", dingtalkSmoke],
+  ["wecom-smoke.sh", wecomSmoke],
+]) {
+  const assetLoopIdx = source.indexOf('for d in "$PINVOU3_ROOT"/assets/cli/');
+  const pathResolveIdx = source.indexOf('CLI="$(command -v ');
+  assert.ok(assetLoopIdx >= 0, `${name}: 未找到应用版本目录扫描循环`);
+  assert.ok(
+    pathResolveIdx > assetLoopIdx,
+    `${name}: PATH 解析必须晚于应用管理资产扫描(应用资产优先;PATH 同名项不得遮住 lock 钉扎资产)`,
+  );
+  assert.match(
+    source,
+    /开发回退,非应用管理的 lock 钉扎资产/,
+    `${name}: PATH 回退选中时必须大声标注「开发回退」来源`,
+  );
+}
+
 // 5) redact() 行为钉(从两份脚本源码现场抽取函数体真跑):host safe_auth_log_line
 //    四标记整行打码 + 引号 JSON 字段打码。删掉 awk 阶段/sed 阶段或换标记词,
 //    这里先红——floor 钉不覆盖脱敏。
@@ -287,6 +328,13 @@ assert.doesNotMatch(
     // 定义共 3 行(redact(){ … awk … sed …)。
     const defn = lines.slice(start, start + 3).join("\n");
     assert.match(defn, /access_token\|refresh_token\|authorization\|bearer/, `${name}: redact 必须覆盖 host 四标记`);
+    // 泛化 token 赋值形态(评审 P1 补充):api_token=…、裸 token: …、token = …
+    // 不属四个 host 标记,此前会漏进失败摘录。类文本被改,本钉即红。
+    assert.match(
+      defn,
+      /\[a-z0-9_-\]\*token\[a-z0-9_-\]\*\[\[:space:\]\]\*\[=:\]/,
+      `${name}: redact 必须覆盖泛化 token 赋值形态(api_token=…、裸 token: …、token = …)`,
+    );
     return defn;
   };
   // 每条形态都断言期望的打码标记,而不只断言 SECRET 不在输出里:只传函数定义不调用时
@@ -302,6 +350,13 @@ assert.doesNotMatch(
     // 数字后缀键钉字段形态的 0-9 字符类(accessToken2 曾整段裸过)。
     ["x-authorization: SECRET7", "[已脱敏"],
     ['{"accessToken2": "SECRET8"}', "token=[REDACTED]"],
+    // 泛化 token 赋值形态(评审 P1 补充):裸赋值键此前整行裸过。
+    ["api_token=SECRET10", "[已脱敏"],
+    ["token: SECRET11", "[已脱敏"],
+    ["token =SECRET12", "[已脱敏"],
+    ["API_TOKEN=SECRET13", "[已脱敏"],
+    ["x-token: SECRET14", "[已脱敏"],
+    ["https://x.example/api?token=SECRET15&v=2", "[已脱敏"],
   ];
   for (const [name, source] of [
     ["dingtalk-smoke.sh", dingtalkSmoke],
@@ -319,6 +374,13 @@ assert.doesNotMatch(
       );
     }
     assert.equal(runRedact("plain diagnostic line"), "plain diagnostic line\n", `${name}: redact 不得改写无凭证形态的行`);
+    // 泛化规则的负控:普通含 token 字样的非赋值行不得被整行吞掉(过度打码会
+    // 把超时/失败诊断变得不可读)。
+    assert.equal(
+      runRedact("token count: 3 items in cache"),
+      "token count: 3 items in cache\n",
+      `${name}: 非「token 键赋值」形态的行不得整行打码`,
+    );
   }
 }
 
@@ -464,6 +526,72 @@ assert.doesNotMatch(
         nextAlloc.stdout.includes("quick 1.2.3"),
         `${name}: 分配失败后的下一次调用输出必须完整回放`,
       );
+      // 组所有权夹具(评审 P1):吞 TERM 的 wrapper 派生 native 孙进程时,只杀
+      // 直接子进程会让孙进程活过超时(持凭证进程超出冒烟边界)。wrapper 与孙
+      // 进程都必须随探测收场——删 set -m(组启动)或把组 kill 退回单进程 kill,
+      // 孙进程存活此处即红。孙进程自带 trap '' TERM:固定版必须靠组 KILL 升级
+      // 才收得掉,夹具连 KILL 升级的组送达一并钉住。(严格 POSIX 语义;Windows
+      // 的 MSYS2 kill 语义不同,本块在 win32 不执行。)
+      const gpidFile = path.join(tmp, "gpid");
+      const grandchild = path.join(tmp, "grandchild-cli");
+      fs.writeFileSync(
+        grandchild,
+        "#!/usr/bin/env bash\nprintf '%s' \"$$\" > \"$GPID_FILE\"\ntrap '' TERM\nsleep 300\n",
+      );
+      fs.chmodSync(grandchild, 0o755);
+      const wrapper = path.join(tmp, "wrapper-cli");
+      fs.writeFileSync(wrapper, '#!/usr/bin/env bash\n"$GRANDCHILD_BIN" &\nwait\n');
+      fs.chmodSync(wrapper, 0o755);
+      const grandchildDead = () => {
+        const gpid = fs.existsSync(gpidFile) ? fs.readFileSync(gpidFile, "utf8").trim() : "";
+        if (!gpid) return false; // 尚未登记 pid:按存活处理,继续等
+        return spawnSync("bash", ["-c", `kill -0 ${JSON.stringify(gpid)} 2>/dev/null`]).status !== 0;
+      };
+      const runTree = (label, bin) => {
+        fs.rmSync(gpidFile, { force: true });
+        const res = spawnSync("bash", ["-c", harness(wrapper, bin)], {
+          encoding: "utf8",
+          timeout: 20000,
+          killSignal: "SIGKILL",
+          env: { ...process.env, GRANDCHILD_BIN: grandchild, GPID_FILE: gpidFile },
+        });
+        assert.strictEqual(
+          res.status,
+          124,
+          `${label}: wrapper+孙进程超时必须以 124 收场(status=${res.status})`,
+        );
+        for (let i = 0; i < 20; i++) {
+          if (grandchildDead()) return;
+          spawnSync("bash", ["-c", "sleep 0.3"]);
+        }
+        assert.fail(`${label}: wrapper 被收场后孙进程必须随进程组一并终止(组所有权缺失)`);
+      };
+      runTree(`${name} 看门狗分支 wrapper+孙进程`, "");
+      if (hasTimeout) runTree(`${name} coreutils timeout 分支 wrapper+孙进程`, timeoutBin);
+      // stdin 契约夹具(评审 P2):探测不得继承调用方 stdin——CLI 可能吃掉管道
+      // 输入或在无 TTY 提示上等输入到超时。喂一行假输入,CLI 必须见到 EOF
+      // (stdin-closed)而不是把它读走;secret 出现在输出里即红。
+      const stdinCli = path.join(tmp, "stdin-cli");
+      fs.writeFileSync(
+        stdinCli,
+        '#!/usr/bin/env bash\nif read -r line; then printf \'consumed:%s\' "$line"; else printf \'stdin-closed\'; fi\n',
+      );
+      fs.chmodSync(stdinCli, 0o755);
+      const runStdin = (label, bin) => {
+        const res = spawnSync("bash", ["-c", harness(stdinCli, bin)], {
+          encoding: "utf8",
+          timeout: 20000,
+          killSignal: "SIGKILL",
+          input: "SECRET-STDIN-7\n",
+        });
+        assert.strictEqual(res.status, 0, `${label}: stdin 探测必须正常收场(status=${res.status})`);
+        assert.ok(
+          res.stdout.includes("stdin-closed") && !res.stdout.includes("SECRET-STDIN-7"),
+          `${label}: CLI 必须见到 EOF 而不是吃掉调用方 stdin(实得: ${res.stdout.trim()})`,
+        );
+      };
+      runStdin(`${name} 看门狗分支 stdin`, "");
+      if (hasTimeout) runStdin(`${name} coreutils timeout 分支 stdin`, timeoutBin);
     }
   }
 }

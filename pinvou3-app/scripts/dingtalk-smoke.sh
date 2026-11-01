@@ -23,16 +23,23 @@ sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
 # 的行整行打码——等号、裸冒号、URL 查询串、大写 scheme 形态一并覆盖(host 对
 # 这些形态就是整行替换);其余行再按 JSON 字段形态打码 token 值。dws auth status
 # 的正常输出不含凭证,这是纵深防御——防未来 CLI 输出形状变化把密钥带进 FAIL 行。
+# 评审补充:泛化 token 赋值形态(api_token=…、裸 token: …、token = …)同样整行
+# 打码——此前只认四个 host 标记,带 token 字样的裸赋值键会漏进失败摘录。
 redact(){ awk '{ l=tolower($0)
-    if (l ~ /access_token|refresh_token|authorization|bearer/) print "[已脱敏:含凭证形状的整行]"
+    if (l ~ /access_token|refresh_token|authorization|bearer/ || l ~ /[a-z0-9_-]*token[a-z0-9_-]*[[:space:]]*[=:]/) print "[已脱敏:含凭证形状的整行]"
     else print }' | sed -E 's/[A-Za-z0-9_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z0-9_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
 
 # --- 定位 dws ---
+# 解析顺序(评审修正,应用管理资产优先):冒烟要验证的是应用按 connectors.lock.json
+# 安装并哈希校验过的那个 dws,不是 PATH 上恰好同名的二进制——陈旧/恶意的 PATH 项
+# 曾可遮住 lock 钉扎资产,让冒烟给「另一个二进制」发通过。顺序:应用版本目录 →
+# 旧布局存量 → npm 全局 shim → PATH 仅作显式开发回退(选中即大声标注;[1] 的
+# 版本下限对它照常把关)。
 # 应用按 connectors.lock.json 把 dws 落到版本目录 <数据根>/assets/cli/dws/<version>/
 # (paths.rs assets_cli_dir,数据根支持 PINVOU3_HOME 重定位);旧布局
 # <数据根>/connectors/<platform>/bin/ 会被 native_installer 迁移并清理,
-# 只作存量回退;再退到 npm 全局 shim。
-CLI="$(command -v dws 2>/dev/null || true)"
+# 只作存量回退。
+CLI=""
 # 本机平台 → connectors.lock 的平台目录名与可执行名(connector_lock executable_name);
 # 只探本机平台,避免共享 HOME 时误选别的平台的二进制。
 case "$(uname -s 2>/dev/null)" in
@@ -77,6 +84,13 @@ fi
 [ -z "$CLI" ] && [ -n "$PLAT" ] && [ -f "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && [ -x "$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE" ] && CLI="$PINVOU3_ROOT/connectors/$PLAT/bin/$EXE"
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/dws.cmd" ] && CLI="$APPDATA/npm/dws.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/dws.cmd" ] && CLI="$HOME/AppData/Roaming/npm/dws.cmd"
+if [ -z "$CLI" ]; then
+  # PATH 只作开发回退(评审修正):前面全是应用管理的落盘位置;走到这里说明
+  # 本机没有应用资产,开发机直装才用 PATH 上的同名二进制,并大声标注来源——
+  # 它不是 lock 钉扎的那个资产,版本下限检查 [1] 对它照常把关。
+  CLI="$(command -v dws 2>/dev/null || true)"
+  [ -n "$CLI" ] && echo "注意: 使用 PATH 上的 dws(开发回退,非应用管理的 lock 钉扎资产): $CLI"
+fi
 if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连接钉钉,应用会在线下载并校验)"; exit 2; fi
 
 # 探测必须限时:connector_cli.rs run_probe 对同一族命令用 30s kill-tree——npm-shim
@@ -85,11 +99,12 @@ if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连�
 # 到 /dev/null:本函数总在 $( ) 里被调用,子壳及其内层 sleep 会继承命令替换的
 # 管道写端,快探针结束后孤儿 sleep 仍握着管道,$() 要等它睡满 30s 才见到 EOF
 # (实测健康路径被拖满 9×30s);指向 /dev/null 后快探针即刻返回。
-# CLI 输出先落临时文件再回放,不直接写 $( ) 管道:两个分支的 kill 都只打得到
-# 直接子进程(GNU timeout 默认也只杀子进程),若 CLI 是 spawn 孙进程再 wait 的
-# wrapper(@wecom/cli 的 npm 包装器就是 execFileSync 形态),孙进程会握着管道
-# 写端把整段脚本拖到它自行退出(实测 45s+ 乃至 >3min);落盘后孙进程只握临时
-# 文件,管道随 cat 结束即 EOF,脚本在时限内返回。
+# 非交互契约(评审补充):CLI 的 stdin 接 /dev/null——探测全是 --version/auth/
+# --help 只读面,不需要输入;继承调用方 stdin 的 CLI 可能吃掉调用方输入,或在
+# 无 TTY 提示上等输入直到超时(host 进程辅助对子进程同样是 null-stdin 契约)。
+# CLI 输出先落临时文件再回放,不直接写 $( ) 管道:被杀进程树里总有成员握着管道
+# 写端的可能,孙进程会握着管道把整段脚本拖到它自行退出(实测 45s+ 乃至 >3min);
+# 落盘后孙进程只握临时文件,管道随 cat 结束即 EOF,脚本在时限内返回。
 DWS_TIMEOUT=30
 # TERM 不是终点:吞掉 TERM 的 CLI(清理例程卡住、无 TTY 提示器拦信号)不能把探测
 # 变成永久等待。GNU timeout 不带 -k 会在子进程无视 TERM 后一直等;看门狗只发一次
@@ -121,17 +136,33 @@ dws_run() {
   DWS_TMP="$t"
   trap 'if [ -n "$DWS_TMP" ]; then rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null; fi' EXIT
   if [ -n "$TIMEOUT_BIN" ]; then
-    "$TIMEOUT_BIN" -k "$DWS_KILL_GRACE" "$DWS_TIMEOUT" "$CLI" "$@" >"$t" 2>&1; rc=$?
+    # GNU timeout 默认(非 --foreground)让命令带子进程跑在它自己的进程组里,
+    # 到点 TERM、-k 宽限 KILL 都送整组——wrapper 的孙进程一并收掉,天然满足
+    # 进程组所有权契约;勿加 --foreground(那会显式豁免子进程不被超时)。
+    "$TIMEOUT_BIN" -k "$DWS_KILL_GRACE" "$DWS_TIMEOUT" "$CLI" "$@" </dev/null >"$t" 2>&1; rc=$?
   else
-    "$CLI" "$@" >"$t" 2>&1 &
+    # 进程组所有权契约(评审修正):set -m 让 CLI 以新进程组组长身份启动,
+    # 看门狗的组信号才打得穿 wrapper(@wecom/cli 的 npm 包装器是 execFileSync
+    # 形态)与它派生的 native 孙进程——只杀直接子进程会让持凭证的孙进程活过
+    # 超时。set +m 立即恢复:本函数总在 $( ) 子壳里跑,-m 只需覆盖这一行后台
+    # 派生;进程组归属在派生瞬间定型,之后关掉也不影响组信号。
+    set -m
+    "$CLI" "$@" </dev/null >"$t" 2>&1 &
     local pid=$!
+    set +m
     # 发出 TERM 即落「到点」标记:子进程收到 TERM 后优雅清理并以 0 退出时,wait
     # 的 0 会把超时伪装成通过(GNU timeout 同形态本就返回 124)——到点事实必须
     # 独立于子进程最终退出码,标记存在则一律按 124 上报。标记先于 TERM 落盘:
     # 子进程恰在到点与 TERM 之间的微窗内自行退出的形态不再漏判超时。落标记前
     # 先确认捕获文件仍在:父壳被信号打断并清场后,孤儿看门狗不得凭空重建
     # .deadline(评审指出的中断残留);父壳仍在 wait 时捕获必在,计时语义不变。
-    ( sleep "$DWS_TIMEOUT" && [ -e "$t" ] && : >"$tflag" && kill "$pid" 2>/dev/null && sleep "$DWS_KILL_GRACE" && kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    # TERM/KILL 都送整组(kill -TERM "-$pid":负 pid = 进程组;不带 -- 的老式
+    # 形态,bash 3.2 即支持)。组信号不可用(MSYS2 对负 pid 的支持不一、异常
+    # 内核)时退回单进程 kill——契约降级为与旧行为等价,不比旧的更弱。
+    ( sleep "$DWS_TIMEOUT" && [ -e "$t" ] && : >"$tflag" || exit 0
+      kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      sleep "$DWS_KILL_GRACE"
+      kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
     kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
