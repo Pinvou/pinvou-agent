@@ -1033,6 +1033,7 @@ impl RemoteControlManager {
             .or_else(|| persisted_previous.clone());
         if let Some(previous) = previous_config.as_ref() {
             queue_pending_revocation(previous)?;
+            self.sync_pending_revocation_backlog(previous);
         }
         let allow_host_workspace = previous_config
             .as_ref()
@@ -1081,8 +1082,23 @@ impl RemoteControlManager {
             let mut inner = self.inner.lock();
             revoke_host_workspace_state(&mut inner);
         }
-        let mut config =
-            load_config()?.ok_or_else(|| "Web access is not configured".to_string())?;
+        // Round-12 复审 P3:从未配置过(enable 之前)的 revoke 是幂等空
+        // 操作——配置不存在则旗标与 grant 都不可能存在,上面的状态失效
+        // 已经空跑。此前返回 Err 会被 bridge 记入 last_error,设置页对
+        // 一次无实际效果的点击显示失败;改回携带空 endpoint_id 的非活跃
+        // 信息(与 stop_current 对未激活 endpoint 的返回形状一致)。不发
+        // status:没有任何状态变化可推送,设置页以本次返回的载荷合并。
+        let mut config = match load_config()? {
+            Some(config) => config,
+            None => {
+                return Ok(WebAccessInfo {
+                    endpoint_id: String::new(),
+                    url: String::new(),
+                    qr_data_url: None,
+                    status: WebAccessStatusKind::Stopped,
+                });
+            }
+        };
         validate_config(&config)?;
         let latched = config.allow_host_workspace;
         if latched {
@@ -1143,6 +1159,7 @@ impl RemoteControlManager {
             .or_else(|| persisted.clone());
         if let Some(config) = current_config.as_ref() {
             queue_pending_revocation(config)?;
+            self.sync_pending_revocation_backlog(config);
         }
         // A failed removal leaves the old config authoritative. Its queued
         // entry therefore remains dormant instead of revoking a live link.
@@ -1249,6 +1266,26 @@ impl RemoteControlManager {
             });
         }
         Ok(())
+    }
+
+    /// Round-12 复审 P2:`queue_pending_revocation` 只写盘、不同步进程内
+    /// backlog——磁盘权威账本里刚排队的条目要等 queue 之后的
+    /// `replay_pending_revocations` 重同步才进入内存。若那次 replay 失败
+    /// (refresh 的 `?` 在此中止、stop 记录后继续),后续任一 ack 的整体
+    /// 落盘会以不含该条目的陈旧 backlog 覆盖磁盘,刚排队的吊销记录被
+    /// 永久删除,旧 endpoint 的 `desktop_secret` 在 relay 侧无限期保持
+    /// 有效——恰是整体落盘语义要保护的资产。queue 成功后(调用方持有
+    /// lifecycle 锁)直接同步推进 backlog,replay 重同步退化为防御性
+    /// 措施。同 key 旧条目先移除:queue 对同 key 不同内容返回 Err,能
+    /// 走到这里即同内容,收敛方向唯一。
+    fn sync_pending_revocation_backlog(&self, config: &WebAccessConfig) {
+        let pending = PendingRevocation::from(config);
+        let key = pending_revocation_key(&pending);
+        let mut inner = self.inner.lock();
+        inner
+            .pending_revocation_backlog
+            .retain(|entry| pending_revocation_key(entry) != key);
+        inner.pending_revocation_backlog.push(pending);
     }
 
     fn finish_pending_revocation(
@@ -2831,7 +2868,13 @@ impl RemoteControlManager {
                 let _ = sender.try_send(RelayOutbound::Message(response));
             }
             RpcRequestAction::Dispatch(dispatch) => {
-                let _ = self.emit_rpc_dispatch(dispatch);
+                // Round-12 复审 P3:发射失败此前被静默吞掉——emit_rpc_dispatch
+                // 内部的恢复逻辑(清除 dispatched_generation、允许重发)照常
+                // 执行,但手机侧收不到任何回执,请求要等到 TTL sweep 伪造
+                // rpc_timed_out 才有终点。记录日志让这类失败可诊断。
+                if let Err(error) = self.emit_rpc_dispatch(dispatch) {
+                    eprintln!("[web-access] rpc dispatch emit to main webview failed: {error}");
+                }
             }
         }
     }

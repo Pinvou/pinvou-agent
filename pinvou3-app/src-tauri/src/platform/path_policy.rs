@@ -82,6 +82,14 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
     ".msmtprc",
     "rclone.conf",
     "credentials.tfrc.json",
+    // Round-12 复审 P2:同族补遗——OpenSSH FIDO2 硬件密钥的默认私钥名
+    // `id_ed25519_sk`/`id_ecdsa_sk`(精确条目 `id_ed25519`/`id_ecdsa` 命不
+    // 中更长的派生名,与 gcloud ADC 命不中 `credentials.json` 同型的缺口);
+    // git 全局配置 `.gitconfig`(`[credential]` 段与 `insteadOf` 改写 URL
+    // 可内嵌令牌,与既有 `.git-credentials` 同类存储)。
+    "id_ed25519_sk",
+    "id_ecdsa_sk",
+    ".gitconfig",
 ];
 
 /// 组件前缀黑名单:`.env.` 系命名(`.env.local`、`.env.production`、
@@ -95,6 +103,17 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
 /// 的 SECRET_EXCLUDES,gitignore 语义)对示例文件/公钥的相反判断是双清
 /// 单独立评估的既定差异,两侧互不推导。
 pub const BLOCKED_COMPONENT_PREFIXES: &[&str] = &[".env."];
+
+/// 组件后缀黑名单:`*.env` 系命名(`production.env`、`config.env`、
+/// `secrets.env`、`deploy.env`……)与 `.env`/`.env.*` 同为本地环境变量
+/// 文件——把名字写在前的形态是 `.env.` 前缀规则的镜像缺口,逐一枚举
+/// 同样不可能,按后缀判定(Round-12 复审 P2)。`*.env` 是环境变量文件的
+/// 通用命名约定,「示例文件宁可过宽」的既定标准与 `BLOCKED_COMPONENT_
+/// PREFIXES` 一致(`sample.env` 一并被拦,有意为之);`*.env.bak` 等
+/// 二次后缀形态不在此列,与 id_* 备份家族同归「目录作用域匹配」残余。
+/// 匹配经由平台感知的 `path_component_suffix`(折叠语义与
+/// `path_component_eq`/`path_component_prefix` 完全一致)。
+pub const BLOCKED_COMPONENT_SUFFIXES: &[&str] = &[".env"];
 
 /// 系统敏感前缀黑名单——Unix 系统文件/虚拟文件系统路径。
 pub const BLOCKED_PREFIXES: &[&str] = &[
@@ -210,6 +229,18 @@ pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String>
                 "path {} crosses sensitive component prefix {}",
                 canonical.display(),
                 prefix
+            ));
+        }
+    }
+
+    for suffix in BLOCKED_COMPONENT_SUFFIXES {
+        if canonical.components().any(|component| {
+            crate::platform::os::path_component_suffix(component.as_os_str(), suffix)
+        }) {
+            return Err(format!(
+                "path {} crosses sensitive component suffix {}",
+                canonical.display(),
+                suffix
             ));
         }
     }
@@ -421,6 +452,36 @@ mod tests {
         }
     }
 
+    /// Round-12 复审 P2:`*.env` 后缀家族(`production.env` 等把名字写在
+    /// 前的形态)与 `.env.` 前缀家族互为镜像——前缀规则对它们不可见。
+    /// `*.env` 是环境变量文件的通用命名约定,`sample.env` 类示例文件一并
+    /// 被拦是既定的宁可过宽;折叠变体(大小写不敏感平台上的
+    /// `PRODUCTION.ENV`)由 interface 层的全量条目折叠钉覆盖。同批的
+    /// FIDO2 密钥名与 `.gitconfig` 走精确组件,由
+    /// `rejects_all_blocked_components` / 删除钉自动覆盖。
+    #[test]
+    fn env_component_suffix_family_is_blocked() {
+        for raw in [
+            "deploy/production.env",
+            "config.env",
+            "secrets.env",
+            "app/.env",
+        ] {
+            let path = std::env::temp_dir().join(raw);
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "{raw} 应被 *.env 后缀规则拦截"
+            );
+        }
+        for benign in ["dotenv.md", "myenv", "env.txt", "notes.environment"] {
+            let path = std::env::temp_dir().join(benign);
+            assert!(
+                check_sensitive_components(&path).is_ok(),
+                "{benign} 不是 *.env 环境文件,不应被拦"
+            );
+        }
+    }
+
     /// Round-11 复审:硬编码字面量钉住原始清单成员(`.gnupg`/`.password-
     /// store`/`id_*` 私钥/`credentials.json`/`/root/`/`/proc/`/`/sys/`)
     /// 与本批新增成员——逐常量循环在成员被删除时静默通过(迭代次数变少
@@ -452,6 +513,10 @@ mod tests {
             ".msmtprc",
             "rclone.conf",
             "credentials.tfrc.json",
+            // Round-12 复审 P2:FIDO2 硬件密钥默认名与 git 全局配置。
+            "id_ed25519_sk",
+            "id_ecdsa_sk",
+            ".gitconfig",
         ];
         for raw in blocked_components {
             let path = std::env::temp_dir().join("home").join(raw).join("x");

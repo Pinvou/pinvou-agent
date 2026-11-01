@@ -885,6 +885,56 @@ for (const source of [webBridge]) {
   assert.equal(count, 3,
     'the webSessionUnavailable copy must exist in all three inline languages');
 }
+// Round-12 复审 P2:WEB_TURN_ERROR_KEYS 的映射键此前只有上面
+// webSessionUnavailable 一根单键计数钉,其余键(en/ja 新增句)任一语言块
+// 缺表项时 bt() 静默回退 zh——en/ja 用户看到中文兜底且无任何测试变红。
+// 从桥源码解析码表键清单,逐键钉 BT_TABLE 三个语言块内必有 `key:` 定义。
+{
+  const turnErrorTableStart = webBridge.indexOf('const WEB_TURN_ERROR_KEYS = {');
+  assert.notEqual(turnErrorTableStart, -1,
+    'the WEB_TURN_ERROR_KEYS mapping must exist in the web bridge');
+  const turnErrorTableEnd = webBridge.indexOf('};', turnErrorTableStart);
+  assert.notEqual(turnErrorTableEnd, -1,
+    'the WEB_TURN_ERROR_KEYS mapping must have a closing brace');
+  const turnErrorCopyKeys = [
+    ...new Set(
+      [
+        ...webBridge
+          .slice(turnErrorTableStart, turnErrorTableEnd)
+          .matchAll(/:\s*"([A-Za-z]+)"/g),
+      ].map((match) => match[1]),
+    ),
+  ];
+  assert.ok(turnErrorCopyKeys.length >= 11,
+    `expected the full WEB_TURN_ERROR_KEYS copy surface, found ${turnErrorCopyKeys.length}`);
+  const btTableStart = webBridge.indexOf('const BT_TABLE = {');
+  assert.notEqual(btTableStart, -1,
+    'the BT_TABLE copy table must exist in the web bridge');
+  const btTableEnd = webBridge.indexOf('\n  };', btTableStart);
+  assert.notEqual(btTableEnd, -1,
+    'the BT_TABLE copy table must have a closing brace');
+  const btTable = webBridge.slice(btTableStart, btTableEnd);
+  const btEnStart = btTable.indexOf('    en: {');
+  const btJaStart = btTable.indexOf('    ja: {');
+  const btZhStart = btTable.indexOf('    zh: {');
+  assert.notEqual(btEnStart, -1, 'the BT_TABLE en block marker must exist');
+  assert.notEqual(btJaStart, -1, 'the BT_TABLE ja block marker must exist');
+  assert.notEqual(btZhStart, -1, 'the BT_TABLE zh block marker must exist');
+  const btLanguageBlocks = [
+    ['en', btTable.slice(btEnStart, btJaStart)],
+    ['ja', btTable.slice(btJaStart, btZhStart)],
+    ['zh', btTable.slice(btZhStart)],
+  ];
+  for (const [language, block] of btLanguageBlocks) {
+    for (const key of turnErrorCopyKeys) {
+      assert.match(
+        block,
+        new RegExp(`\\b${key}:`),
+        `WEB_TURN_ERROR_KEYS maps to copy key "${key}", but the BT_TABLE ${language} block has no ${key}: definition (bt() silently falls back to zh for a missing key)`,
+      );
+    }
+  }
+}
 // The JS half of the edit_last_turn revision guard: dropping or renaming the
 // arg would silently degrade the stale-view protection to fail-open, and the
 // Rust-side Option param alone cannot catch it (round-4 minor).
@@ -1126,6 +1176,31 @@ assert.match(settingsView, /\{remoteCopy\.revokeWorkspace\}/,
   'the revoke control must carry explicit trilingual copy');
 assert.doesNotMatch(settingsView, /handleRevokeHostWorkspace[\s\S]{0,200}allowHostWorkspace: true/,
   'revoking folder consent must never re-grant it');
+// Round-12 复审 P3:uiRemote 的 close / workspaceAllowed / revokeWorkspace
+// 三键此前没有三语在位钉。close: 在各语言文件里与 uiToolStore、子智能体
+// 抽屉、uiCodexWorkspace 等分区重名(每文件 7 处),裸 contains 会误配——
+// 按 uiRemote 分区的开闭括号切片后逐键钉在位,删任一语言的任一键即红。
+const i18nByLanguage = {
+  en: readSource(path.join(root, 'src', 'shared', 'i18n', 'en.js'), 'utf8'),
+  ja: readSource(path.join(root, 'src', 'shared', 'i18n', 'ja.js'), 'utf8'),
+  zh: readSource(path.join(root, 'src', 'shared', 'i18n', 'zh.js'), 'utf8'),
+};
+for (const [language, source] of Object.entries(i18nByLanguage)) {
+  const uiRemoteStart = source.indexOf('uiRemote: {');
+  assert.notEqual(uiRemoteStart, -1,
+    `the ${language} i18n dictionary must define a uiRemote section`);
+  const uiRemoteEnd = source.indexOf('\n        },', uiRemoteStart);
+  assert.notEqual(uiRemoteEnd, -1,
+    `the uiRemote section of the ${language} i18n dictionary must have a closing brace`);
+  const uiRemoteBlock = source.slice(uiRemoteStart, uiRemoteEnd);
+  for (const key of ['close', 'workspaceAllowed', 'revokeWorkspace']) {
+    assert.match(
+      uiRemoteBlock,
+      new RegExp(`\\b${key}:`),
+      `the uiRemote section of the ${language} i18n dictionary must define ${key}: (missing copy breaks the settings remote-control modal)`,
+    );
+  }
+}
 // Registration rejections must surface trilingual recovery copy through the
 // stable last_error_code; the raw English last_error is fallback only
 // (regression: the actionable hints shipped as English-only raw strings).
@@ -1208,6 +1283,27 @@ assert.match(
   remoteControlCommands,
   /web_access_publish_event\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'the management event-publish channel must stay main-WebView only',
+);
+// Round-12 复审 P3:RPC 代理三兄弟(bridge_ready / rpc_begin / rpc_respond)
+// 的主 WebView gate 行此前没有 Round-8 同款 source-shape 钉——策略反钉护的
+// 是手机侧调用者,辅助桌面 WebView 的唯一防线就是这行 gate;删行仍全绿。
+// 补齐同款:rpc_respond 参数表长(签名到 gate 实距 ~311),间距上限放宽到
+// 400(与 list_host_files 同款),仍远小于删除后到下一命令 gate 的距离
+// (~837),删行即红。
+assert.match(
+  remoteControlCommands,
+  /web_access_bridge_ready\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'the bridge readiness handshake must stay main-WebView only',
+);
+assert.match(
+  remoteControlCommands,
+  /web_access_rpc_begin\([\s\S]{0,240}require_main_webview\(&window\)\?/,
+  'the RPC dispatch ACK must stay main-WebView only',
+);
+assert.match(
+  remoteControlCommands,
+  /web_access_rpc_respond\([\s\S]{0,400}require_main_webview\(&window\)\?/,
+  'the RPC completion handoff must stay main-WebView only',
 );
 assert.match(remoteControlManager, /require_host_workspace_authorization\(endpoint\.config\.allow_host_workspace\)\?/,
   'workspace capabilities must fail closed until desktop authorization is persisted');

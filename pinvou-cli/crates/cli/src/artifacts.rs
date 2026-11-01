@@ -44,6 +44,7 @@ use pinvou3_lib::features::sessions::SessionStore;
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
+use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_SUFFIXES as SENSITIVE_PATH_COMPONENT_SUFFIXES;
 /// The credential-component blocklist, IMPORTED from
 /// `platform::path_policy::BLOCKED_COMPONENTS` (the module was widened from
 /// `pub(crate)` for exactly this consumer): the lists can no longer drift.
@@ -54,10 +55,9 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_
 /// that both surfaces read one constant.
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COMPONENTS;
 
-/// The system-prefix half is the upstream composed predicate
-/// (`path_policy::canonical_system_prefix_hit`, which wraps
-/// `BLOCKED_PREFIXES` with the macOS `/private/{etc,var,tmp}` alias
-/// expansion) — see [`check_sensitive_path`].
+/// The component half of `path_policy::check_sensitive_components`: the
+/// credential-component blocklist, IMPORTED from
+/// `platform::path_policy::BLOCKED_COMPONENTS` so the lists cannot drift.
 ///
 /// Only consulted for paths the user names freely — the round-45 lane set is
 /// `files ingest`, `artifacts read`/`write`, `feedback submit
@@ -65,11 +65,11 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COM
 /// postprocess --text-file/--draft-file`, and `personas create/update
 /// --file`. See the module docs for the session-storage caveat: targets
 /// already proved inside session storage take the component half
-/// ([`crosses_sensitive_component`] plus, for the `.env.*` component-prefix
-/// rule, the separate [`crosses_sensitive_component_prefix`] leg wired at the
+/// ([`crosses_sensitive_component`], the `.env.*` component-prefix rule
+/// [`crosses_sensitive_component_prefix`], and the `*.env` component-suffix
+/// rule [`crosses_sensitive_component_suffix`], wired at the
 /// [`resolve_session_artifact`] call site) while the *system*-prefix half
 /// (unix system areas) cannot apply to them.
-/// The component half of `path_policy::check_sensitive_components`.
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
 /// the blacklisted component it crosses, if any. The comparison delegates to
@@ -101,15 +101,30 @@ fn crosses_sensitive_component_prefix(canonical: &Path) -> Option<&'static str> 
         })
 }
 
+/// The component-suffix half (`BLOCKED_COMPONENT_SUFFIXES`, the `*.env`
+/// environment-file variants), with the same platform-aware compare via
+/// `pinvou3_lib::platform::path_component_suffix`.
+fn crosses_sensitive_component_suffix(canonical: &Path) -> Option<&'static str> {
+    SENSITIVE_PATH_COMPONENT_SUFFIXES
+        .iter()
+        .copied()
+        .find(|suffix| {
+            canonical.components().any(|component| {
+                pinvou3_lib::platform::path_component_suffix(component.as_os_str(), suffix)
+            })
+        })
+}
+
 /// Mirror of the whole `path_policy::check_sensitive_components` predicate
 /// (components *and* system prefixes), for user-named paths that are not
 /// confined to session storage. The system-prefix half delegates to the
-/// upstream composed predicate (`canonical_system_prefix_hit`, published for
-/// exactly this consumer in the Round-6 review): hand-looping the prefix list
-/// here silently missed the macOS `/private/{etc,var,tmp}` alias expansion
-/// that `check_sensitive_components` gained — canonicalized spellings on
-/// macOS resolve `/etc/...` to `/private/etc/...`, which matches no list
-/// entry, so the GUI refused paths this mirror shipped.
+/// upstream composed predicate (`canonical_system_prefix_hit`, which wraps
+/// `BLOCKED_PREFIXES` with the macOS `/private/{etc,var,tmp}` alias expansion,
+/// published for exactly this consumer in the Round-6 review): hand-looping
+/// the prefix list here silently missed the macOS `/private/{etc,var,tmp}`
+/// alias expansion that `check_sensitive_components` gained — canonicalized
+/// spellings on macOS resolve `/etc/...` to `/private/etc/...`, which matches
+/// no list entry, so the GUI refused paths this mirror shipped.
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
     check_sensitive_canonical(canonical, cfg!(target_os = "macos"))
 }
@@ -134,6 +149,12 @@ fn check_sensitive_canonical(canonical: &Path, alias_symlinks: bool) -> Result<(
     if let Some(prefix) = crosses_sensitive_component_prefix(canonical) {
         return Err(format!(
             "{} crosses the credential path component prefix `{prefix}`",
+            canonical.display()
+        ));
+    }
+    if let Some(suffix) = crosses_sensitive_component_suffix(canonical) {
+        return Err(format!(
+            "{} crosses the credential path component suffix `{suffix}`",
             canonical.display()
         ));
     }
@@ -364,6 +385,7 @@ fn resolve_session_artifact(
     // model context, which is the read direction.
     if let Some(blocked) = crosses_sensitive_component(&canonical)
         .or_else(|| crosses_sensitive_component_prefix(&canonical))
+        .or_else(|| crosses_sensitive_component_suffix(&canonical))
     {
         return Err(CliError::failed(format!(
             "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
@@ -938,6 +960,30 @@ mod tests {
             assert_eq!(crosses_sensitive_component_prefix(&path), None, "{benign}");
             assert!(check_sensitive_path(&path).is_ok(), "{benign}");
         }
+    }
+
+    /// Round-12 review P2: the `*.env` component-suffix family must ship
+    /// through the mirror exactly like the GUI — `production.env`-style
+    /// names read back via `artifacts read` otherwise. The fold variants
+    /// (`PRODUCTION.ENV`) are pinned at the interface level for every list
+    /// entry; the pin here is the CONSUMER wiring — deleting the
+    /// `.or_else` suffix leg at [`resolve_session_artifact`]/inside
+    /// [`check_sensitive_canonical`] keeps every other pin green.
+    #[test]
+    fn env_component_suffix_refused_through_the_mirror() {
+        let blocked = std::env::temp_dir()
+            .join("s-1")
+            .join("deploy")
+            .join("production.env");
+        assert!(
+            check_sensitive_path(&blocked).is_err(),
+            "production.env must be refused through the suffix leg"
+        );
+        let benign = std::env::temp_dir().join("s-1").join("dotenv.md");
+        assert!(
+            check_sensitive_path(&benign).is_ok(),
+            "dotenv.md is not an environment file"
+        );
     }
 
     /// Round-7 review M3: the alias arm must be drivable through the CLI

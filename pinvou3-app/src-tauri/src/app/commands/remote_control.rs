@@ -1933,6 +1933,25 @@ mod tests {
     }
 
     #[test]
+    fn busy_producer_bail_stays_bare_in_the_engine() {
+        // Round-12 复审 P3:busy 锚点的另一端——engine.rs 的
+        // `anyhow::bail!("session_turn_in_progress")` 必须保持裸形态。该
+        // 错误串会被 reserve_turn 的 map_err 加上 reservation 前缀、再被
+        // 上面的分类器按整段识别;一旦这里被包上 `.context(...)` 或改写
+        // 文案,分类器失配,busy 拒绝折成通用 chat 失败,手机端远程回
+        // 合对账卡死(与上面同一失败方向——消费者端的钉看不见生产者端
+        // 的回归)。
+        let source = include_str!("../../features/assistant/engine.rs");
+        assert_eq!(
+            source
+                .matches("anyhow::bail!(\"session_turn_in_progress\")")
+                .count(),
+            2,
+            "the bare busy bail shape must stay (a rewrite here breaks the busy classifier)"
+        );
+    }
+
+    #[test]
     fn stable_web_error_codes_are_locked() {
         // `acpErrors.js` treats every code below as a controlled Web failure;
         // `web_access_contract.test.mjs` additionally pins the mapping from

@@ -891,6 +891,13 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
+    // Round-12 复审 P2:每个快照在 add -A 之后重跑一次 purge。info/exclude
+    // 只挡 untracked;工作树 .gitignore(含子目录)按 gitignore(5) 优先级
+    // 压过 info/exclude,`!.env` 类否定规则会在每次 add -A 把敏感文件重新
+    // 收进影子 index——一次性迁移 purge(secret-excludes-v1 门控)只在
+    // 升级时清一次,挡不住下一轮重入。purge 幂等(--ignore-unmatch),
+    // 干净仓库上是一次廉价的空扫描。
+    purge_secret_patterns_from_index(&repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()
         .to_string();
@@ -1524,6 +1531,35 @@ pub(crate) fn git_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-12 复审 P2:快照路径的 add -A 之后必须紧跟 purge。工作树
+    /// `.gitignore` 的否定规则(`!.env`)按 gitignore(5) 优先级压过
+    /// info/exclude,会在每个快照把敏感文件重新收进影子 index——一次性
+    /// 迁移 purge 只在升级时清一次,挡不住下一轮重入。源码契约钉:删掉
+    /// 快照流程里的 purge 调用必须在此变红(restore 路径的 read-tree 后
+    /// purge 与 ensure_repo 的迁移 purge 是另两处独立防线,不受影响)。
+    #[test]
+    fn snapshot_purge_follows_the_add_in_the_capture_flow() {
+        let source = include_str!("mod.rs");
+        let capture = source
+            .split("fn create_checkpoint_preserving(")
+            .nth(1)
+            .expect("create_checkpoint_preserving must exist");
+        let capture_body = capture
+            .split("\nfn ")
+            .next()
+            .expect("capture body must be extractable");
+        let add = capture_body
+            .find("&[\"add\", \"-A\"]")
+            .expect("capture must stage through add -A");
+        let purge = capture_body
+            .find("purge_secret_patterns_from_index(&repo, &execution_root)")
+            .expect("the snapshot-path purge must follow the add -A");
+        assert!(
+            purge > add,
+            "the snapshot-path purge must run after the add -A to re-close the gitignore-negation hole"
+        );
+    }
 
     /// Upgrade regression: index entries written before `CheckpointMeta.label`
     /// was restored carry no `label` key. The field must deserialize with its

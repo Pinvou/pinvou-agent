@@ -62,6 +62,7 @@ pub use os::path_identity_is_same_or_nested;
 // them back to byte equality instead of a drifting `cfg!(windows)` re-copy.
 pub use os::path_component_eq;
 pub use os::path_component_prefix;
+pub use os::path_component_suffix;
 pub use os::path_starts_with_folded;
 // Same crate-boundary shape as the re-exports above: the headless CLI's
 // file-persisting lanes (`artifacts write`, `feedback submit`) were the last

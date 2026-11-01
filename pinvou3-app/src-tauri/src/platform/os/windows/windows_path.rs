@@ -86,6 +86,11 @@ pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
     super::super::interface::volume_fold_prefix(component, prefix)
 }
 
+/// NTFS 默认大小写不敏感:组件后缀比较与 `path_component_eq` 同用折叠原语。
+pub fn path_component_suffix(component: &OsStr, suffix: &str) -> bool {
+    super::super::interface::volume_fold_suffix(component, suffix)
+}
+
 /// Windows 空设备名（git 等外部工具的「读空配置」入参）。
 pub fn null_device() -> &'static str {
     "NUL"

@@ -6,8 +6,8 @@ pub(crate) use windows_path::bundled_python_path;
 pub use windows_path::{
     apply_user_npm_prefix, configure_onnxruntime_dylib, connector_cli_command,
     filesystem_path_identity_key, kill_pid_tree, null_device, obsidian_config_path,
-    path_component_eq, path_component_prefix, platform_compat_path, python_command, user_home_dir,
-    validate_upload_location,
+    path_component_eq, path_component_prefix, path_component_suffix, platform_compat_path,
+    python_command, user_home_dir, validate_upload_location,
 };
 pub(crate) use windows_path::{asr_model_path, bundled_asr_backend_path, bundled_asr_tool_path};
 pub use windows_permission::{

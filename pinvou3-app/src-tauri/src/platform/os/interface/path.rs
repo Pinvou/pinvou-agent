@@ -22,6 +22,10 @@ pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
     super::super::platform::path_component_prefix(component, prefix)
 }
 
+pub fn path_component_suffix(component: &OsStr, suffix: &str) -> bool {
+    super::super::platform::path_component_suffix(component, suffix)
+}
+
 /// Stable identity key for paths already stored by the application. The platform adapter
 /// applies only equivalences guaranteed by that OS (for example Windows separators and case).
 pub fn filesystem_path_identity_key(path: &str) -> String {
@@ -92,6 +96,21 @@ pub(crate) fn volume_fold_prefix(component: &OsStr, prefix: &str) -> bool {
             .is_some_and(|head| head.eq_ignore_ascii_case(prefix));
     }
     volume_fold_spelling(&text).starts_with(&volume_fold_spelling(prefix))
+}
+
+/// `path_component_suffix` 的折叠实现，快速路径同上（后缀长度切片上做
+/// ASCII 无关比较，不构造新串）。两侧均为 ASCII 时任意字节下标都是字符
+/// 边界，切片不会 panic；`get` 的 Option 兜底防御非 ASCII 混入。
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+pub(crate) fn volume_fold_suffix(component: &OsStr, suffix: &str) -> bool {
+    let text = component.to_string_lossy();
+    if text.is_ascii() && suffix.is_ascii() {
+        return text.len() >= suffix.len()
+            && text
+                .get(text.len() - suffix.len()..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix));
+    }
+    volume_fold_spelling(&text).ends_with(&volume_fold_spelling(suffix))
 }
 
 /// 组件序列版 `starts_with`：系统区前缀黑名单（`/etc/ssh` 等）按组件对
@@ -265,6 +284,41 @@ mod tests {
             assert_ne!(
                 filesystem_path_identity_key(r"folder\file.md"),
                 filesystem_path_identity_key("folder/file.md"),
+            );
+        }
+    }
+
+    #[test]
+    fn blocked_list_entries_fold_onto_themselves_for_every_entry() {
+        // Round-12 复审:黑名单全量条目的折叠语义钉。大小写不敏感卷(APFS/
+        // NTFS)会把大写拼写解析到与原拼写相同的磁盘文件,适配器选择的折叠
+        // 比较(posix/windows 的 path_component_eq/prefix/suffix)必须把每
+        // 个条目的大写变体判为命中。适配器自身的选择分支由 macOS/Windows
+        // 的 CI 腿执行;此处跨平台钉住折叠原语对全部清单条目的语义——
+        // 折叠路径上漏判任何一个条目(或折叠原语被退化为字节比较)在
+        // 任何平台上都直接变红。纯字符串逻辑,无文件系统访问。
+        let entries: Vec<&str> = crate::platform::path_policy::BLOCKED_COMPONENTS
+            .iter()
+            .chain(crate::platform::path_policy::BLOCKED_COMPONENT_PREFIXES.iter())
+            .chain(crate::platform::path_policy::BLOCKED_COMPONENT_SUFFIXES.iter())
+            .copied()
+            .collect();
+        assert!(entries.len() >= 30, "黑名单条目数不应莫名缩水");
+        for entry in &entries {
+            let upper = entry.to_uppercase();
+            assert!(
+                volume_fold_eq(OsStr::new(upper.as_str()), entry),
+                "折叠比较必须把大写变体 {upper} 判为命中 {entry}"
+            );
+        }
+        for suffix in crate::platform::path_policy::BLOCKED_COMPONENT_SUFFIXES {
+            assert!(
+                volume_fold_suffix(OsStr::new("PRODUCTION.ENV"), suffix),
+                "折叠后缀必须命中 PRODUCTION.ENV"
+            );
+            assert!(
+                !volume_fold_suffix(OsStr::new("dotenv.md"), suffix),
+                "折叠后缀不得误伤非 .env 文件"
             );
         }
     }

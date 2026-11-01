@@ -5,6 +5,7 @@ import { chmod, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { encodeFrame } from "./frame.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIB = 1024 * 1024;
@@ -259,19 +260,13 @@ function terminateDestination(ws) {
 
 function send(ws, value) {
   if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
-  // JSON.stringify is recursive and throws RangeError on deeply nested values
-  // that JSON.parse accepted, so a forwarded frame can be unserializable even
-  // though ingress let it through. Treat this destination exactly like the
-  // high-water-mark path below: one poisoned frame must terminate only this
-  // socket, never crash the Relay process.
+  // One poisoned frame (encodeFrame throws, see frame.js) must terminate only
+  // this destination, exactly like the high-water-mark path below — never
+  // crash the Relay process.
   let encoded;
   let bytes;
   try {
-    encoded = JSON.stringify(value);
-    // byteLength stays inside the same guard: stringify of JSON.parse output
-    // cannot be `undefined` today, but a future `send(ws, undefined)` call
-    // site would throw here and escape the destination-only cleanup.
-    bytes = Buffer.byteLength(encoded);
+    ({ encoded, bytes } = encodeFrame(value));
   } catch {
     terminateDestination(ws);
     return false;
@@ -1087,6 +1082,12 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
 
 server.on("upgrade", (req, socket, head) => {
+  // The error listener must exist before any await/deferral: ws attaches its
+  // raw-socket 'error' listener only inside handleUpgrade/setSocket, so a
+  // client RST between the upgrade event and the handshake would surface as
+  // an unhandled 'error' event and kill the process. One pre-auth packet
+  // must never take down the Relay.
+  socket.on("error", () => socket.destroy());
   if (!sourceAllowed(req)) {
     socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     socket.destroy();

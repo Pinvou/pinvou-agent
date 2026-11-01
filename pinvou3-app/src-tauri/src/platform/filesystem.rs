@@ -2785,10 +2785,14 @@ pub(crate) mod tests {
     use std::path::Path;
 
     use super::{
-        atomic_write, atomic_write_private, is_executable_file, permission_bits,
-        quarantine_corrupt_file, quarantine_corrupt_file_bytes, quarantine_corrupt_file_copy,
-        quarantine_secret_file, read_capped, rotate_log_if_oversized,
+        atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
+        quarantine_corrupt_file_bytes, quarantine_corrupt_file_copy, read_capped,
+        rotate_log_if_oversized,
     };
+    // Round-12 复审:permission_bits / quarantine_secret_file 的调用测试是
+    // cfg(unix)(0600 语义),无条件导入会在 Windows 测试构建下悬空为
+    // unused-import 硬错——此前该分支从未在 Windows 上编译过,与 Round-4
+    // 的「Linux 把坏臂 cfg 出去、本地验证全绿」同型。
     #[cfg(unix)]
     use super::{create_secret_file, open_private_append_file, open_private_lock_file};
     #[cfg(any(
@@ -2797,6 +2801,8 @@ pub(crate) mod tests {
         all(target_os = "linux", target_pointer_width = "64")
     ))]
     use super::{ensure_private_real_directory, open_private_file_directory};
+    #[cfg(unix)]
+    use super::{permission_bits, quarantine_secret_file};
 
     /// The open-time metadata gate bounds the read only at
     /// open time — a file appended past the cap between the gate and EOF

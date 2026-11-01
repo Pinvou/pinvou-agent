@@ -28,12 +28,24 @@ pub fn pinvou3_home() -> PathBuf {
 /// 折叠任意文本(通常是 io::Error 的 Display,内嵌 `create /home/u/.pinvou3/…`
 /// 一类绝对路径)中的存储根前缀为 `~/.pinvou3`,供随成功载荷出站的错误文本
 /// 使用:绝对路径不得跨 relay。非前缀文本原样返回。
+///
+/// Round-12 复审:发生折叠时把剩余文本里的路径分隔符统一为 `/`,使出站
+/// 形态跨平台一致(Windows 的 `join`/`Display` 产生 `\`,此前折叠结果是
+/// `~/.pinvou3\user\...`,而消费端断言/pin 的是正斜杠形态)。该函数的
+/// 产出是面向手机载荷与日志的展示文本,不回喂文件系统 API,分隔符
+/// 归一化不影响任何路径解析;未发生折叠的文本保持原样返回(与既有
+/// display_redacted 的恒等钉一致)。
 pub fn redact_storage_prefix(text: &str) -> String {
     let prefix = pinvou3_home().display().to_string();
     if prefix.is_empty() {
         return text.to_string();
     }
-    text.replace(&prefix, "~/.pinvou3")
+    let folded = text.replace(&prefix, "~/.pinvou3");
+    if folded == text {
+        folded
+    } else {
+        folded.replace('\\', "/")
+    }
 }
 
 pub fn settings_path() -> PathBuf {
@@ -909,7 +921,23 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-12 复审:折叠后剩余文本的分隔符统一为 `/`——Windows 侧
+    /// `join`/`Display` 产生 `\`,出站形态必须是跨平台一致的正斜杠形式。
+    /// 输入在 POSIX 上同样含反斜杠(展示文本不回喂文件系统 API),该断言
+    /// 在任何平台都执行。
     #[test]
+    fn redact_storage_prefix_normalizes_separators_in_the_folded_remainder() {
+        crate::platform::test_support::with_temp_home("paths-redact-separators", || {
+            let root = pinvou3_home();
+            let text = format!("{}\\user\\memory\\snapshot.md", root.display());
+            assert_eq!(
+                redact_storage_prefix(&text),
+                "~/.pinvou3/user/memory/snapshot.md",
+                "the folded remainder must use forward slashes on every platform"
+            );
+        });
+    }
+
     fn redact_storage_prefix_keeps_sibling_out_of_storage_root_form() {
         crate::platform::test_support::with_temp_home("paths-redact-sibling", || {
             // 存储根本身命名为 .pinvou3(镜像默认布局 <home>/.pinvou3),

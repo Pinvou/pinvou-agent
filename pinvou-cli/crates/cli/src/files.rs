@@ -271,11 +271,17 @@ fn translate_ingest_error(message: &str) -> String {
     }
     // `platform::path_policy::check_sensitive_components`.
     if let Some(rest) = message.strip_prefix("path ") {
-        // 前缀变体的分隔符更长,必须先于精确组件变体尝试,否则会把
-        // "prefix .env." 整体当成组件名回显。
+        // 前缀/后缀变体的分隔符更长,必须先于精确组件变体尝试,否则会把
+        // "prefix .env." / "suffix .env" 整体当成组件名回显。
         if let Some((path, prefix)) = rest.split_once(" crosses sensitive component prefix ") {
             return format!(
                 "{path} crosses the credential path component prefix `{prefix}`; files under \
+                 credential locations are never read into a model context"
+            );
+        }
+        if let Some((path, suffix)) = rest.split_once(" crosses sensitive component suffix ") {
+            return format!(
+                "{path} crosses the credential path component suffix `{suffix}`; files under \
                  credential locations are never read into a model context"
             );
         }
@@ -498,6 +504,23 @@ fn translate_ingest_warning(warning: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-12 复审:后缀变体(`*.env` 家族)的翻译臂——分隔符同样比
+    /// 精确组件变体长,必须先于后者尝试,否则 "`suffix .env`" 会被整体
+    /// 当组件名回显。
+    #[test]
+    fn ingest_error_translation_splits_the_component_suffix_delimiter_first() {
+        let upstream = "path /home/u/deploy/production.env crosses sensitive component suffix .env";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential path component suffix `.env`"),
+            "the suffix arm must win: {translated}"
+        );
+        assert!(
+            !translated.contains("`suffix .env`"),
+            "the exact-component split must not echo the suffix delimiter's tail: {translated}"
+        );
+    }
 
     /// Round-5 复审:前缀变体分隔符更长、必须先于精确组件变体尝试——
     /// 顺序颠倒会把 "`prefix .env.`" 整体当组件名回显。此前的翻译臂

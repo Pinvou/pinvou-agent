@@ -849,7 +849,13 @@ pub async fn edit_last_turn(
             "send_error",
             Some(&format!("{error:#}")),
         );
-        return Err(format!("edit_last_turn: {error:#}"));
+        // Round-12 复审:与文件内其余 web 可见 Err 同纪——过共享折叠,存储
+        // 根前缀不得随错误文本出站(该臂是 `if let Err` + `return Err` 形,
+        // 不在 `web_visible_memory_errors_fold_the_storage_prefix` 的
+        // `.map_err` 扫描内,折叠是实义而非计数)。
+        return Err(crate::platform::paths::redact_storage_prefix(&format!(
+            "edit_last_turn: {error:#}"
+        )));
     }
     Ok(())
 }

@@ -385,13 +385,17 @@ fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevoc
     salvaged
 }
 
-fn quarantine_pending_ledger(path: &Path, data: &[u8]) {
+/// 隔离损坏账本原件留证。返回隔离是否成功——调用方据此决定空抢救集是否
+/// 可以按空账本语义移除路径(Round-12 复审:隔离彻底失败时原件是仅存的
+/// 证据,不得随后被删除)。
+fn quarantine_pending_ledger(path: &Path, data: &[u8]) -> bool {
     match crate::platform::filesystem::quarantine_corrupt_file(path) {
         Ok(quarantined) => {
             eprintln!(
                 "[web-access] quarantined corrupt pending-revocation ledger to {}",
                 quarantined.display()
             );
+            true
         }
         Err(rename_error) => {
             // rename 失败(Windows AV/备份锁等)不能默许证据被后续的
@@ -410,13 +414,17 @@ fn quarantine_pending_ledger(path: &Path, data: &[u8]) {
                              wrote in-memory bytes of corrupt pending-revocation ledger to {}",
                             quarantined.display()
                         ),
-                        Err(error) => eprintln!(
-                            "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
-                            path.display()
-                        ),
+                        Err(error) => {
+                            eprintln!(
+                                "[web-access] failed to quarantine corrupt pending-revocation ledger {}: {error}",
+                                path.display()
+                            );
+                            return false;
+                        }
                     }
                 }
             }
+            true
         }
     }
 }
@@ -497,15 +505,25 @@ fn load_pending_revocations_classified(path: &Path) -> RevocationLedgerLoad {
             salvaged.entries.len(),
             ledger.entries.len()
         );
-        quarantine_pending_ledger(path, &data);
+        let quarantined = quarantine_pending_ledger(path, &data);
         // 抢救出的条目必须立刻落盘:进程崩溃在 worker ack 之前会丢掉这批
         // 待吊销记录(隔离副本只留证据,不会被自动重放),旧 endpoint 将在
         // relay 侧保持可加入——正是本分支要避免的结局。空抢救集按空账本
-        // 语义移除已隔离的路径,避免下一次 load 重复走隔离。落盘失败则
+        // 语义移除已隔离的路径,避免下一次 load 重复走隔离;但隔离彻底失败
+        // 时原件是仅存的证据,不得按空账本语义删除(Round-12 复审:保留
+        // 原件并大声记录,下一轮 load 重走隔离)。落盘失败则
         // 降级为内存态:本进程内由回放的权威账本
         // (`pending_revocation_backlog`)接住,确认针对它整体落盘即可重建
         // 盘上账本;进程在此之前重启则这批条目已不可恢复(与崩溃窗口同
         // 级残余,Round-11 复审 minor 补记)。
+        if salvaged.entries.is_empty() && !quarantined {
+            eprintln!(
+                "[web-access] quarantine of the invalid pending-revocation ledger {} failed and \
+                 nothing was salvaged; the original file is kept in place as evidence",
+                path.display()
+            );
+            return RevocationLedgerLoad::Ledger(salvaged);
+        }
         if let Err(persist_error) = persist_pending_revocations_to(path, &salvaged) {
             eprintln!(
                 "[web-access] failed to persist salvaged pending revocations: {persist_error}"
@@ -639,6 +657,13 @@ pub(super) fn load_or_initialize_rpc_ledger_at(
         }
         Err(error) => return Err(format!("read {}: {error}", path.display())),
     };
+    // Round-12 复审 P3:首次句柄上的 0600 修复,与 config / revocations
+    // 两个载入器同形——该文件按 0600 写入,备份恢复可能留下放宽权限的
+    // 副本,读取即修复且先于任何内容读取。内容敏感度低于 desktop_secret
+    // (endpoint_id + 请求指纹),修复失败按读取错误 fail-closed 上抛
+    // (与本载入器其余 IO 错误一致);Windows/fallback 平台为显式 no-op。
+    platform::enforce_private_permissions(&file, path)
+        .map_err(|error| format!("restrict {}: {error}", path.display()))?;
     let mut text = String::new();
     file.take((super::MAX_RPC_LEDGER_FILE_BYTES + 1) as u64)
         .read_to_string(&mut text)

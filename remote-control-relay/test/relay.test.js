@@ -2299,6 +2299,63 @@ test("survives illegal websocket frames at the receiver and keeps serving", asyn
   }
 });
 
+test("survives a client RST between the upgrade request and the handshake and keeps serving", async () => {
+  // Round-12 pin for the upgrade-path crash guard: the upgrade listener owns
+  // the raw socket's 'error' event from its first line, because ws attaches
+  // its own listener only inside handleUpgrade/setSocket. A client RST racing
+  // the handshake must therefore terminate only this socket — never surface
+  // as ERR_UNHANDLED_ERROR and kill the process — even if a future change
+  // ever defers between the upgrade event and handleUpgrade.
+  const isolated = await spawnRelay();
+  try {
+    let stderr = "";
+    const onStderr = (chunk) => { stderr += String(chunk); };
+    isolated.child.stderr.on("data", onStderr);
+    await new Promise((resolve, reject) => {
+      const raw = netConnect(isolated.port, "127.0.0.1");
+      const key = crypto.randomBytes(16).toString("base64");
+      raw.setNoDelay(true);
+      const timer = setTimeout(() => {
+        raw.destroy();
+        reject(new Error("the relay neither completed nor tore down the aborted upgrade within 3000ms"));
+      }, 3000);
+      raw.on("close", () => { clearTimeout(timer); resolve(); });
+      raw.on("error", () => { /* RST: expected */ });
+      raw.on("connect", () => {
+        // Same well-formed request as upgradeRaw (no Origin header: the
+        // handshake passes pre-auth), then an immediate RST so the reset
+        // races the server-side upgrade processing.
+        raw.write(
+          `GET /pinvou3/remote/ws HTTP/1.1\r\n`
+          + `Host: 127.0.0.1:${isolated.port}\r\n`
+          + `Upgrade: websocket\r\n`
+          + `Connection: Upgrade\r\n`
+          + `Sec-WebSocket-Key: ${key}\r\n`
+          + `Sec-WebSocket-Version: 13\r\n\r\n`,
+        );
+        if (typeof raw.resetAndDestroy === "function") raw.resetAndDestroy();
+        else raw.destroy();
+      });
+    });
+    isolated.child.stderr.off("data", onStderr);
+
+    // The process survived the aborted handshake and its stderr shows no
+    // unhandled-error crash.
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+    assert.doesNotMatch(stderr, /unhandled[\s_'-]*error/i);
+
+    // The relay still answers probes and completes fresh handshakes.
+    const health = await fetch(`${isolated.httpUrl}/pinvou3/remote/healthz`);
+    assert.equal(health.ok, true);
+    const healthy = await openSocket(isolated.wsUrl);
+    assert.equal(healthy.readyState, healthy.OPEN);
+    closeSocket(healthy);
+  } finally {
+    await stopRelay(isolated.child);
+  }
+});
+
 test("a newer desktop registration replaces the old socket and keeps the web lease", async (t) => {
   const endpointId = `endpoint_desktop_replace_${Date.now()}`;
   const accessToken = "access-token-desktop-replace-000000001";

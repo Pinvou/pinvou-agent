@@ -471,7 +471,13 @@ pub(super) enum WebSessionScope {
 /// own picker, but a paired phone supplies them directly — without this
 /// gate the token holder could index (and then read out via kb_documents)
 /// arbitrary disk trees. Every path must clear the same browsable policy as
-/// `web_access_list_host_files`: $HOME subtree minus credential components.
+/// `web_access_list_host_files` — which is platform-dependent: POSIX
+/// confines to the $HOME subtree minus credential components, while the
+/// Windows adapter (`validate_upload_location`) has no under-$HOME leg and
+/// only excludes the system roots (WINDIR/SystemRoot/ProgramFiles/
+/// ProgramData), so on Windows the effective boundary here is the
+/// component blocklist plus the system-root exclusion (Round-12 复审:
+/// 承认这一不对称并如实记录,under-$HOME 收紧是需要产品决策的后续).
 /// 上限防滥用:1 MiB 请求体可塞下数万条路径,而每条都要过一次触盘的
 /// canonicalize;逐条准入前先按条数做确定性的形状拒绝。
 const MAX_WEB_KB_PATHS: usize = 128;

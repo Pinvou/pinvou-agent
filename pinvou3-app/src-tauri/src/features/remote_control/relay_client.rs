@@ -447,11 +447,31 @@ async fn run_revocation_loop(
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(value) => {
                                     let terminal = terminal_message(&value, &endpoint_id);
+                                    // Round-12 复审 P3:worker 自身的终止集与
+                                    // 消费方的 ack 集是两个函数,此前仅靠当前
+                                    // 唯一调用点的行为耦合。endpoint_not_found
+                                    // 在 terminal_message 里按「可恢复」折叠为
+                                    // None(注册循环靠 reconnect 自愈),但对
+                                    // 吊销 worker 而言 endpoint 已不存在,吊销
+                                    // 天然完成——未来的 spawn_revocation 调用点
+                                    // 若不消费 Message 帧,会把一次额外重试变
+                                    // 成 12s 超时的无限 connect→revoke 循环。
+                                    // worker 在此处自行把该码判为终态;外来
+                                    // endpoint 的帧仍按 None 忽略(与折叠谓词
+                                    // 同一 scope 口径)。
+                                    let scoped_to_self = value
+                                        .get("endpoint_id")
+                                        .and_then(Value::as_str)
+                                        .is_none_or(|scope| scope.is_empty() || scope == endpoint_id);
+                                    let worker_terminal = terminal.is_some()
+                                        || (scoped_to_self
+                                            && value.get("code").and_then(Value::as_str)
+                                                == Some("endpoint_not_found"));
                                     drop(value);
                                     if tx_in.send(RelayInbound::Message(text.to_string())).await.is_err() {
                                         return;
                                     }
-                                    if terminal.is_some() {
+                                    if worker_terminal {
                                         let _ = write.send(Message::Close(None)).await;
                                         return;
                                     }

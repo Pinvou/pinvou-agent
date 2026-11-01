@@ -341,6 +341,14 @@ pub fn capture_baseline(session_id: &str, root: &Path) -> Result<()> {
         let mut dirty_paths = BTreeSet::new();
         for change in status {
             dirty_paths.insert(change.relative_path.clone());
+            // Round-12 复审:黑名单条目永远不会被预览/差异车道服务,基线
+            // 指纹不应读它们的内容——与变更车道的既定理由一致(黑名单
+            // 条目不能先读一遍内容);不可读的黑名单名(如 chmod-000 的
+            // .env)此前会让指纹整体报错、连带会话创建失败。dirty_paths
+            // 仍保留全量,桌面分支的脏标计数语义不变。
+            if relative_path_crosses_blocked_component(&change.relative_path) {
+                continue;
+            }
             let path = root.join(&change.relative_path);
             if let Some(fingerprint) = fingerprint(&path, true)? {
                 entries.insert(change.relative_path, fingerprint);
@@ -890,6 +898,12 @@ pub fn workspace_diff(session_id: &str, root: &Path, relative_path: &str) -> Res
         if path_crosses_blocked_component(&landing) {
             bail!("工作区路径途经凭据文件，拒绝生成差异: {relative}");
         }
+        // Round-12 复审 P3:解析落点还要复查包含关系——canonicalize 只解
+        // 析链接,不保证落点仍在工作区内。preview 车道(resolve_existing_
+        // path)与 untracked_diff 都有这一腿,diff 的 git 臂虽只服务仓库
+        // 内容,这里把「canonicalize → 黑名单 → 包含」不变量在三个臂间
+        // 显式对齐,拒绝语义与 preview 一致。
+        ensure_path_within_workspace(&root, &landing)?;
     }
 
     if let Some(cached) = diff_cache_get(session_id, &root, &relative) {
@@ -1579,7 +1593,14 @@ fn git_status_entries(root: &Path) -> Result<Vec<WorkspaceChange>> {
         let x = record[0] as char;
         let y = record[1] as char;
         let path = porcelain_record_path(record);
-        if (matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C')) && index < records.len() {
+        if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
+            // Round-12 复审 P3:来源字段缺失的截断记录按 fail-closed 处理
+            // ——真实 git 不会产生这种形态,但其余畸形形态全部 fail-closed
+            // (旧守卫 `&& index < records.len()` 会放行无来源的目的地条目
+            // 且不消费任何记录):不推进、不回显。
+            if index >= records.len() {
+                continue;
+            }
             // Round-9 复审 BLOCKER:porcelain 的 R/C 记录是 `目的地 NUL
             // 来源`,来源才是改名对里旧内容(黑名单名下的字节)的载体。
             // 来源命中黑名单时,目的地条目整体不回显——它正是把旧字节
