@@ -22,7 +22,7 @@ metadata:
 
 4. **`--format json`（默认）下，判断成功用 `ok == true`（或进程退出码 0），不要用 `code == 0`**：成功信封没有顶层 `code` / `msg` 字段，`code` 只出现在错误信封的 `error` 内。按 OpenAPI 老格式 `{"code": 0, "msg": "ok"}`判断会把所有成功调用误判为失败——封装写入类命令时尤其危险。JSON 输出契约 → [`lark-shared-output-contract.md`](references/lark-shared-output-contract.md)。
 
-5. **CLI 未安装 / 未登录时不要自行排障**：`lark-cli` 命令不存在或执行报"找不到命令"时，由品悟应用代管安装——**不要自行安装或升级**，提示用户在品悟「插件中心 → 飞书（Lark）」卡片重新点「连接」，由应用完成安装/升级后重试。未登录、登录态过期或权限不足时，按 [`lark-shared-identity-and-permissions.md`](references/lark-shared-identity-and-permissions.md) 的按需授权两段式处理（发起授权的回合只发链接，绝不在会话内跑阻塞式登录），也不要因未登录直接断定技能不可用。
+5. **CLI 未安装 / 未登录时不要自行排障**：`lark-cli` 命令不存在或执行报"找不到命令"时，由品悟应用代管安装——**不要自行安装或升级**，提示用户在品悟「插件中心 → 飞书（Lark）」卡片重新点「连接」，由应用完成安装/升级后重试。未登录、登录态过期或权限不足时，按 [`lark-shared-identity-and-permissions.md`](references/lark-shared-identity-and-permissions.md) 的按需授权两段式处理（发起授权的回合只发链接，不在同一轮跑阻塞式登录；后续轮按该 reference 完成 `--device-code` 登录），也不要因未登录直接断定技能不可用。
 
 6. **限流（rate limit）默认处理**：错误码 / 错误消息命中 `rate_limit`、`99991400`、HTTP `429`，或 `hint` 提示频率受限时，**不要立即重试**：按返回的 `retry_after_seconds` / `hint` 等待后做指数退避，总尝试次数控制在约 3 次（1 次初始 + 2 次重试）以内；批量 / 分页场景改用更小批次、放慢翻页规避。个别接口有专属限流口径的（如 drive 导出任务的等待与续查规则），以对应 reference 为准。
 
