@@ -171,6 +171,66 @@ try {
     assert.equal(lane.items.find(item => item.type === 'approval').cardState, 'denied');
   }
 
+  // ── 评审 P2：快照 await 窗口的决议竞态——落空 resolved 留墓碑，迟到快照不复活 ──
+  // 时序：get_pending_approvals 快照（在途）→ 同一审批从另一表面落定，
+  // chat:approval_resolved 先到而此刻 lane 无卡（落空）→ 旧快照回程按
+  // approval_required 重放。无墓碑时已决审批会被当活卡插回（可点、可提交，
+  // 提交只会得到 approval-not-found）；有墓碑时必须拦截。已知决策值才落
+  // 墓碑（fail-neutral 的未知值不落，留待权威回声）。
+  {
+    const lane = createNativeLane();
+    const synthetic = {
+      session_id: 's1',
+      approval_id: 'ap-race',
+      tool_name: 'shell_exec',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    };
+    // 快照在途：lane 还没有这张卡，决议先到 → 落空分支。
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-race', decision: 'deny',
+    }), false, '无卡可落的 resolved 无可视变化');
+    // 旧快照回程：同 id 的 approval_required 必须被墓碑拦下。
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_required', synthetic), false,
+      '墓碑拦截迟到快照的已决审批');
+    assert.equal(lane.items.filter(item => item.type === 'approval').length, 0,
+      '已决审批不得以活卡形态出现');
+    // 墓碑只拦该 id：后续新审批不受影响。
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_required', {
+      ...synthetic, approval_id: 'ap-fresh',
+    }), true);
+    // 卡在场时的 resolved 正常落终态，不依赖墓碑（既有语义回归护栏）。
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-fresh', decision: 'allow',
+    }), true);
+    const card = lane.items.find(item => item.type === 'approval');
+    assert.equal(card.cardState, 'allowed');
+  }
+
+  // ── round-4 fail-neutral 的 native 车道同口径：未知决策值不得落终态 ──
+  // 主车道（chat-events）已有 fail-neutral 钉；native lane 的 resolved
+  // 分支曾是同样的三元直落 allowed 形状，这里锁行为：畸形回声 no-op，
+  // 未决卡保持 active 等权威回声/终态清扫。
+  {
+    const lane = createNativeLane();
+    applyNativeChatEvent(lane, 'chat:approval_required', {
+      session_id: 's1', approval_id: 'ap-mal', tool_name: 'shell_exec',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    });
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-mal', decision: 'allow_all',
+    }), false, '未知决策值 no-op（无可视变化）');
+    const malformed = lane.items.find(item => item.type === 'approval');
+    assert.equal(malformed.resolved, false, '畸形回声不得落 resolved');
+    assert.equal(malformed.cardState, 'active', '未决卡保持 active');
+    // 缺失决策值同口径。
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-mal',
+    }), false, '缺失决策值 no-op');
+    assert.equal(lane.items.find(item => item.type === 'approval').cardState, 'active');
+  }
+
   // ── chat:guardrail_denied：硬拒通知（不出卡）+ 稳定 reason 键透传 ──
   {
     const lane = createNativeLane();

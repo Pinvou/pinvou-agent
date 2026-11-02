@@ -627,6 +627,10 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       const resolvedId = String(p.approval_id || p.approvalId || '');
       if (!resolvedId) return false;
       const decision = String(p.decision || '');
+      // fail-neutral（与 chat-events 主车道同口径）：未知/缺失决策值按 no-op
+      // 早退——审批面上的畸形载荷不得把未决卡映射成 "allowed"，宁可留着
+      // 未决等权威回声/终态清扫。
+      if (decision !== 'deny' && decision !== 'allow' && decision !== 'allow_for_session') return false;
       let changed = false;
       lane.items.forEach(item => {
         if (item && item.type === 'approval' && item.approvalId === resolvedId && !item.resolved) {
