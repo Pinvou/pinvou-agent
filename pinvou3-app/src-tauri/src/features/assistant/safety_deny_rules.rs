@@ -1524,10 +1524,13 @@ fn exfil_source_rules() -> Vec<ToolAskRule> {
 }
 
 /// Sensitive face of [`exfil_source_rules`] (Full profile only): the
-/// per-credential upload spellings (`curl * ~/.ssh/id_rsa`). Under Yolo the
-/// armed engine owns the card for these; dropping the face also un-deniess
-/// the registered curl collateral (`scp -i <key>` flag-value double-read)
-/// that fires on ordinary key usage.
+/// per-credential upload spellings (`curl * ~/.ssh/id_rsa`). Under Yolo
+/// these are ABSENT, not carded: a dropped face produces no deny decision,
+/// and arming converts existing denies into cards — it cannot conjure a
+/// decision for a rule that is not there (silent pass, armed or not).
+/// Dropping the face also un-deniess the registered curl collateral
+/// (`scp -i <key>` flag-value double-read) that fires on ordinary key
+/// usage.
 fn exfil_credential_upload_rules() -> Vec<ToolAskRule> {
     let mut rules = Vec::new();
     for variant in sensitive_first_arg_variants() {
@@ -1876,7 +1879,8 @@ fn persistence_rules() -> Vec<ToolAskRule> {
 /// `tee * ~/.gitconfig`, `mv * .git/hooks/pre-commit`, `crontab -e`, …).
 /// These are the faces with day-to-day false-positive cost inside an agent
 /// workspace (dotfile management, git hook setup, cron editing) — under
-/// Yolo the armed engine owns the card for them instead of a hard deny.
+/// Yolo they are dropped outright (silent, armed or not): no rule means no
+/// deny decision, and arming only converts denies that actually fire.
 fn persistence_injection_rules() -> Vec<ToolAskRule> {
     let mut targets = Vec::new();
     for file in SHELL_STARTUP_FILES {
@@ -2489,6 +2493,13 @@ mod tests {
     /// string or dropped/duplicated a family — fix the split, not this pin.
     #[test]
     fn forkguard_ruleset_profile_full_is_the_pinned_composition() {
+        // The composition embeds the real-home spelling family; parallel
+        // tests mutate HOME under ENV_LOCK (boot-env-guard), so these
+        // string pins must serialize against them (reproduced flake under
+        // plain parallel `cargo test --lib`).
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         assert_eq!(
             safety_rules_for_profile_with_home(SafetyRuleProfile::Full, false, None),
             safety_deny_rules_with_home(false, None),
@@ -2504,6 +2515,12 @@ mod tests {
     /// by exact command strings shared with the pinned Full snapshot above.
     #[test]
     fn forkguard_ruleset_profile_floor_keeps_floor_drops_sensitive() {
+        // Same ENV_LOCK discipline as the Full composition pin above: the
+        // embedded real-home spelling family must not race parallel
+        // HOME-mutating tests.
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let full = safety_rules_for_profile_with_home(SafetyRuleProfile::Full, false, None);
         let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
         let floor_commands: Vec<&str> =
@@ -2590,8 +2607,9 @@ mod tests {
     }
 
     /// Tri-mode profile seam, engine-level: under the Floor ruleset the
-    /// sensitive spellings really pass (Yolo trades them for the armed
-    /// card) while the floor faces still short-circuit AskForApproval::Never
+    /// sensitive spellings really pass (dropped outright — no deny decision
+    /// exists for arming to convert, so Yolo runs them silent, armed or
+    /// not) while the floor faces still short-circuit AskForApproval::Never
     /// — the mechanical behavior the composition promises, not just the
     /// rule-string census.
     #[test]
@@ -2599,8 +2617,8 @@ mod tests {
         let floor_engine = ExecPolicyEngine::with_rulesets(vec![ruleset_with_denied_prefix_promotion(
             safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None),
         )]);
-        // Sensitive faces: allowed under Floor (the armed engine's deny-face
-        // mapping owns the card; unarmed Yolo runs them silent).
+        // Sensitive faces: no rule, no decision — silent under Yolo whether
+        // the host arms guardrail prompts or not.
         for cmd in ["crontab -e", "tee ~/.bashrc", "rm ~/.ssh/id_rsa"] {
             let d = check(&floor_engine, cmd);
             assert!(d.allow, "Floor profile must allow the sensitive face: {cmd}");

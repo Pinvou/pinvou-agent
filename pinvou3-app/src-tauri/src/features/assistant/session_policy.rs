@@ -156,10 +156,11 @@ impl SessionPolicy {
     /// 审批参数（auto_approve, approval_mode）——按会话的 tri-mode 安全档
     /// 取值（S-1 落地，取代两模式写死的「全自动 + Auto」）。
     ///
-    /// 映射表见 [`crate::core::mode_state::SerializableMode::approval_params`]；
-    /// 本方法保留调用点兼容并继续收敛「按产品轴取运行参数」的单一出处。
-    /// `ask_on_guardrail` 是会话级运行状态而非模式身份，不经本对象，由
-    /// bridge 从 mode_state 直取。
+    /// 映射表见 [`crate::core::mode_state::SerializableMode::approval_params`]。
+    /// 生产调用点已改为直读 `SerializableMode::approval_params`（engine_pool
+    /// 发送线 / platform::bridge）；本方法现仅剩测试调用方，保留为测试胶水
+    /// （不得再被当作生产兼容层引用）。`ask_on_guardrail` 是会话级运行状态
+    /// 而非模式身份，不经本对象，由 bridge 从 mode_state 直取。
     pub fn approval_params_for_mode(&self, mode: crate::core::mode_state::SerializableMode) -> (bool, ApprovalMode) {
         mode.approval_params()
     }
