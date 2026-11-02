@@ -52,9 +52,18 @@
   优先。尚无 mode 条目的会话翻开关：选择落侧车 + 内存覆盖镜像（不借此钉死
   mode），后续物化（模式写入铸条目）与重启经播种点（`ask_on_guardrail_seed`）
   继承该选择——显式覆盖永不静默丢弃。侧车是 `HashMap<String, bool>` 显式覆盖
-  表，与 mode 共用同一 io 互斥、原子写（`features/sessions/mode_state.rs`）；
-  落盘失败只记日志不打断交互——内存切换已生效；中断写入留不下截断文件，
-  损坏文件在装载时静默跳过。会话删除/驱逐时侧车条目随保留策略一并清除。
+  表，与 mode 共用同一 io 互斥、原子写（`features/sessions/mode_state.rs`）。
+  落盘失败语义按命令分流：**mode 切换（`set_mode`）只记日志不打断交互**——
+  内存切换已生效，落盘只做尽力持久化；**开关翻转（`set_ask_on_guardrail`）
+  则回滚**——条目与覆盖镜像恢复到调用前状态，任何读侧都不会看到盘上不存在的
+  值（fail-consistent）。中断写入留不下截断文件，损坏文件在装载时静默跳过。
+  会话删除/驱逐时侧车条目随保留策略一并清除。
+- lane 全局默认（settings.json `mode_defaults.work` /
+  `code_permission.last_mode`）**永不写入 `"auto"` 字面量**：显式 Auto 选择
+  走专用 `*_auto` 伴随旗持久化，旧词表保持 Plan/Yolo——pre-tri-mode 二进制
+  的整文件解析因此不受影响（未知变体会击穿整文件并让下一次保存用默认值
+  覆盖一切）。lane 默认的视图/解析把伴随旗折回 `Auto`；旧二进制读新文件
+  时丢弃未知旗，按各自旧默认解析（一次性、更严方向的陈旧）。
 - 写路径统一过存在性门（id 形状 + 会话存在，`ensure_mode_target_session`），
   防 IPC 直调给任意 id 铸条目/写侧车。
 
