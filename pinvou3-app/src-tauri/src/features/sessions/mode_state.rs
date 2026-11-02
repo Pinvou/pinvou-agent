@@ -1465,7 +1465,7 @@ impl SessionStore {
     /// sidecar and the in-memory override mirror — the toggle is durable
     /// user intent and must not silently vanish; it does **not** mint a mode
     /// entry (that would pin a mode the user never chose), and the next
-    /// mint consults the override via [`Self::ask_on_guardrail_seed`].
+    /// mint consults the override via `ask_on_guardrail_seed` (crate-private).
     /// Same critical-section discipline as [`Self::set_mode`]: the durable
     /// RMW runs under the shared io mutex — but unlike `set_mode`
     /// (log-only), a failed persist returns `Err`. The sidecar RMW runs
@@ -1538,7 +1538,7 @@ impl SessionStore {
     /// the mode-state entries boot minting materialized AND fills the
     /// in-memory override mirror, so entries minted LATER in this run
     /// (toggle written while entry-less, then a mode write materializes the
-    /// entry) seed through [`Self::ask_on_guardrail_seed`] and keep the
+    /// entry) seed through `ask_on_guardrail_seed` (crate-private) and keep the
     /// recorded choice. Called after `load_session_mode_states`.
     pub fn load_ask_on_guardrail_overrides(&self) {
         let file = crate::platform::paths::sessions_root().join("_ask_on_guardrail.json");
