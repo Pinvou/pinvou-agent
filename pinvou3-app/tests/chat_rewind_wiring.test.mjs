@@ -333,12 +333,17 @@ for (const language of ['zh', 'en', 'ja']) {
 // 快照（O(1)，无 transcript 解析）；回退成 store.load 全量计数或删掉派生都要红。
 // 压缩收缩窗口的正确性由后端收缩钩子的作废保证（compaction_shrink_keeps_ledger_
 // count_transcript_honest 锚定），两侧合起来才是完整的调和门契约。
+// r42 M4：派生下沉到 feature 层 `list_checkpoints_with_turn_count`（单次索引
+// 读取返回条目 + 末条 Turn 计数；条目面过滤「仅对话」哨兵、计数包含哨兵），
+// 命令层只做传输——钉改为锚定委托接线（删掉委托或回退到命令内自制计数都红），
+// 派生本体由 mod.rs 的 undo_sentinel_aligns_turn_count_and_is_hidden_from_list
+// 行为测试锚定。
 {
   const rs = readFileSync(new URL('../src-tauri/src/app/commands/checkpoints.rs', import.meta.url), 'utf8');
   assert.match(
     rs,
-    /let user_turns = entries[\s\S]{0,40}?\.rev\(\)[\s\S]{0,120}?CheckpointKind::Turn/,
-    'list_checkpoints 的 userTurns 必须从索引末条 Turn 快照派生（r21 M1 计数源钉）',
+    /list_checkpoints_with_turn_count\(&ledger\)[\s\S]{0,240}?user_turns: listed\.latest_turn/,
+    'list_checkpoints 必须委托 feature 层组合函数取「条目 + 末条 Turn 计数」（r21 M1 计数源钉 / r42 M4 委托接线）',
   );
   const listBody = rs.split('pub async fn list_checkpoints')[1] || '';
   assert.doesNotMatch(

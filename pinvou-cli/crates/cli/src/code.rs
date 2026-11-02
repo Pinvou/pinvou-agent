@@ -6343,12 +6343,16 @@ mod tests {
             body.contains("pending_rewind_conflict"),
             "the refusal must carry the named error kind (r39 M2)"
         );
-        // r41 M4: the refusal copy must interpolate the PENDING's fields, not
-        // the current attempt's target — the old copy named checkpoint X (the
-        // attempt) and advised "retry the same rewind", an unreachable loop.
+        // r41 M4 + r42 M2: the refusal copy must interpolate the PENDING's
+        // fields, not the current attempt's target — the old copy named
+        // checkpoint X (the attempt) and advised "retry the same rewind", an
+        // unreachable loop. The r41 needle here was the GUI's format string
+        // ("pending.checkpoint_id, pending.keep_turns" — app crate only),
+        // self-UNsatisfying in this crate and RED at head; the CLI
+        // destructures the projection as (pending_target, pending_keep).
         assert!(
-            body.contains("pending.checkpoint_id, pending.keep_turns"),
-            "the refusal copy must interpolate the pending's real target/keepTurns (r41 M4)"
+            body.contains("pending_target, pending_keep"),
+            "the refusal copy must interpolate the pending's real target/keepTurns via the projection (r41 M4 / r42 M2)"
         );
     }
 

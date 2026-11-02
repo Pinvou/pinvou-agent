@@ -1295,7 +1295,14 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       if (compactionResync && compactionOuterActive && typeof switchToSessionInternal === "function") {
         // 前台臂：失效已在换入前完成，此处强制盘载重注水，通知条后补。
         Promise.resolve(switchToSessionInternal(compactionSid, true, "compaction", { forceDurableLoad: true }))
-          .then(function () { addSystemItem(compactionNotice); })
+          // r42 minor 9: boolean contract (true on success, false on failure,
+          // never rejects) — a failed or superseded reload still runs then()
+          // and would append the notice to whatever buffer is current (a
+          // phantom compaction pill on another session / a blanked view).
+          // Gate on the boolean: attach only when the reload succeeded.
+          .then(function (reloaded) {
+            if (reloaded === true) addSystemItem(compactionNotice);
+          })
           .catch(function () {});
       } else {
         // 后台收缩（已预失效）/非收缩 done/原语缺席：照常挂通知。

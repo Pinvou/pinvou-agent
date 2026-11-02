@@ -40,6 +40,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod platform;
 pub(crate) mod turns;
 
 pub(crate) use turns::count_user_turns;
@@ -444,19 +445,23 @@ pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root:
 fn fs_is_case_insensitive(dir: &Path) -> bool {
     // r33 minor 13：探针名追加纳秒后缀——pid 键名在同根并发会话间会
     // AlreadyExists 冲突、第二个 ensure_repo 得到假阴性。
+    // r42 M3：r33 修复自我击败——写入名与 stat 名各自采样 now_nanos()，
+    // 两个值 virtually 不可能相等，stat 恒 miss、探针在任何文件系统上恒
+    // false（core.ignorecase 恒 false，文档化的 Makefile/makefile alias
+    // 语义永不生效；大小写敏感 FS 上则侥幸「对」）。提升为单次采样，两个
+    // 名字共享同一纳秒。
+    let nanos = now_nanos();
     let probe = dir.join(format!(
-        ".Pinvou-Icase-Probe-{}-{}",
-        std::process::id(),
-        now_nanos()
+        ".Pinvou-Icase-Probe-{}-{nanos}",
+        std::process::id()
     ));
     let insensitive = match fs::File::create_new(&probe)
         .and_then(|mut f| std::io::Write::write_all(&mut f, b""))
     {
         Ok(()) => {
             let other = dir.join(format!(
-                ".PINVOU-ICASE-PROBE-{}-{}",
-                std::process::id(),
-                now_nanos()
+                ".PINVOU-ICASE-PROBE-{}-{nanos}",
+                std::process::id()
             ));
             fs::metadata(&other).is_ok()
         }
@@ -681,10 +686,17 @@ fn git_bounded(
         // src/ 下新文件全部静默跳过（exit 0）——新文件从此不在任何快照与
         // 预览里（clean -fd 不删 ignored，文件存活但安全网不覆盖）。空值钉
         // 禁用一切外部 excludes 文件；影子仓库的排除语义只走 info/exclude
-        // （仓库内、由 ensure_repo 幂等重写）。include.path 转发的键由 scrub
-        // 正则同场清扫（--get-regexp 对 include 源键不可见 → 钉集完整性是
-        // 承重面，钉集必须无洞）。
+        // （仓库内、由 ensure_repo 幂等重写）。include/includeif 转发的键由
+        // scrub 正则同场清扫（--get-regexp 对 include 源键不可见 → 钉集完整
+        // 性是承重面，钉集必须无洞）。
         command.arg("-c").arg("core.excludesFile=");
+        // r42 M6：Windows 长路径面——core.longpaths 默认 false 时，>260 字符
+        // 的深路径让 `add -A` 以 rc=0 + 空 index 静默收场（告警进被弃的
+        // stderr）：深子树静默缺席快照与预览而检查点照常登记；回退时
+        // `clean -fd` 报「Filename too long」失败 → apply_restore 中止 → 该
+        // 会话的每次回退确定性失败（重试同败）。与 r40-M4 的「安全网被静默
+        // 掏空」同类，钉 true 让 add/clean/checkout 在长路径上如实工作。
+        command.arg("-c").arg("core.longpaths=true");
         command.args(arguments);
         crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
             .map_err(|error| run_error(&error))
@@ -963,6 +975,10 @@ fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
         .filter(|path| !path.is_empty())
         .map(|path| String::from_utf8_lossy(path).into_owned())
         .collect();
+    // r42 minor 3：非 UTF8 幸存路径（badÿdir/.ENV 形态）经 lossy 转换后的
+    // pathspec 匹配不到真条目——批量 rm 后重列，幸存即 fail-closed 报错中止
+    // restore（明文留在 index 里静默_checkout 比诚实报错更糟）。git() 以
+    // &str 传参（构造器单份），OsStr 字节面改造是披露的 follow-up。
     if survivor_paths.is_empty() {
         return Ok(());
     }
@@ -976,6 +992,16 @@ fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
         bail!(
             "git rm --cached 幸存变体失败: {}",
             String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let remaining = git_ok(repo, work_tree, &list_args)?;
+    if !remaining
+        .as_bytes()
+        .split(|byte| *byte == 0)
+        .all(|path| path.is_empty())
+    {
+        bail!(
+            "存在无法按 lossy 路径清除的幸存变体（非 UTF8 路径），中止 restore 以免明文残留影子 index"
         );
     }
     Ok(())
@@ -1118,7 +1144,12 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // false 落盘或命令钉压制——两层同向）。r41 M2：core.excludesfile 同场
     // 清扫；include.* 一并移除（include.path 转发的键对 --get-regexp 不可见
     // ——唯一能绕过本探针的投递通道，整段移除是唯一可靠清扫）。
-    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf|core\.excludesfile|include\.)";
+    // r42 M2：裸 `include\.` 被 includeif 击穿——条件包含在 --get-regexp
+    // 输出里是 `includeif.<条件>.path`（`include` 后跟 `i` 非 `.`），r41 版
+    // 对它恒不命中；被指文件转发的键同样对探针不可见并最后解析，可覆盖
+    // ensure_repo 的就地改写。收窄为前缀 `include`（include/includeif 全中；
+    // 对本模块自建的影子仓库，过宽匹配多删的只可能是无意义的自家段落）。
+    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf|core\.excludesfile|include)";
     let dangerous_keys = match git(
         &repo,
         execution_root,
@@ -1214,6 +1245,17 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
                     &["config", "--local", "--unset-all", key],
                 );
             } else {
+                // r42 M2：includeIf 子节（节名含 `:`/`/`，如 `includeif.gitdir:/`）
+                // --remove-section 无法寻址（fatal: no such section，git 对这类
+                // quoted-subsection 形态的限制）——先 --unset-all 精确去键
+                // （r42-M2 测试实证：探针正则改对后键可见、整节移除仍失败），
+                // 再尽力整节移除清扫兄弟键（filter.pwn 的 clean+smudge 双键族
+                // 仍靠整节移除）。
+                let _ = git(
+                    &repo,
+                    execution_root,
+                    &["config", "--local", "--unset-all", key],
+                );
                 let _ = git(
                     &repo,
                     execution_root,
@@ -1349,11 +1391,10 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // 失败（load_index 是全部读写的入口），而解析损坏路径早已证明隔离
             // +重建既保住「不可信 rev 不喂 git」（坏条目随隔离消失）又恢复
             // 快照能力。取证保留在隔离文件里供检查。
-            let corrupt_entry = index.entries.iter().any(|entry| {
-                let commit = entry.commit.trim();
-                let valid_len = commit.len() == 40 || commit.len() == 64;
-                !valid_len || !commit.bytes().all(|b| b.is_ascii_hexdigit())
-            });
+            let corrupt_entry = index
+                .entries
+                .iter()
+                .any(|entry| !entry_has_valid_commit(entry));
             if corrupt_entry {
                 // r40 minor 6：隔离前身份复核——隔离与读取不在锁内，并发写者
                 // 可能在两次读之间整体替换了 index（新鲜好索引被误隔离 =
@@ -1394,29 +1435,47 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
 }
 
 /// r40 minor 6 + r41 minor 4：并发写复核——磁盘内容已变（并发写者在读取与
-/// 隔离之间整体替换了索引）则重读解析；新鲜索引仍须过对象 id 形状校验
-/// （r41 minor 4：fast-path 此前是唯一跳过 r20-M1 校验的返回路径）。新鲜
-/// 写入为 v2 形态（save_index 落盘已迁移版本），v1 迁移腿不适用；校验不过
-/// 返回 None 走隔离。内容比对是 dev/ino 的可移植等价（原子重命名必然换
-/// inode，同长同刻写也可区分）。
+/// 隔离之间整体替换了索引，原子重命名必然换 inode）则重读解析并返回新鲜
+/// 索引；内容未变（bytes 就是当前磁盘态，重析必然得到同一结果）返回 None
+/// 走隔离。新鲜索引仍须过对象 id 形状校验（r41 minor 4：不得跳过 r20-M1
+/// 校验）；新鲜写入为 v2 形态（save_index 落盘已迁移版本），v1 迁移腿不
+/// 适用；校验不过返回 None 走隔离。r42 M1：r41 重构把守卫写反了（内容已
+/// 变返回 None = 恢复腿死亡，且对方新鲜索引被隔离——活跃数据丢失），恢复
+/// 腿行为测试钉住方向。
 fn recheck_concurrent_index_rewrite(
     path: &std::path::Path,
     bytes: &[u8],
 ) -> Option<CheckpointIndex> {
     let current = fs::read(path).ok()?;
-    if current.as_slice() != bytes {
+    if current.as_slice() == bytes {
+        // 内容未变：重析同一批已判损字节毫无意义，按无并发写处理（None =
+        // 调用方隔离磁盘上的损坏原文）。
         return None;
     }
     let fresh = serde_json::from_slice::<CheckpointIndex>(&current).ok()?;
-    let fresh_corrupt = fresh.entries.iter().any(|entry| {
-        let commit = entry.commit.trim();
-        let valid_len = commit.len() == 40 || commit.len() == 64;
-        !valid_len || !commit.bytes().all(|b| b.is_ascii_hexdigit())
-    });
+    let fresh_corrupt = fresh
+        .entries
+        .iter()
+        .any(|entry| !entry_has_valid_commit(entry));
     if fresh_corrupt {
         return None;
     }
     Some(fresh)
+}
+
+/// r20-M1 对象 id 形状校验（SHA-1 40 / SHA-256 64 位十六进制）。
+/// r42 M4：Turn 条目允许空 commit——「仅对话」哨兵（undo 还原登记 = 无代码
+/// 快照）。空串作为 git argv 的 rev 位只会得到「ambiguous argument」错误、
+/// 无元字符注入面，且全部消费 commit 的路径（diff、prepare、回退计划的
+/// 快照定位）都在入口拒绝/过滤哨兵；PreRestore 恒为真实快照，空 commit
+/// 仍判损。
+fn entry_has_valid_commit(entry: &CheckpointMeta) -> bool {
+    if is_conversation_only_entry(entry) {
+        return true;
+    }
+    let commit = entry.commit.trim();
+    let valid_len = commit.len() == 40 || commit.len() == 64;
+    valid_len && commit.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// r39 minor 5：索引损坏（解析失败或语义损坏）的共用隔离+重建腿——隔离保留
@@ -1569,6 +1628,14 @@ fn create_checkpoint_preserving(
     preserve: &[&str],
 ) -> Result<CheckpointMeta> {
     let execution_root = canonical_execution_root(execution_root)?;
+    // r42 M6：快照面的 junction 拒绝——add -A 会递归进入联接把执行根外内容
+    // 吸进影子 objects（unbound 布局下 agent 可经 git 读面检视根外文件）。
+    // Turn 快照的 Err 走既有「快照失败不阻断 turn、入口如实降级」路径；
+    // PreRestore（回退/反悔前奏）在此拒绝时一切破坏性动作尚未开始。
+    let reparse = execution_root_reparse_dirs(&execution_root);
+    if !reparse.is_empty() {
+        reparse_dir_bail(&reparse)?;
+    }
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // 硬停（评审 r8 M3）：打包体积 ≥ 2× 预算时 Turn 快照拒绝登记——断路模式
     // （跳过裁剪/gc）下影子库只增不减，这里补回字节上限：Err 走「快照失败不
@@ -1747,8 +1814,68 @@ fn commit_tree(repo: &Path, work_tree: &Path, tree: &str, kind: CheckpointKind) 
 }
 
 /// 列出会话的全部 checkpoint（按创建顺序升序，turn 对齐用）。
+/// 「仅对话」哨兵条目：r42 M4 由 undo 成功路径登记的 Turn 条目，`commit`
+/// 为空 = 没有代码快照（undo 只还原 transcript、不重建 Turn 快照）。列表
+/// 派生计入、条目面过滤、diff/restore 拒绝。
+pub(crate) fn is_conversation_only_entry(entry: &CheckpointMeta) -> bool {
+    entry.kind == CheckpointKind::Turn && entry.commit.is_empty()
+}
+
 pub fn list_checkpoints(ledger_root: &Path) -> Result<Vec<CheckpointMeta>> {
-    Ok(load_index(ledger_root)?.entries)
+    Ok(list_checkpoints_with_turn_count(ledger_root)?.entries)
+}
+
+/// 列表 + 后端权威的用户 turn 计数，单次索引读取。条目面已过滤「仅对话」
+/// 哨兵（不可 diff/restore，不该出现在 chip 列表）；计数派生**包含**哨兵
+/// ——undo 还原后账本末条 Turn 是哨兵，计数立即对齐恢复后的全量口径，
+/// 前端调和门不再 fail-close 隐藏全部入口（r42 M4）。
+pub fn list_checkpoints_with_turn_count(ledger_root: &Path) -> Result<CheckpointListWithTurnCount> {
+    let index = load_index(ledger_root)?;
+    let latest_turn = index
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| entry.kind == CheckpointKind::Turn)
+        .and_then(|entry| entry.turn)
+        .unwrap_or(0);
+    Ok(CheckpointListWithTurnCount {
+        entries: index
+            .entries
+            .into_iter()
+            .filter(|entry| !is_conversation_only_entry(entry))
+            .collect(),
+        latest_turn,
+    })
+}
+
+/// [`list_checkpoints_with_turn_count`] 的响应体。
+pub struct CheckpointListWithTurnCount {
+    pub entries: Vec<CheckpointMeta>,
+    pub latest_turn: u32,
+}
+
+/// r42 M4：undo 成功后登记「仅对话」哨兵 Turn 条目。undo 只还原 transcript、
+/// 不重建 Turn 快照；若不登记，账本末条 Turn 停留在回退保留值而时间线已恢复
+/// 全量，`list_checkpoints` 派生的 userTurns 与前端时间线失配，调和门
+/// fail-close 隐藏**全部**入口（含仍有效的更老边界）直到下一次发送。哨兵把
+/// 账本计数立即对齐到恢复后口径：此后对中间轮的再回退按「仅回退对话」降级
+/// （设计文档 §8 承诺的稳态在 undo 完成即刻成立）。哨兵无 ref、无对象——
+/// 下一次 rewind 的 `turn > keep` 作废会自然清掉它（ref 删除对空 commit
+/// 条目跳过）；登记失败 best-effort（窗口退回诚实隐藏，与修复前等价）。
+pub fn register_conversation_only_turn(ledger_root: &Path, turn: u32) -> Result<()> {
+    with_index_write_lock(ledger_root, || {
+        let mut index = load_index(ledger_root)?;
+        let seq = index.entries.len() + 1;
+        index.entries.push(CheckpointMeta {
+            id: format!("c{seq}-{}", now_nanos()),
+            turn: Some(turn),
+            kind: CheckpointKind::Turn,
+            label: "undo 还原（仅对话）".to_string(),
+            commit: String::new(),
+            created_at: now_seconds(),
+        });
+        save_index(ledger_root, &index)
+    })
 }
 
 pub fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<CheckpointMeta> {
@@ -2053,6 +2180,12 @@ pub fn prepare_restore(
     reuse_pre_restore: Option<&str>,
 ) -> Result<(CheckpointMeta, CheckpointMeta)> {
     let meta = find_checkpoint(ledger_root, checkpoint_id)?;
+    // r42 M4：「仅对话」哨兵（undo 还原登记，commit 为空）不可作为恢复目标
+    // ——回退计划按快照存在性分流降级（列表已过滤哨兵，计划定位不到即
+    // conversation_only），直呼本函数的路径（CLI 按 id 恢复）在此如实拒绝。
+    if meta.commit.is_empty() {
+        bail!("该边界为「仅回退对话」记录（undo 还原，无代码快照），不能作为回退目标");
+    }
     let execution_root = canonical_execution_root(execution_root)?;
     let undo = match reuse_pre_restore {
         Some(id) => find_checkpoint(ledger_root, id)?,
@@ -2088,6 +2221,129 @@ pub fn prepare_restore(
     Ok((meta, undo))
 }
 
+// ===================== r42 M5/M6：执行根级写围栏与再解析点拒绝 =====================
+
+/// r42 M5：执行根级跨进程写围栏的崩溃自愈阈值（秒）。apply 是多条 git 子进程
+/// 串行（各自有 120s 超时上限），阈值必须盖过合法 apply 的最坏耗时——偷早了
+/// 会在最需要围栏的慢 apply 中段开洞。
+const EXECUTION_ROOT_FENCE_STALE_SECS: u64 = 600;
+
+/// r42 M5：围栏文件寻址——按 canonical 执行根散列，落系统临时目录。账本级
+/// 锁盖不住跨进程/跨会话腿：绑定布局下同一执行根的每个会话各有一个账本根，
+/// 而 CLI 与 GUI 是两个进程；系统临时目录是两进程共享的机器本地唯一稳定锚
+/// （跨用户场景不共享，按既有披露口径接受）。DefaultHasher 的跨进程稳定性
+/// 由同版本 std 保证——GUI 与 CLI 同仓同构建；未来 std 变更导致两侧寻址
+/// 漂移时，围栏退化为「互不可见」（与修复前等价），不会产生错误互斥。
+fn execution_root_fence_path(execution_root: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    execution_root.to_string_lossy().hash(&mut hasher);
+    std::env::temp_dir()
+        .join("pinvou3-checkpoint-fences")
+        .join(format!("{:016x}.flag", hasher.finish()))
+}
+
+/// r42 M5：执行根写围栏的持有者。Drop 即释放（删除围栏文件，best-effort）。
+pub(crate) struct ExecutionRootWriteFence {
+    path: PathBuf,
+}
+
+impl Drop for ExecutionRootWriteFence {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// r42 M5：获取执行根级跨进程写围栏。`checkpoint_diff` 的 `add -A` 是影子
+/// index 的第二个写者，且不站在任何闸内（进程内 `begin_execution_root_rewind`
+/// 是 check-then-act 探针，登记不了 diff 自己；CLI 是另一进程，根本看不到
+/// 内存标志）——它的 index 写落入 [`apply_restore`] 的多子进程窗口
+/// （read-tree→purge→rm --cached→checkout-index→clean，子进程间 index 锁已
+/// 释放）时，checkout-index 会按 diff 的暂存态物化**回退前**工作区：回退报
+/// 成功、文件未恢复；unbound 布局下刚摘除的账本路径还会被 stale add -A 重新
+/// 暂存、checkout-index 覆写活账本。r34-M1 围了 compact_now，diff 是漏网的
+/// 同型。围栏在 apply 与 diff 两个 feature 入口互斥：后到方如实拒绝；崩溃
+/// 残留按 [`EXECUTION_ROOT_FENCE_STALE_SECS`] 偷走自愈，二次竞争由
+/// create_new 仲裁。
+pub(crate) fn acquire_execution_root_write_fence(
+    execution_root: &Path,
+) -> Result<ExecutionRootWriteFence> {
+    let path = execution_root_fence_path(execution_root);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                use std::io::Write as _;
+                let _ = writeln!(
+                    file,
+                    "pid={} created_at={}",
+                    std::process::id(),
+                    now_seconds()
+                );
+                return Ok(ExecutionRootWriteFence { path });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let age = fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .map(|elapsed| elapsed.as_secs());
+                match age {
+                    Some(age) if age < EXECUTION_ROOT_FENCE_STALE_SECS => {
+                        bail!("项目目录有检查点写操作在飞（回退/回滚或变更预览读取），请稍后再试")
+                    }
+                    _ => {
+                        // 崩溃残留：改名留证后重试（并发抢锁由下一轮 create_new
+                        // 仲裁；rename 目标带纳秒后缀，Windows 上不与现存文件冲突）。
+                        let _ = fs::rename(
+                            &path,
+                            path.with_extension(format!("stale-{}", now_nanos())),
+                        );
+                    }
+                }
+            }
+            Err(error) => return Err(anyhow::Error::new(error).context("创建检查点写围栏失败")),
+        }
+    }
+}
+
+/// r42 M6：执行根内的目录再解析点（Windows junction / mount point）清单。
+/// git-for-windows 把 junction 当普通目录递归：`add -A` 会把联接目标内容吸进
+/// 影子 objects（unbound 布局下 objects 在 agent 可见的工作树内——执行根外
+/// 文件从此可被 agent 经 git 读面检视）；`checkout-index -f -a` 更会**穿过
+/// 联接写到执行根外**（rc=0 静默，r42-M6 实机演示，与恢复段「写只落在执行
+/// 根内」的承诺相悖）。预算走读按 is_symlink 跳过（不递归），与 git 的递归
+/// 语义劈叉——两层必须同向：快照/恢复/预览路径 fail-closed 拒绝。跳过集与
+/// 预算走读同款（SHADOW_EXCLUDES 目录）：排除目录里的 junction（pnpm 的
+/// node_modules 联接农场）不进 index、不被 checkout/clean 触及，拒绝它们
+/// 只会误伤。平台差异（枚举 + reparse 位判定）下沉在 [`platform`] 适配层，
+/// 非 Windows 恒空集（零开销）。
+fn execution_root_reparse_dirs(execution_root: &Path) -> Vec<PathBuf> {
+    let skip_dirs: std::collections::HashSet<&str> = SHADOW_EXCLUDES
+        .iter()
+        .map(|line| line.trim_end_matches('/'))
+        .collect();
+    platform::reparse_dir_paths_under(execution_root, &skip_dirs)
+}
+
+/// r42 M6：junction fail-closed 的统一报错（快照/恢复/预览三路同文案）。
+fn reparse_dir_bail(paths: &[PathBuf]) -> Result<()> {
+    bail!(
+        "执行根包含目录联接（junction/reparse point）：{}。git 会递归进入联接目标——快照会把执行根外内容吸进影子库、恢复会穿过联接写到根外。本轮操作已拒绝；请移除联接（或将其移入 node_modules 等已排除目录）后重试",
+        paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 /// 恢复执行段：read-tree → 清 index（敏感 + 账本）→ checkout-index → clean，
 /// 幂等可重入。
 pub fn apply_restore(
@@ -2096,6 +2352,15 @@ pub fn apply_restore(
     meta: &CheckpointMeta,
 ) -> Result<()> {
     let execution_root = canonical_execution_root(execution_root)?;
+    // r42 M5：apply 多子进程窗口与并发 diff 的 index 写互斥（围栏语义见
+    // [`acquire_execution_root_write_fence`]；持有至函数返回，Drop 释放）。
+    let _write_fence = acquire_execution_root_write_fence(&execution_root)?;
+    // r42 M6：恢复面的 junction 拒绝——checkout-index 穿联接写根外是 rc=0
+    // 静默灾难，fail-closed 并如实给出联接清单。
+    let reparse = execution_root_reparse_dirs(&execution_root);
+    if !reparse.is_empty() {
+        reparse_dir_bail(&reparse)?;
+    }
     // r23 M3：apply_restore 是唯一不经 ensure_repo 就执行 read-tree /
     // checkout-index 的窗口（update-ref/gc 的 invalidate 路径同样运行在
     // ensure_repo 之外、其执行根参数穿线列为 follow-up——r24 minor 2）。
@@ -2411,7 +2676,22 @@ pub fn diff_checkpoint(
     include_patch: bool,
 ) -> Result<CheckpointDiff> {
     let meta = find_checkpoint(ledger_root, checkpoint_id)?;
+    // r42 M4：「仅对话」哨兵条目（undo 还原登记，commit 为空）没有代码快照
+    // 可对比；放行会让 add -A + diff --cached "" 在空串 ref 上崩出 git 原生
+    // 错误。如实拒绝并说明成因。
+    if meta.commit.is_empty() {
+        bail!("该边界为「仅回退对话」记录（undo 还原，无代码快照），没有可对比的变更");
+    }
     let execution_root = canonical_execution_root(execution_root)?;
+    // r42 M5：diff 的 add -A 与 apply 窗口互斥（跨进程围栏，语义见
+    // [`acquire_execution_root_write_fence`]）。
+    let _write_fence = acquire_execution_root_write_fence(&execution_root)?;
+    // r42 M6：diff 的 add -A 与 create 的 add -A 同样会递归进入 junction，
+    // 把执行根外内容吸进影子 index/objects——同款 fail-closed。
+    let reparse = execution_root_reparse_dirs(&execution_root);
+    if !reparse.is_empty() {
+        reparse_dir_bail(&reparse)?;
+    }
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // add -A 让影子 index 反映当前执行根，diff --cached <commit> 即「快照→现在」。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
@@ -2630,10 +2910,28 @@ pub fn invalidate_turn_checkpoints_after_created_until(
     created_until: i64,
 ) -> Result<usize> {
     with_index_write_lock(ledger_root, || {
+        // r42 P2-1：活暂记的两个 id 不作废。pending 的目标边界快照 turn 恒
+        // > kept（目标 = keep+1 的边界快照），裸谓词会把在飞暂记自己的目标
+        // 删掉：引导重试卡死 checkpoint_missing、降级重试被 revision 拒、
+        // undo 被活暂记拒——直到下一次发送的 target-missing 臂静默清账
+        // （崩溃边界从此无 undo）。r26-M2 在 reconcile 腿修过同型，压缩腿
+        // 此前漏了。窥视失败按「整体跳过作废」处理：宁可漏删（入口降级，
+        // 且陈旧和解 precheck 按备份记录最终一致补作废），不可误删暂记目标。
+        let pending_ids: Vec<String> = match peek_pending_rewind(ledger_root) {
+            Ok(Some(pending)) => vec![pending.checkpoint_id, pending.pre_restore_id],
+            Ok(None) => Vec::new(),
+            Err(error) => {
+                log::warn!(
+                    "[checkpoints] compaction invalidation skipped: pending peek failed: {error:#}"
+                );
+                return Ok(0);
+            }
+        };
         invalidate_entries_if(ledger_root, |entry| {
             entry.kind == CheckpointKind::Turn
                 && entry.turn.is_some_and(|turn| turn > keep_turns)
                 && entry.created_at <= created_until
+                && !pending_ids.iter().any(|id| id == &entry.id)
         })
     })
 }
@@ -2686,6 +2984,11 @@ fn invalidate_entries_if(
     let repo = repo_dir(ledger_root);
     if repo.join("HEAD").is_file() {
         for entry in &invalidated {
+            // r42 M4：「仅对话」哨兵无 ref 可删（update-ref -d 对不存在 ref
+            // 只会报错），跳过。
+            if entry.commit.is_empty() {
+                continue;
+            }
             let _ = git_ref(
                 &repo,
                 &[
@@ -4531,23 +4834,289 @@ mod tests {
         .expect("bootstrap checkpoint");
         let repo = repo_dir(ledger.path());
         // 植入敌对 config（追加 [core] 段，同键后者生效）+ 锥定义 + excludesFile。
+        // r42 M3：excludesFile 的相对路径按 work-tree/cwd 解析（git dir 无关）
+        // ——r41 版把文件写进了 git dir，腿恒 inert、删 -c 钉单独变异仍绿。
+        // 文件必须落在 exec root。
         let mut config = fs::read_to_string(repo.join("config")).unwrap_or_default();
-        config.push_str(
-            "[core]\n\tsparseCheckout = true\n\tautocrlf = true\n\texcludesFile = hostile-excludes\n",
-        );
+        let hostile_path_text = exec
+            .path()
+            .join("hostile-excludes")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        config.push_str(&format!(
+            "[core]\n\tsparseCheckout = true\n\tautocrlf = true\n\texcludesFile = {hostile_path_text}\n"
+        ));
         fs::write(repo.join("config"), config).unwrap();
         let info = repo.join("info");
         fs::create_dir_all(&info).unwrap();
         fs::write(info.join("sparse-checkout"), b"in-cone.txt\n").unwrap();
-        fs::write(repo.join("hostile-excludes"), b"outside.txt\n").unwrap();
+        exec.write("hostile-excludes", "outside.txt\nfresh.txt\n");
         exec.write("outside.txt", "b2\n");
+        // excludes 腿的靶标必须是「植入配置之后才出现的新文件」——excludes
+        // 文件不作用于已跟踪文件（bootstrap 已把 outside.txt 收进 index，
+        // add -A 会照常重暂存它的变更），静默忽略只发生在未跟踪的新文件上。
+        exec.write("fresh.txt", "new\n");
         // 绕过 create_checkpoint（其 ensure_repo scrub 会先拔植入键）：直接走
         // 模块自身 git() 的 add -A + ls-files——-c 钉是唯一防线。
         git_ok(&repo, exec.path(), &["add", "-A"]).expect("add -A under hostile config");
         let staged = git_ok(&repo, exec.path(), &["ls-files"]).expect("ls-files staged set");
         assert!(
             staged.lines().any(|line| line == "outside.txt"),
-            "敌对 sparse/excludes 配置不得让锥外/被忽略文件静默缺席 add -A 的暂存集（-c 钉隔离验证）: {staged}"
+            "敌对 sparse 配置不得让锥外文件静默缺席（-c 钉隔离验证）: {staged}"
+        );
+        assert!(
+            staged.lines().any(|line| line == "fresh.txt"),
+            "敌对 excludesFile 不得让新文件被静默忽略（excludesFile -c 钉隔离验证——r41 版此腿因靶标已跟踪而恒 inert）: {staged}"
+        );
+    }
+
+    /// r42 M1 恢复腿回归：recheck_concurrent_index_rewrite 的比较方向——
+    /// 磁盘内容已变（并发写者的新鲜 v2 索引替换了调用方读到的损坏字节）时
+    /// 必须返回新鲜索引，而不是 None（None 会让调用方把对方的**好索引**
+    /// 隔离掉 = 活跃数据丢失，r41 重构写反了方向且无测试覆盖）。同时钉住
+    /// 未变腿（返回 None → 隔离原文）与文件完好性。
+    #[test]
+    fn load_index_recheck_recovers_a_concurrent_rewrite() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("recheck-ledger");
+        let exec = TestDir::new("recheck-exec");
+        exec.write("a.txt", "a\n");
+        let _c1 = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("bootstrap checkpoint");
+        let index_file = index_path(ledger.path());
+        let good = fs::read(&index_file).unwrap();
+        // 竞态模拟：调用方读到的是损坏字节；磁盘已被原子替换为好索引。
+        let corrupt: &[u8] = b"{ this is not json";
+        let fresh = recheck_concurrent_index_rewrite(&index_file, corrupt)
+            .expect("a concurrent rewrite with a valid v2 index must be recovered");
+        assert!(
+            fresh.entries.iter().any(|entry| entry.id == _c1.id),
+            "恢复出的新鲜索引必须包含并发写者的条目"
+        );
+        // 文件完好（未被隔离流程触碰）。
+        assert_eq!(fs::read(&index_file).unwrap(), good);
+        // 未变腿：bytes 就是当前磁盘态 → None（调用方隔离损坏原文）。
+        assert!(recheck_concurrent_index_rewrite(&index_file, &good).is_none());
+    }
+
+    /// r42 M2 回归：条件包含（`includeif.<cond>.path`）必须被 scrub 整段移除
+    /// ——r41 版正则 `include\.` 对 `include` 后跟 `i` 的键恒不命中，被指文件
+    /// 转发的键对 --get-regexp 不可见并最后解析（可覆盖 ensure_repo 的就地
+    /// 改写）。同时钉住转发的危险键本体不得存活。
+    #[test]
+    fn scrub_removes_conditional_includes() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("scrub-includeif-ledger");
+        let exec = TestDir::new("scrub-includeif-exec");
+        exec.write("a.txt", "a\n");
+        // 先物化影子仓库（此时 config 无敌对内容，首次 scrub 空过），再植入
+        // 敌对 includeIf + 被指文件，二次 create 经 ensure_repo 触发重扫。
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("bootstrap checkpoint");
+        let repo = repo_dir(ledger.path());
+        let include_target = exec.path().join("evil-include.inc");
+        fs::write(&include_target, "[core]\n\tsshCommand = pwn\n").unwrap();
+        let mut config = fs::read_to_string(repo.join("config")).unwrap();
+        config.push_str(&format!(
+            "[includeIf \"gitdir:/\"]\n\tpath = {}\n",
+            include_target.display().to_string().replace('\\', "/")
+        ));
+        fs::write(repo.join("config"), config).unwrap();
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .expect("second checkpoint re-runs ensure_repo scrub");
+        let probe = git(
+            &repo,
+            exec.path(),
+            &["config", "--local", "--get-regexp", "^include"],
+        )
+        .expect("probe git runs");
+        assert_eq!(
+            probe.status.code(),
+            Some(1),
+            "include/includeif 段必须被整段移除: {}",
+            String::from_utf8_lossy(&probe.stdout)
+        );
+        let forwarded = git(
+            &repo,
+            exec.path(),
+            &["config", "--local", "core.sshcommand"],
+        )
+        .expect("probe git runs");
+        assert!(
+            !forwarded.status.success(),
+            "被指文件转发的 core.sshCommand 不得存活: {}",
+            String::from_utf8_lossy(&forwarded.stdout)
+        );
+    }
+
+    /// r42 M3 回归：探针结论必须与独立基准一致——测试用自己的固定名探针
+    /// （写入小写名、以全大写名 stat）得出「该文件系统是否大小写不敏感」的
+    /// 真值，再要求 `fs_is_case_insensitive` 与之一致。r41 版在探针内两次
+    /// 采样 now_nanos()，写入名与 stat 名必不相等、恒 miss → 任何文件系统上
+    /// 恒 false（大小写不敏感的 NTFS/APFS 上本测试必红）。
+    #[test]
+    fn case_probe_matches_an_independent_ground_truth() {
+        let dir = TestDir::new("icase-probe");
+        let probe = dir.path().join(".Ground-Truth-Probe");
+        fs::write(&probe, b"").unwrap();
+        let truth = fs::metadata(dir.path().join(".GROUND-TRUTH-PROBE")).is_ok();
+        let _ = fs::remove_file(&probe);
+        assert_eq!(
+            fs_is_case_insensitive(dir.path()),
+            truth,
+            "case 探针必须与独立基准一致（文件系统 truth={truth}）"
+        );
+    }
+
+    /// r42 M5 回归：围栏持有期间 diff 与 apply 都必须如实拒绝（后到方不落
+    /// 任何 git 写），释放后恢复。围栏寻址按 canonical 执行根——测试侧的
+    /// 直取也必须走同一条 canonical 化路径。
+    #[test]
+    fn diff_and_apply_refuse_while_the_write_fence_is_held() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("fence-ledger");
+        let exec = TestDir::new("fence-exec");
+        exec.write("a.txt", "a\n");
+        let created = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("bootstrap checkpoint");
+        let canonical = canonical_execution_root(exec.path()).expect("canonical exec root");
+        let fence = acquire_execution_root_write_fence(&canonical).expect("acquire fence");
+        let diff_error =
+            diff_checkpoint(ledger.path(), exec.path(), &created.id, false).unwrap_err();
+        assert!(
+            diff_error.to_string().contains("在飞"),
+            "diff 必须被在飞围栏拒绝: {diff_error:#}"
+        );
+        let apply_error = apply_restore(ledger.path(), exec.path(), &created).unwrap_err();
+        assert!(
+            apply_error.to_string().contains("在飞"),
+            "apply 必须被在飞围栏拒绝: {apply_error:#}"
+        );
+        drop(fence);
+        diff_checkpoint(ledger.path(), exec.path(), &created.id, false)
+            .expect("diff succeeds after the fence is released");
+    }
+
+    /// r42 M4 回归：「仅对话」哨兵——登记后列表计数立即对齐恢复后口径
+    /// （latest_turn 含哨兵）、条目面隐藏哨兵；索引可正常读写（空 commit 过
+    /// r20-M1 形状校验，不得触发隔离重建）；哨兵不可 diff、不可作为恢复目标。
+    #[test]
+    fn undo_sentinel_aligns_turn_count_and_is_hidden_from_list() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("sentinel-ledger");
+        let exec = TestDir::new("sentinel-exec");
+        for turn in 1..=3 {
+            exec.write(&format!("f{turn}.txt"), "x\n");
+            create_checkpoint(
+                ledger.path(),
+                exec.path(),
+                Some(turn),
+                CheckpointKind::Turn,
+                &format!("t{turn}"),
+            )
+            .expect("turn checkpoint");
+        }
+        register_conversation_only_turn(ledger.path(), 5).expect("register sentinel");
+        let listed = list_checkpoints_with_turn_count(ledger.path()).expect("list");
+        assert_eq!(listed.latest_turn, 5, "计数必须包含哨兵（恢复后全量口径）");
+        assert_eq!(listed.entries.len(), 3, "条目面必须过滤哨兵");
+        assert!(
+            listed.entries.iter().all(|entry| !entry.commit.is_empty()),
+            "条目面不得出现空 commit 条目"
+        );
+        // 索引读回不触发隔离重建（空 commit 合法性）：哨兵仍在磁盘上。
+        let raw = load_index(ledger.path()).expect("index loads");
+        let sentinel = raw
+            .entries
+            .iter()
+            .find(|entry| is_conversation_only_entry(entry))
+            .expect("sentinel survives an index round-trip")
+            .clone();
+        let diff_error =
+            diff_checkpoint(ledger.path(), exec.path(), &sentinel.id, false).unwrap_err();
+        assert!(
+            diff_error.to_string().contains("仅回退对话"),
+            "哨兵不可 diff: {diff_error:#}"
+        );
+        let prepare_error =
+            prepare_restore(ledger.path(), exec.path(), &sentinel.id, None).unwrap_err();
+        assert!(
+            prepare_error.to_string().contains("仅回退对话"),
+            "哨兵不可作为恢复目标: {prepare_error:#}"
+        );
+    }
+
+    /// r42 P2-1 回归：活暂记在飞时，压缩收缩钩子的作废腿必须保住暂记自己的
+    /// 目标快照——pending 的目标边界 turn 恒 > kept，裸谓词会把它一并作废
+    /// （引导重试卡死 checkpoint_missing，崩溃边界无 undo）。
+    #[test]
+    fn compaction_invalidation_preserves_a_live_pendings_targets() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("pending-preserve-ledger");
+        let exec = TestDir::new("pending-preserve-exec");
+        let mut target_id = String::new();
+        for turn in 1..=3 {
+            exec.write(&format!("f{turn}.txt"), "x\n");
+            let meta = create_checkpoint(
+                ledger.path(),
+                exec.path(),
+                Some(turn),
+                CheckpointKind::Turn,
+                &format!("t{turn}"),
+            )
+            .expect("turn checkpoint");
+            if turn == 2 {
+                target_id = meta.id;
+            }
+        }
+        // 暂记指向第 2 轮边界快照（回退到第 1 轮 = 目标 turn 2 的快照）。
+        write_pending_rewind(ledger.path(), &target_id, 1, "", "").expect("write pending");
+        let invalidated =
+            invalidate_turn_checkpoints_after_created_until(ledger.path(), 1, now_seconds() + 10)
+                .expect("invalidate");
+        assert_eq!(
+            invalidated, 1,
+            "只有第 3 轮被作废，暂记目标（第 2 轮）必须幸存"
+        );
+        let listed = list_checkpoints(ledger.path()).expect("list");
+        assert!(
+            listed.iter().any(|entry| entry.id == target_id),
+            "活暂记的目标快照不得被压缩作废腿删除"
         );
     }
 

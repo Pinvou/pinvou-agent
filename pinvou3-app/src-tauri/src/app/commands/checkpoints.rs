@@ -494,17 +494,14 @@ pub async fn list_checkpoints(
     // rewind_to_turn 预检仍走全量精确计数：那是实际执行回退前的一次性
     // 校验，不在轮询热路径。
     tauri::async_runtime::spawn_blocking(move || {
-        let entries = checkpoints::list_checkpoints(&ledger)
+        // r42 M4：列表与计数单次索引读取；条目面过滤「仅对话」哨兵（不可
+        // diff/restore），计数派生包含哨兵——undo 还原后计数立即对齐恢复后
+        // 口径，调和门不再 fail-close 隐藏全部入口。
+        let listed = checkpoints::list_checkpoints_with_turn_count(&ledger)
             .map_err(|error| format!("读取检查点列表失败: {error:#}"))?;
-        let user_turns = entries
-            .iter()
-            .rev()
-            .find(|entry| entry.kind == checkpoints::CheckpointKind::Turn)
-            .and_then(|entry| entry.turn)
-            .unwrap_or(0);
         Ok::<_, String>(CheckpointListForUi {
-            checkpoints: entries,
-            user_turns,
+            checkpoints: listed.entries,
+            user_turns: listed.latest_turn,
         })
     })
     .await
@@ -561,8 +558,12 @@ pub async fn checkpoint_diff(
     // 不可达自前端，raw IPC 可达）。find_checkpoint 只读 index（缺失索引 =
     // 空集，不物化任何目录），不存在即在此拒绝，与 rewind/undo 的
     // reserve_turn 先败同序。
-    checkpoints::find_checkpoint(&ledger, &checkpoint_id)
-        .map_err(|error| format!("检查点不存在或已淘汰: {error:#}"))?;
+    // r42 minor 12：文案如实覆盖两条失败成因（不存在/淘汰，或索引瞬态读
+    // 失败）——find_checkpoint 的错误不区分二者，笼统的「不存在」会误导
+    // 瞬态故障的重试判断。
+    checkpoints::find_checkpoint(&ledger, &checkpoint_id).map_err(|error| {
+        format!("读取变更预览失败（检查点不存在/已淘汰，或检查点索引暂不可读）: {error:#}")
+    })?;
     tauri::async_runtime::spawn_blocking(move || {
         // `false`: the webview renders only the `changes` list (RewindChip);
         // generating the unified diff here would cost a full `git diff` per
@@ -1391,7 +1392,8 @@ pub async fn undo_last_rewind(
         .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
     {
         return Err(format!(
-            "存在未完成的回退暂记（目标 {}，保留 {} 轮）：请先完成或撤销该回退——发送一条新消息自动对账重放、重试同一回退，或撤销回退记录；反悔操作已在改动对话前拒绝",
+            // r42 minor 1：补救列表只保留可达项——「撤销回退记录」指向的就是被拒命令本身，循环建议已删。
+            "存在未完成的回退暂记（目标 {}，保留 {} 轮）：请先完成该回退——发送一条新消息自动对账重放，或重试同一回退；反悔操作已在改动对话前拒绝",
             pending.checkpoint_id, pending.keep_turns
         ));
     }
@@ -1472,8 +1474,8 @@ pub async fn undo_last_rewind(
     //    到同一个绑定回滚点，不会因步骤 1 新打的 PreRestore 而漂移。
     let store_restore = store.inner().clone();
     let session_id_restore = session_id.clone();
-    let restored_messages = tauri::async_runtime::spawn_blocking(move || {
-        store_restore.restore_rewound_turns(&session_id_restore)
+    let restored = tauri::async_runtime::spawn_blocking(move || {
+        store_restore.restore_rewound_turns_detailed(&session_id_restore)
     })
     .await
     .map_err(|error| format!("恢复对话任务失败: {error}"))?
@@ -1504,12 +1506,27 @@ pub async fn undo_last_rewind(
             (None, false) => format!("对话恢复失败: {detail}"),
         }
     })?;
+    // r42 M4：恢复成功即登记「仅对话」哨兵 Turn 条目（turn = 保留轮数 + 恢复
+    // 轮数 = 恢复后全量口径）——账本末条 Turn 不再停留在回退保留值，调和门
+    // 立即恢复渲染（仍有效的更老边界可见），中间轮按「仅回退对话」降级，
+    // 与设计文档承诺的「下次发送后」稳态在 undo 完成即刻成立。登记失败
+    // best-effort：窗口退回诚实隐藏（与修复前等价），下次发送自然对齐。
+    {
+        let sentinel_turn = restored.kept_turns.saturating_add(restored.restored_turns);
+        if let Err(error) = checkpoints::register_conversation_only_turn(&ledger, sentinel_turn) {
+            eprintln!(
+                "[checkpoints] undo conversation-only sentinel registration failed for {session_id}: {error:#}"
+            );
+        }
+    }
     // 3) undo 成功 = 会话状态已变，任何在途回退暂记一律作废（评审 r6 M2 暂记
     // 生命周期：rev 会话 revision 已不匹配兜底，这里显式清理收口）。引擎驱逐
     // 已前提到步骤 1 之前（r39 minor 3）。
     checkpoints::clear_pending_rewind(&ledger);
     drop(reservation);
-    Ok(UndoLastRewindResult { restored_messages })
+    Ok(UndoLastRewindResult {
+        restored_messages: restored.messages,
+    })
 }
 
 #[cfg(test)]
@@ -1777,6 +1794,9 @@ fn ",
         ] {
             let fn_start = src.find(signature).expect("production fn must exist");
             let rest = &src[fn_start..];
+            // r42 minor 11: undo_last_rewind is followed by a top-level
+            // #[cfg(test)] - without this bound the slice runs to EOF and the
+            // anchors drift into the test module (same fix as its sibling).
             let body_end = [
                 "
 pub ",
@@ -1786,6 +1806,8 @@ pub(super) ",
 async fn ",
                 "
 fn ",
+                "
+#[",
             ]
             .iter()
             .filter_map(|marker| rest.find(marker))
@@ -1801,6 +1823,31 @@ fn ",
                 "{signature} 必须携带 aux 拒绝文案（r34 M5）"
             );
         }
+    }
+
+    /// r42 P2-4：checkpoint_diff 的三道在飞防线钉（源切片，删任一即红）——
+    /// r41-minor-13 先存在后 materialize（find_checkpoint 在 ensure_repo 之前）、
+    /// r33-minor-11 aux 拒绝、r40-minor-5 执行根回退标志探针。命令体无法单测
+    /// 直调（Tauri State），源码 pin 是本项目惯例。
+    #[test]
+    fn checkpoint_diff_keeps_its_three_defense_gates() {
+        let src = include_str!("checkpoints.rs");
+        let src = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("test module marker must exist")];
+        let body = production_body(src, "pub async fn checkpoint_diff(");
+        assert!(
+            body.contains("辅助会话不支持检查点差异预览"),
+            "r33-minor-11 aux 拒绝不得从 checkpoint_diff 消失"
+        );
+        assert!(
+            body.contains("is_execution_root_rewinding(&execution)"),
+            "r40-minor-5 执行根回退标志探针不得从 checkpoint_diff 消失"
+        );
+        assert!(
+            body.contains("find_checkpoint(&ledger, &checkpoint_id)"),
+            "r41-minor-13 先存在后 materialize（ensure_repo 之前的 find 拒绝）不得从 checkpoint_diff 消失"
+        );
     }
 
     /// r26 M2 pin：回退前奏必须先探活暂记、再做陈旧 Turn 和解

@@ -244,7 +244,7 @@ const expectedProtocolHashes = {
   // invalidation's active leg would clear a background working set's array
   // references — notices pushed into detached arrays). Same event set, no new
   // invoke/listen entries — only the captured handler body changed.
-  chat: '2b530f2e4995dcc9ed4c620f2faaba2218451a2c250dd40985f856410a3598db',
+  chat: '0a746ad2891347f439354e4b08e24c047d535fa2f17fa18bcf4cb5da10d3889e',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -472,6 +472,12 @@ for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
+// r42 minor 10: the r8 incident class - a Proxy-stub surface cannot notice a
+// dropped factory-return entry. This suite executes the REAL bridge factory,
+// so asserting the callable pins the chat-side notice landing pad the same
+// way the sessions twins are pinned by session_nav_race.
+assert.equal(typeof api.chat.addSystemItem, 'function',
+  'chat factory must export callable addSystemItem (r8 incident class / r42 minor 10)');
 assert.equal(api.getState, undefined, 'flat state facade must not return');
 
 function sourceFiles(directory) {
