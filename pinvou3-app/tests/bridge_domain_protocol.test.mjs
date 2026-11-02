@@ -248,7 +248,7 @@ const expectedProtocolHashes = {
   // (approval card projection), chat:guardrail_denied (hard-deny notice) and
   // chat:mode_changed (authoritative mode broadcast through
   // applyAuthoritativeModeState).
-  chat: 'ec033b959d4fc39e252c4eeb824dcc66835763baa3ab0ae5de22f41828b3471d',
+  chat: '80e7c43b608f1b5e71a58367ed5cc03dea12a91fe8ade07bae449f1dab85e9b1',
   // Recomputed for the tri-mode safety surface: chat-events.js gains three
   // listeners — chat:approval_required (approval card projection),
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed

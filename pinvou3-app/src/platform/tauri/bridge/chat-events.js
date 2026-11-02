@@ -1119,8 +1119,10 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       // 终态代栅栏 bump（评审 P3）：该会话的审批重放代数在此推进——
       // 终态前发出的 get_pending_approvals 快照回程时见代数已变即整批
       // 作废，不会把引擎侧已消亡的审批当活卡插回（sessions.js 消费）。
-      const approvalSeqMap = state.approvalReplayTerminalSeq
-        || (state.approvalReplayTerminalSeq = new Map());
+      if (!state.approvalReplayTerminalSeq) {
+        state.approvalReplayTerminalSeq = new Map();
+      }
+      const approvalSeqMap = state.approvalReplayTerminalSeq;
       approvalSeqMap.set(String(sid), (approvalSeqMap.get(String(sid)) || 0) + 1);
       // Refresh artifacts written in this turn in place when already presented.
       // Add only the first card for artifacts the model did not present, and
