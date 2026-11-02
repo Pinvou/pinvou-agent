@@ -211,18 +211,29 @@ fn load_rewound_turns_map_with(
         Err(parse_error) => {
             // 损坏的 sidecar 不得全局锁死 rewind/undo：改名隔离（保留现场供人工
             // 恢复）后按空 map 继续——代价是存量备份记录对该会话不再可见（undo
-            // 入口消失），胜过整个功能报错卡死。r42 minor 7：隔离名改用平台
-            // 原语（纳秒后缀）——秒级时间戳 + POSIX rename-over 在一秒内二次
-            // 损坏时会覆盖首份证据副本（quarantine_corrupt_file 为此加纳秒
-            // 后缀，此处不再手搓时间戳命名）。
-            let quarantine =
-                crate::platform::filesystem::quarantine_corrupt_file(&path).map_err(|error| {
-                    anyhow::Error::new(error)
-                        .context(format!("隔离损坏的回退备份失败: {}", path.display()))
-                })?;
+            // 入口消失），胜过整个功能报错卡死。隔离名用平台原语（纳秒后缀）——
+            // 秒级时间戳 + POSIX rename-over 在一秒内二次损坏时会覆盖首份证据
+            // 副本（quarantine_corrupt_file 为此加纳秒后缀）。
+            // r43 MAJOR-4：隔离必须发生在「取锁 + 锁下重读」判定之后——r42
+            // minor 7 把 eager rename 提到了 match 之前，三处破坏：CallerHoldsLock
+            // 腿 quarantine_and_continue 二次 rename ENOENT、落进 r41-minor-6
+            // fail-closed 恒硬错（拒绝理由还是假的「文件仍在场」）；TryLockAndRecheck
+            // 锁下重读 NotFound、并发重建恢复臂死亡；持锁对端在重读前刚重建的
+            // 新鲜 map 会被本次 eager rename 改名进 .corrupt-*（记录丢失到对端
+            // 下次 persist）。
             match mode {
                 RewindLoadMode::CallerHoldsLock => {
-                    quarantine_and_continue(&path, &quarantine, parse_error)
+                    // 调用方已持 mutation 锁：无并发写者，立即隔离（恰好一次 rename）。
+                    let quarantine = crate::platform::filesystem::quarantine_corrupt_file(&path)
+                        .map_err(|error| {
+                            anyhow::Error::new(error)
+                                .context(format!("隔离损坏的回退备份失败: {}", path.display()))
+                        })?;
+                    eprintln!(
+                        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+                        quarantine.display()
+                    );
+                    Ok(HashMap::new())
                 }
                 RewindLoadMode::TryLockAndRecheck => {
                     match try_lock_rewound_turns_file() {
@@ -244,8 +255,35 @@ fn load_rewound_turns_map_with(
                                     );
                                     Ok(fresh_map)
                                 }
+                                Err(error)
+                                    if error.downcast_ref::<std::io::Error>().is_some_and(
+                                        |io_error| io_error.kind() == ErrorKind::NotFound,
+                                    ) =>
+                                {
+                                    // 锁下重读 NotFound：entry-read 与取锁之间文件
+                                    // 已被对端隔离/替换（我们此刻持锁，对端 persist
+                                    // 无法再动它）——按空继续，对端的下一次 persist
+                                    // 负责重建。不得再 rename（文件已不在场）。
+                                    eprintln!(
+                                        "[sessions] 回退备份在读取后被并发写方移除，按空继续（对端负责重建）"
+                                    );
+                                    Ok(HashMap::new())
+                                }
                                 Err(_still_corrupt) => {
-                                    quarantine_and_continue(&path, &quarantine, parse_error)
+                                    // 仍在场且仍损坏：锁内隔离（恰好一次 rename）+ 按空继续。
+                                    let quarantine =
+                                        crate::platform::filesystem::quarantine_corrupt_file(&path)
+                                            .map_err(|error| {
+                                                anyhow::Error::new(error).context(format!(
+                                                    "隔离损坏的回退备份失败: {}",
+                                                    path.display()
+                                                ))
+                                            })?;
+                                    eprintln!(
+                                        "[sessions] 回退备份损坏（锁下复核仍损坏），隔离为 {} 后按空继续: {parse_error:#}",
+                                        quarantine.display()
+                                    );
+                                    Ok(HashMap::new())
                                 }
                             }
                         }
@@ -275,28 +313,6 @@ fn load_rewound_turns_map_with(
 /// answer an empty map. Both messages are part of the observable behavior
 /// and are pinned verbatim here; see the mode enum for who holds the
 /// cross-process flock during the rename.
-fn quarantine_and_continue(
-    path: &std::path::Path,
-    quarantine: &std::path::Path,
-    parse_error: serde_json::Error,
-) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
-    eprintln!(
-        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
-        quarantine.display()
-    );
-    if let Err(error) = std::fs::rename(path, quarantine) {
-        // r41 minor 6：隔离失败不得按空图继续——空图被下一次 persist 原子
-        // 落盘会整体覆盖仍在场的损坏文件，此前全部反悔记录（被截对话的唯一
-        // 保留）随之湮灭且无证据副本。fail-closed：如实报错，调用方拒绝本轮
-        // 操作，损坏文件原地保留待人工处理/重试隔离。
-        return Err(anyhow::Error::new(error).context(format!(
-            "隔离损坏的回退备份失败，拒绝按空记录继续（避免覆盖既有反悔记录）: {}",
-            path.display()
-        )));
-    }
-    Ok(HashMap::new())
-}
-
 fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> Result<()> {
     let path = rewound_turns_path();
     if map.values().all(|records| records.is_empty()) {
@@ -596,6 +612,116 @@ mod tests {
         }
         drop(guard);
         second.try_lock().expect("released guard lets the peer in");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：损坏 sidecar 的两条隔离腿都「恰好一次 rename」——
+    /// r42-minor-7 的 eager-rename + 二次 rename ENOENT 会让 CallerHoldsLock
+    /// 硬错（fail-closed 臂的拒绝理由「文件仍在场」还是假的）、TryLockAndRecheck
+    /// 落进同一硬错。
+    #[test]
+    fn caller_holds_lock_quarantines_exactly_once() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::CallerHoldsLock)
+            .expect("corrupt sidecar must quarantine-and-continue, not hard-error");
+        assert!(map.is_empty(), "quarantine continues on an empty map");
+        assert!(
+            !path.exists(),
+            "the corrupt file must be moved aside exactly once"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：TryLockAndRecheck 无对端竞争时同样「恰好一次
+    /// rename」+ 按空继续（锁下重读仍损坏 → 锁内隔离）。
+    #[test]
+    fn try_lock_and_recheck_quarantines_exactly_once_without_a_peer() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("corrupt sidecar must quarantine-and-continue, not hard-error");
+        assert!(map.is_empty());
+        assert!(
+            !path.exists(),
+            "the corrupt file must be moved aside exactly once"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：锁被写方持有时不动文件、按空继续（file 未被本次
+    /// 隔离触碰——eager-rename 版会把它改名进 .corrupt-*，记录丢失到对端
+    /// 下次 persist）。
+    #[test]
+    fn try_lock_and_recheck_leaves_the_file_alone_while_a_peer_holds_the_lock() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let peer_guard = lock_rewound_turns_file().expect("peer holds the lock");
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("lock-held degrade answers an empty map");
+        assert!(map.is_empty());
+        assert!(
+            path.exists(),
+            "the corrupt file must be left untouched while a peer holds the lock"
+        );
+        std::fs::write(&path, b"{ not json").unwrap();
+        drop(peer_guard);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：有效 sidecar 永不被隔离——修复前 eager-rename 竞态
+    /// 可能把并发写方刚重建的好文件改名进 .corrupt-*（本测试钉住「解析成功
+    /// 的文件必须原样在场」这一不变量）。
+    #[test]
+    fn a_valid_sidecar_is_never_quarantined() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Wire 形状是 camelCase（serde rename_all），与生产 persist 一致。
+        let valid = r#"{"rebuiltSession":[{"rewoundAt":"2026-11-03T00:00:00Z","originalRevision":"","keptTurns":1,"preRestoreCheckpointId":null,"truncatedRevision":"","removedMessages":[]}]}"#;
+
+        std::fs::write(&path, valid).unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("a valid sidecar must parse and continue");
+        assert!(
+            map.contains_key("rebuiltSession"),
+            "锁下重读必须按在场内容继续（不得隔离对端的好文件）"
+        );
+        assert!(path.exists(), "a valid sidecar must never be quarantined");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

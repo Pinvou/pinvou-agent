@@ -1149,7 +1149,15 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // 对它恒不命中；被指文件转发的键同样对探针不可见并最后解析，可覆盖
     // ensure_repo 的就地改写。收窄为前缀 `include`（include/includeif 全中；
     // 对本模块自建的影子仓库，过宽匹配多删的只可能是无意义的自家段落）。
-    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.partialclone|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf|core\.excludesfile|include)";
+    // r43 M5：恢复面的字节面通道同场清扫——core.symlinks/filemode/
+    // trustctime/checkStat 与 index.version 在 ensure_repo 就地改写后仍可被
+    // 转发通道最后解析覆盖（r42-M2 同型），植入 core.symlinks=false 可让
+    // checkout-index 以 rc=0 把符号链接物化成含链接目标文本的普通文件
+    // （错误字节 + 错误成功）；extensions.worktreeConfig 是 includeIf 之外
+    // 的第二条转发通道（repositoryformatversion 0 下即生效、--local 探针
+    // 不可见、config.worktree 覆盖就地改写）——探针/节推导机制对顶层
+    // extensions 键即插即用（--unset-all 精确去键）。
+    const SCRUB_DANGEROUS_KEYS_RE: &str = r"^(filter\.|diff\.|extensions\.|remote\..+\.promisor|remote\..+\.url|core\.sshcommand|protocol\.|core\.sparsecheckout|index\.sparse|core\.autocrlf|core\.excludesfile|core\.symlinks|core\.filemode|core\.trustctime|core\.checkstat|index\.version|include)";
     let dangerous_keys = match git(
         &repo,
         execution_root,
@@ -1344,6 +1352,27 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     Ok(repo)
 }
 
+/// r13-M1 的 v1→v2 迁移腿（load_index 与 recheck 的并发恢复腿共用——r43
+/// P2-7：recheck 返回并发写者的新鲜索引时不得跳过迁移，老二进制写的 v1
+/// 索引会以未迁移形态流出）。
+fn migrate_index_to_v2(mut index: CheckpointIndex) -> CheckpointIndex {
+    if index.version < 2 {
+        let retired = index
+            .entries
+            .iter()
+            .filter(|e| e.kind == CheckpointKind::Turn)
+            .count();
+        if retired > 0 {
+            eprintln!(
+                "[checkpoints] legacy v1 turn numbering: retiring {retired} Turn entries (honest conversation-only degradation); new turns use the narrowed predicate",
+            );
+        }
+        index.entries.retain(|e| e.kind != CheckpointKind::Turn);
+        index.version = 2;
+    }
+    index
+}
+
 fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
     let path = index_path(ledger_root);
     let bytes = match fs::read(&path) {
@@ -1367,20 +1396,7 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
             // 「文件+对话」回退实际恢复早 k 轮的文件状态。保守失效：v1 索引
             // 的 Turn 条目整体退役（PreRestore 保留供 undo），该会话的旧边界
             // 诚实降级为仅对话；新 turn 起以 v2 口径从当前计数对齐。
-            if index.version < 2 {
-                let retired = index
-                    .entries
-                    .iter()
-                    .filter(|e| e.kind == CheckpointKind::Turn)
-                    .count();
-                if retired > 0 {
-                    eprintln!(
-                        "[checkpoints] legacy v1 turn numbering: retiring {retired} Turn entries (honest conversation-only degradation); new turns use the narrowed predicate",
-                    );
-                }
-                index.entries.retain(|e| e.kind != CheckpointKind::Turn);
-                index.version = 2;
-            }
+            index = migrate_index_to_v2(index);
             // r20 M1：commit 字段按对象 id 形状校验（SHA-1 40 / SHA-256 64 位
             // 十六进制）。它被插进 git argv 的 rev 位（rev-parse / read-tree /
             // diff 等）且位于 `--no-textconv`/`--no-ext-diff` 等选项钉之后——
@@ -1460,7 +1476,9 @@ fn recheck_concurrent_index_rewrite(
     if fresh_corrupt {
         return None;
     }
-    Some(fresh)
+    // r43 P2-7：并发写者的新鲜索引可能是老二进制写的 v1 形态——与 load_index
+    // 同过迁移腿归一，未迁移索引不得从恢复腿流出。
+    Some(migrate_index_to_v2(fresh))
 }
 
 /// r20-M1 对象 id 形状校验（SHA-1 40 / SHA-256 64 位十六进制）。
@@ -1636,6 +1654,14 @@ fn create_checkpoint_preserving(
     if !reparse.is_empty() {
         reparse_dir_bail(&reparse)?;
     }
+    // r43 M1：账本级跨进程围栏——本函数的 add -A（turn 快照 + PreRestore
+    // prepare 腿）与 apply 的多子进程窗口互斥：CLI 的 prepare/turn-snapshot
+    // 落进 GUI 的 apply 窗口 = r42-M5 同型错误成功（checkout-index 按 create
+    // 的暂存态物化回退前工作区）。与执行根围栏从不嵌套（prepare 在 apply
+    // 之前顺序执行），无死锁面。键按 canonical 账本根（调用方传入的形态
+    // 不一，与测试/CLI 侧同键必须规范化）。
+    let fence_key = fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _write_fence = acquire_ledger_write_fence(&fence_key)?;
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // 硬停（评审 r8 M3）：打包体积 ≥ 2× 预算时 Turn 快照拒绝登记——断路模式
     // （跳过裁剪/gc）下影子库只增不减，这里补回字节上限：Err 走「快照失败不
@@ -1679,7 +1705,13 @@ fn create_checkpoint_preserving(
         let mut index = load_index(ledger_root)?;
         let previous = index.entries.last().cloned();
         let commit = match previous {
-            Some(previous) => {
+            // r43 BLOCKER-1：「仅对话」哨兵（undo 还原登记，commit 为空、无
+            // git 对象）不能进复用探针——rev-parse "^{tree}" 对空串恒 128、
+            // `?` 中止创建；哨兵恒为末条（LRU 裁剪发生在 push 之后），不设防
+            // 则 undo 之后的每一次快照与每一次 prepare 都确定性失败且无自愈
+            // （转录继续增长而账本冻结，调和门重新隐藏全部入口）。空 commit
+            // 直接跳过复用、恒 commit_tree（哨兵本无树可复用）。
+            Some(previous) if !previous.commit.is_empty() => {
                 let previous_tree = git_ok(
                     &repo,
                     &execution_root,
@@ -1691,7 +1723,7 @@ fn create_checkpoint_preserving(
                     commit_tree(&repo, &execution_root, &tree, kind)?
                 }
             }
-            None => commit_tree(&repo, &execution_root, &tree, kind)?,
+            _ => commit_tree(&repo, &execution_root, &tree, kind)?,
         };
         let meta = CheckpointMeta {
             id: format!("c{}-{}", index.entries.len() + 1, now_nanos()),
@@ -2221,89 +2253,90 @@ pub fn prepare_restore(
     Ok((meta, undo))
 }
 
-// ===================== r42 M5/M6：执行根级写围栏与再解析点拒绝 =====================
+// ===================== r42 M5/M6 · r43 M1/M6：跨进程写围栏与再解析点拒绝 =====================
 
-/// r42 M5：执行根级跨进程写围栏的崩溃自愈阈值（秒）。apply 是多条 git 子进程
-/// 串行（各自有 120s 超时上限），阈值必须盖过合法 apply 的最坏耗时——偷早了
-/// 会在最需要围栏的慢 apply 中段开洞。
-const EXECUTION_ROOT_FENCE_STALE_SECS: u64 = 600;
+/// r42 M5：跨进程写围栏的崩溃自愈阈值（秒）。r43 M6 指出 600s 盖不住 apply
+/// 的最坏串行和（read-tree/purge/rm --cached/checkout-index/clean 等 8-9 条
+/// 子进程 × 各 120s 超时上限 ≈ 960s+）——取 1800s 盖满；代价是崩溃残留的最长
+/// 自愈时间同步变大，由如实拒绝文案（点明残留与自愈时限）+ Drop 的所有权
+/// 核验兜住误导面。
+const WRITE_FENCE_STALE_SECS: u64 = 1800;
 
-/// r42 M5：围栏文件寻址——按 canonical 执行根散列，落系统临时目录。账本级
-/// 锁盖不住跨进程/跨会话腿：绑定布局下同一执行根的每个会话各有一个账本根，
-/// 而 CLI 与 GUI 是两个进程；系统临时目录是两进程共享的机器本地唯一稳定锚
-/// （跨用户场景不共享，按既有披露口径接受）。DefaultHasher 的跨进程稳定性
-/// 由同版本 std 保证——GUI 与 CLI 同仓同构建；未来 std 变更导致两侧寻址
-/// 漂移时，围栏退化为「互不可见」（与修复前等价），不会产生错误互斥。
-fn execution_root_fence_path(execution_root: &Path) -> PathBuf {
+/// r42 M5：围栏文件寻址——按 canonical 键散列，落系统临时目录。执行根键
+/// （apply↔diff 互斥）与账本根键（r43 M1：create 的 add -A 与 apply 的
+/// 多子进程窗口互斥——prepare 的 PreRestore 腿同为影子 index 写者，CLI 的
+/// prepare 落进 GUI 的 apply 窗口即 r42-M5 同型错误成功）各取一个命名空间。
+/// 系统临时目录是两进程共享的机器本地唯一稳定锚（跨用户场景不共享，按既有
+/// 披露口径接受）。DefaultHasher 的跨进程稳定性由同版本 std 保证——GUI 与
+/// CLI 同仓同构建；未来 std 变更导致两侧寻址漂移时，围栏退化为「互不可见」
+/// （与修复前等价），不会产生错误互斥。
+fn write_fence_path(key: &Path, scope: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    execution_root.to_string_lossy().hash(&mut hasher);
+    key.to_string_lossy().hash(&mut hasher);
     std::env::temp_dir()
         .join("pinvou3-checkpoint-fences")
-        .join(format!("{:016x}.flag", hasher.finish()))
+        .join(format!("{scope}-{:016x}.flag", hasher.finish()))
 }
 
-/// r42 M5：执行根写围栏的持有者。Drop 即释放（删除围栏文件，best-effort）。
-pub(crate) struct ExecutionRootWriteFence {
+/// 跨进程写围栏的持有者。r43 M6：Drop 前核验所有权——读回文件内容，仅当
+/// 仍含本持有者的 token 才删除。无核验时，阈值内被偷走围栏的老进程在apply
+/// 结束后会把偷取者的**活跃围栏**一并删除（在对方临界区内重开窗口）。
+pub(crate) struct WriteFence {
     path: PathBuf,
+    token: String,
 }
 
-impl Drop for ExecutionRootWriteFence {
+impl Drop for WriteFence {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Ok(content) = fs::read_to_string(&self.path) {
+            if content.contains(&format!("token={}", self.token)) {
+                let _ = fs::remove_file(&self.path);
+            }
+        }
     }
 }
 
-/// r42 M5：获取执行根级跨进程写围栏。`checkpoint_diff` 的 `add -A` 是影子
-/// index 的第二个写者，且不站在任何闸内（进程内 `begin_execution_root_rewind`
-/// 是 check-then-act 探针，登记不了 diff 自己；CLI 是另一进程，根本看不到
-/// 内存标志）——它的 index 写落入 [`apply_restore`] 的多子进程窗口
-/// （read-tree→purge→rm --cached→checkout-index→clean，子进程间 index 锁已
-/// 释放）时，checkout-index 会按 diff 的暂存态物化**回退前**工作区：回退报
-/// 成功、文件未恢复；unbound 布局下刚摘除的账本路径还会被 stale add -A 重新
-/// 暂存、checkout-index 覆写活账本。r34-M1 围了 compact_now，diff 是漏网的
-/// 同型。围栏在 apply 与 diff 两个 feature 入口互斥：后到方如实拒绝；崩溃
-/// 残留按 [`EXECUTION_ROOT_FENCE_STALE_SECS`] 偷走自愈，二次竞争由
-/// create_new 仲裁。
-pub(crate) fn acquire_execution_root_write_fence(
-    execution_root: &Path,
-) -> Result<ExecutionRootWriteFence> {
-    let path = execution_root_fence_path(execution_root);
-    if let Some(parent) = path.parent() {
+/// 获取跨进程写围栏（O_EXCL 仲裁；已存在且未过期 = 后到方如实拒绝；过期 =
+/// 崩溃残留，改名留证后重试，二次竞争由下一轮 create_new 仲裁）。
+fn acquire_write_fence(fence_path: PathBuf, refusal: String) -> Result<WriteFence> {
+    if let Some(parent) = fence_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    let token = now_nanos().to_string();
     loop {
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&path)
+            .open(&fence_path)
         {
             Ok(mut file) => {
                 use std::io::Write as _;
                 let _ = writeln!(
                     file,
-                    "pid={} created_at={}",
+                    "pid={} token={token} created_at={}",
                     std::process::id(),
                     now_seconds()
                 );
-                return Ok(ExecutionRootWriteFence { path });
+                return Ok(WriteFence {
+                    path: fence_path,
+                    token,
+                });
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let age = fs::metadata(&path)
+                let age = fs::metadata(&fence_path)
                     .and_then(|metadata| metadata.modified())
                     .ok()
                     .and_then(|modified| modified.elapsed().ok())
                     .map(|elapsed| elapsed.as_secs());
                 match age {
-                    Some(age) if age < EXECUTION_ROOT_FENCE_STALE_SECS => {
-                        bail!("项目目录有检查点写操作在飞（回退/回滚或变更预览读取），请稍后再试")
-                    }
+                    Some(age) if age < WRITE_FENCE_STALE_SECS => bail!("{refusal}"),
                     _ => {
-                        // 崩溃残留：改名留证后重试（并发抢锁由下一轮 create_new
-                        // 仲裁；rename 目标带纳秒后缀，Windows 上不与现存文件冲突）。
+                        // 崩溃残留：改名留证后重试（rename 目标带纳秒后缀，
+                        // Windows 上不与现存文件冲突）。
                         let _ = fs::rename(
-                            &path,
-                            path.with_extension(format!("stale-{}", now_nanos())),
+                            &fence_path,
+                            fence_path.with_extension(format!("stale-{}", now_nanos())),
                         );
                     }
                 }
@@ -2311,6 +2344,32 @@ pub(crate) fn acquire_execution_root_write_fence(
             Err(error) => return Err(anyhow::Error::new(error).context("创建检查点写围栏失败")),
         }
     }
+}
+
+/// r42 M5：执行根级围栏（apply↔diff 互斥）。`checkpoint_diff` 的 `add -A` 是
+/// 影子 index 的第二个写者，且不站在任何闸内（进程内
+/// `begin_execution_root_rewind` 是 check-then-act 探针，登记不了 diff 自己；
+/// CLI 是另一进程，根本看不到内存标志）——它的 index 写落入 [`apply_restore`]
+/// 的多子进程窗口时，checkout-index 会按 diff 的暂存态物化**回退前**工作区。
+pub(crate) fn acquire_execution_root_write_fence(execution_root: &Path) -> Result<WriteFence> {
+    acquire_write_fence(
+        write_fence_path(execution_root, "exec"),
+        "项目目录有检查点写操作在飞（回退/回滚或变更预览读取），请稍后再试；若刚发生崩溃或强制退出，残留锁最长约 30 分钟后自动清除".to_string(),
+    )
+}
+
+/// r43 M1：账本级围栏（create 的 add -A ↔ apply 窗口互斥）。`add -A` 是影子
+/// index 的写者，先于 apply 的 read-tree 到达同一影子 repo：其 index 写落入
+/// apply 的多子进程窗口时，checkout-index 会按 create 的暂存态物化回退前
+/// 工作区（r42-M5 同型，经 prepare/turn-snapshot 腿）。CLI 的 rewind/undo
+/// prepare 与 GUI 的 apply 跨进程互不可见（内存标志只在本进程）——围栏文件
+/// 按账本根寻址（同一影子 repo 的所有写者共享一把）。与执行根围栏从不同时
+/// 嵌套（prepare 在 apply 之前顺序执行），无死锁面。
+pub(crate) fn acquire_ledger_write_fence(ledger_root: &Path) -> Result<WriteFence> {
+    acquire_write_fence(
+        write_fence_path(ledger_root, "ledger"),
+        "该会话的检查点账本有写操作在飞（快照或回退准备进行中），请稍后再试；若刚发生崩溃或强制退出，残留锁最长约 30 分钟后自动清除".to_string(),
+    )
 }
 
 /// r42 M6：执行根内的目录再解析点（Windows junction / mount point）清单。
@@ -4979,6 +5038,10 @@ mod tests {
     /// 恒 false（大小写不敏感的 NTFS/APFS 上本测试必红）。
     #[test]
     fn case_probe_matches_an_independent_ground_truth() {
+        // r43 P2-5：本测试只在大小写不敏感文件系统（Windows/macOS）上具备
+        // 回归捕获力——大小写敏感 FS（Linux ext4）上真值恒 false，把探针改回
+        // 双 now_nanos() 恒 false 同样绿（r43 变异实证）。Linux CI 的兜底是
+        // 下面的探针形状钉（单次采样，平台无关）。
         let dir = TestDir::new("icase-probe");
         let probe = dir.path().join(".Ground-Truth-Probe");
         fs::write(&probe, b"").unwrap();
@@ -4988,6 +5051,24 @@ mod tests {
             fs_is_case_insensitive(dir.path()),
             truth,
             "case 探针必须与独立基准一致（文件系统 truth={truth}）"
+        );
+        // 形状钉（r43 P2-5）：探针体内 `now_nanos()` 恰好出现一次——双采样
+        // （r42-M3 的回归形状：写入名与 stat 名必不相等、恒 miss）在大小写
+        // 敏感 FS 上也要变红。
+        let src = include_str!("mod.rs");
+        let fn_start = src
+            .find("fn fs_is_case_insensitive(")
+            .expect("probe fn must exist");
+        let rest = &src[fn_start..];
+        let body_end = rest.find("\n}").expect("probe fn must close");
+        let calls = rest[..body_end]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| line.matches("now_nanos()").count())
+            .sum::<usize>();
+        assert_eq!(
+            calls, 1,
+            "case 探针必须单次采样 now_nanos（r42-M3 回归形状钉：双采样恒 miss；注释行不计）"
         );
     }
 
@@ -5026,6 +5107,96 @@ mod tests {
         drop(fence);
         diff_checkpoint(ledger.path(), exec.path(), &created.id, false)
             .expect("diff succeeds after the fence is released");
+    }
+
+    /// r43 BLOCKER-1 回归：undo 哨兵（空 commit）之后的快照与回退必须照常
+    /// 工作——哨兵是末条时，create 的复用探针不得把 rev-parse "^{tree}" 打到
+    /// 空串上（恒 128、`?` 中止创建：此后每轮快照静默跳过、每次 prepare 确定性
+    /// 失败且无自愈）。变异证据：修复前本测试在第一个 expect 处红。
+    #[test]
+    fn turn_snapshot_and_rewind_succeed_after_an_undo_sentinel() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("sentinel-create-ledger");
+        let exec = TestDir::new("sentinel-create-exec");
+        for turn in 1..=2 {
+            exec.write(&format!("f{turn}.txt"), "x\n");
+            create_checkpoint(
+                ledger.path(),
+                exec.path(),
+                Some(turn),
+                CheckpointKind::Turn,
+                &format!("t{turn}"),
+            )
+            .expect("turn checkpoint");
+        }
+        register_conversation_only_turn(ledger.path(), 2).expect("register sentinel");
+        exec.write("f3.txt", "y\n");
+        let third = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(3),
+            CheckpointKind::Turn,
+            "t3",
+        )
+        .expect("snapshot after the sentinel must succeed");
+        assert_eq!(third.turn, Some(3));
+        // 回退面：prepare（复用探针同路径）+ apply 必须完整走通。
+        let (meta, _undo) = prepare_restore(ledger.path(), exec.path(), &third.id, None)
+            .expect("prepare after the sentinel must succeed");
+        apply_restore(ledger.path(), exec.path(), &meta)
+            .expect("apply after the sentinel must succeed");
+    }
+
+    /// r43 MAJOR-1 回归：账本围栏持有期间，create（turn 快照腿与 PreRestore
+    /// prepare 腿同一入口）与 prepare 都必须如实拒绝——CLI 的 prepare 落进
+    /// GUI apply 窗口的形状。围栏键按 canonical 账本根，测试侧取同键。
+    #[test]
+    fn snapshot_and_prepare_refuse_while_the_ledger_fence_is_held() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("ledger-fence-ledger");
+        let exec = TestDir::new("ledger-fence-exec");
+        exec.write("a.txt", "a\n");
+        let created = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("bootstrap checkpoint");
+        let fence_key = canonical_execution_root(ledger.path()).expect("canonical ledger root");
+        let fence = acquire_ledger_write_fence(&fence_key).expect("acquire ledger fence");
+        let create_error = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .unwrap_err();
+        assert!(
+            create_error.to_string().contains("在飞"),
+            "快照必须被在飞账本围栏拒绝: {create_error:#}"
+        );
+        let prepare_error =
+            prepare_restore(ledger.path(), exec.path(), &created.id, None).unwrap_err();
+        assert!(
+            format!("{prepare_error:#}").contains("在飞"),
+            "prepare 必须被在飞账本围栏拒绝（r43 MAJOR-1 的 CLI×GUI 腿）: {prepare_error:#}"
+        );
+        drop(fence);
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "t2",
+        )
+        .expect("create succeeds after the ledger fence is released");
     }
 
     /// r42 M4 回归：「仅对话」哨兵——登记后列表计数立即对齐恢复后口径

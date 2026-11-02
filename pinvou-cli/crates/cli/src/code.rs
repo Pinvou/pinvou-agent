@@ -6208,7 +6208,7 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
             ))
         })?;
     }
-    let restored_messages = store.restore_rewound_turns(session).map_err(|error| {
+    let restored = store.restore_rewound_turns_detailed(session).map_err(|error| {
         let detail = format!("{error:#}");
         // The store fails *non-retryably* when the transcript changed after
         // the rewind (new turns produced, turn content edited, or the bound
@@ -6232,6 +6232,19 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
         let condition_broken = matches!(resolve_undo_state(&store, &ledger, session), Ok(None));
         undo_restore_failure(condition_broken, session, checkpoint_id.as_deref(), &detail)
     })?;
+    // r43 MAJOR-2: mirror the GUI's conversation-only sentinel registration
+    // (app/commands/checkpoints.rs undo_last_rewind) — undo restores the
+    // transcript without rebuilding Turn snapshots; without the sentinel a
+    // CLI-side undo leaves the ledger's newest Turn at `kept` while the
+    // timeline is whole again, and the desktop reconciliation gate hides every
+    // chip until the next send. Best-effort: failure degrades to the pre-r42
+    // honest-hide window, realigned by the next send.
+    let sentinel_turn = restored.kept_turns.saturating_add(restored.restored_turns);
+    if let Err(error) = checkpoints::register_conversation_only_turn(&ledger, sentinel_turn) {
+        eprintln!(
+            "[code] undo conversation-only sentinel registration failed for {session}: {error:#}"
+        );
+    }
     // r24 M2: a successful undo means the session state changed - invalidate
     // any live pending (mirror of the GUI's explicit close-out in
     // app/commands/checkpoints.rs). Otherwise the replay arm sees the sidecar
@@ -6242,12 +6255,13 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     checkpoints::clear_pending_rewind(&ledger);
     let value = serde_json::json!({
         "session": session,
-        "restoredMessages": restored_messages,
+        "restoredMessages": restored.messages,
         "restoredCheckpoint": checkpoint_id,
         "info": info.to_json(),
     });
     let human = format!(
-        "undid rewind of {session}: restored {restored_messages} messages{}",
+        "undid rewind of {session}: restored {} messages{}",
+        restored.messages,
         checkpoint_id
             .as_deref()
             .map(|id| format!(" and code to rollback point {id}"))
@@ -6350,9 +6364,33 @@ mod tests {
         // ("pending.checkpoint_id, pending.keep_turns" — app crate only),
         // self-UNsatisfying in this crate and RED at head; the CLI
         // destructures the projection as (pending_target, pending_keep).
+        // r43 P2-1: the needle is the FORMAT-ARGS text, not the projection —
+        // `pending_target, pending_keep` alone is satisfied by the destructure
+        // line (:5947), so mutating the format args back to `checkpoint.id`
+        // (the exact r41 regression) stayed green. Anchoring on the args list
+        // (which names all three: the pending's target/keepTurns plus the
+        // attempt's own id for contrast) makes that mutation red again.
         assert!(
-            body.contains("pending_target, pending_keep"),
-            "the refusal copy must interpolate the pending's real target/keepTurns via the projection (r41 M4 / r42 M2)"
+            body.contains("pending_target, pending_keep, checkpoint.id,"),
+            "the refusal format args must interpolate the pending's real target/keepTurns (and the attempt id for contrast) (r41 M4 / r42 M2 / r43 P2-1)"
+        );
+        // r43 P2-1: the checkpoints_undo refusal twin ships the same
+        // projection with no pin of its own — mutating its format args back to
+        // the attempt's fields must also go red.
+        let undo_src = src;
+        let undo_start = undo_src
+            .find("fn checkpoints_undo(")
+            .expect("checkpoints_undo must exist");
+        let undo_rest = &undo_src[undo_start..];
+        let undo_end = ["\nfn ", "\npub "]
+            .iter()
+            .filter_map(|marker| undo_rest.find(marker))
+            .min()
+            .unwrap_or(undo_rest.len());
+        let undo_body = &undo_rest[..undo_end];
+        assert!(
+            undo_body.contains("pending_target, pending_keep,"),
+            "the checkpoints_undo refusal format args must interpolate the pending's real target/keepTurns (r43 P2-1)"
         );
     }
 

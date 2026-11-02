@@ -204,6 +204,19 @@ async fn reconcile_pending_rewind(
             pending.keep_turns
         );
         checkpoints::clear_pending_rewind(ledger);
+        // r43 P2-4：清暂记的同时作废 turn > 当前转录轮数的 Turn 条目——崩溃
+        // 暂记的目标可能被 P2-1 的 preserve 集从压缩裁剪里救回（turn N > 压缩
+        // 后计数），裸清会把「first-wins 锚定」留给压缩前的陈旧条目：转录重长
+        // 后新登记的 turn-N 快照被旧条目抢占，回退恢复出被压缩截断的旧分支却
+        // 报成功。此刻账本里 turn > 转录轮数的条目只能是该陈旧分支（新分支
+        // 尚未登记），整段作废方向安全。
+        if let Err(error) =
+            checkpoints::invalidate_turn_checkpoints_after(ledger, current_turn_count as u32)
+        {
+            log::warn!(
+                "[pinvou3][checkpoints] vacuous-pending stale anchor invalidation failed sid={session_id}: {error:#}"
+            );
+        }
         return true;
     }
     // r35 MAJOR-2：pre_restore_id 必须真实存在于索引——否则 planted pending
@@ -371,6 +384,13 @@ pub(super) async fn create_turn_checkpoint(
     // r19 M6：快照前先对账中断的回退（收口混合态；未完成则跳过本轮快照）。
     // r23 M1：栅栏输入由命令层以真实 pool/ACP 探针预计算（ReconcileGates）。
     if !reconcile_pending_rewind(store, session_id, &ledger, &execution, gates).await {
+        // r43 M6：对账失败不得只留在 feature 层日志里——发送路径在此以
+        // error 级如实上报（含可用补救），不留「承诺自动对账却静默什么都没
+        // 发生」的误导面。UI 事件通道（新 bridge 事件契约 + i18n）列为
+        // follow-up。
+        log::error!(
+            "[pinvou3][{caller}] rewind reconciliation did not complete, this turn's snapshot is blocked sid={session_id}: complete the pending rewind (guided retry of the same rewind, or undo), or send again after a crash-residue write fence self-heals (≤30 min)"
+        );
         return None;
     }
     let store_count = store.clone();
@@ -941,7 +961,9 @@ pub async fn rewind_to_turn(
     // transcript 整体写回磁盘（对话复活、工作区仍回退 = 不可接受分叉）。
     // 驱逐后下次 get_or_spawn 未命中 → lazy respawn → 从截断后的磁盘注入。
     // 如果 restore/截断失败，引擎已不存在但下次使用时会从磁盘重建（安全）。
-    pool.evict(&session_id).await;
+    // r43 P2-8：evict_if_present——evict 的无条目臂会 invalidate 未提交预约
+    // （本命令此刻正持自己的预约），r28-B1 同款存在性判定在 entries 锁内。
+    pool.evict_if_present(&session_id).await;
     // 跨会话忙碌门：恢复单位是执行根，同根其它会话在跑时回退会撤销它正在写的
     // 文件，如实拒绝并告知哪个会话在忙。全量枚举（含 scheduled）是阻塞 IO，
     // 移出 async worker。
@@ -1417,8 +1439,10 @@ pub async fn undo_last_rewind(
     // 整体写回磁盘，静默回滚本次反悔。当前由 undo 前置条件（有任何完成轮次
     // 即拒绝反悔）挡住，但那是一次前置条件放宽之遥的永久丢失；与 rewind、
     // 重放臂对齐把驱逐前提。驱逐后若后续步骤失败，引擎已不存在但下次使用会
-    // 从磁盘重建（安全，同 rewind 语义）。
-    pool.evict(&session_id).await;
+    // 从磁盘重建（安全，同 rewind 语义）。r43 P2-8：evict_if_present——evict
+    // 的无条目臂会 invalidate 未提交预约（本命令此刻正持自己的预约），r28-B1
+    // 同款存在性判定在 entries 锁内。
+    pool.evict_if_present(&session_id).await;
 
     // 1) 恢复代码到本次回退绑定的 PreRestore（仅对话降级的回退无绑定，跳过
     //    本步——degraded 语义承诺绝不动代码，也不做 ACP 复检）。对称语义：
@@ -1565,6 +1589,47 @@ mod tests {
     /// 预览入口的命令体必须真的询问压缩闩——压缩不持 turn 预约，turn-active
     /// 探针对它全盲；删掉任意一处栅栏即红（接线 pin，非仅判定体 pin）。
     #[test]
+    /// r43 P2-2/P2-1：undo 的哨兵登记接线钉 + 三处活暂记拒绝的插值钉——
+    /// 删除 register_conversation_only_turn 调用（r43 MAJOR-2 点名的 GUI 侧
+    /// 根因、CLI 侧已同修）或把拒绝格式参数改回 attempt 自身字段都须变红。
+    #[test]
+    fn undo_wires_the_sentinel_and_refusals_interpolate_the_pending() {
+        let src = include_str!("checkpoints.rs");
+        let src = &src[..src
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("test module marker must exist")];
+        let undo_body = production_body(src, "pub async fn undo_last_rewind(");
+        assert!(
+            undo_body
+                .contains("checkpoints::register_conversation_only_turn(&ledger, sentinel_turn)"),
+            "undo 必须登记「仅对话」哨兵（r42 M4 / r43 MAJOR-2：缺登记 = 调和门重新隐藏全部入口）"
+        );
+        // 三处活暂记拒绝的格式参数必须携带 pending 自身字段（rewind 两处 +
+        // undo 一处；r41 M4 针的 GUI 侧同款——reviewer P2-1 点名）。
+        let interpolations = src
+            .matches("pending.checkpoint_id, pending.keep_turns")
+            .count();
+        assert!(
+            interpolations >= 3,
+            "活暂记拒绝的格式参数必须插值 pending 的真实字段（r41 M4 / r43 P2-1），当前 {interpolations} 处"
+        );
+    }
+
+    /// r43 P2-3：compact_now 的活暂记拒绝接线钉（r26-M4 同款 tripwire 标准）
+    /// ——删除 interaction.rs 的 pending 探针臂（r42 P2-1 修复本体）必须变红。
+    #[test]
+    fn compact_now_probes_the_persistent_pending() {
+        let src = include_str!("interaction.rs");
+        assert!(
+            src.contains("peek_pending_rewind(&roots.ledger)"),
+            "compact_now 必须探针持久化回退暂记（r43 P2-3：内存回退标志盖不住崩溃回退）"
+        );
+        assert!(
+            src.contains("存在未完成的回退暂记"),
+            "compact_now 的活暂记拒绝必须携带可操作文案（r43 P2-3）"
+        );
+    }
+
     fn destructive_checkpoint_gates_ask_the_compaction_latch() {
         let src = include_str!("checkpoints.rs");
         // Cut at the test module so the probe's own strings can never satisfy
@@ -1764,8 +1829,8 @@ fn ",
             .find("checkpoints::peek_pending_rewind(&ledger)")
             .expect("the undo live-pending refusal must exist (r41 M1)");
         let evict_at = undo_body
-            .find("pool.evict(&session_id).await")
-            .expect("the undo evict must exist");
+            .find("pool.evict_if_present(&session_id).await")
+            .expect("the undo evict must exist (r43 P2-8: evict_if_present — plain evict voids the command's own reservation)");
         let restore_at = undo_body
             .find("checkpoints::prepare_restore(&ledger_prepare")
             .expect("the undo prepare call must exist");
