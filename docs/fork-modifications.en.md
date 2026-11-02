@@ -28,11 +28,6 @@
 - All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
 - Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
 
-## Web JSONPath upstream backport (integrated; historical candidate evidence, #756)
-
-- [Upstream #7046](https://github.com/codewhale-hq/Codewhale/pull/7046) merged on 2026-10-22 as `b9619942905ac4b62752a579ca8937467d0486fc`. Commit `4164aa6fd` preserves the original patch, message and contributor credit through `git cherry-pick -x` above public maintenance `083cebfd9`. Candidate branch tip `4bf5e0894`, which contains that pick, remains on `integration/jsonpath-upstream-7046` for historical provenance. Maintenance integrated the change through the CodeWhale#117 squash `ea9fdc90f`, already consumed by parent #750. This belongs to existing T2, not a new fork theme.
-- Boundary: the backport aligns upstream Web schema wording with the real parser contract; parser, network policy and execution stay unchanged. Fuller double-quoted-key/nonnegative-index/ASCII-dot-field/object-wildcard wording and the existing quoted-key `]` scan limitation remain follow-ups. The existing baseline register owns current state, counts and tests.
-
 ## T3 addendum: skills-index phantom-tool fix (#56 merged as `72e98fd89`)
 
 - Status: [Pinvou/CodeWhale#56](https://github.com/Pinvou/CodeWhale/pull/56) merged as squash `72e98fd89` (2026-09-17), and the 2026-09-17 batch advanced the published `pinvou3-clean` to `92427bd8d` (the candidate branch carried eight commits above the r1 maintenance head `ae7e3fb36`: the incident-site fix `c34c3a430`, the same-class sweep `f81528358`, the two-stage activation closure `a2e21fcf9`, the rider strip `18f7c7b15`, the review-dedupe plus guard hardening `9f46ac5f0`, the fifth-round review closure `be2b2fe92`, the sixth-round same-class closure `4eb487cd3`, and the seventh-round consistency closure `dc1f391d6`). The parent-side allowlist/always-loaded and instruction adaptations ride with parent PR #490. The candidate-period `CANDIDATE_HEAD` registration was retired on landing; the parent gitlink points at the published maintenance-branch head again and `verify-public-submodule.sh` is green.
@@ -63,26 +58,37 @@
 
 - Every ordinary shell execution overlays hook/task environment values, including an empty map. `CommandSpec::with_env` previously replaced the constructor's entire map and removed `PYTHONIOENCODING=utf-8`, so Python reverted to its Windows locale encoding while PowerShell and the tool's output readers expected UTF-8. Merge overlays instead, and resolve explicit Windows variable overrides case-insensitively. Keep the sanitizer, explicit overrides, and Python's file/default-text encoding policy unchanged.
 - The common shell builder covers foreground, background/PTY, interactive, and encoded PowerShell retry execution. Pre-existing direct `CommandSpec::program` consumers, including the read-only direct-argv command lane and `codew sandbox run`, do not seed that shell default and are outside this fix's claim.
-- Integrated: current gitlink is public maintenance `f1eb10efc`, containing #115–#122 plus #114/#125. Earlier candidate test receipts below retain their original execution boundaries.
+- Integrated: current gitlink is public maintenance `ea9fdc90f1`, containing #115/#116/#117. Earlier candidate test receipts below retain their original execution boundaries.
 - Parent ancestry-gate regressions isolate inherited `GIT_*` variables in both fixture Git calls and gate subprocesses. Under selectors aimed at a disposable foreign repository, the three real topology conditions still produce their expected results while the foreign repository, worktree and index stay byte-identical. The topology/fingerprint boundary is asserted explicitly so inserted layers cannot be silently skipped.
 - The default Windows child-environment regression holds the process environment lock and sets a GBK sentinel before probing empty/unrelated overlays. It cannot inherit a process/registry UTF-8 workaround and falsely pass. The probe uses the detected shell syntax, exercises encoded commands only for PowerShell, and enforces a 30-second timeout with child cleanup. Reintroducing the old replacing `with_env` while the outer process had `PYTHONIOENCODING=utf-8` made this strengthened regression fail (0 passed, 1 failed); the final source was restored byte-for-byte before passing verification.
 - Native end-to-end regressions run the actual lowercase `bash` tool and background ShellManager with a GBK parent environment, Python stdout/stderr, and 64 KiB of preceding output. They require Windows Python on PATH and a PowerShell dispatcher; run from PowerShell or cmd with `SHELL` unset. Opt in with `cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`; set `CODEWHALE_TEST_PYTHON` to select an interpreter.
 - Local native Windows verification: `cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` passed 23 tests (Cargo substring matching selects 19 `sandbox::tests::*` and 4 `repl::sandbox::tests::*`; Linux selects 26 because of cfg differences). Both opt-in tool tests passed with system Python 3.14 and bundled Python 3.13.14 (four executions); the separate Git Bash environment probe passed once. Earlier, restoring the original builders made both native tool tests fail for each interpreter with corrupted Python Chinese and intact PowerShell Chinese. Formatting, architecture guard, and fast fork fingerprints passed.
 - Windows evidence above is prior local author verification, not a claim that later documentation revisions reran native tests. The parent Windows regression step now selects the three deterministic default-merge, constructor-wiring, and case-insensitive-override filters, each with a nonzero-test guard. The actual [Windows regression job at `91e262ba2`](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) ran all three filters successfully. That receipt covers the older head and unchanged foundation, not later revisions. The two Python-dependent opt-in tests remain local author evidence. The maintenance fork's `pinvou3-clean` workflow is Ubuntu-only; Windows-gated tests do not run in that CI lane. The Linux-visible `windows_shell_default_env_forces_python_pipe_stdio_utf8` checks the helper result, not its constructor wiring; the case-insensitive overlay also requires native Windows regression. Upstream PR codewhale-hq/Codewhale#7041 is the contribution path for eventual upstream Windows CI coverage, not evidence that such a lane has run. No customer-device replay, PowerShell 7 verification, or installer release was performed.
 
-## Current state (2026-10-28)
+## Current state (2026-10-23)
 
-- Public maintenance and parent gitlink: `f1eb10efcfe2468fde42d1724d7f5f19d54b904c` (2026-10-28). #114 merged as `fe90f72f9`, #125 as `f1eb10efc`. This follow-up changes parent references only; it does not advance maintenance.
-- Measured history: 86 commits above upstream v0.9.12 `dcd4c200f`, 71 above r1 `1fafee7e2`; 84 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Public maintenance and parent gitlink: `ea9fdc90f1c90335554833195eeeb847c83d82dd` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance. #117 merged remotely on 2026-10-23 as `ea9fdc90f`.
+- Measured history: 79 commits above upstream v0.9.12 `dcd4c200f`, 64 above r1 `1fafee7e2`; 77 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Measured drift: 525 files, +91397/-39288, net +52109; 255 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+- Measured drift: 504 files, +86011/-37667, net +48344; 231 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
-### 2026-10-23 batch maintenance integration (#115/#116/#117)
+- Integration pin (this PR's window): the gitlink is temporarily pinned to the re-cut integration head `upstream/integration` = `ea9fdc90f` + 15 = `9082d69f28e40c5a83f2886fbc8ee92e195373bd` (`fork-guard.sh` registered head `9082d69f2`, `EXPECTED_COMMITS` 94 = 79 registered + 15 pending upstream #81/#82/#85/#87: 14 topic commits + 1 integration-only adaptation commit); inside this window the `verify-public-submodule.sh` "gitlink = maintenance-branch head" assertion is red by design and recovers when the re-cut closure lands after the upstream merges. Re-pushing the integration branch and re-pinning the gitlink must land in the same batch — CI submodule fetches fail with "not our ref" in between. The re-cut closure is not a doc-only operation: the pinned base already carries the component face introduced by #87's review rounds, and the pre-registered migration has landed with this PR — the app's bare `id_*` entries derive from the engine's `SENSITIVE_COMPONENT_NAMES` (`ID_COMPONENT_KEYS`), `APP_ONLY_COMPONENTS` and its disjointness assert are retired, and engine component-face additions must be adopted or registered as residuals (red on any addition, re-runnable at any time; the round-3 review verified it with a wallet.dat probe)
+
+### Maintenance integration
 
 - #115 merges overlays while retaining shell defaults and handles explicit Windows keys case-insensitively; #116 merged as [`e9a7f48da1`](https://github.com/Pinvou/CodeWhale/commit/e9a7f48da1), recording returned failure flags through actual history/session round trips. Both remain within T2; no topic is added.
 - #116 selectively forward-ports the `is_error` mapping from upstream `2ae7460e4`. The mapping was absent from the v0.9.12 baseline; the cancellation metadata and shell receipt changes in that upstream commit were not included. Returned payloads with `success=false` and interrupted, unexecuted markers are recorded as failed, retaining their bodies. Existing execution errors, successful results and successful schema hydration without execution retain their semantics.
 - Affected surfaces are persisted history `is_error`, failure flags in resumed Anthropic requests, CLI failure counts, session-picker previews, runtime API session JSON/tool receipts, and Pinvou application tool cards whose restored success state is backfilled from `!is_error` (`bridge-shared-helpers.js`). Live tool cards and ACP Failed status already derive from `ToolResult.success` and do not change through this history mapping; the CodeWhale TUI restored-history renderer does not create ToolResult cards. Pre-existing flag loss in the child recorder (`tools/subagent/mod.rs`) and TUI `SyncSession` mirror (`tui/ui/event_loop.rs`) remains follow-up work outside #116.
 - Fingerprints cover the Windows defaults/constructor/explicit override/native tool tests and `forkguard_tool_failure_flag_survives_recording_and_round_trip`. Foundation integration does not imply customer-environment or release validation.
+
+### Parent chop: consume the engine's new public primitives (parent-side adaptation, this PR)
+
+The upstream integration batch was first cut as `44921cf02` + 4 (`422a60f26`, 2026-10-05), re-cut onto `480bebf61` (`4e2486c76` — that head is no longer resolvable locally or on the remote; historical record only), a third time onto `803e672bb` + 4 (`f8709f0ab`), a fourth time onto `13ee4dfd2` + 14 (`f7d1cb0a2`), a fifth onto `c08c8c022` + 15 (`689360ff5`), and a sixth onto `083cebfd9` + 15 (`bd57b795d`); after the public head advanced with CodeWhale#115/#116/#117 (2026-10-23) to `ea9fdc90f`, this PR re-cuts the topic chain a seventh time onto it: head `upstream/integration` = `pinvou3-clean` + 15 = `9082d69f2` (#81 `5f6f39923`/`e24555cc8`/`8cfb0d50e` skills exports + shared link predicate + contract calibration, #82 `095eb09cd` memory sensitivity, #87 `b1a795a7c`/`906369dc4`/`06e873d04` execpolicy inventory + face completion + bypass-family disclosure, #85 `e730fc047`/`3e1d63b41`/`f87b8f9d3`/`f36b5c7e7`/`35d38f9ea`/`49c60e3b0`/`0ac0453f8` automation archive + HTTP listing + retained writes + pins; the 14 topic commits are patch-id identical to the sixth cut, plus one integration-only adaptation commit `9082d69f2` passing an empty `workspace_roots` list to the sensitive-path tests' shared `ExecPolicyContext` helper (#54 made the field required after those tests were authored; empty keeps the historical single-root matching)), to be re-cut once more from the final merge result when upstream PRs #81/#82/#85/#87 land. The parent repo converts four comment-alignment / double-maintained adaptations into consumption of the engine primitives:
+
+- Guard constants: `scripts/fork-guard.sh` registered head `ea9fdc90f` → `9082d69f2`, `EXPECTED_COMMITS` 79 → 94 (79 registered commits + 15 pending upstream = 14 topic commits + 1 integration-only adaptation commit; inside this PR's window the `verify-public-submodule.sh` "gitlink = maintenance-branch head" assertion is red by design and recovers at closure).
+- Skill-install safety surface (#81 makes `is_safe_path` / `validate_skill_name_segment` / `InstalledFromMarker` / `INSTALLED_FROM_MARKER` / `add_entry_size` public): `features/marketplace/plugin_import.rs::checked_zip_entry_path` now delegates its header-declared size cap to `deepseek_tui::skills::install::add_entry_size` (point-for-point equivalence pinned by `forkguard_declared_size_cap_delegates_to_engine_add_entry_size`), and every production `.installed-from` literal now references the engine's public marker constant (`skill_marketplace.rs`, the `store.rs` legacy mirror read, `runtime_bundle/extraction.rs` retired-skill protection and removed-skill cleanup, `skill_materialization.rs` mirror skip, and the bridge test fixture; `forkguard_installed_from_marker_delegates_to_engine_constant` pins the constant↔disk-format bond). The traversal judgment keeps the zip crate's `enclosed_name` sanitizer and the symlink judgment keeps the unix-mode face — the sanitizer's normalized output feeds downstream layout logic (`skill_md_rank` etc.) and its semantics are "normalize and accept", not point-for-point swappable with the engine's reject predicate; the verdict divergence is registered by `forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate` (now with an executable temp-file-zip verdict pin). `is_safe_skill_name` stays local: it is a stricter app-specific allowlist (`[a-zA-Z0-9_-]{1,64}`; the base validator is wider), not an aligned copy.
+- Sensitive-path inventory single-sourcing (#87 `sensitive_paths` module): `platform/path_policy.rs`'s `BLOCKED_COMPONENTS` / `BLOCKED_PREFIXES` are compile-time anchored to the engine inventory (`const` asserts check the subset relation item by item, with all twelve `BLOCKED_COMPONENTS` entries anchored on the engine's **component face** `SENSITIVE_COMPONENT_NAMES` specifically — an engine rename/removal, and equally a migration of an adopted entry out of the component face, fails the build and forces a conscious sync; the bare `id_*` entries now derive from the engine's `SENSITIVE_COMPONENT_NAMES` component face — the pre-registered migration landed with the pinned cut, retiring `APP_ONLY_COMPONENTS` and its disjointness assert). Engine-only residuals and the reasons for each non-adoption are documented in the constants, and `forkguard_blocked_lists_are_the_anchored_subset_of_engine_inventory` now pins both directions: the subset side plus engine coverage (every engine entry across all four faces — directory, file, prefix, component — must be adopted or registered as a residual, so engine additions, component face included, can no longer slip through silently). In `features/assistant/safety_deny_rules.rs`, `SENSITIVE_DIR_NAMES` is now a direct const alias of the engine's `SENSITIVE_DIRECTORY_NAMES` (content and order were already item-for-item identical); `SENSITIVE_CHILD_FILES` / `SENSITIVE_NAME_DIRS` / `SENSITIVE_ABS_FILES` get the same compile-time anchoring (`forkguard_deny_inventory_anchored_to_engine_sensitive_paths` pins the residual sets and reverse-pins that every registered residual still exists in the engine inventory; the `/var/log/auth.log` addition is covered by `starts_with` on the adopted `/var/log/auth` prefix). The deny corpus stays byte-identical: `rule_snapshot_is_stable` passes unchanged at its pinned count of 8,729.
+- Automation run archive (#85 `list_archived_runs`): **not chopped**. The engine archive stores run records per automation id (they carry task/thread/turn ids but no display metadata, and are pruned per automation at `ARCHIVE_RETAINED_TERMINAL_RUNS`); the app's scheduled-history sidecar is a UI contract (task display-name/model snapshot + `deleted_at`, one JSON listing all archived automations, retained unbounded on its own — the retention divergence is handled together with the delegation). The contract difference is documented on `ArchivedScheduledTaskSnapshot`; delegation is tracked as issue #702.
 
 ### Turn-bound cancel: the host dispatches stops by turn identity (parent-side adaptation, this PR)
 
@@ -120,8 +126,6 @@ These upstream tests were replaced, not silently deleted, because registered Pin
 
 | Commit | Topic |
 |---|---|
-| `f1eb10efc` | T3: align bounded discovery and exact-name Skill guidance; migrate the exact v11 bundled discovery body while preserving edits (#125) |
-| `fe90f72f9` | T2: reuse suffix-proven partial streaming tool inputs; preserve the existing fallback for uncertain fragments (#114) |
 | `38dd961ea` | T1 host facade, routing, and embedding boundary |
 | `a5c12e203` | T2 tool compatibility, MCP secrets, and execution safety |
 | `7dc1a429a` | T3 host-owned static prompt composition |
@@ -179,14 +183,7 @@ These upstream tests were replaced, not silently deleted, because registered Pin
 | `0bc868ff0` | T4 fix: the drain-cap test resolves its four names (`drain_pipe`/`DRAIN_CAPTURE_CAP`/`DRAIN_CAP_TRUNCATED_NOTE`/`Arc`/`Mutex`) through explicit imports instead of the tests mod's unix-gated glob (the #77 shape) — the test is platform-independent (tokio duplex) and the Windows lib-test compile previously failed with 7 E0425/E0433 errors (#95) |
 | `906ffa979` | T5 fix: the Windows hard-link count reads through the stable handle API — `number_of_links` is still unstable (`windows_by_handle`) and broke the parent's Windows legs with E0658; read via `GetFileInformationByHandle` (the same mechanism as the Runtime store identity check), with an unopenable/unqueryable member counting as single-linked and the archive writer's streaming read surfacing real problems loudly; the unix/fallback arms only gain an unused path argument to keep one call site (#94) |
 | `7624cd3db` | T4 feature: human-wait wall-clock pause (split out of #75, rebuilt per a 12-agent adversarial audit): on surfaces that can actually deliver the decision (runtime-API `decide_approval`/`submit_user_input`), an approval/user-input wait window pauses the task wall clock and restarts the idle clock fresh when the window closes; the TUI's private task runtime has no delivery channel, never arms the window, and the wall clock keeps its own deadline; an aggregate 24h fail-safe cap sums across the whole task and terminalizes as `HumanWaitTimeout`; the parked journal poll backs off from the 200ms catch-up cadence (doubling, capped at 2s) and an arriving decision broadcasts to wake the loop early; every claim is pinned by a mutation-verified red-green test (#78) |
-| `7d2636993` | T2 fix: Preserve shell defaults when task environment overlays are merged; explicit Windows names override case-insensitively. CodeWhale#115 adds generic overlay and Windows foreground/background Python stdio regressions; child-env sanitization and public signatures are unchanged. |
-| `e9a7f48da` | T2 fix: Preserve failed tool results as `is_error:true` during history recording. Existing upstream round-trip regression covers HTTP/tool errors, success and schema-loaded non-execution. CodeWhale#116; no public signature/dependency change. |
-| `ea9fdc90f` | T2 help/contract: Document the already supported Web JSONPath subset; one schema-description string changes, with a resultful parser-contract regression. No execution/parser/API/dependency change (CodeWhale#117). |
-| `a96fdec8e` | T2 fix: Recoverable full tool output: backports the recoverable output-budget slice of upstream #6619 (`3e39820f5`, Hmbown) — header-heavy Web responses keep their answers or a usable full-output reference, and the route budget is shared across engine/Web/provider wire/TUI; adapts the fork's two execution paths, keeps the bounded child summary and legacy-ownership retrieval, rejects conflicting full-output replays, and distinguishes body evidence from response envelopes (#118) |
-| `5861912a3` | T1 fix: Subagent session-name lifecycle and the wait-timeout surface: a session name is held only by a live child (running, or interrupted with a wakeable checkpoint) and released once settled (completed/failed/cancelled/budget-exhausted), and a retried same name resolves to the retry instead of reading ambiguously; `action=wait` re-advertises `timeout_secs` (range and copy pinned to the runtime constant, the `timeout` alias stays parse-accepted); spawn-refusal copy gives actionable advice per holder state, and the roster/`type` enum/tool description honestly disclose each role's scope-claim rules (#119) |
-| `f12299e69` | deps: Security refresh of the npm locks CodeWhale carries for its own `web/` and `telemetry-ingest/` (next 16.4.3, vite, vitest); the parent consumes neither directory (#120) |
-| `c2fdfd3e2` | CI sync: CodeWhale's own CI: restores the telemetry-ingest lane for `pinvou3-clean` PRs (#121) |
-| `6e1ee88ee` | deps: CodeWhale dependency round-3: lock refresh fixing RUSTSEC-2026-0381/0382/0383 and a yanked clipboard-win; `codewhale-tui`'s oauth2 flips to `default-features = false` (all HTTP goes through its own reqwest, reqwest/rand each collapse to a single version in the lock); `codewhale-secrets` migrates from keyring 3 to keyring 4.2 (the v1 `Entry`/`Error` API is unchanged; on Linux keyring 4 has no keyutils-persistent composite store, so the kernel-keyring write-through cache is dropped and the Secret Service collection becomes the single durable authority store; keyring 4's zbus Secret Service store enables secret-service's crypto-rust feature itself, session encryption stays RustCrypto, and the crate keeps no direct secret-service dependency). The crates' public signatures toward the parent are unchanged; the parent `Cargo.lock` is regenerated in the same PR (#122) |
+| `9082d69f2` | Pending upstream integration batch | Re-cut integration head = `ea9fdc90f` + 15 commits: `5f6f39923`/`e24555cc8`/`8cfb0d50e` skill-install safety-primitive exports + shared link-predicate reuse + embedder-reuse contract calibration (#81), `095eb09cd` native memory sensitive-write refusal (#82), `b1a795a7c`/`906369dc4`/`06e873d04` execpolicy builtin sensitive-path inventory + inventory-face completion + bypass-family disclosure with every face pinned (#87), `e730fc047`/`3e1d63b41`/`f87b8f9d3`/`f36b5c7e7`/`35d38f9ea`/`49c60e3b0`/`0ac0453f8` automation terminal-run archiving + HTTP listing + honest bound docs + retained-writes + delete-contract pins + runtime-api docs + sweep/limit/corrupt-file pins (#85), `9082d69f2` integration-only adaptation — the sensitive-path test helper gains the `workspace_roots` field (empty list = the historical single-root matching); first cut `44921cf02` + 4 (`422a60f26`, 2026-10-05), second cut `480bebf61` + 4 (`4e2486c76`, no longer resolvable; historical record only), third cut `803e672bb` + 4 (`f8709f0ab`), fourth cut `13ee4dfd2` + 14 (`f7d1cb0a2`), fifth cut `c08c8c022` + 15 (14 topic commits patch-id identical to the fourth cut), sixth cut `083cebfd9` + 15 (patch-id identical to the fifth cut), seventh cut `ea9fdc90f` + 15 (patch-id identical to the sixth cut), re-cut as the public head and the topic branches evolve. After upstream PRs #81/#82/#85/#87 land, re-cut from the final merge result; this row is re-pinned with each cut (the zh register's section-3 row is authoritative and mirrors this row) |
 
 Historical DCO receipt before the 2026-10-23 batch (current exceptions are listed above): All commits carry DCO sign-off, with one exception: the #107 squash `f27672935`, whose merge commit message dropped the sign-off trailer (reported to the upstream maintainers, see CodeWhale#107). `b4c02616b` contains most of the cross-topic closure and is admittedly coarse for bisecting. After the branch became public for review, history was not force-pushed merely for polish; DCO-signed-off commits were appended for review and release-gate fixes, while this table, fingerprints, and behavior tests restore audit granularity. The immutable tag now exists and must never be rewritten. Lesson recorded (2026-10-15): a gh squash merge with a custom body kept only the subject list and dropped the sign-off trailer, leaving the #107 squash `f27672935` as the only unsigned commit among the 71 registered ones; the resulting "all signed" register claim was written by #705, carried through #712, and only corrected two batches later (#706). Squash merges must include the `Signed-off-by:` trailer in the commit message, and every register batch must recount the signed commits (`git rev-list --grep=^Signed-off-by:`) instead of carrying over the previous batch's narrative.
 
@@ -276,310 +273,9 @@ Shell task reconciliation prefers the stable `origin_tool_call_id` carried by sn
 Origin scope: a shell job's `origin_tool_call_id` is the unique root turn-loop tool call that spawned it; subagent jobs carry only `owner_agent_id` with a null origin and take the origin-less reconciliation paths. Read-only `multi_tool_use.parallel` sub-calls share the wrapper call's origin, but shell tools have `ExecutesCode` and cannot enter read-only parallel, so that sharing never applies to shell jobs. Consumers must preserve the owner distinction and never let one job adopt a card already bound to another job.
 
 Bounded gate-held awaits: four side-effect awaits issued while a session turn gate is held are bounded by `TURN_GATE_AWAIT_TIMEOUT` (5s, issue #255) — the cancel phase-two cascade sends, the shell-cleanup join, the reclaim shutdown sends, and the shell-reclaim finalize. On timeout the side effect is abandoned and logged: an abandoned cascade send is never enqueued (tokio mpsc send is cancel-safe) and every gate-held sender is serialized with the next turn's `SendMessage` on the same turn gate, so no late cancel can be enqueued after it (the argument covers gate-submitted turns; engine-autonomous turns start without the gate and are adopted by the forwarder at `TurnStarted` — a pre-existing window outside the guarantee); a timed-out reclaim finalize keeps finishing in the background with `cleanup_failed` preset conservatively, so the session's active scope can never wedge permanently (rebind and delete reset the registry as the escape); a panicked finalize is reported as not settled and replaced by one fresh detached attempt (the finalize is idempotent), so the terminal never claims a verified-clean shell state from a run that died mid-flight — until a detached finalize settles, the session's next send can transiently fail with the scope-still-active bail and succeeds once it has settled (rebind and delete reset the registry and are immune). Cleanup runs no longer serialize on the turn gate, so overlapping kill ladders and the background worker sweep alike are serialized by a per-registry cleanup gate instead — otherwise concurrent `cleanup_scope_once` passes would double-count `PendingKill.attempts` toward `MAX_KILL_ATTEMPTS` and permanently stop retrying a still-dying job. Undelivered reclaim shutdown ops are re-sent by a detached task that holds no gate, in the original FIFO order with a 60s per-op patience: the engine owns a `tx_op` clone that keeps its ops channel open after the entry is dropped, so its run loop only exits through the normal `Shutdown` path — without the retry the engine task would linger until process exit; if the retry also times out it gives up with a diagnostic, and the lingering engine task is then the doing of the stall itself — a delete/evict that already returned can see the lingering engine's late terminal write land under the removed session directory as orphaned files (harmless: session listing reads only top-level `<id>.json` records, so no ghost session appears). The submit-side gate-held waits are bounded too (issue #525, the send half of the #255 residual): the user/eval/resent-message submit send is bounded by `TURN_GATE_AWAIT_TIMEOUT` and times out into a clean reservation failure (tokio's cancel-safe bounded reserve/send guarantees the timed-out op was never enqueued, so the turn verifiably did not start; the transcript rule rolls back with the reservation's Drop and the prepared shell scope abandons itself), so a new send into an already-wedged engine no longer re-blocks evict/delete behind the gate; the spawn-failure teardown `Shutdown` send carries the same bound, with undelivered ops moved to the detached retry; the reclaim terminal persistence join is bounded, and its timeout presets the terminal to Failed (an unverified persistence must not claim a clean state; the detached save can still land later); the forwarder abort-join is bounded and detaches on timeout (the forwarder holds no gate, pool, or session-map state, so it cannot re-block evict/delete). The gate-held waits still unbounded are not only the scheduled turn's whole-turn gate hold and its unbounded sends (pre-existing design, declared out of scope by #525): the cold-spawn spawn_blocking join that materializes session skills under the gate and the per-submit spawn_blocking join that reads the shell baseline job list in `prepare_turn` likewise bypass the engine channel and for now rely on disk/mutex-health assumptions (the latter is sensitive only to mutex health); both can adopt the same bound later. The behavior tests `forkguard_cancel_holds_turn_lock_boundedly`, `forkguard_bounded_join_reports_panicked_task_as_not_settled`, `forkguard_bounded_join_detaches_task_that_outlives_budget`, `forkguard_reclaim_shutdown_sends_bounded_and_retried`, `forkguard_reclaim_shutdown_retry_gives_up_within_patience`, `forkguard_reclaim_cleanup_failed_preset_clears_on_success`, `forkguard_background_cleanup_sweep_takes_cleanup_gate`, `forkguard_reserved_submit_send_fails_cleanly_on_wedged_engine`, `forkguard_spawn_failure_teardown_shutdown_bounded_and_retried`, and `forkguard_reclaimed_persistence_join_detaches_task_that_outlives_budget` are executed by fork-guard layer 3.
-Transcript-commit lifecycle (this repo's port of the official fork's transcript-commit fix, see `docs/chat-transcript-commit-lifecycle.en.md`): the ordinary-chat engine snapshot write and the optimistic admission display fallback write complete together with the revision computation and the `chat:transcript_committed` notification inside one `scheduled_mutation` transaction in `SessionStore::persist_chat_engine_state_with_commit` / `persist_admitted_chat_display_with_commit` — aborting the awaiting forwarder can no longer split a durable write from its marker. Each engine incarnation carries its own `AppEngine::transcript_writer_active` liveness flag; reclaim and failed-spawn teardown store `false` (Release) before the bounded Shutdown send / `forwarder.abort()`, and a refused writer gets `Ok(None)` (silent skip) under the mutation lock. The cold-spawn baseline read goes through `SessionStore::load_for_engine_spawn` under the same gate, ordering it before any successor takes over. The orderings are pinned by `forkguard_failed_spawn_teardown_retires_writers_before_abort` (fork-guard layer 3) plus `transcript_persist_pins` and `transcript_commit_tests`.
-Panic-hook redaction scopes (this repo's port of the official fork's chainable panic-hook design, `core::panic_hooks::chain`): `features/computer_use/backend.rs` registers its payload-redacting scope through a mutex-serialized registry that installs the process hook exactly once and dispatches through an immutable snapshot — the last-registered owning scope wins (reverse registration order, first handler returning `true`), otherwise the pre-install hook runs — so a later registration can neither open a default-hook gap over an active scope nor silently replace an earlier one. The one remaining take/set window is the first install itself, and it runs on the owning worker thread before any request (hence any redactable payload) exists. Pinned by `late_registration_preserves_active_redaction_without_a_default_hook_gap` (in-flight gap, reverse-order dispatch, unowned fallthrough) and `worker_thread_panics_are_redacted_and_other_panics_forwarded`, both registered as APP fingerprints in fork-guard.
 
-This section is a snapshot from the 2026-09-27 registration (#549): the baseline's net +17,336 lines at that time exceeded the +1,500 soft limit (current measured drift is tracked in the `Current state` section), chiefly in Engine state, final dispatch, child-only host profiles, explicit-Skill-root boundaries, and review-requested result-level safety coverage where an app-side mirror would create two unsafe sources of truth. Reduction order is: upstream generic steer and per-turn dispatch policy; upstream Automation ownership/misfire behavior; upstream the execpolicy phase-2 expressiveness and subagent wiring; upstream the T5 archive export as a unit; upstream the T6 rate-limit governor; upstream the GLM-5.3 forced-thinking dialect and BigModel route predicate; make the 100 KiB `FragmentId::Permissions` host budget a configurable upstream fragment limit; migrate the parent to explicit re-export APIs and then narrow the 18-module compatibility facade; finally replace T3 once upstream provides complete static-composer, explicit-Skill-root, and host-profile contracts.
+The baseline's net +17,336 lines exceed the +1,500 soft limit, chiefly in Engine state, final dispatch, child-only host profiles, explicit-Skill-root boundaries, and review-requested result-level safety coverage where an app-side mirror would create two unsafe sources of truth. Reduction order is: upstream generic steer and per-turn dispatch policy; upstream Automation ownership/misfire behavior; upstream the execpolicy phase-2 expressiveness and subagent wiring; upstream the T5 archive export as a unit; upstream the T6 rate-limit governor; upstream the GLM-5.3 forced-thinking dialect and BigModel route predicate; make the 100 KiB `FragmentId::Permissions` host budget a configurable upstream fragment limit; migrate the parent to explicit re-export APIs and then narrow the 18-module compatibility facade; finally replace T3 once upstream provides complete static-composer, explicit-Skill-root, and host-profile contracts.
 
 ## Publication and rollback
 
 The public rollback point is the immutable tag `pinvou-v0.9.5-r13`; local `backup/pre-v0.9.12-sync` is only a convenience ref. The r3 closure completed on 2026-09-23: the immutable `pinvou-v0.9.12-r3` tag is cut at the merged head `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`, and `pinvou3-clean`, the parent gitlink and the tag all point at the same commit; the rollback point `pinvou-v0.9.12-r2` stays pinned at its closure `6f780290f1c35e8a3c5dff86b4f76da142744b0c`; the r3 tag was re-cut from `ba2a07768f` for the #77 fix before any parent-repo reference. The r2 closure had completed on 2026-09-21 at `6f780290f1c35e8a3c5dff86b4f76da142744b0c`. Lesson recorded (2026-09-23): #65 was planned to land through the parent swarm phase-2 PR commit-preserving (no squash) but actually landed as a squash — the previously pinned wave head `4767c2816` dangled from all public refs and the fast-gate reachability check went red; the swarm phase-2 branch re-pinned to the maintenance-branch head the same day, restoring gitlink = public-branch-head equality. From now on every base merge is followed immediately by re-pinning the gitlink to the public branch head; never pin pre-merge wave SHAs. Public reachability continues to be verified with `scripts/verify-public-submodule.sh`. The release temporarily removed status contexts that cannot trigger on the maintenance branch solely for this exact-head fast-forward, restored the original protection immediately afterward, kept force pushes disabled, and did not rewrite a published tag. Never weaken the public reachability check to make an unpublished object appear released.
-
-## 2026-10-23 consumed baseline: Python stdio environment defaults (T2)
-
-CI public-baseline verification detected maintenance head `7d2636993` replacing `083cebfd9`. This parent consumes the already merged CodeWhale#115; it does not create another foundation patch or behavior topic. `CommandSpec::with_env` now merges through `with_env_var` so shell defaults survive empty/nonempty task overlays. On Windows, explicit environment names override earlier spellings case-insensitively; child environment sanitization still applies. Public signatures and dependency files are unchanged, so no app API adapter is needed.
-
-Existing upstream regressions cover generic overlays, Windows shell defaults and both Python execution lanes. Fingerprints pin those tests. Native Windows execution belongs to the corresponding upstream/parent CI; local Linux checks do not claim to exercise those cfg(windows) tests. The immutable r3 closure tag remains `61cb769be`. Recount:77 registered commits /76 commits with a signoff (the historical #107 exception is unchanged).
-
-## 2026-10-23 consumed baseline: failed tool result flags (T2)
-
-The live maintenance head advanced again to `e9a7f48da` (CodeWhale#116) while #115 validation was running. The only production change passes `(!output.success).then_some(true)` into the existing history-content builder instead of discarding the failure flag. The added upstream regression persists/restores HTTP failures, execution errors, success and schema-loaded non-execution. Public signatures, stored schema and dependencies are unchanged; no app adapter or new fork patch is needed. The existing T2 tool-result boundary owns this fix.
-
-Recount at this head:78 registered commits,76 with a signoff; #116's squash message introduces a second missing-footer exception alongside historical #107. This inventory records the public commit as observed; it does not claim an upstream report or rewrite. The parent repository's own commits remain signed. The immutable closure tag is unchanged.
-
-## 2026-10-23 consumed help-only baseline: JSONPath subset (T2)
-
-The public verifier advanced to `ea9fdc90f` (CodeWhale#117) between the parent and child pushes. The entire production delta from `e9a7f48da` is one Web `fields.description` string; execution, parsing, public signatures, dependencies and persisted schema are unchanged. The added resultful test drives advertised selectors through the real parser and verifies unsupported recursive descent/filters. The new fingerprint is under existing T2; no new fork patch/topic is introduced. Recount79 registered/77 signed commits; #107/#116 remain the only missing-footer exceptions.
-
-The preceding e9 execution regressions are retained as such. This help-only update is checked through current consumer compilation, Clippy and the current foundation schema/fork contracts; retained prior full-suite counts must not be presented as fresh runs at this documentation-only head.
-
-## 2026-10-26 consumed baseline: tool-output recovery, subagent name lifecycle, deps round-3 (T2/T1)
-
-The public maintenance branch advanced by five reviewed squashes — #118 `a96fdec8e`, #119 `5861912a3`, #120 `f12299e69`, #121 `c2fdfd3e2`, #122 `6e1ee88ee` — and this parent consumes them with reference and lock updates only; it creates no new fork topic.
-
-- #118 (T2) backports the recoverable output-budget slice of upstream #6619 (`3e39820f`, Hmbown): header-heavy Web responses keep their answers or a usable full-output ref, the route budget is shared across engine/Web/provider wire/TUI, conflicting full-output replays are rejected, and body evidence is distinguished from response envelopes. The parent-side consumer work for this slice is tracked separately and is not part of this bump.
-- #119 (T1) releases session names when their child settles (completed/failed/cancelled/budget-exhausted), resolves a retried name to the live holder then the newest settled record, re-advertises `timeout_secs` for `action=wait` with the `timeout` alias still parse-accepted, and aligns spawn-refusal guidance and roster/tool text with the actual scope-claim rules. The subagent worker-ledger surface consumed by the parent keeps its shape; the roster gains no new field (the 14-field surface count was already current).
-- #120/#121 are CodeWhale-internal (its own `web/`/`telemetry-ingest/` npm locks and its CI lane); the parent consumes neither directory.
-- #122 (deps) fixes RUSTSEC-2026-0381/0382/0383 via an in-range lock refresh, drops oauth2's bundled reqwest client from `codewhale-tui` (`default-features = false`; all HTTP still goes through the tui's own client), and migrates `codewhale-secrets` from keyring 3 to keyring 4.2. The v1 `Entry`/`Error` API is unchanged, so no parent adapter is needed; on Linux the keyutils-persistent write-through cache is dropped and the Secret Service collection becomes the single durable store (keyring 4's zbus Secret Service store enables secret-service's crypto-rust feature itself, so session encryption stays RustCrypto with no direct secret-service dependency in the crate). The parent `Cargo.lock` is regenerated in the same PR because the oauth2 feature set and the keyring major both move inside the parent's dependency graph.
-
-Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f27672935` and #116 `e9a7f48da1` remain the only missing-footer exceptions. Measured drift at this head: 520 files, +89901/-39349, net +50552; 253 distinct `forkguard_*` names (floor 64). The immutable r3 closure tag remains `61cb769be`. CodeWhale-side review receipts for #118/#119/#122 live in their CodeWhale PRs; this register records the consumed public state and does not re-claim those execution boundaries for the parent tree beyond the parent gates run in this PR.
-
-### Integrated #118 recovery boundaries and guards (#757)
-
-- This section describes public #118 squash `a96fdec8e`, already consumed by parent #796 and included in current `6e1ee88ee`; it is not a candidate-reference upgrade. Only returned content reaching the engine is recoverable. Producer caps remain: `git.rs`/`git_history.rs` 40,000 characters each; `test_runner.rs` 40,000 per stream; `verifier.rs` 16,000 per gate stdout/stderr stream; `shell_output.rs` 30,000 bytes via `MAX_OUTPUT_SIZE`; `tasks.rs` 900 characters per stream summary before the gate DTO is built. Without an active task, `log_path` is null and no full command log is saved. Engine artifacts preserve that returned DTO, not previously discarded producer tails. A present `log_path` names the separate command log.
-- Integrated immutable-artifact privacy applies engine-wide to preserved results, not only Web: on Unix, the temporary inode is created with mode `0600` before payload writes and hard-link publication (umask may restrict it further). Existing files are not retroactively hardened; Windows retains inherited ACLs. This PR records existing behavior and introduces no permission change.
-- Deliberate differences in the integrated implementation: `evidence_available` previews pass through unchanged only within the current route budget; larger previews are refitted using their existing reference, unlike unconditional upstream `3e39820f5` pass-through. Per-child row summaries, including route/handle projections, retain fixed bounds. `run_verifiers` keeps at most twelve gates and 600-character detail per gate, without upstream scaling or parsed-level/per-gate `log_path` lines. `run_tests` allocates remaining budget across streams without upstream's 600-character per-stream floor. Existing `task_gate_run` `log_path` output remains.
-- Native-search answers retain their 2,048/4,096-token caps; this slice added no provider length-stop marker. Responses new execution uses the engine view but adds no legacy-history wire backstop; the Chat Completions legacy backstop is route-independent. The historical `tool_result_max_bytes` key is interpreted as Unicode scalar values for inline budgeting, not a UTF-8 byte ceiling; compatible migration remains outstanding.
-- Remaining boundaries are tracked in #769 (optional retrieval digest checks), #770 (tiny-budget footers, character/byte semantics and resumed route/wire), #771 (artifact quota, transcript duplication, retention/seven-day retrieval expiry), and #772 (producer caps, planner reachability, upstream differences, composer-bang save failures, relative-path size observation, legacy line-count fallback and /status metrics). None is claimed completed here. Pre-engine cuts in native_memory, handle, lsp and subagent coordination remain unrecoverable. A complete first-fetch envelope does not promise renewed references for every Web envelope after route shrink.
-- This PR adds 24 T2 checks beyond main's existing fingerprints. Two of the old candidate's 26 additions already landed; the remaining checks still match the current public tree. They cover structured omissions, recovery guidance, real gate/child DTOs, complete fetch envelopes, immutable artifacts, retrieval activation and serial/parallel/aggregate dispatch contracts. Production code, gitlink, maintenance count, existing predicates and execution layers stay unchanged. Earlier foundation native/mutation evidence retains its original commit boundary; this round's fingerprint checks do not rerun those native tests or establish release qualification.
-- The historical mutation-validation workflow remains on CodeWhale validation-only branch `validation/returned-result-20261024` at `b4eb108335a99556429b11191b9a2dabadbd23c8` (six selected tests × baseline and three negative variants). It differs from its then-source commit only in the validation workflow; it was not delivered as production CI and is not introduced by this PR. This round verified that the public branch still names that commit; earlier execution receipts are not transferred to a new run on the current foundation.
-
-> Historical candidate review record (pre-integration). The counts and heads below
-> belong to their dated checkpoints. They are superseded for current consumption by
-> the [2026-10-28 consumed baseline](#current-consumed-baseline) below (`f1eb10efc`, CodeWhale#125 merged).
-> The former draft/dependency instructions no longer apply.
-
-## 2026-10-23 local prompt candidate (T3; unpublished)
-
-The prompt-optimization worktree now consumes the registered `6e1ee88ee` gitlink
-and keeps the published topology intact; prior frozen measurements used `ea9fdc90f`. Its local CodeWhale diff updates model guidance only:
-known Skills load by exact name; missing tools require discovery and an honest
-unavailable fallback; transcript hints no longer recommend calling absent tools.
-Registry-first guidance and the bundled discovery Skill now respect a host's
-explicit built-in entry points before applying the Registry default. Ordinary
-repository work and the existing external-capability discovery flow are retained.
-No tool registry, allowlist, approval rule, Skill source validation, or execution
-loop is changed. The existing Skill-index, child-catalog, transcript-hint and
-Registry instruction tests cover the guidance; corresponding fingerprints track
-these contracts. This is a local candidate, not a published fork baseline.
-
-Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
-
-The same candidate advances the bundled Skill catalog from generation 11 to 12
-and records the exact superseded discovery-body digest. Existing unmodified
-installs receive the host-aware discovery guidance; user edits and intentional
-deletions retain the installer's existing protection. A regression fixture and
-upgrade test cover the old shipped body and a user-customized body. This install
-migration does not alter the prompt text used by the frozen fresh-home model
-comparison. Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
-
-## 2026-10-27 prompt guidance review candidate (T3; CodeWhale#125)
-
-The parent review gitlink is `50a42c38edf81e45019403d33ac05ef87da77555`; public maintenance then remained
-`6e1ee88ee8f8ea28eec7be3d8add3a591468412a`. This adds one DCO-signed commit
-(14 files, +173/-47) in T3. It advances bundled Skills from generation 11 to 12,
-records the exact old discovery-body digest, and keeps existing user-edit/deletion
-protection. An old-body fixture and installer regression fail without the fix
-and pass restored. The one-line `repo_law.rs` borrow cleanup is test-only, made
-after model timing to satisfy all-target Clippy; its existing behavior test passes.
-
-Upstream already implements [exact-name Skill guidance](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/skills/mod.rs#L1996)
-and [available-capability-first discovery](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/core/engine.rs#L149);
-this is a narrow maintenance adaptation, not a duplicate upstream proposal.
-Model comparisons use the combined Pinvou candidate and cannot isolate this
-foundation patch. See [V2.4.5 evaluation](prompt-optimization-evaluation/report-v2.4.5.md)
-and [verification provenance](prompt-optimization-evaluation/verification-v2.4.5.json).
-The public-head verifier is unchanged and is expected to reject this pending
-review gitlink. After foundation integration, update the parent to the actual
-squash SHA, recount/fingerprint it, and rerun the gates before marking ready.
-
-Author: Codex (OpenAI); model: GPT-6 (exact variant/reasoning level unavailable).
-
-### Parent adaptations for the prompt review candidate
-
-The existing T3 candidate also has application-side adaptations: eager ordinary-mode
-artifact presentation with code-mode denial still winning, unattended question-tool
-exclusion, and target-root rule discovery with pinned scope labels. Behavior checks:
-`artifact_delivery_is_loaded_without_widening_code_mode_tools`,
-`unattended_shield_tests::unattended_turn_denies_scheduled_task_write_family` (and the existing
-unattended shield tests), and
-`project_rules_keep_additional_roots_for_on_demand_discovery`. The latter also
-checks that an unbound session does not receive a rule-scope label. These app
-changes reuse foundation policy/session mechanisms; they do not add a turn loop.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## 2026-10-27 review revision R1 (T3; CodeWhale#125)
-
-R1 review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance then stayed `6e1ee88ee`.
-The two review commits total 17 files, +296/-49. Candidate topology is 86 commits
-above v0.9.12, 71 above r1, 84 signed; only the two registered historical squashes
-lack a footer. Drift: 522 files, +90219/-39420, net +50799; 255 distinct guard names.
-
-R1 restores a bounded documented-name probe when discovery is unavailable and
-access has not been denied. It preserves the exact-allowlist embedding path and
-again agrees with the existing Goal-family fallback. Schema receipts do not
-establish execution/transcript evidence. The new
-`forkguard_parent_deferred_tools_remain_reachable_without_discovery` exercises
-real catalog narrowing/hydration and denial controls. Host declaration channels
-and the standalone default are documented; Registry-result guidance now respects
-the same carve-out. Historical bundled-body coverage and peer-marker limits are
-documented without a blanket overwrite. No dispatch/approval loop is changed.
-
-The parent fixes browser error-code and evidence-authority wording, strict Plan
-and unattended constraints, and additional-root labels. The original model matrix
-remains the immutable pre-review V2.4.5 measurement, not a score for R1. See
-[review verification](prompt-optimization-evaluation/review-r1-verification.json).
-At this checkpoint the app PR remained draft pending the actual maintenance squash.
-The consumed baseline below records the subsequent repin and public-head verification.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-
-## 2026-10-28 review revision R2 (T3; CodeWhale#125)
-
-Historical review gitlink: `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6`; public maintenance then remained
-`6e1ee88ee`. The three review commits total 18 files, +376/-60. Recounted
-candidate history: 87 commits above v0.9.12, 72 above r1, 85 signed; only
-the registered #107/#116 squashes lack a footer. Drift: 522 files,
-+90147/-39279, net +50868; 255 distinct guard names.
-
-The bundled discovery Skill now applies discovery, one permitted exact-name
-probe, and schema-receipt/refusal rules in steps 1, 3 and 4. Shell and Registry
-result guidance agree. A receipt with `retry_required: true` explicitly licenses
-one retry with its schema; it is not execution or transcript evidence. The
-primary instruction restores must-call wording, local/custom/manual execution
-coverage, scored snapshot and full-catalog boundaries. The tool description
-now agrees with exact-name-first Skill loading. Goal-family wording remains
-outside this alignment and is disclosed without claiming the new probe bounds.
-
-The denial regression removes only the two deferred targets and verifies eager
-`read` remains permitted and active. Existing Skill/Registry/shell pins cover the
-restored guidance. The unreleased generation stays 12, and the exact generation-11
-fixture/digest and customized-body protections are unchanged. Historical R1 and
-V2.4.5 sources/measurements remain frozen; no fresh live-model score is claimed.
-
-Fresh checks and source boundaries are recorded in
-[review-r2-verification.json](prompt-optimization-evaluation/review-r2-verification.json)
-and [source-manifest-review-r2.json](prompt-optimization-evaluation/source-manifest-review-r2.json).
-At this checkpoint the unchanged public verifier still required an actual maintenance
-squash. That repin and verification are recorded in the consumed baseline below.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## 2026-10-28 review revision R3 (application guards and evidence)
-
-The foundation review gitlink remains `643e5e1b3`; no foundation behavior or
-inventory changes in this revision. Correct the R1 historical drift to 522 files,
-+90219/-39420, net +50799; R2 remains +90147/-39279, net +50868. Restore the
-English historical local-candidate section and synchronize the current-state date.
-
-The parent restores stable read-before-edit, write-verification and foreground
-bash guidance, distinguishes user home from the primary execution root, and pins
-the guidance in bundle/Node contracts. Browser error documentation now requires
-production error constructions rather than test-fixture literals. Symlink-rule
-controls reject both the link and its resolved target and retain a primary-file
-positive control. The opt-in evaluation example rejects empty home configuration
-and malformed mode/root options; its isolation guard is runtime-only. All eight
-exact digest paths receive real positive/negative Gitleaks controls; the allowance
-is unchanged. Report indexes, alias-diagnostic boundaries, current artifact hashes
-and review history are reconciled without changing frozen model data/manifests.
-
-See [R3 verification](prompt-optimization-evaluation/review-r3-verification.json)
-and [R3 source manifest](prompt-optimization-evaluation/source-manifest-review-r3.json)
-for fresh checks and their limits. Prior measured scores are not R3 results.
-At this checkpoint CodeWhale#125 was open and the app stayed draft. The actual
-maintenance squash has since been consumed and public verification passes, as recorded below.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## 2026-10-28 approval-review follow-up R4 (T3; CodeWhale#125)
-
-The approval [at `643e5e1b3`](https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5677804087)
-confirmed all prior requested changes. The small follow-up candidate is `0af53af6c0648b544e4b79194acc9e4f408ef7a4`;
-public `pinvou3-clean` then remained `6e1ee88ee`. It restores the system-level core-capability
-match definition and inspect-before-local ordering, qualifies discovery on availability,
-clarifies shell query/receipt flow, and independently pins host declarations and the
-exact-name-first tool description. The installer is unchanged; its existing regression
-now also covers a preserved custom body beside an unchanged peer whose refresh advances
-the marker. The disclosed historical-body, Goal-wording and strict release-Clippy
-exclusions remain outside this follow-up.
-
-Candidate history: 88 commits above v0.9.12, 73 above r1, 86 signed;
-the same two historical squashes lack footers. Drift: 522 files, +90186/-39279,
-net +50907; 255 distinct guard names. Fresh checks and deletion controls are in
-[R4 verification](prompt-optimization-evaluation/review-r4-verification.json), with a
-separate [R4 source manifest](prompt-optimization-evaluation/source-manifest-review-r4.json).
-No new model result or fresh full application/native-platform regression is claimed.
-At this checkpoint the app stayed draft pending integration. The consumed-baseline
-record below supersedes that dependency; the actual squash is now pinned and verified.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-<a id="current-consumed-baseline"></a>
-
-## 2026-10-28 consumed baseline: streaming tool-input reuse and discovery-guidance alignment (T2/T3)
-
-The public maintenance branch advanced by two reviewed squashes — #114 `fe90f72f9`, #125 `f1eb10efc` — and this parent consumes them with reference and register updates only; it creates no new fork topic and leaves both parent `Cargo.lock` files untouched (neither squash changes the fork's `Cargo.toml`/lock; the crates' public signatures toward the parent are unchanged).
-
-- #114 (T2) adds a suffix-only reuse path for streaming tool input: each JSON delta runs a suffix proof and reuses the previous parse result only while a valid unfinished string cannot be repaired and the selected raw segment's byte range is unchanged; all uncertain or unsupported input keeps the existing parser path. The author's local synthetic benchmark reports parameter-processing gains such as 64 KiB plain text P50 396.9 ms → 0.44 ms; no whole-turn or model-latency claim is made.
-- #125 (T3) unifies seven discovery/skill guidance surfaces on one bounded-probe doctrine (host-declared entry points first → `tool_search` when available → one direct call by name unless denied → a schema receipt is not execution → stop when unavailable or denied), and switches `load_skill` to exact-name-first loading; it ships a refreshed `mcp-discovery` body (bundled-skill marker advances to 12, the v11 body is registered as superseded, user-customized bytes are preserved). The `pub(crate)`/`pub(super)` surface and public signatures are unchanged, so the parent needs no adapter code.
-- Parent register: `fork-guard.sh` re-pins the eight T3 wording fingerprints to #125's actual text (skill-index Usage ×2, subagent `## Skills` header, mcp-discovery steps 1/3, registry-first instruction ×2, worker `handle_read` hint) and adds two T3 executable-regression fingerprints (parent deferred tools reachable without discovery; skill upgrade refresh preserving user edits) plus two #114 T2 fingerprints (suffix-only module intent; interleaved-tools end-to-end regression).
-
-Recount: 86 registered commits above v0.9.12, 84 with a sign-off; #107 `f27672935` and #116 `e9a7f48da1` remain the only missing-footer exceptions. Measured drift at this head: 525 files, +91397/-39288, net +52109; 255 distinct `forkguard_*` names (floor 64). The immutable r3 closure tag remains `61cb769be`. CodeWhale-side review receipts for #114/#125 live in their CodeWhale PRs; this register records the consumed public state and does not re-claim those execution boundaries for the parent tree beyond the parent gates run in this PR.
-
-## 2026-10-29 review revision R5 (evaluation correctness and integrated state)
-
-The consumed foundation remains `f1eb10efc`; its candidate/squash patch identity
-and all 164 unaffected parent-file patches were independently verified before
-following the maintainer's `1aac7942c` replay. No foundation source changes.
-Current public verification and fork inventory replace the old candidate dependency.
-
-The app pins eager ordinary-mode delivery with code denial, unattended exclusion,
-bound-root discovery including an empty primary rule chain, canonical Plan submission
-and exact browser error-code boundaries. The scope label remains fixed at spawn.
-The evaluator shares ID-paired settled presentation events and exact numeric tokens;
-new rows carry a grader revision covering the delegated source chain. Existing
-suite-specific acceptance/browser policies remain versioned rather than silently
-regrading historical rows. Bytecode-cache exceptions use path components.
-
-Current CI runs the exact digest allowance controls and provider-free namespace
-acceptance explicitly. Report binaries/figures are retained, with generated assets
-excluded from textual diffs. Frozen model receipts, scores and grader copies retain
-their original source boundary; there are no new model results. See
-[R5 verification](prompt-optimization-evaluation/review-r5-verification.json) and
-[R5 sources](prompt-optimization-evaluation/source-manifest-review-r5.json).
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## PR799 review R6 follow-up (2026-10-29)
-
-Foundation inventory and gitlink remain at consumed public squash `f1eb10efc`;
-this follow-up changes only the parent application, evaluation tools and CI.
-
-- Secret-scan explicitly prepares Python 3.x before importing the exact digest
-  controls (`tomllib` requires Python 3.11+). The CLI regression lane executes
-  the `prompt_eval` example's two unit tests explicitly. Namespace preparation
-  precedes discovery and retries package downloads; exhausted failures remain red.
-- Grader identity includes lateral `prompt_eval_*` imports and the selected runner
-  adapter. Resume validates existing rows before tail repair or manifest creation.
-  Both aggregators and adjudication reject mixed revisions and legacy/current
-  mixtures; wholly legacy frozen corpora remain readable.
-- Numeric controls reject alternative totals and code-consult substrings, allow
-  whole-number decimal notation, and retain disclosed semantic-review limits.
-  Ambiguous overlapping IDs remain unsettled; missing turn prompts and deleted
-  preservation sentinels fail checks rather than crashing the auditor.
-- Restore explicit protected-directory, unavailable-browser, scheduling-lifetime,
-  memory-UI and authorization wording. Align five shipped Skill files with ordinary
-  presenter exposure when the backend is healthy. No permission, dispatch, engine
-  loader, foundation or frozen-score behavior is changed.
-- Three additional APP fingerprints pin the restored authorization and browser
-  boundaries. The short zh/en commit inventories now both list #114/#125; the
-  detailed Chinese section 3 already listed both squashes before R6.
-
-Current verification and source boundaries are recorded in
-[prompt-optimization-evaluation/review-r6-verification.json](prompt-optimization-evaluation/review-r6-verification.json)
-and [source-manifest-review-r6.json](prompt-optimization-evaluation/source-manifest-review-r6.json).
-Earlier receipts retain their original sources and execution counts. No fresh
-model run, per-request token measurement or native-platform CI result is implied.
-
-## PR799 approved-review follow-up R7 (2026-10-30)
-
-The provenance unit fixture stubs namespace command construction and restores
-shared grader imports, including the prepare wrapper, on success or failure.
-The real Linux namespace opt-in remains separate. Forward/reverse fixture order
-and a bwrap-unavailable control cover the two approved-review infrastructure nits.
-
-The evidence README distinguishes the approved R6 checkpoint from the historical
-replay, parallel scoring branches, receipt-derived request counts from proxy-side
-attempt totals, and the separate scheduled-origin follow-up. The visual-design
-Skill explicitly describes healthy ordinary-mode presenter exposure and retains
-the Code-mode deny boundary. The presenter receipt verifies existence/size and
-handoff, not content correctness or a visible native card.
-
-Foundation gitlink/inventory and the 283 fingerprint entries / 255 distinct
-foundation guard names are unchanged in R7. The PR's overall additions are 8 APP
-and 11 T3 entries; R6's three APP entries were a per-round count. Evidence-retention
-policy remains a maintainer decision; no new retention threshold is inferred.
-See [R7 verification](prompt-optimization-evaluation/review-r7-verification.json)
-and [R7 sources](prompt-optimization-evaluation/source-manifest-review-r7.json).
