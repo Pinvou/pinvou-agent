@@ -153,7 +153,8 @@ Agent，各 Agent 保留自己的认证、模型、工具与行为。
 
 ```bash
 cd pinvou3-app
-npm run test:codex-acp
+npm run test:codex-acp-macos-runtime    # 仅 macOS 原生 runner（脚本断言 darwin）
+npm run test:codex-acp-windows-runtime  # 仅 Windows x64 原生 runner（脚本断言 win32）
 npm run test:ui-language
 npm run build:ui
 cd ..

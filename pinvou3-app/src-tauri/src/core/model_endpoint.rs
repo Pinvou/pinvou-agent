@@ -772,9 +772,6 @@ pub fn with_opencode_session_header(
     }
 }
 
-/// 模型列表探测地址：upstream 带 `/v1` 后缀时直接拼 `/models`；不带也拼 `/models`
-/// 而非补一层 `/v1`——glm `/paas/v4`、火山方舟 `/api/v3`、gemini `/v1beta/openai`
-/// 的 `/models` 端点均存在，补 `/v1` 会拼成不存在的地址永远 404。
 /// Status-code → stable probe classification code: the single home of the
 /// ladder both surfaces previously duplicated verbatim (GUI
 /// `model_connection_http_result`, CLI `connection_http_result`). The

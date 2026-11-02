@@ -3815,10 +3815,10 @@ mod tests {
     // itself and declares the guard BEFORE its `TempHome`/`TempEnv` guards,
     // so the fixture restores the environment while the lock is still held.
     //
-    // This is the lib test binary's SHARED env lock (the gaia tests in
-    // `lib.rs` hold the same one through their `RestoreHomeGuard`), not a
+    // This is the lib test binary's SHARED env lock (the gaia test in
+    // `lib.rs` holds the same one through its `TempHome` guard), not a
     // models-local static: a per-module lock would serialize inside this
-    // module and still race the gaia fixtures' `PINVOU3_HOME` swaps.
+    // module and still race the gaia fixture's `PINVOU3_HOME` swaps.
     use crate::support::{ENV_LOCK, test_support::TempHome};
 
     #[test]

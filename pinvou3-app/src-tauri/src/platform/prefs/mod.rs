@@ -399,7 +399,7 @@ pub struct SavedModel {
     /// Optional user-facing label for cloud model selectors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    /// 决定 provider 路由 + 模板,复用现有 9 预设枚举。
+    /// 决定 provider 路由 + 模板,复用现有预设枚举。
     pub preset: ModelPreset,
     /// 该具体部署允许的 context window；与发给服务端的 `model` wire name 解耦。
     #[serde(default, skip_serializing_if = "Option::is_none")]

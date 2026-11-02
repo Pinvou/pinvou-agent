@@ -18,7 +18,7 @@ pub(crate) struct ArtifactInfo {
 }
 
 /// 读 artifact 文件的纯文本（md/json/txt 等）。文件不存在或不是文本 → 报错。
-/// 路径必须在用户家目录下（防 ../../../etc/passwd 之类逃逸）。
+/// 路径须为绝对路径且不触及凭据/系统敏感黑名单（validate_user_path，防逃逸）。
 #[tauri::command]
 pub async fn read_artifact_text(path: String) -> Result<String, String> {
     read_artifact_text_impl(&path)
@@ -1034,7 +1034,7 @@ pub async fn open_artifact_window(
     if crate::platform::os::libreoffice_open_fallback_needed(&p) {
         return open_with_libreoffice(&p);
     }
-    // 用文件 inode 做稳定 label,防同一文件多次打开建多窗口。Tauri label 只允许 a-zA-Z0-9-_。
+    // 用文件路径哈希做稳定 label,防同一文件多次打开建多窗口。Tauri label 只允许 a-zA-Z0-9-_。
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();

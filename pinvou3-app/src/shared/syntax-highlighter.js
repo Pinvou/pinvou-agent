@@ -72,8 +72,8 @@ function genericLog(hljsApi) {
 // 别名表是反查表(LAZY_ALIAS_TO_CANONICAL)与注册后别名注册(registerAliasesFor)
 // 的单一真相源:核心语言的常用别名 + 懒语言的 hljs 内建别名(注册前围栏写这些
 // 别名也必须能触发懒加载,否则永久回落纯文本)。内建别名清单须与 lockfile 实际
-// 版本的各语言模块 aliases 保持一致(测试 lazy_alias_table_covers_installed_aliases
-// 会从安装版回读断言全覆盖,升级 highlight.js 时漂移会被测试拦下)。
+// 版本的各语言模块 aliases 保持一致(tests/markdown_syntax_highlight.test.mjs
+// 的防漂移断言会从安装版回读断言全覆盖,升级 highlight.js 时漂移会被测试拦下)。
 const EXPLICIT_ALIASES = {
   javascript: ['js', 'jsx', 'mjs', 'cjs'],
   typescript: ['ts', 'tsx', 'mts', 'cts'],

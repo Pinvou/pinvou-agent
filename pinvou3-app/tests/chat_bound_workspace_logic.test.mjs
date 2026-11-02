@@ -238,7 +238,7 @@ test('enterDraft：作废绑定草稿的显式 mode 暂存', () => {
 // ── ensureSession: lane default application for bound drafts ──────────────────
 test('ensureSession：绑定草稿不套用 work lane 默认（后端按 code lane 解析）', async () => {
   const rt = loadFeature('sessions');
-  rt.state.modeDefaults = { work: 'plan', design: null, code: null }; // work lane default is plan
+  rt.state.modeDefaults = { work: 'plan', design: null, code: null };
   rt.api.setDraftWorkspace('/work/project');
   const id = await rt.api.ensureSession();
   assert.equal(id, 'chat-new');

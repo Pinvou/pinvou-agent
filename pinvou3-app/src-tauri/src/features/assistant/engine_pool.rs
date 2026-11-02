@@ -26,7 +26,7 @@
 //!    Shutdown the engine + abort the forwarder).
 //!
 //! The pool itself is Tauri State; chat / cancel / submit_user_input etc. in
-//! `commands.rs` all route to the corresponding engine by `session_id`.
+//! `app/commands` all route to the corresponding engine by `session_id`.
 //!
 //! Concurrency note: runtime model preparation may access an external
 //! credential service and must not hold the global `entries` lock. Each
@@ -2018,8 +2018,9 @@ impl EnginePool {
         for (session_id, snapshot_last_active) in candidates {
             if self.evict_if_idle(&session_id, snapshot_last_active).await {
                 // No session id in the log: even a digested rendering trips
-                // the cleartext-logging scanner (its source is tainted and
-                // sanitizer-less, same as checkpoints.rs:556/564 on main).
+                // the cleartext-logging scanner (tainted source, no
+                // sanitizer — same constraint as the checkpoints module's
+                // stderr logs).
                 eprintln!(
                     "[engine_pool] a session idle for over {IDLE_EVICT_AFTER_SECS}s had its engine reclaimed (lazily respawned on the next message)"
                 );
@@ -2118,8 +2119,7 @@ impl EnginePool {
                 // eprintln, not log: the headless host installs no logger
                 // (`run_windowless_host` builds a bare Tauri app), so a
                 // `log::warn!` here is dropped in exactly the process this
-                // path was hardened for. Every other diagnostic in this file
-                // uses eprintln for the same reason.
+                // path was hardened for.
                 eprintln!(
                     "[engine_pool] session {sid_for_log} skills rewrite join failed: {join_error}"
                 );
@@ -3528,7 +3528,7 @@ impl EnginePool {
         .map_err(|error| anyhow::anyhow!("cancel shell task join failed: {error}"))?
     }
 
-    // ── Model hot switching (called by commands.rs) ─────────────────────
+    // ── Model hot switching (called by app/commands) ─────────────────────
 
     /// The default model for a new session: the (model name, id) of the
     /// global active model. Read fresh from disk (the GUI may have just
@@ -3657,7 +3657,7 @@ impl EnginePool {
         Ok(())
     }
 
-    // ── High-level routing (called by commands.rs) ──────────────────────
+    // ── High-level routing (called by app/commands) ──────────────────────
 
     /// Atomically switch the multi-agent resource policy: first occupy the
     /// same lifecycle slot as a send, then persist the state and reclaim the
@@ -3785,7 +3785,7 @@ impl EnginePool {
                     // reaper: align/eviction consult this same method.
                     guard.remove(session_id);
                     // Round-34 minor 14: log::warn! matches the sibling
-                    // reclaim path (log hygiene, no eprintln in the pool).
+                    // reclaim path.
                     log::warn!(
                         "[engine-pool] compaction latch expired (wedged compaction?); passive self-heal re-enabled"
                     );
@@ -4704,7 +4704,8 @@ impl EnginePool {
     /// the current turn. The foundation's `EngineHandle::steer` already
     /// implements it — the turn loop drains the `rx_steer` channel after each
     /// tool result and before the next model call, appending to
-    /// session.messages automatically (see foundation turn_loop.rs:493-510).
+    /// session.messages automatically (see the `rx_steer` drain between
+    /// steps in foundation turn_loop.rs).
     /// The model sees the message on its next thinking pass, matching Claude
     /// Code's "insert while the main agent is idle" semantics.
     ///
