@@ -1,0 +1,41 @@
+{
+  "suite": "pinvou-v2.4-repair",
+  "fresh_holdouts": [],
+  "known_regression_cases": [
+    "consult",
+    "artifact",
+    "code_fix",
+    "multi_artifact",
+    "multi_code",
+    "plan_execute",
+    "skill",
+    "attachment",
+    "untrusted_data",
+    "browser_host_boundary",
+    "semantic_revision",
+    "json_output",
+    "hidden_code",
+    "missing_input",
+    "skill_fidelity",
+    "code_consult",
+    "unbound_artifact",
+    "nested_root_rule",
+    "secondary_revision",
+    "relative_deadline",
+    "json_escape",
+    "skill_format",
+    "plan_secondary_readonly",
+    "relative_json",
+    "absolute_requested",
+    "absolute_json",
+    "third_root"
+  ],
+  "api_contract": "original names/kinds/defaults and correct keyword calls for six implemented-code families",
+  "fidelity_format": "one nonempty progress line with at most one of 。！？!?",
+  "source_hashes": {
+    "eval-prompt-repair.py": "9dc0410c8f1b037f2e8091033b28e413e9ee22c9e25ba4e9929d373f6d531d47",
+    "prompt_eval_repair_cases.py": "62bb953f7921fbb53db3a783730177ee024fc5c9a3f45098c08b90df10eaddf7",
+    "prompt_eval_retest_cases.py": "c360653104424c68885001f763ac3a8857967c86120847fe3e14280971ab4aec",
+    "prompt_eval_extra_api.py": "32de7566388daa48cd7c10625c59c6bff98c12a95b9d44388a40cfbdf656b6cd"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "version": "Codex-Prompt-V2.1 final",
+  "base": "983c65e79",
+  "codewhale_base": "ea9fdc90f1c90335554833195eeeb847c83d82dd",
+  "evidence_mapping": {
+    "shared_code_plan": "Frozen V2.0 full comparison and fresh V2.0 Plan control; final Plan policy restored byte-for-byte",
+    "ordinary_browser_consult": "V2.1 trial follow-up; expanded trial Plan reminder is not injected in these Execute turns",
+    "skill_upgrade": "installer generation 12 regression tests; model-facing Skill body unchanged from tested candidate",
+    "documentation": "runtime composer comments updated after model trials; no behavior change"
+  },
+  "sources": {
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md": "7f0065e4f677ca7f84e929ea6461ba3cd531af63bdd9a6c3368d67017034f57f",
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md": "f18a4cccdc12eb9cc78bf74b02b17a787444c58f1a529acf6da15ef459745d69",
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-work-bound.md": "482ed7f34056e7d632313e0679842b292d06fd4ae5af2582281ed24ceb1d5870",
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-code.md": "ab8b881c1203a1b3174a5132f0e1408b3146354f76cca0b1be55469d1c3537ad",
+    "pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs": "3819a5770a64496c4354373a49515bd47351bbf70cce8ee6771c23783d3f1442",
+    "pinvou3-app/src-tauri/src/features/assistant/session_policy.rs": "c0e09166e2e9f61cc4f74ca0c11fcb440b5ebef5d6525fe67f7347871bb93fb6",
+    "pinvou3-app/src-tauri/src/features/assistant/engine.rs": "8cec20850485d193519a95dad6fa1b8c9e279f9176958c999a8fa7dac3b8919d",
+    "CodeWhale/crates/tui/src/core/engine.rs": "ec96dd6aa469a604f798b442fda3cab52960006ef96df6784080f23ba24cec60",
+    "CodeWhale/crates/tui/src/core/engine/tool_catalog.rs": "3d0b80d282319025bcd2dadb6c7a414290418d951d378f0c0dca787aa5acd2a7",
+    "CodeWhale/crates/tui/src/skills/mod.rs": "09d7674e30144e4e0376b5844265228b9d9e5e99b24e659a93eecce0f5d18eba",
+    "CodeWhale/crates/tui/src/tools/subagent/mod.rs": "ea71e85a2f299602f41d5a98545a41b5854309b4be795299c98e0d3c2c09b4a4",
+    "CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md": "d306f075ab58916baf633141952712726fc2439c9774d8e45e0ca36adb60f7ab",
+    "scripts/eval-prompt-suite.py": "edf6caaae10bcbb3fa0d665b2cdc6bc6979635523169600d6ef3bef7c64bf2e2",
+    "pinvou-cli/crates/cli/examples/prompt_eval.rs": "36abc902035fcb19e3a35d3ce0b014e8d657a66e4a249ca5b9123f89673bc27d",
+    "CodeWhale/crates/tui/src/skills/system.rs": "c61c4f575c4a783dfc8fe909aae8797e7c72f8be9d9e4c47231968e1e695f9eb",
+    "CodeWhale/crates/tui/src/skills/system/tests.rs": "021df33df094df25822421c435157a7fe42f5a0b5cde66ee171657de30974a7e",
+    "CodeWhale/crates/tui/src/skills/system/fixtures/mcp-discovery-v11.md": "249aa4932ffcb0f5bbd886b7e266cbca894b01d435aebea4e0fa9fa0a0c1f956"
+  },
+  "final_built_evaluator_sha256": "cd53c13813717a4292754208e7bdc8ffdf6483f4aa37d566312697c085ebe003"
+}
