@@ -147,7 +147,7 @@ function copyFile(src, dst) {
   fs.copyFileSync(src, dst);
 }
 
-// 递归复制目录内容到 dstDir（不包含 dstDir 自身的创建）
+// 递归复制目录内容到 dstDir
 function copyDirContents(srcDir, dstDir) {
   fs.mkdirSync(dstDir, { recursive: true });
   const entries = fs.readdirSync(srcDir, { withFileTypes: true });

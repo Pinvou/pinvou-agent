@@ -1,4 +1,4 @@
-//! codex / claude / gemini(即 kimi) CLI 的安装、升级与版本/来源探测。
+//! codex / claude / kimi CLI 的安装、升级与版本/来源探测。
 
 use super::runtime::run_version_probe;
 use super::*;

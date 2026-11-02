@@ -208,7 +208,7 @@
         "childNode": {
           "name": "办理人",
           "isDefaultName": true,
-          "type": "audit",
+          "type": "handler",
           "prevId": "13e5_6934",
           "nodeId": "4be9_e43d",
           "properties": {

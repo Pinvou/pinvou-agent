@@ -2350,7 +2350,8 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
     }
 
     /// 运行状态上下文长度推断：覆盖设置页全部云端模型（2026-07 逐厂商核实，
-    /// 依据为仓库 catalog + 底座启发式 + 各厂商官方文档，见 pinvou_known_context_window 注释）。
+    /// 依据为仓库 catalog + 底座启发式（CodeWhale known_context_window_for_model）
+    /// + core::model_context 的 PINVOU_KNOWN 补充表 + 各厂商官方文档）。
     /// Exemptions: aggregator org-prefixed ids and the per-deployment context
     /// figures behind self-hosted Coding Plan gateways are not mirrored one by
     /// one (see the aggregator/Coding Plan group comments in model-catalog.js);

@@ -28,7 +28,7 @@ vm.runInNewContext(read('src', 'platform', 'tauri', 'bridge', 'interaction.js'),
 const installInteraction = sandbox.window.__PINVOU_TAURI_BRIDGE_FEATURES__.interaction;
 
 // 按 sid 模拟 runSyncOnSession 的 buffer swap：把 state 工作集临时切到目标 session。
-// 真实实现（tauri bridge.js:973）是 swap-load-fn-save；这里用数组引用模拟，足以断言
+// 真实实现（tauri bridge.js 的 runSyncOnSession）是 swap-load-fn-save；这里用数组引用模拟，足以断言
 // "UI 写入落在触发会话而非当前会话"。
 function makeContext(initialState) {
   const buffers = {};

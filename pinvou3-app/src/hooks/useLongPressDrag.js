@@ -65,8 +65,4 @@ const LONGPRESS_MS = 350;
       return { handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: clearPress }, guardClick };
     };
 
-    // ==========================================
-    // Render
-    // ==========================================
-
 export { useLongPressDrag };

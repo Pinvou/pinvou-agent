@@ -92,10 +92,16 @@ const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 防止反复回退把 sidecar 写到无限大。
 const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
 
-/// 底座 compaction 摘要标记（`CodeWhale/crates/tui/src/core/engine/context.rs` 的
-/// `COMPACTION_SUMMARY_MARKER`，`pub(super)` 不可直接引用，app 侧用同一字面量匹配）。
-/// 漂移后果：底座改文案后这里不再命中，回退后不再提示「对话含压缩摘要残留」——
-/// 只是不提示，不影响回退正确性，可接受。
+/// 底座 compaction 摘要标记。底座现行标记是 `COMPACTION_SUMMARY_MARKER`
+/// （首句 "Another language model started to solve this problem"，随摘要检查点
+/// 以 `Role::User` 历史消息进入对话历史并单独存于 `compaction_summary_prompt`，
+/// 稳定 system 前缀不携带检查点——底座 `core/engine.rs`
+/// `commit_compaction_checkpoint` 与 `compaction.rs`
+/// `compaction_checkpoint_message`），定义在底座
+/// `CodeWhale/crates/tui/src/history_recognition.rs`；
+/// 本字面量是底座 v0.9.6 前的旧格式标记（`LEGACY_COMPACTION_SUMMARY_MARKER`），
+/// 现仅命中旧格式会话——现行格式的会话回退后不再触发压缩残留提示，只是不提示，
+/// 不影响回退正确性，可接受。
 const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
 
 /// 持久化的 system_prompt 是否含 compaction 摘要（截断不会触碰 system_prompt，

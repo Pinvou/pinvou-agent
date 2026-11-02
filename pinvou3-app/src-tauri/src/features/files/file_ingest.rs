@@ -316,8 +316,9 @@ fn ingest_checked(path: &Path) -> Result<IngestResult, AttachmentLimitViolation>
 fn classify(ext: &str) -> &'static str {
     match ext {
         // 安全硬墙(优先级最高):私钥 / 密钥库类扩展名一律不读正文 —— 防止私钥被读进
-        // markdown、内联进 prompt、进而发给(可能的云端)LLM。validate_path 只挡 5 个
-        // 敏感目录,挡不住 ~/certs/server.key 这类文件,故在此补文件级拒绝。
+        // markdown、内联进 prompt、进而发给(可能的云端)LLM。validate_path 的路径组件
+        // 黑名单(path_policy::check_sensitive_components)挡不住 ~/certs/server.key 这
+        // 类文件,故在此补文件级拒绝。
         // The "secret" class goes to redacted_secret_placeholder (markdown
         // always None) and never reaches sniffing.
         // 注意:公钥证书(crt/cer/csr)本身可公开,仍归 text,方便用户问「证书 CN/到期日」。
@@ -465,7 +466,7 @@ fn sanitize_filename(raw: &str) -> String {
 }
 
 /// 校验上传路径：必须绝对 + 指向普通文件 + 满足当前系统的上传位置策略 + 不在敏感目录。
-/// 跟 commands::validate_user_path 同语义，单独抽出供前端 ingest 入口调用。
+/// 与 platform::path_policy::validate_user_path 同语义，单独抽出供前端 ingest 入口调用。
 pub fn validate_path(raw: &str) -> Result<PathBuf, String> {
     let canon = validate_browsable_path(raw)?;
     if !canon.is_file() {
@@ -902,7 +903,6 @@ mod tests {
 
     #[test]
     fn ingest_text_reads_md() {
-        // 写一个临时文件，调 ingest
         let tmp = std::env::temp_dir().join("pinvou3-ingest-test.md");
         std::fs::write(&tmp, "# 标题\n\n内容。").unwrap();
         let r = ingest(&tmp);
