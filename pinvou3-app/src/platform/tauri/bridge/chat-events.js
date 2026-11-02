@@ -1321,12 +1321,15 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // 审批决策收敛广播（tri-mode M5）：决策可能来自第二窗口或 remote 表面，
   // 后端 decide_approval 落定后广播终态；本表面的同 id 未决卡就地落终态。
   // 只对未决卡生效（幂等）：发起方的乐观终态、终态清扫的 cancelled 都不得
-  // 被回声覆盖。负载不带 tool input（后端载荷构造点有钉）。
+  // 被回声覆盖。负载不带 tool input（后端载荷构造点有钉）。未知/缺失决策
+  // 值按 no-op 处理（fail-neutral）：审批面上的畸形载荷不得把卡映射成
+  // "allowed"——宁可留着未决等权威回声/终态清扫。
   listen("chat:approval_resolved", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     const approvalId = String(p.approval_id || "");
     if (!approvalId) return;
     const decision = String(p.decision || "");
+    if (decision !== "deny" && decision !== "allow" && decision !== "allow_for_session") return;
     let changed = false;
     state.chatItems.forEach(function (item) {
       if (item && item.type === "approval" && item.approvalId === approvalId && !item.resolved) {

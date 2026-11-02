@@ -11,6 +11,7 @@
 //    v3.5：Auto→Yolo 直达不再绕道 Plan）。
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -322,8 +323,10 @@ try {
 
   // round-2 M5：决策收敛广播 chat:approval_resolved——只对未决卡生效（幂等），
   // 决策值映射三终态；不覆盖发起方的乐观终态与终态清扫的 cancelled。
-  assert.match(chatEvents, /listen\("chat:approval_resolved", function \(e\) \{ onSessionEvent\(e, function \(\) \{[\s\S]{0,300}?item\.type === "approval" && item\.approvalId === approvalId && !item\.resolved[\s\S]{0,300}?decision === "deny" \? "denied"[\s\S]{0,120}?"allowed_session"/,
-    '收敛广播处理器只落未决卡并映射决策终态');
+  // round-4：未知/缺失决策值先按 no-op 早退（fail-neutral）——审批面上的
+  // 畸形载荷不得把未决卡映射成 "allowed"。
+  assert.match(chatEvents, /listen\("chat:approval_resolved", function \(e\) \{ onSessionEvent\(e, function \(\) \{[\s\S]{0,520}?decision !== "deny" && decision !== "allow" && decision !== "allow_for_session"[\s\S]{0,200}?item\.type === "approval" && item\.approvalId === approvalId && !item\.resolved[\s\S]{0,300}?decision === "deny" \? "denied"[\s\S]{0,120}?"allowed_session"/,
+    '收敛广播处理器拒识别未知决策、只落未决卡并映射三终态');
   // round-2 M5：decideApproval 的失败恢复不得覆盖终态清扫已落的 cancelled
   // （await 期间 chat:done 先到 → catch 恢复让位 resolved）。
   assert.match(interaction, /card\.submitting = false;[\s\S]{0,300}?if \(!card\.resolved\) \{[\s\S]{0,200}?card\.cardState = previous\.cardState;/,
@@ -380,6 +383,183 @@ try {
   assert.match(composerControls, /const showAskToggle = activeMode !== 'plan';/, '守卫开关只在 Auto/Yolo 档显示');
   assert.match(composerControls, /const askOnGuardrail = \(askOnGuardrailProp === undefined \|\| askOnGuardrailProp === null\)\s*\n\s*\? \(\(ms && ms\.askOnGuardrail\) !== false\)/,
     '展示值缺省按开（旧快照无此键不翻成关）');
+
+  // ── 3. 主车道运行时（chat-events.js，session_nav_race 风格的 VM harness）──
+  // round-4：源码契约之外补可执行回归——畸形收敛回声 fail-neutral、终态清扫
+  // 保留显式决策、回声对已决卡幂等（正则 pin 锁形状，这里锁行为）。
+  {
+    const vmRoot = {};
+    vm.runInNewContext(read('src', 'shared', 'bridge-shared-helpers.js') + '\n' + read('src', 'platform', 'tauri', 'bridge', 'chat-events.js'), {
+      window: vmRoot, globalThis: vmRoot, setTimeout, clearTimeout,
+    }, { filename: 'chat-events-harness.js' });
+    const factory = vmRoot.__PINVOU_TAURI_BRIDGE_FEATURES__['chat-events'];
+    assert.equal(typeof factory, 'function', 'chat-events feature 工厂已注册');
+    const listeners = {};
+    const state = {
+      settings: { language: 'zh' },
+      chatItems: [],
+      messages: [],
+      modeState: { mode: 'auto', multiAgent: false, askOnGuardrail: true },
+      sessions: [{ id: 's1' }],
+      activeSessionId: 's1',
+      artifacts: [],
+      turnDirtyArtifacts: [],
+      turnPresentedArtifacts: [],
+      tokens: { max: 0 },
+    };
+    factory({
+      state,
+      listen: (event, handler) => { listeners[event] = handler; },
+      notify: () => {},
+      onSessionEvent: (e, fn) => fn(),
+      runSyncOnSession: (sid, fn) => fn(),
+      addChatItem: item => { item.id = 'item-' + (state.chatItems.length + 1); state.chatItems.push(item); },
+      addSystemItem: text => { state.chatItems.push({ type: 'system', text, id: 'sys-' + (state.chatItems.length + 1) }); },
+      addAuthoritySyncNotice: () => {},
+      bt: key => key,
+      timeStr: () => '',
+      applyAuthoritativeModeState: () => {},
+      recordAuthoritySyncDiagnostic: () => {},
+      authoritySyncBufferSnapshot: () => ({}),
+      isNotifySuppressed: () => false,
+      invoke: () => Promise.resolve({}),
+      turnUsageDirty: {},
+      sessionStates: {},
+      renderMarkdown: s => s,
+      autoCreateScheduledTaskDraft: () => {},
+      toolCallAlreadyStarted: () => false,
+      toolCallAlreadyFinished: () => false,
+      hasChatItemForTool: () => false,
+      flushPendingTextBlock: () => {},
+      flushAssistantMessageToHistory: () => {},
+      startReasoningBlock: () => {},
+      appendReasoningBlock: () => {},
+      finalizeStreamingReasoning: () => {},
+      reasoningEventIndex: () => 0,
+      startThinking: () => {},
+      thinkingTool: () => {},
+      thinkingIdle: () => {},
+      stopThinking: () => {},
+      mergeFloatChunks: () => {},
+      downsampleFromBase64: () => {},
+      patchItemById: () => {},
+      itemIdSeq: { value: 0 },
+      pendingStreamNotifications: { get value() { return null; } },
+      pendingAssistantText: { get value() { return ''; }, set value(v) {} },
+      pendingAssistantBlocks: { get value() { return []; }, set value(v) {} },
+      currentStreamText: { get value() { return ''; }, set value(v) {} },
+      currentStreamId: { get value() { return 0; }, set value(v) {} },
+      toolMeta: {},
+      finalizeAssistantStreamBeforeReasoning: () => {},
+      flushQueued: () => {},
+      preserveInterruptedAssistantPresentation: () => {},
+      cancelPendingStreamNotify: () => {},
+      recordTurnStarted: () => {},
+      markRemoteTurn: () => {},
+      isScheduledRunSession: () => false,
+      memoryWriteLabel: () => '',
+      memoryWriteStatusLabel: () => '',
+      normalizeMemoryCandidateText: s => s,
+      handleMemoryWrite: () => {},
+      scheduledTaskAutoCreateSeq: { get value() { return 0; } },
+      shellToolResultDisplay: null,
+      toolResultText: s => s,
+      stripInternalToolRuntimeSuffix: s => s,
+      toolResultDisplayContent: s => s,
+      isShellExecutionTool: () => false,
+      formatShellSnapshot: () => '',
+      shellCommandForItem: () => '',
+      shellSnapshotKey: () => '',
+      basename: p => String(p),
+      scheduleShellPoll: () => {},
+      presentArtifactAbsPath: () => null,
+      parseToolResultPayload: () => ({}),
+      numOr0: v => v || 0,
+      isPresentArtifactTool: () => false,
+      artifactPathFromToolOutput: () => null,
+      shouldUseToolOutputAsArtifact: () => false,
+      noteArtifactChange: () => {},
+      reconcileArtifacts: () => {},
+      pushArtifactPath: () => {},
+      extractArtifactPath: () => null,
+      extractArtifactPaths: () => [],
+      isDeliverable: () => false,
+      isTmpPath: () => false,
+      normalizedPath: p => p,
+      isAbsPath: () => false,
+      escapeHtml: s => s,
+      mentionsShellTool: () => false,
+      persistMessagesFor: () => {},
+      hasUnresolvedItem: () => false,
+      updateToolItem: () => {},
+      saveWorkingSetTo: () => {},
+      loadWorkingSetFrom: () => {},
+      userMessageDisplayText: s => s,
+      isInternalUserMessageProvenance: () => false,
+      userMessageInputProvenance: () => '',
+      makeQueuedMessage: () => ({}),
+      stripMentionBlockForComposerRestore: s => s,
+      rebuiltQueuedPayload: () => ({}),
+      rebuiltQueuedMetaPayload: () => ({}),
+      getComposerDraft: () => '',
+      setComposerDraft: () => {},
+      prefillComposer: () => {},
+      queuedPayloadEnvelope: () => ({}),
+      submitUserInput: () => {},
+      planCardHydrationKey: () => '',
+      parsePlanSnapshot: () => ({ plan: null, todos: null }),
+      parseUserAnswers: () => null,
+      parseCarefulBlocked: () => null,
+      compactPruneRollupText: () => '',
+      removeCompactionStartItem: () => {},
+      addOrMergePruneCompaction: () => {},
+      hasChatItemForApproval: undefined,
+      touchSessionBuffer: () => {},
+      getBuffer: () => ({ chatItems: state.chatItems, messages: [] }),
+      flushPendingStreamRender: () => {},
+      safeConsoleInfo: () => {},
+      sweepUnpairedToolMeta: () => {},
+      findPresentedArtifact: () => null,
+      startMonitorPolling: () => {},
+      reportSessionSwitchFailure: () => {},
+      reconcileRemoteTurn: () => {},
+      refreshHistoryList: () => Promise.resolve(),
+    });
+
+    const seedCard = (id, decision) => {
+      state.chatItems.push({
+        type: 'approval', approvalId: id, toolName: 'shell_exec', description: 'd',
+        input: null, intentSummary: '', forcePrompt: false,
+        resolved: !!decision, cardState: decision || 'active', submitting: false, time: '',
+      });
+    };
+
+    // round-4 fail-neutral：未知/缺失 decision 的收敛回声不得把未决卡映射成
+    // "allowed"——卡保持未决等权威回声/终态清扫。
+    seedCard('ap-unk', null);
+    const before = JSON.stringify(state.chatItems);
+    listeners['chat:approval_resolved']({ payload: { session_id: 's1', approval_id: 'ap-unk', decision: 'SOME_NEW_DECISION' } });
+    listeners['chat:approval_resolved']({ payload: { session_id: 's1', approval_id: 'ap-unk' } });
+    assert.equal(JSON.stringify(state.chatItems), before, '未知/缺失决策 = no-op，卡不得被落成 allowed');
+
+    // 幂等：deny 落未决卡；对已决卡（发起方乐观终态/清扫 cancelled）是 no-op。
+    seedCard('ap-live', null);
+    listeners['chat:approval_resolved']({ payload: { session_id: 's1', approval_id: 'ap-live', decision: 'deny' } });
+    assert.equal(state.chatItems.at(-1).cardState, 'denied', 'deny 回声落终态');
+    assert.equal(state.chatItems.at(-1).resolved, true);
+    listeners['chat:approval_resolved']({ payload: { session_id: 's1', approval_id: 'ap-live', decision: 'allow' } });
+    assert.equal(state.chatItems.at(-1).cardState, 'denied', '回声不覆盖已决卡');
+
+    // 终态清扫：未决卡 → cancelled；显式决策保留。
+    seedCard('ap-sweep', null);
+    seedCard('ap-denied', 'denied');
+    listeners['chat:done']({ payload: { session_id: 's1', generation: 1, status: 'Completed' } });
+    const byId = Object.fromEntries(state.chatItems.map(item => [item.approvalId, item]));
+    assert.equal(byId['ap-sweep'].cardState, 'cancelled', '未决卡就地落 cancelled');
+    assert.equal(byId['ap-denied'].cardState, 'denied', '显式决策不被清扫覆盖');
+
+    console.log('approval_card_lane: plain-lane runtime ok');
+  }
 
   console.log('approval_card_lane: ok');
 } finally {

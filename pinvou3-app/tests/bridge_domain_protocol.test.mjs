@@ -248,7 +248,7 @@ const expectedProtocolHashes = {
   // (approval card projection), chat:guardrail_denied (hard-deny notice) and
   // chat:mode_changed (authoritative mode broadcast through
   // applyAuthoritativeModeState).
-  chat: '8bb520da56d65d2c94be963769d6d450da4f84729d6a87b06c42479b4610bcfe',
+  chat: 'a8a19109bd91a34aefccf349d5e0856d349376a807e08e9789cdd57e4cc15cbf',
   // Recomputed for the tri-mode safety surface: chat-events.js gains three
   // listeners — chat:approval_required (approval card projection),
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
@@ -257,6 +257,9 @@ const expectedProtocolHashes = {
   // applies an explicit yolo/auto work-lane default via the existing
   // set_session_mode command (no new command or event surface).
 
+  // Recomputed for the round-4 fail-neutral echo guard: the
+  // chat:approval_resolved handler gains an unknown-decision early return
+  // (same single listener, no new command or event surface).
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

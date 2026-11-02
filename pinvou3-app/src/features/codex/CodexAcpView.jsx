@@ -3424,8 +3424,9 @@ export function CodexAcpView({
 
   // 原生车道 tri-mode 审批卡决策：语义镜像 respondNativeInput——entry 捕获
   // sid（await 期间用户切会话时不得把终态写进错误 lane），成功后按决策写终态
-  // （decide_approval 不再 emit 事件，前端对自己的卡做权威收口），失败仅提示、
-  // 卡保持 active 可重试。
+  // （decide_approval 成功会广播 chat:approval_resolved 供其它表面收敛；本
+  // lane 的卡按返回就地落终态，重放的同 id 回声对已决卡是 no-op），失败仅
+  // 提示、后端已把登记原样放回，卡保持 active 可重试。
   async function decideNativeApproval(approvalId, decision) {
     if (!activeId || !approvalId) return;
     const sid = activeId;
