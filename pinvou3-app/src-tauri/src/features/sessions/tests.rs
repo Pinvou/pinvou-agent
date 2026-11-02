@@ -4132,6 +4132,66 @@ fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
     assert_eq!(reopened.mode_state(sid).ask_on_guardrail, !global_default);
 }
 
+/// Tri-mode（评审 P2）：ask-on-guardrail 持久化失败必须作为失败上报，
+/// 不得 Ok(()) 把回滚后的旧值当权威状态广播——命令层拿到 Err 才会跳过
+/// publish,前端既有 catch 才会回滚并提示。副作用断言:内存条目与
+/// override 镜像都精确回到调用前状态。
+#[cfg(unix)]
+#[test]
+fn ask_on_guardrail_persist_failure_returns_err_and_rolls_back() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (store, guard) = isolated_store();
+    let sid = "persist-failure-toggle-session";
+    // 物化条目:rollback 走 entry 回写路径(与 entry-less 的 override 移除
+    // 路径相对)。先落到 Plan,条目的 guardrail 默认继承全局默认。
+    store
+        .set_mode(sid, SerializableMode::Plan)
+        .expect("materialize");
+    let seeded = store.mode_state(sid).ask_on_guardrail;
+    let toggled = !seeded;
+    store
+        .set_ask_on_guardrail(sid, toggled)
+        .expect("first toggle");
+    assert_eq!(store.mode_state(sid).ask_on_guardrail, toggled);
+
+    // 把 sessions 目录变成只读:原子写 rename 需要目录写权限,必然失败。
+    let sessions_dir = crate::platform::paths::sessions_root();
+    let mut perms = std::fs::metadata(&sessions_dir)
+        .expect("sessions dir")
+        .permissions();
+    let original_dir_mode = perms.mode();
+    perms.set_mode(0o555);
+    std::fs::set_permissions(&sessions_dir, perms).expect("chmod sessions dir");
+
+    let outcome = store.set_ask_on_guardrail(sid, seeded);
+
+    // 恢复权限:TestHomeGuard 清理临时目录需要可写。
+    let mut restore = std::fs::metadata(&sessions_dir)
+        .expect("sessions dir")
+        .permissions();
+    restore.set_mode(original_dir_mode);
+    std::fs::set_permissions(&sessions_dir, restore).expect("restore sessions dir");
+
+    let error = outcome.expect_err("persist failure must surface as Err, not Ok(())");
+    assert!(
+        !error.to_string().is_empty(),
+        "the error must carry the persist failure detail"
+    );
+    // 内存条目回滚到翻转后的旧值(不是本次要写入的值),mode 不受牵连。
+    assert_eq!(
+        store.mode_state(sid).ask_on_guardrail,
+        toggled,
+        "in-memory entry must roll back to the pre-call value"
+    );
+    assert_eq!(
+        store.mode_state(sid).mode,
+        SerializableMode::Plan,
+        "the failed guardrail toggle must not disturb the session mode"
+    );
+    let _ = guard; // ENV_LOCK 守卫活到断言结束
+}
+
 /// Mode-switch loop (the core contract after the foundation regressed to two
 /// modes): the transition commands set_plan_mode_next(→Plan) /
 /// accept_plan / exit_plan_to_yolo(→Yolo) all just call set_mode under the

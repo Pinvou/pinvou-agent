@@ -1397,6 +1397,11 @@ impl SessionStore {
                 }
             }
             eprintln!("[sessions] persist ask_on_guardrail failed: {error:#}");
+            // 持久化失败必须作为失败上报(评审 P2):内存条目与 override
+            // 镜像都已回滚,Ok(()) 会让命令层把回滚后的旧值当权威状态广播,
+            // 前端把开关摆回旧值却不给任何失败提示,重启后用户才发现没存上。
+            // Err 使命令层跳过 publish,由前端既有 catch 回滚并提示。
+            return Err(error);
         }
         Ok(())
     }
