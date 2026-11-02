@@ -2004,9 +2004,17 @@ export function CodexAcpView({
         // tri-mode 审批卡还原：与 user_input 同款「pending 登记表 → 合成事件」，
         // applyNativeChatEvent 按 approvalId 幂等去重。查询返回是 serde camelCase
         // 的 PendingApproval，按事件负载的 snake_case 形状重灌。
-        const pendingApprovals = await invoke('get_pending_approvals', { sessionId: id })
+        const terminalFence = lane.approvalReplayTerminalSeq || 0;
+        let pendingApprovals = await invoke('get_pending_approvals', { sessionId: id })
           .catch(() => null);
         if (sessionLoadRequestRef.current !== requestId) return null;
+        // 重放终态代栅栏（评审 P3，镜像主车道 chat-events/sessions 的
+        // approvalReplayTerminalSeq）：快照在途时发生 turn 终态，chat:done 已
+        // 清空后端登记表并就在席卡落 cancelled——迟到的快照回程会把引擎侧已
+        // 消亡的审批当活卡插回（其决策只会得到 approval-not-found），整批
+        // 作废。sessionLoadRequestRef 只守会话切换，守不住同一会话的 turn
+        // 终态；墓碑只拦已落定的单个 id。
+        if ((lane.approvalReplayTerminalSeq || 0) !== terminalFence) pendingApprovals = null;
         ((pendingApprovals) || []).forEach(entry => {
           if (!entry) return;
           applyNativeChatEvent(lane, 'chat:approval_required', {

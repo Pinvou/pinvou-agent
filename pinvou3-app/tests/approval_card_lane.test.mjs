@@ -207,6 +207,51 @@ try {
     assert.equal(card.cardState, 'allowed');
   }
 
+  // ── 评审 P3：重放终态代栅栏——快照在途时发生 turn 终态，整批迟到快照作废 ──
+  // 时序（remount 期间 turn 终态）：get_pending_approvals 快照发出（组件捕获
+  // lane.approvalReplayTerminalSeq）→ chat:done 清空后端登记表、就在席卡落
+  // cancelled 并推进代数 → 迟到的快照回程见代数已变，整批作废。否则 lane 无
+  // 同 id 卡亦无墓碑（去重/墓碑都拦不住），已消亡审批被当活卡插回，其决策
+  // 只会得到 approval-not-found。组件侧消费钉在下方第 2 节源码契约（主车道
+  // sessions.js 的 terminalFence 同款）。
+  {
+    const replayEntry = {
+      session_id: 's1',
+      approval_id: 'ap-stale',
+      tool_name: 'shell_exec',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    };
+    // 竞态复现基线：无栅栏时，迟到快照对 fresh lane 会直接插回活卡。
+    const probe = createNativeLane();
+    applyNativeChatEvent(probe, 'chat:approval_required', replayEntry);
+    assert.equal(probe.items.filter(item => item.type === 'approval').length, 1,
+      '无栅栏基线：同 id 去重/墓碑都拦不住迟到快照的活卡插回');
+    // 插叙：快照发出（捕获代数）→ chat:done（清扫在席卡 + 推进代数）→ 回程判废。
+    const lane = createNativeLane();
+    applyNativeChatEvent(lane, 'chat:approval_required', {
+      ...replayEntry, approval_id: 'ap-live',
+    });
+    const terminalFence = lane.approvalReplayTerminalSeq || 0;
+    assert.equal(applyNativeChatEvent(lane, 'chat:done', { session_id: 's1', status: 'completed' }), true);
+    const swept = lane.items.find(item => item.type === 'approval');
+    assert.equal(swept.cardState, 'cancelled', '终态清扫在席卡（既有 M3 语义）');
+    assert.equal(lane.approvalReplayTerminalSeq, terminalFence + 1, '终态推进重放代数');
+    const stale = (lane.approvalReplayTerminalSeq || 0) === terminalFence;
+    assert.equal(stale, false, '终态后的快照回程必须被代栅栏判废');
+    if (stale) applyNativeChatEvent(lane, 'chat:approval_required', replayEntry);
+    assert.equal(lane.items.filter(item => item.type === 'approval' && !item.resolved).length, 0,
+      '终态后的迟到快照不得把已消亡审批当活卡插回');
+    // 对照组：无终态介入的重放照常插卡（栅栏只废终态后的整批快照）。
+    const control = createNativeLane();
+    const controlFence = control.approvalReplayTerminalSeq || 0;
+    assert.equal((control.approvalReplayTerminalSeq || 0) === controlFence, true,
+      '无终态介入时代数不变，快照仍有效');
+    applyNativeChatEvent(control, 'chat:approval_required', replayEntry);
+    const controlCard = control.items.find(item => item.type === 'approval');
+    assert.equal(controlCard.cardState, 'active', '无终态介入的重放仍正常插卡');
+  }
+
   // ── round-4 fail-neutral 的 native 车道同口径：未知决策值不得落终态 ──
   // 主车道（chat-events）已有 fail-neutral 钉；native lane 的 resolved
   // 分支曾是同样的三元直落 allowed 形状，这里锁行为：畸形回声 no-op，
@@ -652,6 +697,16 @@ try {
     const chatEvents = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
     assert.match(chatEvents, /approvalReplayTerminalSeq/,
       'chat:done 终态清扫必须推进审批重放代栅栏（sessions.js 消费）');
+    // native 车道同款栅栏（评审 P3 残留）：bump 在 codex chat:done 终态清扫处，
+    // 消费在 CodexAcpView.loadSession 的 get_pending_approvals 重放（该分支的
+    // sessionLoadRequestRef 只守会话切换，守不住同会话的 turn 终态）。
+    const nativeLaneSrc = read('src', 'features', 'codex', 'code-native-lane.js');
+    assert.match(nativeLaneSrc, /lane\.approvalReplayTerminalSeq = \(lane\.approvalReplayTerminalSeq \|\| 0\) \+ 1;/,
+      'codex 车道 chat:done 终态清扫必须推进审批重放代栅栏（CodexAcpView 消费）');
+    assert.match(codexView, /const terminalFence = lane\.approvalReplayTerminalSeq \|\| 0;/,
+      'codex 车道重放必须在快照发出前捕获终态代栅栏');
+    assert.match(codexView, /\(lane\.approvalReplayTerminalSeq \|\| 0\) !== terminalFence\) pendingApprovals = null;/,
+      'codex 车道终态代已推进时整批快照必须作废（迟到的登记表不得插回活卡）');
   }
 
   console.log('approval_card_lane: ok');

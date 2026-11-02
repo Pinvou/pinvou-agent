@@ -43,6 +43,10 @@ export function createNativeLane() {
     memory: null,
     // chat:compaction phase=start → true，done/fail → false；用于禁用手动压缩入口。
     compacting: false,
+    // 审批重放终态代（评审 P3）：chat:done 终态清扫处推进（见
+    // applyNativeChatEvent），CodexAcpView.loadSession 的 get_pending_approvals
+    // 重放据此整批作废迟到快照（主车道 sessions.js 同款）。
+    approvalReplayTerminalSeq: 0,
     seq: 0,
   };
 }
@@ -735,6 +739,14 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         item.resolved = true;
         item.cardState = 'cancelled';
       }
+      // Terminal-generation fence for the get_pending_approvals replay
+      // (review P3): the backend registry is cleared at every terminal, so a
+      // snapshot captured before this point is stale even when no in-place
+      // card existed (fresh-remount lane). The consumer in
+      // CodexAcpView.loadSession drops the whole snapshot when the counter
+      // moved on; mirrors the main lane's chat-events.js
+      // approvalReplayTerminalSeq bump consumed by sessions.js.
+      lane.approvalReplayTerminalSeq = (lane.approvalReplayTerminalSeq || 0) + 1;
       const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;
       lane.thinking = null;
