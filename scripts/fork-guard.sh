@@ -7,8 +7,8 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Review candidate: CodeWhale#131 (host-armed guardrail prompts + authority-transition notice) ahead of public maintenance.
-EXPECTED_HEAD="04c1f7843df8859bf68e02284ff6a3a5fed44081"
-EXPECTED_COMMITS=89
+EXPECTED_HEAD="5c13fc561d1da6778eb31e2278e6e423a167f0a4"
+EXPECTED_COMMITS=90
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -212,6 +212,10 @@ fingerprints=(
   "T2|Turn authority install never rolls back published arming |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_turn_authority_install_never_rolls_back_published_arming"
   "T2|ChangeMode status suffixes report arming changes |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_apply_change_mode_status_suffixes_report_the_arming_change"
   "T2|Turn start detector records and renders transition once |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_turn_start_detector_records_the_posture_and_renders_the_transition_once"
+  "T2|Pending arming survives arming-free publishes |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_pending_arming_survives_arming_free_authority_publishes"
+  "T2|Armed composer shell keeps the hard deny face |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_composer_shell_keeps_the_hard_deny_face"
+  "T2|Armed Auto-Review escalation stays fail closed |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_armed_auto_review_escalation_stays_fail_closed"
+  "T2|Preview transition uses the planned posture |CodeWhale/crates/tui/src/core/engine/preview/tests.rs|fn forkguard_preview_transition_uses_the_planned_posture_not_the_stale_session"
   "T2|Authority transition model notice line |CodeWhale/crates/tui/src/core/authority.rs|Authority transition (host): {} -> {}; reason: {}"
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("

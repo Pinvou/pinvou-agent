@@ -245,14 +245,16 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
 
 ## 8. 测试与登记
 
-- **底座**（CodeWhale#131）：本行为新增 14 条 `forkguard_` pin——提交
-  `998ffe27e` 7 条 + 复审加固 6 条 + 评审修复 1 条，逐条钉住上述五个武装面、
+- **底座**（CodeWhale#131）：本行为新增 18 条 `forkguard_` pin——提交
+  `998ffe27e` 7 条 + 复审加固 6 条 + 评审修复 1 条 + 复审修复二 `5c13fc561`
+  4 条（武装发布粘滞、armed composer 硬拒、armed Auto-Review 升级恒拒、
+  preview 计划姿态与 live 线体哈希一致），逐条钉住上述五个武装面、
   Auto-Review/Never 恒拒、授予缓存不可静默消费武装 hold、composer 不武装、
   子代理两个镜像面、transition 渲染/折叠/预览一致与武装不可回滚。
-  forkguard 行为名总数 255 → 269；门禁命令
+  forkguard 行为名总数 255 → 273；门禁命令
   `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`
-  （评审修复头 `04c1f7843` 实测 254 过 / 0 挂，既有 fail-closed pin 原样绿）。
-  14 条逐名：
+  （复审修复二头 `5c13fc561` 实测 258 过 / 0 挂，既有 fail-closed pin 原样绿）。
+  18 条逐名：
   `forkguard_armed_full_access_forced_hold_resolves_to_prompt`、
   `forkguard_armed_full_access_hold_prompts_instead_of_blocking`、
   `forkguard_armed_repo_law_hold_prompts_instead_of_blocking`、
@@ -268,7 +270,12 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
   `forkguard_apply_change_mode_status_suffixes_report_the_arming_change`、
   `forkguard_turn_start_detector_records_the_posture_and_renders_the_transition_once`
   （评审修复新增，逐字节咬住 detector 的记录与一次性消费；deny-face 钉扩展
-  Auto-Review 恒拒面）。
+  Auto-Review 恒拒面）、
+  `forkguard_pending_arming_survives_arming_free_authority_publishes`、
+  `forkguard_armed_composer_shell_keeps_the_hard_deny_face`、
+  `forkguard_armed_auto_review_escalation_stays_fail_closed`、
+  `forkguard_preview_transition_uses_the_planned_posture_not_the_stale_session`
+  （复审修复二新增，四条均突变验证转红）。
 - **应用侧**：`forkguard_approval_surface_record_dedupes_by_approval_id` /
   `_remove_returns_entry_and_cleans_empty_session` /
   `_grant_and_denial_scoping` / `_clear_session_wipes_memory` /
