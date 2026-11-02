@@ -3379,6 +3379,33 @@ pub(crate) mod tests {
         mcp_path
     }
 
+    /// Dead-target fixture path that is genuinely `is_absolute()` on every
+    /// platform: POSIX spellings ("/x/w.py") are rooted but not absolute on
+    /// Windows (no drive prefix), so `dead_local_entry_target` would correctly
+    /// never judge them and every dead-target rebuild pin would no-op there.
+    /// Derived from the temp dir, so it is absolute everywhere, and the
+    /// reserved directory component keeps the target nonexistent.
+    fn dead_target_fixture(file_name: &str) -> String {
+        std::env::temp_dir()
+            .join("pinvou3-reconcile-dead-target")
+            .join(file_name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn reconcile_dead_target_fixture_is_absolute_and_never_exists() {
+        let dead = dead_target_fixture("w.py");
+        assert!(
+            Path::new(&dead).is_absolute(),
+            "the fixture must be an absolute dead-target candidate on every platform: {dead}"
+        );
+        assert!(
+            !Path::new(&dead).exists(),
+            "the fixture must stay nonexistent for the dead-target judgment: {dead}"
+        );
+    }
+
     /// Shared tail of the reconcile tests: a converged reconcile reports no
     /// actions and leaves mcp.json byte-identical.
     fn assert_reconcile_idempotent<S: CredentialStore>(
@@ -3411,14 +3438,15 @@ pub(crate) mod tests {
                 )
                 .unwrap();
             let unknown = serde_json::json!({"command": "node", "args": ["/opt/user-tool/run.js"]});
+            let dead_script = dead_target_fixture("w.py");
             let mcp_path = seed_mcp_json(serde_json::json!({
-                "weather-x": {"command": "python3", "args": ["/x/w.py"]},
+                "weather-x": {"command": "python3", "args": [dead_script]},
                 "user-own-tool": unknown,
             }));
 
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(actions.len(), 1, "{actions:?}");
-            assert!(actions[0].contains("weather-x") && actions[0].contains("/x/w.py"));
+            assert!(actions[0].contains("weather-x") && actions[0].contains(&dead_script));
 
             let mcp = read_mcp_json();
             let entry = &mcp["servers"]["weather-x"];
@@ -3954,7 +3982,7 @@ pub(crate) mod tests {
             let mcp_path = seed_mcp_json(serde_json::json!({
                 "toggle-x": {
                     "command": "python3",
-                    "args": ["/x/w.py"],
+                    "args": [dead_target_fixture("w.py")],
                     "enabled": false,
                     "timeout_ms": 4200,
                     "custom_hint": "keep"
@@ -3997,14 +4025,19 @@ pub(crate) mod tests {
     #[test]
     fn reconcile_refuses_rebuild_when_manifest_command_is_dead() {
         with_temp_home(|| {
+            let dead_command = dead_target_fixture("dead-binary");
+            // Spliced into a raw JSON document: serialize the path as a JSON
+            // string literal so a Windows backslash path stays valid JSON
+            // (json! seeds escape automatically, only this raw splice needs it).
+            let dead_command_json = serde_json::to_string(&dead_command).unwrap();
             write_tool_manifest_fixture(
                 "deadbin",
                 "deadbin",
-                r#""mcp_tools":[],"command":"/opt/dead/binary","args":[]"#,
+                &format!(r#""mcp_tools":[],"command":{dead_command_json},"args":[]"#,),
             );
             write_installed_ids(&["deadbin".to_string()]);
             let mcp_path = seed_mcp_json(serde_json::json!({
-                "deadbin": {"command": "/opt/dead/binary"}
+                "deadbin": {"command": dead_command}
             }));
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -4012,7 +4045,7 @@ pub(crate) mod tests {
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(actions.len(), 1, "{actions:?}");
             assert!(
-                actions[0].contains("not rebuilt") && actions[0].contains("/opt/dead/binary"),
+                actions[0].contains("not rebuilt") && actions[0].contains(&dead_command),
                 "{actions:?}"
             );
             assert_eq!(
@@ -4083,7 +4116,7 @@ pub(crate) mod tests {
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             // No credential-store entry for AMAP_KEY.
             let mcp_path = seed_mcp_json(serde_json::json!({
-                "lostkey-x": {"command": "python3", "args": ["/x/w.py"]}
+                "lostkey-x": {"command": "python3", "args": [dead_target_fixture("w.py")]}
             }));
 
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
@@ -4842,7 +4875,11 @@ pub(crate) mod tests {
             write_installed_ids(&["loclp-x".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let mcp_path = seed_mcp_json(serde_json::json!({
-                "loclp-x": {"command": "python3", "args": ["/x/w.py"], "disabled": false}
+                "loclp-x": {
+                    "command": "python3",
+                    "args": [dead_target_fixture("w.py")],
+                    "disabled": false
+                }
             }));
 
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
@@ -12168,7 +12205,7 @@ pub(crate) mod tests {
                 .set(&mcp_secret_reference("reclr-x", "env", "AMAP_KEY"), "k1")
                 .unwrap();
             let mut stale = read_mcp_json()["servers"]["reclr-x"].clone();
-            stale["args"] = serde_json::json!(["/nonexistent/stale/server.py"]);
+            stale["args"] = serde_json::json!([dead_target_fixture("stale-server.py")]);
             let mcp_path = seed_mcp_json(serde_json::json!({ "reclr-x": stale }));
 
             let boot2 = manager.reconcile_installed_mcp_entries().unwrap();
@@ -12225,7 +12262,7 @@ pub(crate) mod tests {
             seed_mcp_json(serde_json::json!({
                 "hyb-r": {
                     "command": "python3",
-                    "args": ["/nonexistent/stale/server.py"],
+                    "args": [dead_target_fixture("stale-server.py")],
                     "url": "https://hyb.example.com/mcp"
                 }
             }));
@@ -13066,7 +13103,7 @@ pub(crate) mod tests {
                 .set(&mcp_secret_reference("stamp-x", "env", "AMAP_KEY"), "k1")
                 .unwrap();
             let mut stale = read_mcp_json()["servers"]["stamp-x"].clone();
-            stale["args"] = serde_json::json!(["/nonexistent/stale/server.py"]);
+            stale["args"] = serde_json::json!([dead_target_fixture("stale-server.py")]);
             stale["enabled"] = serde_json::Value::Bool(false);
             stale["disabled"] = serde_json::Value::Bool(true);
             let mcp_path = seed_mcp_json(serde_json::json!({ "stamp-x": stale }));
@@ -13115,7 +13152,7 @@ pub(crate) mod tests {
             let mcp_path = seed_mcp_json(serde_json::json!({
                 "keepd-x": {
                     "command": "python3",
-                    "args": ["/nonexistent/stale/server.py"],
+                    "args": [dead_target_fixture("stale-server.py")],
                     "disabled": true
                 }
             }));
