@@ -9677,6 +9677,25 @@ fn session_auto_mode_is_downgrade_parseable_via_companion_flag() {
         Some(SerializableMode::Yolo),
         "the old binary's own write must survive"
     );
+
+    // Same-session overwrite (review P2): the old binary explicitly
+    // switches auto-a itself to Yolo. The map entry now says `yolo` while
+    // the untouched companion still says true — the acknowledged map write
+    // must win, or the upgraded reader silently resurrects Auto over the
+    // user's persisted Yolo.
+    let mut overwritten = rewritten;
+    overwritten.insert("auto-a".to_string(), "yolo".to_string());
+    std::fs::write(
+        &file,
+        serde_json::to_string(&overwritten).expect("serialize overwrite"),
+    )
+    .expect("old-binary same-session overwrite");
+    store.load_session_mode_states();
+    assert_eq!(
+        store.durable_mode_entry("auto-a"),
+        Some(SerializableMode::Yolo),
+        "an acknowledged old-binary Yolo write must beat the stale companion flag"
+    );
 }
 
 /// The pre-tri-mode reader's vocabulary: no Auto variant. Mirrors the enum

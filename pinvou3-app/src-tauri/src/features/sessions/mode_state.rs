@@ -1204,12 +1204,23 @@ impl SessionStore {
     /// the existence authority (the funnel removes both together; a crash
     /// between them can only leave a stale flag, which the next upsert of
     /// the session recomputes).
+    ///
+    /// The flag upgrades only an entry still holding the Auto-collapse
+    /// value (`plan`). An entry that reads `yolo` was written after the
+    /// Auto choice by the only writer that cannot know the companion file
+    /// — a pre-tri-mode binary's explicit switch — and that acknowledged
+    /// map write wins: overlaying the stale flag would silently resurrect
+    /// Auto over the persisted Yolo (review P2). Residual (unresolvable
+    /// without a format change): a pre-tri-mode binary explicitly writing
+    /// `plan` over a recorded Auto is byte-identical to the collapse value,
+    /// so that explicit Plan still resolves back to Auto; the new UI can
+    /// re-pick Plan with one switch.
     fn resolve_sidecar_mode(
         mode: SerializableMode,
         auto_flags: &std::collections::HashMap<String, bool>,
         id: &str,
     ) -> SerializableMode {
-        if auto_flags.get(id).copied().unwrap_or(false) {
+        if mode == SerializableMode::Plan && auto_flags.get(id).copied().unwrap_or(false) {
             SerializableMode::Auto
         } else {
             mode
