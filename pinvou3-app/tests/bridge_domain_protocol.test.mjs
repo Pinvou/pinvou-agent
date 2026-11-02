@@ -250,7 +250,7 @@ const expectedProtocolHashes = {
   // applyAuthoritativeModeState).
   chat: '8bb520da56d65d2c94be963769d6d450da4f84729d6a87b06c42479b4610bcfe',
   // Recomputed for the tri-mode safety surface: chat-events.js gains three
-  // listeners — chat:approval_required (approval card projection), 
+  // listeners — chat:approval_required (approval card projection),
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
   // (authoritative mode broadcast through applyAuthoritativeModeState).
   // Recomputed for the v3.5 fix wave: sessions.js materialization now also
