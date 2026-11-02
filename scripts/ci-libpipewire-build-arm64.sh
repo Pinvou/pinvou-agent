@@ -26,7 +26,9 @@ PW_VERSION=1.0.7
 PW_SHA256=9c45eef65e66224804ae8671849452a7f221e913813072b3aad346f20df666a8
 PREFIX=/usr/local/arm64
 
-export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
+# 前缀优先,但保留 multiarch 系统目录:setup 探测 glib/libcap 等 :arm64
+# 依赖也走同一 pkg-config,只留前缀会让它们全部 not found。
+export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
 
 if command -v pkg-config >/dev/null 2>&1 &&
   pkg-config --exists libpipewire-0.3 2>/dev/null &&
