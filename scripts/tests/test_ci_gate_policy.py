@@ -2860,10 +2860,18 @@ class CiGatePolicyTests(unittest.TestCase):
         # loudly when the module still cannot be loaded. Host operations
         # stubbed; never change the test machine's swap, sysfs or dpkg
         # state (both spool redirects point into a throwaway directory).
+        # The real repair_dpkg_state is included so the clean-state
+        # assertion proves the gate executed (exactly one audit call, no
+        # configure call) instead of passing vacuously on a missing
+        # function; the unexpected-error check turns any other missing
+        # helper ("command not found") into a failure.
         source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
-        # Execute the real module loader and main fallback flow with host
-        # operations stubbed.
+        # Execute the real module loader, repair gate and main fallback
+        # flow with host operations stubbed.
         loader = source.split("setup_zram() {", 1)[1].split("# Mandatory disk swap:", 1)[0]
+        repair = source.split("repair_dpkg_state() {", 1)[1].split(
+            "# Primary repair entry point", 1
+        )[0]
         main = source[source.index("if [[ ${PINVOU3_CI_DISABLE_ZRAM:-0}"):]
         cases = ((1, "0", 0), (124, "0", 0), (1, "1", 0), (1, "0", 1))
         for status, disabled, swap_status in cases:
@@ -2882,9 +2890,6 @@ run_to() { shift; "$@"; }
 modprobe() { echo "module unavailable" >&2; return "$MODULE_STATUS"; }
 apt-get() { echo "apt-get $*" >> "$CALLS_LOG"; return 1; }
 dpkg() {
-  if [[ ${1:-} == --audit ]]; then
-    exit 0
-  fi
   echo "dpkg $*" >> "$CALLS_LOG"
   exit 0
 }
@@ -2900,6 +2905,7 @@ df() { :; }
                     harness
                     + f"\nMODULE_STATUS={status}\nPINVOU3_CI_DISABLE_ZRAM={disabled}\n"
                     + f"SWAP_STATUS={swap_status}\n"
+                    + "repair_dpkg_state() {" + repair
                     + "setup_zram() {" + loader + main
                 )
                 env = dict(os.environ)
@@ -2911,6 +2917,11 @@ df() { :; }
                 )
                 output = result.stdout + result.stderr
                 self.assertEqual(result.returncode, 0, output)
+                # No helper may go missing silently: the previous version of
+                # this harness omitted repair_dpkg_state, whose rc-127
+                # "command not found" fell through errexit-less and turned
+                # the zero-dpkg assertion into a false positive.
+                self.assertNotIn("command not found", output, output)
                 calls = (
                     Path(calls_log).read_text(encoding="utf-8").splitlines()
                     if os.path.exists(calls_log) else []
@@ -2925,10 +2936,14 @@ df() { :; }
                     self.assertEqual(
                         sum(1 for c in calls if c.startswith("apt-get install")), 1, calls,
                     )
-                    # Clean-state gate: the in-flow repair call must be a
-                    # no-op — zero dpkg invocations of any kind.
+                    # Clean-state gate, with the gate's execution itself
+                    # proven: the in-flow repair audit runs exactly once and
+                    # stays a no-op (zero configure invocations).
                     self.assertEqual(
-                        [c for c in calls if c.startswith("dpkg")], [], calls,
+                        sum(1 for c in calls if c == "dpkg --audit"), 1, calls,
+                    )
+                    self.assertEqual(
+                        [c for c in calls if c.startswith("dpkg --configure")], [], calls,
                     )
                     self.assertIn("giving up on zram", output)
                 else:
@@ -2938,6 +2953,72 @@ df() { :; }
                 self.assertIn("zswap-fallback", output)
                 if swap_status:
                     self.assertIn("image-swap-fallback", output)
+
+    def test_memory_setup_inflow_repairs_interrupted_dpkg_state(self):
+        # Dirty-state leg of the in-flow repair gate: when the audit (or
+        # the redirected updates journal) reports an interrupted dpkg, the
+        # in-flow call inside the module loader must run one configure
+        # attempt through the capped path and keep the shell green. The
+        # clean-state no-op arm lives in
+        # test_memory_setup_module_install_capped_and_repair_gated; the
+        # full clock-bounded retry contract is covered by the
+        # CiMemorySetupRepairBehaviorTests class against the whole script.
+        source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
+        loader = source.split("setup_zram() {", 1)[1].split("# Mandatory disk swap:", 1)[0]
+        repair = source.split("repair_dpkg_state() {", 1)[1].split(
+            "# Primary repair entry point", 1
+        )[0]
+        main = source[source.index("if [[ ${PINVOU3_CI_DISABLE_ZRAM:-0}"):]
+        scratch = tempfile.mkdtemp(prefix="memory-setup-inflow-repair-")
+        self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
+        calls_log = os.path.join(scratch, "calls.log")
+        updates_dir = os.path.join(scratch, "updates")
+        os.mkdir(updates_dir)
+        # A leftover updates journal: audit alone would look clean, the
+        # journal gate must still trigger the configure attempt.
+        with open(os.path.join(updates_dir, "0001leftover"), "w", encoding="utf-8") as f:
+            f.write("replaying\n")
+        harness = r'''
+set -uo pipefail
+log() { echo "$*"; }
+warn() { echo "$*" >&2; }
+warn_recoverable() { warn "$@"; }
+run_to() { shift; "$@"; }
+modprobe() { echo "module unavailable" >&2; return 1; }
+apt-get() { echo "apt-get $*" >> "$CALLS_LOG"; return 1; }
+dpkg() {
+  echo "dpkg $*" >> "$CALLS_LOG"
+  exit 0
+}
+swapon() { return 0; }
+any_swap_active() { return 1; }
+setup_disk_swap() { echo "disk-swap-kib=$DISK_SWAP_SIZE_KIB"; }
+setup_zswap_fallback() { echo "zswap-fallback"; }
+activate_image_swap_fallback() { echo "image-swap-fallback"; }
+zramctl() { :; }
+df() { :; }
+'''
+        shell = (
+            harness
+            + "\nPINVOU3_CI_DISABLE_ZRAM=0\n"
+            + "repair_dpkg_state() {" + repair
+            + "setup_zram() {" + loader + main
+        )
+        env = dict(os.environ)
+        env["CALLS_LOG"] = calls_log
+        env["PINVOU3_CI_DPKG_UPDATES_DIR"] = updates_dir
+        result = subprocess.run(
+            ["bash", "-c", shell], capture_output=True, text=True, timeout=10,
+            env=env, encoding="utf-8",
+        )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn("command not found", output, output)
+        calls = Path(calls_log).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(sum(1 for c in calls if c == "dpkg --audit"), 1, calls)
+        self.assertEqual(sum(1 for c in calls if c.startswith("dpkg --configure")), 1, calls)
+        self.assertIn("dpkg was left in an interrupted state", output)
+        self.assertIn("dpkg admin state repaired (configure attempt 1)", output)
 
     def test_fetch_connectors_verifies_checksums_with_loud_diagnostics(self):
         # verify_file is called bare under `set -e` from three places (the
