@@ -1000,4 +1000,55 @@ mod tests {
             "finish must not promote an interrupted job to done: state is {state:?}"
         );
     }
+
+    /// PR #802 review P2: Win32 normalization strips the trailing `.` from
+    /// every PLAIN component, so the plain spelling `...\folder.\report.txt`
+    /// resolves to `...\folder\report.txt` while the verbatim
+    /// `\\?\...\folder.\report.txt` keeps the literal `folder.` directory —
+    /// two distinct files. The identity key used to strip the verbatim
+    /// prefix unconditionally, collapsing the two namespace spellings onto
+    /// one key, so the key-based dedup below silently dropped one import
+    /// source. Windows-only: the literal-name directory only comes into
+    /// existence through a verbatim path.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unique_existing_files_keeps_verbatim_and_plain_sensitive_siblings() {
+        let dir =
+            std::env::temp_dir().join(format!("pinvou3-import-sensitive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // The dotless sibling `folder\report.txt` (what the plain spelling
+        // of `folder.\report.txt` resolves to on this OS).
+        let plain_file = dir.join("folder").join("report.txt");
+        std::fs::create_dir_all(plain_file.parent().unwrap()).unwrap();
+        std::fs::write(&plain_file, b"plain").unwrap();
+        // The literal `folder.\report.txt`, only creatable through the
+        // verbatim spelling that skips the trailing-dot normalization.
+        let verbatim_file = PathBuf::from(format!(r"\\?\{}", dir.display()))
+            .join("folder.")
+            .join("report.txt");
+        std::fs::create_dir_all(verbatim_file.parent().unwrap()).unwrap();
+        std::fs::write(&verbatim_file, b"verbatim").unwrap();
+        assert!(plain_file.is_file() && verbatim_file.is_file());
+
+        // The colliding input pair: both spellings of the sensitive name —
+        // the plain one (resolving to the dotless file) and the verbatim
+        // one (the literal file).
+        let plain_spelled = dir.join("folder.").join("report.txt");
+        assert!(plain_spelled.is_file());
+        assert_ne!(
+            path_key(&plain_spelled),
+            path_key(&verbatim_file),
+            "plain and verbatim spellings of a trailing-dot path must not share one key"
+        );
+
+        let kept = unique_existing_files(vec![plain_spelled.clone(), verbatim_file.clone()]);
+        assert_eq!(
+            kept.len(),
+            2,
+            "both distinct sources must survive the key-based dedup, got {kept:?}"
+        );
+        assert!(kept.contains(&plain_spelled) && kept.contains(&verbatim_file));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

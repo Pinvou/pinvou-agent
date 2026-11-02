@@ -510,4 +510,58 @@ mod tests {
         // gate only passes when the path textually starts with it, which
         // makes the path `..`-bearing — refused above.
     }
+
+    #[test]
+    fn windows_identity_key_keeps_the_normalization_sensitive_verbatim_guard_pinned() {
+        // windows_path.rs is cfg-gated out of non-Windows builds, so a
+        // revert of the plain/verbatim namespace guard in the Windows
+        // `filesystem_path_identity_key` would stay green on every other
+        // CI leg (the behavioral regression next to the key only runs on
+        // the Windows leg). This source pin holds the guard open
+        // everywhere: for a Win32-normalization-sensitive path (any
+        // component with a trailing `.`/space — plain `folder.\report.txt`
+        // resolves to `folder\report.txt` while the verbatim spelling
+        // keeps the literal `folder.` directory) the key must treat the
+        // two namespaces differently: the PLAIN spelling is keyed by its
+        // normalized form (components stripped, matching what Win32
+        // resolves), and only the VERBATIM spelling keeps the unstripped
+        // components under a `\\?/` namespace marker. Marking both sides
+        // alike would re-collapse the spellings onto one key. Exact-text
+        // pin per the repo's production-source pin convention.
+        let src = include_str!("../windows/windows_path.rs");
+        let key_start = src
+            .find("pub fn filesystem_path_identity_key")
+            .expect("the Windows identity key entry point must exist");
+        let body = src[key_start..]
+            .split("\npub fn ")
+            .next()
+            .expect("non-empty source slice");
+        assert!(
+            body.contains("has_win32_normalization_sensitive_component(path)"),
+            "the identity key must branch on the Win32-normalization-sensitivity guard"
+        );
+        assert!(
+            body.contains("if verbatim {"),
+            "the key must distinguish the verbatim spelling before folding sensitive paths"
+        );
+        assert!(
+            body.contains(r"\\?/{folded}"),
+            "sensitive verbatim paths must keep the `\\?/` namespace marker in the key"
+        );
+        assert!(
+            body.contains(r#"trim_end_matches(['.', ' '])"#),
+            "sensitive plain paths must be keyed by the normalized form Win32 resolves to"
+        );
+        let guard = src
+            .find("fn has_win32_normalization_sensitive_component")
+            .expect("the sensitivity guard helper must exist");
+        assert!(
+            src[guard..].contains("ends_with('.')"),
+            "the guard must flag trailing-dot components (Win32 normalization rewrites them)"
+        );
+        assert!(
+            src[guard..].contains("ends_with(' ')"),
+            "the guard must flag trailing-space components (Win32 normalization rewrites them)"
+        );
+    }
 }
