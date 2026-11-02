@@ -1687,6 +1687,13 @@ pub(crate) fn spawn_event_forwarder(
                     request_ms,
                     ..
                 } => {
+                    // 审计 A1:常规构建也消费引擎计时字段。监控 TTFT/TPS 以引擎为
+                    // 权威源(first_token_ms 从请求派发点起表,含真实网络首字节),
+                    // 墙钟 Instant 重测含转发/分发延迟,仅作引擎未上报时的回落。
+                    // benchmark-hooks 的 eval 里程碑照旧,与 self_metrics 互不影响。
+                    if let Some(m) = &self_metrics {
+                        m.on_engine_usage(&session_id, first_token_ms, request_ms);
+                    }
                     #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
                         // benchmark-core's stable product contract predates the
@@ -1709,7 +1716,7 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                     #[cfg(not(feature = "benchmark-hooks"))]
-                    let _ = (usage, duration_ms, first_token_ms, request_ms);
+                    let _ = (usage, duration_ms);
                 }
                 Event::ToolGateDecision {
                     agent_id,
