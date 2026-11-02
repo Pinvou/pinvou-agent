@@ -1031,6 +1031,11 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedweb().touch
     if (state.activeSessionId === id) {
       state.activeSessionId = null;
       loadWorkingSetFrom(freshBuffer());
+      // freshBuffer's modeState is the generic default (yolo); the draft
+      // display must be overridden with this lane's global default (see the
+      // shared leaveSessionView override — deleting the open session lands
+      // here on the web lane, and the chip must read the resolved default).
+      state.modeState = currentDraftModeState();
     }
   }
 

@@ -415,6 +415,12 @@ const EXPECTED_CLUSTER_KEYS = {
     'addSystemItem',
     'basename',
     'bt',
+    // round-4: shared leaveSessionView now overrides the fresh-buffer Yolo
+    // chip with the lane-resolved draft default after delete/archive, so the
+    // tauriSessions literal must forward the lane's currentDraftModeState
+    // (each lane passes its own; a missing key binds undefined in the shared
+    // body and crashes the delete/archive draft landing).
+    'currentDraftModeState',
     'currentStreamId',
     'currentStreamText',
     'enterDraft',
