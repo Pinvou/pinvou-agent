@@ -13,7 +13,12 @@
 # Mechanism: upstream release tarball (sha256-pinned), meson cross file
 # (aarch64-linux-gnu-gcc from the gcc-aarch64-linux-gnu apt package), every
 # optional backend/plugin disabled — the same validated flag set as the host
-# script, which needs no further system dev packages. Install goes to
+# script; only the cross file and the /usr/local/arm64 prefix differ. Unlike
+# the host runner image it needs explicit target-side dev packages from the
+# job's apt step: libglib2.0-dev:arm64 is REQUIRED (the flatpak option
+# defaults to enabled, making glib-2.0 a hard setup-time dependency), while
+# libcap is an optional probe nothing uses under this flag set (the workflow
+# still installs it defensively). Install goes to
 # /usr/local/arm64 (never ldconfig'd: these are target-arch objects, not
 # host-executable ones); discovery happens through the job env
 # PKG_CONFIG_LIBDIR, which lists /usr/local/arm64/lib/pkgconfig first.
@@ -37,15 +42,20 @@ if command -v pkg-config >/dev/null 2>&1 &&
   exit 0
 fi
 
-for tool in aarch64-linux-gnu-gcc aarch64-linux-gnu-ar; do
+# Fail fast on every tool the cross file names (cpp/strip are present via the
+# same apt packages but never invoked under this flag set; ar is, for the
+# static_library targets).
+for tool in aarch64-linux-gnu-gcc aarch64-linux-gnu-g++ aarch64-linux-gnu-ar aarch64-linux-gnu-strip; do
   command -v "$tool" >/dev/null 2>&1 || {
-    echo "FAIL: $tool not found — install gcc-aarch64-linux-gnu before running this script" >&2
+    echo "FAIL: $tool not found — install gcc-aarch64-linux-gnu / g++-aarch64-linux-gnu before running this script" >&2
     exit 1
   }
 done
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# sudo to match the host variant: files root-created inside the build tree
+# (e.g. by a sudo-wrapped ninja invocation) must not wedge the cleanup.
+trap 'sudo rm -rf "$work"' EXIT
 
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends meson ninja-build ca-certificates curl
@@ -82,10 +92,11 @@ endian = 'little'
 EOF
 
 # Same minimal header+core-lib flag set as the host script (validated on
-# jammy's meson 0.61.2, no further system dev packages required); only the
-# cross file and the /usr/local/arm64 prefix differ. setup/build run as the
-# job user; only the install needs sudo. No ldconfig: target-arch libs must
-# stay out of the host loader/linker default path.
+# jammy's meson 0.61.2); only the cross file and the /usr/local/arm64 prefix
+# differ. setup/build run as the job user; only the install needs sudo. The
+# glib-2.0 probe (see the header: flatpak defaults to enabled) resolves from
+# libglib2.0-dev:arm64 installed by the job's apt step. No ldconfig:
+# target-arch libs must stay out of the host loader/linker default path.
 meson setup build --prefix="$PREFIX" -Dlibdir=lib --cross-file "$cross_file" \
   -Dtests=disabled -Ddocs=disabled -Dman=disabled -Dexamples=disabled \
   -Dpipewire-alsa=disabled -Dpipewire-jack=disabled '-Dsession-managers=[]' \
