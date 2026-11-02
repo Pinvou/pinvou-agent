@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 96 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 97 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,8 +7,8 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Review candidate: CodeWhale#131 (host-armed guardrail prompts + authority-transition notice) ahead of public maintenance.
-EXPECTED_HEAD="b94cc3175a24d21180dfce0ff70512a0f5839a5e"
-EXPECTED_COMMITS=96
+EXPECTED_HEAD="1785dae1584f0005ceacbc5153e3a48f010abbaa"
+EXPECTED_COMMITS=97
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
@@ -220,6 +220,8 @@ fingerprints=(
   "T2|Not-started turn keeps the pending transition |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_a_not_started_turn_neither_consumes_nor_records_the_transition"
   "T2|Sync clears the recorded posture |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_sync_session_clears_the_recorded_turn_meta_posture"
   "T2|Isolated turn keeps the pending transition |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_an_isolated_turn_neither_consumes_nor_records_the_transition"
+  "T2|Narrowed turn keeps the standing baseline |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_a_provenance_narrowed_turn_neither_emits_the_host_line_nor_pollutes_the_baseline"
+  "T2|Auto-Review narrowing carries its receipt |CodeWhale/crates/tui/src/core/engine/tests.rs|fn forkguard_an_auto_review_turn_narrowed_by_provenance_still_records_its_narrowing"
   "T2|Authority transition model notice line |CodeWhale/crates/tui/src/core/authority.rs|Authority transition (host): {} -> {}; reason: {}"
 
   "T3|静态 prompt composer              |CodeWhale/crates/tui/src/prompts.rs|pub fn set_static_prompt_composer_override("
