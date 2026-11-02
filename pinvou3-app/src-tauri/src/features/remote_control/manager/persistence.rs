@@ -18,6 +18,14 @@ use super::{
 };
 use crate::platform::paths;
 
+/// Round-15 复审:队列满错误的可识别前缀——stop/refresh 属恢复路径,按
+/// 此前缀把该类错误降级为「记日志继续」,不再楔死停用/轮换;同键不同
+/// 密钥的冲突保持 fail-closed 不变(round-14 记录的设计边界)。用字符串
+/// 前缀而非枚举:全模块错误面就是 String,与既有风格一致,调用方以
+/// `starts_with` 判别。
+pub(super) const PENDING_REVOCATION_QUEUE_FULL_PREFIX: &str =
+    "pending Web revocation queue is full";
+
 pub(super) fn pairing_info(endpoint: &ActiveEndpoint) -> WebAccessInfo {
     WebAccessInfo {
         endpoint_id: endpoint.config.endpoint_id.clone(),
@@ -592,7 +600,7 @@ pub(super) fn queue_pending_revocation_at(
     }
     if ledger.entries.len() >= super::MAX_PENDING_REVOCATIONS {
         return Err(format!(
-            "pending Web revocation queue is full ({})",
+            "{PENDING_REVOCATION_QUEUE_FULL_PREFIX} ({})",
             super::MAX_PENDING_REVOCATIONS
         ));
     }

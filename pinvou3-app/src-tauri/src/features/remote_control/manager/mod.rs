@@ -31,12 +31,12 @@ use crate::platform::paths;
 #[cfg(test)]
 use persistence::atomic_write_private_json;
 use persistence::{
-    acquire_process_lock, apply_runtime_relay_override, config_path, eligible_pending_revocations,
-    fresh_config, load_config, load_config_from, load_or_initialize_rpc_ledger,
-    load_pending_revocations_for_replay, new_stream_epoch, pairing_info, pending_revocation_key,
-    persist_config, persist_pending_revocations, persist_rpc_ledger, process_lock_path, public_url,
-    queue_pending_revocation, remote_relay_ws_url, remove_config, remove_rpc_ledger,
-    validate_config,
+    PENDING_REVOCATION_QUEUE_FULL_PREFIX, acquire_process_lock, apply_runtime_relay_override,
+    config_path, eligible_pending_revocations, fresh_config, load_config, load_config_from,
+    load_or_initialize_rpc_ledger, load_pending_revocations_for_replay, new_stream_epoch,
+    pairing_info, pending_revocation_key, persist_config, persist_pending_revocations,
+    persist_rpc_ledger, process_lock_path, public_url, queue_pending_revocation,
+    remote_relay_ws_url, remove_config, remove_rpc_ledger, validate_config,
 };
 
 // RPC admission, response shaping, scope validation, and the stream/event
@@ -1052,8 +1052,20 @@ impl RemoteControlManager {
             .map(|endpoint| endpoint.config.clone())
             .or_else(|| persisted_previous.clone());
         if let Some(previous) = previous_config.as_ref() {
-            queue_pending_revocation(previous)?;
-            self.sync_pending_revocation_backlog(previous);
+            match queue_pending_revocation(previous) {
+                Ok(()) => self.sync_pending_revocation_backlog(previous),
+                // Round-15 复审:满队不再楔死轮换——rotation 是恢复路径,
+                // 33 次无 relay 连接的轮换后队列写满,`?` 传播会让此后每次
+                // refresh 都失败。降级为记日志继续(旧凭据的吊销意图留在
+                // 原地,与 stop 的容错读取同一理由);同键不同密钥的冲突仍
+                // 按 round-14 记录的设计边界 fail-closed。
+                Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
+                    eprintln!(
+                        "[web-access] refresh ignores full pending-revocation queue: {error}"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         }
         let allow_host_workspace = previous_config
             .as_ref()
@@ -1073,7 +1085,12 @@ impl RemoteControlManager {
         if let Some(previous) = previous {
             let _ = previous.sender.try_send(RelayOutbound::Shutdown);
         }
-        self.replay_pending_revocations()?;
+        // Round-15 复审:此处 `?` 曾让「rotation 已提交(旧凭据已下线、
+        // 新凭据已落盘)但 activate 未跑」的半提交窗口以失败上报。回放是
+        // 清理路径,与 stop 同一容错;失败不回滚已提交的轮换。
+        if let Err(error) = self.replay_pending_revocations() {
+            eprintln!("[web-access] refresh ignores pending-revocation replay failure: {error}");
+        }
         self.activate(apply_runtime_relay_override(config))?;
         let inner = self.inner.lock();
         Ok(pairing_info(inner.endpoint.as_ref().ok_or_else(|| {
@@ -1096,8 +1113,13 @@ impl RemoteControlManager {
         // 全部已发出的 grant,再做配置读回/落盘。web-access.json 在端点
         // 存活期间损坏时,严格读取失败不能把撤权卡死(与 stop_current
         // 容错读的同一理由:停用/撤权本身就是恢复手段),否则一次性
-        // grant 在剩余 TTL 内仍可兑换。落盘失败仍返回 Err,但此时状态
-        // 失效已先行,错误提示宁按已撤销一侧。
+        // grant 在剩余 TTL 内仍可兑换。读取/校验失败时 durable 侧并未
+        // 改变且 start/enable 对损坏文件 fail-closed,不存在复活面,错误
+        // 按已撤销一侧呈现;落盘失败则是另一回事——磁盘仍 latch 着授权,
+        // 内存若停在已撤销一侧,下一次 start/enable 会从磁盘重建授权而
+        // 毫无同意手势(Round-15 复审 MA1)。因此落盘失败必须把内存旗标
+        // 回锁到磁盘一侧再返回:状态两侧一致、UI 显示真实授权态、错误
+        // 明说撤权未生效需重试。
         {
             let mut inner = self.inner.lock();
             revoke_host_workspace_state(&mut inner);
@@ -1131,7 +1153,24 @@ impl RemoteControlManager {
             // 性检查缩小而非闭合窗口(彻底闭合需泵臂持生命周期锁,死锁面
             // 不划算);残余形状自愈且无访问增益,与本函数既有注释一致。
             if config_path().exists() {
-                persist_config(&config)?;
+                if let Err(error) = persist_config(&config) {
+                    // 落盘失败:磁盘 latch 未动,内存不得停留在已撤销一侧
+                    // (否则内存/磁盘分叉,后续 benign start/enable 会无声
+                    // 复活授权)。回锁旗标、刷新状态、报可行动错误。
+                    eprintln!(
+                        "[web-access] host-workspace revocation failed to persist, re-latching in-memory consent: {error}"
+                    );
+                    {
+                        let mut inner = self.inner.lock();
+                        if let Some(endpoint) = inner.endpoint.as_mut() {
+                            endpoint.config.allow_host_workspace = true;
+                        }
+                    }
+                    self.emit_status();
+                    return Err(format!(
+                        "host-workspace revocation could not be persisted; folder access remains enabled: {error}"
+                    ));
+                }
             }
         }
         // 状态失效无条件先行(幂等重入时 grant 清空同样真实发生),状态
@@ -1177,8 +1216,15 @@ impl RemoteControlManager {
             .map(|endpoint| endpoint.config.clone())
             .or_else(|| persisted.clone());
         if let Some(config) = current_config.as_ref() {
-            queue_pending_revocation(config)?;
-            self.sync_pending_revocation_backlog(config);
+            match queue_pending_revocation(config) {
+                Ok(()) => self.sync_pending_revocation_backlog(config),
+                // Round-15 复审:满队不楔停用(恢复路径,理由同 refresh
+                // 臂);同键不同密钥冲突保持 round-14 的 fail-closed 边界。
+                Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
+                    eprintln!("[web-access] stop ignores full pending-revocation queue: {error}");
+                }
+                Err(error) => return Err(error),
+            }
         }
         // A failed removal leaves the old config authoritative. Its queued
         // entry therefore remains dormant instead of revoking a live link.
@@ -1199,7 +1245,11 @@ impl RemoteControlManager {
         if let Err(error) = self.replay_pending_revocations() {
             eprintln!("[web-access] stop ignores pending-revocation replay failure: {error}");
         }
-        remove_rpc_ledger()?;
+        // Round-15 复审:停用本体已完成(配置已删、endpoint 已拆),账本
+        // 文件删除失败只降级——报 Err 会让用户对一次已生效的停用看到失败。
+        if let Err(error) = remove_rpc_ledger() {
+            eprintln!("[web-access] stop ignores rpc-ledger removal failure: {error}");
+        }
         self.emit_status();
         Ok(())
     }
@@ -4429,6 +4479,17 @@ mod tests {
             body.contains("rpc_completion_is_in_flight_timeout(completion)"),
             "the Complete arm must route the placeholder decision through the shared predicate"
         );
+        // Round-15 复审 MA3:谓词取反突变(`if !Self::…`)在仅有朴素
+        // contains + 插入计数时全套件保持绿(突变实证)——真完成被吞、
+        // 终态可被后续重复完成覆盖,round-5 的两类回归同时复活。钉死
+        // 谓词调用在 if 臂内的**无取反**原样形态:取反、删除 if、改写
+        // 谓词名任一突变都转红。
+        assert!(
+            body.contains("if Self::rpc_completion_is_in_flight_timeout(completion) {"),
+            "the supersede decision must stay an un-negated if-arm calling the shared \
+             predicate on completion in complete_rpc; negating it swallows real \
+             completions and lets a later duplicate overwrite terminal values"
+        );
         // Round-14 复审 minor:朴素 contains 会被 Pending 臂自己的插入
         // 满足——只删占位替换臂的插入(留空 if)时全测试套仍绿,round-5
         // 的吞结果回归复活。要求函数体内至少两处插入:占位替换臂 +
@@ -5576,6 +5637,30 @@ mod tests {
         inner.web_attachment_order.push_back("attachment_a".into());
         inner.web_attachments.insert("attachment_a".into(), cached);
         inner.web_attachment_bytes = 64;
+        // Round-15 复审 MA4:rejoin 臂必须三种种全——只种 attachments 时,
+        // 在 keep 臂清空 in-flight uploads(乃至 session downloads)的突变
+        // 全套件保持绿(突变实证),Round-2 的 watchdog 吞上传回归半复活。
+        inner.web_attachment_uploads.insert(
+            "upload_a".to_string(),
+            WebAttachmentUpload {
+                file_name: "notes.txt".into(),
+                total: 3,
+                data: b"abc".to_vec(),
+                last_touched: Instant::now(),
+            },
+        );
+        inner.web_session_downloads.insert(
+            "download_a".to_string(),
+            WebSessionDownload {
+                session_id: "session_a".into(),
+                reservation_id: "reservation_a".into(),
+                file: tempfile::tempfile().unwrap(),
+                reserved_bytes: 1,
+                total: 1,
+                ready: false,
+                last_touched: Instant::now(),
+            },
+        );
 
         // Rejoin (same token holder, previous socket already gone): the
         // staged transfer survives an idle-watchdog reconnect; only the
@@ -5588,6 +5673,14 @@ mod tests {
         assert!(
             inner.web_attachments.contains_key("attachment_a"),
             "a rejoin must keep staged attachments"
+        );
+        assert!(
+            inner.web_attachment_uploads.contains_key("upload_a"),
+            "a rejoin must keep in-flight uploads"
+        );
+        assert!(
+            inner.web_session_downloads.contains_key("download_a"),
+            "a rejoin must keep session downloads"
         );
 
         // Takeover (fresh client replaces a live one): the wipe must stay so
@@ -5636,12 +5729,11 @@ mod tests {
 
     #[test]
     fn revoke_host_workspace_never_holds_inner_across_emit_status() {
-        // B1 回归钉:emit_status→status 会再次锁 inner(parking_lot 不可重入),
-        // 持 guard 调用 = 同线程自锁,撤销路径必死锁。仓库没有 mock_app 先例
-        // (见 engine_pool 同注),单测无法真构造 Manager 走命令入口,这里按
-        // web_access_contract 的做法以源码契约钉死不变量:emit_status 的括号
-        // 深度必须浅于取 inner guard 的位置——即 guard 已先出作用域。pre-fix
-        // 的「guard 与 emit_status 同块」两处同深,断言失败。
+        // 深度必须浅于取 inner guard 的位置——即 guard 已先出作用域。
+        // Round-15 复审 MA1 的落盘失败臂在更深的嵌套里先取/放 guard 再
+        // emit,朴素的「首个 emit 深度 < 首个 lock 深度」判据看不见这一点
+        // (突变实证:误报)。改为精确区间判定:每个 emit_status 站点不得
+        // 落在任何 self.inner.lock() 站点所属花括号块闭合之前。
         let source = include_str!("mod.rs");
         let body = source
             .split("pub fn revoke_host_workspace")
@@ -5649,8 +5741,6 @@ mod tests {
             .expect("revoke_host_workspace must exist");
         let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
         let open = body.find('{').expect("function body braces");
-        let lock = body.find("self.inner.lock()").expect("inner lock site");
-        let emit = body.find("self.emit_status()").expect("emit_status site");
         let depth_at = |pos: usize| {
             body[open..pos]
                 .chars()
@@ -5659,15 +5749,44 @@ mod tests {
                 .checked_sub(body[open..pos].chars().filter(|c| *c == '}').count())
                 .expect("brace depth cannot go negative in valid Rust")
         };
+        let mut lock_spans: Vec<(usize, usize)> = Vec::new();
+        let mut search = open;
+        while let Some(rel) = body[search..].find("self.inner.lock()") {
+            let lock_pos = search + rel;
+            let lock_depth = depth_at(lock_pos);
+            let mut close = lock_pos;
+            while close < body.len() && depth_at(close) >= lock_depth {
+                close += body[close..].chars().next().expect("valid utf8").len_utf8();
+            }
+            lock_spans.push((lock_pos, close));
+            search = lock_pos + "self.inner.lock()".len();
+        }
         assert!(
-            depth_at(emit) < depth_at(lock),
-            "emit_status (depth {}) must run outside the scope that took the inner \
-             guard (depth {}); holding the guard across it re-locks the same \
-             non-reentrant mutex and deadlocks the revoke path",
-            depth_at(emit),
-            depth_at(lock)
+            !lock_spans.is_empty(),
+            "revoke must take the inner lock for the state invalidation"
         );
+        let mut emit_sites: Vec<usize> = Vec::new();
+        let mut search = open;
+        while let Some(rel) = body[search..].find("self.emit_status()") {
+            emit_sites.push(search + rel);
+            search += rel + "self.emit_status()".len();
+        }
+        assert!(
+            !emit_sites.is_empty(),
+            "revoke must refresh the status"
+        );
+        for emit in emit_sites {
+            for (lock_pos, lock_end) in &lock_spans {
+                assert!(
+                    emit <= *lock_pos || emit >= *lock_end,
+                    "emit_status at byte {emit} runs inside the live inner-guard span \
+                     ({lock_pos}..{lock_end}); holding the guard across it re-locks the \
+                     same non-reentrant mutex and deadlocks the revoke path",
+                );
+            }
+        }
     }
+
 
     /// 接线钉(Round-10 复审 M2):撤销的安全语义「同步失效已铸发的
     /// workspace grants + 落盘 consent 旗标」只在命令路径的调用点生效——
@@ -5685,7 +5804,7 @@ mod tests {
             .expect("revoke_host_workspace must exist");
         let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
         assert!(
-            body.contains("persist_config(&config)?"),
+            body.contains("persist_config(&config)"),
             "revoke must latch the consent flag into the persisted config"
         );
         assert!(
@@ -5696,6 +5815,99 @@ mod tests {
             body.contains("self.emit_status();"),
             "revoke must push the refreshed status so the modal reflects the revoked row"
         );
+    }
+
+    /// 接线钉(Round-15 复审 MA1):落盘失败必须把内存旗标回锁到磁盘一侧
+    /// 再返回。退回 `persist_config(&config)?` 的 ?-传播(或在错误臂删除
+    /// 回锁赋值)会把撤权留在「内存已撤销 / 磁盘仍授权」的分叉态——下一
+    /// 次 start/enable 从磁盘重建授权旗标而毫无同意手势,全套件保持绿
+    /// (突变实证:恢复 ?-传播后本钉转红、其余 revoke 钉全绿)。
+    #[test]
+    fn revoke_persist_failure_re_latches_memory_to_the_disk_side() {
+        let source = include_str!("mod.rs");
+        let body = source
+            .split("pub fn revoke_host_workspace(")
+            .nth(1)
+            .expect("revoke_host_workspace must exist");
+        let body = &body[..body.find("\n    pub fn ").unwrap_or(body.len())];
+        assert!(
+            !body.contains("persist_config(&config)?"),
+            "revoke must not propagate a persist failure with `?` while the \
+             in-memory flag is already revoked: memory would stay revoked while \
+             the disk latch stays authorized, so the next benign start/enable \
+             resurrects folder consent without a gesture"
+        );
+        assert!(
+            body.contains("if let Err(error) = persist_config(&config)"),
+            "the persist failure must be handled inside revoke, not propagated"
+        );
+        assert!(
+            body.contains("endpoint.config.allow_host_workspace = true;"),
+            "the failure arm must re-latch the in-memory flag to match the \
+             still-authorized disk state"
+        );
+        assert!(
+            body.contains("folder access remains enabled"),
+            "the error must tell the user the revocation did not take effect"
+        );
+    }
+
+    /// 接线钉(Round-15 复审 minor:满队楔死恢复路径)。stop/refresh 对
+    /// pending-revocation 队列满必须按共享前缀降级为记日志继续;退回
+    /// `queue_pending_revocation(…)?` 的 ?-传播会同时恢复两类楔死:
+    /// stop 无法停用、第 33 次轮换起 refresh 永久失败(突变实证)。
+    /// 同键不同密钥的冲突分支保持原样(round-14 的 fail-closed 边界)。
+    #[test]
+    fn recovery_paths_degrade_a_full_revocation_queue_instead_of_wedging() {
+        let source = include_str!("mod.rs");
+        for (fn_name, label) in [("pub fn stop_current(", "stop"), ("fn refresh(", "refresh")] {
+            let body = source
+                .split(fn_name)
+                .nth(1)
+                .unwrap_or_else(|| panic!("{fn_name} must exist"));
+            let end = ["\n    fn ", "\n    pub fn ", "\n    #[test]"]
+                .iter()
+                .filter_map(|marker| body.find(marker))
+                .min()
+                .unwrap_or(body.len());
+            let body = &body[..end];
+            assert!(
+                !body.contains("queue_pending_revocation(config)?")
+                    && !body.contains("queue_pending_revocation(previous)?"),
+                "{label} must not propagate a full pending-revocation queue with `?`: a full queue would wedge the recovery path itself",
+            );
+            assert!(
+                body.contains("PENDING_REVOCATION_QUEUE_FULL_PREFIX"),
+                "{label} must recognize the shared queue-full prefix and degrade to a log",
+            );
+        }
+        // refresh 的提交后回放同样不得楔住 activate(rotation 已提交的
+        // 半提交窗口不得以失败上报)。
+        let refresh_body = source
+            .split("fn refresh(")
+            .nth(1)
+            .expect("refresh must exist");
+        let end = ["\n    fn ", "\n    pub fn ", "\n    #[test]"]
+            .iter()
+            .filter_map(|marker| refresh_body.find(marker))
+            .min()
+            .unwrap_or(refresh_body.len());
+        let refresh_body = &refresh_body[..end];
+        // 入口处的 fail-closed 回放(start/resume/refresh 同一口径)保留;
+        // 提交后、activate 前的回放必须走容错臂,不得 `?` 传播。
+        assert!(
+            refresh_body.contains("[web-access] refresh ignores pending-revocation replay failure"),
+            "the post-commit replay before activate must tolerate failure like stop does",
+        );
+        let entry_form = refresh_body.find("self.replay_pending_revocations()?;");
+        let tolerate_form =
+            refresh_body.find("[web-access] refresh ignores pending-revocation replay failure");
+        if let (Some(entry), Some(tolerate)) = (entry_form, tolerate_form) {
+            assert!(
+                entry < tolerate,
+                "the fail-closed entry replay must precede the committed-rotation tolerate arm",
+            );
+        }
     }
 
     /// 接线钉(Round-10 复审 minor):`web_access:status` 载荷携带配对
