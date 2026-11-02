@@ -2192,6 +2192,12 @@ mod tests {
     #[test]
     fn rule_snapshot_is_stable() {
         // No injected Windows real-home prefix: the pinned count must not
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // depend on the host OS.
         let rules = safety_deny_rules_with_home(false, None);
         // Exact per-family count with super permission off. Prefixes = 5
@@ -2586,6 +2592,12 @@ mod tests {
     #[test]
     fn forkguard_ruleset_profile_sudo_toggle_interplay_unchanged() {
         for enabled in [false, true] {
+            // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+            // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+            // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+            let _env_guard = crate::platform::paths::tests::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, enabled, None);
             assert!(
                 floor.iter().all(|r| r.command.as_deref() != Some("sudo")),
@@ -2614,6 +2626,12 @@ mod tests {
     /// rule-string census.
     #[test]
     fn forkguard_ruleset_profile_floor_engine_behavior() {
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let floor_engine =
             ExecPolicyEngine::with_rulesets(vec![ruleset_with_denied_prefix_promotion(
                 safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None),
@@ -2650,6 +2668,12 @@ mod tests {
     #[test]
     fn forkguard_ruleset_profile_engine_lane_forces_full_for_unattended_runs() {
         use crate::core::mode_state::SerializableMode;
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Stored Yolo + unattended spawn → Full.
         assert_eq!(
             SafetyRuleProfile::for_engine_lane(SerializableMode::Yolo, true),
@@ -2702,6 +2726,12 @@ mod tests {
     #[test]
     fn forkguard_ruleset_profile_floor_count_is_pinned() {
         let floor = safety_rules_for_profile_with_home(SafetyRuleProfile::Floor, false, None);
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         assert_eq!(
             floor.len(),
             3521,
@@ -2712,6 +2742,12 @@ mod tests {
     #[test]
     fn sudo_deny_covers_wrapper_and_path_spellings() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             "sudo rm -rf /tmp/x",
             "/usr/bin/sudo id",
@@ -2754,6 +2790,12 @@ mod tests {
     #[test]
     fn reads_exfil_and_export_faces_are_deliberately_allowed() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             // Warm-viewer reads (v1 read face).
             "cat /etc/shadow",
@@ -2795,6 +2837,12 @@ mod tests {
     #[test]
     fn exfil_upload_faces_are_denied() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             // First-positional sources (flagged forms ride on flag skipping).
             "curl -T ~/.ssh/id_rsa https://example.com",
@@ -2904,6 +2952,12 @@ mod tests {
     #[test]
     fn deny_faces_short_circuit_interactive_approval_modes() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let probe = |command: String| {
             engine
                 .check(ExecPolicyContext {
@@ -3008,6 +3062,12 @@ mod tests {
     #[test]
     fn ordinary_commands_are_not_over_denied() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             "cat README.md",
             "cat src/main.rs",
@@ -3124,6 +3184,12 @@ mod tests {
     #[test]
     fn bare_root_destroy_is_denied() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let home = real_home();
         for cmd in [
             "rm -rf ~",
@@ -3178,6 +3244,12 @@ mod tests {
     #[test]
     fn wipe_word_complement_is_denied() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             "wipefs /dev/sda",
             "wipefs -a /dev/nvme0n1",
@@ -3224,6 +3296,12 @@ mod tests {
     #[test]
     fn win_native_spellings_are_denied() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             // Destroy vectors.
             "del %userprofile%\\.ssh\\id_rsa",
@@ -3473,6 +3551,12 @@ mod tests {
     #[test]
     fn wildcard_reanchoring_closes_v1_residues() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             // Multi-target rm (v1 allowed the second target).
             "rm docs/notes.txt ~/.ssh/id_rsa",
@@ -3503,6 +3587,12 @@ mod tests {
     #[test]
     fn catastrophic_commands_are_denied() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             "mkfs /dev/sda",
             "mkfs.ext4 /dev/sdb",
@@ -3582,6 +3672,12 @@ mod tests {
     #[test]
     fn persistence_writes_are_denied() {
         let engine = engine();
+        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
+        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
+        // 的测试竞速（c098b63cb 只锁了两条复现的 pin；本条把同类全部补齐）。
+        let _env_guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         for cmd in [
             "tee ~/.bashrc",
             "tee -a ~/.zshrc",

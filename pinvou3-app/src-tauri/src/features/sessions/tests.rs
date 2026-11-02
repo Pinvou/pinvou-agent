@@ -172,6 +172,10 @@ fn reopen_store(store: &SessionStore) -> Result<SessionStore> {
     reopened.load_pinned_sessions();
     reopened.load_hidden_sessions();
     reopened.load_session_mode_states();
+    // 生产 boot 在 load_session_mode_states 之后立即合并 `_ask_on_guardrail.json`
+    // （store.rs 的 boot 顺序）；helper 同序补上，重启断言不必各自记得手动
+    // 加载 override 镜像（漏掉的测试会静默测到空镜像）。
+    reopened.load_ask_on_guardrail_overrides();
     {
         let _mutation = reopened.scheduled_mutation.lock();
         reopened.enforce_session_retention_locked()?;
