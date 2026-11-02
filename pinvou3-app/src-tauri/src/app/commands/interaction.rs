@@ -572,7 +572,9 @@ pub async fn decide_approval(
     let Some((pending, registry_generation)) =
         pending_approvals::remove_fenced(&session_id, &approval_id)
     else {
-        return Err(format!("decide_approval: approval not found: {approval_id}"));
+        return Err(format!(
+            "decide_approval: approval not found: {approval_id}"
+        ));
     };
     let Some((engine, incarnation)) = pool.handle_with_incarnation(&session_id).await else {
         // 引擎不在场：无化身可比对，只受注册表栅栏把守。
@@ -591,8 +593,7 @@ pub async fn decide_approval(
         Ok(()) => Ok(()),
         Err(error) => {
             // 发送时引擎在场：化身 + 注册表双栅栏（见上）。
-            let engine_still_live =
-                pool.engine_incarnation(&session_id).await == Some(incarnation);
+            let engine_still_live = pool.engine_incarnation(&session_id).await == Some(incarnation);
             if engine_still_live && pending_approvals::generation() == registry_generation {
                 pending_approvals::record(&session_id, pending);
             }

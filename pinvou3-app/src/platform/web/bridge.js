@@ -2829,7 +2829,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     };
     return invoke("get_mode_state", { sessionId: sid }).then(function (modeState) {
       if (modeState && modeState.mode === "auto") {
-        return Promise.reject(new Error(bt("webAutoSendBlocked")));
+        throw new Error(bt("webAutoSendBlocked"));
       }
       return admitted();
     }, function () {

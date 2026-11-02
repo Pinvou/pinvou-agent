@@ -1204,7 +1204,11 @@ impl SessionStore {
     /// the existence authority (the funnel removes both together; a crash
     /// between them can only leave a stale flag, which the next upsert of
     /// the session recomputes).
-    fn resolve_sidecar_mode(mode: SerializableMode, auto_flags: &std::collections::HashMap<String, bool>, id: &str) -> SerializableMode {
+    fn resolve_sidecar_mode(
+        mode: SerializableMode,
+        auto_flags: &std::collections::HashMap<String, bool>,
+        id: &str,
+    ) -> SerializableMode {
         if auto_flags.get(id).copied().unwrap_or(false) {
             SerializableMode::Auto
         } else {

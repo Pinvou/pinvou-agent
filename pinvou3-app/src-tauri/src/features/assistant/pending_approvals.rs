@@ -568,7 +568,10 @@ mod tests {
             "a registry mutation during the await window must cancel the fenced restore"
         );
         // remove_fenced shares remove's cleanup contract.
-        assert!(remove_fenced(&session, "ap-f1").is_none(), "重复移除返回 None");
+        assert!(
+            remove_fenced(&session, "ap-f1").is_none(),
+            "重复移除返回 None"
+        );
     }
 
     #[test]
