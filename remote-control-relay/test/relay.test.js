@@ -3115,6 +3115,12 @@ test("destroys an upgrade request with a hostile Host header without killing the
   // throw into an uncaught exception.
   await new Promise((resolve, reject) => {
     const raw = netConnect(port, "127.0.0.1");
+    // The reject path answers with the fixed 400 banner before destroying the
+    // socket. This client never reads that banner, so it must put the socket
+    // into flowing mode: a paused socket withholds 'close' behind the unread
+    // bytes, and the strict deadline below would measure our own stall
+    // instead of the relay's teardown.
+    raw.resume();
     // Strict teardown expectation: only the relay closing/destroying the
     // hostile socket resolves. If the socket is still alive after 1500ms the
     // relay accepted the request and stalled it, which must fail the test.
