@@ -409,14 +409,21 @@
       // desktop-bound forwarding path) — is not a healthy idle cycle:
       // past the failure cap the reconnect becomes visible instead of
       // speculatively repeating forever (see LIVENESS_MAX_SPECULATIVE_FAILURES).
-      // Keep byte-identical with the speculative-close block in handleNetworkBecomeOnline — edit both together (transport tests pin each copy).
+      this.speculativeClose(this.socket);
+    }
+
+    // Shared tail of the two speculative-close sites (liveness watchdog and
+    // the `online` handler). Round-11: extracted from two byte-identical
+    // copies that relied on an edit-together comment — one method removes the
+    // drift hazard instead of pinning it.
+    speculativeClose(socket) {
       if (!this.joined || (this.awaitingCapabilitySnapshot && !this.desktopCapabilitiesReady)) {
         this.speculativeFailures += 1;
       }
       this.speculativeReconnect =
         this.speculativeFailures <= LIVENESS_MAX_SPECULATIVE_FAILURES;
-      this.speculativeSource = this.socket;
-      try { this.socket.close(); } catch { this.clearSpeculativeReconnect(); }
+      this.speculativeSource = socket;
+      try { socket.close(); } catch { this.clearSpeculativeReconnect(); }
     }
 
     // OS-level connectivity change: neither the old socket nor the old
@@ -429,14 +436,7 @@
         // Like the watchdog, the close is speculative — the UI stays on
         // "connected" unless the cycle never became usable, and such a
         // cycle counts toward the same failure cap.
-        // Keep byte-identical with the speculative-close block in _livenessCheck — edit both together (transport tests pin each copy).
-        if (!this.joined || (this.awaitingCapabilitySnapshot && !this.desktopCapabilitiesReady)) {
-          this.speculativeFailures += 1;
-        }
-        this.speculativeReconnect =
-          this.speculativeFailures <= LIVENESS_MAX_SPECULATIVE_FAILURES;
-        this.speculativeSource = this.socket;
-        try { this.socket.close(); } catch { this.clearSpeculativeReconnect(); }
+        this.speculativeClose(this.socket);
         return;
       }
       if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
@@ -515,6 +515,11 @@
           // "connected" forever. The verified-good reset lives at the
           // capability-handshake completion, which only a real desktop frame
           // can reach.
+          // Accepted trade-off (documented): the OTHER two ladders
+          // (reconnectAttempt / desktopGoneRetries) still reset on the ack, so
+          // a relay alternating ack+close can keep the phone reconnecting at
+          // fast pace forever — self-DoS against the user's own relay only;
+          // rate-limiting the reset is a follow-up if it ever matters.
           this.reconnectAttempt = 0;
           this.desktopGoneRetries = 0;
           this.clearSpeculativeReconnect();

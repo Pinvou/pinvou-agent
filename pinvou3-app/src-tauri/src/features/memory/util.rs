@@ -209,7 +209,11 @@ pub(super) fn read_text_recovering_unlocked_with(
     validate: &dyn Fn(&str) -> bool,
     promote: &dyn Fn(&Path, &Path, &[u8]) -> io::Result<()>,
 ) -> io::Result<String> {
-    let current_error = match fs::read_to_string(path) {
+    // Round-11 复审 minor:读经共享的有界私态原语(常规文件门 + 16 MiB
+    // 上限)——写侧压实让合法存储远小于该界,超界即坏档/外部种植,走恢复
+    // 分支自愈,而不是无界读入后整包序列化进 web 载荷。此前的
+    // `fs::read_to_string` 是全仓最后一批未收口的裸读。
+    let current_error = match crate::platform::filesystem::read_private_data_file(path) {
         Ok(raw) if validate(&raw) => return Ok(raw),
         Ok(_) => io::Error::new(
             io::ErrorKind::InvalidData,
@@ -272,14 +276,14 @@ pub(super) fn read_text_recovering_unlocked_with(
     });
     candidates.reverse();
     for (_, candidate) in candidates {
-        let Ok(raw) = fs::read_to_string(&candidate) else {
+        let Ok(raw) = crate::platform::filesystem::read_private_data_file(&candidate) else {
             continue;
         };
         if !validate(&raw) {
             continue;
         }
         promote(&candidate, path, raw.as_bytes())?;
-        let restored = fs::read_to_string(path)?;
+        let restored = crate::platform::filesystem::read_private_data_file(path)?;
         if validate(&restored) {
             cleanup_recovery_candidates(path);
             return Ok(restored);
@@ -713,4 +717,38 @@ pub(super) fn looks_completed_work_status(value: &str) -> bool {
     COMPLETED_WORK_STATUS_NEEDLES
         .iter()
         .any(|needle| value.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-11 复审 minor(判别钉):权威存储读取必须经共享的有界私态
+    /// 原语——超界文件以 InvalidData 走恢复分支,而不是无界读入后原样
+    /// 返回。回退成裸 `fs::read_to_string` 时本钉红(17 MiB 垃圾会被整包
+    /// 读回并序列化进 web 载荷)。
+    #[test]
+    fn authoritative_store_reads_are_capped() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-capped-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("profile.json");
+        std::fs::write(&path, vec![b'x'; 17 * 1024 * 1024]).unwrap();
+        let outcome = read_text_recovering_unlocked_with(&path, &|_raw| true, &_promote_noop);
+        assert!(
+            outcome.is_err(),
+            "an over-cap authoritative store must be refused, not read whole"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn _promote_noop(_from: &Path, _to: &Path, _bytes: &[u8]) -> std::io::Result<()> {
+        Ok(())
+    }
 }

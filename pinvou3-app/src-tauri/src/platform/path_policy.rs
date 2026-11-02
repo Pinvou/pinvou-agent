@@ -92,6 +92,40 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
     ".gitconfig",
 ];
 
+/// 目录作用域凭据文件:末分量是通用文件名(settings.xml/hosts.yml/
+/// Local State 这类名字在任意工作区里都是无辜的普通文件),只有落在
+/// 特定凭据目录序列之下才拦——按「路径以固定分量序列结尾」判定,每
+/// 个分量经平台感知的 `path_component_eq`(与 `BLOCKED_COMPONENTS` 同
+/// 折叠语义)。清单纪律:序列必须以真实凭据目录开头,不收裸文件名;
+/// 浏览器 profile 目录(Cookies/Login Data,名字不定)下的条目中间
+/// 分量无法固定,不进本清单(已记录残余)。 Round-11 复审 minor:
+/// `.config/gh/hosts.yml` 是 GitHub CLI 的 OAuth token 存储,
+/// `.m2/settings.xml` 常内嵌明文 server 密码(`.npmrc` 同型),
+/// `.config/sops/age/keys.txt` 是 sops 的年龄私钥,`.config/
+/// {google-chrome,chromium}/Local State` 内嵌 Chrome 的加密密钥原料。
+pub const BLOCKED_PATH_TAILS: &[&[&str]] = &[
+    &[".config", "gh", "hosts.yml"],
+    &[".m2", "settings.xml"],
+    &[".config", "sops", "age", "keys.txt"],
+    &[".config", "google-chrome", "Local State"],
+    &[".config", "chromium", "Local State"],
+];
+
+/// 目录作用域尾序列命中判定(含 CLI 镜像在内的所有消费方共用);命中时
+/// 返回命中的尾序列,供错误文案拼接。
+pub fn blocked_path_tail_hit(canonical: &Path) -> Option<&'static [&'static str]> {
+    let components: Vec<_> = canonical.components().collect();
+    BLOCKED_PATH_TAILS.iter().copied().find(|tail| {
+        components.len() >= tail.len()
+            && components[components.len() - tail.len()..]
+                .iter()
+                .zip(tail.iter())
+                .all(|(component, expected)| {
+                    crate::platform::os::path_component_eq(component.as_os_str(), expected)
+                })
+    })
+}
+
 /// 组件前缀黑名单:`.env.` 系命名(`.env.local`、`.env.production`、
 /// `.env.development`……)与 `.env` 同为本地环境凭据文件,环境变体命名
 /// 无法逐一枚举,按前缀判定。匹配经由平台感知的 `path_component_prefix`
@@ -147,6 +181,9 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "/etc/sudoers~",
     "/proc/",
     "/sys/",
+    // Round-11 复审 NIT:macOS 的 root 用户主目录(Linux `/root/` 的
+    // 对位;普通 app 用户不可读,仅在超级权限场景作为对称纵深)。
+    "/var/root/",
     // Round-11 复审 minor:pam_unix 的密码历史文件(旧哈希,与 shadow
     // 同内容级);`*` 收拢 .old/.bak 等轮转备份家族。
     "/etc/security/opasswd*",
@@ -243,6 +280,15 @@ pub(crate) fn check_sensitive_components(canonical: &Path) -> Result<(), String>
                 suffix
             ));
         }
+    }
+
+    // Round-11 复审 minor:目录作用域条目(通用文件名只在特定凭据目录
+    // 序列之下才拦,清单与语义见 BLOCKED_PATH_TAILS)。
+    if blocked_path_tail_hit(canonical).is_some() {
+        return Err(format!(
+            "path {} crosses a directory-scoped credential file",
+            canonical.display()
+        ));
     }
 
     // 组件序列比较走平台折叠语义(macOS 大小写不敏感卷会把 `/Etc/Sudoers`
@@ -539,6 +585,83 @@ mod tests {
             assert!(
                 check_sensitive_components(&path).is_err(),
                 "{prefix} 前缀条目被删除时此断言必须变红"
+            );
+        }
+    }
+
+    /// Round-11 复审 minor:目录作用域尾序列(gh/Maven/sops/Chrome 的
+    /// 通用命名凭据文件)——清单成员在位命中、无辜同名文件在别处放行、
+    /// 大小写变体跟随卷语义(与组件清单同判据)。清单被删条目即红。
+    #[test]
+    fn directory_scoped_credential_tails_follow_platform_case_semantics() {
+        let blocked = [
+            &[".config", "gh", "hosts.yml"][..],
+            &[".m2", "settings.xml"][..],
+            &[".config", "sops", "age", "keys.txt"][..],
+            &[".config", "google-chrome", "Local State"][..],
+            &[".config", "chromium", "Local State"][..],
+        ];
+        let home = std::env::temp_dir();
+        for tail in blocked {
+            let mut path = home.clone();
+            path.push("repo");
+            for component in tail {
+                path.push(component);
+            }
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "{} must be refused",
+                path.display()
+            );
+            // 无辜同名文件:不在凭据目录序列之下(父目录不同/深度不足)。
+            let mut innocent = home.clone();
+            innocent.push("repo");
+            innocent.push(tail[tail.len() - 1]);
+            assert!(
+                check_sensitive_components(&innocent).is_ok(),
+                "{} at an arbitrary directory is an ordinary file",
+                innocent.display()
+            );
+            let mut sibling = home.clone();
+            sibling.push("repo");
+            sibling.push("docs");
+            sibling.push(tail[tail.len() - 1]);
+            assert!(
+                check_sensitive_components(&sibling).is_ok(),
+                "{} under an unrelated directory is an ordinary file",
+                sibling.display()
+            );
+            // 大小写变体跟随卷语义(macOS/Windows 折叠命中,Linux 不同文件)。
+            let mut variant = home.clone();
+            variant.push("repo");
+            for component in tail.iter().take(tail.len() - 1) {
+                variant.push(component.to_uppercase());
+            }
+            variant.push(tail[tail.len() - 1].to_uppercase());
+            if cfg!(windows) || cfg!(target_os = "macos") {
+                assert!(
+                    check_sensitive_components(&variant).is_err(),
+                    "case-insensitive volumes must fold: {}",
+                    variant.display()
+                );
+            } else {
+                assert!(
+                    check_sensitive_components(&variant).is_ok(),
+                    "Linux stays byte-exact: {}",
+                    variant.display()
+                );
+            }
+        }
+        // 逐常量循环驱动(删除任一条目即红):清单成员恰好末 N 分量命中。
+        for tail in BLOCKED_PATH_TAILS {
+            let mut path = home.clone();
+            path.push("anywhere");
+            for component in tail.iter() {
+                path.push(component);
+            }
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "tail {tail:?} must be refused"
             );
         }
     }

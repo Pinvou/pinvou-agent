@@ -2347,9 +2347,14 @@ mod tests {
                 .err()
                 .expect("an escaping untracked symlink must be refused");
             let rendered = format!("{error:#}");
+            // Round-12 P3 的解析落点包含复查先于本臂的专用命名触发:越界
+            // 拒绝现在以「越过了项目根目录」更早发生(在任何内容读取之
+            // 前),untracked 腿的「越出了工作区」保持为纵深命名。两个消
+            // 息都只可能是越界拒绝——泄露保证(目标字节不出现在差异里)
+            // 由上面的 .err() 期望本身钉住。
             assert!(
-                rendered.contains("越出了工作区"),
-                "the refusal must name the symlink escape, got: {rendered}"
+                rendered.contains("越出了工作区") || rendered.contains("越过了项目根目录"),
+                "the refusal must name the escape, got: {rendered}"
             );
             let _ = fs::remove_file(&outside);
 

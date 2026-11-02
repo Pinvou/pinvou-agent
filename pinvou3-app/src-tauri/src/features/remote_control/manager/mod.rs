@@ -264,6 +264,20 @@ fn attachment_handle_is_well_formed(handle: &str) -> bool {
     }
 }
 
+/// 入库/重发用的 relay 文本上限:与 `rpc_error_completion` 的错误截断
+/// 同口径(char 边界,不劈开多字节字符)。
+const RELAY_ERROR_TEXT_MAX_CHARS: usize = 16_384;
+
+/// relay 提供的自由文本(错误 message、主机命名等)入库前的 char 边界
+/// 截断——帧上限 4 MiB 的文本原样存进会随每次状态重发重复序列化
+/// (Round-11 复审 NIT)。
+fn bound_relay_text(mut text: String) -> String {
+    if let Some((boundary, _)) = text.char_indices().nth(RELAY_ERROR_TEXT_MAX_CHARS) {
+        text.truncate(boundary);
+    }
+    text
+}
+
 /// 注册类 error 帧的可操作恢复提示。版本不匹配的正确恢复路径是升级到
 /// 匹配的最新版本——轮换只会铸出同一协议版本的新 endpoint,「rotate」
 /// 提示在那里是错误指引。同一个码覆盖两侧:桌面端过旧(默认情形)与
@@ -2192,8 +2206,27 @@ impl RemoteControlManager {
             "web_client_connected" => self.handle_web_connected(&value),
             "web_client_disconnected" => self.handle_web_disconnected(&value),
             "rpc_request" => self.handle_rpc_request(&value),
-            "event_subscribe" => self.handle_event_subscription(&value, true),
-            "event_unsubscribe" => self.handle_event_subscription(&value, false),
+            "event_subscribe" | "event_unsubscribe" => {
+                // Round-11 复审 minor:订阅帧与 rpc_request 同一接替竞态面
+                // (PR 已为 rpc_request/client_ready 加门,唯独订阅帧缺席)
+                // ——迟到的死 lease 订阅帧(relay 按 socket 打当时 lease 戳)
+                // 会让退订摘掉新客户端刚装的订阅、订阅回填已被替换的名单。
+                // 与 rpc 门同口径:帧 lease 与活跃 lease 不符即丢弃。
+                let lease_id = value
+                    .get("lease_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                {
+                    let inner = self.inner.lock();
+                    if !rpc_request_targets_active_lease(&inner, lease_id) {
+                        return;
+                    }
+                }
+                self.handle_event_subscription(
+                    &value,
+                    value.get("type").and_then(Value::as_str) == Some("event_subscribe"),
+                );
+            }
             "client_ready" => self.synchronize_client_from_value(&value),
             "desktop_endpoint_revoked" => self.handle_revoked(endpoint_id),
             "desktop_endpoint_replaced" => self.handle_replaced(endpoint_id),
@@ -3265,8 +3298,11 @@ impl RemoteControlManager {
     }
 
     /// 错误文本 + 可选稳定恢复码成对写入;不携带码的错误必须清掉旧码,
-    /// 防止旧恢复文案被映射到新错误上。
+    /// 防止旧恢复文案被映射到新错误上。文本先经 [`bound_relay_text`]
+    /// 截断(Round-11 复审 NIT:relay error 帧的 message 可达单帧上限
+    /// ~4 MiB,原样入库会在每次 `emit_status` 重复序列化整段)。
     fn set_endpoint_error_with_code(&self, code: Option<&'static str>, error: String) {
+        let error = bound_relay_text(error);
         {
             let mut inner = self.inner.lock();
             if let Some(endpoint) = inner.endpoint.as_mut() {
@@ -5748,6 +5784,69 @@ mod tests {
             !body.contains("acknowledge_pending_revocation("),
             "the disk-rereading acknowledgement must not come back; it drops salvaged \
              siblings when the on-disk ledger is absent"
+        );
+    }
+
+    /// 接线钉(Round-11 复审 minor):订阅帧必须先过活跃 lease 门再动
+    /// 订阅集——迟到的死 lease 订阅帧会让退订摘掉新客户端刚装的订阅。
+    /// 分派体需要 AppHandle,行为钉驱动不了;把门删掉或挪到订阅变更之后
+    /// 即红。
+    #[test]
+    fn event_subscriptions_are_lease_gated_at_the_dispatch_site() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("\"event_subscribe\" | \"event_unsubscribe\" =>")
+            .expect("the combined subscription arm must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("self.handle_event_subscription(&value,")
+            .expect("the arm must dispatch to handle_event_subscription")];
+        let gate = body
+            .find("rpc_request_targets_active_lease(&inner, lease_id)")
+            .expect("the subscription arm must consult the active-lease gate");
+        let early_return = body
+            .find("return;")
+            .expect("the gate refusal must drop the frame");
+        assert!(
+            gate < early_return,
+            "the lease gate must precede the dispatch and refuse dead-lease frames"
+        );
+    }
+
+    /// Round-11 复审 NIT:relay 自由文本入库前的 char 边界截断(与
+    /// `rpc_error_completion` 的 16,384 同口径),多字节字符不被劈开。
+    #[test]
+    fn bound_relay_text_truncates_on_char_boundaries() {
+        let short = "短错误".to_string();
+        assert_eq!(bound_relay_text(short.clone()), short);
+        let long = "界".repeat(RELAY_ERROR_TEXT_MAX_CHARS + 10);
+        let bound = bound_relay_text(long);
+        assert_eq!(bound.chars().count(), RELAY_ERROR_TEXT_MAX_CHARS);
+        assert!(
+            bound.ends_with('界'),
+            "the cut must stay on a char boundary"
+        );
+    }
+
+    /// 接线钉:relay 提供的错误文本必须在 `set_endpoint_error_with_code`
+    /// 入库点经 [`bound_relay_text`] 截断——单元钉只测函数本体,看不见
+    /// 调用点;把截断从入库点删掉(单帧 4 MiB 文本原样入库、每次
+    /// emit_status 重复序列化)即红。
+    #[test]
+    fn endpoint_error_persistence_bounds_the_relay_text() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find(
+                "fn set_endpoint_error_with_code(&self, code: Option<&'static str>, error: String)",
+            )
+            .expect("set_endpoint_error_with_code must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("set_endpoint_error_with_code body must be terminated by the next fn")];
+        assert!(
+            body.contains("let error = bound_relay_text(error);"),
+            "the relay-supplied error text must be bounded before it is stored"
         );
     }
 

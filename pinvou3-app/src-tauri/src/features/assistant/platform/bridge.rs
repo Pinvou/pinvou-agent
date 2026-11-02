@@ -9645,6 +9645,11 @@ mod tests {
     /// to `low` must not silently rewrite what the app sends.
     #[test]
     fn stored_off_reasoning_effort_reaches_the_responses_wire_verbatim() {
+        // Round-11 复审:`responses_wire_suppressed` 读 DEEPSEEK_* 环境变量,
+        // 而 multiagent 回归测试在持锁状态下写这些变量——本测试不持锁时,
+        // 断言随机翻红(gates 实锤 1/3 次)。与姊妹测试同款:持 ENV_LOCK
+        // 排除并发写者。
+        let (_lock, _env) = locked_env(&["DEEPSEEK_MODEL", "DEEPSEEK_PROVIDER"]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,

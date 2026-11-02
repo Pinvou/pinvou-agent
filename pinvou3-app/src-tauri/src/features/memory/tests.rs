@@ -918,6 +918,48 @@ fn update_wrappers_report_persistent_stale_cleanup_and_keep_the_stale_entry() {
     drop(home);
 }
 
+/// Round-11 复审 minor:磁盘载入的记录 id(`clean_scalar` 不限字符集)
+/// 拼进迁移清理路径前必须是单分量普通文件名——种植的 `"id": "../victim"`
+/// 让无保护的 join 把清理臂的 `remove_file` 指到偏好目录之外(删除同级
+/// 私态文件)。守卫跳过这类旧记录的清理:迁移照常落盘,孤儿文件留待
+/// 手工清理,目录外的受害者文件必须存活。
+#[test]
+fn preference_migration_skips_non_plain_filename_ids() {
+    let _home = IsolatedPinvouHome::new("pref-id-traversal");
+    let prefs_dir = paths::user_memory_preferences_dir();
+    fs::create_dir_all(&prefs_dir).unwrap();
+    let victim = prefs_dir
+        .parent()
+        .expect("preferences dir must live under the isolated home")
+        .join("victim.json");
+    fs::write(&victim, "{}").unwrap();
+    write_json_atomic(
+        &prefs_dir.join("pref-weird0000.json"),
+        &preference_fixture("../victim", "alpha_preference", "old preference"),
+    )
+    .unwrap();
+
+    // `clean_id("../victim") == "victim"`,公共入口按调用方 id 命中种植
+    // 记录,迁移臂随即用**记录内**的原始 id 拼旧路径——正是守卫要拦的
+    // 形状;删掉守卫本钉红(remove_file 真实删掉目录外的 victim.json)。
+    let updated = update_preference(
+        "victim",
+        MemoryTextPatch {
+            topic: None,
+            text: Some("new preference".to_string()),
+        },
+    )
+    .unwrap();
+    assert!(
+        updated.is_some(),
+        "the planted record must still migrate to a hash id"
+    );
+    assert!(
+        victim.exists(),
+        "the migration must not remove files outside the store dir"
+    );
+}
+
 /// Round-8 复审：`resolve_topic_authorities` 的重复权威脱敏点（io.rs 的
 /// `cleanup_failures.push(... display_redacted(&duplicate) ...)`）此前只有
 /// helper 级钉，把该行回退成裸 `duplicate.display()` 时无用例变红。本钉在

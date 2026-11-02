@@ -1197,7 +1197,6 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(client.lastSeq, 6, 'an explicit seq must still advance the cursor');
 }
 
-console.log('web bootstrap transport tests passed');
 
 // 缺凭证的截断链接必须停在阻断卡:online/visibilitychange 看门狗等恢复路径
 // 不得绕过凭证 gate,把 credentials_missing 转成注定失败的 join 重试循环
@@ -1260,3 +1259,7 @@ assert.match(source, /const LIVENESS_MAX_SPECULATIVE_FAILURES = 1;/);
 assert.match(source, /const LIVENESS_CONNECT_WEDGE_TIMEOUT_MS = 45_000;/);
 assert.match(source, /const DESKTOP_GONE_FAST_RETRIES = 5;/);
 assert.match(source, /const DESKTOP_GONE_MAX_DELAY_MS = 60_000;/);
+
+// Round-11 复审 NIT:通过横幅移到真正的文件末尾——此前它先于凭据门/
+// 构造器抛错/常数钉三个块打印,失败运行也会先喊 passed。
+console.log('web bootstrap transport tests passed');

@@ -902,12 +902,18 @@ pub(super) fn update_work_context_unlocked(
     normalize_work_context(&mut updated);
     let dir = work_context_dir();
     fs::create_dir_all(&dir)?;
-    let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
     let mut stale_paths =
         work_context_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
-    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
-        stale_paths.push(old_path);
+    // Round-11 复审 minor:existing.id 来自磁盘上的记录文件(clean_scalar
+    // 不限字符集),拼进清理路径前必须是单分量普通文件名——种植的
+    // `"id": "../x"` 会让清理臂 remove 到存储目录之外。非普通文件名的旧
+    // 记录跳过清理(新记录照常落盘,孤儿文件等待手工清理)。
+    if is_plain_filename(&existing.id) {
+        let old_path = dir.join(format!("{}.json", existing.id));
+        if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+            stale_paths.push(old_path);
+        }
     }
     let mutation =
         commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {
@@ -1755,12 +1761,18 @@ pub(super) fn update_preference_unlocked(
     };
     let dir = paths::user_memory_preferences_dir();
     fs::create_dir_all(&dir)?;
-    let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
     let mut stale_paths =
         preference_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
-    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
-        stale_paths.push(old_path);
+    // Round-11 复审 minor:与 update_work_context 同判据——磁盘载入的
+    // existing.id(clean_scalar 不限字符集)拼进清理路径前必须是单分量
+    // 普通文件名,否则种植的 `"id": "../x"` 会让清理臂 remove 到偏好
+    // 目录之外。非普通文件名的旧记录跳过清理。
+    if is_plain_filename(&existing.id) {
+        let old_path = dir.join(format!("{}.json", existing.id));
+        if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+            stale_paths.push(old_path);
+        }
     }
     let mutation =
         commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {

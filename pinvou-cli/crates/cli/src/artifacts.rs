@@ -63,12 +63,15 @@ use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COM
 /// `files ingest`, `artifacts read`/`write`, `feedback submit
 /// --attach/--body-file`, `agent run --attach`, `memory add --file`, `voice
 /// postprocess --text-file/--draft-file`, and `personas create/update
-/// --file`. See the module docs for the session-storage caveat: targets
-/// already proved inside session storage take the component half
-/// ([`crosses_sensitive_component`], the `.env.*` component-prefix rule
-/// [`crosses_sensitive_component_prefix`], and the `*.env` component-suffix
-/// rule [`crosses_sensitive_component_suffix`], wired at the
-/// [`resolve_session_artifact`] call site) while the *system*-prefix half
+/// --file`; the round-11 audit adds the lanes that joined later through the
+/// same gate: `agent run --prompt-file`, the scheduled prompt-file lane, and
+/// `knowledge collections add-sources`. See the module docs for the
+/// session-storage caveat: targets already proved inside session storage take
+/// the component half ([`crosses_sensitive_component`], the `.env.*`
+/// component-prefix rule [`crosses_sensitive_component_prefix`], the `*.env`
+/// component-suffix rule [`crosses_sensitive_component_suffix`], and the
+/// directory-scoped credential tails [`blocked_path_tail_hit`], all wired at
+/// the [`resolve_session_artifact`] call site) while the *system*-prefix half
 /// (unix system areas) cannot apply to them.
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
@@ -155,6 +158,14 @@ fn check_sensitive_canonical(canonical: &Path, alias_symlinks: bool) -> Result<(
     if let Some(suffix) = crosses_sensitive_component_suffix(canonical) {
         return Err(format!(
             "{} crosses the credential path component suffix `{suffix}`",
+            canonical.display()
+        ));
+    }
+    // Round-11 复审 minor:目录作用域尾序列(gh/Maven/sops/Chrome 的通用
+    // 命名凭据文件)与 GUI 同源——上游单一谓词,不手抄清单。
+    if pinvou3_lib::platform::path_policy::blocked_path_tail_hit(canonical).is_some() {
+        return Err(format!(
+            "{} crosses a directory-scoped credential file",
             canonical.display()
         ));
     }
@@ -382,11 +393,18 @@ fn resolve_session_artifact(
     // does not even require — but an agent can create `.env` or `.ssh/id_rsa`
     // inside its own workspace, and there the GUI refuses while the CLI did
     // not. Same refusal on read and write: the risk is the content reaching a
-    // model context, which is the read direction.
-    if let Some(blocked) = crosses_sensitive_component(&canonical)
-        .or_else(|| crosses_sensitive_component_prefix(&canonical))
-        .or_else(|| crosses_sensitive_component_suffix(&canonical))
-    {
+    // model context, which is the read direction. The round-11 audit adds the
+    // directory-scoped tails (gh/Maven/sops/Chrome credential files can sit
+    // inside a session workspace just the same).
+    let directory_scoped_tail =
+        pinvou3_lib::platform::path_policy::blocked_path_tail_hit(&canonical)
+            .map(|tail| tail.join("/"));
+    let blocked = crosses_sensitive_component(&canonical)
+        .map(str::to_string)
+        .or_else(|| crosses_sensitive_component_prefix(&canonical).map(str::to_string))
+        .or_else(|| crosses_sensitive_component_suffix(&canonical).map(str::to_string))
+        .or(directory_scoped_tail);
+    if let Some(blocked) = blocked {
         return Err(CliError::failed(format!(
             "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
              never read or written through this command",

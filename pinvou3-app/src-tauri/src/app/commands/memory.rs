@@ -1156,4 +1156,57 @@ mod tests {
             },
         );
     }
+
+    /// Round-11 复审 minor(整载荷扫描钉):逐字段钉只能钉住已知的路径
+    /// 字段,新增一个带绝对路径的字段不会被任何现有钉看到。序列化整个
+    /// `MemoryOverviewState`(即实际过 relay 的字节)断言绝对存储根
+    /// 不出现——一个未来未脱敏的路径字段在此变红。
+    #[test]
+    fn serialized_memory_overview_carries_no_absolute_storage_root() {
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-overview-whole-payload-redact",
+            || {
+                let root = crate::platform::paths::pinvou3_home();
+                let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                    root.join("scheduled"),
+                )
+                .expect("session store");
+                // 建一个活跃会话:overview 的 runtime 快照按活跃会话构建,
+                // 没有会话时 runtime 为 None,runtime_path 不进载荷,扫描对
+                // 该字段假绿(首次突变复跑实证)。
+                let created = store
+                    .create_new("/model".into(), None, root.join("workspace"))
+                    .expect("active session");
+                store.set_active(Some(created.metadata.id.clone()));
+                // SAFETY: State<'r, T> 是单引用字段的 newtype，transmute 两侧
+                // 大小由编译器静态校验一致；引用生命周期随 'r 存续到本闭包
+                // 结束，State 仅在被测命令内经 Deref 只读使用，不引入新的
+                // 别名或对齐约束。
+                let state: State<'_, SessionStore> = unsafe {
+                    std::mem::transmute::<&SessionStore, State<'_, SessionStore>>(&store)
+                };
+                let overview = tauri::async_runtime::block_on(get_memory_overview(None, state))
+                    .expect("overview");
+                let home_text = root.to_string_lossy().to_string();
+                let serialized = serde_json::to_string(&overview).expect("overview serializes");
+                assert!(
+                    !serialized.contains(home_text.as_str()),
+                    "the serialized overview payload must not carry the absolute storage root: \
+                     {serialized}"
+                );
+                // 扫描非空判据:载荷必须真实包含红色化的存储前缀形态,
+                // 否则上面的断言对「载荷为空」假绿。
+                assert!(
+                    serialized.contains("~/.pinvou3"),
+                    "the overview payload should reference redacted storage paths: {serialized}"
+                );
+                // runtime_path 的非空判据(它随活跃会话进入载荷):红色化后
+                // 是 ~/.pinvou3/user/memory/runtime/<sid>.md 形态。
+                assert!(
+                    serialized.contains("~/.pinvou3/user/memory/runtime/"),
+                    "the runtime prompt path must ride the payload redacted: {serialized}"
+                );
+            },
+        );
+    }
 }

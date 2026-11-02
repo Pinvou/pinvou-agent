@@ -262,6 +262,29 @@ for (const source of [remoteControlManager, desktopRemoteControlBridge]) {
   }
 }
 
+// Round-11 复审 minor:JS↔Rust 错误码表的跨语言契约。bridge.js 的
+// `WEB_TURN_ERROR_KEYS` 键是 Rust 侧折叠出的稳定 wire code;Rust 端的
+// stable_web_error_codes_are_locked 等钉锁住生产侧,这里是消费侧的
+// 反向钉:每个 JS 键必须仍出现在某个 Rust 命令源码里——重命名一个
+// Rust 码而漏改 JS 时,该键映射不到任何文案、静默落进红acted 兜底,
+// 本钉即红。
+{
+  const tableStart = webBridge.indexOf('const WEB_TURN_ERROR_KEYS = {');
+  assert.notEqual(tableStart, -1, 'WEB_TURN_ERROR_KEYS must exist in web/bridge.js');
+  const tableEnd = webBridge.indexOf('};', tableStart);
+  const table = webBridge.slice(tableStart, tableEnd);
+  const jsKeys = [...table.matchAll(/^\s{4}([a-z_0-9]+): "/gm)].map(match => match[1]);
+  assert.ok(jsKeys.length >= 14,
+    `expected the full turn-error code table, found ${jsKeys.length} keys`);
+  // 生产代码分布在 app/commands/*(折叠点)与 features/remote_control/manager/*
+  // (rpc 准入拒绝),两侧都扫。
+  const rustProducers = commands + remoteControlManager;
+  for (const code of jsKeys) {
+    assert.ok(rustProducers.includes(code),
+      `WEB_TURN_ERROR_KEYS entry "${code}" has no Rust producer; rename one side or the other`);
+  }
+}
+
 // 知识库批量导入的进度查看与继续/取消/重试/失败文件分页是一组协同命令：Web 端知识库
 // 已开放（kb_collection_add_sources 等），任一导入控制命令遗漏会让对应按钮静默失败。
 for (const command of [
