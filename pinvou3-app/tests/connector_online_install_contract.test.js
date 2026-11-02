@@ -40,7 +40,7 @@ assert.match(installer, /normalized_path_eq/);
 assert.match(installer, /\.installing-/);
 
 assert.match(tmeet, /@tencentcloud\/tmeet@1\.0\.19/);
-// 连接器 CLI 解析实现已收敛到 posix.rs（Wave 3 去重），linux/macos 仅 re-export。
+// Connector CLI resolution has converged into posix.rs (Wave 3 dedup); linux/macos only re-export it.
 assert.match(posix, /bundled_connector_npm_cli/);
 assert.match(posix, /cli_bin == "tmeet"/);
 assert.match(posix, /bundled_connector_node/);
@@ -48,10 +48,11 @@ for (const platformSource of [linux, macos]) {
   assert.match(platformSource, /connector_cli_command/);
 }
 
-// 版本联动：工具卡展示版本必须与 lock 钉扎（及 tmeet.rs npm 钉扎）一致，
-// 防止再次出现卡片版本与实际安装版本脱节（如历史上的 v1.0.56 vs lock 1.0.65）。
-// 5 份平台 lock 全量校验（NOTICE 承诺「5 份任一即可，版本字段一致」由此背书）：
-// 只改其中一份的版本而漏改其余（或漏改卡片）都会在此失败。
+// Version lockstep: the version shown on the tool cards must match the lock pin (and the tmeet.rs npm pin),
+// preventing a repeat of the card version drifting from the actually installed version (historically
+// v1.0.56 vs lock 1.0.65). All five platform locks are verified in full (this backs the NOTICE promise
+// that "any one of the five suffices, provided the version fields agree"): bumping only one lock and missing
+// the others (or the card) fails here.
 const lockVersionsByPlatform = {};
 for (const [osDir, archDir] of [
   ["macos", "aarch64"],
@@ -134,8 +135,9 @@ assert.match(
   /grep -qxF "\$MIN_TRI"/,
   "dingtalk-smoke.sh must compare against the pinned MIN_TRI floor, not a drift copy",
 );
-// 逐段比较而非加权 1*10000+…:加权在段 ≥100 时给出错误答案(锁钉 1.0.164 vs
-// 下限 1.1.0 → 10100 ≤ 10164 误过,而语义上下限已高于锁)。
+// Per-segment comparison instead of weighted 1*10000+…: weighting gives the wrong answer once a segment
+// reaches ≥100 (lock pins 1.0.164 vs floor 1.1.0 → 10100 ≤ 10164 wrongly passes, though semantically the
+// floor is already above the lock).
 const seg = (v) => v.split(".").map(Number);
 const segLe = (a, b) => {
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -150,9 +152,9 @@ assert.ok(
   "dws SKILL.md cli_version floor must not exceed the dws version pinned in the platform locks",
 );
 
-// ---- 两份冒烟脚本自身的契约(floor 之外的行为钉) ----
-// 1) 版本比较必须用逐段数值排序键:丢掉 -k 键退化为字典序会把 1.0.9 排到
-//    1.0.64 之后,低于下限的 CLI 误 PASS,而 floor 字面量钉全绿。
+// ---- Contracts of the two smoke scripts themselves (behavior pins beyond the floors) ----
+// 1) Version comparison must use the per-segment numeric sort keys: dropping the -k keys degrades to lexical
+//    order, which sorts 1.0.9 after 1.0.64 and lets a below-floor CLI pass while the floor-literal pins stay green.
 for (const [name, source] of [
   ["dingtalk-smoke.sh", dingtalkSmoke],
   ["wecom-smoke.sh", wecomSmoke],
@@ -162,9 +164,10 @@ for (const [name, source] of [
     /sort -t\. -k1,1n -k2,2n -k3,3n/,
     `${name}: 版本比较必须保留逐段数值排序键(字典序会让 1.0.9 >= 1.0.64)`,
   );
-  // 2) 版本号解析必须锚定含 CLI 名的行并取名字之后的点分数字:同族 lark-cli
-  //    实测在版本行之前打「a new version 1.0.96 is available」(feishu.rs 钉有
-  //    该夹具),「全文首个点分数字」会把更新号/代理 IP 读成本机版本误 PASS。
+  // 2) Version parsing must anchor on the line containing the CLI name and take dotted numbers after the name:
+  //    the same-family lark-cli was observed printing "a new version 1.0.96 is available" before the version
+  //    line (feishu.rs pins that fixture); "first dotted number in the whole text" would read the update
+  //    number/proxy IP as the local version and pass by mistake.
   assert.match(
     source,
     /tolower\(\$0\) ~ \/(dws|wecom-cli)\//,
@@ -175,9 +178,9 @@ for (const [name, source] of [
     /if \(seen && \$i ~/,
     `${name}: 版本号必须取 CLI 名字之后的点分数字(seen 标志)`,
   );
-  // 3) 所有 CLI 输出回显(含 PASS 与 SKIP 行)都要过 redact:直接钉 [1] PASS 回显
-  //    与 [3] SKIP 回显的管道形态(FAIL 路径本就过 redact,按出现次数钉会被
-  //    FAIL 路径凑数而漏掉 PASS 路径——经变异验证)。
+  // 3) Every CLI output echo (including PASS and SKIP lines) must go through redact: pin the pipe shapes of
+  //    the [1] PASS echo and the [3] SKIP echo directly (the FAIL path already goes through redact; pinning
+  //    by occurrence count would let the FAIL path pad the count and miss the PASS path — verified via mutation).
   assert.match(
     source,
     /可执行: \$\(printf '%s\\n' "\$VER" \| redact \|/,
@@ -188,16 +191,18 @@ for (const [name, source] of [
     /域结果未知\(exit \$d_rc\): \$\(printf '%s' "\$OUT" \| redact \|/,
     `${name}: [3] 域探测 SKIP 回显必须过 redact`,
   );
-  // 3b) 探测限时必须有第二级强制终止:GNU timeout 缺 -k 或看门狗缺 KILL 升级时,
-  //     吞 TERM 的 CLI 会把探测拖成永久等待(源形态钉;行为钉见下方第 6 节)。
+  // 3b) The probe deadline must have a second-level hard kill: with GNU timeout missing -k or the watchdog
+  //     missing the KILL escalation, a TERM-swallowing CLI drags the probe into a permanent wait (source-shape
+  //     pin; behavior pin in section 6 below).
   assert.match(
     source,
     /-k "\$\{?(DWS|WECOM)_KILL_GRACE\}?"/,
     `${name}: coreutils timeout 必须带 -k 强杀宽限(吞 TERM 的 CLI 会挂住 timeout 本身)`,
   );
-  // 3b-进程组所有权(评审 P1 修正):CLI 以 set -m 启动为自有进程组组长、
-  // stdin 接 /dev/null(非交互契约,CLI 不得吃调用方输入或等输入到超时),
-  // 派生后立即 set +m;TERM/KILL 都送整组(-$pid),组信号不可用才退回单进程。
+  // 3b-process-group ownership (reviewer P1 correction): the CLI starts via set -m as leader of its own
+  // process group, stdin on /dev/null (non-interactive contract: the CLI must not consume the caller's input
+  // or wait on input until timeout), set +m immediately after the spawn; TERM/KILL both go to the whole
+  // group (-$pid), falling back to single-process kill only when group signals are unavailable.
   assert.match(
     source,
     /set -m\s*\n\s*"\$CLI" "\$@" <\/dev\/null >"\$t" 2>&1 &\s*\n\s*local pid=\$!\s*\n\s*set \+m/,
@@ -205,8 +210,19 @@ for (const [name, source] of [
   );
   assert.match(
     source,
-    /"\$TIMEOUT_BIN" -k "\$\{?(DWS|WECOM)_KILL_GRACE\}?" "\$\{?(DWS|WECOM)_TIMEOUT\}?" "\$CLI" "\$@" <\/dev\/null >"\$t" 2>&1/,
-    `${name}: coreutils timeout 分支同样必须接 /dev/null stdin(默认组杀语义满足所有权契约,勿加 --foreground)`,
+    /"\$TIMEOUT_BIN" -k "\$\{?(DWS|WECOM)_KILL_GRACE\}?" "\$\{?(DWS|WECOM)_TIMEOUT\}?" "\$CLI" "\$@" <\/dev\/null >"\$t" 2>&1 &\s*\n\s*local tpid=\$!\s*\n\s*set \+m\s*\n\s*wait "\$tpid"/,
+    `${name}: coreutils timeout 分支必须同样以 set -m 后台启动(组 id=timeout pid 可组信号寻址)、stdin 接 /dev/null、wait 回收;勿加 --foreground`,
+  );
+  // GNU timeout monitors only its direct child: it returns as soon as the leader dies, and -k does not
+  // follow up on the rest of the group, so a TERM-resistant grandchild survives the probe (reviewer
+  // reproduced on GNU coreutils 8.32). After a 124 finish, the script's own TERM->grace->group-KILL
+  // escalation chain must run, gated by a group-liveness probe (kill -0 on the negative pid): return at once
+  // when the group is empty (compliant TERM death, or -k already cleaned up), escalate only while the group
+  // survives.
+  assert.match(
+    source,
+    /if \[ "\$rc" -eq 124 \] && kill -0 "-\$tpid" 2>\/dev\/null; then\s*\n\s*kill -TERM "-\$tpid" 2>\/dev\/null \|\| kill -TERM "\$tpid" 2>\/dev\/null\s*\n\s*sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?"\s*\n\s*kill -KILL "-\$tpid" 2>\/dev\/null \|\| kill -KILL "\$tpid" 2>\/dev\/null/,
+    `${name}: coreutils timeout 分支 124 收场后必须补组升级链(TERM->KILL_GRACE->组 KILL),用 kill -0 组存活探针把守——leader 之死不得带走升级所有权`,
   );
   assert.match(
     source,
@@ -218,15 +234,17 @@ for (const [name, source] of [
     /sleep "\$\{?(DWS|WECOM)_KILL_GRACE\}?"\s*\n\s*kill -KILL "-\$pid" 2>\/dev\/null \|\| kill -KILL "\$pid"/,
     `${name}: KILL 升级必须同样送整组(吞 TERM 的孙进程只有组 KILL 收得到)`,
   );
-  // 看门狗清理行:删掉它,看门狗子壳会活过快探针,在 PID 复用后误杀无辜进程,
-  // 迟到的 .deadline 也永不清理——此行无行为夹具背书,只能形态钉。
+  // Watchdog cleanup line: without it the watchdog subshell outlives a fast probe and, after PID reuse,
+  // kills innocent processes, and the late .deadline is never cleaned up — no behavior fixture backs this
+  // line, so it can only be shape-pinned.
   assert.match(
     source,
     /kill "\$wpid" 2>\/dev\/null; wait "\$wpid" 2>\/dev\/null/,
     `${name}: 看门狗必须在 wait 后回收子壳(孤儿看门狗会在 PID 复用后误杀进程)`,
   );
-  // 到点事实必须独立于子进程最终退出码:TERM 后优雅 exit 0 的 CLI 会让 wait 返回
-  // 0,把超时伪装成通过(GNU timeout 同形态本就 124;行为钉见第 6 节 term-zero)。
+  // The deadline fact must be independent of the child's final exit code: a CLI that exits 0 gracefully
+  // after TERM makes wait return 0, disguising the timeout as a pass (GNU timeout returns 124 for the same
+  // shape; behavior pin in section 6, term-zero).
   assert.match(
     source,
     /\[ -e "\$tflag" \] && rc=124/,
@@ -237,8 +255,8 @@ for (const [name, source] of [
     /\[ "\$rc" -eq 137 \] && rc=124/,
     `${name}: KILL 死(137)必须归一为超时 124,不能伪装成「结果未知」`,
   );
-  // 3c) 版本/连接 PASS 以探测退出 0 为前提:健康形状的输出 + 非零退出(实测
-  //     exit 7 曾全绿)不构成通过;超时 124 亦被同一前提拦截。
+  // 3c) Version/connection PASS presumes the probe exited 0: healthy-looking output plus a non-zero exit
+  //     (exit 7 was observed going all green) is not a pass; timeout 124 is caught by the same precondition.
   assert.match(
     source,
     /if \[ "\$v_rc" -eq 0 \] && \[ -n "\$TRI" \]/,
@@ -249,29 +267,32 @@ for (const [name, source] of [
     /if \[ "\$a_rc" -eq 0 \] && echo "\$AUTH"/,
     `${name}: [2] 连接 PASS 必须先要求探测退出 0(exit 7 + authenticated:true 不是已连接)`,
   );
-  // 3d) redact 字段形态必须含数字后缀键(accessToken2 形态曾裸过)。
-  // 首位数字类只有形态钉、没有行为夹具——这不是缺口:sed 匹配不锚定行首,键含
-  // token 时值遮蔽总能在数字后重启匹配(实测 {"2fa_token":"SECRET9"} 在两类下都
-  // 被遮蔽,首位类对泄漏行为冗余,它只定输出形状);尾部类则不然(token 后的数字
-  // 必须被尾类吃掉才能接到 ": " 值,accessToken2 夹具因此行为红)。类文本被改,
-  // 本钉(整段连写形态)即红——漏字符类必先红在这里。
+  // 3d) The redact field pattern must accept digit-suffixed keys (the accessToken2 shape once leaked bare).
+  // The leading-digit class has only a shape pin and no behavior fixture — not a gap: the sed match does not
+  // anchor at line start, so when a key contains token, the value masking can always restart matching after
+  // the digit (measured: {"2fa_token":"SECRET9"} is masked under both classes; the leading class is redundant
+  // for leak behavior and only fixes the output shape). The trailing class is different: digits after token
+  // must be consumed by the trailing class to reach the ": " value, which is why the accessToken2 fixture
+  // goes red behaviorally. If the class text changes, this pin (the whole run-on shape) goes red — a missing
+  // character class always trips here first.
   assert.match(
     source,
     /\[A-Za-z0-9_-\]\*\[Tt\]\[Oo\]\[Kk\]\[Ee\]\[Nn\]\[A-Za-z0-9_-\]\*/,
     `${name}: redact 字段形态必须接受数字后缀键`,
   );
 }
-// 4) wecom 冒烟必须扫应用自装布局:只搜 PATH 会漏掉 <数据根>/assets/cli/wecom-cli/<ver>/
-//    (native_installer 落盘处),并把关不上的报错引向 npm -g 自装(NOTICE-wecom
-//    登记的哈希循环路径)。数据根走 PINVOU3_ROOT(paths.rs pinvou3_home 支持
-//    PINVOU3_HOME 整体重定位;只认 $HOME/.pinvou3 会漏掉重定位安装)。
+// 4) The wecom smoke must scan the app-installed layout: searching PATH only would miss
+//    <data root>/assets/cli/wecom-cli/<ver>/ (where native_installer lays the binary down) and steer an
+//    ungated error toward a self-installed npm -g copy (the hash-loop path registered in NOTICE-wecom). The
+//    data root goes through PINVOU3_ROOT (paths.rs pinvou3_home supports relocating the data root wholesale
+//    via PINVOU3_HOME; honoring only $HOME/.pinvou3 would miss relocated installs).
 assert.match(
   wecomSmoke,
   /for d in "\$PINVOU3_ROOT"\/assets\/cli\/wecom-cli\/\*\/; do/,
   "wecom-smoke.sh 必须扫描应用安装布局 <数据根>/assets/cli/wecom-cli/<version>/(钉循环本身,注释提及不算)",
 );
-// 数据根解析必须与应用同名(PINVOU3_HOME 优先、默认 $HOME/.pinvou3):钉定义行,
-// 防止回退成硬编码 $HOME/.pinvou3(重定位安装再次漏扫)。
+// Data-root resolution must match the app (PINVOU3_HOME first, default $HOME/.pinvou3): pin the definition
+// line to prevent falling back to a hardcoded $HOME/.pinvou3 (relocated installs would be missed again).
 for (const [name, source] of [
   ["dingtalk-smoke.sh", dingtalkSmoke],
   ["wecom-smoke.sh", wecomSmoke],
@@ -293,11 +314,12 @@ assert.doesNotMatch(
   "dingtalk-smoke.sh 找不到 CLI 时不得建议 npm -g 自装(绕过 lock 钉扎)",
 );
 
-// ---- 4b) 解析顺序:应用管理资产优先,PATH 只作显式开发回退 ----
-// 冒烟要验证的是应用按 connectors.lock.json 安装并哈希校验过的二进制;PATH 上的
-// 同名项(陈旧/恶意)曾排在资产之前,可遮住 lock 钉扎资产让冒烟给「另一个二进制」
-// 发通过。钉:版本目录扫描循环必须先于 PATH 解析出现,且 PATH 回退选中时必须
-// 带来源标注(把解析挪回 PATH 优先、或删掉标注,此处即红)。
+// ---- 4b) Resolution order: app-managed assets first, PATH only as an explicit dev fallback ----
+// The smoke must verify the binary the app installed from connectors.lock.json and hash-verified; a
+// same-named PATH entry (stale/malicious) used to be resolved before the assets and could shadow the
+// lock-pinned asset, letting the smoke pass "another binary". Pins: the version-directory scan loop must
+// appear before PATH resolution, and selecting the PATH fallback must carry the source annotation (moving
+// resolution back to PATH-first, or dropping the annotation, goes red here).
 for (const [name, source] of [
   ["dingtalk-smoke.sh", dingtalkSmoke],
   ["wecom-smoke.sh", wecomSmoke],
@@ -316,20 +338,22 @@ for (const [name, source] of [
   );
 }
 
-// 5) redact() 行为钉(从两份脚本源码现场抽取函数体真跑):host safe_auth_log_line
-//    四标记整行打码 + 引号 JSON 字段打码。删掉 awk 阶段/sed 阶段或换标记词,
-//    这里先红——floor 钉不覆盖脱敏。
+// 5) redact() behavior pin (the function body is extracted live from both script sources and actually run):
+//    the host's safe_auth_log_line masks the whole line for the four markers plus quoted JSON field masking.
+//    Removing the awk stage/sed stage or swapping the marker words goes red here first — the floor pins do
+//    not cover redaction.
 {
   const { execFileSync } = require("node:child_process");
   const extractRedact = (source, name) => {
     const lines = source.split("\n");
     const start = lines.findIndex((l) => l.startsWith("redact(){"));
     assert.ok(start >= 0, `${name}: 未找到 redact(){ 定义`);
-    // 定义共 3 行(redact(){ … awk … sed …)。
+    // The definition is 3 lines in total (redact(){ … awk … sed …).
     const defn = lines.slice(start, start + 3).join("\n");
     assert.match(defn, /access_token\|refresh_token\|authorization\|bearer/, `${name}: redact 必须覆盖 host 四标记`);
-    // 泛化 token 赋值形态(评审 P1 补充):api_token=…、裸 token: …、token = …
-    // 不属四个 host 标记,此前会漏进失败摘录。类文本被改,本钉即红。
+    // Generalized token assignment shapes (reviewer P1 addition): api_token=…, bare token: …, token = …
+    // are not among the four host markers and used to leak into failure excerpts. Changing the class text
+    // goes red on this pin.
     assert.match(
       defn,
       /\[a-z0-9_-\]\*token\[a-z0-9_-\]\*\[\[:space:\]\]\*\[=:\]/,
@@ -337,8 +361,9 @@ for (const [name, source] of [
     );
     return defn;
   };
-  // 每条形态都断言期望的打码标记,而不只断言 SECRET 不在输出里:只传函数定义不调用时
-  // bash 不读 stdin、输出为空,"不含 SECRET" 会空真(CI 以 spawnSync EPIPE 暴露)。
+  // Each shape asserts its expected masking marker, not merely that SECRET is absent from the output: when
+  // only the function definition is passed without a call, bash never reads stdin and the output is empty,
+  // so "no SECRET" would pass vacuously (CI exposed this via spawnSync EPIPE).
   const leakForms = [
     ["access_token=SECRET1", "[已脱敏"],
     ['refresh_token: "SECRET2"', "[已脱敏"],
@@ -346,11 +371,12 @@ for (const [name, source] of [
     ["AUTHORIZATION: BEARER SECRET4", "[已脱敏"],
     ["x-auth: bearer SECRET5", "[已脱敏"],
     ['{"token": "SECRET6"}', "token=[REDACTED]"],
-    // authorization 单独成标记(前两条 bearer 形态顺带命中它,这条钉裸 authorization);
-    // 数字后缀键钉字段形态的 0-9 字符类(accessToken2 曾整段裸过)。
+    // authorization is a marker in its own right (the two bearer shapes above happen to hit it; this one
+    // pins bare authorization); the digit-suffixed key pins the 0-9 character class of the field pattern
+    // (accessToken2 once leaked in full).
     ["x-authorization: SECRET7", "[已脱敏"],
     ['{"accessToken2": "SECRET8"}', "token=[REDACTED]"],
-    // 泛化 token 赋值形态(评审 P1 补充):裸赋值键此前整行裸过。
+    // Generalized token assignment shapes (reviewer P1 addition): bare assignment keys used to leak whole lines.
     ["api_token=SECRET10", "[已脱敏"],
     ["token: SECRET11", "[已脱敏"],
     ["token =SECRET12", "[已脱敏"],
@@ -363,7 +389,7 @@ for (const [name, source] of [
     ["wecom-smoke.sh", wecomSmoke],
   ]) {
     const defn = extractRedact(source, name);
-    if (process.platform === "win32") continue; // bash 不在 PATH 的平台跳过行为段
+    if (process.platform === "win32") continue; // skip the behavior section on platforms without bash on PATH
     const runRedact = (line) =>
       execFileSync("bash", ["-c", `${defn}\nredact`], { input: `${line}\n` }).toString();
     for (const [line, marker] of leakForms) {
@@ -374,8 +400,8 @@ for (const [name, source] of [
       );
     }
     assert.equal(runRedact("plain diagnostic line"), "plain diagnostic line\n", `${name}: redact 不得改写无凭证形态的行`);
-    // 泛化规则的负控:普通含 token 字样的非赋值行不得被整行吞掉(过度打码会
-    // 把超时/失败诊断变得不可读)。
+    // Negative control for the generalized rule: an ordinary non-assignment line merely containing the word
+    // token must not be swallowed whole (over-masking makes timeout/failure diagnostics unreadable).
     assert.equal(
       runRedact("token count: 3 items in cache"),
       "token count: 3 items in cache\n",
@@ -384,13 +410,15 @@ for (const [name, source] of [
   }
 }
 
-// ---- 6) 探测限时对吞 TERM 与 TERM 后优雅退出的 CLI 都必须有界且判超时 ----
-// GNU timeout 缺 -k:子进程无视 TERM 后 timeout 自身无限等待;看门狗只发一次
-// TERM:wait 同样无界。现场抽取两份脚本的 run 函数真跑 TERM 抗性子进程:两条
-// 路径都必须在 时限+杀宽限 内以 124 收场,且强杀前的输出保留(超时诊断可用)。
-// 另一形态:子进程收到 TERM 后优雅清理并以 0 退出——wait 的 0 不得覆盖「已到点」
-// 事实,仍须判 124(GNU timeout 同形态本就 124;看门狗分支曾实测伪装成 rc=0)。
-// spawnSync 的 timeout+SIGKILL 只是回归兜底——修回归后此测试自身数秒内结束。
+// ---- 6) The probe deadline must stay bounded and report timeout for both TERM-swallowing and graceful-exit-after-TERM CLIs ----
+// GNU timeout without -k: once the child ignores TERM, timeout itself waits forever; a watchdog that sends
+// TERM only once leaves wait equally unbounded. The run function is extracted live from both scripts and run
+// against TERM-resistant children: both paths must finish with 124 within deadline+kill grace, and output
+// produced before the hard kill must be preserved (timeout diagnostics need the scene).
+// Another shape: the child receives TERM, cleans up gracefully, and exits 0 — wait's 0 must not overwrite
+// the "deadline reached" fact, and the result must still be 124 (GNU timeout returns 124 for the same shape;
+// the watchdog branch was observed masquerading as rc=0).
+// spawnSync's timeout+SIGKILL is only a regression backstop — once fixed, this test itself finishes in seconds.
 {
   const { spawnSync, execFileSync } = require("node:child_process");
   const os = require("node:os");
@@ -409,8 +437,9 @@ for (const [name, source] of [
       "#!/usr/bin/env bash\ntrap '' TERM\nprintf 'stubborn 9.9.9\\n'\nsleep 300\n",
     );
     fs.chmodSync(stubborn, 0o755);
-    // 优雅退出夹具必须用 sleep&wait 而非前台 sleep:bash 在前台子进程上会推迟
-    // trap 执行(那实际是「吞 TERM」形态,走 KILL 路径),wait 才会立即跑 trap。
+    // The graceful-exit fixture must use sleep&wait, not a foreground sleep: bash defers trap execution
+    // while a foreground child runs (that is really the "swallow TERM" shape, taking the KILL path); only
+    // wait runs the trap immediately.
     const termZero = path.join(tmp, "term-zero-cli");
     fs.writeFileSync(
       termZero,
@@ -466,10 +495,11 @@ for (const [name, source] of [
       };
       if (hasTimeout) runBounded(`${name} coreutils timeout 分支`, timeoutBin);
       runBounded(`${name} 看门狗分支`, "");
-      // TERM 后优雅 exit 0:两条路径都不得把超时伪装成 rc=0(看门狗分支曾实测)。
+      // Graceful exit 0 after TERM: neither path may disguise the timeout as rc=0 (observed on the watchdog branch).
       if (hasTimeout) runBounded(`${name} coreutils 分支 TERM 后 exit 0 仍判超时`, timeoutBin, termZero, "term-zero 9.9.9");
       runBounded(`${name} 看门狗分支 TERM 后 exit 0 仍判超时`, "", termZero, "term-zero 9.9.9");
-      // 后续调用对照:超时收场不得污染下一次探测(残留标记/孤儿会让快速调用挂住或失败)。
+      // Follow-up call control: a timeout finish must not pollute the next probe (leftover markers/orphans
+      // would hang or fail a fast call).
       const after = spawnSync("bash", ["-c", harness(quick, "")], {
         encoding: "utf8",
         timeout: 20000,
@@ -488,10 +518,11 @@ for (const [name, source] of [
       });
       assert.strictEqual(res.status, 0, `${name}: 健康子进程不得被误杀(status=${res.status})`);
       assert.ok(res.stdout.includes("quick 1.2.3"), `${name}: 健康探测输出必须完整回放`);
-      // 分配失败(mktemp 失败/为空)必须在派生任何清理路径之前原路返回:旧形态
-      // 会把空的 t 派生成调用方目录里的相对 .deadline,尾部普通 rm 误删同名文件
-      // (评审实测复现;删掉守卫本块即红——实测旧形态此处 status=124 且哨兵被删)。
-      // 失败后换回健康 TMPDIR 的下一次调用必须照常成功(失败不得污染后续探测)。
+      // An allocation failure (mktemp failing/empty) must early-return before spawning any cleanup path: the
+      // old shape spawned the empty t into a relative .deadline in the caller's directory, and the trailing
+      // plain rm deleted the same-named file (reviewer reproduced; remove the guard and this block goes red —
+      // the old shape measured status=124 here with the sentinel deleted). After the failure, the next call
+      // with a healthy TMPDIR must succeed as usual (a failure must not pollute later probes).
       const allocCaller = fs.mkdtempSync(path.join(os.tmpdir(), "smoke-alloc-caller-"));
       fs.writeFileSync(path.join(allocCaller, ".deadline"), "caller owns this file");
       const runFromCaller = (env) =>
@@ -526,15 +557,17 @@ for (const [name, source] of [
         nextAlloc.stdout.includes("quick 1.2.3"),
         `${name}: 分配失败后的下一次调用输出必须完整回放`,
       );
-      // 组所有权夹具(评审 P1):吞 TERM 的 wrapper 派生 native 孙进程时,只杀
-      // 直接子进程会让孙进程活过超时(持凭证进程超出冒烟边界)。wrapper 与孙
-      // 进程都必须随探测收场——删 set -m(组启动)或把组 kill 退回单进程 kill,
-      // 孙进程存活此处即红。wrapper 与孙进程都自带 trap '' TERM:组 TERM 打不穿
-      // 两者,固定版必须靠组 KILL 升级才收得掉,夹具连 KILL 升级的组送达一并钉住
-      // (wrapper 夹具曾漏掉 trap——它直接死在组 TERM 上,与这里声称模拟的
-      // 「吞 TERM wrapper」不符;coreutils timeout 分支尤其测不到升级:GNU
-      // timeout 在直接子进程死后即退出,-k 升级只覆盖 TERM 后仍存活的 leader)。
-      // (严格 POSIX 语义;Windows 的 MSYS2 kill 语义不同,本块在 win32 不执行。)
+      // Group-ownership fixture (reviewer P1): when a TERM-swallowing wrapper spawns a native grandchild,
+      // killing only the direct child lets the grandchild outlive the timeout (a credential-holding process
+      // escaping the smoke boundary). Both wrapper and grandchild must finish with the probe — remove set -m
+      // (group startup) or demote the group kill back to a single-process kill, and a surviving grandchild
+      // goes red here. Both wrapper and grandchild carry trap '' TERM: a group TERM cannot pierce either, so
+      // the fix must reap them via the group-KILL escalation, and the fixture pins the group delivery of that
+      // KILL escalation too (the wrapper fixture once lacked the trap — it died straight on the group TERM,
+      // which did not match the "TERM-swallowing wrapper" it claimed to simulate; the coreutils timeout
+      // branch's group escalation is completed by the post-124 sweep chain, see the leader-early-exit fixture
+      // below).
+      // (Strict POSIX semantics; Windows MSYS2 kill semantics differ, so this block does not run on win32.)
       const gpidFile = path.join(tmp, "gpid");
       const grandchild = path.join(tmp, "grandchild-cli");
       fs.writeFileSync(
@@ -548,17 +581,19 @@ for (const [name, source] of [
         "#!/usr/bin/env bash\ntrap '' TERM\n\"$GRANDCHILD_BIN\" &\nwait\n",
       );
       fs.chmodSync(wrapper, 0o755);
-      // leader 提前退场夹具(评审 P2):wrapper 不带 trap,组 TERM 上 leader 即死
-      // 而抗 TERM 孙进程尚存——父壳 wait 提前返回,升级链最容易在此被砍断:旧
-      // 形态的 kill $wpid 恰好带走还没发组 KILL 的看门狗。只跑看门狗分支:GNU
-      // timeout 的升级与监控都绑在直接子进程上,leader 死了它自己即退出,该形态
-      // 下孙进程收场本就不在其契约内(见上)。
+      // Leader-early-exit fixture (reviewer P2): the wrapper carries no trap, so the leader dies on the group
+      // TERM while the TERM-resistant grandchild survives — the parent shell's wait returns early, and the
+      // escalation chain is easiest to sever here: the old shape's kill $wpid took down the watchdog before it
+      // ever sent the group KILL. Both branches must run: the watchdog branch verifies the escort fix; the
+      // coreutils timeout branch verifies the post-124 group-escalation sweep (GNU timeout monitors only its
+      // direct child and returns once the leader dies, so the grandchild can only be reaped by the script's
+      // own group KILL).
       const wrapperEarlyExit = path.join(tmp, "wrapper-early-exit-cli");
       fs.writeFileSync(wrapperEarlyExit, '#!/usr/bin/env bash\n"$GRANDCHILD_BIN" &\nwait\n');
       fs.chmodSync(wrapperEarlyExit, 0o755);
       const grandchildDead = () => {
         const gpid = fs.existsSync(gpidFile) ? fs.readFileSync(gpidFile, "utf8").trim() : "";
-        if (!gpid) return false; // 尚未登记 pid:按存活处理,继续等
+        if (!gpid) return false; // pid not registered yet: treat as alive and keep waiting
         return spawnSync("bash", ["-c", `kill -0 ${JSON.stringify(gpid)} 2>/dev/null`]).status !== 0;
       };
       const runTree = (label, bin, wrapperBin = wrapper) => {
@@ -583,9 +618,10 @@ for (const [name, source] of [
       runTree(`${name} 看门狗分支 wrapper+孙进程`, "");
       if (hasTimeout) runTree(`${name} coreutils timeout 分支 wrapper+孙进程`, timeoutBin);
       runTree(`${name} 看门狗分支 leader 提前退场后孙抗 TERM 仍被组 KILL`, "", wrapperEarlyExit);
-      // stdin 契约夹具(评审 P2):探测不得继承调用方 stdin——CLI 可能吃掉管道
-      // 输入或在无 TTY 提示上等输入到超时。喂一行假输入,CLI 必须见到 EOF
-      // (stdin-closed)而不是把它读走;secret 出现在输出里即红。
+      if (hasTimeout) runTree(`${name} coreutils timeout 分支 leader 提前退场后孙抗 TERM 仍被组 KILL`, timeoutBin, wrapperEarlyExit);
+      // stdin contract fixture (reviewer P2): probes must not inherit the caller's stdin — the CLI could
+      // consume pipe input or wait on a no-TTY prompt until timeout. Feed one fake input line: the CLI must
+      // see EOF (stdin-closed) instead of reading it; the secret appearing in output goes red.
       const stdinCli = path.join(tmp, "stdin-cli");
       fs.writeFileSync(
         stdinCli,
@@ -611,10 +647,11 @@ for (const [name, source] of [
   }
 }
 
-// ---- 7) 探测失败(非零退出)不得发 PASS ----
-// 健康形状的输出 + exit 7 曾让两份脚本全绿退出 0(评审以假 CLI 实测复现)。
-// 真脚本 + 假 CLI 全跑:版本/连接两处都必须 FAIL,整体非 0 退出,且不得落入
-// 「全部域探测跳过」的 exit 3 掩护路径(假 CLI 域探测全 exit 0)。
+// ---- 7) A failing probe (non-zero exit) must not PASS ----
+// Healthy-looking output plus exit 7 once let both scripts finish all green with exit 0 (reviewer
+// reproduced with a fake CLI). Full runs of the real scripts with a fake CLI: version and connection must
+// both FAIL, the overall exit must be non-zero, and it must not fall into the "all domain probes skipped"
+// exit 3 escape hatch (the fake CLI's domain probes all exit 0).
 {
   const { spawnSync } = require("node:child_process");
   const os = require("node:os");
@@ -672,11 +709,12 @@ for (const [name, source] of [
   }
 }
 
-// ---- 8) 解析/比较/发现管道行为钉(形状钉不执行,变异不咬)----
-// 「更新提示在前行」(行内无 CLI 名)由行名过滤排除——该夹具钉的是行名过滤;
-// seen 锚由「同一行内数字在名字之前」的夹具钉住,删 seen 此处才红。比较管道
-// head→tail 或丢 -k 数值键时下限判定翻转;发现排序丢键时 1.0.9 会压过 1.0.64。
-// 全部现场 eval 真跑。
+// ---- 8) Behavior pins for the parse/compare/discovery pipelines (shape pins do not execute, so mutations do not bite) ----
+// "Update notice on an earlier line" (no CLI name on the line) is excluded by the line-name filter — that
+// fixture pins the line-name filter; the seen anchor is pinned by the "digits before the name on the same
+// line" fixture, and only removing seen goes red there. Flipping the compare pipeline head→tail or dropping
+// the -k numeric keys flips the floor verdict; dropping the discovery sort's keys lets 1.0.9 outrank 1.0.64.
+// All of it is actually run via live eval.
 {
   const { execFileSync } = require("node:child_process");
   if (process.platform !== "win32") {
@@ -700,8 +738,9 @@ for (const [name, source] of [
         min,
         `${name}: 更新提示行(数字在前、行内无 CLI 名)不得被读成本机版本——删行名过滤此处即红`,
       );
-      // seen 锚的专属夹具:同一行内点分数字出现在 CLI 名之前——行名过滤放行该行,
-      // 只有 seen 能跳过名字前的数字取名字后的版本(独立负控实证:删 seen 此处红)。
+      // Dedicated fixture for the seen anchor: dotted digits appear before the CLI name on the same line —
+      // the line-name filter lets the line through, and only seen can skip the digits before the name and
+      // take the version after it (independent negative control: removing seen goes red here).
       assert.strictEqual(
         runLine(triLine, "TRI", { VER: `2.5.1 available for ${cliName} needs ${min}` }),
         min,
@@ -743,9 +782,10 @@ for (const [name, source] of [
   }
 }
 
-// ---- 9) wecom [3] 分支序:超时(124)先于权限词 ----
-// 超时探测的部分输出可能恰含「权限」——先查词会把超时误标成「域未授权」;
-// 两者都是 SKIP,但超时要求的是重跑,标注不能误导。
+// ---- 9) wecom [3] branch order: timeout (124) before the permission words ----
+// A timed-out probe's partial output may contain "permissions" — checking words first would mislabel the
+// timeout as "domain unauthorized"; both are SKIP, but a timeout calls for a rerun, and the labeling must
+// not mislead.
 {
   const lines = wecomSmoke.split("\n");
   const timeoutIdx = lines.findIndex((l) => l.includes('elif [ "$d_rc" -eq 124 ]'));
@@ -754,9 +794,10 @@ for (const [name, source] of [
   assert.ok(permIdx > timeoutIdx, "wecom-smoke.sh: [3] 超时分支必须先于权限词分支");
 }
 
-// ---- 9b) dingtalk [3] 分支序:超时(124)先于错误词(与 wecom [3] 同款) ----
-// 超时探测的部分输出可能恰含 not found/未知——先查词会把超时误标成「域不存在」
-// 硬失败;两者处置不同,超时要求的是重跑,标注不能误导。
+// ---- 9b) dingtalk [3] branch order: timeout (124) before the error words (same as wecom [3]) ----
+// A timed-out probe's partial output may contain not found/unknown — checking words first would mislabel
+// the timeout as a hard "domain missing" failure; the two are handled differently, a timeout calls for a
+// rerun, and the labeling must not mislead.
 {
   const lines = dingtalkSmoke.split("\n");
   const timeoutIdx = lines.findIndex((l) => l.includes('elif [ "$d_rc" -eq 124 ]'));
@@ -765,12 +806,13 @@ for (const [name, source] of [
   assert.ok(errIdx > timeoutIdx, "dingtalk-smoke.sh: [3] 超时分支必须先于错误词分支(超时的部分输出可能恰含 not found/未知)");
 }
 
-// ---- 10) wecom [4] 错误键只查 envelope,不查正文值 ----
-// wecomcli-doc SKILL.md 返回表的 string 字段都承载文档数据:content 是「文档内容
-// 较短时直接返回的原文」——值恰为 error 的合法文档曾被裸 grep 误红成读失败(评审
-// P3,真脚本 + 假 CLI 全跑);name/url/file_path 同表 string 字段,文档名恰为
-// error 时同样误红,脚本一并屏蔽。屏蔽正文后 envelope 层的结构化错误键
-// (errcode:3)仍必须 FAIL——屏蔽不得吞检查。
+// ---- 10) wecom [4] error keys are checked in the envelope only, never in body values ----
+// Every string field of the wecomcli-doc SKILL.md return table carries document data: content is "the
+// original text returned directly when the document is short" — a legitimate document whose value is
+// exactly "error" once went red as a failed read under a bare grep (reviewer P3, full runs of the real
+// script with a fake CLI); name/url/file_path are string fields of the same table and go red the same way
+// when the document name is exactly "error", so the script masks them all. After masking body values, the
+// envelope layer's structured error keys (errcode:3) must still FAIL — masking must not swallow the check.
 {
   const { spawnSync } = require("node:child_process");
   const os = require("node:os");
@@ -806,7 +848,8 @@ for (const [name, source] of [
         },
       });
     };
-    // 合法 envelope + 正文值恰为 "error":屏蔽正文后必须判读成功,不得误红。
+    // Legitimate envelope with a body value exactly "error": after masking the body it must read as success,
+    // not go red by mistake.
     const good = runSmoke(
       '{"url":"https://doc.example/x","name":"周报","content":"error","file_path":"","document":{},"version":"3"}',
     );
@@ -819,7 +862,7 @@ for (const [name, source] of [
       good.stdout.includes("[PASS] 读到文档内容"),
       `wecom-smoke.sh: 正文屏蔽后读取必须 PASS\n${good.stdout}`,
     );
-    // envelope 真错误键:屏蔽不得吞掉 envelope 层的结构化错误。
+    // Real envelope error key: masking must not swallow the envelope layer's structured error.
     const bad = runSmoke(
       '{"url":"https://doc.example/x","name":"t","content":"ok","file_path":"","document":{},"version":"3","errcode":3}',
     );
@@ -832,8 +875,9 @@ for (const [name, source] of [
       !bad.stdout.includes("[PASS] 读到文档内容"),
       `wecom-smoke.sh: errcode:3 不得判读成功\n${bad.stdout}`,
     );
-    // 同表其余 string 字段承载文档数据:文档名/链接/落盘路径恰含 error 的合法
-    // envelope 也不得误红(屏蔽键须盖住返回表全部 string 字段)。
+    // The other string fields of the same table carry document data: a legitimate envelope whose document
+    // name/link/on-disk path contains "error" must not go red either (the masked keys must cover every
+    // string field of the return table).
     const named = runSmoke(
       '{"url":"https://doc.example/error","name":"error","content":"ok","file_path":"/tmp/error.md","document":{},"version":"3"}',
     );
@@ -849,13 +893,14 @@ for (const [name, source] of [
   }
 }
 
-// ---- 10b) dingtalk [4] 错误键只查 envelope,不查正文值(与 §10 同款) ----
-// 真脚本 + 假 CLI 全跑:正文值恰为 error 的合法 envelope 不得误红;屏蔽不得吞掉
-// envelope 层的结构化错误键。屏蔽键取包内文档钉到的正文载体键(--format json
-// envelope 为 {"success": true, "body": {...}}:global-reference.md;result/data
-// 为 --fields 文档与 attendance 脚本的信封键;content 与 §10 同族;jsonml 为
-// doc-read.md 载荷键)。status:"error" 值形态必须仍 FAIL——屏蔽只盖正文载体键,
-// 不得把非载体键上的错误值形态一并吞掉。
+// ---- 10b) dingtalk [4] error keys are checked in the envelope only, never in body values (same as section 10) ----
+// Full runs of the real script with a fake CLI: a legitimate envelope whose body value is exactly "error"
+// must not go red; masking must not swallow the envelope layer's structured error keys. The masked keys are
+// the body-carrier keys the bundled docs pin (--format json envelope is {"success": true, "body": {...}}
+// per global-reference.md; result/data are envelope keys from the --fields doc and the attendance script;
+// content is the same family as section 10; jsonml is the payload key of doc-read.md). The "status":"error"
+// value shape must still FAIL — masking covers body-carrier keys only and must not swallow error value
+// shapes on non-carrier keys.
 {
   const { spawnSync } = require("node:child_process");
   const os = require("node:os");
@@ -891,7 +936,8 @@ for (const [name, source] of [
         },
       });
     };
-    // 合法 envelope + 正文值恰为 "error":屏蔽正文后必须判读成功,不得误红。
+    // Legitimate envelope with a body value exactly "error": after masking the body it must read as success,
+    // not go red by mistake.
     const good = runSmoke(
       '{"url":"https://doc.example/x","name":"周报","content":"error","version":"1"}',
     );
@@ -904,7 +950,7 @@ for (const [name, source] of [
       good.stdout.includes("[PASS] 读到文档内容"),
       `dingtalk-smoke.sh: 正文屏蔽后读取必须 PASS\n${good.stdout}`,
     );
-    // envelope 真错误键:屏蔽不得吞掉 envelope 层的结构化错误。
+    // Real envelope error key: masking must not swallow the envelope layer's structured error.
     const bad = runSmoke(
       '{"url":"https://doc.example/x","name":"t","content":"ok","version":"1","error":"invalid node"}',
     );
@@ -917,10 +963,11 @@ for (const [name, source] of [
       !bad.stdout.includes("[PASS] 读到文档内容"),
       `dingtalk-smoke.sh: envelope error 键不得判读成功\n${bad.stdout}`,
     );
-    // 正文载体键(documented envelope 的 body):值恰为 error 时,裸 grep 的
-    // "error" 模式由值的定界引号拼出(误红);屏蔽必须盖住 body 的字符串值。
-    // (正文内文含引号的形态经 JSON 转义成 \"error\",定界引号拼不出 "error",
-    // 本就不会误红——夹具只钉真正的误红形态。)
+    // Body-carrier key (the documented envelope's body): when the value is exactly "error", a bare grep's
+    // "error" pattern is assembled from the value's delimiting quotes (false red); masking must cover the
+    // body's string value.
+    // (A body containing quotes is JSON-escaped into \"error\", from which the delimiting quotes cannot
+    // assemble "error", so it never false-reds — the fixture pins only the genuinely false-red shape.)
     const bodyCarrier = runSmoke(
       '{"success":true,"body":"error","version":"1"}',
     );
@@ -933,8 +980,8 @@ for (const [name, source] of [
       bodyCarrier.stdout.includes("[PASS] 读到文档内容"),
       `dingtalk-smoke.sh: body 载体屏蔽后读取必须 PASS\n${bodyCarrier.stdout}`,
     );
-    // 屏蔽只盖正文载体键:非载体键上的错误值形态("status":"error")必须照常
-    // FAIL——这是屏蔽不扩成「吞所有字符串值」的原因。
+    // Masking covers body-carrier keys only: an error value shape on a non-carrier key ("status":"error")
+    // must still FAIL — this is why masking is not widened into "swallow every string value".
     const statusValue = runSmoke(
       '{"success":true,"body":"ok","status":"error"}',
     );
@@ -950,11 +997,12 @@ for (const [name, source] of [
   }
 }
 
-// ---- 11) EXIT 清理所有权:调用方目录不得被碰,真实捕获由探测子壳自清 ----
-// 形态钉:兜底清理 trap 必须挂在 run 函数内部且带空值守卫。run 函数总经 $( )
-// 调用,DWS_TMP 赋值只活在探测子壳里——挂在外层脚本 EXIT 上的清理会展开成
-// rm -f "" ".deadline",把调用方工作目录里的同名文件误删(评审实测复现;
-// mktemp 失败时子壳内 DWS_TMP 同样为空,守卫拦住同形状)。
+// ---- 11) EXIT cleanup ownership: the caller's directory must not be touched, and the real capture is cleaned by the probe subshell itself ----
+// Shape pin: the backstop cleanup trap must hang inside the run function with an empty-value guard. The run
+// function is always invoked via $( ), and the DWS_TMP assignment lives only inside the probe subshell —
+// cleanup hung on the outer script's EXIT would expand to rm -f "" ".deadline" and delete the caller's
+// same-named file (reviewer reproduced; when mktemp fails, DWS_TMP is equally empty inside the subshell and
+// the guard blocks the same shape).
 {
   for (const [name, source] of [
     ["dingtalk-smoke.sh", dingtalkSmoke],
@@ -986,18 +1034,20 @@ for (const [name, source] of [
     );
   }
 }
-// 行为钉(真脚本 + 假 CLI,从带 .deadline 哨兵的调用目录跑,WINDOWS 外跳过):
-// 正常退出哨兵必须保留、真实捕获已清。中断场景的断言边界(评审指出此前注释
-// 夸大覆盖,须与实际断言对齐):夹具对脚本进程本身发正 pid 信号(先 SIGINT,
-// 随后 SIGTERM 保证两版 bash 都收场),不发进程组信号;信号前以捕获文件落盘为
-// 就绪门,防夹具落在探测开始之前而空真;中断后只断言哨兵保留,不断言捕获清理
-// ——真实 Ctrl-C 的进程组送达形态与子壳 EXIT 清理由 §6 有界探测与 trap 形状钉
-// 覆盖,本夹具不重复背书。
+// Behavior pin (real scripts + fake CLI, run from a caller directory holding a .deadline sentinel, skipped
+// on Windows): on normal exit the sentinel must survive and the real capture must be cleaned. The assertion
+// boundary for the interrupt scenario (the reviewer flagged that earlier comments overstated coverage and
+// must align with the actual assertions): the fixture signals the script process itself with a positive pid
+// (SIGINT first, then SIGTERM to guarantee both bash versions finish), not process-group signals; the
+// capture file being on disk acts as the readiness gate before signaling, preventing the fixture from
+// landing before the probe starts and passing vacuously; after the interrupt only sentinel survival is
+// asserted, not capture cleanup — real Ctrl-C's process-group delivery shape and subshell EXIT cleanup are
+// covered by section 6's bounded probes and the trap shape pin, and this fixture does not re-endorse them.
 {
   const { spawnSync, spawn } = require("node:child_process");
   const os = require("node:os");
   if (process.platform !== "win32") {
-    // spawnSync 发不了进程组信号,这里用 Atomics.wait 做同步等待(主线程可用)。
+    // spawnSync cannot send process-group signals; use Atomics.wait for synchronous sleeping here (safe on the main thread).
     const sleepSync = (ms) => {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     };
@@ -1041,7 +1091,7 @@ for (const [name, source] of [
       ["dws", "dingtalk-smoke.sh"],
       ["wecom-cli", "wecom-smoke.sh"],
     ]) {
-      // 正常退出:健康假 CLI 全跑 exit 0;哨兵保留;捕获清空。
+      // Normal exit: a healthy fake CLI runs the whole script to exit 0; sentinel survives; capture cleaned.
       {
         const { cap, caller, env, sentinel, bin } = mkCase("own-normal");
         fs.writeFileSync(path.join(bin, name), fakeCli(name));
@@ -1068,11 +1118,12 @@ for (const [name, source] of [
           `${script}: 正常退出后真实捕获文件必须已清(TMPDIR 残留=探测子壳清理被破坏)`,
         );
       }
-      // 中断退出:slow CLI 挂在探测里,先发正 pid 的 SIGINT;bash ≥5.3 实测会在
-      // wait 期间吞掉/推迟 INT 而活下来(脚本转而逐探测跑完,各探测尾部自清),
-      // 3.2 则直接死——两版上「脚本被信号打断退出」都由随后的正 pid SIGTERM 保证:
-      // 父壳死于信号时,旧形态的外层 EXIT trap 会当场展开 rm -f "" ".deadline"
-      // 误删哨兵,新形态父壳无 trap,哨兵必须保留。
+      // Interrupted exit: the slow CLI hangs inside a probe; send a positive-pid SIGINT first. bash ≥5.3 was
+      // observed swallowing/deferring the INT during wait and surviving (the script then finishes probe by
+      // probe, each probe cleaning up after itself), while 3.2 dies outright — on both versions "the script
+      // exits killed by a signal" is guaranteed by the subsequent positive-pid SIGTERM: when the parent shell
+      // dies from a signal, the old shape's outer EXIT trap would expand rm -f "" ".deadline" on the spot and
+      // delete the sentinel; in the new shape the parent shell has no trap and the sentinel must survive.
       {
         const { cap, caller, env, sentinel, bin } = mkCase("own-int");
         fs.writeFileSync(path.join(bin, name), slowCli(name));
@@ -1082,10 +1133,11 @@ for (const [name, source] of [
           env,
           stdio: ["ignore", "pipe", "pipe"],
         });
-        // 主线程被 sleepSync(Atomics.wait) 阻塞时 libuv 的 exit 事件不会派发:
-        // exitCode/signalCode 恒为 null,且死掉的子进程无人收尸成僵尸——
-        // kill(pid,0) 对僵尸也成功。活性只能问 OS:ps 的状态列(Z=僵尸=已死,
-        // 空=EARCH=已消失),不能轮询 child.exitCode 也不能只看 kill(pid,0)。
+        // While the main thread is blocked in sleepSync (Atomics.wait), libuv does not dispatch the exit
+        // event: exitCode/signalCode stay null forever, and the dead child is never reaped, leaving a zombie
+        // — kill(pid,0) also succeeds against zombies. Liveness can only be asked of the OS: ps's state
+        // column (Z = zombie = dead, empty = ESRCH = already gone); neither polling child.exitCode nor
+        // looking only at kill(pid,0) is sound.
         const alive = () => {
           try {
             process.kill(child.pid, 0);
@@ -1099,8 +1151,10 @@ for (const [name, source] of [
           return st !== "" && !st.startsWith("Z");
         };
         sleepSync(1200);
-        // 就绪门:信号必须落在探测已落盘捕获之后——固定 sleep 只能等,证明不了
-        // 探测在飞,哨兵断言会因此空真(评审指出注释宣称的就绪验证此前并不存在)。
+        // Readiness gate: the signal must land only after the probe has written its capture to disk — a fixed
+        // sleep can only wait and cannot prove the probe is in flight, and the sentinel assertion would
+        // otherwise pass vacuously (the reviewer flagged that the readiness verification the comments claimed
+        // did not previously exist).
         const readyT0 = Date.now();
         while (fs.readdirSync(cap).length === 0 && Date.now() - readyT0 < 10000) {
           sleepSync(100);

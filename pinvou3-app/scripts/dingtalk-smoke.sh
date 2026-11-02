@@ -1,47 +1,52 @@
 #!/usr/bin/env bash
-# 钉钉 dws live 冒烟测试 —— 打真钉钉云,**只读为主、安全默认**(不创建文档、不发消息)。
+# DingTalk dws live smoke test — hits the real DingTalk cloud; read-only-first with safe defaults (creates
+# no documents, sends no messages).
 #
-# 用法:
+# Usage:
 #   bash scripts/dingtalk-smoke.sh
-#   DINGTALK_TEST_DOC_ID=<doc_id> bash scripts/dingtalk-smoke.sh   # 额外真实读一篇已有文档
+#   DINGTALK_TEST_DOC_ID=<doc_id> bash scripts/dingtalk-smoke.sh   # additionally read one existing document for real
 #
-# 退出码:有硬性检查(版本/连接/可选读文档)失败则非 0,可挂 CI(但需先扫码授权,故默认手动跑);
-# 全部域探测被跳过时 exit 3 —— 「没验证到」不等于「验证通过」。
+# Exit codes: non-zero when any hard check (version/connection/optional doc read) fails, so it can hang off CI
+# (but QR-code authorization is needed first, hence manual runs by default);
+# exit 3 when every domain probe was skipped — "not verified" is not "verified".
 set -u
-# set -u 下 HOME 未设置会直接炸成 unbound variable;这里给可行动的退出码 2。
+# Under set -u, an unset HOME would blow up as an unbound variable; give an actionable exit code 2 here instead.
 if [ -z "${HOME:-}" ]; then echo "HOME 未设置,无法定位 dws"; exit 2; fi
-# 应用同名解析(paths.rs pinvou3_home):PINVOU3_HOME 可整体重定位数据根,
-# 只认 $HOME/.pinvou3 会漏掉重定位安装——应用已连上而冒烟报「找不到 CLI」。
+# Resolve the data root the same way the app does (paths.rs pinvou3_home): PINVOU3_HOME can relocate the data
+# root wholesale; honoring only $HOME/.pinvou3 would miss relocated installs — the app is connected while the
+# smoke reports "CLI not found".
 PINVOU3_ROOT="${PINVOU3_HOME:-$HOME/.pinvou3}"
 
 pass=0; fail=0; skip=0; dom_ok=0
 ok(){ echo "  [PASS] $1"; pass=$((pass+1)); }
 no(){ echo "  [FAIL] $1"; fail=$((fail+1)); }
 sk(){ echo "  [SKIP] $1"; skip=$((skip+1)); }
-# 失败回显脱敏(host 侧 connector_cli.rs safe_auth_log_line 同口径):凡出现
-# access_token/refresh_token/authorization/bearer(整行小写后匹配,大小写不敏感)
-# 的行整行打码——等号、裸冒号、URL 查询串、大写 scheme 形态一并覆盖(host 对
-# 这些形态就是整行替换);其余行再按 JSON 字段形态打码 token 值。dws auth status
-# 的正常输出不含凭证,这是纵深防御——防未来 CLI 输出形状变化把密钥带进 FAIL 行。
-# 评审补充:泛化 token 赋值形态(api_token=…、裸 token: …、token = …)同样整行
-# 打码——此前只认四个 host 标记,带 token 字样的裸赋值键会漏进失败摘录。
+# Redact failure echo (same semantics as host-side connector_cli.rs safe_auth_log_line): any line containing
+# access_token/refresh_token/authorization/bearer (matched after lowercasing the whole line, case-insensitive)
+# is masked in full — equals signs, bare colons, URL query strings, and uppercase scheme forms all covered
+# (the host does full-line replacement for exactly these forms); remaining lines then mask token values by
+# JSON field shape. Normal dws auth status output contains no credentials; this is defense in depth — guarding
+# against a future CLI output-shape change smuggling secrets into FAIL lines.
+# Reviewer addition: generalized token assignment shapes (api_token=…, bare token: …, token = …) are likewise
+# masked in full — previously only the four host markers were recognized, so bare assignment keys containing
+# "token" leaked into failure excerpts.
 redact(){ awk '{ l=tolower($0)
     if (l ~ /access_token|refresh_token|authorization|bearer/ || l ~ /[a-z0-9_-]*token[a-z0-9_-]*[[:space:]]*[=:]/) print "[已脱敏:含凭证形状的整行]"
     else print }' | sed -E 's/[A-Za-z0-9_-]*[Tt][Oo][Kk][Ee][Nn][A-Za-z0-9_-]*"?:[[:space:]]*"[^"]*"/token=[REDACTED]/g'; }
 
-# --- 定位 dws ---
-# 解析顺序(评审修正,应用管理资产优先):冒烟要验证的是应用按 connectors.lock.json
-# 安装并哈希校验过的那个 dws,不是 PATH 上恰好同名的二进制——陈旧/恶意的 PATH 项
-# 曾可遮住 lock 钉扎资产,让冒烟给「另一个二进制」发通过。顺序:应用版本目录 →
-# 旧布局存量 → npm 全局 shim → PATH 仅作显式开发回退(选中即大声标注;[1] 的
-# 版本下限对它照常把关)。
-# 应用按 connectors.lock.json 把 dws 落到版本目录 <数据根>/assets/cli/dws/<version>/
-# (paths.rs assets_cli_dir,数据根支持 PINVOU3_HOME 重定位);旧布局
-# <数据根>/connectors/<platform>/bin/ 会被 native_installer 迁移并清理,
-# 只作存量回退。
+# --- Locate dws ---
+# Resolution order (reviewer correction, app-managed assets first): the smoke must verify the dws the app
+# installed from connectors.lock.json and hash-verified, not a coincidentally same-named binary on PATH —
+# a stale/malicious PATH entry could shadow the lock-pinned asset and make the smoke pass "another binary".
+# Order: app version directory → legacy layout remnants → npm global shim → PATH only as an explicit dev
+# fallback (loudly annotated when selected; the [1] version floor still gates it).
+# The app lays dws down from connectors.lock.json into the version directory <data root>/assets/cli/dws/<version>/
+# (paths.rs assets_cli_dir; the data root supports PINVOU3_HOME relocation); the legacy layout
+# <data root>/connectors/<platform>/bin/ is migrated and cleaned up by native_installer,
+# kept only as a remnant fallback.
 CLI=""
-# 本机平台 → connectors.lock 的平台目录名与可执行名(connector_lock executable_name);
-# 只探本机平台,避免共享 HOME 时误选别的平台的二进制。
+# Native platform → platform directory name and executable name in connectors.lock (connector_lock
+# executable_name); probe only the native platform so a shared HOME never picks another platform's binary.
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*) PLAT=windows-x64; EXE=dws.exe ;;
   Linux)
@@ -59,20 +64,22 @@ case "$(uname -s 2>/dev/null)" in
   *) PLAT=""; EXE=dws ;;
 esac
 if [ -z "$CLI" ]; then
-  # 多版本并存时取最高版本(按数字段排序,不依赖 sort -V);只认纯数字点分目录,
-  # 排除 1.0.99.bak 这类改名残留目录冒充高版本。候选在普通循环里累积后再排序:
-  # macOS 自带 bash 3.2 在执行期才解析 $() 内文,解析不了「$() 内嵌 case」
-  # (pattern 的 `)` 会终止命令替换)——文档化用法是 bash scripts/dingtalk-smoke.sh,
-  # 必须兼容 3.2(bash -n 两版都过,只有真跑 3.2 才暴露,已实测)。
+  # With multiple coexisting versions, take the highest (numeric per-segment sort, no reliance on sort -V);
+  # accept only all-numeric dotted directories, so renamed remnant directories like 1.0.99.bak cannot
+  # impersonate a higher version. Candidates accumulate in a plain loop and sort afterwards: macOS's bundled
+  # bash 3.2 parses $() bodies only at execution time and cannot parse "case nested inside $()" (the pattern's
+  # `)` would terminate the command substitution) — the documented usage is bash scripts/dingtalk-smoke.sh,
+  # which must work on 3.2 (bash -n passes on both versions; only actually running 3.2 exposes it, verified in practice).
   ver=""
   for d in "$PINVOU3_ROOT"/assets/cli/dws/*/; do
     db="${d%/}"; db="${db##*/}"
     case "$db" in *[!0-9.]*) continue ;; esac
-    # 还须含点:裸日期目录(如 20261027)不是版本号,选它会遮住旁边的健康安装
-    # (下游版本探测虽会 FAIL,但报错指向错误目录,排查费劲)。
+    # Must also contain a dot: bare date directories (e.g. 20261027) are not versions, and picking one would
+    # shadow a healthy install next to it (the downstream version probe would FAIL, but point at the wrong
+    # directory, making diagnosis painful).
     case "$db" in *.*) : ;; *) continue ;; esac
-    # -f 排除「名字恰好叫 dws 的目录」:[ -x ] 对目录也为真,选中后 [1] 会把
-    # shell 报错文本里的路径当版本号误报 PASS。
+    # -f excludes "a directory that happens to be named dws": [ -x ] is also true for directories, and after
+    # picking one, [1] would misreport PASS by reading the path inside the shell error text as a version number.
     [ -f "$d$EXE" ] || continue
     [ -x "$d$EXE" ] || continue
     ver="$ver$db
@@ -85,91 +92,133 @@ fi
 [ -z "$CLI" ] && [ -n "${APPDATA:-}" ] && [ -f "$APPDATA/npm/dws.cmd" ] && CLI="$APPDATA/npm/dws.cmd"
 [ -z "$CLI" ] && [ -f "$HOME/AppData/Roaming/npm/dws.cmd" ] && CLI="$HOME/AppData/Roaming/npm/dws.cmd"
 if [ -z "$CLI" ]; then
-  # PATH 只作开发回退(评审修正):前面全是应用管理的落盘位置;走到这里说明
-  # 本机没有应用资产,开发机直装才用 PATH 上的同名二进制,并大声标注来源——
-  # 它不是 lock 钉扎的那个资产,版本下限检查 [1] 对它照常把关。
+  # PATH only as a dev fallback (reviewer correction): everything above is app-managed on-disk locations;
+  # reaching this point means the machine has no app asset, and only a dev-machine direct install should use
+  # the same-named binary from PATH — loudly annotated as to its source, since it is not the lock-pinned
+  # asset; the [1] version floor check still gates it.
   CLI="$(command -v dws 2>/dev/null || true)"
   [ -n "$CLI" ] && echo "注意: 使用 PATH 上的 dws(开发回退,非应用管理的 lock 钉扎资产): $CLI"
 fi
 if [ -z "$CLI" ]; then echo "找不到 dws(先在 Pinvou Agent 工具面板连接钉钉,应用会在线下载并校验)"; exit 2; fi
 
-# 探测必须限时:connector_cli.rs run_probe 对同一族命令用 30s kill-tree——npm-shim
-# CLI 曾实测卡在网络/代理/无 TTY 提示上无限挂起,冒烟脚本挂着不退出比红更糟。
-# 有 coreutils timeout 用之;macOS 裸机退化为 bash 看门狗。看门狗子壳必须重定向
-# 到 /dev/null:本函数总在 $( ) 里被调用,子壳及其内层 sleep 会继承命令替换的
-# 管道写端,快探针结束后孤儿 sleep 仍握着管道,$() 要等它睡满 30s 才见到 EOF
-# (实测健康路径被拖满 9×30s);指向 /dev/null 后快探针即刻返回。
-# 非交互契约(评审补充):CLI 的 stdin 接 /dev/null——探测全是 --version/auth/
-# --help 只读面,不需要输入;继承调用方 stdin 的 CLI 可能吃掉调用方输入,或在
-# 无 TTY 提示上等输入直到超时(host 进程辅助对子进程同样是 null-stdin 契约)。
-# CLI 输出先落临时文件再回放,不直接写 $( ) 管道:被杀进程树里总有成员握着管道
-# 写端的可能,孙进程会握着管道把整段脚本拖到它自行退出(实测 45s+ 乃至 >3min);
-# 落盘后孙进程只握临时文件,管道随 cat 结束即 EOF,脚本在时限内返回。
+# Probes must be time-bounded: connector_cli.rs run_probe uses a 30s kill-tree for this CLI family — the
+# npm-shim CLI was observed in practice hanging indefinitely on network/proxy/no-TTY prompts, and a smoke
+# script that hangs without exiting is worse than red. Use coreutils timeout when present; on bare macOS
+# fall back to a bash watchdog. The watchdog subshell must be redirected to /dev/null: this function is
+# always called inside $( ), so the subshell and its inner sleep inherit the command substitution's pipe
+# write end; after a fast probe finishes, the orphaned sleep still holds the pipe and $() waits for it to
+# sleep out the full 30s before seeing EOF (healthy path measured at a full 9×30s); pointed at /dev/null,
+# a fast probe returns at once.
+# Non-interactive contract (reviewer addition): the CLI's stdin is /dev/null — probes are all read-only
+# --version/auth/--help surfaces needing no input; a CLI inheriting the caller's stdin could consume the
+# caller's input, or wait on a no-TTY prompt until timeout (the host process helper applies the same
+# null-stdin contract to child processes).
+# CLI output goes to a temp file first and is replayed afterwards, never written straight into the $( )
+# pipe: some member of a killed process tree may always hold the pipe write end, and a grandchild holding
+# the pipe drags the whole script out until it exits on its own (measured 45s+ and even >3min); once on
+# disk, the grandchild holds only the temp file, the pipe hits EOF when cat ends, and the script returns
+# within the limit.
 DWS_TIMEOUT=30
-# TERM 不是终点:吞掉 TERM 的 CLI(清理例程卡住、无 TTY 提示器拦信号)不能把探测
-# 变成永久等待。GNU timeout 不带 -k 会在子进程无视 TERM 后一直等;看门狗只发一次
-# TERM 同样让 wait 永久阻塞。两级都在 KILL_GRACE 后升级 SIGKILL,并把 137(KILL 死)
-# 归一为 124——超时诊断分支照常生效,不能把超时伪装成「结果未知」。
+# TERM is not the end: a CLI that swallows TERM (stuck cleanup routine, no-TTY prompter intercepting signals)
+# must not turn the probe into a permanent wait. GNU timeout without -k keeps waiting after the child ignores
+# TERM; a watchdog that sends TERM only once likewise blocks wait forever. Both tiers escalate to SIGKILL after
+# KILL_GRACE and normalize 137 (KILL death) to 124 — the timeout diagnostic branch keeps working; a timeout
+# must not be disguised as "outcome unknown".
 DWS_KILL_GRACE=5
 TIMEOUT_BIN="$(command -v timeout 2>/dev/null || true)"
 dws_run() {
   local t rc tflag
-  # mktemp 失败(TMPDIR 指向不可写/不存在的目录等)时 t 为空,tflag 退化成调用方
-  # 工作目录里的相对路径 .deadline,尾部的普通 rm 会把调用方同名文件删掉(评审
-  # 实测复现);EXIT 兜底 trap 的空值守卫只救 trap 自己,救不了普通路径。分配
-  # 失败/为空必须在派生任何清理路径、启动任何命令之前原路返回——本次探测按失败
-  # 收场(mktemp 自己的诊断已在 stderr 上,随 $() 的 2>&1 进入失败回显),而不是
-  # 动调用方目录。
+  # When mktemp fails (e.g. TMPDIR points at an unwritable/nonexistent directory), t is empty and tflag
+  # degrades to the relative path .deadline in the caller's working directory; the plain rm at the end would
+  # delete the caller's same-named file (reviewer reproduced in practice); the empty-value guard on the EXIT
+  # backstop trap saves only the trap itself, not the plain path. An allocation failure/empty value must
+  # early-return before spawning any cleanup path or starting any command — this probe ends as a failure
+  # (mktemp's own diagnostics are already on stderr and enter the failure echo via $()'s 2>&1) instead of
+  # touching the caller's directory.
   t="$(mktemp "${TMPDIR:-/tmp}/dws-smoke.XXXXXX")" || t=""
   if [ -z "$t" ]; then
     echo "mktemp 失败:探测临时文件分配不出来(检查 TMPDIR)" >&2
     return 1
   fi
   tflag="${t}.deadline"
-  # 兜底清理挂在拥有临时文件的探测子壳自身,不能挂外层脚本:本函数总经 $( )
-  # 调用,DWS_TMP 赋值只活在子壳里,外层永远看到空值——外层 EXIT 上的清理会
-  # 展开成 rm -f "" ".deadline",误删调用方工作目录里的同名文件(评审实测复现;
-  # 空值守卫一并拦住 mktemp 失败时 DWS_TMP 为空的同形状)。SIGINT 同进程组送达
-  # 时,子壳死前会执行自己的 EXIT(实测 bash 3.2.57 与 5.x 同),真实捕获文件
-  # 随之清掉;SIGKILL 无能为力,泄漏面只剩 $TMPDIR 一个文件。裸 CLI 输出未过
-  # redact,不应留在 $TMPDIR 供人翻看。
+  # The backstop cleanup hangs on the probe subshell that owns the temp file, never on the outer script: this
+  # function is always invoked via $( ), the DWS_TMP assignment lives only inside the subshell, and the outer
+  # shell always sees an empty value — cleanup on the outer EXIT would expand to rm -f "" ".deadline" and
+  # delete the caller's same-named file (reviewer reproduced in practice; the empty-value guard also blocks
+  # the same shape where DWS_TMP is empty after mktemp failure). When SIGINT is delivered to the same process
+  # group, the subshell runs its own EXIT before dying (verified the same on bash 3.2.57 and 5.x), taking the
+  # real capture file with it; SIGKILL cannot help, so the leak surface is a single file in $TMPDIR. Raw CLI
+  # output has not been through redact and must not sit in $TMPDIR for anyone to browse.
   DWS_TMP="$t"
   trap 'if [ -n "$DWS_TMP" ]; then rm -f "$DWS_TMP" "${DWS_TMP}.deadline" 2>/dev/null; fi' EXIT
   if [ -n "$TIMEOUT_BIN" ]; then
-    # GNU timeout 默认(非 --foreground)让命令带子进程跑在它自己的进程组里,
-    # 到点 TERM、-k 宽限 KILL 都送整组——wrapper 的孙进程一并收掉,天然满足
-    # 进程组所有权契约;勿加 --foreground(那会显式豁免子进程不被超时)。
-    "$TIMEOUT_BIN" -k "$DWS_KILL_GRACE" "$DWS_TIMEOUT" "$CLI" "$@" </dev/null >"$t" 2>&1; rc=$?
+    # GNU timeout only monitors its direct child: on deadline it TERMs the CLI,
+    # and once that leader exits — compliantly on TERM, or via the -k KILL —
+    # timeout returns without following up on the rest of the group, so a
+    # TERM-resistant grandchild keeps running past the probe (reviewer
+    # reproduced on GNU coreutils 8.32). Give the CLI tree its own process
+    # group here too (set -m around the backgrounded timeout: the group id is
+    # then the timeout pid, which the CLI and its descendants inherit), and
+    # after a deadline-fired 124 re-run the same escalation the watchdog branch
+    # owns instead of trusting timeout's narrower contract. Do not pass
+    # --foreground: that exempts the child tree from the deadline entirely.
+    set -m
+    "$TIMEOUT_BIN" -k "$DWS_KILL_GRACE" "$DWS_TIMEOUT" "$CLI" "$@" </dev/null >"$t" 2>&1 &
+    local tpid=$!
+    set +m
+    wait "$tpid" 2>/dev/null; rc=$?
+    # Escalation ownership must not die with the leader (reviewer P2): timeout
+    # returns as soon as its direct child is gone, so on a 124 sweep the group
+    # ourselves. The kill -0 probe on the negative pid gates the sweep: an
+    # empty group (compliant TERM death, or -k already killed everything)
+    # returns immediately, while a surviving grandchild gets TERM, one
+    # KILL_GRACE to exit, then the group KILL — the same TERM->KILL chain as
+    # the watchdog branch. Platforms whose kill cannot address negative pids
+    # fail the probe and keep plain timeout -k behavior (no weaker than
+    # before); the sweep runs while the group demonstrably exists, matching
+    # the watchdog's PID-reuse exposure window.
+    if [ "$rc" -eq 124 ] && kill -0 "-$tpid" 2>/dev/null; then
+      kill -TERM "-$tpid" 2>/dev/null || kill -TERM "$tpid" 2>/dev/null
+      sleep "$DWS_KILL_GRACE"
+      kill -KILL "-$tpid" 2>/dev/null || kill -KILL "$tpid" 2>/dev/null
+    fi
   else
-    # 进程组所有权契约(评审修正):set -m 让 CLI 以新进程组组长身份启动,
-    # 看门狗的组信号才打得穿 wrapper(@wecom/cli 的 npm 包装器是 execFileSync
-    # 形态)与它派生的 native 孙进程——只杀直接子进程会让持凭证的孙进程活过
-    # 超时。set +m 立即恢复:本函数总在 $( ) 子壳里跑,-m 只需覆盖这一行后台
-    # 派生;进程组归属在派生瞬间定型,之后关掉也不影响组信号。
+    # Process-group ownership contract (reviewer correction): set -m starts the CLI as leader of its own new
+    # process group so the watchdog's group signals pierce the wrapper (@wecom/cli's npm wrapper is an
+    # execFileSync shape) and the native grandchild it spawns — killing only the direct child would let the
+    # credential-holding grandchild outlive the timeout. set +m restores immediately: this function always
+    # runs in a $( ) subshell, so -m only needs to cover this one background spawn; process-group membership
+    # is fixed at spawn time, so turning it off afterwards does not affect group signals.
     set -m
     "$CLI" "$@" </dev/null >"$t" 2>&1 &
     local pid=$!
     set +m
-    # 发出 TERM 即落「到点」标记:子进程收到 TERM 后优雅清理并以 0 退出时,wait
-    # 的 0 会把超时伪装成通过(GNU timeout 同形态本就返回 124)——到点事实必须
-    # 独立于子进程最终退出码,标记存在则一律按 124 上报。标记先于 TERM 落盘:
-    # 子进程恰在到点与 TERM 之间的微窗内自行退出的形态不再漏判超时。落标记前
-    # 先确认捕获文件仍在:父壳被信号打断并清场后,孤儿看门狗不得凭空重建
-    # .deadline(评审指出的中断残留);父壳仍在 wait 时捕获必在,计时语义不变。
-    # TERM/KILL 都送整组(kill -TERM "-$pid":负 pid = 进程组;不带 -- 的老式
-    # 形态,bash 3.2 即支持)。组信号不可用(MSYS2 对负 pid 的支持不一、异常
-    # 内核)时退回单进程 kill——契约降级为与旧行为等价,不比旧的更弱。
+    # Drop the "deadline reached" marker as soon as TERM goes out: when the child receives TERM, cleans up
+    # gracefully, and exits 0, wait's 0 would disguise the timeout as a pass (GNU timeout returns 124 for the
+    # same shape) — the deadline fact must be independent of the child's final exit code, and the marker's
+    # presence always reports 124. The marker lands before TERM: the shape where the child exits on its own in
+    # the micro-window between deadline and TERM no longer misses the timeout. Before dropping the marker,
+    # confirm the capture file still exists: after the parent shell is interrupted by a signal and cleans up,
+    # the orphaned watchdog must not conjure a .deadline out of nothing (interrupt remnant flagged by the
+    # reviewer); while the parent shell is still in wait, the capture is necessarily there and timing
+    # semantics are unchanged.
+    # TERM/KILL both go to the whole group (kill -TERM "-$pid": negative pid = process group; the old-style
+    # form without --, supported since bash 3.2). When group signals are unavailable (MSYS2 support for
+    # negative pids varies, exotic kernels), fall back to a single-process kill — the contract degrades to
+    # equivalence with the old behavior, no weaker than before.
     ( sleep "$DWS_TIMEOUT" && [ -e "$t" ] && : >"$tflag" || exit 0
       kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
       sleep "$DWS_KILL_GRACE"
       kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
-    # 升级链存活(评审 P2):到点标记已落 = 看门狗已在 TERM→KILL 升级链上,
-    # 父壳此刻不得 kill 它——leader 收 TERM 即死、抗 TERM 孙进程尚存时 wait
-    # 提前返回,旧形态的 kill $wpid 恰好砍断尚未发出组 KILL 的看门狗,升级链
-    # 最后一环永远不响,持凭证孙进程活过超时。改为陪跑到看门狗发完组 KILL 自行
-    # 退出(有界:最多再等一个 KILL_GRACE);仅正常完成路径(未见标记)才取消。
+    # Escalation chain must stay alive (reviewer P2): the deadline marker has landed = the watchdog is already
+    # on its TERM→KILL escalation chain, and the parent shell must not kill it now — when the leader dies on
+    # TERM while a TERM-resistant grandchild survives, wait returns early, and the old shape's kill $wpid
+    # would cut down the watchdog just before its group KILL, so the escalation chain's final link never
+    # fires and the credential-holding grandchild outlives the timeout. Instead, escort the watchdog until it
+    # has sent the group KILL and exits on its own (bounded: at most one more KILL_GRACE of waiting); cancel
+    # only on the normal-completion path (marker absent).
     if [ -e "$tflag" ]; then
       wait "$wpid" 2>/dev/null
     else
@@ -177,7 +226,7 @@ dws_run() {
     fi
     [ -e "$tflag" ] && rc=124
   fi
-  # 超时形态归一:TERM 死(143)与 KILL 死(137)都按 124 上报。
+  # Normalize timeout shapes: TERM death (143) and KILL death (137) both report as 124.
   [ "$rc" -eq 143 ] && rc=124
   [ "$rc" -eq 137 ] && rc=124
   cat "$t"; rm -f "$t" "$tflag"
@@ -186,26 +235,29 @@ dws_run() {
 echo "dws = $CLI"
 echo
 
-MIN_TRI="1.0.64"  # dws SKILL.md cli_version floor;connector_online_install_contract.test.js 与 SKILL.md、connectors.lock.json 三方钉扎,漂移即红
+MIN_TRI="1.0.64"  # dws SKILL.md cli_version floor; connector_online_install_contract.test.js three-way pins SKILL.md and connectors.lock.json — any drift goes red
 echo "[1] --version runs and is >= ${MIN_TRI} (dws SKILL.md cli_version floor; lock pins 1.0.65)"
-# stdout/stderr 都收(与 [2] auth 同口径,个别发行把版本打在 stderr)。版本号只从
-# 含 CLI 名字的那一行、且位于名字之后取:同族 lark-cli 实测会在版本行*之前*打
-# 「a new version 1.0.96 is available」(feishu.rs 钉有该夹具),dws 的自动更新检查
-# 也写 stderr——「全文首个点分数字」会把更新号/代理 URL 里的 IP 读成本机版本,
-# 让低于下限的 CLI 误 PASS。DWS_NO_UPDATE_CHECK=1 若 CLI 认该变量则顺手关掉
-# 更新检查(不认该变量时无副作用)。只认点分版本号(比 connector_cli.rs parse_semver3
-# 更严:那边按任意非数字切分,裸数字串如构建日期 20261027 会读成 20261027.0.0
-# 放行;此处点分要求天然排除),不足三段补 0,不用 sort -V。残余已知误读形状:
-# 名字在数字之前的行(如 `dws mirror 2.5.1 …`)仍会被当成版本行——真实 CLI 未观测
-# 到该形状,锚定它的代价(逐词位置语义)高于收益。
+# Collect both stdout and stderr (same semantics as [2] auth; some builds print the version on stderr). The
+# version number is taken only from the line containing the CLI name, and only after the name: the same-family
+# lark-cli was observed printing "a new version 1.0.96 is available" *before* the version line (feishu.rs pins
+# that fixture), and dws's auto-update check also writes stderr — "first dotted number in the whole text"
+# would read the update number or an IP inside a proxy URL as the local version and let a below-floor CLI
+# pass by mistake. DWS_NO_UPDATE_CHECK=1 also switches off the update check if the CLI honors that variable
+# (no side effect when it does not). Accept only dotted version numbers (stricter than connector_cli.rs
+# parse_semver3: that one splits on any non-digit, so a bare digit run like the build date 20261027 reads as
+# 20261027.0.0 and passes; the dotted requirement here excludes that naturally), pad to three segments with
+# zeros, no sort -V. Known residual misread shape: a line with the name before the number (e.g.
+# `dws mirror 2.5.1 …`) would still be treated as the version line — never observed on the real CLI, and the
+# cost of anchoring it (word-position semantics) outweighs the benefit.
 export DWS_NO_UPDATE_CHECK=1
 VER="$(dws_run --version 2>&1)"; v_rc=$?
 TRI="$(printf '%s\n' "$VER" | awk 'tolower($0) ~ /dws/ { for (i = 1; i <= NF; i++) { if (seen && $i ~ /^[0-9]+(\.[0-9]+)+$/) { print $i; exit } if (tolower($i) ~ /dws/) seen = 1 } }' | awk -F. '{printf "%d.%d.%d", $1, $2+0, $3+0}')"
-# 逐段数值比较(与上面目录排序同键;加权 1*10000+... 会把 0.99.164 误判 >= 1.0.64):
-# TRI >= MIN_TRI 当且仅当两行升序排序后的首行就是 MIN_TRI。
+# Per-segment numeric comparison (same keys as the directory sort above; weighted 1*10000+... would misjudge
+# 0.99.164 >= 1.0.64): TRI >= MIN_TRI iff the first line of the two lines sorted ascending is MIN_TRI itself.
 GE="$(printf '%s\n%s\n' "$TRI" "$MIN_TRI" | sort -t. -k1,1n -k2,2n -k3,3n | head -1 | grep -qxF "$MIN_TRI" && echo yes || echo no)"
-# PASS 前提是探测本身成功(v_rc=0):健康形状的输出 + 非零退出(含超时 124)是
-# 「CLI 跑了但失败」,不能因输出像样就发 PASS——实测 exit 7 + 正常版本行曾全绿。
+# PASS presumes the probe itself succeeded (v_rc=0): healthy-looking output plus a non-zero exit (including
+# timeout 124) means "the CLI ran but failed"; output alone must not earn PASS — exit 7 plus a normal version
+# line was observed going all green in practice.
 if [ "$v_rc" -eq 0 ] && [ -n "$TRI" ]; then
   ok "--version 可执行: $(printf '%s\n' "$VER" | redact | tr -d '\r' | head -1 | cut -c 1-200)"
   if [ "$GE" = yes ]; then
@@ -214,8 +266,9 @@ if [ "$v_rc" -eq 0 ] && [ -n "$TRI" ]; then
     no "version below ${MIN_TRI} (below the SKILL.md cli_version floor): $TRI"
   fi
 else
-  # 超时(124)与「跑不动/解析不了」的处置不同:前者是这一族 CLI 已知的挂起形态
-  # (见下方 DWS_TIMEOUT 注释),提示重跑/查代理,不是「先扫码」。
+  # Timeout (124) and "could not run/could not parse" are handled differently: the former is this CLI family's
+  # known hang shape (see the DWS_TIMEOUT comment below) and calls for rerunning/checking the proxy, not
+  # "scan to auth first".
   if [ "$v_rc" -eq 124 ]; then
     no "--version 探测超时(${DWS_TIMEOUT}s+${DWS_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示): $(printf '%s' "$VER" | redact | tr -d '\n' | head -c 120)"
   else
@@ -224,12 +277,13 @@ else
 fi
 
 echo "[2] 连接状态(auth status --format json 的 authenticated=true = 已授权)"
-# 与 dingtalk.rs 同口径:只认官方 JSON 的 authenticated:true,stdout/stderr 都看;剥 \r。
+# Same semantics as dingtalk.rs: only the official JSON's authenticated:true counts; both stdout and stderr
+# are inspected; strip \r.
 AUTH="$(dws_run auth status --format json 2>&1)"; a_rc=$?
-# dingtalk.rs 同口径是「顶层 authenticated == true」;grep 没有树的概念,加一条
-# 「不得同时出现 authenticated:false」排除嵌套假真(如 {"authenticated":false,
-# "detail":{"authenticated":true}})。与 [1] 同口径:先要求探测退出 0,输出形状
-# 不为失败背书(exit 7 + authenticated:true 是失败,不是已连接)。
+# The dingtalk.rs semantics are "top-level authenticated == true"; grep has no notion of trees, so an extra
+# "authenticated:false must not also appear" clause excludes nested false truths (e.g. {"authenticated":false,
+# "detail":{"authenticated":true}}). Same semantics as [1]: require the probe to exit 0 first — output shape
+# does not vouch for a failure (exit 7 + authenticated:true is a failure, not connected).
 if [ "$a_rc" -eq 0 ] && echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*true' \
   && ! echo "$AUTH" | tr -d '\r' | grep -Eq '"authenticated"[[:space:]]*:[[:space:]]*false'; then
   ok "已连接(auth status authenticated=true)"
@@ -244,41 +298,49 @@ else
 fi
 
 echo "[3] 服务域抽样探测(代表性子集,只读 --help;存在的服务 exit 0,不存在则 exit 1)"
-# 域=dws 顶层服务,--help 不触网、不需授权。用退出码判定——Cobra 对未知命令也会打
-# "Run '… --help' for usage." 行,grep Usage 会把不存在的域误报可用。只探顶层服务:
-# Cobra 对组命令下的未知叶子会直接打印组帮助并 exit 0,叶子级探测分不出真假。
-# 超时(124)检查先于错误词(与 wecom-smoke [3] 同款,那边有分支序钉):超时探测的
-# 部分输出可能恰含 not found/未知——先查词会把超时误标成「域不存在」硬失败;
-# 两者处置不同,超时要求的是重跑,标注不能误导。
+# Domain = dws top-level service; --help touches no network and needs no auth. Decide by exit code — Cobra
+# also prints a "Run '… --help' for usage." line for unknown commands, so grepping Usage would misreport
+# nonexistent domains as available. Probe only top-level services: for an unknown leaf under a group command
+# Cobra prints the group help and exits 0, and leaf-level probing cannot tell true from false.
+# The timeout (124) check precedes the error words (same as wecom-smoke [3], which pins the branch order): a
+# timed-out probe's partial output may contain not found/unknown — checking words first would mislabel a
+# timeout as a hard "domain missing" failure; the two are handled differently, a timeout calls for a rerun,
+# and the labeling must not mislead.
 for d in doc drive calendar todo chat sheet aitable; do
   OUT="$(dws_run "$d" --help 2>&1)"; d_rc=$?
   if [ "$d_rc" -eq 0 ]; then ok "$d 域可用"; dom_ok=$((dom_ok+1))
   elif [ "$d_rc" -eq 124 ]; then sk "$d 域探测超时(${DWS_TIMEOUT}s+${DWS_KILL_GRACE}s 宽限;该 CLI 族已知会挂网络/代理/无 TTY 提示)"
   elif echo "$OUT" | grep -Eqi 'unknown command|not found|不存在|未知'; then no "$d 域不存在(CLI 无此服务)"
-  # SKIP 回显同样过 redact:未知退出码正是 CLI 重试/报错时可能把凭证带进输出的路径。
+  # The SKIP echo goes through redact too: an unknown exit code is exactly the path where CLI retries/errors
+  # may carry credentials into the output.
   else sk "$d 域结果未知(exit $d_rc): $(printf '%s' "$OUT" | redact | tr -d '\n' | head -c 60)"; fi
 done
 
 echo "[4] 真实读文档(可选,需 DINGTALK_TEST_DOC_ID)"
 if [ -n "${DINGTALK_TEST_DOC_ID:-}" ]; then
   R="$(dws_run doc read --node "$DINGTALK_TEST_DOC_ID" --format json 2>&1)"; r_rc=$?
-  # PASS 以退出码 0 为前提:flag 漂移时 Cobra 打 usage 走非零退出,
-  # 不能因输出里没有错误字样就把 usage 误判成读成功。--format json 下成功读取
-  # 必含 JSON 对象(dingtalk.rs 取首个 { 到末个 } 同口径),exit 0 的 usage/help
-  # 倾倒不含 {,同样不判读成功。只查结构化错误键("error"/"success":false),
-  # 不再扫正文错误词——正文是用户文档,主题恰好是「错误/权限」的合法文档会误红。
-  # 错误键只查 envelope、不查正文值:正文是用户文档,值为恰为 error 的合法文档会
-  # 被裸 grep 误红。屏蔽键取包内文档实际钉到的正文载体键:global-reference.md 的
-  # --format json 节钉 envelope 为 {"success": true, "body": {...}}(body 为正文
-  # 载体),error-codes.md 钉错误形态 {"success": false, "code", "message"},
-  # attendance_report_common.py 钉 success/result/error 拆包契约,--fields 文档钉
-  # 顶层信封键 data/result/success/status,doc-read.md 钉 --content-format jsonml
-  # 载荷 {revision, jsonml}——各文档间并不一致,故正文类键一并屏蔽:
-  # content(与 wecom-smoke [4] 同族同键)+body+result+data+jsonml。字符串值按
-  # JSON 语义(\" 不终止值)整体屏蔽后再查错误键;屏蔽不碰键名与布尔值,envelope
-  # 层的错误键("error" 键/"success":false/"status":"error" 值形态)照常生效。
-  # 残余(保守向):jsonml 数组内的裸字符串元素不呈 key:value 形态,屏蔽不到——
-  # 数组元素恰为 error 时仍会误红(裸 grep 的 "error" 由定界引号拼出)。
+  # PASS presumes exit code 0: on flag drift Cobra prints usage and exits non-zero, and usage must not be
+  # misjudged as a successful read just because the output lacks error words. A successful read under
+  # --format json must contain a JSON object (same semantics as dingtalk.rs taking the first { through the
+  # last }), and an exit-0 usage/help dump contains no { so it likewise does not count as a successful read.
+  # Only structured error keys are checked ("error"/"success":false), no longer scanning body text for error
+  # words — the body is the user's document, and a legitimate document whose topic happens to be
+  # "errors/permissions" would go red by mistake.
+  # Error keys are checked in the envelope only, never in body values: the body is the user's document, and a
+  # legitimate document whose value is exactly "error" would go red under a bare grep. The masked keys are the
+  # body-carrier keys the bundled docs actually pin: global-reference.md's --format json section pins the
+  # envelope as {"success": true, "body": {...}} (body is the body carrier), error-codes.md pins the error
+  # shape {"success": false, "code", "message"},
+  # attendance_report_common.py pins the success/result/error unpacking contract, the --fields doc pins the
+  # top-level envelope keys data/result/success/status, and doc-read.md pins the --content-format jsonml
+  # payload {revision, jsonml} — the docs do not agree with each other, so the body-like keys are masked
+  # together: content (same family and key as wecom-smoke [4]) +body+result+data+jsonml. String values are
+  # masked whole under JSON semantics (\" does not terminate a value) before checking error keys; masking
+  # does not touch key names or booleans, and envelope-level error keys ("error" key / "success":false /
+  # "status":"error" value shape) keep working.
+  # Residual (conservative): bare string elements inside a jsonml array are not key:value shaped and cannot
+  # be masked — an array element that is exactly "error" still goes red (a bare grep's "error" is assembled
+  # from the delimiting quotes).
   R_ENVELOPE="$(printf '%s' "$R" | sed -E 's/"(content|body|result|data|jsonml)"[[:space:]]*:[[:space:]]*"(\\.|[^"\\])*"/"\1":"[正文已屏蔽]"/g')"
   if [ "$r_rc" -eq 0 ] && [ -n "$R" ] && echo "$R" | grep -q '{' \
     && ! printf '%s\n' "$R_ENVELOPE" | grep -Eqi '"error"|"success"[[:space:]]*:[[:space:]]*false'; then
