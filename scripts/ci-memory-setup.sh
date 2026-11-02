@@ -35,12 +35,17 @@
 #      linux-modules-extra package, so on a modprobe miss this script runs
 #      one capped apt install (30s update + 130s install, both with
 #      DPkg::Lock::Timeout 60) and retries modprobe; repair_dpkg_state
-#      heals any dpkg state a mid-flight kill leaves behind. The install
-#      is budgeted to complete inside the 240s wrapper — zram is a
-#      required layer here because dropping to disk-only swap risks OOM on
-#      the ~14.2GB rust-test link peaks (pinvou3 #2211's original design,
-#      repo decision 2026-11-02) — and only an install that genuinely
-#      fails gives up to the fallback layers below.
+#      gives an interrupted-dpkg state an earlier, in-flow recovery
+#      attempt than the EXIT backstop (best effort: its 40s lock wait and
+#      configure window are bounded, and the wrapper's SIGKILL can still
+#      preempt both). The nominal 30+130+60 budget fits the 240s wrapper,
+#      but the lock wait, kill grace, initial modprobe and image-swap
+#      preactivation sit on top of it, so a compound-pathological run can
+#      exceed the wrapper — zram is still a required layer here because
+#      dropping to disk-only swap risks OOM on the ~14.2GB rust-test link
+#      peaks (pinvou3 #2211's original design, repo decision 2026-11-02),
+#      and only an install that genuinely fails gives up to the fallback
+#      layers below.
 #      The 2026-09-12 hosted job hangs once blamed on zram (Pinvou/pinvou3
 #      run 34708283784) were re-classified as a transient environment
 #      incident: the same script ran green with zram loaded in this repo
@@ -205,10 +210,12 @@ repair_dpkg_state() {
   # 40s matches the observed bound on how long the orphaned dpkg held the
   # frontend lock after its parent was killed. The capped module install
   # above can be killed by its own 130s cap (or, on the compound-pathological
-  # day, by the wrapper), so this wait spends the script's residual window —
-  # the 30 + 130 + 60 budget in setup_zram reserves room for it; if the lock
-  # is still held after the wait, the give-up warning below names the state
-  # for whichever step hits it next.
+  # day, by the wrapper), so this wait draws on the script's residual
+  # window — it is NOT part of the nominal 30 + 130 + 60 budget in
+  # setup_zram (30+130+40+60 alone already passes 240s, before the kill
+  # grace and preactivation extras), so on compound paths the wrapper's
+  # SIGKILL bounds it; if the lock is still held after the wait, the
+  # give-up warning below names the state for whichever step hits it next.
   wait_deadline=$(( $(date +%s) + 40 ))
   while :; do
     attempt=$((attempt + 1))
@@ -298,8 +305,11 @@ setup_zram() {
     # 2026-11-02). At 90s the timeout killed apt-get mid-dpkg and left
     # packages half-configured (this repo's rust-lint run 41417350097 died
     # exactly that way); repair_dpkg_state below cleans up, but the zram
-    # layer would be lost for the job. Budget inside the workflow-side 240s
-    # wrapper: 30 + 130 + 60 (repair) + ~10s overhead.
+    # layer would be lost for the job. Nominal budget inside the
+    # workflow-side 240s wrapper: 30 + 130 + 60 (repair) + ~10s overhead —
+    # the 40s lock wait, kill grace and preactivation extras are NOT in
+    # that sum; the wrapper's SIGKILL stays the outer bound, so in-flow
+    # repair is an earlier opportunity, not a guaranteed completion.
     local modules_pkg="linux-modules-extra-$(uname -r)"
     if ! run_to 130 apt-get install -y -qq --no-install-recommends \
       -o DPkg::Lock::Timeout=60 \
