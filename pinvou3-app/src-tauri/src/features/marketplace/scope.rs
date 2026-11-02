@@ -4612,12 +4612,16 @@ mod tests {
                 grant_a.granted && grant_a.relied_grant_token.is_empty(),
                 "fixture: op1 grants fresh, capturing nothing: {grant_a:?}"
             );
-            // A REAL uninstall of an installed record sweeps the consent
-            // mid-flight — grant, token, ledger, rows (not a vacuous
-            // uninstall: the store record exists). The companion layout is
-            // planted only after op2's gate below so the scope read path's
-            // present-bundle scan cannot re-seed the swept ledger pair
-            // before op2's gate probes it.
+            // Models the uninstall phase of the teardown flow, not the full
+            // uninstall orchestration: the planted installed record makes
+            // the consent live, then remove_bundle_from_disabled_scopes_exact
+            // — the exact-cleanup writer a real uninstall runs after the
+            // package directory is gone — sweeps that consent mid-flight
+            // (grant, token, ledger, rows). The record exists, so the sweep
+            // is not vacuous. The companion layout is planted only after
+            // op2's gate below so the scope read path's present-bundle scan
+            // cannot re-seed the swept ledger pair before op2's gate probes
+            // it.
             plant_installed_record("feishu", BundleSource::Preset);
             remove_bundle_from_disabled_scopes_exact("feishu").unwrap();
             assert!(
