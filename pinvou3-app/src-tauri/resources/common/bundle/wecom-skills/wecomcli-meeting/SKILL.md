@@ -196,7 +196,7 @@ metadata:
 - `attendees` 字段格式为 `[{"userid": "woxxx"}, {"userid": "woyyy"}]` 对象数组，不接受姓名，不接受平铺字符串数组。
 - 用户提供的是姓名时，通过 `读取 wecomcli-contact 技能` 解析为对应 userid；多候选人时用文字让用户选择，不自行猜测。
 - **禁止**把姓名当 userid 拼接，**禁止**凭记忆或猜测编造 userid。
-- `userid` 是企微通讯录的用户唯一标识（`wo` 前缀），只按上一条从 wecomcli-contact 搜索解析获取；其他系统的用户标识（如 `open_vid`）与企微 `userid` **不是**同一概念，不能直接替代，也不要凭 ID 形态猜测拼接。
+- `userid` 是企微通讯录的用户唯一标识（`wo` 前缀），只按上一条从 wecomcli-contact 搜索解析获取（上下文中已有的合法 userid（`wo` 前缀）可直接使用）；其他系统的用户标识（如 `open_vid`）与企微 `userid` **不是**同一概念，不能直接替代，也不要凭 ID 形态猜测拼接。
 
 ### 规则 2: 写操作执行口径
 

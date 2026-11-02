@@ -218,7 +218,7 @@ pub(crate) use crate::platform::connector_skills::{
 /// required for connected users to refresh at startup (otherwise the refresh
 /// waits for the post-first-frame refresh_connector_auth_gates backfill).
 /// 0.36: model-facing guidance gaps from the 2026-10-07 audit's undelivered
-/// fork-side items (no upstream sync, no Rust behavior change): lark
+/// fork-side items (no upstream sync, no Rust logic change): lark
 /// calendar `+meeting` row no longer routes video-conference link
 /// retrieval through `+get` (the reference documents meeting_id/meeting_note
 /// only) and states the `+create` default-VC fact; lark-shared gains the
@@ -227,7 +227,10 @@ pub(crate) use crate::platform::connector_skills::{
 /// still win); wecomcli-meeting's open_vid≡userid equivalence claim
 /// replaced with the wo-prefix contact-search-only rule; wecomcli-contact /
 /// wecomcli-doc / wecomcli-doc-manage gain compact business-failure
-/// sections in the meeting pack's retry-cap style. Hooks:
+/// sections in the meeting pack's retry-cap style; the scoped aux persona
+/// (bridge.rs AUX_SESSION_INSTRUCTIONS) explains the trailing
+/// `# userselect:` quote envelope while the zero-tool fallback persona
+/// stays verbatim. Hooks:
 /// multiagent_depth_guard's opaque-source gate matches any string-valued
 /// `"source_path"` key (grep cannot count nesting depth, so nested
 /// occurrences still deny — conservative, fail-closed) — the bare `path`
@@ -242,8 +245,10 @@ pub(crate) use crate::platform::connector_skills::{
 /// comment-cleanup tree-text delivery). The instructions files are inside
 /// the content hash, so the changed hash alone already forces the startup
 /// refresh; the slot bump additionally delivers the un-hashed surfaces —
-/// skill trees and the depth-guard hook twins, which have no backfill
-/// path — and keeps one coherent slot per delivered batch.
+/// skill trees (also backfilled post-first-frame by
+/// refresh_connector_auth_gates for currently visible connectors) and the
+/// depth-guard hook twins, whose only writer is this bundle_changed-gated
+/// block — and keeps one coherent slot per delivered batch.
 pub const BUNDLE_VERSION: &str = concat!("0.36-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// Native ordinary/code instructions share this compile-time skeleton.
