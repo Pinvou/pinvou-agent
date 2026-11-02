@@ -6208,30 +6208,32 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
             ))
         })?;
     }
-    let restored = store.restore_rewound_turns_detailed(session).map_err(|error| {
-        let detail = format!("{error:#}");
-        // The store fails *non-retryably* when the transcript changed after
-        // the rewind (new turns produced, turn content edited, or the bound
-        // checkpoint vanished). Retrying cannot succeed and would steer
-        // the user wrong, so mirror the GUI's condition_broken classification
-        // (app/commands/checkpoints.rs undo_last_rewind): report that the
-        // record was NOT left consumable-by-retry and the truncated messages
-        // remain in the rewind backup for manual handling.
-        //
-        // The discriminator is the re-derived undo state, never the store's
-        // message text (the GUI's `detail.contains("不可反悔")` breaks the
-        // moment the store's copy changes; an arbitrary rewording must not
-        // reclassify an IO failure as non-retryable or vice versa).
-        // `resolve_undo_state` re-validates exactly the preconditions the
-        // store guards — kept turn count, truncated revision, and the bound
-        // PreRestore checkpoint — so `Ok(None)` on the retry means the
-        // precondition genuinely no longer holds; `Ok(Some(_))` means the
-        // state is still undoable and the failure is something else (IO
-        // etc.), which leaves the record unconsumed and retryable. Every
-        // other failure falls to the retryable branch, matching the GUI.
-        let condition_broken = matches!(resolve_undo_state(&store, &ledger, session), Ok(None));
-        undo_restore_failure(condition_broken, session, checkpoint_id.as_deref(), &detail)
-    })?;
+    let restored = store
+        .restore_rewound_turns_detailed(session)
+        .map_err(|error| {
+            let detail = format!("{error:#}");
+            // The store fails *non-retryably* when the transcript changed after
+            // the rewind (new turns produced, turn content edited, or the bound
+            // checkpoint vanished). Retrying cannot succeed and would steer
+            // the user wrong, so mirror the GUI's condition_broken classification
+            // (app/commands/checkpoints.rs undo_last_rewind): report that the
+            // record was NOT left consumable-by-retry and the truncated messages
+            // remain in the rewind backup for manual handling.
+            //
+            // The discriminator is the re-derived undo state, never the store's
+            // message text (the GUI's `detail.contains("不可反悔")` breaks the
+            // moment the store's copy changes; an arbitrary rewording must not
+            // reclassify an IO failure as non-retryable or vice versa).
+            // `resolve_undo_state` re-validates exactly the preconditions the
+            // store guards — kept turn count, truncated revision, and the bound
+            // PreRestore checkpoint — so `Ok(None)` on the retry means the
+            // precondition genuinely no longer holds; `Ok(Some(_))` means the
+            // state is still undoable and the failure is something else (IO
+            // etc.), which leaves the record unconsumed and retryable. Every
+            // other failure falls to the retryable branch, matching the GUI.
+            let condition_broken = matches!(resolve_undo_state(&store, &ledger, session), Ok(None));
+            undo_restore_failure(condition_broken, session, checkpoint_id.as_deref(), &detail)
+        })?;
     // r43 MAJOR-2: mirror the GUI's conversation-only sentinel registration
     // (app/commands/checkpoints.rs undo_last_rewind) — undo restores the
     // transcript without rebuilding Turn snapshots; without the sentinel a
