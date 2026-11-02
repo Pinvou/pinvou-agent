@@ -1364,6 +1364,13 @@ jobs:
       - name: dev profile 内存边界覆盖(codewhale-tui O0,仅本 job)
         run: |
           config="${CARGO_HOME:-$HOME/.cargo}/config.toml"
+          # $CARGO_HOME 目录不保证存在:2026-11 起 macos-15 runner 镜像预装
+          # Rust(rustup 家目录不在 ~/.cargo),dtolnay/rust-toolchain 的
+          # "Install rustup if needed" 因此跳过,不再创建 ~/.cargo;裸
+          # cat >> 因父目录缺失直接 exit 1(PR #802 macos-rust-check
+          # "config.toml: No such file or directory" 实证)。先建目录再 append;
+          # cat >> 自身会在文件缺失时创建它。
+          mkdir -p "$(dirname "$config")"
           cat >> "$config" <<'EOF'
 
           [profile.dev.package.codewhale-tui]
@@ -1971,6 +1978,12 @@ jobs:
           $ErrorActionPreference = "Stop"
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE ".cargo" }
           $config = Join-Path $cargoHome "config.toml"
+          # Same runner-image-drift guard as the bash siblings (rust-test /
+          # macos-rust-check): $cargoHome is not guaranteed to exist, and
+          # Add-Content fails on a missing parent directory, which under
+          # ErrorActionPreference=Stop fails this step. Create it first;
+          # Add-Content creates a missing file itself.
+          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
           Add-Content -Path $config -Value @"
 
           [profile.dev.package.codewhale-tui]
@@ -2576,6 +2589,14 @@ jobs:
       - name: dev-profile memory guard (codewhale-tui O0, this job only)
         run: |
           config="${CARGO_HOME:-$HOME/.cargo}/config.toml"
+          # $CARGO_HOME is not guaranteed to exist: since 2026-11 the macos-15
+          # runner image ships Rust with rustup's home outside ~/.cargo, so
+          # dtolnay/rust-toolchain's "Install rustup if needed" skips and never
+          # creates ~/.cargo; a bare cat >> then exits 1 on the missing parent
+          # directory (PR #802 macos-rust-check "config.toml: No such file or
+          # directory"). Create the directory before appending; cat >> creates
+          # a missing file itself.
+          mkdir -p "$(dirname "$config")"
           cat >> "$config" <<'EOF'
 
           [profile.dev.package.codewhale-tui]
