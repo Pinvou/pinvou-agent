@@ -279,14 +279,15 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 3: Linux arm64 deb(GitHub 原生 arm64 runner,公共仓库免费) ──
+  # ── Job 3: Linux arm64 deb(x86_64 runner 全程交叉,弃用计费 arm 托管 runner) ──
   build-linux-arm64:
     name: 构建 Linux arm64 deb
     needs: check-version-bump
     if: needs.check-version-bump.outputs.build_required == 'true'
     # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35)。
     # 2026-11 起改为 x86_64 ubuntu-22.04 全程交叉(宿主与 loongarch64 腿一致):
-    # arm64 托管 runner 按分钟计费(2026-10 该腿 $18.46 净额),交叉后归零。
+    # arm64 托管 runner 按分钟计费(作者报告 2026-10 该腿净额 $18.46),改交叉
+    # 后该腿归零;release 之外仍有 arm 用量(connector-verify,另案跟进)。
     # 与 loong64 的"外部工具链 + 第三方 sysroot"不同,arm64 走 Ubuntu 原生
     # multiarch:dpkg --add-architecture arm64 后从 jammy 档案装 :arm64 版
     # webkit/gtk/openssl/pipewire 等库——与原生 arm runner 同源同版本,
@@ -294,8 +295,8 @@ jobs:
     # 但守护语义不变,floor 检查照跑)。tauri-bundler 原生支持 aarch64 目标,
     # 无需 loong64 那套手工 deb 组装。
     runs-on: ubuntu-22.04
-    # 原生实测 37m12s–46m22s(19 次成功);交叉参考 loong64 先例约为原生
-    # 1.2x,先沿用 120(policy 按联动公式钉住,交叉实测落地后再校准)。
+    # 原生实测 37m12s–46m22s(19 次成功);交叉实测 50m42s(2026-11-02,
+    # ≈1.09x 原生上限),沿用 120(policy 按联动公式钉住,样本继续积累)。
     timeout-minutes: 120
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
@@ -356,11 +357,15 @@ jobs:
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # 交叉构建的工具链 + multiarch sysroot + cargo target 目录全部落在工作
-      # 区/系统盘,先腾空间(同 loong64 腿;探针见 ci-memory-setup.sh)。
+      # 交叉构建的 cargo target 目录与工具链落在工作区/系统盘,先腾空间。
+      # 基座档(不加 --aggressive,由 test_ci_gate_policy 钉住)即足够:
+      # multiarch sysroot 与交叉工具链经 apt 落在系统目录,基座档清理的
+      # 未用 SDK 已在 2026-11 的两次完整交叉构建中覆盖峰值用量。
       - name: Prepare disk space for the release build
         run: |
-          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE"             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT"             python3 scripts/ci-rust-disk.py --min-free-gib 24
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py --min-free-gib 24
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -395,13 +400,20 @@ jobs:
           # runner 同源同版本,glibc 2.35 基线由此钉住)。包清单与原生腿
           # 逐项对应(2026-09-15 审计注释见 x64 腿):webkit 三件套/openssl/
           # appindicator/pipewire+drm+gbm+egl。
-          sudo apt-get install -y --no-install-recommends             build-essential pkg-config cmake lld             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu             libclang-14-dev             libwebkit2gtk-4.1-dev:arm64             libssl-dev:arm64             libayatana-appindicator3-dev:arm64             libpipewire-0.3-dev:arm64 libdrm-dev:arm64 libgbm-dev:arm64 libegl-dev:arm64 \
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake lld \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libclang-14-dev \
+            libwebkit2gtk-4.1-dev:arm64 \
+            libssl-dev:arm64 \
+            libayatana-appindicator3-dev:arm64 \
+            libpipewire-0.3-dev:arm64 libdrm-dev:arm64 libgbm-dev:arm64 libegl-dev:arm64 \
             libglib2.0-dev:arm64 libcap-dev:arm64
-          # 交叉 gcc 的 collect2 按 <triple>-ld.lld → ld.lld 的顺序在 PATH 找
-          # -fuse-ld=lld 指定的链接器,而 jammy 的 lld 包只提供不带前缀的
-          # /usr/bin/ld.lld —— 不加这个软链,全部 cargo 链接都会在最后一步
-          # "collect2: cannot find 'ld'" 失败(链接旗标由 policy 测试钉死,不能
-          # 改成绝对路径写法)。
+          # -fuse-ld=lld 下交叉 gcc 的 collect2 只沿 PATH 找带 <triple>- 前缀
+          # 的链接器名(裸名 ld.lld 仅在 COMPILER_PATH 里找),而 jammy 的 lld
+          # 包只提供不带前缀的 /usr/bin/ld.lld —— 不加这个软链,全部 cargo
+          # 链接都会在最后一步 "collect2: cannot find 'ld'" 失败(链接旗标由
+          # policy 测试钉死,不能改成绝对路径写法)。
           sudo ln -sf "$(command -v ld.lld)" /usr/local/bin/aarch64-linux-gnu-ld.lld
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
@@ -436,7 +448,9 @@ jobs:
       # knowledge server: cargo 按 triple 交叉,target 目录即 build.js
       # 约定的 pinvou-knowledge/target/<triple>/release/ 查找路径。
       - name: 交叉构建 knowledge host (aarch64)
-        run: cargo build --manifest-path pinvou-knowledge/Cargo.toml --target aarch64-unknown-linux-gnu --release --locked
+        run: |
+          cargo build --manifest-path pinvou-knowledge/Cargo.toml \
+            --target aarch64-unknown-linux-gnu --release --locked
 
       # SenseVoice 引擎:脚本的 --arch aarch64 即交叉模式(CC/CXX 指向
       # 交叉编译器,STRIP 名目标 strip;同 loong64 用法),输出落在 build.js
@@ -445,14 +459,17 @@ jobs:
         run: |
           set -euo pipefail
           export CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ STRIP=aarch64-linux-gnu-strip
-          bash scripts/asr/build-sensevoice-runtime.sh             --output pinvou3-app/src-tauri/target/linux-asr-runtime/aarch64/sense-voice-main             --arch aarch64
+          bash scripts/asr/build-sensevoice-runtime.sh \
+            --output pinvou3-app/src-tauri/target/linux-asr-runtime/aarch64/sense-voice-main \
+            --arch aarch64
 
       # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
       # connectors.lock.json 在线下载、校验并安装到用户目录。
       # VERSION bump 与人工触发都产出正式 artifact，完整使用 release profile。
       # 交叉目标由 --target 指定;tauri-bundler 原生支持 aarch64 deb(不同于
       # loong64 需 --no-bundle + 手工组装),产物名仍是 pinvou3_<version>_arm64.deb,
-      # 下游 repack/重命名/守护步骤与原生版逐字一致。两个 PREBUILT 标志
+      # 下游 repack/重命名/守护步骤的脚本与原生版逐字一致(工作目录按三元组
+      # 分层指向 target/aarch64-unknown-linux-gnu/)。两个 PREBUILT 标志
       # 告知 build.js sidecar 已按目标架构就位(等价原生包内容)。
       - name: 构建 deb
         working-directory: pinvou3-app
