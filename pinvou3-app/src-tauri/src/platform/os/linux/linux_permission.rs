@@ -31,7 +31,7 @@ pub fn disable_super_permission() -> Result<(), String> {
 /// faces (and `.env`) are prompt-level doctrine by design — safety_deny_rules.rs
 /// deliberately keeps read faces out of the mechanical ruleset, so the reminder
 /// restates doctrine there rather than mirroring a deny rule.
-const TURN_REMINDER_ON: &str = "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`crontab -e` 等持久化操作在 Plan/Auto 档默认会被安全策略拒绝,开启「守卫命中时询问」时改弹审批卡由用户决定;Yolo 全自动档不设这道门,仅 `visudo` 等 sudoers 底线命令仍拒绝),不要滥用。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。";
+const TURN_REMINDER_ON: &str = "超级权限【已开启】(sudo 免密)。需要 root 时**直接用 sudo 一步到位,绝不先试不带 sudo 的命令再回头补**:写系统路径用 `sudo touch`/`sudo tee`/`sudo mkdir -p`/`sudo rm`,装包用 `sudo apt install`,服务查看/重启用 `sudo systemctl status|restart`(`systemctl enable/mask`、`crontab -e` 等持久化操作在 Plan/Auto 档默认会被安全策略拒绝,开启「守卫命中时询问」时改弹审批卡由用户决定;Yolo 全自动档不设这道门,`visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时同样弹卡由用户决定),不要滥用。仍遵守「红线」的密钥凭证禁读禁写(`~/.ssh`、含 `credentials`/`id_rsa`/`.env`/`token` 的路径、`/etc/shadow`、`/etc/sudoers`),开 root 也禁。";
 
 /// OFF-state per-turn reminder. The settings path must match the i18n labels
 /// (uiSettings.permissions + uiSettingsDetail.advancedPermission); the old
@@ -121,9 +121,14 @@ mod tests {
             // tri-mode doctrine: deny faces default to hard deny and become
             // approval cards only when the session arms ask-on-guardrail;
             // the Yolo scoping must stay truthful (persistence faces are
-            // Full-only — Yolo drops them, only the sudoers floor remains).
+            // Full-only — Yolo drops them, only the sudoers floor remains),
+            // INCLUDING under an armed Yolo session: the ask scoping applies
+            // to the sudoers floor too (armed → card, disarmed → deny), so
+            // the anchor pins the conditional wording rather than a blanket
+            // "仍拒绝" that would overstate strictness in the armed case.
             "守卫命中时询问",
             "Yolo 全自动档不设这道门",
+            "sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时同样弹卡",
         ] {
             assert!(
                 TURN_REMINDER_ON.contains(anchor),

@@ -30,7 +30,7 @@
 | 模式 | 引擎姿态（逐轮 op 与同步 op 同一映射） | 守卫命中（开关 ON，默认） | 守卫命中（开关 OFF） | 普通可提示工具 |
 |---|---|---|---|---|
 | Plan | `AppMode::Plan`（底座只读归一：禁 shell、只读 sandbox、只读工具集） | 只读拦截（既有） | 同左 | 拦截；审批事件到达即异常，防御性硬拒（`plan_mode`） |
-| Auto | `Agent` + `(false, Suggest)` | 弹卡 | 硬拒 + `chat:guardrail_denied` | 逐次审批卡；工作区内文件写走底座 #5185 carve-out 免卡，只读命令走 readonly 分类免卡 |
+| Auto | `Agent` + `(false, Suggest)` | 弹卡 | 引擎内静默硬拒（开关 OFF = 不武装；守卫面在引擎门内拒绝，不产生审批事件，因此**没有** `chat:guardrail_denied`——该通告只覆盖宿主审批面的拒绝，见 §4.1） | 逐次审批卡；工作区内文件写走底座 #5185 carve-out 免卡，只读命令走 readonly 分类免卡 |
 | Yolo | `Agent` + `(true, Bypass)` | 弹卡 | 硬拒 + 通告（`guardrail_ask_off`） | 免卡（历史 Yolo 行为） |
 
 - Auto 是新工作车道（未绑定 plain 会话）的默认；code 会话与绑定工作区的 plain
@@ -62,8 +62,11 @@
   `code_permission.last_mode`）**永不写入 `"auto"` 字面量**：显式 Auto 选择
   走专用 `*_auto` 伴随旗持久化，旧词表保持 Plan/Yolo——pre-tri-mode 二进制
   的整文件解析因此不受影响（未知变体会击穿整文件并让下一次保存用默认值
-  覆盖一切）。lane 默认的视图/解析把伴随旗折回 `Auto`；旧二进制读新文件
-  时丢弃未知旗，按各自旧默认解析（一次性、更严方向的陈旧）。
+  覆盖一切）。lane 默认的视图/解析把伴随旗折回 `Auto`。**降级方向的真话**：
+  旧二进制读新文件时丢弃未知旗——code 车道 `last_mode` 保持 None → 旧默认
+  Plan（更严方向的陈旧）；work 车道 `work` 保持 None → 未绑定 plain 会话落
+  旧默认 **Yolo 全自动（更宽方向）**：一次显式 Auto 全局默认在降级运行的
+  窗口内被静默放宽，恢复新二进制即复原，无持久丢失。
 - 写路径统一过存在性门（id 形状 + 会话存在，`ensure_mode_target_session`），
   防 IPC 直调给任意 id 铸条目/写侧车。
 
@@ -181,7 +184,9 @@ TUI 的作用域语义且**按会话隔离**（跨会话不得互相放行/连�
   payload 带 snake_case `mode` 与会话解析后的 `ask_on_guardrail`），前端经
   epoch 保护的统一收敛点写回，在途旧读作废。审批/守卫/模式三类事件都进
   remote_control 的事件转发白名单（`RUST_FORWARDED_EVENTS`）；面向 Web 的
-  RPC 命令仍受既有多智能体执行 denylist 管辖，本 PR 不改其边界。
+  RPC 命令仍受既有多智能体执行 denylist 管辖——本 PR 在 denylist 登记了
+  三个新的模式/审批变更命令、在 `web_session_scope` 与 access-policy 登记
+  了新表面，只读**策略**不变（多智能体执行面依旧拒绝写操作）。
 
 ## 5. 规则档（SafetyRuleProfile）
 
@@ -226,9 +231,20 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   的重开漂移按失败 run 处理。首次模式写入即 Plan 的未物化会话，铸条目按
   `resolved_default_mode` 解析（而非历史 Yolo 哨兵），accept 回到 chip 显示
   过的默认（Auto）——有行为测试钉。
-- **`SerializableMode::Auto` 向后兼容**：旧侧车里的 `"plan"/"yolo"` 照常反序
-  列化；`"auto"` 只由新二进制写入，旧二进制读到会整表回退 boot 缓存
-  （`durable_mode_entry` 既定语义：一次性陈旧、无数据丢失）。
+- **`SerializableMode::Auto` 向后兼容（降级边界如实陈述）**：旧侧车里的
+  `"plan"/"yolo"` 照常反序列化；`"auto"` 只由新二进制写入。pre-tri-mode
+  二进制读到 `"auto"` 时 `_session_mode_states.json` 的**整表 strict 反序列
+  化失败**，且两个方向的代价都不是无害陈旧：
+  - **读路径**：该次装载整体失败、boot 缓存留空——没有「回退 boot 缓存」
+    可言（缓存就是空的）；所有会话按各自默认解析，未绑定 plain 会话落旧
+    默认 **Yolo 全自动（静默放宽）**，而非记录过的 Auto。
+  - **写路径**：旧二进制对该文件的任何变更（切档、`accept_plan` 持久化、
+    保留策略驱逐）走整表 mutate——parse 失败触发**隔离（quarantine）并拒
+    绝该次变更**，下一次变更从空表重建活文件：全部会话的持久 mode（包括
+    旧词表的 `plan`/`yolo`）都离开活跃 sidecar，隔离副本不自动读回
+    （手工恢复 = 从隔离副本抄回）。恢复新二进制**不会**找回被隔离的条目。
+  这是「旧二进制 + 共享 PINVOU3_HOME」场景的真实降级代价，换取的是新
+  词表的干净落盘；pin 旧词表的会话在降级窗口内同样受整表隔离牵连。
 - 无持久记录时的默认解析矩阵：
 
 | 会话形态 | 默认 |
@@ -311,10 +327,16 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
 
 ## 9. 已知边界
 
-- **Web 端收得到、还没渲染**：三类事件已进 Relay 转发白名单
-  （`src/platform/web/access-policy.json`），但 Web bridge 尚无审批卡渲染与
-  `get_pending_approvals` 回放接线——桌面双车道（原生 + 代码）才是本 PR 的
-  产品面。Web 端对审批事件的表现是后续项，不是本 PR 验收范围。
+- **Web 端显式不支持审批卡**：四类事件已进 Relay 转发白名单
+  （`src/platform/web/access-policy.json`：approval_required /
+  approval_resolved / guardrail_denied / mode_changed）。Web bridge 不渲染
+  审批卡（无 `decide_approval` 接线；access-policy 的命令白名单是前向兼容
+  登记，Web 端今天没有调用者）——桌面双车道（原生 + 代码）才是本 PR 的
+  产品面。**审批请求在 Web 端不是静默的**：`chat:approval_required` 显式落
+  一条三语系统通告（unsupported-capability 信号），`chat:guardrail_denied`
+  照稳定键映射三语文案，`chat:mode_changed` 走权威收敛点让芯片跟随；一个
+  等待审批的 turn 在 Web 端表现为「看得见原因的等待」（桌面决策或 Web 用户
+  停止生成），不是无反馈转圈。完整 Web 审批工作流仍是后续项。
 - **审批面跨进程重启不保真**：挂起卡与授予/拒绝缓存是进程内存；重启后 turn
   重新请批（engine 侧审批 id 本就随进程消亡）。这是有意取舍，不是持久化缺陷。
 - **多智能体引导期的默认解析先于 code 判定注册**：`_multi_agent.json` 的引导

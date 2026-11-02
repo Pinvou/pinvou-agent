@@ -21,11 +21,15 @@ use serde::{Deserialize, Serialize};
 /// `Auto` 是后加的中间档（对齐 Claude Code `acceptEdits`/`default` 的主流
 /// 形态）：普通可提示工具逐次请批，工作区内文件写走底座 carve-out 免弹卡。
 /// 旧侧车文件里的 `"plan"/"yolo"` 照常反序列化。兼容面纪律：`"auto"` 只进
-/// `_session_mode_states.json` 侧车（旧二进制读到会整表回退 boot 缓存，
-/// durable_mode_entry 的既定语义，一次性陈旧）；settings.json 的 lane 默认
-/// 永不写 `"auto"` 字面量——显式 Auto 选择走 `*_auto` 伴随旗（见
-/// `platform::prefs`），否则旧二进制的整文件解析会失败并把下一次保存变成
-/// 默认值覆盖（持久设置丢失）。
+/// `_session_mode_states.json` 侧车；settings.json 的 lane 默认永不写
+/// `"auto"` 字面量——显式 Auto 选择走 `*_auto` 伴随旗（见 `platform::prefs`），
+/// 否则旧二进制的整文件解析会失败并把下一次保存变成默认值覆盖（持久设置
+/// 丢失）。**降级代价如实陈述（pre-tri-mode 二进制 + 共享 PINVOU3_HOME）**：
+/// 旧二进制读到侧车里的 `"auto"` 时整表 strict 反序列化失败——读路径该次
+/// 装载留空（未绑定 plain 会话按旧默认落 **Yolo 全自动**，静默放宽而非
+/// 「一次性陈旧」），写路径任何变更触发整表隔离并拒绝，下一次变更从空表
+/// 重建（全部会话的持久 mode 离开活跃 sidecar，隔离副本不自动读回）。
+/// 真实语义与降级恢复边界见 `docs/safety-modes.md` §3.1/§6。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerializableMode {
