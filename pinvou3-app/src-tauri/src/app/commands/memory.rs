@@ -533,14 +533,14 @@ pub async fn organize_memory(
     // degrade to the pool's shared bridge with global prefs loaded directly,
     // the same `get_image_input_capability` fallback.
     let bridge = match resolve_session_id(None, &store) {
-        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|error| {
-            // The `fresh_bridge_for` error chain can carry endpoint/credential
-            // probing details; pass it through `redact_secret` before returning
-            // to the frontend (shared `sanitize_command_error` policy).
-            sanitize_command_error(
+        Some(sid) => pool.fresh_bridge_for(&sid).await.map_err(|e| {
+            // Endpoint/credential probing details + storage root must both be
+            // scrubbed before this web-visible arm returns (Round-15 复审
+            // minor:organize 命令与其他 memory 命令同口径折叠)。
+            crate::platform::paths::redact_storage_prefix(&sanitize_command_error(
                 &format!("organize memory: resolve bridge for {sid}"),
-                format!("{error:#}"),
-            )
+                format!("{e:#}"),
+            ))
         })?,
         None => {
             let mut bridge = pool.bridge.clone();
@@ -553,7 +553,12 @@ pub async fn organize_memory(
     // the scheduled-task entry point passes a token).
     let report = crate::features::memory::organize_memory_with_llm(&bridge, None)
         .await
-        .map_err(|error| sanitize_command_error("organize memory", format!("{error:#}")))?;
+        .map_err(|e| {
+            crate::platform::paths::redact_storage_prefix(&sanitize_command_error(
+                "organize memory",
+                format!("{e:#}"),
+            ))
+        })?;
     let (runtime, mut warnings) = refresh_memory_runtime_best_effort(None, &store);
     // If the best-effort pre-render already failed, do not let the snapshot
     // refresh retry (avoiding a duplicate same-code warning and a second
@@ -1099,14 +1104,24 @@ mod tests {
             .expect("memory.rs must keep its tests behind #[cfg(test)]");
         let mut arms = 0;
         let mut raw_arms = 0;
-        for (pos, _) in production.match_indices(".map_err(|e|") {
-            arms += 1;
-            let window_end = (pos + 400).min(production.len());
-            let window = &production[pos..window_end];
-            if !(window.contains("redact_storage_prefix")
-                || window.contains("reserve edit_last_turn"))
-            {
-                raw_arms += 1;
+        // Round-15 复审 minor:扫描同时覆盖 `.map_err(|e|` 与
+        // `.map_err(|error|` 两种拼写——此前 organize 命令的两臂用后者
+        // 拼写,本钉看不见,断言信息夸大了覆盖面。
+        let scan = production;
+        for spelling in [".map_err(|e|", ".map_err(|error|"] {
+            let mut pos = 0;
+            while let Some(found) = scan[pos..].find(spelling) {
+                arms += 1;
+                let start = pos + found;
+                let window_end = (start + 400).min(scan.len());
+                let window = &scan[start..window_end];
+                if !(window.contains("redact_storage_prefix")
+                    || window.contains("reserve edit_last_turn")
+                    || window.contains("[edit_last_turn]"))
+                {
+                    raw_arms += 1;
+                }
+                pos = start + spelling.len();
             }
         }
         assert!(
@@ -1116,8 +1131,8 @@ mod tests {
         assert_eq!(
             raw_arms, 0,
             "every web-visible memory error arm must fold the storage prefix via \
-             redact_storage_prefix; the single allowed exception is the deliberately-raw \
-             edit_last_turn reservation chain"
+             redact_storage_prefix; the allowed exceptions are the deliberately-raw \
+             edit_last_turn reservation chain and its revision-guard log arms"
         );
     }
 
