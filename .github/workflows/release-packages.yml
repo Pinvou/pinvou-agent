@@ -423,14 +423,36 @@ jobs:
         working-directory: pinvou3-app
         run: npm ci --prefer-offline --no-audit
 
+      # ── 交叉 sidecar(与 loong64 腿编排的 step 3/4 同构) ──
+      # build.js 的 cross gate 要求两个只能原生构建的组件在交叉时显式决策:
+      # PREBUILT 模式保留 overlay 资源声明并接受目标架构工件(见 build.js
+      # crossBuildViolations 注释),产物等价于原生 arm 腿。
+      # knowledge server: cargo 按 triple 交叉,target 目录即 build.js
+      # 约定的 pinvou-knowledge/target/<triple>/release/ 查找路径。
+      - name: 交叉构建 knowledge host (aarch64)
+        run: cargo build --manifest-path pinvou-knowledge/Cargo.toml --target aarch64-unknown-linux-gnu --release --locked
+
+      # SenseVoice 引擎:脚本的 --arch aarch64 即交叉模式(CC/CXX 指向
+      # 交叉编译器,STRIP 名目标 strip;同 loong64 用法),输出落在 build.js
+      # 约定的 src-tauri/target/linux-asr-runtime/aarch64/ 路径。
+      - name: 交叉构建 SenseVoice 引擎 (aarch64)
+        run: |
+          set -euo pipefail
+          export CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ STRIP=aarch64-linux-gnu-strip
+          bash scripts/asr/build-sensevoice-runtime.sh             --output pinvou3-app/src-tauri/target/linux-asr-runtime/aarch64/sense-voice-main             --arch aarch64
+
       # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
       # connectors.lock.json 在线下载、校验并安装到用户目录。
       # VERSION bump 与人工触发都产出正式 artifact，完整使用 release profile。
       # 交叉目标由 --target 指定;tauri-bundler 原生支持 aarch64 deb(不同于
       # loong64 需 --no-bundle + 手工组装),产物名仍是 pinvou3_<version>_arm64.deb,
-      # 下游 repack/重命名/守护步骤与原生版逐字一致。
+      # 下游 repack/重命名/守护步骤与原生版逐字一致。两个 PREBUILT 标志
+      # 告知 build.js sidecar 已按目标架构就位(等价原生包内容)。
       - name: 构建 deb
         working-directory: pinvou3-app
+        env:
+          PINVOU3_LINUX_ASR_PREBUILT: "1"
+          PINVOU3_KNOWLEDGE_HOST_PREBUILT: "1"
         run: node scripts/tauri/build.js build --bundles deb --target aarch64-unknown-linux-gnu
 
       # Repack deb (data.tar gzip-6 → xz -9), same as build-linux-x64.
