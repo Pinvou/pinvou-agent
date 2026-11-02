@@ -288,6 +288,7 @@ fn quarantine_and_continue(
     Ok(HashMap::new())
 }
 
+
 fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> Result<()> {
     let path = rewound_turns_path();
     if map.values().all(|records| records.is_empty()) {
@@ -577,6 +578,116 @@ mod tests {
         }
         drop(guard);
         second.try_lock().expect("released guard lets the peer in");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：损坏 sidecar 的两条隔离腿都「恰好一次 rename」——
+    /// r42-minor-7 的 eager-rename + 二次 rename ENOENT 会让 CallerHoldsLock
+    /// 硬错（fail-closed 臂的拒绝理由「文件仍在场」还是假的）、TryLockAndRecheck
+    /// 落进同一硬错。
+    #[test]
+    fn caller_holds_lock_quarantines_exactly_once() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::CallerHoldsLock)
+            .expect("corrupt sidecar must quarantine-and-continue, not hard-error");
+        assert!(map.is_empty(), "quarantine continues on an empty map");
+        assert!(
+            !path.exists(),
+            "the corrupt file must be moved aside exactly once"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：TryLockAndRecheck 无对端竞争时同样「恰好一次
+    /// rename」+ 按空继续（锁下重读仍损坏 → 锁内隔离）。
+    #[test]
+    fn try_lock_and_recheck_quarantines_exactly_once_without_a_peer() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("corrupt sidecar must quarantine-and-continue, not hard-error");
+        assert!(map.is_empty());
+        assert!(
+            !path.exists(),
+            "the corrupt file must be moved aside exactly once"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：锁被写方持有时不动文件、按空继续（file 未被本次
+    /// 隔离触碰——eager-rename 版会把它改名进 .corrupt-*，记录丢失到对端
+    /// 下次 persist）。
+    #[test]
+    fn try_lock_and_recheck_leaves_the_file_alone_while_a_peer_holds_the_lock() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"{ not json").unwrap();
+
+        let peer_guard = lock_rewound_turns_file().expect("peer holds the lock");
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("lock-held degrade answers an empty map");
+        assert!(map.is_empty());
+        assert!(
+            path.exists(),
+            "the corrupt file must be left untouched while a peer holds the lock"
+        );
+        std::fs::write(&path, b"{ not json").unwrap();
+        drop(peer_guard);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// r43 MAJOR-4 回归：有效 sidecar 永不被隔离——修复前 eager-rename 竞态
+    /// 可能把并发写方刚重建的好文件改名进 .corrupt-*（本测试钉住「解析成功
+    /// 的文件必须原样在场」这一不变量）。
+    #[test]
+    fn a_valid_sidecar_is_never_quarantined() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-quarantine-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let path = rewound_turns_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // Wire 形状是 camelCase（serde rename_all），与生产 persist 一致。
+        let valid = r#"{"rebuiltSession":[{"rewoundAt":"2026-11-03T00:00:00Z","originalRevision":"","keptTurns":1,"preRestoreCheckpointId":null,"truncatedRevision":"","removedMessages":[]}]}"#;
+
+        std::fs::write(&path, valid).unwrap();
+
+        let map = load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+            .expect("a valid sidecar must parse and continue");
+        assert!(
+            map.contains_key("rebuiltSession"),
+            "锁下重读必须按在场内容继续（不得隔离对端的好文件）"
+        );
+        assert!(path.exists(), "a valid sidecar must never be quarantined");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
