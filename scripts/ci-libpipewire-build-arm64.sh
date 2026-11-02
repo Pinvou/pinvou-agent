@@ -66,6 +66,9 @@ c = 'aarch64-linux-gnu-gcc'
 cpp = 'aarch64-linux-gnu-g++'
 ar = 'aarch64-linux-gnu-ar'
 strip = 'aarch64-linux-gnu-strip'
+# meson(0.61)在交叉文件存在时会为 build machine 也找 cross 域的 pkg-config
+# 入口;显式声明后,PKG_CONFIG_LIBDIR(导出的 arm64 目录表)决定它解析哪侧。
+pkg-config = 'pkg-config'
 
 [host_machine]
 system = 'linux'

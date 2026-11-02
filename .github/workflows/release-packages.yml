@@ -395,7 +395,8 @@ jobs:
           # runner 同源同版本,glibc 2.35 基线由此钉住)。包清单与原生腿
           # 逐项对应(2026-09-15 审计注释见 x64 腿):webkit 三件套/openssl/
           # appindicator/pipewire+drm+gbm+egl。
-          sudo apt-get install -y --no-install-recommends             build-essential pkg-config cmake lld             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu             libclang-14-dev             libwebkit2gtk-4.1-dev:arm64             libssl-dev:arm64             libayatana-appindicator3-dev:arm64             libpipewire-0.3-dev:arm64 libdrm-dev:arm64 libgbm-dev:arm64 libegl-dev:arm64
+          sudo apt-get install -y --no-install-recommends             build-essential pkg-config cmake lld             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu             libclang-14-dev             libwebkit2gtk-4.1-dev:arm64             libssl-dev:arm64             libayatana-appindicator3-dev:arm64             libpipewire-0.3-dev:arm64 libdrm-dev:arm64 libgbm-dev:arm64 libegl-dev:arm64 \
+            libglib2.0-dev:arm64 libcap-dev:arm64
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
