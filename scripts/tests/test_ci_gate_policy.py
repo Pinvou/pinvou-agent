@@ -3939,8 +3939,10 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
     def test_all_linux_jobs_pin_the_release_runner_image(self):
         # Image versions never drift (single-image convention): every
         # workflow's Linux runner must match the release build baseline
-        # (ubuntu-22.04 / ubuntu-22.04-arm). Release binaries link against the
-        # build host's glibc, so tests and checks must run on the same system
+        # (ubuntu-22.04; the -arm entry remains for connector-verify's native
+        # arm leg). Release x86_64 binaries link the build host's glibc and
+        # the cross-built arm64 binaries link the jammy :arm64 multiarch
+        # sysroot (PR #810), so tests and checks must run on the same system
         # as the release build; image upgrades must be coordinated across the
         # whole repo at once — rolling images like ubuntu-latest and per-job
         # version bumps are forbidden.

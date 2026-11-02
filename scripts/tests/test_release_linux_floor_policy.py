@@ -12,15 +12,17 @@ GUARD_SCRIPT = ROOT / "scripts" / "check-linux-glibc-floor.sh"
 ELF_POLICY_SCRIPT = ROOT / "scripts" / "check-linux-elf-policy.sh"
 ASR_BUILD_SCRIPT = ROOT / "scripts" / "asr" / "build-sensevoice-runtime.sh"
 ASR_SETUP_SCRIPT = ROOT / "scripts" / "asr" / "setup-sensevoice.sh"
+CI_LIBPIPEWIRE_ARM64_SCRIPT = ROOT / "scripts" / "ci-libpipewire-build-arm64.sh"
+CI_LIBPIPEWIRE_HOST_SCRIPT = ROOT / "scripts" / "ci-libpipewire-build.sh"
 LINUX_OVERLAY = ROOT / "pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json"
 
 # Linux 发布基线:Ubuntu 22.04 (glibc 2.35) x86_64/arm64 + loongarch64 的
 # deepin 23/25 / UOS V25 (glibc 2.38)。x86_64 链接构建机 glibc;arm64 自
-# 2026-11 起交叉构建(计费的 arm 托管 runner 已弃用):x86_64 jammy 基座 +
-# jammy 档案的 :arm64 multiarch 目标库,基线仍由 jammy 钉住,等价于原生
-# arm runner 的发行版语义;loongarch64 走交叉工具链 + deepin sysroot,基线
-# 由 sysroot 决定。runner 标签、multiarch sysroot 与 glibc 守护都是有意
-# 决策;本测试防止无意的基线漂移。
+# 2026-11 起交叉构建(release 腿弃用计费的 arm 托管 runner):x86_64 jammy
+# 基座 + jammy 档案的 :arm64 multiarch 目标库,基线仍由 jammy 钉住,等价
+# 于原生 arm runner 的发行版语义;loongarch64 走交叉工具链 + deepin
+# sysroot,基线由 sysroot 决定。runner 标签、multiarch sysroot、交叉 env
+# 块与 glibc 守护都是有意决策;本测试防止无意的基线漂移。
 
 
 def _without_yaml_comments(block):
@@ -76,14 +78,13 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
         # 带换行断言,避免 x64 段误匹配 ubuntu-22.04-arm 这类更长标签。
         self.assertIn("runs-on: ubuntu-22.04\n", self.x64_job)
         # arm64 交叉构建(2026-11):宿主与 x64/loong64 一致钉在 x86_64
-        # jammy;目标侧基线来自 jammy 档案的 :arm64 multiarch 包,因此除
-        # runner 钉外还钉住 multiarch 开关与关键目标库——丢掉 :arm64 后缀
-        # 会静默链到宿主 amd64 库,属于基线漂移的另一种形态。
+        # jammy;目标侧基线来自 jammy 档案的 :arm64 multiarch 包,基线语义
+        # 等价原生 arm runner。multiarch 目标库/apt 源、交叉 env 块与 pw
+        # 前缀脚本由下面三个专门测试钉住。runner absence 钉按模块头极性
+        # 只扫 runs-on 行(loong64 同款):注释提及退役标签不得误红。
         self.assertIn("runs-on: ubuntu-22.04\n", self.arm64_job)
-        self.assertNotIn("ubuntu-22.04-arm", self.arm64_job)
+        self.assertNotIn("runs-on: ubuntu-22.04-arm", self.arm64_job)
         self.assertIn("dpkg --add-architecture arm64", self.arm64_job)
-        self.assertIn("libwebkit2gtk-4.1-dev:arm64", self.arm64_job)
-        self.assertIn("libssl-dev:arm64", self.arm64_job)
         self.assertNotIn("ubuntu-latest", self.x64_job.split("\n    steps:")[0])
         self.assertNotIn("ubuntu-24.04", self.arm64_job.split("\n    steps:")[0])
         # loongarch64 没有 GitHub 托管 loong64 runner:交叉构建必须钉在
@@ -93,6 +94,82 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
         self.assertNotIn("runs-on: ubuntu-22.04-arm", self.loong64_job)
         self.assertNotIn("ubuntu-latest", self.loong64_job.split("\n    steps:")[0])
         self.assertNotIn("ubuntu-24.04", self.loong64_job.split("\n    steps:")[0])
+
+    def test_arm64_multiarch_targets_pinned(self):
+        # 目标侧库必须全部带 :arm64 后缀:丢后缀 apt 会静默装宿主 amd64 版,
+        # pkg-config 交叉解析随之指向宿主侧(多数情况下 CI 红,但组合无保障)
+        # ——按清单逐项钉死,增删包必须同步本表(与 loong64 套件钉工具链/
+        # sysroot 清单同一反漂移惯例)。
+        for package in (
+            "libwebkit2gtk-4.1-dev",
+            "libssl-dev",
+            "libayatana-appindicator3-dev",
+            "libpipewire-0.3-dev",
+            "libdrm-dev",
+            "libgbm-dev",
+            "libegl-dev",
+            "libglib2.0-dev",
+            "libcap-dev",
+        ):
+            self.assertIn(f"{package}:arm64", self.arm64_job)
+        # arm64 档案钉在 ports.ubuntu.com 的 jammy 四 pocket:pocket 丢失或
+        # 漂到别的发行版会抬目标侧基线——这是唯一没有响亮 CI 红的漂移形态
+        # (只有 outcome 层 floor 守护部分兜底),故在契约层按份数钉死。
+        ports_line = "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy"
+        self.assertEqual(self.arm64_job.count(ports_line), 4)
+        # 宿主 amd64 的 pkgconfig 目录必须保持缺席(absence 钉走注释剥离
+        # 文本,极性见 _without_yaml_comments):混入即可能解析到宿主库。
+        self.assertNotIn(
+            "/usr/lib/x86_64-linux-gnu/pkgconfig",
+            _without_yaml_comments(self.arm64_job),
+        )
+
+    def test_arm64_cross_env_pinned(self):
+        # 交叉 env 块是 arm64 腿的"目标侧解析面":链接器/C 工具链/pkg-config/
+        # bindgen 任一变量丢失或漂移,构建要么红在几十分钟后的 cargo,要么
+        # 静默换解析侧。逐项钉死,正钉只看活行(极性见
+        # _without_inline_comments;loong64 套件对 LIBCLANG_PATH/
+        # PKG_CONFIG_LIBDIR 有等价钉)。
+        live = _without_inline_comments(self.arm64_job)
+        self.assertIn(
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc", live
+        )
+        self.assertIn("CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc", live)
+        self.assertIn("CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++", live)
+        self.assertIn("AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar", live)
+        self.assertIn(
+            "PKG_CONFIG_LIBDIR: /usr/local/arm64/lib/pkgconfig:"
+            "/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig",
+            live,
+        )
+        self.assertIn('PKG_CONFIG_ALLOW_CROSS: "1"', live)
+        self.assertIn("LIBCLANG_PATH: /usr/lib/llvm-14/lib", live)
+        # 显式 target 添加步骤:缺失在专属步骤即红,而不是埋在几十分钟后的
+        # cargo 构建里(步骤注释自身的约定)。
+        self.assertIn("rustup target add aarch64-unknown-linux-gnu", live)
+        # -fuse-ld=lld 下交叉 gcc 只沿 PATH 找带 triple 前缀的链接器名:
+        # 软链步骤本身就是钉住对象(丢失时全部 cargo 链接红在 collect2)。
+        self.assertIn(
+            'ln -sf "$(command -v ld.lld)" /usr/local/bin/aarch64-linux-gnu-ld.lld',
+            live,
+        )
+        # 交叉 pw 前缀脚本调用(jammy :arm64 的 0.3.48 SPA 头缺口与 amd64 相同)。
+        self.assertIn("bash scripts/ci-libpipewire-build-arm64.sh", live)
+
+    def test_pipewire_arm64_script_mirrors_host_pin(self):
+        # 交叉 1.0.7 前缀与宿主前缀必须同版本同源:两腿的 libspa-sys 都在
+        # 构建期对系统头 bindgen,版本或源分叉即两腿 SPA 头不一致。两脚本
+        # 的 PW_VERSION/PW_SHA256 逐值相等(升版必须两处同步)。
+        host = CI_LIBPIPEWIRE_HOST_SCRIPT.read_text(encoding="utf-8")
+        arm64 = CI_LIBPIPEWIRE_ARM64_SCRIPT.read_text(encoding="utf-8")
+
+        def pin(script, name):
+            match = re.search(rf"^{name}=(.+)$", script, flags=re.MULTILINE)
+            self.assertIsNotNone(match, f"missing {name} pin")
+            return match.group(1)
+
+        self.assertEqual(pin(host, "PW_VERSION"), pin(arm64, "PW_VERSION"))
+        self.assertEqual(pin(host, "PW_SHA256"), pin(arm64, "PW_SHA256"))
 
     def test_linux_builds_run_glibc_floor_guard_before_upload(self):
         # 守护必须覆盖三个 Linux job,且位于产物上传之前(失败即阻断发布)。
@@ -220,7 +297,13 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
         self.assertIn('"1.3.13"', policy)  # CXXABI_ (jammy gcc 12)
 
     def test_guard_script_is_valid_bash(self):
-        for script in (GUARD_SCRIPT, ELF_POLICY_SCRIPT, ASR_BUILD_SCRIPT, ASR_SETUP_SCRIPT):
+        for script in (
+            GUARD_SCRIPT,
+            ELF_POLICY_SCRIPT,
+            ASR_BUILD_SCRIPT,
+            ASR_SETUP_SCRIPT,
+            CI_LIBPIPEWIRE_ARM64_SCRIPT,
+        ):
             with self.subTest(script=script.name):
                 subprocess.run(["bash", "-n", str(script)], check=True)
 
