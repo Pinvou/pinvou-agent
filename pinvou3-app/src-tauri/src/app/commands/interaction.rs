@@ -551,20 +551,32 @@ pub async fn decide_approval(
         ));
     }
     // 再摘登记：拿回 approval_key / grouping_key 供缓存写入；engine 侧调用
-    // 失败（审批已超时/turn 已中断）时卡也必须消失，不能因错误返回而残留。
+    // 失败（审批已超时/turn 已中断）时把摘除的登记原样放回——卡保持未决，
+    // 本表面可重试、其它表面的点击仍能收口；摘除不回滚会留一张永远
+    // "approval not found" 的死卡（登记摘除不可逆的唯一例外是引擎调用失败）。
+    // 引擎调用成功路径不回滚：卡已消费，残留会复活已收口的卡。
     let pending = pending_approvals::remove(&session_id, &approval_id)
         .ok_or_else(|| format!("decide_approval: approval not found: {approval_id}"))?;
-    let engine = pool
-        .handle_for(&session_id)
-        .await
-        .ok_or_else(|| "session_engine_not_running".to_string())?;
+    let engine = match pool.handle_for(&session_id).await {
+        Some(engine) => engine,
+        None => {
+            pending_approvals::record(&session_id, pending);
+            return Err("session_engine_not_running".to_string());
+        }
+    };
     let result = if decision == "deny" {
         engine.handle.deny_tool_call(approval_id.clone()).await
     } else {
         // "allow" | "allow_for_session"（上方已校验）。
         engine.handle.approve_tool_call(approval_id.clone()).await
     };
-    let outcome = result.map_err(|error| format!("decide_approval({decision}): {error:#}"));
+    let outcome = match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            pending_approvals::record(&session_id, pending);
+            return Err(format!("decide_approval({decision}): {error:#}"));
+        }
+    };
     // 授予/拒绝缓存在 engine 调用**成功后**写入：decision 在 engine 侧未生效
     // （审批已消费/turn 已中断）时，缓存不得替一次没落地的点击放行后续调用。
     if outcome.is_ok() && decision == "allow_for_session" {
@@ -576,7 +588,7 @@ pub async fn decide_approval(
         pending_approvals::remember_denial(&session_id, &pending.approval_key);
     }
     // 收敛广播在 engine 调用成功后（与缓存写入同序）：失败不广播——其它表面
-    // 的卡保持未决，发起方收到错误提示，卡由终态清扫或重试收口。
+    // 的卡保持未决，发起方收到错误提示；摘除的登记已原样放回，重试仍能收口。
     if outcome.is_ok() {
         let payload =
             pending_approvals::approval_resolved_payload(&session_id, &approval_id, &decision);
@@ -617,12 +629,25 @@ pub async fn set_session_mode(
     store
         .set_mode(&session_id, mode)
         .map_err(|error| format!("set_session_mode({session_id}): {error:#}"))?;
+    // ask 半段失败不吞掉 mode 半段：mode 已落库并生效，发布序列照走（广播
+    // 携带权威状态，其它表面/窗口收敛到已生效的 mode），ask 错误大声记日志
+    // 并回传——命令失败但切换半落地时，前端按广播收敛芯片而不是回滚一个
+    // 实际已持久化的 mode。
+    let mut ask_error = None;
     if let Some(enabled) = ask_on_guardrail {
-        store
-            .set_ask_on_guardrail(&session_id, enabled)
-            .map_err(|error| format!("set_session_mode({session_id}): {error:#}"))?;
+        if let Err(error) = store.set_ask_on_guardrail(&session_id, enabled) {
+            let rendered = format!("set_session_mode({session_id}): ask_on_guardrail: {error:#}");
+            eprintln!(
+                "[commands] {rendered} (mode already persisted; broadcasting authoritative state)"
+            );
+            ask_error = Some(rendered);
+        }
     }
-    publish_session_mode_change(&session_id, &store, &pool, &app).await
+    let state = publish_session_mode_change(&session_id, &store, &pool, &app).await?;
+    if let Some(error) = ask_error {
+        return Err(error);
+    }
+    Ok(state)
 }
 
 /// 单独翻转会话 ask-on-guardrail（Yolo 全自动档下守卫命中弹卡还是硬拒）。
