@@ -114,11 +114,41 @@ pub fn remove(session_id: &str, approval_id: &str) -> Option<PendingApproval> {
 /// 授予/拒绝是会话级记忆，**不随 turn 终态消亡**——「本会话允许」必须跨
 /// turn 存活（TUI 语义：只在换会话/换工作区时清），否则按钮实为「本 turn
 /// 允许」。会话级记忆的清理点是 [`clear_session`]（会话删除）。
+///
+/// 生产终态路径应改用 [`clear_pending_returning_child_ids`]：detached
+/// worker 的审批不能在这里被静默丢弃（丢弃 = 悬挂 worker），本函数保留给
+/// 测试与未来非终态清理点。
 pub fn clear_pending(session_id: &str) {
     with_store(|store| {
         store.generation = store.generation.wrapping_add(1);
         store.by_session.remove(session_id);
     });
+}
+
+/// 终态清空的分裂变体：摘除该 session 的全部挂起卡，并返回其中
+/// **detached worker 审批**的 approval_id。底座子代理审批 id 形如
+/// `agent:<agent_id>:approval:<boot_id>:<n>`（
+/// `SubAgentManager::register_child_approval`），它是子代理 oneshot 的键：
+/// 静默丢弃等于把还在 `WaitingForUser` 等待的 worker 永久悬挂（detached
+/// worker 刻意比父 turn 活得久）。调用方必须对返回的 id 逐个走 engine
+/// deny（`route_child_approval_decision` 路由到子代理），把「父 turn 已
+/// 结束」变成 worker 可见的确定性拒绝；引擎已被回收时 oneshot 随 receiver
+/// drop 落 `Unavailable`，同样是确定性终态。父会话自己的审批 id（引擎
+/// per-turn 审批随 turn 消亡）直接丢弃即可。
+pub fn clear_pending_returning_child_ids(session_id: &str) -> Vec<String> {
+    with_store(|store| {
+        store.generation = store.generation.wrapping_add(1);
+        let entries = store.by_session.remove(session_id).unwrap_or_default();
+        entries
+            .into_iter()
+            .filter(|entry| {
+                deepseek_tui::tools::subagent::SubAgentManager::is_child_approval_id(
+                    &entry.approval_id,
+                )
+            })
+            .map(|entry| entry.approval_id)
+            .collect()
+    })
 }
 
 /// 会话删除/清理时摘除该 session 的全部份额：挂起卡、授予、拒绝。授予/
@@ -537,6 +567,64 @@ mod tests {
         clear_session(&session);
         assert!(!session_granted(&session, "g-1"), "会话删除清授予");
         assert!(!session_denied(&session, "k-1"), "会话删除清拒绝");
+    }
+
+    /// turn 终态分裂清空：detached worker 的审批 id（底座
+    /// `agent:<agent_id>:approval:<boot_id>:<n>` 形状）被摘出并返回给调用方
+    /// 做确定性拒绝，父会话自己的审批 id 直接丢弃；两类条目都离开登记。
+    /// 静默丢弃 worker 审批 = 把 `WaitingForUser` 的 worker 永久悬挂。
+    #[test]
+    fn forkguard_approval_surface_terminal_split_returns_child_ids() {
+        let session = isolate("approval-terminal-split-test");
+        record(&session, sample("ap-parent-1", "k-1", "g-1"));
+        let mut child = sample("agent:ag-1:approval:boot-1:1", "k-2", "g-2");
+        child.intent_summary = None;
+        record(&session, child);
+
+        let child_ids = clear_pending_returning_child_ids(&session);
+        assert_eq!(
+            child_ids,
+            vec!["agent:ag-1:approval:boot-1:1".to_string()],
+            "只有子代理审批 id 被摘出供确定性拒绝"
+        );
+        assert!(list(&session).is_empty(), "两类条目都离开登记");
+        assert!(
+            clear_pending_returning_child_ids(&session).is_empty(),
+            "重复清空返回空"
+        );
+
+        // 会话级授予/拒绝记忆不受终态清空影响（与 clear_pending 同语义）。
+        remember_grant(&session, "g-1");
+        remember_denial(&session, "k-1");
+        clear_pending_returning_child_ids(&session);
+        assert!(session_granted(&session, "g-1"), "授予跨 turn 存活");
+        assert!(session_denied(&session, "k-1"), "拒绝跨 turn 存活");
+        clear_session(&session);
+    }
+
+    /// 终态接线钉：`emit_chat_terminal` 必须用分裂变体摘登记，并把摘出的
+    /// 子代理审批送确定性拒绝——退回静默 `clear_pending` 会把
+    /// `WaitingForUser` 的 detached worker 永久悬挂（worker 审批比父 turn
+    /// 活得久）。
+    #[test]
+    fn forkguard_emit_chat_terminal_denies_child_approvals_after_terminal() {
+        let src = include_str!("engine.rs");
+        let production = src.split("#[cfg(test)]").next().expect("non-empty source");
+        let sweep = production
+            .find("clear_pending_returning_child_ids")
+            .expect("the terminal sweep must split out detached-worker approval ids");
+        assert!(
+            production[sweep..].contains("deny_child_approvals_after_terminal"),
+            "the split ids must be routed to the deterministic child denial"
+        );
+        assert!(
+            production.contains("deny_tool_call"),
+            "the denial task must go through the engine deny route (oneshot resolution)"
+        );
+        assert!(
+            !production.contains("pending_approvals::clear_pending("),
+            "the terminal sweep must not drop pending entries silently"
+        );
     }
 
     #[test]

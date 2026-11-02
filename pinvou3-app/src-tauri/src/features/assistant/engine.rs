@@ -566,10 +566,19 @@ pub(crate) fn emit_chat_terminal(
     // turn 终态兜底清空挂起的输入请求（取消/中断时可能没有对应 tool_end）。
     crate::features::assistant::pending_user_input::clear_session(session_id);
     // 审批卡同理：中断的 turn 里 engine 侧审批已随 turn 丢弃，挂起登记兜底
-    // 清空，残留卡不得跨 turn 存活。授予/拒绝是会话级记忆，**跨 turn 存活**
-    // （「本会话允许」的语义；TUI 同样只在换会话/换工作区时清）——它们随
-    // 会话删除在 lib.rs 会话清理处经 clear_session 摘除。
-    crate::features::assistant::pending_approvals::clear_pending(session_id);
+    // 清空，残留卡不得跨 turn 存活。**detached worker 的审批例外**：它的
+    // approval id 是子代理 oneshot 的键（detached worker 刻意比父 turn 活得
+    // 久，此刻可能正在 `WaitingForUser` 等待应答），静默丢弃 = worker 永久
+    // 悬挂——对它们逐个确定性拒绝（见 split 变体文档）。授予/拒绝是会话级
+    // 记忆，**跨 turn 存活**（「本会话允许」的语义；TUI 同样只在换会话/换
+    // 工作区时清）——它们随会话删除在 lib.rs 会话清理处经 clear_session 摘除。
+    let child_approval_ids =
+        crate::features::assistant::pending_approvals::clear_pending_returning_child_ids(
+            session_id,
+        );
+    if !child_approval_ids.is_empty() {
+        deny_child_approvals_after_terminal(app, session_id, child_approval_ids);
+    }
     let payload = json!({
         "session_id": session_id,
         // Turn identity: terminal events must carry the generation so the
@@ -594,6 +603,40 @@ pub(crate) fn emit_chat_terminal(
     );
     let _ = app.emit("chat:done", payload.clone());
     crate::features::remote_control::forward_app_event(app, "chat:done", payload);
+}
+
+/// 父 turn 终态对 detached worker 审批的确定性拒绝（id 来源见
+/// `clear_pending_returning_child_ids`）。引擎在位 → deny 经底座
+/// `route_child_approval_decision` 路由到子代理 oneshot，worker 拿到拒绝并
+/// 自行收尾；引擎已被回收（handle_for 无在位条目）→ oneshot 随 receiver
+/// drop 落 `Unavailable`，同样不悬挂。分离任务：终态发射不被 engine I/O
+/// 阻塞（chat:done 必须先落，前端闸门才重开）。
+fn deny_child_approvals_after_terminal(
+    app: &AppHandle,
+    session_id: &str,
+    child_approval_ids: Vec<String>,
+) {
+    let denied_count = child_approval_ids.len();
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    tokio::spawn(async move {
+        let pool = app.state::<crate::features::assistant::engine_pool::EnginePool>();
+        let Some(engine) = pool.handle_for(&session_id).await else {
+            eprintln!(
+                "[pinvou3-app] turn terminal: {denied_count} detached-worker approval(s) left \
+                 pending while the engine is already reclaimed; their workers resolve to \
+                 Unavailable via the dropped oneshot receivers"
+            );
+            return;
+        };
+        for approval_id in child_approval_ids {
+            if let Err(error) = engine.handle.deny_tool_call(approval_id).await {
+                eprintln!(
+                    "[pinvou3-app] detached-worker approval deny after terminal failed: {error:#}"
+                );
+            }
+        }
+    });
 }
 
 pub(crate) fn emit_transcript_committed(
