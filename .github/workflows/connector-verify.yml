@@ -42,8 +42,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # linux-arm64: 2026-11 起跑在免费 x86_64 ubuntu-22.04 上,qemu-user
+            # + binfmt 真实执行 aarch64 CLI(can_run 保持 true,覆盖不降级);
+            # 动态链接的 Go CLI(dws/lark-cli)需要 libc6:arm64 提供的
+            # /lib/ld-linux-aarch64.so.1,见下方准备步骤。arm 托管 runner
+            # 按分钟计费(2026-10 该腿 ~$16/月),交叉后归零。
           - platform: linux-arm64
-            runs-on: ubuntu-22.04-arm
+            runs-on: ubuntu-22.04
             resources: linux/aarch64
             suffix: ""
             can_run: true
@@ -84,6 +89,30 @@ jobs:
         if: runner.os == 'Linux'
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+
+      # 仅 linux-arm64 腿需要:注册 binfmt 后 aarch64 ELF 透明执行。
+      # Ubuntu 主档案无 arm64 包,libc6:arm64 走 ports.ubuntu.com 的
+      # [arch=arm64] 源(既有源钉回 amd64/i386,同 pinvou-agent 的 arm64
+      # 交叉构建方案);wecom-cli 静态链接直接可跑,dws/lark-cli 动态链接
+      # 需要 arm64 解释器与 glibc。
+      - name: Set up aarch64 binfmt emulation (linux-arm64 leg only)
+        if: matrix.platform == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture arm64
+          sudo sed -i -E 's|^deb ([^[[:space:]])|deb [arch=amd64,i386] \1|' /etc/apt/sources.list
+          printf '%s\n' \
+            'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse' \
+            'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse' \
+            'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse' \
+            | sudo tee /etc/apt/sources.list.d/arm64.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support libc6:arm64
+          sudo update-binfmts --enable qemu-aarch64 || true
+          # 冒烟:确认 aarch64 ELF 能透明执行(动态/静态各验一个)。
+          file /lib/ld-linux-aarch64.so.1 2>/dev/null || ls /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+          /usr/bin/qemu-aarch64-static --version | head -1
 
       - name: Download pinned connector binaries
         # windows runner 默认 pwsh 无法直接执行 .sh,必须显式走 bash。
