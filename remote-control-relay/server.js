@@ -40,6 +40,15 @@ const MAX_PAYLOAD_BYTES = boundedInteger(
 // desktop could produce while still rejecting unbounded-depth frames before
 // JSON.parse, which alone would accept them.
 const MAX_WIRE_NESTING_DEPTH = 128;
+// Round-15 复审:桌面侧 tungstenite 的入站上限是协议文档的 4 MiB−64 KiB。
+// Web→desktop 转发会在载荷外再包一层(endpoint_id + lease_id + v),恰好
+// 4 MiB 的 web 帧此前被 ingress 放行、转发后超桌面界限,触发桌面强制断
+// 线重连(自愈但会闪断)。ingress 不动(上限语义不变);转发前按
+// raw 字节数 + 富余余量预检,超限回显明确的 frame_too_large,而非让桌
+// 面在界限上撞死。富余量宽松覆盖 endpoint_id(32 字节 token)、lease_id
+// 与键名开销。
+const DESKTOP_MAX_FRAME_BYTES = 4 * MIB - 64 * 1024;
+const DESKTOP_ENVELOPE_HEADROOM_BYTES = 512;
 const MAX_ENDPOINTS = boundedInteger(
   process.env.MAX_ENDPOINTS ?? process.env.MAX_ROOMS,
   2000,
@@ -1449,6 +1458,7 @@ wss.on("connection", (ws, req) => {
     }
     let msg;
     const rawText = String(raw);
+    const rawBytes = rawMessageBytes(raw);
     try {
       assertNoDuplicateVersionKey(rawText);
       msg = JSON.parse(rawText);
@@ -1466,6 +1476,16 @@ wss.on("connection", (ws, req) => {
         "unsupported_protocol_version",
         "protocol version 2 is required",
       );
+      return;
+    }
+    // Round-15 复审:转发前预检桌面侧帧界(见 DESKTOP_MAX_FRAME_BYTES)。
+    if (rawBytes + DESKTOP_ENVELOPE_HEADROOM_BYTES > DESKTOP_MAX_FRAME_BYTES) {
+      send(ws, {
+        v: 2,
+        type: "error",
+        code: "frame_too_large",
+        message: "web frame plus relay envelope exceeds the desktop frame bound",
+      });
       return;
     }
     if (hasLegacyTokenAlias(msg)) {

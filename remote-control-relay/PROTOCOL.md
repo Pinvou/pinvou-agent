@@ -225,9 +225,9 @@ aborts startup with a fixed `[relay-error]` line.
 
 The Relay reports rejects with a `type: "error"` message carrying a `code`.
 Codes enforced by the reject helper also close the socket with WebSocket close
-code 1008. Five informational codes leave the connection open:
+code 1008. Six informational codes leave the connection open:
 `bad_json`, `bad_message`, `binary_unsupported`, `unsupported_message_type`,
-and `desktop_offline`. Graceful closes wait for the peer's close handshake so
+`frame_too_large`, and `desktop_offline`. Graceful closes wait for the peer's close handshake so
 queued messages are delivered, and frames that arrive after the close are
 ignored; a peer that withholds the handshake is terminated unconditionally
 after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
@@ -265,9 +265,17 @@ when the revoke requester is acknowledged with a normal close ("endpoint
 revoked"), `4001` when a replaced desktop or Web client is closed ("desktop
 endpoint replaced" or "endpoint replaced"), and `4003` when revoke or TTL
 expiry tears down the affected client ("endpoint revoked" or "endpoint
-expired"). A client whose socket the Relay terminates abruptly (frame high-
-water mark, unserializable frame, hostile upgrade, heartbeat liveness kill)
-observes the implicit `1006` abnormal-closure code on its side.
+expired"). A client whose socket the Relay terminates abruptly after the WebSocket
+handshake (frame high-water mark, unserializable frame, heartbeat liveness
+kill) observes the implicit `1006` abnormal-closure code on its side. A
+hostile upgrade is rejected before any WebSocket exists: the peer sees a
+failed HTTP upgrade (a 4xx/429/503 banner or a bare destroy), not `1006`.
+
+A Web frame whose byte size plus the Relay's forward envelope (endpoint_id,
+lease_id, `v`) would exceed the desktop's documented `4 MiB - 64 KiB` frame
+bound is rejected with `frame_too_large` before forwarding (Round-15 复审:
+previously such a frame was accepted at ingress and then killed the desktop
+socket at the boundary, forcing a self-healing reconnect flap).
 
 ## HTTP and operational behavior
 
