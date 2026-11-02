@@ -264,7 +264,13 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
 
 轮中任意次 `ChangeMode` 翻转折叠为下一块的一次转换；姿态未变的轮零新增行
 （#3947 byte-stable doctrine）。`/preview-request` 读同一引擎计算值，预览与
-实线逐字节一致。未改动前，姿态变更只能靠下一轮的常设姿态行被模型「观察到」，
+实线逐字节一致。该行只度量「站姿」变化：provenance 窄化轮（AgentMail、导入
+转录等非权威输入）运行的是逐轮降低的姿态，由窄化回执行族（`Authority
+narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(host)` 行
+（把逐轮窄化误标为宿主翻转），也不污染站姿 baseline（否则下一个权威轮会把
+窄化解除渲染成一次无人做过的反向 host 翻转）；真正的宿主翻转落在同一窗口时，
+由下一个权威轮从窄化前的站姿出发渲染。Auto-Review 下的窄化降级
+（Auto→Suggest）与 Bypass 降级同样携带结构化窄化事件，不再静默。未改动前，姿态变更只能靠下一轮的常设姿态行被模型「观察到」，
 行为突变（突然免批/突然要批）读起来没有解释；这一行让变更自述原因
 （`crates/tui/src/core/authority.rs`，机制登记见底座 PR (b)）。
 
@@ -275,14 +281,16 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
   4 条（武装发布粘滞、armed composer 硬拒、armed Auto-Review 升级恒拒、
   preview 计划姿态与 live 线体哈希一致）+ 复审修复三 `f972884e5`
   2 条（runtime pump 尊重 force_prompt、NotStarted 不吞 transition）+ 复审修复四
-  `b94cc3175` 2 条（sync 重置已上报姿态、isolated 轮不记录不消费），逐条钉住上述五个武装面、
+  `b94cc3175` 2 条（sync 重置已上报姿态、isolated 轮不记录不消费）+ 复审修复五
+  `1785dae15` 2 条（窄化 provenance 轮不误报 host 行且不污染 standing baseline、
+  Auto-Review 窄化降级携带结构化回执），逐条钉住上述五个武装面、
   Auto-Review/Never 恒拒、授予缓存不可静默消费武装 hold、composer 不武装、
   子代理两个镜像面、transition 渲染/折叠/预览一致与武装不可回滚。
-  forkguard 行为名总数 255 → 277；门禁命令
+  forkguard 行为名总数 255 → 279；门禁命令
   `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`
-  （复审修复四头 `b94cc3175` 实测 262 过 / 0 挂，既有 fail-closed pin 原样绿；
+  （复审修复五头 `1785dae15` 实测 264 过 / 0 挂，既有 fail-closed pin 原样绿；
   协议 crate 71/0 含新增遗留 ChangeMode 载荷 serde 钉）。
-  22 条逐名：
+  24 条逐名：
   `forkguard_armed_full_access_forced_hold_resolves_to_prompt`、
   `forkguard_armed_full_access_hold_prompts_instead_of_blocking`、
   `forkguard_armed_repo_law_hold_prompts_instead_of_blocking`、
@@ -310,7 +318,10 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
   `forkguard_sync_session_clears_the_recorded_turn_meta_posture`、
   `forkguard_an_isolated_turn_neither_consumes_nor_records_the_transition`
   （复审修复四新增，两条均突变验证转红；本波第三项修复扩展 pump 钉的载荷断言、
-  不新增钉名）。
+  不新增钉名），
+  `forkguard_a_provenance_narrowed_turn_neither_emits_the_host_line_nor_pollutes_the_baseline`、
+  `forkguard_an_auto_review_turn_narrowed_by_provenance_still_records_its_narrowing`
+  （复审修复五新增，两条均突变验证转红）。
 - **应用侧**：`forkguard_approval_surface_record_dedupes_by_approval_id` /
   `_remove_returns_entry_and_cleans_empty_session` /
   `_grant_and_denial_scoping` / `_clear_session_wipes_memory` /
