@@ -436,10 +436,14 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       ? targetSessionId
       : state.activeSessionId;
     if (!sid) return;
-    patchItemById(itemId, { resolved: true }); notify();
+    // Mark handled only after the switch commits (reviewer P2): marking up
+    // front let a rejected set_session_mode return leave the card "handled"
+    // with its actions already stripped — a failed operation with no retry
+    // path. The catch keeps the card actionable and surfaces the error.
     try {
       const st = await invoke("set_session_mode", { sessionId: sid, mode: "auto" });
       applyAuthoritativeModeState(sid, st);
+      patchItemByIdFor(sid, itemId, { resolved: true }); notify();
     } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); notify(); return; }
     try { await sendMessageToSession(sid, bt("planStuckGoPrompt")); }
     catch (e) { addSystemItemFor(sid, bt("planContinueFailed") + e); notify(); }
@@ -489,6 +493,16 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
         };
         addSystemItem(bt("switchModeFailed") + e);
       });
+      // Reconcile from the persisted source of truth (reviewer P3): two
+      // opposite toggles that BOTH fail would each restore their captured
+      // optimistic value, leaving the chip showing enabled while the durable
+      // setting is disabled. The authoritative re-read converges the chip to
+      // what the backend actually kept; a re-read failure must not mask the
+      // original error, so the rollback value above stays the fallback.
+      try {
+        const ms = await invoke("get_mode_state", { sessionId: sid });
+        applyAuthoritativeModeState(sid, ms);
+      } catch { /* keep the optimistic rollback value */ }
     }
     notify();
   }

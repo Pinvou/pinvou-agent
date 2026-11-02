@@ -2948,6 +2948,34 @@ impl EnginePool {
             .map(|e| e.engine.clone())
     }
 
+    /// Atomic (engine, incarnation) snapshot for the approval-decision path:
+    /// the decision sends on the returned handle and may only restore a
+    /// removed pending approval while this exact engine incarnation is still
+    /// the live entry (an eviction/rebuild between the send and the failure
+    /// arm must not resurrect a decision surface whose engine-side approval
+    /// died with the old engine). One entries-lock read keeps the pair
+    /// consistent — same shape as the steer() snapshot.
+    pub(crate) async fn handle_with_incarnation(
+        &self,
+        session_id: &str,
+    ) -> Option<(AppEngine, u64)> {
+        self.entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| (e.engine.clone(), e.steer_incarnation))
+    }
+
+    /// The live entry's engine incarnation, or None when not running. The
+    /// restore-fence comparator for [`Self::handle_with_incarnation`].
+    pub(crate) async fn engine_incarnation(&self, session_id: &str) -> Option<u64> {
+        self.entries
+            .lock()
+            .await
+            .get(session_id)
+            .map(|e| e.steer_incarnation)
+    }
+
     /// Reclaim a session's engine: cancel the running turn → Shutdown the
     /// engine → abort the forwarder. Called when a session is deleted.
     pub async fn evict(&self, session_id: &str) {

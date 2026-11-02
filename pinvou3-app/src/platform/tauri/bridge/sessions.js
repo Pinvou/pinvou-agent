@@ -793,12 +793,23 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     const map = state.approvalReplayTombstones;
     return !!approvalId && !!map && map.has(String(sid) + "\u0000" + String(approvalId));
   }
+  // 重放终态代栅栏（评审 P3）：快照发出到回程之间若发生 turn 终态
+  // （chat:done 已清空后端登记表、在席卡就地 cancelled，见 chat-events.js
+  // 的 approvalReplayTerminalSeq bump），整批快照作废——终态后回程的
+  // 快照会把引擎侧已消亡的审批当活卡插回。墓碑只拦已落定的单个 id，
+  // 拦不住「终态之后才回程」的整批；下一次会话切换会用新登记表重放。
+  function approvalTerminalSeq(sid) {
+    const map = state.approvalReplayTerminalSeq;
+    return (map && map.get(String(sid))) || 0;
+  }
   async function replayPendingApprovals(sid) {
     if (!sid) return;
+    const terminalFence = approvalTerminalSeq(sid);
     let pending = [];
     try { pending = await invoke("get_pending_approvals", { sessionId: sid }) || []; }
     catch { return; }
     if (!pending.length) return;
+    if (approvalTerminalSeq(sid) !== terminalFence) return;
     let changed = false;
     runSyncOnSession(sid, function () {
       pending.forEach(function (entry) {

@@ -3646,7 +3646,7 @@ fn decide_approval_side_effect_ordering_is_pinned() {
         .find("invalid decision")
         .unwrap_or_else(|| panic!("decision validation missing"));
     let remove_at = body
-        .find("pending_approvals::remove(")
+        .find("pending_approvals::remove_fenced(")
         .unwrap_or_else(|| panic!("registry removal missing"));
     let approve_at = body
         .find("approve_tool_call(")
@@ -3667,6 +3667,20 @@ fn decide_approval_side_effect_ordering_is_pinned() {
     assert!(
         approve_at < grant_at && deny_at < denial_at,
         "grant/denial caches must be written only after the engine call succeeded"
+    );
+    // The failure-arm restore must be fenced (reviewer P2): a registry
+    // mutation racing the await (turn-terminal sweep, session purge, a
+    // concurrent decision) or an engine eviction/rebuild must cancel the
+    // restore instead of recreating a closed approval lifecycle's entry.
+    assert!(
+        body.find("pending_approvals::generation() == registry_generation")
+            .is_some(),
+        "the failure-arm restore must be gated on the registry generation fence"
+    );
+    assert!(
+        body.find("engine_incarnation(&session_id).await == Some(incarnation)")
+            .is_some(),
+        "the send-failure restore must be gated on the engine incarnation fence"
     );
 }
 

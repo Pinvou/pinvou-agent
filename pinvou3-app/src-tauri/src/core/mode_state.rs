@@ -20,16 +20,16 @@ use serde::{Deserialize, Serialize};
 /// 历史：曾经只有 `Plan / Yolo` 两态（工作车道默认 Yolo，即全程自动批准）。
 /// `Auto` 是后加的中间档（对齐 Claude Code `acceptEdits`/`default` 的主流
 /// 形态）：普通可提示工具逐次请批，工作区内文件写走底座 carve-out 免弹卡。
-/// 旧侧车文件里的 `"plan"/"yolo"` 照常反序列化。兼容面纪律：`"auto"` 只进
-/// `_session_mode_states.json` 侧车；settings.json 的 lane 默认永不写
-/// `"auto"` 字面量——显式 Auto 选择走 `*_auto` 伴随旗（见 `platform::prefs`），
-/// 否则旧二进制的整文件解析会失败并把下一次保存变成默认值覆盖（持久设置
-/// 丢失）。**降级代价如实陈述（pre-tri-mode 二进制 + 共享 PINVOU3_HOME）**：
-/// 旧二进制读到侧车里的 `"auto"` 时整表 strict 反序列化失败——读路径该次
-/// 装载留空（未绑定 plain 会话按旧默认落 **Yolo 全自动**，静默放宽而非
-/// 「一次性陈旧」），写路径任何变更触发整表隔离并拒绝，下一次变更从空表
-/// 重建（全部会话的持久 mode 离开活跃 sidecar，隔离副本不自动读回）。
-/// 真实语义与降级恢复边界见 `docs/safety-modes.md` §3.1/§6。
+/// 旧侧车文件里的 `"plan"/"yolo"` 照常反序列化。兼容面纪律（两条车道同规矩）：
+/// settings.json 的 lane 默认永不写 `"auto"` 字面量——显式 Auto 选择走
+/// `*_auto` 伴随旗（见 `platform::prefs`）；per-session 的
+/// `_session_mode_states.json` 同样只保留 pre-tri-mode 词表——
+/// `apply_session_mode_mutation_locked` 把 Auto 折叠成 `"plan"` 落共享表，
+/// 显式选择以 `true` 旗记入 `_session_auto_modes.json` 伴随表。共享
+/// PINVOU3_HOME 的 pre-tri-mode 二进制因此可以整表 strict 反序列化成功：
+/// 降级不再隔离整表、不再在下次写入时把其他会话的选择从空表重建
+/// （评审 P2 数据兼容要求），Auto 会话在其视图里保守降级为 Plan。
+/// 语义与降级恢复边界见 `docs/safety-modes.md` §3.1/§6。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerializableMode {

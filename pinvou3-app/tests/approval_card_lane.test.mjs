@@ -621,6 +621,39 @@ try {
     console.log('approval_card_lane: plain-lane runtime ok');
   }
 
+  // ── 3. Web 车道 + 重放栅栏（评审 P2/P3 修复钉）────────────────────
+  {
+    const web = read('src', 'platform', 'web', 'bridge.js');
+    // 去重键 = 会话 id + approval id：不同会话合法复用同一 approval id，
+    // 全局 id-only Set 会吞掉第二个会话的等待说明；有界 Map（最旧逐出），
+    // 因为 web 不监听 chat:approval_resolved，没有可清除的收敛事件。
+    assert.match(web, /const dedupKey = String\(p\.session_id \|\| ""\) \+ "\\u0000" \+ approvalId;/,
+      'web 审批通告去重必须按 会话+approval id 复合键（全局 id-only 键跨会话吞通告）');
+    assert.match(web, /webApprovalNoticeIds = new Map\(\)/,
+      'web 审批通告去重必须是有界 Map 而非无界 Set');
+    assert.match(web, /webApprovalNoticeIds\.size > WEB_APPROVAL_NOTICE_CAP/,
+      'web 审批通告去重必须有界（无 resolve 收敛事件可清除）');
+    // 受理前姿态门：Auto 档在受理前显式拒绝该不受支持的执行路径——
+    // 事后通告不是完成态；姿态命令失败不拦发送（fail-open，通告兜底）。
+    assert.match(web, /invoke\("get_mode_state", \{ sessionId: sid \}\)/,
+      'web 发送受理前必须解析会话姿态');
+    assert.match(web, /modeState && modeState\.mode === "auto"[\s\S]{0,200}webAutoSendBlocked/,
+      'Auto 姿态必须在受理前显式拒绝（webAutoSendBlocked 三语文案）');
+    const blockedHits = (web.match(/webAutoSendBlocked:/g) || []).length;
+    assert.ok(blockedHits >= 3, `webAutoSendBlocked 文案必须三语齐备（实得 ${blockedHits} 处）`);
+    assert.match(web, /function doSendForAdmitted\(/,
+      '发送主体必须拆出为 doSendForAdmitted（姿态门先行，不重构调用方）');
+
+    const sessionsBridge = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
+    assert.match(sessionsBridge, /const terminalFence = approvalTerminalSeq\(sid\)/,
+      '审批重放必须在快照发出前捕获终态代栅栏');
+    assert.match(sessionsBridge, /approvalTerminalSeq\(sid\) !== terminalFence\) return;/,
+      '终态代已推进时整批快照必须作废（终态后回程不得插回已消亡的审批）');
+    const chatEvents = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
+    assert.match(chatEvents, /approvalReplayTerminalSeq/,
+      'chat:done 终态清扫必须推进审批重放代栅栏（sessions.js 消费）');
+  }
+
   console.log('approval_card_lane: ok');
 } finally {
   rmSync(temp, { recursive: true, force: true });

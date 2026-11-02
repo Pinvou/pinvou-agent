@@ -271,7 +271,16 @@ impl SessionStore {
                     std::collections::HashMap<String, SerializableMode>,
                 >(&content)
                 {
-                    return entries.remove(id);
+                    if let Some(mode) = entries.remove(id) {
+                        // Same companion overlay as the boot load: `plan` +
+                        // `true` flag reads back as the explicit Auto choice.
+                        return Some(Self::resolve_sidecar_mode(
+                            mode,
+                            &Self::read_session_auto_modes(),
+                            id,
+                        ));
+                    }
+                    return None;
                 }
             }
             // Absent is authoritative — the mutation path removes the file
@@ -1107,11 +1116,33 @@ impl SessionStore {
         upserts: &[(String, SerializableMode)],
         removes: &[String],
     ) -> Result<()> {
+        // Downgrade compatibility (reviewer P2, mirroring the settings.json
+        // lane's `*_auto` companion discipline): the shared map keeps the
+        // pre-tri-mode vocabulary — an explicit Auto is durably `"plan"`
+        // there plus a `true` flag in `_session_auto_modes.json`, so a
+        // pre-tri-mode binary sharing PINVOU3_HOME strict-parses the whole
+        // map instead of quarantining it and rebuilding every other session's
+        // choice from empty on its next write; Auto itself degrades
+        // conservatively to Plan in that binary's view.
+        //
+        // The map write lands first: a crash between the two writes leaves
+        // the conservative `plan` durable without the flag (reads back as
+        // Plan), never an Auto flag over an un-collapsed entry. Both RMWs run
+        // under the caller's io mutex, so the pair cannot interleave with
+        // another mutator's write.
+        let mut companion: Vec<(String, bool)> = Vec::with_capacity(upserts.len());
+        let mapped: Vec<(String, SerializableMode)> = upserts
+            .iter()
+            .map(|(id, mode)| {
+                companion.push((id.clone(), *mode == SerializableMode::Auto));
+                (id.clone(), Self::collapse_auto_for_sidecar(*mode))
+            })
+            .collect();
         crate::features::sessions::sidecars::mutate_json_map_file(
             "_session_mode_states.json",
             |entries: &mut std::collections::HashMap<String, SerializableMode>| {
                 let mut changed = false;
-                for (id, mode) in upserts {
+                for (id, mode) in &mapped {
                     if entries.get(id) != Some(mode) {
                         entries.insert(id.clone(), mode.clone());
                         changed = true;
@@ -1122,7 +1153,63 @@ impl SessionStore {
                 }
                 changed
             },
+        )?;
+        crate::features::sessions::sidecars::mutate_json_map_file(
+            "_session_auto_modes.json",
+            |entries: &mut std::collections::HashMap<String, bool>| {
+                let mut changed = false;
+                for (id, auto) in &companion {
+                    changed |= if *auto {
+                        entries.insert(id.clone(), true) != Some(true)
+                    } else {
+                        entries.remove(id).is_some()
+                    };
+                }
+                for id in removes {
+                    changed |= entries.remove(id).is_some();
+                }
+                changed
+            },
         )
+    }
+
+    /// The durable map value for a mode: the shared `_session_mode_states.json`
+    /// keeps the pre-tri-mode vocabulary (`plan`/`yolo` only — see the
+    /// `SerializableMode` compat doc), so an explicit Auto collapses to `plan`
+    /// there; the companion flag in `_session_auto_modes.json` carries the
+    /// actual choice.
+    fn collapse_auto_for_sidecar(mode: SerializableMode) -> SerializableMode {
+        match mode {
+            SerializableMode::Auto => SerializableMode::Plan,
+            other => other,
+        }
+    }
+
+    /// The durable explicit-Auto flags (`_session_auto_modes.json`):
+    /// `true` restores the collapsed `plan` map entry as Auto on every read
+    /// path ([`Self::load_session_mode_states`], [`Self::durable_mode_entry`]).
+    /// Unreadable/absent file reads as empty — the collapsed `plan` value is
+    /// the safe degradation, never a silent widening.
+    fn read_session_auto_modes() -> std::collections::HashMap<String, bool> {
+        let file = crate::platform::paths::sessions_root().join("_session_auto_modes.json");
+        std::fs::read_to_string(file)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+            .unwrap_or_default()
+    }
+
+    /// Resolve one map entry against the companion flags: `plan` + `true`
+    /// flag is the durable spelling of an explicit Auto choice. A flag
+    /// without a map entry resolves to `mode` unchanged — the map entry is
+    /// the existence authority (the funnel removes both together; a crash
+    /// between them can only leave a stale flag, which the next upsert of
+    /// the session recomputes).
+    fn resolve_sidecar_mode(mode: SerializableMode, auto_flags: &std::collections::HashMap<String, bool>, id: &str) -> SerializableMode {
+        if auto_flags.get(id).copied().unwrap_or(false) {
+            SerializableMode::Auto
+        } else {
+            mode
+        }
     }
 
     /// Restore every session's per-session mode at boot: merge into
@@ -1160,7 +1247,7 @@ impl SessionStore {
             Ok(c) => c,
             Err(_) => return,
         };
-        let modes: std::collections::HashMap<String, SerializableMode> =
+        let mut modes: std::collections::HashMap<String, SerializableMode> =
             match serde_json::from_str(&content) {
                 Ok(m) => m,
                 Err(e) => {
@@ -1168,6 +1255,20 @@ impl SessionStore {
                     return;
                 }
             };
+        // Companion-flag overlay before any consumer: `plan` + `true` flag is
+        // the durable spelling of an explicit Auto (the shared map keeps the
+        // pre-tri-mode vocabulary for downgrade parsing — see
+        // `apply_session_mode_mutation_locked`). Applied before the legacy
+        // migration so the materialized map, the persisted mirror, and the
+        // mint loop below all see the resolved mode.
+        {
+            let auto_flags = Self::read_session_auto_modes();
+            if !auto_flags.is_empty() {
+                for (id, mode) in modes.iter_mut() {
+                    *mode = Self::resolve_sidecar_mode(*mode, &auto_flags, id);
+                }
+            }
+        }
         if from_legacy && !modes.is_empty() {
             let upserts: Vec<(String, SerializableMode)> = modes
                 .iter()
@@ -1350,59 +1451,32 @@ impl SessionStore {
     /// user intent and must not silently vanish; it does **not** mint a mode
     /// entry (that would pin a mode the user never chose), and the next
     /// mint consults the override via [`Self::ask_on_guardrail_seed`].
-    /// Same critical-section discipline as [`Self::set_mode`]: in-memory
-    /// switch plus durable RMW under the shared io mutex — but unlike
-    /// `set_mode` (log-only), a failed persist ROLLS BACK: the entry and the
-    /// override mirror are restored, so no reader sees a value the sidecar
-    /// does not carry (fail-consistent; docs §3.1 of safety-modes.md).
+    /// Same critical-section discipline as [`Self::set_mode`]: the durable
+    /// RMW runs under the shared io mutex — but unlike `set_mode`
+    /// (log-only), a failed persist returns `Err`. The sidecar RMW runs
+    /// FIRST and the in-memory entry/override mirror is published only after
+    /// it succeeds (reviewer P3): releasing those locks before the write let
+    /// a concurrent reader consume the new value even when the write
+    /// subsequently failed and rolled back — rollback does not retract an
+    /// already-consumed posture. The RMW depends on nothing in memory, so
+    /// the reorder is behavior-neutral on success and makes the failure path
+    /// a no-op: no reader ever sees a value the sidecar does not carry
+    /// (fail-consistent; docs §3.1 of safety-modes.md). The command layer
+    /// publishes its broadcast only on `Ok`, so the frontend's existing
+    /// catch rolls back its optimistic toggle and surfaces the failure.
     pub fn set_ask_on_guardrail(&self, id: &str, enabled: bool) -> Result<()> {
         let _io = self.session_mode_states_io.lock();
-        let previous = {
-            let mut states = self.mode_states.write();
-            match states.get_mut(id) {
-                Some(entry) => {
-                    let previous = entry.ask_on_guardrail;
-                    entry.ask_on_guardrail = enabled;
-                    previous
-                }
-                // No entry: record the override only (sidecar + in-memory
-                // mirror below); the current resolved toggle for this
-                // session is `ask_on_guardrail_seed(id)`, which the mirror
-                // update makes equal `enabled`. The resolved value is the
-                // rollback target on a failed persist (the entry rollback
-                // below no-ops while no entry exists).
-                None => self.ask_on_guardrail_seed(id),
-            }
-        };
-        // Mirror update before the sidecar RMW: readers of a failed persist
-        // stay consistent via the rollback below.
-        let prior_override = self.ask_on_guardrail_overrides.read().get(id).copied();
+        Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)], &[])?;
+        // Post-success publication: an entry-less session records the
+        // override only (sidecar + mirror below) and does not mint a mode
+        // entry — the next mint consults the mirror via
+        // [`Self::ask_on_guardrail_seed`].
+        if let Some(entry) = self.mode_states.write().get_mut(id) {
+            entry.ask_on_guardrail = enabled;
+        }
         self.ask_on_guardrail_overrides
             .write()
             .insert(id.to_string(), enabled);
-        if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)], &[]) {
-            if let Some(entry) = self.mode_states.write().get_mut(id) {
-                entry.ask_on_guardrail = previous;
-            }
-            // Restore the override mirror to its exact pre-call state: pinning
-            // the resolved seed as an "explicit" override here would mask a
-            // later global-default change for the rest of the run.
-            let mut overrides = self.ask_on_guardrail_overrides.write();
-            match prior_override {
-                Some(value) => {
-                    overrides.insert(id.to_string(), value);
-                }
-                None => {
-                    overrides.remove(id);
-                }
-            }
-            eprintln!("[sessions] persist ask_on_guardrail failed: {error:#}");
-            // 持久化失败必须作为失败上报(评审 P2):内存条目与 override
-            // 镜像都已回滚,Ok(()) 会让命令层把回滚后的旧值当权威状态广播,
-            // 前端把开关摆回旧值却不给任何失败提示,重启后用户才发现没存上。
-            // Err 使命令层跳过 publish,由前端既有 catch 回滚并提示。
-            return Err(error);
-        }
         Ok(())
     }
 

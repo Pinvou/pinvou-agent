@@ -425,6 +425,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
       toolGuardrailDenied: "Guardrail denied", toolGuardrailDeniedSessionDenied: "this exact operation was denied in this session (a changed request asks again)", toolGuardrailDeniedPlan: "Plan mode is read-only; denied", toolGuardrailDeniedAskOff: "ask-on-guardrail is off; denied outright",
       webApprovalUnsupported: "⚠️ Approval needed — the web UI cannot decide it; the turn waits for a decision in the desktop app",
+      webAutoSendBlocked: "⚠️ Send blocked: this session is in Auto mode, which can raise approval cards the web UI cannot decide. Switch the session to Plan or Yolo with the mode chip, or continue in the desktop app.",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
@@ -561,6 +562,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
       toolGuardrailDenied: "ガードレール拒否", toolGuardrailDeniedSessionDenied: "このセッションで拒否済みの操作です（内容が変われば再度確認）", toolGuardrailDeniedPlan: "Plan モードは読み取り専用のため拒否", toolGuardrailDeniedAskOff: "ガードレール確認がオフのため直接拒否",
       webApprovalUnsupported: "⚠️ 承認が必要です — Web UI では決定できず、ターンはデスクトップアプリでの決定を待ちます",
+      webAutoSendBlocked: "⚠️ 送信をブロックしました: このセッションは Auto モードのため、Web UI では決定できない承認カードが出る可能性があります。モードチップで Plan または Yolo に切り替えるか、デスクトップアプリで続行してください。",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -697,6 +699,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
       toolGuardrailDenied: "守卫拦截", toolGuardrailDeniedSessionDenied: "该会话已拒绝此操作（换参数需重新请批）", toolGuardrailDeniedPlan: "Plan 模式为只读，已拒绝", toolGuardrailDeniedAskOff: "守卫询问已关闭，已直接拒绝",
       webApprovalUnsupported: "⚠️ 需要审批——Web 端无法决策，turn 将在桌面端等待处理",
+      webAutoSendBlocked: "⚠️ 已拦截发送：该会话处于 Auto 档，可能弹出 Web 端无法决策的审批卡。请用模式芯片切换到 Plan 或 Yolo，或在桌面端继续。",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
@@ -2813,7 +2816,28 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
 
   // 真正发送:在 sid 的工作集上加 user 气泡 + 流式占位 + busy,然后 invoke chat。
   // active/后台通用(后台走 runSyncOnSession 临时切工作集)。
+  // 发送受理前的姿态门（评审 P2）：Auto 档会话可能弹出 Web 端无法决策/
+  // 重放的审批卡——旧行为在这里照单全收，turn 卡住后才靠事后通告兜底。
+  // 在受理前解析会话姿态并显式拒绝该不受支持的执行路径；逃生路径真实
+  // 存在（模式芯片 setPlanModeNext/exitPlanToYolo 在 Web 白名单内，只有
+  // 进入 Auto 的 setSessionMode 是桌面专属）。姿态命令失败不拦发送——
+  // 事后通告仍是竞态兜底；与上方 remote-sync 拦截同一拒绝面（Promise.reject
+  // 走调用方既有的失败提示）。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
+    const admitted = function () {
+      return doSendForAdmitted(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure);
+    };
+    return invoke("get_mode_state", { sessionId: sid }).then(function (modeState) {
+      if (modeState && modeState.mode === "auto") {
+        return Promise.reject(new Error(bt("webAutoSendBlocked")));
+      }
+      return admitted();
+    }, function () {
+      return admitted();
+    });
+  }
+
+  function doSendForAdmitted(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     turnUsageDirty[sid] = false; // 新一轮开始，重置口径保护
     const turnOwnerBuffer = getBuffer(sid);
     let submittedMessage = null;
@@ -4088,13 +4112,22 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   // （engine 重放/remount 重灌不得刷屏；桌面同 id 去重出卡，Web 同口径）。
   // guardrail 拒绝照稳定键映射三语文案；mode 广播走权威收敛点（芯片及时
   // 跟随桌面/远端的切换）；chat:approval_resolved 无卡可收敛，不监听。
-  const webApprovalNoticeIds = new Set();
+  const webApprovalNoticeIds = new Map();
+  const WEB_APPROVAL_NOTICE_CAP = 512;
   listen("chat:approval_required", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     const approvalId = String(p.approval_id || "");
     if (!approvalId) return;
-    if (webApprovalNoticeIds.has(approvalId)) return;
-    webApprovalNoticeIds.add(approvalId);
+    // 去重键 = 会话 id + approval id（评审 P2）：不同会话合法复用同一
+    // approval id，全局 id-only Set 会吞掉第二个会话的等待说明。与桌面
+    // chat-events 墓碑同形同界（512 条最旧逐出——Web 不监听
+    // chat:approval_resolved，没有可清除的收敛事件）。
+    const dedupKey = String(p.session_id || "") + "\u0000" + approvalId;
+    if (webApprovalNoticeIds.has(dedupKey)) return;
+    webApprovalNoticeIds.set(dedupKey, true);
+    if (webApprovalNoticeIds.size > WEB_APPROVAL_NOTICE_CAP) {
+      webApprovalNoticeIds.delete(webApprovalNoticeIds.keys().next().value);
+    }
     const tool = p.tool_name ? String(p.tool_name) : "";
     addSystemItem(bt("webApprovalUnsupported") + (tool ? ": " + tool : ""), {
       webApprovalUnsupported: true,

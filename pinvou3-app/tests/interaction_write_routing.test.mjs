@@ -236,3 +236,42 @@ test('planStuckGo 补充指令失败定向提示：sendMessageToSession 抛错�
   assert.ok(String(rt.errorItems[0]).includes('planContinueFailed'),
     '失败提示必须携带 planContinueFailed 文案而非静默吞掉');
 });
+
+// ── 评审 P2/P3 修复回归：卡片可重试 + 失败后权威收敛 ──────────────────
+test('planStuckGoAuto 切换失败不落 resolved：卡保持可重试', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 77, type: 'planStuck', resolved: false, cardState: 'active' });
+  const setMode = rt.defer('set_session_mode');
+  const p = rt.api.planStuckGoAuto(77, 'chat-a');
+  setMode.reject(new Error('engine gone'));
+  await p;
+  const item = rt.state.chatItems.find(i => i.id === 77);
+  assert.equal(item.resolved, false,
+    'set_session_mode 失败不得把卡标成已处理（旧形态先 resolved:true 再早退，渲染层剥掉动作按钮后无重试路径）');
+  assert.ok(rt.errorItems.length >= 1, '失败必须落系统提示');
+  assert.ok(!rt.calls.some(c => String(c).startsWith('sendMessageToSession')),
+    '切换失败后不得继续发补充指令');
+});
+
+test('planStuckGoAuto 成功后才落 resolved 并发补充指令', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.chatItems.push({ id: 78, type: 'planStuck', resolved: false, cardState: 'active' });
+  const setMode = rt.defer('set_session_mode');
+  const p = rt.api.planStuckGoAuto(78, 'chat-a');
+  setMode.resolve({ mode: 'auto', multi_agent: false });
+  await p;
+  const item = rt.state.chatItems.find(i => i.id === 78);
+  assert.equal(item.resolved, true, '切换提交成功后卡才落已处理');
+  assert.ok(rt.calls.includes('sendMessageToSession:chat-a'), '成功后发补充指令');
+});
+
+test('setAskOnGuardrail 失败后重读 get_mode_state 收敛权威态', async () => {
+  const rt = loadInteractionRuntime();
+  const setAsk = rt.defer('set_ask_on_guardrail');
+  const p = rt.api.setAskOnGuardrail('chat-a', true);
+  setAsk.reject(new Error('persist failed'));
+  await p;
+  const reReads = rt.invokeCalls.filter(c => c.name === 'get_mode_state');
+  assert.ok(reReads.length >= 1,
+    '失败路径必须重读权威态（两个相反翻转都失败时各自回放捕获的乐观值，芯片会与持久值背离）');
+});

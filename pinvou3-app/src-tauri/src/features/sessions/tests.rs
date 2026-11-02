@@ -4178,11 +4178,14 @@ fn ask_on_guardrail_persist_failure_returns_err_and_rolls_back() {
         !error.to_string().is_empty(),
         "the error must carry the persist failure detail"
     );
-    // 内存条目回滚到翻转后的旧值(不是本次要写入的值),mode 不受牵连。
+    // 内存条目保持翻转后的旧值(不是本次要写入的值),mode 不受牵连。
+    // publish-after-persist 重排(评审 P3)后这不是"回滚"而是"从未发布":
+    // 持久化先行,失败路径不触碰 entry/override 镜像,读者永远看不到
+    // 侧车不携带的值(瞬态发布窗不复存在)。
     assert_eq!(
         store.mode_state(sid).ask_on_guardrail,
         toggled,
-        "in-memory entry must roll back to the pre-call value"
+        "in-memory entry must stay at the pre-call value (never published)"
     );
     assert_eq!(
         store.mode_state(sid).mode,
@@ -9596,6 +9599,93 @@ fn mode_persist_keeps_entries_written_after_boot() {
         ]),
         "a mode persist from this process must not revert modes persisted after boot"
     );
+}
+
+#[test]
+fn session_auto_mode_is_downgrade_parseable_via_companion_flag() {
+    let (store, _g) = isolated_store();
+    store
+        .set_mode_and_persist("auto-a", SerializableMode::Auto)
+        .expect("persist auto mode");
+    store
+        .set_mode_and_persist("plan-b", SerializableMode::Plan)
+        .expect("persist plan mode");
+
+    // The reviewer scenario: a pre-tri-mode binary strict-parses the shared
+    // map. Its vocabulary has no Auto variant, so an "auto" literal in the
+    // file fails the WHOLE map (quarantine + rebuild-from-empty on the next
+    // write, losing every other session's choice). The collapsed vocabulary
+    // must parse under the old reader instead.
+    let file = paths::sessions_root().join("_session_mode_states.json");
+    let old_reader: std::collections::HashMap<String, OldSidecarMode> =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read mode file"))
+            .expect("pre-tri-mode binary must parse the whole map (no quarantine)");
+    assert_eq!(
+        old_reader.get("auto-a"),
+        Some(&OldSidecarMode::Plan),
+        "Auto must collapse to the conservative plan value in the shared map"
+    );
+    assert_eq!(old_reader.get("plan-b"), Some(&OldSidecarMode::Plan));
+
+    let companion: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_auto_modes.json"))
+            .expect("read companion flag file"),
+    )
+    .expect("companion flag file must be valid JSON");
+    assert_eq!(
+        companion,
+        std::collections::HashMap::from([("auto-a".to_string(), true)]),
+        "the explicit Auto choice must ride the companion flag file only"
+    );
+
+    // Simulate the old binary's next write: it rewrites the map from what it
+    // parsed (preserving every entry) and cannot know the companion file.
+    // The new binary must still restore Auto from the untouched companion,
+    // and the old binary's own entry must survive.
+    let mut rewritten: std::collections::HashMap<String, String> = old_reader
+        .iter()
+        .map(|(id, mode)| {
+            (
+                id.clone(),
+                match mode {
+                    OldSidecarMode::Plan => "plan".to_string(),
+                    OldSidecarMode::Yolo => "yolo".to_string(),
+                },
+            )
+        })
+        .collect();
+    rewritten.insert("old-c".to_string(), "yolo".to_string());
+    std::fs::write(
+        &file,
+        serde_json::to_string(&rewritten).expect("serialize rewrite"),
+    )
+    .expect("old-binary map rewrite");
+
+    store.load_session_mode_states();
+    assert_eq!(
+        store.durable_mode_entry("auto-a"),
+        Some(SerializableMode::Auto),
+        "the companion flag must restore Auto after an old binary rewrote the map"
+    );
+    assert_eq!(
+        store.durable_mode_entry("plan-b"),
+        Some(SerializableMode::Plan),
+        "sessions the old binary preserved must keep their choices"
+    );
+    assert_eq!(
+        store.durable_mode_entry("old-c"),
+        Some(SerializableMode::Yolo),
+        "the old binary's own write must survive"
+    );
+}
+
+/// The pre-tri-mode reader's vocabulary: no Auto variant. Mirrors the enum
+/// shape an old binary compiles (strict snake_case deserialization).
+#[derive(Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OldSidecarMode {
+    Plan,
+    Yolo,
 }
 
 #[test]

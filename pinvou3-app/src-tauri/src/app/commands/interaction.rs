@@ -557,14 +557,29 @@ pub async fn decide_approval(
     // 本表面可重试、其它表面的点击仍能收口；摘除不回滚会留一张永远
     // "approval not found" 的死卡（登记摘除不可逆的唯一例外是引擎调用失败）。
     // 引擎调用成功路径不回滚：卡已消费，残留会复活已收口的卡。
-    let pending = pending_approvals::remove(&session_id, &approval_id)
-        .ok_or_else(|| format!("decide_approval: approval not found: {approval_id}"))?;
-    let engine = match pool.handle_for(&session_id).await {
-        Some(engine) => engine,
-        None => {
+    //
+    // 恢复受双重栅栏把守（评审 P2：只允许在同一仍然存活的审批生命周期内
+    // 恢复）——摘除与 await 之间可能发生 turn 终态清扫 / 会话清除 /
+    // 并发决策 / 引擎重建，无条件恢复会把已关闭生命周期里的请求原样复活，
+    // 全新 remount 快照照样把它暴露出来，前端墓碑管不到后端 resurrect：
+    // (a) 注册表栅栏 = remove_fenced 返回的代数快照，恢复前重读
+    //     generation()，任何注册表变更（终态清扫/清除/并发决策/新弹卡）
+    //     都取消恢复；保守方向正确——漏恢复的代价是重触发一次操作，
+    //     错误恢复的代价是复活一张引擎侧审批已不存在的死卡。
+    // (b) 引擎化身栅栏 = 恢复前重读 engine_incarnation()，摘除时快照的
+    //     化身必须仍是活条目——被逐出/重建后的新引擎永远不会应答旧审批
+    //     id，恢复只会造出点了必然报错的僵尸卡。
+    let Some((pending, registry_generation)) =
+        pending_approvals::remove_fenced(&session_id, &approval_id)
+    else {
+        return Err(format!("decide_approval: approval not found: {approval_id}"));
+    };
+    let Some((engine, incarnation)) = pool.handle_with_incarnation(&session_id).await else {
+        // 引擎不在场：无化身可比对，只受注册表栅栏把守。
+        if pending_approvals::generation() == registry_generation {
             pending_approvals::record(&session_id, pending);
-            return Err("session_engine_not_running".to_string());
         }
+        return Err("session_engine_not_running".to_string());
     };
     let result = if decision == "deny" {
         engine.handle.deny_tool_call(approval_id.clone()).await
@@ -575,7 +590,12 @@ pub async fn decide_approval(
     let outcome = match result {
         Ok(()) => Ok(()),
         Err(error) => {
-            pending_approvals::record(&session_id, pending);
+            // 发送时引擎在场：化身 + 注册表双栅栏（见上）。
+            let engine_still_live =
+                pool.engine_incarnation(&session_id).await == Some(incarnation);
+            if engine_still_live && pending_approvals::generation() == registry_generation {
+                pending_approvals::record(&session_id, pending);
+            }
             return Err(format!("decide_approval({decision}): {error:#}"));
         }
     };

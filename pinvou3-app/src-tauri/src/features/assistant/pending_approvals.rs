@@ -110,6 +110,39 @@ pub fn remove(session_id: &str, approval_id: &str) -> Option<PendingApproval> {
     })
 }
 
+/// Fenced removal for the decide-approval failure arm: like [`remove`], but
+/// also returns the store generation captured atomically under the same lock
+/// as the removal (the removal itself bumps it). The command layer re-reads
+/// [`generation`] before restoring a removed entry, so any registry mutation
+/// that raced the await — the turn-terminal sweep, a session purge, a
+/// concurrent decision or a newly raised card — cancels the restore instead
+/// of recreating an entry the registry lifecycle already closed (reviewer
+/// P2: restore only within the same still-live approval lifecycle).
+pub fn remove_fenced(session_id: &str, approval_id: &str) -> Option<(PendingApproval, u64)> {
+    with_store(|store| {
+        store.generation = store.generation.wrapping_add(1);
+        let entries = store.by_session.get_mut(session_id)?;
+        let position = entries
+            .iter()
+            .position(|entry| entry.approval_id == approval_id)?;
+        let removed = entries.remove(position);
+        if entries.is_empty() {
+            store.by_session.remove(session_id);
+        }
+        Some((removed, store.generation))
+    })
+}
+
+/// Current store generation (see [`ApprovalStore::generation`]). A global
+/// counter by design: the restore fence is deliberately conservative — any
+/// observable registry change during the await window skips the restore,
+/// and a skipped restore only costs a re-trigger of the action, while a
+/// wrongly restored entry recreates a decision surface whose engine-side
+/// approval no longer exists.
+pub fn generation() -> u64 {
+    with_store(|store| store.generation)
+}
+
 /// turn 终态兜底清空该 session 的挂起卡（取消/中断时可能没有逐条决策）。
 /// 授予/拒绝是会话级记忆，**不随 turn 终态消亡**——「本会话允许」必须跨
 /// turn 存活（TUI 语义：只在换会话/换工作区时清），否则按钮实为「本 turn
@@ -511,6 +544,31 @@ mod tests {
             !list_all_sessions().iter().any(|(sid, _)| sid == &session),
             "空 session 条目从全局索引摘除"
         );
+    }
+
+    #[test]
+    fn forkguard_remove_fenced_returns_atomic_generation_snapshot() {
+        let session = isolate("approval-remove-fenced-test");
+        record(&session, sample("ap-f1", "k-f1", "g-f1"));
+        let (removed, generation_after_remove) = remove_fenced(&session, "ap-f1")
+            .expect("fenced removal must find the recorded approval");
+        assert_eq!(removed.approval_id, "ap-f1");
+        // The snapshot is captured under the same lock as the removal (the
+        // removal itself bumps the generation), so absent further mutations
+        // a fresh read equals it — that is the restore fence's "registry
+        // unchanged during the await" precondition.
+        assert_eq!(generation(), generation_after_remove);
+        // Any later observable mutation advances the generation past the
+        // snapshot, which is what cancels the decide-approval failure-arm
+        // restore (terminal sweep, purge, concurrent decision, new card).
+        record(&session, sample("ap-f2", "k-f2", "g-f2"));
+        assert_ne!(
+            generation(),
+            generation_after_remove,
+            "a registry mutation during the await window must cancel the fenced restore"
+        );
+        // remove_fenced shares remove's cleanup contract.
+        assert!(remove_fenced(&session, "ap-f1").is_none(), "重复移除返回 None");
     }
 
     #[test]

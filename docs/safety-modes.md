@@ -30,7 +30,13 @@
 | 模式 | 引擎姿态（逐轮 op 与同步 op 同一映射） | 守卫命中（开关 ON，默认） | 守卫命中（开关 OFF） | 普通可提示工具 |
 |---|---|---|---|---|
 | Plan | `AppMode::Plan`（底座只读归一：禁 shell、只读 sandbox、只读工具集） | 只读拦截（既有） | 同左 | 拦截；审批事件到达即异常，防御性硬拒（`plan_mode`） |
-| Auto | `Agent` + `(false, Suggest)` | 弹卡 | 引擎内静默硬拒（开关 OFF = 不武装；守卫面在引擎门内拒绝，不产生审批事件，因此**没有** `chat:guardrail_denied`——该通告只覆盖宿主审批面的拒绝，见 §4.1） | 逐次审批卡；工作区内文件写走底座 #5185 carve-out 免卡，只读命令走 readonly 分类免卡 |
+| Auto | `Agent` + `(false, Suggest)` | 弹卡 | 自主守卫面在引擎门内静默硬拒（开关 OFF = 不武装；该转换只覆盖 tri-mode 自主守卫面，不产生审批事件，因此**没有** `chat:guardrail_denied`——该通告只覆盖宿主审批面的拒绝，见 §4.1） | 逐次审批卡；工作区内文件写走底座 #5185 carve-out 免卡，只读命令走 readonly 分类免卡 |
+
+注意（评审 P3，开表面化）：开关 OFF 并不把 Auto 变成「无提示」——**既有**
+的 Suggest 逐项 Ask 面（普通可提示工具）、仓库法则（repository-law）提示与
+sandbox 升级提示在不武装时照常弹出；被开关转换的只有本 PR 新增的自主守卫
+面（底线守卫命中从「弹卡等真人」改为「静默硬拒」）。上表「守卫命中（开关
+OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体提示面。
 | Yolo | `Agent` + `(true, Bypass)` | 弹卡 | 硬拒 + 通告（`guardrail_ask_off`） | 免卡（历史 Yolo 行为） |
 
 - Auto 是新工作车道（未绑定 plain 会话）的默认；code 会话与绑定工作区的 plain
@@ -231,20 +237,22 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
   的重开漂移按失败 run 处理。首次模式写入即 Plan 的未物化会话，铸条目按
   `resolved_default_mode` 解析（而非历史 Yolo 哨兵），accept 回到 chip 显示
   过的默认（Auto）——有行为测试钉。
-- **`SerializableMode::Auto` 向后兼容（降级边界如实陈述）**：旧侧车里的
-  `"plan"/"yolo"` 照常反序列化；`"auto"` 只由新二进制写入。pre-tri-mode
-  二进制读到 `"auto"` 时 `_session_mode_states.json` 的**整表 strict 反序列
-  化失败**，且两个方向的代价都不是无害陈旧：
-  - **读路径**：该次装载整体失败、boot 缓存留空——没有「回退 boot 缓存」
-    可言（缓存就是空的）；所有会话按各自默认解析，未绑定 plain 会话落旧
-    默认 **Yolo 全自动（静默放宽）**，而非记录过的 Auto。
-  - **写路径**：旧二进制对该文件的任何变更（切档、`accept_plan` 持久化、
-    保留策略驱逐）走整表 mutate——parse 失败触发**隔离（quarantine）并拒
-    绝该次变更**，下一次变更从空表重建活文件：全部会话的持久 mode（包括
-    旧词表的 `plan`/`yolo`）都离开活跃 sidecar，隔离副本不自动读回
-    （手工恢复 = 从隔离副本抄回）。恢复新二进制**不会**找回被隔离的条目。
-  这是「旧二进制 + 共享 PINVOU3_HOME」场景的真实降级代价，换取的是新
-  词表的干净落盘；pin 旧词表的会话在降级窗口内同样受整表隔离牵连。
+- **`SerializableMode::Auto` 向后兼容（降级数据保全，评审 P2）**：旧侧车里
+  的 `"plan"/"yolo"` 照常反序列化；**共享表永不写 `"auto"` 字面量**——与
+  settings.json 车道的 `*_auto` 伴随旗同一纪律：显式 Auto 选择折叠为
+  `"plan"` 落 `_session_mode_states.json`，真实选择以 `true` 旗记入
+  `_session_auto_modes.json` 伴随表（写入顺序：先共享表、后伴随表，中断只
+  会留下保守的 `plan`）。因此「旧二进制 + 共享 PINVOU3_HOME」的降级不再
+  付出整表隔离/从空表重建的代价：
+  - **读路径**：pre-tri-mode 二进制整表 strict 反序列化**成功**；Auto 会话
+    在其视图里保守降级为 Plan（逐项请批），其余会话的选择原样保留。
+  - **写路径**：旧二进制的任何变更照常整表 mutate，不再触发隔离；其他
+    会话的持久 mode 不离开活跃 sidecar。
+  - **升级回读**：新二进制在 boot 装载与 `durable_mode_entry` 读取时叠加
+    伴随旗（`plan`+`true` 旗 = 显式 Auto），旧二进制写过的表不丢 Auto
+    选择；伴随旗不脱离映射条目复活——共享表条目缺失时以映射为准。
+  行为钉：`session_auto_mode_is_downgrade_parseable_via_companion_flag`
+  （旧词表 reader 整表可解析 + 旧二进制改写后 Auto 仍由伴随旗找回）。
 - 无持久记录时的默认解析矩阵：
 
 | 会话形态 | 默认 |
