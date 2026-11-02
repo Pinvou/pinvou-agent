@@ -140,7 +140,6 @@ const desktopOnlyWebAccessCommands = [
   'web_access_status',
   'web_access_rotate',
   'web_access_revoke_host_workspace',
-  'web_access_relay_settings',
   // Round-10 复审 minor:主 WebView 事件通道同样管理专用——进 Web 策略的
   // 话手机可经 RPC→bridge invoke 触发 publish_frontend_event(只过
   // policy.events 允许名单,可伪造允许事件);缺席即全部防线。
@@ -1288,11 +1287,6 @@ assert.match(
 // 此前没有 source-shape pin,删除任一 gate 行仍然全绿;补齐与上方四条同款。
 assert.match(remoteControlCommands, /web_access_disable\([\s\S]{0,240}require_main_webview\(&window\)\?/,
   'only the main desktop WebView may stop a persistent remote endpoint');
-assert.match(
-  remoteControlCommands,
-  /web_access_relay_settings\([\s\S]{0,240}require_main_webview\(&window\)\?/,
-  'relay topology discovery must stay main-WebView only',
-);
 assert.match(
   remoteControlCommands,
   /web_access_list_host_files\([\s\S]{0,400}require_main_webview\(&window\)\?/,

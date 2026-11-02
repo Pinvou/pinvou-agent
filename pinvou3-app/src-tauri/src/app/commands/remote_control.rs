@@ -16,9 +16,7 @@ use crate::features::codex_acp::{
     project_acp_permission_request_for_web, project_acp_value_for_web,
 };
 use crate::features::remote_control::{MAX_TRANSFER_CHUNK_BYTES, file_access, manager};
-use crate::features::remote_control::{
-    RelaySettingsInfo, RemoteControlManager, WebAccessInfo, WebAccessStatus,
-};
+use crate::features::remote_control::{RemoteControlManager, WebAccessInfo, WebAccessStatus};
 use crate::features::sessions::SessionStore;
 use crate::platform::prefs::UserPrefs;
 
@@ -280,17 +278,6 @@ pub fn web_access_revoke_host_workspace(
 ) -> Result<WebAccessInfo, String> {
     require_main_webview(&window)?;
     manager.revoke_host_workspace()
-}
-
-/// 桌面专属：查询自定义 Relay 地址。不进 Web 命令白名单——Relay 指向
-/// 哪台服务器只能由桌面端决定,辅助 WebView 亦不得探测链路拓扑。
-#[tauri::command]
-pub fn web_access_relay_settings(
-    window: WebviewWindow,
-    manager: State<'_, RemoteControlManager>,
-) -> Result<RelaySettingsInfo, String> {
-    require_main_webview(&window)?;
-    Ok(manager.relay_settings())
 }
 
 /// Desktop-only readiness handshake. It is intentionally absent from the Web
