@@ -90,6 +90,28 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
     "id_ed25519_sk",
     "id_ecdsa_sk",
     ".gitconfig",
+    // Round-14 复审:与既有条目同型的默认凭据存储补遗——Yarn Berry
+    // `.yarnrc.yml`(npmAuthToken)与经典 `.yarnrc`(registry 认证,
+    // `.npmrc` 同型)、Emacs `.authinfo`/`.authinfo.gpg`(netrc 明文格式,
+    // `.netrc` 同型)、wget/curl 的 `.wgetrc`/`.curlrc`(`http_password`/
+    // `-u user:pass`)与 Windows 命名 `_curlrc`/`_netrc`(被拦 `.netrc`
+    // 的 Windows 对位名)、Mercurial `.hgrc`(`[auth]` 段明文,
+    // `.gitconfig` 同型)、gsutil/boto `.boto`(AWS 密钥,`.s3cfg`
+    // 同型)、minikube 目录(`ca.key`/per-profile admin `client.key`,
+    // `.kube` 同型)、Android ADB 私钥 `adbkey`(可认证任意已授权设备,
+    // 含无线调试)。
+    ".yarnrc.yml",
+    ".yarnrc",
+    ".authinfo",
+    ".authinfo.gpg",
+    ".wgetrc",
+    ".curlrc",
+    "_curlrc",
+    "_netrc",
+    ".hgrc",
+    ".boto",
+    ".minikube",
+    "adbkey",
 ];
 
 /// 目录作用域凭据文件:末分量是通用文件名(settings.xml/hosts.yml/
@@ -103,12 +125,25 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
 /// `.m2/settings.xml` 常内嵌明文 server 密码(`.npmrc` 同型),
 /// `.config/sops/age/keys.txt` 是 sops 的年龄私钥,`.config/
 /// {google-chrome,chromium}/Local State` 内嵌 Chrome 的加密密钥原料。
+/// Round-14 复审 MAJOR/同批补遗:`.config/git/credentials` 是
+/// `credential.helper store` 的另一个默认落点(`~/.git-credentials`
+/// 的同格式兄弟路径,`https://user:token@host` 明文),`.config/git/
+/// config` 与被拦 `.gitconfig` 同类(`[credential]` 段/`insteadOf`
+/// 改写内嵌令牌);`.gradle/gradle.properties` 常含发布密钥与仓库
+/// PAT(`.m2/settings.xml` 的构建工具对位);`.config/containers/
+/// auth.json` 是 Podman 的 registry 凭据存储(`.docker` 同型);
+/// `.android/debug.keystore` 是调试签名密钥(口令为公开默认值)。
 pub const BLOCKED_PATH_TAILS: &[&[&str]] = &[
     &[".config", "gh", "hosts.yml"],
     &[".m2", "settings.xml"],
     &[".config", "sops", "age", "keys.txt"],
     &[".config", "google-chrome", "Local State"],
     &[".config", "chromium", "Local State"],
+    &[".config", "git", "credentials"],
+    &[".config", "git", "config"],
+    &[".gradle", "gradle.properties"],
+    &[".config", "containers", "auth.json"],
+    &[".android", "debug.keystore"],
 ];
 
 /// 目录作用域尾序列命中判定(含 CLI 镜像在内的所有消费方共用);命中时
@@ -171,7 +206,13 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "/var/log/auth",
     // 轮转日志(auth.log.1 / auth.log.2.gz / …)与上述备份家族是无法逐
     // 一枚举的开放家族:末分量 `*` 表示该分量按组件前缀匹配(清单自律
-    // 仅用于此类条目,语义见 path_starts_with_folded)。
+    // 仅用于此类条目,语义见 path_starts_with_folded)。Round-14 复审
+    // minor:注意两类基形的差别——`auth.log*`/`opasswd*` 的 `*` 紧跟
+    // 非点基名,连带拦下 `auth.logx`/`opasswd-notes` 这类无点同前缀名
+    // (宁可过宽,面收敛在 /var/log 与 /etc/security 之内);`shadow.*`/
+    // `sudoers.*` 的点尾基名才有 `sudoersedit` 类无辜名的保护。两种
+    // 基形并存是有意的,轮转家族的真实形态恰为点分(auth.log.N)或
+    // 无点前缀(opasswd.old),按各自最宽成员选形。
     "/var/log/auth.log*",
     "/etc/shadow.*",
     "/etc/shadow~",
@@ -563,6 +604,20 @@ mod tests {
             "id_ed25519_sk",
             "id_ecdsa_sk",
             ".gitconfig",
+            // Round-14 复审:同型默认凭据存储补遗(yarn/authinfo/wget/
+            // curl/hg/boto/minikube/adb,见清单内注释)。
+            ".yarnrc.yml",
+            ".yarnrc",
+            ".authinfo",
+            ".authinfo.gpg",
+            ".wgetrc",
+            ".curlrc",
+            "_curlrc",
+            "_netrc",
+            ".hgrc",
+            ".boto",
+            ".minikube",
+            "adbkey",
         ];
         for raw in blocked_components {
             let path = std::env::temp_dir().join("home").join(raw).join("x");
@@ -580,7 +635,20 @@ mod tests {
             check_sensitive_components(&gcloud_adc).is_err(),
             "gcloud ADC(双层目录名命中)必须被拦"
         );
-        for prefix in ["/root/", "/proc/", "/sys/", "/etc/security/opasswd"] {
+        for prefix in [
+            "/root/",
+            "/proc/",
+            "/sys/",
+            "/etc/security/opasswd",
+            // Round-14 复审 minor:旗舰精确条目本身此前无字面删除钉
+            // (其余 sudoers 断言全走 `sudoers.*` 通配),清单行被"清理"
+            // 时全绿;连同其余五个无钉成员一并逐字面钉住。
+            "/etc/sudoers",
+            "/etc/gshadow",
+            "/var/log/auth",
+            "/etc/shadow~",
+            "/var/root/",
+        ] {
             let path = Path::new(prefix).join("probe");
             assert!(
                 check_sensitive_components(&path).is_err(),
@@ -600,6 +668,13 @@ mod tests {
             &[".config", "sops", "age", "keys.txt"][..],
             &[".config", "google-chrome", "Local State"][..],
             &[".config", "chromium", "Local State"][..],
+            // Round-14 复审:XDG git 凭据/配置(gradle/containers/android
+            // 批同入)——硬编码字面量,清单条目被删除时本钉变红。
+            &[".config", "git", "credentials"][..],
+            &[".config", "git", "config"][..],
+            &[".gradle", "gradle.properties"][..],
+            &[".config", "containers", "auth.json"][..],
+            &[".android", "debug.keystore"][..],
         ];
         let home = std::env::temp_dir();
         for tail in blocked {
@@ -662,6 +737,56 @@ mod tests {
             assert!(
                 check_sensitive_components(&path).is_err(),
                 "tail {tail:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn default_credential_store_additions_block_across_spellings() {
+        // Round-14 复审:同型默认凭据存储补遗(yarn/authinfo/wget/curl/
+        // hg/boto/minikube/adb,见清单内注释)的在位命中与无辜名放行;
+        // XDG git 尾序列的行为钉在
+        // directory_scoped_credential_tails_follow_platform_case_semantics
+        // 与 CLI 镜像(artifact 门/会话车道)。
+        let blocked = [
+            ".yarnrc.yml",
+            ".yarnrc",
+            ".authinfo",
+            ".authinfo.gpg",
+            ".wgetrc",
+            ".curlrc",
+            "_curlrc",
+            "_netrc",
+            ".hgrc",
+            ".boto",
+            "adbkey",
+        ];
+        let home = std::env::temp_dir();
+        for raw in blocked {
+            let path = home.join("repo").join(raw).join("probe");
+            assert!(
+                check_sensitive_components(&path).is_err(),
+                "{raw} must be refused"
+            );
+        }
+        // `.minikube` 是目录名:目录之下任意文件命中。
+        assert!(
+            check_sensitive_components(&home.join("repo").join(".minikube").join("ca.key"))
+                .is_err()
+        );
+        // 无辜名:共享前缀/同名不同形不受牵连(adbkey.pub 是公钥,必须可读)。
+        for benign in [
+            "yarnrc.yml",
+            "authinfo2",
+            "wgetrc.md",
+            "curlrc-notes",
+            "adbkey.pub",
+            "minikube-dir",
+        ] {
+            let path = home.join("repo").join(benign).join("probe");
+            assert!(
+                check_sensitive_components(&path).is_ok(),
+                "{benign} is an ordinary name"
             );
         }
     }

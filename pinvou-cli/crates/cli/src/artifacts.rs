@@ -26,9 +26,10 @@
 //! is its `BLOCKED_PREFIXES` half (`/etc/shadow`, `/proc/`, `/root/`, …). Those
 //! are system locations, and `resolve_session_artifact` has already proved the
 //! canonical target is inside this session's own storage — so every one of them
-//! is unreachable here by construction, except `/root/`, which is the ordinary
-//! home of a root-owned install and would therefore refuse *every* artifact
-//! rather than any sensitive one. The component blacklist is the half that
+//! is unreachable here by construction, except `/root/` (and its macOS
+//! counterpart `/var/root/`, added in the round-14 review) under a root-owned
+//! install, where the entry would refuse *every* artifact rather than any
+//! sensitive one. The component blacklist is the half that
 //! still bites inside session storage (an agent can create a file named `.env`
 //! or a `.ssh/` directory in its own workspace) and it is mirrored in full.
 
@@ -1002,6 +1003,46 @@ mod tests {
             check_sensitive_path(&benign).is_ok(),
             "dotenv.md is not an environment file"
         );
+    }
+
+    /// Round-14 review M2/M3: the directory-scoped-tail leg inside
+    /// [`check_sensitive_canonical`] is CONSUMER wiring the upstream pins
+    /// cannot see (they drive `path_policy` directly), and git's XDG
+    /// credential store is the same `credential.helper store` plaintext
+    /// format as the blocked `~/.git-credentials`, one directory deeper.
+    /// Deleting the mirror's tail leg keeps every other pin green while
+    /// every gate lane reopens (`agent run --prompt-file
+    /// ~/.config/gh/hosts.yml`, `feedback submit --attach
+    /// ~/.m2/settings.xml`, `artifacts write --file
+    /// ~/.config/sops/age/keys.txt`) — this pin is the one that turns red.
+    #[test]
+    fn directory_scoped_tails_refused_through_the_mirror() {
+        let blocked = [
+            "/home/u/.config/gh/hosts.yml",
+            "/home/u/.m2/settings.xml",
+            "/home/u/.config/sops/age/keys.txt",
+            // Round-14 review M3: git's XDG credential store and its config
+            // sibling of the blocked `~/.gitconfig`.
+            "/home/u/.config/git/credentials",
+            "/home/u/.config/git/config",
+        ];
+        for raw in blocked {
+            assert!(
+                check_sensitive_path(Path::new(raw)).is_err(),
+                "{raw} must be refused through the mirror's tail leg"
+            );
+        }
+        for benign in [
+            "/home/u/repo/hosts.yml",
+            "/home/u/repo/credentials",
+            "/home/u/repo/git/config",
+            "/home/u/.config/git/config.toml",
+        ] {
+            assert!(
+                check_sensitive_path(Path::new(benign)).is_ok(),
+                "{benign} is an ordinary file at an unrelated location"
+            );
+        }
     }
 
     /// Round-7 review M3: the alias arm must be drivable through the CLI

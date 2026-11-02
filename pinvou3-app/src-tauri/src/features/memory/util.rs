@@ -211,8 +211,10 @@ pub(super) fn read_text_recovering_unlocked_with(
 ) -> io::Result<String> {
     // Round-11 复审 minor:读经共享的有界私态原语(常规文件门 + 16 MiB
     // 上限)——写侧压实让合法存储远小于该界,超界即坏档/外部种植,走恢复
-    // 分支自愈,而不是无界读入后整包序列化进 web 载荷。此前的
-    // `fs::read_to_string` 是全仓最后一批未收口的裸读。
+    // 分支自愈,而不是无界读入后整包序列化进 web 载荷。Round-14 复审
+    // 更正并补齐:memory 存储车道内的裸读至此全部收口(journal 复核/
+    // 权威校验复读/目录扫描/organize 历史与本函数同批),本注释不再
+    // 宣称全仓范围——其它 feature 的历史裸读按各自车道单独评估。
     let current_error = match crate::platform::filesystem::read_private_data_file(path) {
         Ok(raw) if validate(&raw) => return Ok(raw),
         Ok(_) => io::Error::new(

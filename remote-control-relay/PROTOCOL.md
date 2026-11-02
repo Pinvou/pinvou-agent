@@ -119,8 +119,12 @@ It accepts only these desktop-to-Web types:
 
 The original top-level fields are forwarded unchanged except that the Relay
 sets authoritative `v`, `endpoint_id`, and `lease_id` fields. Credential fields
-(`access_token`, `token`, `pairing_token`, `desktop_secret`) are additionally
-stripped from forwarded frames. That strip is top-level only: nested objects
+(`access_token`, `token`, `pairing_token`, `desktop_secret`) and the
+relay-authoritative `web_rejoining` flag are additionally
+stripped from forwarded frames — a desktop that echoes `web_rejoining`
+inside a forwarded frame silently loses it; the flag exists only on
+relay-generated `web_client_connected` / `desktop_endpoint_registered`
+notices. That strip is top-level only: nested objects
 such as `args` or `payload` are forwarded verbatim, so endpoints must never
 embed credentials inside them. A desktop message that explicitly targets a
 stale lease is dropped so a late response cannot leak into the replacement

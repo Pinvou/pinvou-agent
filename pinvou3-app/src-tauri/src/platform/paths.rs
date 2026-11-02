@@ -36,7 +36,13 @@ pub fn pinvou3_home() -> PathBuf {
 /// 归一化不影响任何路径解析;未发生折叠的文本保持原样返回(与既有
 /// display_redacted 的恒等钉一致)。
 pub fn redact_storage_prefix(text: &str) -> String {
-    let prefix = pinvou3_home().display().to_string();
+    // Round-14 复审 NIT:env 覆盖安装可能带着尾部分隔符(PINVOU3_HOME=
+    // "/tmp/x/"),按字面 replace 会把分隔符一并吃掉,折叠出
+    // "~/.pinvou3settings.json" 这种粘连形态;先剥尾部分隔符再折叠。
+    let mut prefix = pinvou3_home().display().to_string();
+    while prefix.ends_with('/') || prefix.ends_with('\\') {
+        prefix.pop();
+    }
     if prefix.is_empty() {
         return text.to_string();
     }
@@ -938,14 +944,16 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-14 复审 M1:`ad0971d2e` 并行波插入 separators 钉时吞掉了本钉
+    /// 的 `#[test]` 行,钉体静默失联(`dead_code=allow` 下零警告)。恢复
+    /// 属性:本文件块注释宣称的五钉必须全部真实执行。
+    #[test]
     fn redact_storage_prefix_keeps_sibling_out_of_storage_root_form() {
         crate::platform::test_support::with_temp_home("paths-redact-sibling", || {
-            // 存储根本身命名为 .pinvou3(镜像默认布局 <home>/.pinvou3),
-            // 兄弟目录 <home>/.pinvou3-evil 与根共享字符串前缀:折叠绝不能
-            // 把兄弟改写成「根内」形态(~/.pinvou3/…),否则它会伪装成存
-            // 储根内路径被模型/中继消费。with_temp_home 把 PINVOU3_HOME
-            // 指向临时目录,兄弟取同名的 `.evil` 后缀邻居(纯字符串用例,
-            // 不落盘)。
+            // 兄弟目录与存储根共享字符串前缀(临时根的同名 `.evil` 后缀
+            // 邻居,纯字符串用例不落盘):折叠绝不能把兄弟改写成「根内」
+            // 形态(~/.pinvou3/…),否则它会伪装成存储根内路径被模型/
+            // 中继消费。
             let root = pinvou3_home();
             let sibling = root.parent().unwrap_or(&root).join(format!(
                 "{}.evil",
@@ -957,6 +965,41 @@ pub(crate) mod tests {
                 redact_storage_prefix(&sibling.display().to_string()),
                 "~/.pinvou3.evil",
                 "the sibling directory must keep its own name and never take the inside-root form"
+            );
+        });
+    }
+
+    /// Round-14 复审 NIT:尾部分隔符形态的 PINVOU3_HOME(env 覆盖安装)
+    /// 不得把分隔符一并吃掉折叠出粘连形态;根本体提及同样折叠。
+    #[test]
+    fn redact_storage_prefix_strips_trailing_separator_from_the_home() {
+        crate::platform::test_support::with_temp_home("paths-redact-trailing-sep", || {
+            let root = pinvou3_home();
+            // panic-safe 脚手架内改写 env:with_temp_home 的 Drop 恢复其
+            // 进入时保存的原值,不向进程内后续测试泄漏。
+            // SAFETY: single-threaded test body; with_temp_home's Drop
+            // restores the saved value even on assertion failure.
+            unsafe {
+                std::env::set_var(
+                    "PINVOU3_HOME",
+                    format!("{}{}", root.display(), std::path::MAIN_SEPARATOR),
+                );
+            }
+            let sep = std::path::MAIN_SEPARATOR;
+            let nested = format!(
+                "{root}{sep}user{sep}memory{sep}snapshot.md",
+                root = root.display(),
+                sep = sep
+            );
+            assert_eq!(
+                redact_storage_prefix(&nested),
+                "~/.pinvou3/user/memory/snapshot.md",
+                "a trailing-separator home must fold without gluing the remainder"
+            );
+            assert_eq!(
+                redact_storage_prefix(&root.display().to_string()),
+                "~/.pinvou3",
+                "a bare mention of the home root must still fold"
             );
         });
     }

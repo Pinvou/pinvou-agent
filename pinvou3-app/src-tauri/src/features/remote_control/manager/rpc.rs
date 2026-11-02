@@ -153,6 +153,37 @@ pub(super) fn prepare_bridge_generation(
     let request_ids = inner.rpc_order.iter().cloned().collect::<Vec<_>>();
     let mut actions = Vec::new();
     for request_id in request_ids {
+        // Round-14 复审 minor:TTL 扫描给「已受理仍在执行」的请求写的超时
+        // 占位会把本函数骗过——下面的重启臂只改写 Pending,占位已是
+        // Complete,重放永远拿到伪造的 `rpc_timed_out`,而契约对该状态
+        // (已受理、结局不明)的如实答案恰是 outcome_unknown。代际变更时
+        // 把这类打标占位改写为 outcome_unknown(无 Respond 动作:旧代际
+        // 已死,手机经重放取得新答案);未受理占位不打标,超时对从未执行
+        // 的请求是准确答案,保持原样。
+        if generation_changed {
+            let repair = match inner.rpc_cache.get(&request_id) {
+                Some(RpcCacheEntry::Complete {
+                    fingerprint,
+                    completion,
+                    swept_acknowledged,
+                }) => (*swept_acknowledged
+                    && !completion.ok
+                    && completion.error_code.as_deref() == Some(RPC_TIMED_OUT_CODE))
+                .then(|| fingerprint.clone()),
+                _ => None,
+            };
+            if let Some(fingerprint) = repair {
+                inner.rpc_cache.insert(
+                    request_id.clone(),
+                    RpcCacheEntry::Complete {
+                        fingerprint,
+                        completion: outcome_unknown_completion(),
+                        swept_acknowledged: false,
+                    },
+                );
+                continue;
+            }
+        }
         let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get(&request_id) else {
             continue;
         };
@@ -166,6 +197,7 @@ pub(super) fn prepare_bridge_generation(
                 RpcCacheEntry::Complete {
                     fingerprint,
                     completion: completion.clone(),
+                    swept_acknowledged: false,
                 },
             );
             if let Some((endpoint_id, sender)) = &response_target {
@@ -239,6 +271,7 @@ pub(super) fn rpc_cache_bytes(inner: &Inner) -> usize {
                     RpcCacheEntry::Complete {
                         fingerprint,
                         completion,
+                        ..
                     } => {
                         fingerprint.len()
                             + serde_json::to_vec(&completion.result)

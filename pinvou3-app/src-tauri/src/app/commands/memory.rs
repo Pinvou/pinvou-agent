@@ -991,10 +991,19 @@ mod tests {
                 .find(fn_name)
                 .unwrap_or_else(|| panic!("{fn_name} must exist"));
             let body = &source[start..];
-            let body = &body[..body
-                .find("\npub async fn ")
-                .or_else(|| body.find("\nfn "))
-                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next fn"))];
+            // Round-14 复审 minor:窗口必须在最近的下一项处收口——此前
+            // `find("\npub async fn ").or_else(find("\nfn "))` 让远处的
+            // async 项吞掉中间的全部函数体,runtime_snapshot_best_effort /
+            // refresh_memory_snapshot_document 两个窗口各自吞进
+            // load_memory_source 的接线,删除这两处生产接线四条断言仍然
+            // 全绿(「删除任一处接线即红」只对半数成员成立)。取各标记
+            // 最早命中,窗口恰为该函数自身。
+            let end = ["\npub async fn ", "\npub fn ", "\nfn ", "\n#[test]"]
+                .iter()
+                .filter_map(|marker| body.find(marker))
+                .min()
+                .unwrap_or_else(|| panic!("{fn_name} body must be terminated by the next item"));
+            let body = &body[..end];
             assert!(
                 body.contains("redact_storage_prefix(&format!("),
                 "{fn_name} must fold warning details through redact_storage_prefix"

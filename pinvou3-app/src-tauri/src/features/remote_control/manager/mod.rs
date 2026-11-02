@@ -550,6 +550,13 @@ enum RpcCacheEntry {
     Complete {
         fingerprint: String,
         completion: RpcCompletion,
+        /// Round-14 复审 minor:TTL 扫描为「已受理仍在执行」的请求写入的
+        /// 超时占位打标(仅扫描臂置 true)。重启/重载的代际臂据此把这类
+        /// 占位改写成如实的 `outcome_unknown`——否则重放永远拿到伪造的
+        /// `rpc_timed_out`,而契约对该状态的如实答案恰是 outcome_unknown;
+        /// 未受理的占位不打标(超时对从未执行的请求是准确答案)。
+        /// 仅内存态:RPC 账本持久化的是墓碑,不是本缓存。
+        swept_acknowledged: bool,
     },
 }
 
@@ -1117,7 +1124,16 @@ impl RemoteControlManager {
         let latched = config.allow_host_workspace;
         if latched {
             config.allow_host_workspace = false;
-            persist_config(&config)?;
+            // Round-14 复审 minor:并发 desktop_endpoint_revoked(消息泵臂,
+            // 不持生命周期锁)可能恰好在本读取与落盘之间删除了配置文件;
+            // 此时撤销目标已达成(relay 侧端点已入墓碑,本地凭据已清),
+            // 不得把 flag=false 的配置文件复活成「已配置」的幻影(否则下
+            // 次 start 拿墓碑端点空转一轮再被 handle_revoked 清理)。存在
+            // 性检查缩小而非闭合窗口(彻底闭合需泵臂持生命周期锁,死锁面
+            // 不划算);残余形状自愈且无访问增益,与本函数既有注释一致。
+            if config_path().exists() {
+                persist_config(&config)?;
+            }
         }
         // 状态失效无条件先行(幂等重入时 grant 清空同样真实发生),状态
         // 刷新因此一律发送;emit_status→status 会再次锁 inner,取 guard
@@ -1234,11 +1250,27 @@ impl RemoteControlManager {
     fn replay_pending_revocations(&self) -> Result<(), String> {
         let ledger = load_pending_revocations_for_replay()?;
         let current = load_config()?;
-        // 回放装载的账本是本进程的权威副本(含抢救降级时只在内存里的
-        // 条目):确认针对它整体落盘,见 finish_pending_revocation。
+        // 回放装载的账本是本进程的权威副本:确认针对它整体落盘,见
+        // finish_pending_revocation。Round-14 复审 minor:装载改为**并集
+        // 且内存优先**——同键同值条目以账本为准,账本没有而内存持有的
+        // 条目(抢救降级后重存盘失败、只在内存里的兄弟条目)必须保留,
+        // 否则 start 之后第二次生命周期调用的回放会用磁盘快照整个覆盖
+        // 内存,降级条目从两侧同时消失;同键不同值的冲突保留内存版本
+        // (在飞工人重试的正是它)。确认工人删除条目时内存与磁盘同批
+        // 更新(finish_pending_revocation 整体落盘),不存在「内存已被
+        // 确认、磁盘仍留残条」的复活面;生命周期锁串行化回放与确认。
         {
             let mut inner = self.inner.lock();
-            inner.pending_revocation_backlog = ledger.entries.iter().cloned().collect();
+            let held = std::mem::take(&mut inner.pending_revocation_backlog);
+            let mut merged = held;
+            for entry in &ledger.entries {
+                if !merged.iter().any(|existing| {
+                    pending_revocation_key(existing) == pending_revocation_key(entry)
+                }) {
+                    merged.push(entry.clone());
+                }
+            }
+            inner.pending_revocation_backlog = merged;
         }
         for pending in eligible_pending_revocations(&ledger, current.as_ref()) {
             let key = pending_revocation_key(&pending);
@@ -2026,6 +2058,7 @@ impl RemoteControlManager {
                 Some(RpcCacheEntry::Complete {
                     fingerprint,
                     completion,
+                    ..
                 }) => {
                     // Round-5 复审 M1:TTL 扫描会把仍在执行(或恰好刚完成)的
                     // 请求先写成超时占位。真实完成必须取代占位而不是被幂等吞
@@ -2049,6 +2082,7 @@ impl RemoteControlManager {
                                     error_code,
                                     error_category,
                                 ),
+                                swept_acknowledged: false,
                             },
                         );
                         // Round-7 复审:替换插入与 Pending→Complete 臂同一
@@ -2066,6 +2100,7 @@ impl RemoteControlManager {
                 RpcCacheEntry::Complete {
                     fingerprint,
                     completion: completion.clone(),
+                    swept_acknowledged: false,
                 },
             );
             prune_rpc_cache(&mut inner);
@@ -2160,7 +2195,10 @@ impl RemoteControlManager {
                 endpoint.web_client_connected = false;
                 endpoint.lease_id = None;
                 endpoint.fresh_baseline_seq = None;
-                endpoint.last_error = error;
+                // Round-14 复审 NIT:与 error 帧入口同口径过界(本地格式化
+                // 文本常态远小于界,一致性收口,防未来经此臂接入 relay 侧
+                // 自由文本)。
+                endpoint.last_error = error.map(bound_relay_text);
                 // 字段契约:任何不携带码的错误写入都必须清掉旧码,防止旧恢复
                 // 码被映射到新的错误文本上(round-5 复审 minor)。
                 endpoint.last_error_code = None;
@@ -2211,17 +2249,11 @@ impl RemoteControlManager {
                 // (PR 已为 rpc_request/client_ready 加门,唯独订阅帧缺席)
                 // ——迟到的死 lease 订阅帧(relay 按 socket 打当时 lease 戳)
                 // 会让退订摘掉新客户端刚装的订阅、订阅回填已被替换的名单。
-                // 与 rpc 门同口径:帧 lease 与活跃 lease 不符即丢弃。
-                let lease_id = value
-                    .get("lease_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                {
-                    let inner = self.inner.lock();
-                    if !rpc_request_targets_active_lease(&inner, lease_id) {
-                        return;
-                    }
-                }
+                // Round-14 复审 minor:门检不在此处单独持锁——先验锁再放行
+                // 会在两锁之间留出 takeover 窗口(本文件 rpc 门注释点名的
+                // 形态),窗口内接替发生时迟到帧仍可摘掉新 lease 刚装的
+                // 订阅。门检移入 handle_event_subscription,与订阅变更
+                // 同一把锁、同一次获取。
                 self.handle_event_subscription(
                     &value,
                     value.get("type").and_then(Value::as_str) == Some("event_subscribe"),
@@ -2445,6 +2477,17 @@ impl RemoteControlManager {
         // Subscribe/unsubscribe bookkeeping only; no desktop-side notification
         // is needed for unsubscribe.
         let mut inner = self.inner.lock();
+        // Round-14 复审 minor:lease 门与订阅变更同一把锁、同一次获取
+        // (与 rpc_request 的准入同口径)。帧 lease 与活跃 lease 不符即
+        // 丢弃;无活跃 lease 时保持放行(主路径本无可回复对象,订阅在
+        // 首次 join 后才可能被消费,语义与既有实现一致)。
+        let lease_id = value
+            .get("lease_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !rpc_request_targets_active_lease(&inner, lease_id) {
+            return;
+        }
         if subscribe {
             inner.subscriptions.insert(event.to_string());
         } else {
@@ -2472,6 +2515,7 @@ impl RemoteControlManager {
             RpcCacheEntry::Complete {
                 fingerprint,
                 completion,
+                swept_acknowledged: false,
             },
         );
         inner.rpc_order.push_back(request_id.to_string());
@@ -2691,6 +2735,10 @@ impl RemoteControlManager {
             for id in expired {
                 if let Some(RpcCacheEntry::Pending(pending)) = inner.rpc_cache.get(&id) {
                     let fingerprint = pending.fingerprint.clone();
+                    // Round-14 复审 minor:已受理(已开始执行)的请求打标,
+                    // 代际变更臂据此改写为 outcome_unknown;未受理占位不打
+                    // 标(超时对从未执行的请求是准确答案)。
+                    let swept_acknowledged = pending.acknowledged_generation.is_some();
                     inner.rpc_cache.insert(
                         id,
                         RpcCacheEntry::Complete {
@@ -2699,6 +2747,7 @@ impl RemoteControlManager {
                                 RPC_TIMED_OUT_CODE,
                                 "远程控制请求执行超时，已释放该请求",
                             ),
+                            swept_acknowledged,
                         },
                     );
                 }
@@ -2756,6 +2805,7 @@ impl RemoteControlManager {
                 Some(RpcCacheEntry::Complete {
                     fingerprint: existing_fingerprint,
                     completion,
+                    ..
                 }) => {
                     let completion = if existing_fingerprint == &fingerprint {
                         completion.clone()
@@ -4390,10 +4440,56 @@ mod tests {
             body.contains("rpc_completion_is_in_flight_timeout(completion)"),
             "the Complete arm must route the placeholder decision through the shared predicate"
         );
+        // Round-14 复审 minor:朴素 contains 会被 Pending 臂自己的插入
+        // 满足——只删占位替换臂的插入(留空 if)时全测试套仍绿,round-5
+        // 的吞结果回归复活。要求函数体内至少两处插入:占位替换臂 +
+        // Pending→Complete 臂,缺任一即红。
         assert!(
-            body.contains("rpc_cache.insert"),
+            body.matches("rpc_cache.insert").count() >= 2,
             "a real completion arriving after the TTL sweep must replace the placeholder, \
-             not be idempotently swallowed"
+             not be idempotently swallowed (both the supersede arm and the Pending arm \
+             must insert)"
+        );
+    }
+
+    /// Round-14 复审 minor:打标的 TTL 超时占位必须在代际变更时被改写为
+    /// outcome_unknown(重启/重载后重放拿到如实的「结局不明」而不是伪造
+    /// 的「已超时」)。删除 prepare_bridge_generation 的改写臂或扫描臂的
+    /// 打标,本钉即红。
+    #[test]
+    fn swept_acknowledged_placeholders_repair_to_outcome_unknown_on_generation_change() {
+        let rpc_source = include_str!("rpc.rs");
+        let start = rpc_source
+            .find("pub(super) fn prepare_bridge_generation(")
+            .expect("prepare_bridge_generation must exist");
+        let body = &rpc_source[start..];
+        let end = ["\npub(super) fn ", "\npub fn ", "\nfn ", "\n#[test]"]
+            .iter()
+            .filter_map(|marker| body.find(marker))
+            .min()
+            .expect("prepare_bridge_generation body must be terminated by the next item");
+        let body = &body[..end];
+        assert!(
+            body.contains("swept_acknowledged"),
+            "the generation arm must recognize swept acknowledged placeholders"
+        );
+        assert!(
+            body.contains("RPC_TIMED_OUT_CODE") && body.contains("outcome_unknown_completion()"),
+            "the repair must convert the timeout placeholder to the truthful outcome_unknown"
+        );
+
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("let expired: Vec<String> = inner")
+            .expect("the TTL sweep must exist");
+        let body = &source[start..];
+        let end = body
+            .find("let in_flight_count = inner")
+            .expect("the sweep body must be terminated by the in-flight count");
+        let body = &body[..end];
+        assert!(
+            body.contains("pending.acknowledged_generation.is_some()"),
+            "the sweep must mark placeholders for acknowledged (still-executing) requests"
         );
     }
 
@@ -5787,29 +5883,63 @@ mod tests {
         );
     }
 
+    /// Round-14 复审 minor(source 契约钉):回放装载必须按「并集且内存
+    /// 优先」合并——朴素 `backlog = ledger.entries…collect()` 的整覆盖会
+    /// 在第二次生命周期调用时把抢救降级后只在内存里的条目从两侧同时
+    /// 抹掉。回退成整覆盖本钉即红。
+    #[test]
+    fn revocation_replay_merges_disk_entries_into_the_process_backlog() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn replay_pending_revocations(")
+            .expect("replay_pending_revocations must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("replay_pending_revocations body must be terminated by the next fn")];
+        assert!(
+            body.contains("pending_revocation_key(existing) == pending_revocation_key(entry)"),
+            "the replay must dedupe by key instead of overwriting the process backlog"
+        );
+        assert!(
+            !body.contains("pending_revocation_backlog = ledger.entries"),
+            "the plain disk-overwrite must not come back; it drops memory-only salvaged entries"
+        );
+    }
+
     /// 接线钉(Round-11 复审 minor):订阅帧必须先过活跃 lease 门再动
     /// 订阅集——迟到的死 lease 订阅帧会让退订摘掉新客户端刚装的订阅。
     /// 分派体需要 AppHandle,行为钉驱动不了;把门删掉或挪到订阅变更之后
     /// 即红。
     #[test]
-    fn event_subscriptions_are_lease_gated_at_the_dispatch_site() {
+    fn event_subscriptions_are_lease_gated_under_the_mutation_lock() {
+        // Round-14 复审 minor(替代 dispatch-site 版本):门检必须活在
+        // handle_event_subscription 体内、与订阅变更同一把锁——旧形状
+        // (dispatch 臂先单独验锁再放行)在两锁之间留 takeover 窗口,本钉
+        // 对该回退形状变红(门检离开函数体即找不到谓词调用)。
         let source = include_str!("mod.rs");
         let start = source
-            .find("\"event_subscribe\" | \"event_unsubscribe\" =>")
-            .expect("the combined subscription arm must exist");
+            .find("fn handle_event_subscription(")
+            .expect("handle_event_subscription must exist");
         let body = &source[start..];
-        let body = &body[..body
-            .find("self.handle_event_subscription(&value,")
-            .expect("the arm must dispatch to handle_event_subscription")];
+        let end = ["\n    fn ", "\n    pub fn ", "\n    #[test]"]
+            .iter()
+            .filter_map(|marker| body.find(marker))
+            .min()
+            .expect("handle_event_subscription body must be terminated by the next item");
+        let body = &body[..end];
+        let lock = body
+            .find("let mut inner = self.inner.lock();")
+            .expect("the handler must lock Inner for the mutation");
         let gate = body
             .find("rpc_request_targets_active_lease(&inner, lease_id)")
-            .expect("the subscription arm must consult the active-lease gate");
-        let early_return = body
-            .find("return;")
-            .expect("the gate refusal must drop the frame");
+            .expect("the lease gate must live inside handle_event_subscription");
+        let mutate = body
+            .find("inner.subscriptions")
+            .expect("the handler must mutate the subscription set");
         assert!(
-            gate < early_return,
-            "the lease gate must precede the dispatch and refuse dead-lease frames"
+            lock < gate && gate < mutate,
+            "the lease gate must run under the same lock acquisition as the subscription mutation"
         );
     }
 

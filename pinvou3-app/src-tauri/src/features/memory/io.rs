@@ -594,7 +594,9 @@ where
     };
     write_topic_migration_journal_unlocked(journal_path, &journal)?;
     write(new_path, value)?;
-    let raw = fs::read_to_string(new_path)?;
+    // Round-14 复审:提交后复读同样走有界原语(刚写出的文件常态远小于
+    // 上限;并发追加越界按坏档处理)。
+    let raw = crate::platform::filesystem::read_private_data_file(new_path)?;
     let committed = serde_json::from_str::<T>(&raw).map_err(invalid_data)?;
     if !validate(&committed) {
         return Err(io::Error::new(
@@ -715,9 +717,13 @@ where
         if !name.starts_with(".topic-migration-") || !name.ends_with(".journal") {
             continue;
         }
-        let journal = match fs::read_to_string(&journal_path).and_then(|raw| {
-            serde_json::from_str::<TopicMigrationJournal>(&raw).map_err(invalid_data)
-        }) {
+        // Round-14 复审:journal 是存储目录内可被外部种植的文件,整读走
+        // 共享有界原语(常规文件门 + 16 MiB 上限);超界/非常规文件按
+        // 坏档同路隔离,不再无界读入。
+        let journal = match crate::platform::filesystem::read_private_data_file(&journal_path)
+            .and_then(|raw| {
+                serde_json::from_str::<TopicMigrationJournal>(&raw).map_err(invalid_data)
+            }) {
             Ok(journal) => journal,
             Err(_) => {
                 // An unparsable journal (truncated write or disk corruption)
@@ -738,10 +744,12 @@ where
             continue;
         }
         let authority = dir.join(&journal.authority_file);
-        let authority_valid = fs::read_to_string(&authority).is_ok_and(|raw| {
-            serde_json::from_str::<T>(&raw).is_ok()
-                && stable_id_with_prefix("authority", &raw) == journal.authority_hash
-        });
+        // Round-14 复审:权威校验复读与 journal 同批收口。
+        let authority_valid = crate::platform::filesystem::read_private_data_file(&authority)
+            .is_ok_and(|raw| {
+                serde_json::from_str::<T>(&raw).is_ok()
+                    && stable_id_with_prefix("authority", &raw) == journal.authority_hash
+            });
         if !authority_valid {
             remove_file(&journal_path)?;
             continue;
@@ -819,7 +827,7 @@ where
         if path == new_path || path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let same_topic = fs::read_to_string(&path)
+        let same_topic = crate::platform::filesystem::read_private_data_file(&path)
             .ok()
             .and_then(|raw| serde_json::from_str::<T>(&raw).ok())
             .map(|item| {
@@ -953,7 +961,7 @@ pub(super) fn delete_work_context_unlocked(id: &str) -> io::Result<bool> {
             .map(clean_id)
             .map(|file_id| file_id == id)
             .unwrap_or(false);
-        let matched_by_body = fs::read_to_string(&path)
+        let matched_by_body = crate::platform::filesystem::read_private_data_file(&path)
             .ok()
             .and_then(|raw| serde_json::from_str::<WorkContextFile>(&raw).ok())
             .map(|item| clean_id(&item.id) == id || clean_id(&item.topic) == id)
@@ -1812,7 +1820,7 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
             .map(clean_id)
             .unwrap_or_default();
         let matched_by_file = file_id == id;
-        let matched_by_body = fs::read_to_string(&path)
+        let matched_by_body = crate::platform::filesystem::read_private_data_file(&path)
             .ok()
             .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
             .map(|pref| clean_id(&pref.id) == id)
@@ -1920,7 +1928,7 @@ fn write_preference_unlocked(item: &PendingMemoryItem) -> io::Result<()> {
             if path == target || path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let same_topic = fs::read_to_string(&path)
+            let same_topic = crate::platform::filesystem::read_private_data_file(&path)
                 .ok()
                 .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
                 .map(|pref| normalize_preference_topic(&pref.topic) == topic)

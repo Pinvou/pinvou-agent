@@ -960,6 +960,95 @@ fn preference_migration_skips_non_plain_filename_ids() {
     );
 }
 
+/// Round-14 复审 minor:work_context 磁盘载入 id 的活防线在 parse 侧的
+/// `normalize_work_context`(`item.id = clean_id(&item.id)`,种植的
+/// `"../victim"` 载入即消毒为 "victim"),此后所有下游 id→路径 join
+/// 拿到的都是单分量名;迁移清理 join 处的 `is_plain_filename` 守卫是
+/// 纵深冗余(单独回退不可观测——突变实证)。本钉住活防线本身:删除
+/// 消毒行,载入出的 id 保持 "../victim" 即红。
+#[test]
+fn work_context_records_sanitize_disk_loaded_ids() {
+    let _home = IsolatedPinvouHome::new("wc-id-sanitize");
+    let context_dir = work_context_dir();
+    fs::create_dir_all(&context_dir).unwrap();
+    let victim = context_dir
+        .parent()
+        .expect("work context dir must live under the isolated home")
+        .join("victim.json");
+    fs::write(&victim, "{}").unwrap();
+    write_json_atomic(
+        &context_dir.join("ctx-weird0000.json"),
+        &WorkContextFile {
+            id: "../victim".to_string(),
+            kind: "work_context".to_string(),
+            topic: "alpha_topic".to_string(),
+            text: "old context".to_string(),
+            source: "test".to_string(),
+            confidence: 1.0,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .unwrap();
+
+    let items = load_work_context().unwrap();
+    assert_eq!(items.len(), 1, "the planted record must load");
+    assert_eq!(
+        items[0].id, "victim",
+        "the disk-loaded id must be sanitized at load, before any id→path join"
+    );
+    assert!(
+        victim.exists(),
+        "the sanitized id must never reach a path outside the store dir"
+    );
+}
+
+/// Round-14 复审 M4:迁移 journal 是存储目录内可被外部种植的文件,复核
+/// 读此前是裸 `fs::read_to_string`(每次偏好/工作上下文载入都会整读)。
+/// 读已收口到共享有界原语(16 MiB 上限):超界种植文件必须走坏档隔离,
+/// 而不是无界读入;隔离后同目录留有 `.corrupt-` 证据,载入车道不阻塞。
+#[test]
+fn migration_journal_reads_are_capped() {
+    let _home = IsolatedPinvouHome::new("journal-cap");
+    let context_dir = work_context_dir();
+    fs::create_dir_all(&context_dir).unwrap();
+    let journal = context_dir.join(".topic-migration-huge.journal");
+    // 区分度关键:种植的是**合法 JSON 但超界**的 journal(单个 17 MiB 的
+    // stale_files 成员)——裸 `fs::read_to_string` 会整读并正常解析,复核
+    // 臂随后因权威缺失静默 `remove_file`(无隔离证据);有界原语在打开
+    // 门即拒(>16 MiB),走坏档隔离。断言隔离证据存在即区分两条读路径。
+    let oversized_name = "x".repeat(17 * 1024 * 1024);
+    let journal_body = format!(
+        "{{\"authority_file\":\"authority-a.json\",\"authority_hash\":\"deadbeef\",\
+         \"stale_files\":[\"{oversized_name}\"]}}"
+    );
+    fs::write(&journal, journal_body).unwrap();
+
+    // 载入触发 journal 复核;超界 journal 按坏档隔离,不阻塞载入。
+    let loaded = load_work_context().unwrap();
+    assert!(
+        loaded.is_empty(),
+        "the planted journal must not fabricate entries"
+    );
+    assert!(
+        !journal.exists(),
+        "the oversize journal must be quarantined, not read whole"
+    );
+    let evidence = fs::read_dir(&context_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".topic-migration-huge.journal.corrupt-"))
+        });
+    assert!(
+        evidence,
+        "the quarantined evidence copy must stay for diagnosis"
+    );
+}
+
 /// Round-8 复审：`resolve_topic_authorities` 的重复权威脱敏点（io.rs 的
 /// `cleanup_failures.push(... display_redacted(&duplicate) ...)`）此前只有
 /// helper 级钉，把该行回退成裸 `duplicate.display()` 时无用例变红。本钉在

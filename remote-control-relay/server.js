@@ -216,6 +216,12 @@ const wsConnectionBuckets = new Map();
 // Round-11 review: receiver-error terminations are surfaced in /healthz so an
 // operator can tell "client hung up" from "endpoint keeps sending poisoned
 // frames" (the connection-level close reason is invisible to probes).
+// Round-14 honesty note: ws emits 'error' from the sender path too (a write
+// failure on an already-dropping client, e.g. an RST mid-flush, funnels
+// through senderOnError into the same event), so this counter bounds
+// "protocol violations" from above, not exactly — a client that dies during
+// an in-flight write is counted here as well. Treat spikes as a signal to
+// check the logs, not as a violations-only metric.
 const relayStats = { receiverErrorTerminations: 0 };
 let relayStateMutation = Promise.resolve();
 
@@ -1082,11 +1088,15 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
 
 server.on("upgrade", (req, socket, head) => {
-  // The error listener must exist before any await/deferral: ws attaches its
-  // raw-socket 'error' listener only inside handleUpgrade/setSocket, so a
-  // client RST between the upgrade event and the handshake would surface as
-  // an unhandled 'error' event and kill the process. One pre-auth packet
-  // must never take down the Relay.
+  // Defense-in-depth, stated honestly (round-14 review): Node's HTTP server
+  // swallows raw-socket errors that land before the 'upgrade' event fires,
+  // and ws attaches its own `socket.on("error")` synchronously as the first
+  // line of handleUpgrade — so a pre-handshake RST cannot surface as an
+  // unhandled 'error' event even without this listener, and the RST test
+  // pins the observable survival property rather than this guard (removing
+  // the guard keeps that test green by construction). The listener stays so
+  // this handler never has to reason about the boundary: any socket error
+  // it can observe must only ever kill this socket, never the process.
   socket.on("error", () => socket.destroy());
   if (!sourceAllowed(req)) {
     socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");

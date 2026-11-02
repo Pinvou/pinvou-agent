@@ -2300,44 +2300,54 @@ test("survives illegal websocket frames at the receiver and keeps serving", asyn
 });
 
 test("survives a client RST between the upgrade request and the handshake and keeps serving", async () => {
-  // Round-12 pin for the upgrade-path crash guard: the upgrade listener owns
-  // the raw socket's 'error' event from its first line, because ws attaches
-  // its own listener only inside handleUpgrade/setSocket. A client RST racing
-  // the handshake must therefore terminate only this socket — never surface
-  // as ERR_UNHANDLED_ERROR and kill the process — even if a future change
-  // ever defers between the upgrade event and handleUpgrade.
+  // Round-14 honesty correction of the round-12 wording: this is an
+  // observation pin, not a pin for the repo's own upgrade-path guard.
+  // Empirically the immediate RST always wins the race — the 'upgrade'
+  // event never fires, Node's HTTP server swallows the raw-socket error,
+  // and ws 8.x attaches its own `socket.on("error")` synchronously as the
+  // first line of handleUpgrade — so deleting the repo guard at
+  // server.js (socket.on("error")) keeps this test green by construction
+  // (verified by mutation, 0/12 kills). What the test does pin is the
+  // observable contract that matters operationally: a pre-auth RST packet
+  // must never take the relay process down, and the relay must keep
+  // serving fresh handshakes afterwards.
   const isolated = await spawnRelay();
   try {
     let stderr = "";
     const onStderr = (chunk) => { stderr += String(chunk); };
     isolated.child.stderr.on("data", onStderr);
-    await new Promise((resolve, reject) => {
-      const raw = netConnect(isolated.port, "127.0.0.1");
-      const key = crypto.randomBytes(16).toString("base64");
-      raw.setNoDelay(true);
-      const timer = setTimeout(() => {
-        raw.destroy();
-        reject(new Error("the relay neither completed nor tore down the aborted upgrade within 3000ms"));
-      }, 3000);
-      raw.on("close", () => { clearTimeout(timer); resolve(); });
-      raw.on("error", () => { /* RST: expected */ });
-      raw.on("connect", () => {
-        // Same well-formed request as upgradeRaw (no Origin header: the
-        // handshake passes pre-auth), then an immediate RST so the reset
-        // races the server-side upgrade processing.
-        raw.write(
-          `GET /pinvou3/remote/ws HTTP/1.1\r\n`
-          + `Host: 127.0.0.1:${isolated.port}\r\n`
-          + `Upgrade: websocket\r\n`
-          + `Connection: Upgrade\r\n`
-          + `Sec-WebSocket-Key: ${key}\r\n`
-          + `Sec-WebSocket-Version: 13\r\n\r\n`,
-        );
-        if (typeof raw.resetAndDestroy === "function") raw.resetAndDestroy();
-        else raw.destroy();
+    try {
+      await new Promise((resolve, reject) => {
+        const raw = netConnect(isolated.port, "127.0.0.1");
+        const key = crypto.randomBytes(16).toString("base64");
+        raw.setNoDelay(true);
+        const timer = setTimeout(() => {
+          raw.destroy();
+          reject(new Error("the relay neither completed nor tore down the aborted upgrade within 3000ms"));
+        }, 3000);
+        raw.on("close", () => { clearTimeout(timer); resolve(); });
+        raw.on("error", () => { /* RST: expected */ });
+        raw.on("connect", () => {
+          // Same well-formed request as upgradeRaw (no Origin header: the
+          // handshake passes pre-auth), then an immediate RST so the reset
+          // races the server-side upgrade processing.
+          raw.write(
+            `GET /pinvou3/remote/ws HTTP/1.1\r\n`
+            + `Host: 127.0.0.1:${isolated.port}\r\n`
+            + `Upgrade: websocket\r\n`
+            + `Connection: Upgrade\r\n`
+            + `Sec-WebSocket-Key: ${key}\r\n`
+            + `Sec-WebSocket-Version: 13\r\n\r\n`,
+          );
+          if (typeof raw.resetAndDestroy === "function") raw.resetAndDestroy();
+          else raw.destroy();
+        });
       });
-    });
-    isolated.child.stderr.off("data", onStderr);
+    } finally {
+      // Detach even on the rejection path so a failed probe cannot leak the
+      // listener onto the shared child's stderr stream.
+      isolated.child.stderr.off("data", onStderr);
+    }
 
     // The process survived the aborted handshake and its stderr shows no
     // unhandled-error crash.

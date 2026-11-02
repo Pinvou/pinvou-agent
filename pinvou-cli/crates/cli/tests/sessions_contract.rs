@@ -1267,8 +1267,24 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     // 镜像同源生效;读向钉住 `.m2/settings.xml`,写向钉住 `.env.local`。
     std::fs::create_dir_all(workspace_dir.join(".m2")).unwrap();
     std::fs::write(workspace_dir.join(".m2").join("settings.xml"), "<server/>").unwrap();
+    // Round-14 复审 M2:`*.env` 后缀腿同样只在 `resolve_session_artifact`
+    // 的 `.or_else` 接线上(上游镜像单元钉驱动的是 check_sensitive_path,
+    // 钉不到这个消费点)——与 round-10 前缀腿的 `.env.local` 同口径,经
+    // 真实分发驱动,删掉后缀腿即红。
+    std::fs::create_dir_all(workspace_dir.join("deploy")).unwrap();
+    std::fs::write(
+        workspace_dir.join("deploy").join("production.env"),
+        "TOKEN=prod\n",
+    )
+    .unwrap();
 
-    for relative in [".ssh/id_rsa", ".env", ".env.local", ".m2/settings.xml"] {
+    for relative in [
+        ".ssh/id_rsa",
+        ".env",
+        ".env.local",
+        ".m2/settings.xml",
+        "deploy/production.env",
+    ] {
         let error = expect_failed(&["pinvou", "artifacts", "read", &id, relative]);
         assert!(
             error

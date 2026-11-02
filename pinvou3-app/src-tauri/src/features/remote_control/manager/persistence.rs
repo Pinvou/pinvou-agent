@@ -573,6 +573,14 @@ pub(super) fn queue_pending_revocation_at(
         .iter()
         .find(|entry| pending_revocation_key(entry) == key)
     {
+        // Round-14 复审 minor(记录既有设计边界):同键不同密钥的冲突
+        // 会让 queue_pending_revocation 返回 Err,而 refresh/stop_current
+        // 以 `?` 传播——即「rotate 崩在 queue 与 persist 之间」的残状
+        // (config=(E,S0)、账本=(E,S1))在 relay 不可达期间会楔住
+        // stop/rotate,直到 relay 恢复、工人确认 S1 为止。这是刻意的
+        // fail-closed(round-9:丢弃条目可能留下永不吊销的凭据);修复
+        // 需要账本同键多密钥语义(格式/确认逻辑连锁变更)或产品层取
+        // 舍,按残余记录,不在本轮范围内。
         return if existing == &pending {
             Ok(())
         } else {

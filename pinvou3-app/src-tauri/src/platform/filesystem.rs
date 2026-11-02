@@ -3625,8 +3625,12 @@ pub(crate) mod tests {
             let body = &body[..body
                 .find("\npub(crate) fn ")
                 .expect("quarantine_secret_file body must be terminated by the next fn")];
+            // Round-14 复审 NIT:精确多行形态对 rustfmt 重排脆(纯重排会
+            // 假红);按压缩空白后的形状断言——copy-then-chmod 回退仍红,
+            // 重排不再误伤。
+            let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(
-                body.contains(".write(true)\n                    .create_new(true)\n                    .mode(0o600)"),
+                normalized.contains(".write(true) .create_new(true) .mode(0o600)"),
                 "the secret evidence copy must be created 0600, not copied loose and tightened after"
             );
         }

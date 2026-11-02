@@ -291,6 +291,17 @@ fn translate_ingest_error(message: &str) -> String {
                  credential locations are never read into a model context"
             );
         }
+        // Round-14 review: the directory-scoped-tail message this PR's third
+        // blocklist list made reachable (`path X crosses a directory-scoped
+        // credential file`, from `blocked_path_tail_hit`) gets the same
+        // family guidance copy its four siblings carry; without the arm it
+        // falls through verbatim.
+        if let Some(path) = rest.strip_suffix(" crosses a directory-scoped credential file") {
+            return format!(
+                "{path} sits under a credential directory sequence; files under credential \
+                 locations are never read into a model context"
+            );
+        }
         if let Some(path) = rest.strip_suffix(" is in system-sensitive area") {
             return format!("{path} is in a system-sensitive area and is never read");
         }
@@ -549,6 +560,23 @@ mod tests {
         assert!(
             translate_ingest_error(upstream).contains("system-sensitive area"),
             "the system-area arm must still fire"
+        );
+    }
+
+    /// Round-14 review: the directory-scoped-tail message (reachable since
+    /// the `BLOCKED_PATH_TAILS` leg joined `check_sensitive_components`)
+    /// must get the family guidance copy instead of the raw pass-through.
+    #[test]
+    fn ingest_error_translation_covers_the_directory_scoped_tail_arm() {
+        let upstream = "path /home/u/.m2/settings.xml crosses a directory-scoped credential file";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential directory sequence"),
+            "the tail arm must add the family guidance: {translated}"
+        );
+        assert!(
+            !translated.starts_with("path /home/u/.m2/settings.xml crosses"),
+            "the raw message must not pass through verbatim: {translated}"
         );
     }
 }
