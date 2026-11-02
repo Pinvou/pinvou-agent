@@ -1845,6 +1845,13 @@
     if (state.activeSessionId !== id) return;
     state.activeSessionId = null;
     loadWorkingSetFrom(freshBuffer());
+    // freshBuffer's modeState is the generic default (yolo); the draft
+    // display must be overridden with this lane's global default — otherwise
+    // delete/archive of the open session lands on a chip reading Yolo while
+    // the backend resolves the unbound draft to the lane default (Auto),
+    // exactly the display-vs-behavior divergence the tri-mode draft work
+    // eliminated elsewhere.
+    state.modeState = currentDraftModeState();
   }
 
   // web+tauriSessions 共享
