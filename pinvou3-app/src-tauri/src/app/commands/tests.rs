@@ -3672,10 +3672,26 @@ fn decide_approval_side_effect_ordering_is_pinned() {
     // mutation racing the await (turn-terminal sweep, session purge, a
     // concurrent decision) or an engine eviction/rebuild must cancel the
     // restore instead of recreating a closed approval lifecycle's entry.
+    // The compare-and-restore must share one registry critical section —
+    // the previous read-generation-then-record pair left a window where a
+    // sweep could advance the generation between the comparison and the
+    // insertion (review round 7).
+    let restore_at = body
+        .find("pending_approvals::restore_if_generation_is(")
+        .unwrap_or_else(|| panic!("fenced compare-and-restore missing"));
     assert!(
         body.find("pending_approvals::generation() == registry_generation")
-            .is_some(),
-        "the failure-arm restore must be gated on the registry generation fence"
+            .is_none(),
+        "the two-step read-generation-then-record fence is racy; use restore_if_generation_is"
+    );
+    assert!(
+        body.find("pending_approvals::record(").is_none(),
+        "the failure arm must restore through the fenced CAS, not a bare record"
+    );
+    assert!(
+        body.find("remove_fenced(")
+            .is_some_and(|at| at < restore_at),
+        "the restore consumes the remove_fenced generation snapshot"
     );
     assert!(
         body.find("engine_incarnation(&session_id).await == Some(incarnation)")

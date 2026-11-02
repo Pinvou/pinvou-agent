@@ -133,6 +133,40 @@ pub fn remove_fenced(session_id: &str, approval_id: &str) -> Option<(PendingAppr
     })
 }
 
+/// Fenced restore for the decide-approval failure arm: re-inserts the entry
+/// removed by [`remove_fenced`] only while the registry generation still
+/// equals the snapshot captured atomically with that removal — the
+/// comparison and the insertion share one registry critical section.
+/// `decide_approval` previously read [`generation`] and then called
+/// [`record`] as two separate lock acquisitions, so a terminal sweep could
+/// run between the comparison and the insertion and the stale restore
+/// resurrected an entry whose engine-side lifecycle had already closed
+/// (reviewer P2). Returns whether the restore happened; a `false` return
+/// costs a re-trigger of the action, a wrongly restored entry would
+/// recreate a dead decision surface.
+pub fn restore_if_generation_is(
+    session_id: &str,
+    approval: PendingApproval,
+    expected_generation: u64,
+) -> bool {
+    with_store(|store| {
+        if store.generation != expected_generation {
+            return false;
+        }
+        store.generation = store.generation.wrapping_add(1);
+        let entries = store.by_session.entry(session_id.to_string()).or_default();
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.approval_id == approval.approval_id)
+        {
+            *existing = approval;
+            return true;
+        }
+        entries.push(approval);
+        true
+    })
+}
+
 /// Current store generation (see [`ApprovalStore::generation`]). A global
 /// counter by design: the restore fence is deliberately conservative — any
 /// observable registry change during the await window skips the restore,
@@ -572,6 +606,38 @@ mod tests {
             remove_fenced(&session, "ap-f1").is_none(),
             "重复移除返回 None"
         );
+    }
+
+    #[test]
+    fn forkguard_restore_if_generation_is_compares_and_inserts_atomically() {
+        let session = isolate("approval-cas-restore-test");
+        record(&session, sample("ap-r1", "k-r1", "g-r1"));
+        let (pending, snapshot) = remove_fenced(&session, "ap-r1")
+            .expect("fenced removal must find the recorded approval");
+        // Happy path: no mutation since the removal — the compare-and-insert
+        // succeeds and the entry is back in the registry.
+        assert!(
+            restore_if_generation_is(&session, pending.clone(), snapshot),
+            "unchanged registry must restore the removed entry"
+        );
+        assert_eq!(list(&session).len(), 1, "restored entry is pending again");
+
+        // Interleaving (review round 7 P2): a terminal sweep's mutation
+        // lands between the remove_fenced snapshot and the restore. The
+        // previous read-generation-then-record pair compared the generation
+        // in one lock acquisition and inserted in a second, so the sweep
+        // could advance it in between and the stale restore resurrected a
+        // closed lifecycle's entry. The CAS rejects it under the same lock
+        // as the insertion.
+        let (pending, snapshot) = remove_fenced(&session, "ap-r1").expect("second fenced removal");
+        record(&session, sample("ap-r2", "k-r2", "g-r2"));
+        assert!(
+            !restore_if_generation_is(&session, pending, snapshot),
+            "a generation advanced after the snapshot must cancel the restore"
+        );
+        let live = list(&session);
+        assert_eq!(live.len(), 1, "only the interleaved card stays");
+        assert_eq!(live[0].approval_id, "ap-r2", "no stale resurrection");
     }
 
     #[test]
