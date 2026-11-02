@@ -903,8 +903,7 @@ assert.match(webBridge, /web_session_unavailable:\s*"webSessionUnavailable"/,
 assert.match(webBridge, /invalid_web_session_id:\s*"webSessionUnavailable"/,
   'the invalid-session rejection must map to trilingual download copy');
 for (const source of [webBridge]) {
-  let count = 0;
-  for (const match of source.matchAll(/webSessionUnavailable:/g)) count += 1;
+  const count = [...source.matchAll(/webSessionUnavailable:/g)].length;
   assert.equal(count, 3,
     'the webSessionUnavailable copy must exist in all three inline languages');
 }
@@ -1254,19 +1253,19 @@ assert.match(desktopRemoteControlBridge,
   /active: true, starting: false, last_error: null, last_error_code: null,/,
   'the start success merge must clear the stale recovery code');
 assert.match(desktopRemoteControlBridge,
-  /active: wasActive, web_client_connected: wasActive && !!state\.webAccess\.web_client_connected, starting: false,\n          status: "error", last_error: String\(error\), last_error_code: null,/,
+  /active: wasActive, web_client_connected: wasActive && !!state\.webAccess\.web_client_connected, starting: false,\n {10}status: "error", last_error: String\(error\), last_error_code: null,/,
   'the start failure merge must clear the stale recovery code');
 assert.equal(
   (desktopRemoteControlBridge.match(/status: "error", last_error: String\(error\), last_error_code: null, starting: false \}/g) || []).length, 2,
   'the stop and rotate failure merges are byte-identical twins; both must keep clearing the stale recovery code');
 assert.match(desktopRemoteControlBridge,
-  /status: "stopped", starting: false,\n        last_error: null, last_error_code: null,/,
+  /status: "stopped", starting: false,\n {8}last_error: null, last_error_code: null,/,
   'the stop success merge must clear the stale recovery code');
 assert.match(desktopRemoteControlBridge,
   /active: true, web_client_connected: false, last_error: null, last_error_code: null, starting: false,/,
   'the rotate success merge must clear the stale recovery code');
 assert.match(desktopRemoteControlBridge,
-  /active: !!\(info && info\.url\), starting: false,\n          host_workspace_authorized: false, last_error: null, last_error_code: null,/,
+  /active: !!\(info && info\.url\), starting: false,\n {10}host_workspace_authorized: false, last_error: null, last_error_code: null,/,
   'the revoke merge must derive active from the url and clear the stale recovery code');
 assert.equal(
   (desktopRemoteControlBridge.match(/\{ last_error: String\(error\), last_error_code: null \}/g) || []).length, 2,
