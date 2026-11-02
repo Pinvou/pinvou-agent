@@ -244,7 +244,16 @@ const expectedProtocolHashes = {
   // invalidation's active leg would clear a background working set's array
   // references — notices pushed into detached arrays). Same event set, no new
   // invoke/listen entries — only the captured handler body changed.
-  chat: '0a746ad2891347f439354e4b08e24c047d535fa2f17fa18bcf4cb5da10d3889e',
+  // Recomputed for the repo-wide stale-comment cleanup: wording-only comment
+  // edits inside the captured chat-events.js listener spans (stale tool_start
+  // line number, three deleted English captions) — chat.js spans and the
+  // command surface unchanged. Recomputed again in round 3: the present_artifact
+  // comment now carries the web lane's exact `chat:tool_start` token so both
+  // bridge lanes read byte-identically.
+  // Recomputed once more for the r42 minor-9 boolean-contract gate on the
+  // compaction front arm (reload success gate on the compaction notice).
+  chat: '1e3a147cd2ef6fd2a5acda8966190ba37b53f57603cc847977f0a8319fee7a01',
+
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

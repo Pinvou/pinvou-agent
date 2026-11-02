@@ -1094,9 +1094,14 @@ impl Pinvou3Bridge {
     ///   2. restricted project rules: sessions bound to a real directory (native
     ///      code sessions' project directory, or plain chat sessions' bound user
     ///      working directory) inject the `AGENTS.md` files on the bound root →
-    ///      user-home (exclusive) path, in root→cwd order (fork base C5
-    ///      emptied `PROJECT_CONTEXT_FILES` and no longer scans automatically;
-    ///      the app side fills the gap within the security boundary here);
+    ///      user-home (exclusive) path, in root→cwd order (the foundation
+    ///      still enumerates `PROJECT_CONTEXT_FILES`, but the app's static
+    ///      prompt-composer override makes the foundation treat the embedder
+    ///      as owning context — the automatic scan returns empty and the
+    ///      workspace context pack stays off, with
+    ///      `project_context_pack_enabled = false` as belt-and-suspenders —
+    ///      so it no longer injects automatically; the app side fills the
+    ///      gap within the security boundary here);
     ///   3. user-custom `~/.codewhale/instructions.md` (optional, still `File`).
     ///
     /// A previous version wrote a `~/.pinvou3/sessions/<sid>/instructions.md`
@@ -1117,8 +1122,23 @@ impl Pinvou3Bridge {
             name: "pinvou3:instructions".to_string(),
             content: rendered,
         });
-        for project_rule in self.code_session_project_rules(session_id) {
-            out.push(InstructionSource::File(project_rule));
+        let project_rules = self.code_session_project_rules(session_id);
+        for project_rule in &project_rules {
+            out.push(InstructionSource::File(project_rule.clone()));
+        }
+        if self
+            .execution_root_resolver
+            .as_ref()
+            .and_then(|resolver| resolver(session_id))
+            .is_some()
+        {
+            // Fixed at engine creation like the existing File sources. These
+            // labels preserve path scope and make incomplete discovery
+            // explicit after the supplied rules, before the user overlay.
+            out.push(InstructionSource::Inline {
+                name: "pinvou3:project-rule-scopes".to_string(),
+                content: "若上方已加载 AGENTS.md，按来源路径生效：仅适用于其所在目录及子目录，不因排列在后就覆盖其他目录的规则。对同一路径，适用规则以更近目录为准。规则不扩大任务、权限或信任范围。\nAny rules loaded above cover only the primary root and its ancestors; this is not a complete rule search for a target file, even when no rules were found. Before editing, identify the selected root containing the target file, then check AGENTS.md in every directory from that root through the target file's directory. A target in an additional root uses that root's own rule chain, not the primary root's chain. Deeper rules may exist even when a root rule is already supplied. Reuse supplied files, but inspect the remaining directories; do not recursively scan unrelated paths.".to_string(),
+            });
         }
         let user = paths::user_instructions();
         if user.is_file() {
@@ -1142,9 +1162,14 @@ impl Pinvou3Bridge {
     /// prompt-injection surface for both kinds of bound sessions, so both share the
     /// same injection rules.
     ///
-    /// The C5 fork base emptied `PROJECT_CONTEXT_FILES` (no more automatic
-    /// scanning); the app side fills the gap within the security boundary
-    /// here. Behavioral semantics:
+    /// The foundation still enumerates `PROJECT_CONTEXT_FILES`, but the
+    /// app's static prompt-composer override makes the foundation treat the
+    /// embedder as owning context: the automatic scan
+    /// (`load_project_context_with_parents`) returns empty and the
+    /// workspace context pack stays off (also gated on
+    /// `!static_composer_installed`; `project_context_pack_enabled = false`
+    /// is belt-and-suspenders). No automatic injection; the app side fills
+    /// the gap within the security boundary here. Behavioral semantics:
     ///   - injection order root→cwd (ancestors first, project root last),
     ///     matching codex/claude convention — the closer a rule is to the
     ///     project root, the later it appears in the prompt;
@@ -1179,11 +1204,10 @@ impl Pinvou3Bridge {
         // determined; fail-closed: inject only the project root's own level.
         let home = normalize_rule_boundary_path(&crate::platform::paths::user_home_dir());
         let mut rules = Vec::new();
+        // Additional selected roots stay available through the workspace
+        // context. Their task-specific rules are discovered on demand instead
+        // of loading sibling rule bodies into every session's instructions.
         for dir in collect_project_rule_chain(&project_root, home.as_deref()) {
-            // AGENTS.md from the project root and every ancestor level
-            // (excluding the home directory itself) is injected, supporting
-            // the existing semantics of a monorepo-root rule covering
-            // subdirectories.
             let agents = dir.join("AGENTS.md");
             if is_plain_file(&agents) {
                 rules.push(agents);
@@ -3487,9 +3511,6 @@ impl Pinvou3Bridge {
     /// Build the [`Op::SendMessage`] sent to the engine — switch
     /// trust/approval/sandbox by `mode`.
     ///
-    /// Decision source: `docs/Plan-YOLO双模式-设计决策.md` section 4.1 reuses
-    /// the foundation's mode field.
-    ///
     /// | mode | allow_shell | trust_mode | auto_approve | approval_mode | effective behavior |
     /// |------|-------------|------------|--------------|---------------|---------|
     /// | Yolo | self.allow  | true       | true         | Auto          | fully automatic + trust the whole home directory |
@@ -3499,8 +3520,7 @@ impl Pinvou3Bridge {
     /// the user content, generated dynamically per `phase`. The same
     /// mechanism as Claude Code fights long-context forgetting + enforces
     /// state-specific behavior. Qwen3.6 has strong short-term attention, so
-    /// the top of the message has a high hit rate. See the decision document
-    /// V2 §13.1.
+    /// the top of the message has a high hit rate.
     ///
     /// Note: the foundation now makes `auto_approve = true` **bypass**
     /// bypassable Required approvals
@@ -4368,6 +4388,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn project_rules_keep_additional_roots_for_on_demand_discovery() {
+        let base = tempfile::tempdir().unwrap();
+        let primary = base.path().join("primary");
+        let secondary = base.path().join("secondary");
+        let unrelated = base.path().join("unrelated");
+        for dir in [&primary, &secondary, &unrelated] {
+            std::fs::create_dir(dir).unwrap();
+            std::fs::write(dir.join("AGENTS.md"), "local rule").unwrap();
+        }
+        std::fs::write(base.path().join("AGENTS.md"), "shared ancestor rule").unwrap();
+        let expected =
+            |dir: &std::path::Path| normalize_rule_boundary_path(dir).unwrap().join("AGENTS.md");
+        let mut bridge = fixture_bridge();
+        let bound = primary.clone();
+        bridge.set_execution_root_resolver(Arc::new(move |id| {
+            (id == "multi-root-rules").then(|| bound.clone())
+        }));
+        let selected = vec![
+            primary.clone(),
+            secondary.clone(),
+            secondary.clone(),
+            base.path().join("missing"),
+        ];
+        bridge.set_workspace_roots_resolver(Arc::new(move |_| selected.clone()));
+        let rules = bridge.code_session_project_rules("multi-root-rules");
+        for path in [expected(base.path()), expected(&primary)] {
+            assert_eq!(rules.iter().filter(|p| **p == path).count(), 1);
+        }
+        assert!(!rules.contains(&expected(&secondary)));
+        assert!(!rules.contains(&expected(&unrelated)));
+        assert!(bridge.code_session_project_rules("unbound").is_empty());
+        assert!(!bridge.session_instructions("unbound").iter().any(
+            |source| matches!(source, InstructionSource::Inline { name, .. }
+                if name == "pinvou3:project-rule-scopes")
+        ));
+        let instructions = bridge.session_instructions("multi-root-rules");
+        assert!(instructions.iter().any(|source| matches!(source,
+            InstructionSource::Inline { name, content }
+            if name == "pinvou3:project-rule-scopes"
+                && content.contains("仅适用于其所在目录及子目录")
+                && content.contains("对同一路径"))));
+        assert!(!instructions.iter().any(|source| matches!(source,
+            InstructionSource::File(path) if path == &expected(&secondary))));
+        assert!(
+            bridge
+                .session_workspace_roots("multi-root-rules")
+                .contains(&secondary)
+        );
+        let scope_index = instructions
+            .iter()
+            .position(|source| {
+                matches!(source,
+                InstructionSource::Inline { name, content }
+                if name == "pinvou3:project-rule-scopes"
+                    && content.contains("Any rules loaded above cover only the primary root and its ancestors")
+                    && content.contains("through the target file's directory")
+                    && content.contains("A target in an additional root uses that root's own rule chain"))
+            })
+            .unwrap();
+        for (index, source) in instructions.iter().enumerate() {
+            if matches!(source, InstructionSource::File(path) if rules.contains(path)) {
+                assert!(
+                    index < scope_index,
+                    "discovery caveat follows supplied rules"
+                );
+            }
+        }
+        for directory in [&primary, &secondary, &unrelated, base.path()] {
+            std::fs::remove_file(directory.join("AGENTS.md")).unwrap();
+        }
+        assert!(
+            bridge
+                .code_session_project_rules("multi-root-rules")
+                .is_empty()
+        );
+        assert!(bridge.session_instructions("multi-root-rules").iter().any(
+            |source| matches!(source,
+            InstructionSource::Inline { name, content }
+            if name == "pinvou3:project-rule-scopes"
+                && content.contains("even when no rules were found"))
+        ));
+    }
+
     /// A plain chat session bound to a real working directory: its mode identity is
     /// still Plain (prompt recipe / artifact capabilities unchanged), but its safety
     /// posture follows the binding — code scope, dual roots, AGENTS.md injection,
@@ -4419,9 +4523,9 @@ mod tests {
         // work semantics.
         let prompt = bridge.build_session_system_prompt("sess-plain-bound");
         assert!(prompt.contains("用户选择的工作目录"), "应渲染绑定环境段");
-        assert!(!prompt.contains("自动落到工作区"));
+        assert!(!prompt.contains("最终成品默认写在 `Current workspace` 给出的实际目录"));
         let plain_prompt = bridge.build_session_system_prompt("sess-plain");
-        assert!(plain_prompt.contains("自动落到工作区"));
+        assert!(plain_prompt.contains("最终成品默认写在 `Current workspace` 给出的实际目录"));
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -4525,11 +4629,33 @@ mod tests {
             // The symlinked AGENTS.md must not be injected (the only AGENTS.md
             // in the project directory is that symlink).
             let rules = bridge.code_session_project_rules("sess-code-project");
-            let marker = base.file_name().unwrap().to_string_lossy().into_owned();
+            let normalized_project = normalize_rule_boundary_path(&project).unwrap();
             assert!(
-                !rules.iter().any(|p| p.to_string_lossy().contains(&marker)),
-                "symlink 的 AGENTS.md 不得注入: {rules:?}"
+                !rules.contains(&normalized_project.join("AGENTS.md")),
+                "symlink must not be injected: {rules:?}"
             );
+            assert!(
+                !rules.contains(&normalize_rule_boundary_path(&outside).unwrap()),
+                "resolved symlink target must not be injected: {rules:?}"
+            );
+
+            // Selecting an additional root must not inject its rule file
+            // into the primary session's instructions either.
+            let primary = base.join("primary");
+            std::fs::create_dir(&primary).unwrap();
+            let primary_agents = primary.join("AGENTS.md");
+            std::fs::write(&primary_agents, "primary rules").unwrap();
+            let additional = project.clone();
+            bridge.set_execution_root_resolver(Arc::new(move |_| Some(primary.clone())));
+            bridge.set_workspace_roots_resolver(Arc::new(move |_| vec![additional.clone()]));
+            let rules = bridge.code_session_project_rules("sess-code-project");
+            assert!(rules.contains(&normalize_rule_boundary_path(&primary_agents).unwrap()));
+            assert!(
+                !rules
+                    .iter()
+                    .any(|path| path.starts_with(&normalized_project))
+            );
+            assert!(!rules.contains(&normalize_rule_boundary_path(&outside).unwrap()));
 
             let _ = std::fs::remove_dir_all(&base);
         }
@@ -5468,6 +5594,7 @@ mod tests {
         // fallback depends on when the process env is read, which is
         // non-deterministic under the parallel suite; the fallback semantics
         // themselves are covered by the marketplace plain_deny_all_* tests).
+        // plain disables my-skill → contains a deny rule pointing at the script
         crate::features::marketplace::scope::save_disabled_bundles_for(
             ConnectorScope::Plain,
             &["my-skill".to_string()],
@@ -5475,10 +5602,13 @@ mod tests {
         .unwrap();
         let rs = bridge.scope_deny_ruleset("sess-plain");
         assert!(
+            rs.ask_rules.iter().any(|r| r
+                .command
+                .as_deref()
+                .is_some_and(|c| c.starts_with("python ") && c.contains("run.py"))
+                && r.action == codewhale_execpolicy::PermissionAction::Deny),
+            "disabled skill script should have a deny rule: {:?}",
             rs.ask_rules
-                .iter()
-                .any(|r| r.command.as_deref().is_some_and(|c| c.contains("run.py"))),
-            "after plain disables an installed skill, the script deny ruleset must be present"
         );
         // Since the v3 rollback, safety-net rules are command-only (the File
         // path face was removed): mkfs-style fallback denies are always
@@ -5497,23 +5627,6 @@ mod tests {
         assert!(
             rs.denied_prefixes.iter().any(|p| p.starts_with("mkfs")),
             "safety-net rules should be promoted into denied_prefixes"
-        );
-
-        // plain disables my-skill → contains a deny rule pointing at the script
-        crate::features::marketplace::scope::save_disabled_bundles_for(
-            ConnectorScope::Plain,
-            &["my-skill".to_string()],
-        )
-        .unwrap();
-        let rs = bridge.scope_deny_ruleset("sess-plain");
-        assert!(
-            rs.ask_rules.iter().any(|r| r
-                .command
-                .as_deref()
-                .is_some_and(|c| c.starts_with("python ") && c.contains("run.py"))
-                && r.action == codewhale_execpolicy::PermissionAction::Deny),
-            "disabled skill script should have a deny rule: {:?}",
-            rs.ask_rules
         );
 
         // Re-enabled → script rule disappears (same computation as the hot
@@ -8869,7 +8982,7 @@ mod tests {
             other => panic!("期望 SendMessage,得到 {other:?}"),
         };
         assert!(
-            !yolo.contains("Plan 模式(只读调研)"),
+            !yolo.contains("本轮为 Plan 模式"),
             "Yolo 不该再有 mode reminder(大产物分块已砍)"
         );
         // Plan still has a reminder (produced by the session policy, D-2),
@@ -8915,7 +9028,7 @@ mod tests {
         }));
         let code = content_of(&bridge, "sess-code");
         assert!(
-            plain.contains("Plan 模式(只读调研)"),
+            plain.contains("本轮为 Plan 模式，只读调研"),
             "Plan 模式必须注入 per-turn reminder,得到:\n{plain}"
         );
         assert_eq!(plain, code, "本期两模式 Plan reminder 必须同文(行为不变)");

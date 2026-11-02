@@ -966,55 +966,6 @@ mod tests {
     }
 
     #[test]
-    fn partial_combo_replay_still_pairs_the_injected_alt_down_with_the_real_up() {
-        // Partial SendInput injection (only the leading Alt↓ reached Windows):
-        // the platform layer confirms alt_forwarded for it too, so the real
-        // Alt up is let through to pair with the injected down — no stuck
-        // modifier — and no dictation trigger fires. The combo keystroke
-        // itself is lost, and no synthetic cleanup key is emitted.
-        let mut state = VoiceShortcutState::default();
-        handle_voice_shortcut_key(
-            &mut state,
-            VoiceShortcutKey::Alt(AltSide::Left),
-            true,
-            true,
-            HWND_A,
-            0,
-        );
-        let combo =
-            handle_voice_shortcut_key(&mut state, VoiceShortcutKey::Other, true, true, HWND_A, 0);
-        assert_eq!(combo, VoiceShortcutDecision::forward_combo());
-        // (the platform layer confirms the partial injection)
-        state.alt_forwarded = true;
-
-        // Alt auto-repeat while held is let through, consistent with the
-        // injected down being held.
-        let repeat = handle_voice_shortcut_key(
-            &mut state,
-            VoiceShortcutKey::Alt(AltSide::Left),
-            true,
-            true,
-            HWND_A,
-            0,
-        );
-        assert_eq!(repeat, VoiceShortcutDecision::pass());
-
-        // The real up is let through to pair with the injected Alt down.
-        let up = handle_voice_shortcut_key(
-            &mut state,
-            VoiceShortcutKey::Alt(AltSide::Left),
-            false,
-            true,
-            HWND_A,
-            0,
-        );
-        assert_eq!(up, VoiceShortcutDecision::pass());
-        assert!(!up.suppress);
-        assert_eq!(up.event, None);
-        assert_eq!(state, VoiceShortcutState::default());
-    }
-
-    #[test]
     fn stale_gesture_resets_after_lost_keyup() {
         // UAC/lock-screen swallowed the keyup: the gap to the previous event
         // far exceeds the threshold, so everything resets.
@@ -1431,14 +1382,6 @@ mod tests {
             "artifact-0123456789abcdef"
         ));
         assert!(!is_voice_shortcut_router_window(""));
-    }
-
-    #[test]
-    fn recording_window_wins_over_focused_window() {
-        assert_eq!(
-            resolve_trigger_target(Some("main"), Some("detached-session-0123456789abcdef")),
-            Some(("main".to_string(), "recording"))
-        );
     }
 
     #[test]

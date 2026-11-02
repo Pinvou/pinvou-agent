@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -8,7 +9,6 @@ import {
   needsAddFolderConfirm,
   projectCoversPath,
   resolveSessionProjectId,
-  unavailableProjectRootPaths,
 } from "../src/features/projects/projectGrouping.js";
 
 const projectItem = (id, path, updatedAt) => ({
@@ -460,24 +460,33 @@ test("capUnavailableRootsForDisplay keeps one badge and folds the rest into +N",
   assert.deepEqual(capUnavailableRootsForDisplay(undefined, false), { visibleRoots: [], hiddenCount: 0 });
 });
 
-test("unavailableProjectRootPaths keys the badge strictly off the wire `available` field", () => {
-  // Review #463 round-14 R3: the sidebar rebind badge filter reads ONLY
-  // `available` — a backend that drops the field (main #566 did) leaves
-  // undefined, which is falsy, so every healthy root would badge. The Rust
-  // wire pin (project_root_status_wire_carries_available) locks the
-  // producer; this locks the consumer the sidebar actually runs.
-  assert.deepEqual(
-    unavailableProjectRootPaths([
-      { path: "/a/healthy", available: true },
-      { path: "/b/gone", available: false },
-    ]),
-    ["/b/gone"],
+// The live consumer is main.jsx's inline unavailableRootsOf (the unused
+// projectGrouping.js duplicate was removed in the dead sweep): pin the
+// strict available===false filter so the #566 shape (missing field →
+// badge on every healthy root) stays locked on the copy the sidebar
+// actually runs, together with the (group.roots || []) fallback (plain
+// sessions carry no roots array) and the String(root.path) coercion.
+// The Rust producer pin lives at project_root_status_wire_carries_available.
+test("sidebar rebind badge filter is pinned on the live main.jsx unavailableRootsOf", () => {
+  const mainSource = readFileSync(new URL("../src/app/main.jsx", import.meta.url), "utf8");
+  assert.match(
+    mainSource,
+    /\.filter\(root => !!\(root && typeof root === 'object' && root\.available === false\)\)/,
+    "sidebar unavailableRootsOf must badge strictly on available === false (missing field reads as available)",
   );
-  // Round-40 M9: missing field reads as AVAILABLE (the strict-false
-  // ruling — the prior inverted expectation pinned the #566 regression
-  // shape as desired behavior).
-  assert.deepEqual(unavailableProjectRootPaths([{ path: "/a/unknown" }]), []);
-  // Legacy bare-string roots carry no availability data: available.
-  assert.deepEqual(unavailableProjectRootPaths(["/c/gone"]), []);
-  assert.deepEqual(unavailableProjectRootPaths(), []);
+  assert.match(
+    mainSource,
+    /const unavailableRootsOf = \(group\) => \(group\.roots \|\| \[\]\)/,
+    "unavailableRootsOf must tolerate a missing roots array (plain sessions carry no roots)",
+  );
+  assert.match(
+    mainSource,
+    /\.map\(root => String\(root\.path\)\)/,
+    "unavailableRootsOf must stringify paths (String(root.path)) before dedup/render",
+  );
+  assert.match(
+    mainSource,
+    /unavailableRoots: unavailableRootsOf\(group\)/,
+    "project group headers must be fed by the strict unavailableRootsOf filter",
+  );
 });

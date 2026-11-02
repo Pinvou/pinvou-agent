@@ -365,6 +365,11 @@ mod tests {
     #[test]
     fn builtin_table_hits_verified_multimodal_models() {
         for (preset, name) in [
+            // Bare "gpt-4o" pins the standalone table entry itself: the row
+            // below only proves the "gpt-4o" substring via -mini, so a
+            // narrowing edit would otherwise strand bare gpt-4o (pin carried
+            // over from the removed pinvou_decision_follows_builtin_table).
+            (ModelPreset::OpenaiCompatible, "gpt-4o"),
             (ModelPreset::OpenaiCompatible, "gpt-4o-mini"),
             (ModelPreset::OpenaiCompatible, "gpt-4.1"),
             // The preset default models (prefs `default_model`) must hit,
@@ -535,24 +540,6 @@ mod tests {
         assert_eq!(
             effective_image_capability(&model),
             EffectiveImageCapability::Unsupported
-        );
-    }
-
-    #[test]
-    fn pinvou_decision_follows_builtin_table() {
-        // Pinvou(pinvou 决策,默认)= 原 Auto 判定链:内置表命中 → Supported,
-        // 未命中 → Unknown;不参与探测回填。
-        let mut hit = saved_model(ModelPreset::OpenaiCompatible, "gpt-4o");
-        hit.image_capability_override = ImageCapabilityOverride::Pinvou;
-        assert_eq!(
-            effective_image_capability(&hit),
-            EffectiveImageCapability::Supported
-        );
-        let mut miss = saved_model(ModelPreset::LocalVllm, "qwen36_35b_256k");
-        miss.image_capability_override = ImageCapabilityOverride::Pinvou;
-        assert_eq!(
-            effective_image_capability(&miss),
-            EffectiveImageCapability::Unknown
         );
     }
 

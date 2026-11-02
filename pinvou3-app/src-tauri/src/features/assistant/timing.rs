@@ -225,7 +225,7 @@ pub(crate) fn has_extra_queued_turns(session_id: &str) -> bool {
 }
 
 /// 旧调用点(无 usage):落盘不带 usage 字段,reader API 反序列化为 None。
-/// 保留是为了不强迫所有调用点同步升级(commands.rs:200 的 send_error 兜底等)。
+/// 保留是为了不强迫所有调用点同步升级(app/commands 各命令的 send_error 兜底等)。
 pub fn finish_turn(session_id: &str, status: &str, error: Option<&str>) {
     finish_turn_with_usage(session_id, status, error, None);
 }

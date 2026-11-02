@@ -14,8 +14,7 @@
 //! `supportsOnDeviceRecognition` 决定：支持时强制端上识别，否则由系统使用在线
 //! Speech 服务。该能力不是处理器架构的固定属性。
 //!
-//! 参考的 objc2 调用风格：`pet_window.rs:1048-1076`；block2 回调包装见 crate 文档
-//! （`block2::RcBlock::new`，`DynBlock` 是 `Block` 的类型别名）。
+//! block2 回调包装见 crate 文档（`block2::RcBlock::new`，`DynBlock` 是 `Block` 的类型别名）。
 
 #![cfg(target_os = "macos")]
 

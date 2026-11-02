@@ -916,7 +916,7 @@ pub async fn update_bundle_display_meta(
     result
 }
 
-/// Unique temp zip path for the upload channels (pid + monotonic nanos).
+/// Unique temp zip path for the upload channels (pid + wall-clock nanos).
 fn temp_upload_zip_path(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "{prefix}-{}-{}.zip",

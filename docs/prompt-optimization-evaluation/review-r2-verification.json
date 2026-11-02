@@ -1,0 +1,184 @@
+{
+  "revision": "V2.4.5-review-r2",
+  "author": "Codex (OpenAI) / GPT-6; exact variant/reasoning level unavailable",
+  "date": "2026-10-28",
+  "review": "https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5670620718",
+  "foundation_head": "643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6",
+  "parent_before_revision": "f21622c96b7c94641dda9c9308d66ac26092228d",
+  "model_measurement_scope": "Historical V2.4.5 results and R1 receipts/manifests unchanged. No fresh live-model run, full application Rust suite or native Windows/macOS run is claimed for R2.",
+  "dispositions": {
+    "major_1": "Discovery Skill steps 1/3/4 follow discovery -> one permitted exact-name probe -> explicit receipt retry, stop refusal/unavailability.",
+    "minor_1": "Document Goal fallback without claiming its wording has the new bounds.",
+    "minor_2": "Shell guidance and Registry result text receive the same fallback; extend existing prompt and shell pins.",
+    "minor_3": "load_skill description matches exact-name-first index and child header.",
+    "minor_4": "Restore system must mandates, code/local/custom/manual coverage, scored snapshot and full-catalog boundary.",
+    "minor_5": "retry_required: true explicitly licenses one schema-following retry on all touched primary/child/Skill/Registry surfaces.",
+    "minor_6": "Deny only deferred target names and assert eager read survives; keep actual hydration/denial assertions.",
+    "nits": "Paragraph breaks, explicit absent-tool antecedent, remove redundant receipt assertions, correct pre-generation-10 installer documentation."
+  },
+  "gates": [
+    {
+      "name": "foundation-forkguard",
+      "command": "cargo test -p codewhale-tui --lib --all-features --locked forkguard_ -- --test-threads=1",
+      "exit_code": 0,
+      "summary": "test result: ok. 246 passed; 0 failed; 0 ignored; 0 measured; 12055 filtered out; finished in 9.43s"
+    },
+    {
+      "name": "r2-foundation-registry",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tui",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "registry_first",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 14.79,
+      "tail": [
+        "test core::engine::tests::forkguard_registry_first_instruction_names_registered_tool_specs ... ok",
+        "test core::engine::tests::registry_first_instruction_only_names_published_tools ... ok",
+        "test core::engine::tests::registry_first_scenario ... ok",
+        "test core::engine::tool_catalog::synthetic_name_tests::registry_first_guidance_does_not_expand_contract_bash_schema_text ... ok",
+        "test tools::mcp_registry::tests::forkguard_registry_first_prompt_teaches_start_tool_activation ... ok",
+        "",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 12296 filtered out; finished in 0.03s",
+        ""
+      ]
+    },
+    {
+      "name": "r2-foundation-skill-tool",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tui",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "tools::skill::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.29,
+      "tail": [
+        "test tools::skill::tests::format_skill_body_skips_companion_section_when_solo ... ok",
+        "test tools::skill::tests::load_skill_returns_skill_body_with_description_header ... ok",
+        "test tools::skill::tests::native_skill_with_vanished_file_fails_loudly_with_the_path ... ok",
+        "test tools::skill::tests::plugin_skill_body_uses_reviewed_snapshot_without_mutable_file_paths ... ok",
+        "test tools::skill::tests::plugin_skill_load_fails_closed_when_reviewed_bundle_drifts ... ok",
+        "",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 12287 filtered out; finished in 0.05s",
+        ""
+      ]
+    },
+    {
+      "name": "r2-foundation-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "codewhale-tui",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "clippy::uninlined_format_args",
+        "-A",
+        "clippy::too_many_arguments",
+        "-A",
+        "clippy::unnecessary_map_or",
+        "-A",
+        "clippy::collapsible_if",
+        "-A",
+        "clippy::assertions_on_constants"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 103.34,
+      "tail": [
+        "    Checking codewhale-hooks v0.9.12 (/home/test/.codex/worktrees/pr-799-followup/pinvou-agent/CodeWhale/crates/hooks)",
+        "    Checking codewhale-config v0.9.12 (/home/test/.codex/worktrees/pr-799-followup/pinvou-agent/CodeWhale/crates/config)",
+        "    Checking rust-i18n v4.2.4",
+        "    Checking codewhale-agent v0.9.12 (/home/test/.codex/worktrees/pr-799-followup/pinvou-agent/CodeWhale/crates/agent)",
+        "    Checking codewhale-lane v0.9.12 (/home/test/.codex/worktrees/pr-799-followup/pinvou-agent/CodeWhale/crates/lane)",
+        "    Checking codewhale-core v0.9.12 (/home/test/.codex/worktrees/pr-799-followup/pinvou-agent/CodeWhale/crates/core)",
+        "    Checking codewhale-command-contract v0.9.12 (/home/test/.codex/worktrees/pr-799-followup/pinvou-agent/CodeWhale/crates/command-contract)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 43s"
+      ]
+    },
+    {
+      "name": "foundation-format",
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0
+    },
+    {
+      "name": "foundation-introduced-commit-gitleaks",
+      "version": "8.30.1",
+      "range": "6e1ee88ee8f8ea28eec7be3d8add3a591468412a..643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6",
+      "exit_code": 0,
+      "summary": "3 commits scanned; no leaks found"
+    },
+    {
+      "name": "parent-fork-guard",
+      "command": "./scripts/fork-guard.sh --fast",
+      "exit_code": 0,
+      "summary": "All fingerprints pass; 255 distinct forkguard names; expected head and count match. Two stale Skill wording fingerprints were repinned after their first run failed, and three receipt/denial fingerprints were added."
+    },
+    {
+      "name": "parent-fork-guard-tests",
+      "command": "python3 -m unittest discover -s scripts/tests -p 'test_fork_guard*.py'",
+      "exit_code": 0,
+      "summary": "Ran 5 tests; OK"
+    },
+    {
+      "name": "parent-prompt-node",
+      "command": "node --test pinvou3-app/tests/browser_core_protocol.test.mjs pinvou3-app/tests/canonical_tool_contract.test.js",
+      "exit_code": 0,
+      "summary": "18 passed; 0 failed"
+    },
+    {
+      "name": "parent-architecture",
+      "command": "python3 scripts/architecture-guard.py",
+      "exit_code": 0,
+      "summary": "architecture guard passed: no architecture debt increased"
+    },
+    {
+      "name": "public-submodule",
+      "command": "./scripts/verify-public-submodule.sh",
+      "exit_code": 1,
+      "expected_failure": true,
+      "summary": "错误：pinvou3-clean 为 6e1ee88ee8f8ea28eec7be3d8add3a591468412a，父仓 gitlink 为 643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6",
+      "resolution": "Keep PR799 draft. After PR125 merges, repin the actual maintenance squash, recount and rerun the unchanged verifier."
+    }
+  ],
+  "distinct_foundation_cases": 263,
+  "foundation_case_executions": 265,
+  "source_policy_negative_control": [
+    {
+      "source": "pre_fix_e4ef5570b",
+      "passes": false,
+      "missing": [
+        "try `registry_sync` directly once",
+        "try `start_registry_mcp_server` directly once",
+        "try its exact returned name directly once",
+        "access was not denied",
+        "`retry_required: true` licenses one retry",
+        "do not repeat failed probes or guess other names"
+      ]
+    },
+    {
+      "source": "r2_worktree",
+      "passes": true,
+      "missing": []
+    }
+  ],
+  "self_review": "Reviewed the entire R2 diff against round-2 items, denial boundaries and eager read survival, exact v11 migration provenance and user-edit protections, parent fingerprints/history counts, public-maintenance dependency and immutable historical model evidence. No runtime dispatch/approval or public signature changes."
+}

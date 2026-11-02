@@ -1,0 +1,164 @@
+[
+  {
+    "scenario": "consult",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "artifact",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "code_fix",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "multi_artifact",
+    "declared_project_mounts": 2,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "multi_code",
+    "declared_project_mounts": 2,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "plan_execute",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "skill",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "attachment",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "untrusted_data",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "browser_host_boundary",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "semantic_revision",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "json_output",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "hidden_code",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "missing_input",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "skill_fidelity",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "code_consult",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "unbound_artifact",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "nested_root_rule",
+    "declared_project_mounts": 2,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "secondary_revision",
+    "declared_project_mounts": 2,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "relative_deadline",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "json_escape",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "skill_format",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "plan_secondary_readonly",
+    "declared_project_mounts": 2,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "relative_json",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "absolute_requested",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "absolute_json",
+    "declared_project_mounts": 1,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  },
+  {
+    "scenario": "third_root",
+    "declared_project_mounts": 3,
+    "all_selected_roots_visible": true,
+    "controller_metadata_hidden": true
+  }
+]

@@ -1,0 +1,37 @@
+{
+  "provider_audit": {
+    "profiles": [
+      {
+        "alias": "ornith-local",
+        "vendor": "other_or_absent",
+        "preset": "openai_compatible"
+      },
+      {
+        "alias": "glm-cloud",
+        "vendor": "glm",
+        "preset": "openai_compatible"
+      }
+    ],
+    "local_wire_models": [
+      "Ornith-1.5-35B-A3B-NVFP4"
+    ],
+    "scope": "loopback UI-upload classification is not exercised; explicit provider metadata and preset preserved"
+  },
+  "endpoint_classification_audit": [
+    {
+      "alias": "ornith-local",
+      "original_endpoint_is_loopback": true,
+      "original_endpoint_is_private_ip": true,
+      "proxy_endpoint_is_loopback": true,
+      "known_vendor": "other_or_absent"
+    },
+    {
+      "alias": "glm-cloud",
+      "original_endpoint_is_loopback": false,
+      "original_endpoint_is_private_ip": false,
+      "proxy_endpoint_is_loopback": true,
+      "known_vendor": "glm"
+    }
+  ],
+  "limits": "Original local and proxy routes are loopback; cloud explicit glm vendor preserves zai provider identity. Image-upload UI classification is not exercised. HTTP1/proxy timing is not an unproxied native latency measurement."
+}

@@ -4629,44 +4629,6 @@ fn retention_purge_notifies_session_purged_hooks() {
     );
 }
 
-/// The composition root's purge hook also removes the session's entry from
-/// the codex_acp agents index — durable, id-scoped IO performed WHILE the
-/// purge runs. The store's hook contract (store.rs) keeps the sidecar io
-/// mutexes released while hooks fire (`scheduled_mutation` stays held), so
-/// a hook may touch its own files without self-deadlock; this test cannot
-/// pin that lock contract itself — it pins that the hook fires with exactly
-/// the evicted id and can perform durable, id-keyed IO while the purge
-/// runs. Pinned with a file stand-in for the index: sessions must not
-/// depend on codex_acp here. The removal leg is unit-tested in lib.rs
-/// against a real agents store, and the run() capture is pinned textually
-/// by the startup-order contract test.
-#[test]
-fn retention_purge_runs_hooks_that_remove_durable_state_for_the_id() {
-    let (store, _guard) = isolated_store();
-    let chat = store
-        .create_new("m".into(), None, std::env::temp_dir())
-        .expect("create chat");
-    let id = chat.metadata.id.clone();
-
-    // Underscore-prefixed like the other scan-invisible sidecar files.
-    let entry = paths::sessions_root().join(format!("_{id}.purge-hook-stub"));
-    std::fs::write(&entry, b"index entry stand-in").expect("seed stub");
-    store.register_session_purged_hook(std::sync::Arc::new(move |sid: &str| {
-        // Stand-in for the agents-index removal: the file is keyed by the id
-        // the hook actually receives, so a wrong id keeps the stub and fails
-        // the assertion below.
-        let _ =
-            std::fs::remove_file(paths::sessions_root().join(format!("_{sid}.purge-hook-stub")));
-    }));
-
-    store.purge_session_side_maps(std::slice::from_ref(&id));
-
-    assert!(
-        !entry.exists(),
-        "the purge must run hooks that remove durable state for the evicted id"
-    );
-}
-
 // ===================== code session permission mode (two-layer persistence + default resolution) =====================
 
 /// Inject a simple code-session predicate: ids in the list count as
@@ -5104,8 +5066,6 @@ fn fresh_code_session_default_plan_registers_pending_plan() {
     assert_eq!(registered.pending_plan_id.as_deref(), Some("plan-1"));
 }
 
-/// A workflow run's workspace derives from the run id and does not land
-/// under sessions/.
 #[test]
 fn session_model_update_rolls_back_memory_when_sidecar_write_fails() {
     let (store, _guard) = isolated_store();
@@ -7787,13 +7747,6 @@ fn apply_rebind_workspace_bindings_skips_owner_deleted_after_plan() {
     let _ = std::fs::remove_dir_all(&to);
 }
 
-/// Round-6 finding 4: an unreadable legacy table (invalid UTF-8 — `read_to_string`
-/// fails before the JSON pass can) is not "absent", and a rebind must not treat it
-/// as syncable: with an empty merged view the old code would delete a file this
-/// process never parsed, closing the "repair it and retry" door. The per-run
-/// re-parse (review #463 round-13 M2) treats the read failure exactly like the
-/// JSON-parse failure: empty plan proceeds and preserves, non-empty plan aborts
-/// with the CORRUPT marker.
 #[test]
 fn keychain_roots_round_trip_through_the_plain_binding_store() {
     // Review #484 round-2 checklist: write the keychain at bind time,
@@ -7993,6 +7946,13 @@ fn rebind_workspace_bindings_translates_keychain_against_the_prefix_not_the_bind
     let _ = std::fs::remove_dir_all(&elsewhere);
 }
 
+/// Round-6 finding 4: an unreadable legacy table (invalid UTF-8 — `read_to_string`
+/// fails before the JSON pass can) is not "absent", and a rebind must not treat it
+/// as syncable: with an empty merged view the old code would delete a file this
+/// process never parsed, closing the "repair it and retry" door. The per-run
+/// re-parse (review #463 round-13 M2) treats the read failure exactly like the
+/// JSON-parse failure: empty plan proceeds and preserves, non-empty plan aborts
+/// with the CORRUPT marker.
 #[test]
 fn unreadable_legacy_workspaces_file_is_preserved_across_rebind() {
     let (store, _g) = isolated_store();

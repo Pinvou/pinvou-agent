@@ -38,7 +38,7 @@ const FILESYSTEM = fs.readFileSync(path.join(TAU, 'platform', 'filesystem.rs'), 
 
 // ---------------------------------------------------------------- 1. 命令注册
 
-// 11 条 Provider 命令 + 1 条会话覆盖命令全部注册到 generate_handler!
+// 12 条 Provider 命令 + 1 条会话覆盖命令全部注册到 generate_handler!
 const PROVIDER_COMMANDS = [
   'list_acp_providers',
   'save_acp_provider',

@@ -1,0 +1,10 @@
+{
+  "git": "983c65e79",
+  "foundation": "ea9fdc90f",
+  "resources": {
+    "instructions-shared.md": "92acff74f247e1e652f2026b43e11b8e77952022330d49a8687e564b0aee837d",
+    "instructions-work.md": "555e63483f0d9b53860ee37f7a21eef209bcbd270c8ba102f0174d2de1983122",
+    "instructions-work-bound.md": "1886e5e7abdec26b31855ed970a19d255c9d8b7913f2cb926777fbf86d247f87",
+    "instructions-code.md": "7496960960d40f1666509113b765b48a61b67fc34fc4d217fa24be3117cc9e31"
+  }
+}

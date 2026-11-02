@@ -58,18 +58,25 @@ test('runtime guidance does not teach retired or hidden replay tool names', () =
   assert.deepEqual(leaks, []);
 });
 
-test('runtime guidance teaches the canonical model-visible tool families', () => {
+test('runtime guidance uses live schemas and canonical app entry points', () => {
   const rendered = runtimeGuidanceFiles(BUNDLE)
     .map((file) => fs.readFileSync(file, 'utf8'))
     .join('\n');
-  for (const canonical of [
-    'read(path=',
-    'write(path=',
-    'file_search(query=',
-    'bash(command=',
-    'terminal/run',
-    'todo_write',
+  // The foundation's generated tool catalog owns names and argument schemas.
+  // Requiring a second hand-written signature table freezes redundant prompt
+  // text and can teach stale arguments. Keep the catalog/discovery contract and
+  // app-only workflow entry points; the preceding scan still bans retired names.
+  const shared = fs.readFileSync(path.join(BUNDLE, 'instructions-shared.md'), 'utf8');
+  assert.match(shared, /本轮真实工具目录.*准确名称/);
+  assert.match(shared, /参数.*实际 schema/);
+  for (const discipline of [
+    '文件内容先用 `read` 核对，再决定修改',
+    '用 `write` 写入后核验实际文件',
+    '`bash` 只执行前台命令，不假定支持后台参数',
   ]) {
+    assert.ok(shared.includes(discipline), `file/shell discipline missing: ${discipline}`);
+  }
+  for (const canonical of ['tool_search', 'terminal/run', 'todo_write']) {
     assert.ok(rendered.includes(canonical), `canonical guidance missing: ${canonical}`);
   }
 });

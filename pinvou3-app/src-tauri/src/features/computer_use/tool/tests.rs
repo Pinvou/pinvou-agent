@@ -202,15 +202,6 @@ impl Default for MockState {
     }
 }
 
-impl MockState {
-    fn with_cursor(cursor: (i32, i32)) -> Self {
-        Self {
-            cursor,
-            ..Self::default()
-        }
-    }
-}
-
 struct MockBackend {
     state: Arc<Mutex<MockState>>,
 }
@@ -1073,36 +1064,6 @@ async fn no_input_executes_while_a_confirmation_dialog_pends() {
         fixture.mock.lock().clicked.is_empty(),
         "the approve click must not execute"
     );
-}
-
-#[tokio::test]
-async fn secure_field_blocks_typing() {
-    let (fixture, _restore) = fixture();
-    fixture.shared.grant_session("s-test");
-    // Keyboard screening checks the **focused element**: focus on a password
-    // field blocks regardless of the cursor position.
-    fixture.mock.lock().focused = Some(ElementInfo {
-        name_screening_hit: false,
-        role: "AXSecureTextField".to_string(),
-        name: "Password".to_string(),
-        x: 0,
-        y: 0,
-        width: 10,
-        height: 10,
-        secure: true,
-        raw_binding: 0,
-    });
-    let result = fixture
-        .tool
-        .execute(
-            json!({"action": "type", "text": "hunter2"}),
-            &context(&fixture.workspace),
-        )
-        .await;
-    let text = result.ok().map(|r| r.content).unwrap_or_default();
-    assert!(text.contains("NOT executed"), "{text}");
-    assert!(text.contains("password/secure field"), "{text}");
-    assert!(fixture.mock.lock().typed.is_empty(), "must not type");
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,17 @@
+{
+  "revision": "V2.4.5-review-r1",
+  "scope": "Current review guidance sources, separate from the historical measured V2.4.5 manifest. No live-model scores are assigned to this revision.",
+  "sources": {
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md": "f21e20fa0a806827b4b025a9ffa8246bd6866a7e5b048b0ba47d74b22c72feb4",
+    "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md": "90dc22115d06c03a041748acf1bf298b9a49627dbe1534e6fec454fa975d2dcf",
+    "pinvou3-app/src-tauri/src/features/assistant/engine.rs": "1736e2c92807690b30de4867e430c7baa1bd4b871093482e0d8482bb97c8ac24",
+    "pinvou3-app/src-tauri/src/features/assistant/session_policy.rs": "1d1a427807b48b2f18d38a71069e5805437ebd84f95994d9f88f28413a3e2f66",
+    "pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs": "32e04572c5334d0377f581efbbea310cb1529f8289f1f1fe5b3368941196b7f2",
+    "CodeWhale/crates/tui/src/core/engine.rs": "4ae0258e9c015cd14b173120b7c244915e61b203b520503dfc3ef094800e99cd",
+    "CodeWhale/crates/tui/src/core/engine/tool_catalog.rs": "3b84db5f0bf064a2a6393f5d895592dad599fb17c4a7ab1fe1aadf444c26d4ae",
+    "CodeWhale/crates/tui/src/skills/mod.rs": "355da55f721ae48dda2138f33c20538a8e1076f0c596949657495c24f1293b4d",
+    "CodeWhale/crates/tui/src/tools/subagent/mod.rs": "29509cc1cfa9c9d3b8cf4391ee5609fb52d64c34752a73f3de98a33d7c5ef60c",
+    "CodeWhale/crates/tui/src/tools/mcp_registry.rs": "b74cfa804ded47be445887e80cde6f2a23bf818f6e396bbf85f07bb6398f1083",
+    "CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md": "8086cf5e2169672f7aa06767a24af3f653b13b029417fe19df385b9728b67e69"
+  }
+}

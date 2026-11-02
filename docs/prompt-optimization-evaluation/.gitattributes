@@ -1,0 +1,4 @@
+# PDF streams must remain byte-identical, including their xref offsets.
+*.pdf binary
+figures/*.svg linguist-generated -diff
+figures/*.png -diff

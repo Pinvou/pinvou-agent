@@ -41,11 +41,8 @@ assert.equal(
 // 永不渲染、卡面也不消费覆盖值（后端 bundle_readiness 已下发，前端断路）。
 // 批次来源必须是本次刚拉回的 list（stale-closure 陷阱：闭包里的 toolBackend
 // state 是渲染快照，首挂载/刚上传后为空 → 上传 MCP 卡漏批直到下次无关刷新）。
-assert.match(
-  toolStoreSource,
-  /customToolIds/,
-  'uploaded MCP/combo ids must join the readiness batch (customToolIds)',
-);
+// (the generic customToolIds substring pin is implied by the exact
+// declaration pin below, so it is not duplicated)
 assert.match(
   toolStoreSource,
   /const customToolIds = \(Array\.isArray\(list\) \? list : \[\]\)/,
@@ -95,7 +92,7 @@ assert.match(
   /const err = await onConfirm\(\{ name, description: desc \}\);/,
   'dialog confirm must surface the save error inline (keep dialog open, inputs retained)',
 );
-// notify 必须钉在保存流程内（全文件共有 18 处 notifyComposerToolsChanged，
+// notify 必须钉在保存流程内（全文件多处 notifyComposerToolsChanged，
 // 泛匹配不构成「保存后通知」的契约）：从 update 调用起向后取一个窗口断言。
 {
   const idx = toolStoreSource.indexOf("invokeTauri('update_bundle_display_meta'");

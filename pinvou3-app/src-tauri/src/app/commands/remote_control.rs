@@ -16,9 +16,7 @@ use crate::features::codex_acp::{
     project_acp_permission_request_for_web, project_acp_value_for_web,
 };
 use crate::features::remote_control::{MAX_TRANSFER_CHUNK_BYTES, file_access, manager};
-use crate::features::remote_control::{
-    RelaySettingsInfo, RemoteControlManager, WebAccessInfo, WebAccessStatus,
-};
+use crate::features::remote_control::{RemoteControlManager, WebAccessInfo, WebAccessStatus};
 use crate::features::sessions::SessionStore;
 use crate::platform::prefs::UserPrefs;
 
@@ -210,13 +208,6 @@ pub fn web_access_rotate(
     manager: State<'_, RemoteControlManager>,
 ) -> Result<WebAccessInfo, String> {
     manager.refresh()
-}
-
-/// 桌面专属：查询自定义 Relay 地址。不进 Web 命令白名单——Relay 指向
-/// 哪台服务器只能由桌面端决定。
-#[tauri::command]
-pub fn web_access_relay_settings(manager: State<'_, RemoteControlManager>) -> RelaySettingsInfo {
-    manager.relay_settings()
 }
 
 /// Desktop-only readiness handshake. It is intentionally absent from the Web

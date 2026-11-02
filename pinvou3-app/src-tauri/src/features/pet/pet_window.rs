@@ -664,8 +664,9 @@ mod tests {
         assert_eq!(legacy.position_space, None);
         assert!(!legacy.activity_visible);
         assert_eq!(legacy.vertical_alignment, PetVerticalAlignment::Bottom);
-        // 空文件/缺字段 → 全默认；「默认 scale 即最小档」的等价断言在
-        // first_launch_defaults_to_minimum_scale(经 geometry 最小窗口尺寸钉住)。
+        // 空文件/缺字段 → 全默认；「默认 scale 即最小档」由 geometry 的
+        // pet_window_size_keeps_activity_cards_readable_at_every_pet_scale
+        // 经 default_scale() 首参钉住。
         let empty: PetWindowState = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, PetWindowState::default());
     }
@@ -722,21 +723,6 @@ mod tests {
         assert_eq!(state.take().unwrap(), Some(first));
         assert_eq!(state.take().unwrap(), Some(second));
         assert_eq!(state.take().unwrap(), None);
-    }
-
-    #[test]
-    fn first_launch_defaults_to_minimum_scale() {
-        let state = PetWindowState::default();
-        assert_eq!(state.scale, default_scale());
-
-        let deserialized: PetWindowState = serde_json::from_str("{}").unwrap();
-        assert_eq!(deserialized.scale, default_scale());
-        // 最小尺寸下的窗口大小由 geometry 子模块覆盖测试(见
-        // pet_window_size_keeps_activity_cards_readable_at_every_pet_scale)。
-        assert_eq!(
-            super::super::geometry::pet_window_logical_size(state.scale, false, None),
-            (144.0, 165.0)
-        );
     }
 
     /// 位置文件路径必须落在 ~/.pinvou3/ 下(跟随 PINVOU3_HOME 重定位)。

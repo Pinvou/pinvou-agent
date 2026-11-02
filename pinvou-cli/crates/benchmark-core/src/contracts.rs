@@ -440,18 +440,10 @@ impl VerifiedDataset {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct TaskSelection {
-    task_ids: Vec<String>,
-}
+pub struct TaskSelection;
 impl TaskSelection {
     pub fn all() -> Self {
-        Self::default()
-    }
-    pub fn from_task_ids(task_ids: Vec<String>) -> Self {
-        Self { task_ids }
-    }
-    pub fn task_ids(&self) -> &[String] {
-        &self.task_ids
+        Self
     }
 }
 

@@ -2571,23 +2571,10 @@ mod tests {
         assert!(map_enigo_key(Key::Function(0)).is_err());
     }
 
-    #[test]
-    fn sanitize_name_strips_quotes_and_truncates() {
-        // Shared helper order (map → truncate → trim): quotes straightened,
-        // control characters folded to space, result trimmed.
-        assert_eq!(
-            sanitize_name("say \"hi\"\nnow", MAX_NAME_CHARS),
-            "say 'hi' now"
-        );
-        // Tab and C0 controls fold to space (the old local copy kept them)
-        // and the result is trimmed.
-        assert_eq!(sanitize_name("a\tb\u{1}c ", MAX_NAME_CHARS), "a b c");
-        let long = "x".repeat(MAX_NAME_CHARS + 20);
-        assert_eq!(
-            sanitize_name(&long, MAX_NAME_CHARS).chars().count(),
-            MAX_NAME_CHARS
-        );
-    }
+    // The shared sanitize_name contract (quote straightening, control folding,
+    // trim, truncation) is pinned by the sibling helpers.rs's sanitize_name
+    // tests; linux.rs consumes the same helper in production, so a local
+    // duplicate would pin nothing extra.
 
     #[test]
     fn x11_type_runs_split_on_newline_and_keep_trailing_segment() {
@@ -3722,8 +3709,8 @@ mod x11_live_tests {
             |keysym, pressed| {
                 assert!(!pressed, "release loop must only send releases");
                 let n = calls_for_closure.fetch_add(1, Ordering::SeqCst);
-                // Events, in order: 0xff48 (H, release fails once), retry
-                // succeeds, then 0xff1b (Esc, succeeds).
+                // Events, in order: 0xff48 (arbitrary fixture keysym, release
+                // fails once), retry succeeds, then 0xff1b (Esc, succeeds).
                 match n {
                     0 => {
                         assert_eq!(keysym, 0xff48);
