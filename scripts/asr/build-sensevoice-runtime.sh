@@ -5,14 +5,17 @@
 # rejects symbols above the 22.04 (glibc 2.35) baseline; release CI builds
 # on ubuntu-22.04 runners.
 #
-# --arch loongarch64 (deepin 23/25 + UOS V25, glibc 2.38 baseline) is an
-# env-driven cross build: no host==requested check, CMake driven by CC/CXX
-# pointing at loongarch64 cross compilers or by CMAKE_TOOLCHAIN_FILE, and
-# STRIP naming the target strip (default loongarch64-linux-gnu-strip) since
-# the host strip cannot handle foreign-arch ELFs. The engine links
+# --arch aarch64 / loongarch64 support env-driven cross builds (since
+# 2026-11 the release arm64 leg cross-compiles aarch64 on an x86_64 runner;
+# loongarch64 has always been cross-built): no host==requested check, CMake
+# driven by CC/CXX pointing at the target cross compilers or (loongarch64
+# sysroot flow) by CMAKE_TOOLCHAIN_FILE, and STRIP naming the target strip
+# (default aarch64-linux-gnu-strip / loongarch64-unknown-linux-gnu-strip)
+# since the host strip cannot handle foreign-arch ELFs. The engine links
 # libstdc++/libgcc statically (the deb's only C++ artifact, so no
 # GLIBCXX_/CXXABI_ requirements) and the result is validated against the
-# loongarch64 policy (GLIBC_ <= 2.38) on the build host.
+# target's policy (arm64 GLIBC_ <= 2.35 / loongarch64 <= 2.38) on the
+# build host.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -58,10 +61,11 @@ case "$requested_arch" in
   # loongarch64 — the workflow provides the Debian cross compilers).
   aarch64)
     target_arch="aarch64"; policy_arch="arm64"
-    if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then cross_mode=0; else cross_mode=1; fi
+    if [ "$host_arch" = "aarch64" ]; then cross_mode=0; else cross_mode=1; fi
     ;;
-  # loongarch64: release CI cross-compiles on an x86_64/arm64 runner, so the
-  # host==requested assertion below is skipped and the cross toolchain comes
+  # loongarch64: release CI cross-compiles it on an x86_64 runner (same host
+  # as the aarch64 leg since 2026-11), so the host==requested assertion below
+  # is skipped and the cross toolchain comes
   # from the environment instead (see the dependency pre-check and cmake
   # invocation).
   loongarch64) target_arch="loongarch64"; policy_arch="loongarch64"; cross_mode=1 ;;
@@ -126,11 +130,11 @@ if [ "$cross_mode" -eq 1 ]; then
     echo "$requested_arch cross build requires CC/CXX ($requested_arch cross compilers) or CMAKE_TOOLCHAIN_FILE in the environment" >&2
     exit 1
   fi
-  # A native loongarch64 host uses its own strip; a real cross build needs
-  # the target's strip (host strip cannot handle foreign-arch ELFs).
-  # Default spelling matches the pinned cross toolchain's binutils
-  # (loongarch64-unknown-linux-gnu-*); the Debian cross-binutils spelling
-  # keeps working via STRIP override.
+  # A native same-arch host uses its own strip; a real cross build needs the
+  # target's strip (host strip cannot handle foreign-arch ELFs). Defaults:
+  # aarch64 uses the Debian cross-binutils spelling shipped by the workflow's
+  # apt packages; loongarch64 matches the pinned cross toolchain's binutils
+  # (loongarch64-unknown-linux-gnu-*). STRIP override keeps working.
   if [ "$requested_arch" = "$host_arch" ]; then
     strip_bin="${STRIP:-strip}"
   elif [ "$requested_arch" = "aarch64" ]; then
@@ -183,6 +187,14 @@ mv "$source_tmp" "$source_dir"
 # CMAKE_SYSTEM_NAME=Linux) explicitly; a caller-provided toolchain file is
 # trusted to set both itself. There is no separate GGML_LOONGARCH64-style
 # toggle to disable.
+#
+# aarch64 (cross mode, 2026-11): the same CMAKE_SYSTEM_PROCESSOR pass-through
+# is equally load-bearing — ggml derives GGML_SYSTEM_ARCH=ARM from
+# "aarch64", selecting the arm quants/repack CPU backends with empty
+# ARCH_FLAGS (armv8-a baseline under GGML_NATIVE=OFF). Left at the host
+# value (x86_64) it would build the x86 backend with AVX2/FMA flags into an
+# aarch64 binary; verified in CI (2026-11-02 cross run: ARM feature probe,
+# arm quants/repack sources, policy PASS).
 cmake_args=(
   -S "$source_dir" -B "$build_dir"
   -DCMAKE_BUILD_TYPE=Release
@@ -208,7 +220,10 @@ if [ "$cross_mode" -eq 1 ]; then
   # dirname is the sysroot.
   if [ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]; then
     sysroot_dir="$(dirname "$CMAKE_TOOLCHAIN_FILE")"
-    multiarch_lib="$sysroot_dir/usr/lib/loongarch64-linux-gnu"
+    # Derive the multiarch dir from the target (<triple>-linux-gnu holds for
+    # every architecture this script cross-builds); hardcoding loongarch64
+    # here would misdiagnose a genuine aarch64 sysroot.
+    multiarch_lib="$sysroot_dir/usr/lib/${target_arch}-linux-gnu"
     # The -L below derives the sysroot root from the toolchain file's
     # dirname — an implicit contract with ci-loongarch64-sysroot.sh, which
     # writes the file at the sysroot root. Guard it: a relocated copy of
