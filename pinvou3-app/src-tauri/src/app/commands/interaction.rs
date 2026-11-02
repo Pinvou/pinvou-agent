@@ -44,12 +44,14 @@ pub async fn get_mode_state(
 }
 
 /// code 会话权限模式的全局偏好：新建 code 会话的默认 mode（`last_mode`，
-/// None = 首次使用 → Plan）与 yolo 一次性确认标志。前端 code 页启动/进草稿时拉取。
+/// None = 首次使用 → Plan；显式 Auto 经 `last_mode_auto` 伴随旗持久化，此处
+/// 折回 `last_mode`，见 `code_permission_prefs_view`）与 yolo 一次性确认
+/// 标志。前端 code 页启动/进草稿时拉取。
 #[tauri::command]
 pub async fn get_code_permission_prefs(
     store: State<'_, SessionStore>,
 ) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
-    Ok(store.code_permission_prefs())
+    Ok(store.code_permission_prefs_view())
 }
 
 /// 用户在 code 页确认卡【确认】切 yolo：全局记住，之后任何会话 Plan↔yolo

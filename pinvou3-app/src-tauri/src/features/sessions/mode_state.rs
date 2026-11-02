@@ -1214,6 +1214,23 @@ impl SessionStore {
         *self.code_permission.read()
     }
 
+    /// 命令线（get_code_permission_prefs / confirm_code_yolo /
+    /// set_ask_on_guardrail_default）回给前端的折叠视图，与
+    /// [`Self::mode_defaults`] 同一折叠：显式 Auto 选择以 `last_mode_auto`
+    /// 伴随旗持久化、legacy 字段永不携带 "auto"，但视图把旗折回
+    /// `last_mode = Some(Auto)`——codex 草稿芯片按 `last_mode` 解析全局默认
+    /// （`nativeModeFallback`），只读 legacy 字段会把重启后的显式 Auto 显示
+    /// 成 Plan，与 `resolved_default_mode` 的实际行为背离（display-vs-behavior
+    /// 分叉，且分叉方向是更宽的 Auto）。原始镜像仍走
+    /// [`Self::code_permission_prefs`]（companion-flag 磁盘形状测试依赖）。
+    pub fn code_permission_prefs_view(&self) -> CodePermissionPrefs {
+        let mut prefs = self.code_permission_prefs();
+        if prefs.last_mode_auto {
+            prefs.last_mode = Some(SerializableMode::Auto);
+        }
+        prefs
+    }
+
     /// View of the per-lane global default modes (in-memory mirror; the disk
     /// truth for work lives in settings.json `mode_defaults.work[_auto]`, for
     /// code in `code_permission.last_mode[_auto]`). An explicit Auto choice
@@ -1434,9 +1451,15 @@ impl SessionStore {
         let Ok(content) = std::fs::read_to_string(&file) else {
             return;
         };
+        // 文件缺失是常态（无开关翻写的会话家），静默；损坏/被截断则响亮记
+        // 日志——与 load_session_mode_states 的读侧纪律一致，静默跳过会让
+        // 「重启后开关全回默认」无从排查。
         let Ok(overrides) =
             serde_json::from_str::<std::collections::HashMap<String, bool>>(&content)
         else {
+            eprintln!(
+                "[sessions] _ask_on_guardrail.json unreadable, skipping override merge: {file:?}"
+            );
             return;
         };
         {
@@ -1457,7 +1480,7 @@ impl SessionStore {
             Ok(())
         })?;
         self.code_permission.write().yolo_confirmed = true;
-        Ok(self.code_permission_prefs())
+        Ok(self.code_permission_prefs_view())
     }
 
     /// Tri-mode safety: set the global ask-on-guardrail default (new
@@ -1477,6 +1500,6 @@ impl SessionStore {
             Ok(())
         })?;
         self.code_permission.write().ask_on_guardrail_default = enabled;
-        Ok(self.code_permission_prefs())
+        Ok(self.code_permission_prefs_view())
     }
 }

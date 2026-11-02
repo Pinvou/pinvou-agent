@@ -4897,6 +4897,29 @@ fn code_session_default_follows_code_lane_default() {
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
 }
 
+/// 命令线折叠视图：显式 Auto 全局默认以 `last_mode_auto` 伴随旗持久化（
+/// legacy 字段保持 None，磁盘形状另有 pin），`code_permission_prefs_view`
+/// 把旗折回 `last_mode = Some(Auto)`——codex 草稿芯片按 `last_mode` 解析，
+/// 不折叠会把重启后的显式 Auto 显示成 Plan（display 与
+/// `resolved_default_mode` 行为背离）。legacy 写入原样透传。
+#[test]
+fn code_permission_prefs_view_folds_auto_companion_flag() {
+    let (store, _g) = isolated_store();
+    store.set_mode_default(ModeLane::Code, SerializableMode::Auto);
+    // 原始镜像：legacy 字段永不携带 "auto"（companion-flag 磁盘形状）。
+    assert!(store.code_permission_prefs().last_mode.is_none());
+    assert!(store.code_permission_prefs().last_mode_auto);
+    // 折叠视图：Auto 回到 last_mode，旗与显示词表并存。
+    let view = store.code_permission_prefs_view();
+    assert_eq!(view.last_mode, Some(SerializableMode::Auto));
+    assert!(view.last_mode_auto);
+    // legacy 写入（Plan/Yolo）原样透传，旗随之清除。
+    store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
+    let view = store.code_permission_prefs_view();
+    assert_eq!(view.last_mode, Some(SerializableMode::Plan));
+    assert!(!view.last_mode_auto);
+}
+
 /// Tri-mode (M2) end-to-end: an explicit Auto lane default persists via the
 /// dedicated `*_auto` companion flags — settings.json never carries the
 /// `"auto"` literal, so a pre-tri-mode binary keeps parsing the whole file
