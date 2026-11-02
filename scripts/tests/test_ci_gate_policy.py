@@ -3934,7 +3934,12 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
         x64 = next(b for b in blocks if b.strip().startswith("build-linux-x64:"))
         arm64 = next(b for b in blocks if b.strip().startswith("build-linux-arm64:"))
         self.assertIn("--aggressive", x64)
-        self.assertNotIn("--aggressive", arm64)
+        # Absence pin on comment-stripped text (same polarity as the floor
+        # suite's absence pins): the arm64 job deliberately stays on the base
+        # tier — its cross toolchain and multiarch sysroot land in apt-managed
+        # system dirs, so the aggressive tier's SDK sweep buys little. A
+        # policy comment explaining that choice must not false-red the pin.
+        self.assertNotIn("--aggressive", _without_yaml_comments(arm64))
 
     def test_all_linux_jobs_pin_the_release_runner_image(self):
         # Image versions never drift (single-image convention): every
