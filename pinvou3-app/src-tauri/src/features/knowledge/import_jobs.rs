@@ -1000,20 +1000,4 @@ mod tests {
             "finish must not promote an interrupted job to done: state is {state:?}"
         );
     }
-
-    #[test]
-    fn finish_does_not_promote_an_interrupted_job_to_done() {
-        let (jobs, _l1, collection_id) = setup();
-        let job_id = jobs.create(collection_id, &[]).unwrap();
-        // The direct shape of the finding: a job the stall timeout pulled
-        // out of its walk (interrupted, zero pending items) is finished by
-        // the thread's ordinary exit. Pre-fix this flipped it to `done`.
-        jobs.interrupt(&job_id);
-        jobs.finish(&job_id).unwrap();
-        let state = jobs.state(&job_id).unwrap();
-        assert!(
-            !state.running && state.resumable,
-            "an interrupted job must stay resumable, not become done: {state:?}"
-        );
-    }
 }

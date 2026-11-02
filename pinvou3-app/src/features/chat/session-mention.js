@@ -346,17 +346,6 @@ export function materializationCarry(key) {
 }
 
 /**
- * Whether the key's live entry is backed by a bridge materialization report
- * (round-28 asto MAJOR): a failure/throw settle that resolves through an
- * UNREPORTED entry is consuming the scope effect's stale navigation record —
- * the draft is still alive and the restored arm's protection applies.
- */
-export function isReportedMaterialization(key) {
-  const entry = materializedDraftKeys.get(key);
-  return !entry || !!entry.reported;
-}
-
-/**
  * Undo a supersession record (round-16 MAJOR-2). The scope effect records
  * the mapping provisionally on any draft:→session: transition while a send
  * from that draft is in flight; the bridge, though, ABORTS the

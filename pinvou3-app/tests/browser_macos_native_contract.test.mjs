@@ -3,7 +3,6 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createPinvouBrowserCoreCatalog } from '../src-tauri/resources/common/bundle/mcp-servers/browser-core-protocol.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (...segments) => readFileSync(path.join(root, ...segments), 'utf8');
@@ -206,12 +205,9 @@ test('macOS native input stays app-scoped with no desktop-wide injection', () =>
     /CGEventPost|postEvent|mouseLocation\(|addGlobalMonitor|dispatchEvent|\.click\(\)|new MouseEvent/,
   );
   assert.match(macos, /dialog-backend-unavailable-on-wkwebview/);
-  const darwinCatalog = createPinvouBrowserCoreCatalog({ includeDialog: false });
-  assert.equal(
-    darwinCatalog.toolsListResult.tools.some((tool) => tool.name === 'handle_dialog'),
-    false,
-    'the macOS BrowserCore catalog must not advertise its unsupported dialog tool',
-  );
+  // The darwin catalog filter itself is pinned by browser_core_protocol.test.mjs
+  // ("BrowserCore catalog can hide platform-specific tools explicitly") on the
+  // same factory with the same includeDialog:false input.
   assert.match(
     browserWrapper,
     /includeDialog: process\.platform !== 'darwin'/,

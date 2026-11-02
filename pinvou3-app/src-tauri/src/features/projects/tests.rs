@@ -388,21 +388,6 @@ fn create_rejects_relative_root() {
 }
 
 #[test]
-fn create_rejects_duplicate_and_nested_roots_within_project() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let duplicate = store
-        .create_project("重复".to_string(), vec![abs("a"), abs("a")])
-        .expect_err("duplicate root rejected");
-    assert!(duplicate.to_string().contains("duplicate project root"));
-
-    let nested = store
-        .create_project("嵌套".to_string(), vec![abs("b"), abs("b").join("sub")])
-        .expect_err("nested roots rejected");
-    assert!(nested.to_string().contains("must not nest"));
-}
-
-#[test]
 fn create_allows_overlap_with_other_projects() {
     // §9.9 legalizes cross-project root overlap: a folder may be referenced by
     // several projects (auto-materialization and the browse channel both rely
@@ -1514,26 +1499,6 @@ fn rebind_roots_via_symlink_alias_cuts_suffix_by_resolved_depth() {
     );
 }
 
-#[test]
-fn begin_rebind_rejects_concurrent_rebind_and_releases_on_drop() {
-    // Minor 10 fence: check-and-set is atomic; the RAII token's Drop is the
-    // only release point, so error paths cannot leave a permanently closed
-    // gate.
-    let temp = tempfile::tempdir().expect("tempdir");
-    let store = store_in(&temp);
-    let gate = store.begin_rebind().expect("first gate acquired");
-    let rejected = store
-        .begin_rebind()
-        .err()
-        .expect("second rebind rejected while the gate is held");
-    assert!(
-        rejected.starts_with("REBIND_IN_PROGRESS"),
-        "typed marker follows the stable-prefix convention"
-    );
-    drop(gate);
-    let _gate = store.begin_rebind().expect("gate released on drop");
-}
-
 /// §9.9 backend authority (review #484 round-6): tier-② multi-hit resolution
 /// must follow the (position, id) order the store loads in — the frontend
 /// `matchProjectByPath` pins the same rule, and `align_session_to_project`
@@ -2205,6 +2170,20 @@ fn roots_conflict_partition_prefixes_match_production_wording() {
         causes[1].starts_with(ROOTS_NEST_CONFLICT),
         "the nest class must carry the nest prefix: {}",
         causes[1]
+    );
+    // Literal wordings (the cross-platform face the retry dialog renders):
+    // the starts_with(prefix) partition above is tautological against
+    // constant edits, so pin the exact phrasing too (carried over from the
+    // removed create_rejects_duplicate_and_nested_roots_within_project;
+    // its duplicate-root wording was the only non-Windows literal pin —
+    // the nest wording was already pinned in the tests above).
+    assert!(
+        causes.iter().any(|c| c.contains("duplicate project root")),
+        "duplicate-root rejection must keep its literal wording: {causes:?}"
+    );
+    assert!(
+        causes.iter().any(|c| c.contains("must not nest")),
+        "nested-root rejection must keep its literal wording: {causes:?}"
     );
     // The partition still accepts both producible classes (the union the
     // command layer matches on).

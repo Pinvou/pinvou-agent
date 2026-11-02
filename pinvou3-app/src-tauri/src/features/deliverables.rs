@@ -430,13 +430,17 @@ mod capped_record_read_tests {
 
 #[cfg(test)]
 pub(crate) mod gui_index_contract_tests {
-    use super::{DeliverableIndex, MAX_LIST_SCAN_BYTES, list_deliverable_index_impl};
+    // The skipped-disclosure GUI contract itself is asserted (over the same
+    // seed_index_fixture shape) by the v2 command-shell tests in
+    // app::commands::protocol_tests; this module now keeps only the fixture
+    // helpers those shell tests consume (the deliverables-side GUI index
+    // test was removed as contained by them).
+    use super::MAX_LIST_SCAN_BYTES;
     use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard};
 
     /// Seeds one scannable session (one real deliverable on disk) plus one
-    /// over-cap record under `<home>/sessions`, the fixture shape shared by
-    /// the core contract below and the command-shell contract in
-    /// app::commands::protocol_tests.
+    /// over-cap record under `<home>/sessions`, the fixture shape for the
+    /// command-shell contract in app::commands::protocol_tests.
     pub(crate) fn seed_index_fixture(home: &std::path::Path) {
         let sessions = home.join("sessions");
         std::fs::create_dir_all(&sessions).expect("seed sessions root");
@@ -480,30 +484,5 @@ pub(crate) mod gui_index_contract_tests {
         unsafe { std::env::set_var("PINVOU3_HOME", home.path()) };
         seed_index_fixture(home.path());
         (lock, home, host)
-    }
-
-    /// The GUI-facing contract (round-4 review): the command shell must
-    /// forward the scan's `skipped` disclosure, not just `rows`. A session
-    /// record past the 32 MiB scan cap has real deliverables on disk that
-    /// the panel will not list — if the shell dropped `skipped`, that
-    /// partial result rendered as a successful (possibly empty) index with
-    /// no notice, indistinguishable from a clean bill. Mirrors the CLI
-    /// contract's `artifacts_list_reports_unscannable_records_in_skipped_sessions`.
-    #[test]
-    fn gui_index_forwards_the_skipped_disclosure() {
-        let (_lock, _home, _host) = run_in_scratch_home();
-
-        let index: DeliverableIndex = list_deliverable_index_impl().expect("gui index");
-        assert_eq!(index.rows.len(), 1, "the scannable session still lists");
-        assert_eq!(index.rows[0].session_id, "s-ok");
-        assert!(
-            index.rows.iter().all(|row| row.session_id != "s-huge"),
-            "the over-cap session contributes no rows"
-        );
-        assert_eq!(
-            index.skipped,
-            vec!["s-huge".to_string()],
-            "the GUI shell must forward the skip disclosure, not drop it"
-        );
     }
 }

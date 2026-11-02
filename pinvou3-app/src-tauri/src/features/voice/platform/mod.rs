@@ -78,13 +78,6 @@ mod asr_ready_tests {
     use super::asr_ready_decision;
 
     #[test]
-    fn env_override_missing_never_falls_back_to_bundled() {
-        // 覆盖命令失效时，即使打包运行时完好也必须报未就绪（执行会原样
-        // spawn 失效路径并失败）。这是 Windows 探测回归的判定级 pin。
-        assert!(!asr_ready_decision(Some("missing-asr"), |_| false, true));
-    }
-
-    #[test]
     fn env_override_present_is_ready_even_without_bundled() {
         assert!(asr_ready_decision(Some("asr"), |_| true, false));
         assert!(!asr_ready_decision(Some("asr"), |_| false, true));

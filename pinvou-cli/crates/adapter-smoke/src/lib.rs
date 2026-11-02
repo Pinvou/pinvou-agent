@@ -198,16 +198,10 @@ impl BenchmarkAdapter for SmokeAdapter {
     fn plan(
         &self,
         _dataset: &VerifiedDataset,
-        selection: &TaskSelection,
+        _selection: &TaskSelection,
     ) -> BenchmarkResult<BenchmarkPlan> {
-        let selected = selection
-            .task_ids()
-            .iter()
-            .map(String::as_str)
-            .collect::<HashSet<_>>();
         let tasks = smoke_cases()
             .into_iter()
-            .filter(|case| selected.is_empty() || selected.contains(case.id()))
             .map(|case| case.to_benchmark_task())
             .collect();
         Ok(BenchmarkPlan::new(tasks))

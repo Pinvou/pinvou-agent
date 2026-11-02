@@ -82,7 +82,6 @@ function reduceScopedDesignChanges(scopes, scopeKey, action) {
 export {
   createDesignChange,
   createDesignChangeScopeKey,
-  reduceDesignChanges,
   reduceScopedDesignChanges,
   sameDesignChange,
   uniqueDesignChanges,

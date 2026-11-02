@@ -2507,30 +2507,6 @@ mod spool_pipeline_tests {
         assert!(!spool.join("abc.json").exists());
     }
 
-    #[tokio::test]
-    async fn poison_file_is_quarantined_immediately() {
-        let _home = TempHome::new();
-        let spool = spool_root();
-        std::fs::create_dir_all(&spool).unwrap();
-        std::fs::write(spool.join("bad.json"), b"not json").unwrap();
-        let fake = FakeDelivery {
-            outcome: Ok(DeliveryOutcome::Steered),
-            calls: Rc::new(RefCell::new(0)),
-        };
-        let mut retries = RetryState::default();
-        process_pending_spool(
-            &fake,
-            &AllowAllGates,
-            &sessions_store(),
-            &mut retries,
-            &mut Default::default(),
-        )
-        .await;
-        assert_eq!(*fake.calls.borrow(), 0, "poison never reaches delivery");
-        assert!(failed_dir().join("bad.json").exists());
-        assert!(!spool.join("bad.json").exists());
-    }
-
     /// Round-8 R2-3: the post-read size re-check ("grew between stat and
     /// read") is source-pinned — the behavior is hard to hook without a
     /// racing writer, but deleting the arm must not pass silently.

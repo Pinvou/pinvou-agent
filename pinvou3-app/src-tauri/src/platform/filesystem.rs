@@ -3285,6 +3285,11 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    // The 1175/1176/1177 family converges through one code path
+    // (converge_failed_windows_replace never reads the raw code), so one
+    // representative error code pins the roll-back layout; there is no
+    // per-code branch left to catch.
+
     #[cfg(windows)]
     #[test]
     fn windows_1175_retains_the_two_official_original_names() {
@@ -3295,26 +3300,6 @@ pub(crate) mod tests {
         let error =
             super::replace_file_atomically_with(&replacement, &target, &backup, |_, _, _| {
                 Err(std::io::Error::from_raw_os_error(1175))
-            })
-            .unwrap_err();
-
-        assert_eq!(error.state(), super::ReplaceState::RolledBack);
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old");
-        assert_eq!(std::fs::read_to_string(&replacement).unwrap(), "new");
-        assert!(!backup.exists());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_1176_with_backup_name_retains_the_two_official_original_names() {
-        let (root, target, replacement, backup) = windows_replace_fixture("1176");
-        std::fs::write(&target, "old").unwrap();
-        std::fs::write(&replacement, "new").unwrap();
-
-        let error =
-            super::replace_file_atomically_with(&replacement, &target, &backup, |_, _, _| {
-                Err(std::io::Error::from_raw_os_error(1176))
             })
             .unwrap_err();
 

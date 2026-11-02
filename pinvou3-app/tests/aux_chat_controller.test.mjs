@@ -1306,22 +1306,10 @@ test('a rejection settling after a task switch never banners the new task (m60)'
   assert.equal(panel.view.auxId, 'aux-switch-b');
 });
 
-test('an ack settling after a task switch never touches the new task\'s composer (m55)', async () => {
-  const h = createHarness();
-  const panel = await mountBoundPanel(h, 'cross-a');
-  panel.setDraftText('shared text');
-  void panel.send();
-  panel.bind('cross-b');
-  await h.flush();
-  panel.setDraftText('shared text');
-  h.auxChat.calls.send[0].resolve({});
-  await h.flush();
-  assert.equal(panel.view.draft, 'shared text', 'the old task\'s ack must not clear the new task\'s composer');
-  // The old task's own store entry WAS consumed: a round trip restores nothing.
-  panel.bind('cross-a');
-  await h.flush();
-  assert.equal(panel.view.draft, '', 'the delivered draft left the old task\'s store');
-});
+// The m55 ack-after-switch assertions (old ack must not clear the new task's
+// composer; the delivered draft leaves the old store) are exercised verbatim
+// by the m55 quotes leg above, whose setup is a strict superset — the
+// standalone m55 test added no kill set and was removed in the dead sweep.
 
 test('ack consumption: a clean ack purges the store so a task round trip restores an empty composer (m10/m53)', async () => {
   const h = createHarness();
