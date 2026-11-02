@@ -529,9 +529,12 @@ for (const [name, source] of [
       // 组所有权夹具(评审 P1):吞 TERM 的 wrapper 派生 native 孙进程时,只杀
       // 直接子进程会让孙进程活过超时(持凭证进程超出冒烟边界)。wrapper 与孙
       // 进程都必须随探测收场——删 set -m(组启动)或把组 kill 退回单进程 kill,
-      // 孙进程存活此处即红。孙进程自带 trap '' TERM:固定版必须靠组 KILL 升级
-      // 才收得掉,夹具连 KILL 升级的组送达一并钉住。(严格 POSIX 语义;Windows
-      // 的 MSYS2 kill 语义不同,本块在 win32 不执行。)
+      // 孙进程存活此处即红。wrapper 与孙进程都自带 trap '' TERM:组 TERM 打不穿
+      // 两者,固定版必须靠组 KILL 升级才收得掉,夹具连 KILL 升级的组送达一并钉住
+      // (wrapper 夹具曾漏掉 trap——它直接死在组 TERM 上,与这里声称模拟的
+      // 「吞 TERM wrapper」不符;coreutils timeout 分支尤其测不到升级:GNU
+      // timeout 在直接子进程死后即退出,-k 升级只覆盖 TERM 后仍存活的 leader)。
+      // (严格 POSIX 语义;Windows 的 MSYS2 kill 语义不同,本块在 win32 不执行。)
       const gpidFile = path.join(tmp, "gpid");
       const grandchild = path.join(tmp, "grandchild-cli");
       fs.writeFileSync(
@@ -540,16 +543,27 @@ for (const [name, source] of [
       );
       fs.chmodSync(grandchild, 0o755);
       const wrapper = path.join(tmp, "wrapper-cli");
-      fs.writeFileSync(wrapper, '#!/usr/bin/env bash\n"$GRANDCHILD_BIN" &\nwait\n');
+      fs.writeFileSync(
+        wrapper,
+        "#!/usr/bin/env bash\ntrap '' TERM\n\"$GRANDCHILD_BIN\" &\nwait\n",
+      );
       fs.chmodSync(wrapper, 0o755);
+      // leader 提前退场夹具(评审 P2):wrapper 不带 trap,组 TERM 上 leader 即死
+      // 而抗 TERM 孙进程尚存——父壳 wait 提前返回,升级链最容易在此被砍断:旧
+      // 形态的 kill $wpid 恰好带走还没发组 KILL 的看门狗。只跑看门狗分支:GNU
+      // timeout 的升级与监控都绑在直接子进程上,leader 死了它自己即退出,该形态
+      // 下孙进程收场本就不在其契约内(见上)。
+      const wrapperEarlyExit = path.join(tmp, "wrapper-early-exit-cli");
+      fs.writeFileSync(wrapperEarlyExit, '#!/usr/bin/env bash\n"$GRANDCHILD_BIN" &\nwait\n');
+      fs.chmodSync(wrapperEarlyExit, 0o755);
       const grandchildDead = () => {
         const gpid = fs.existsSync(gpidFile) ? fs.readFileSync(gpidFile, "utf8").trim() : "";
         if (!gpid) return false; // 尚未登记 pid:按存活处理,继续等
         return spawnSync("bash", ["-c", `kill -0 ${JSON.stringify(gpid)} 2>/dev/null`]).status !== 0;
       };
-      const runTree = (label, bin) => {
+      const runTree = (label, bin, wrapperBin = wrapper) => {
         fs.rmSync(gpidFile, { force: true });
-        const res = spawnSync("bash", ["-c", harness(wrapper, bin)], {
+        const res = spawnSync("bash", ["-c", harness(wrapperBin, bin)], {
           encoding: "utf8",
           timeout: 20000,
           killSignal: "SIGKILL",
@@ -568,6 +582,7 @@ for (const [name, source] of [
       };
       runTree(`${name} 看门狗分支 wrapper+孙进程`, "");
       if (hasTimeout) runTree(`${name} coreutils timeout 分支 wrapper+孙进程`, timeoutBin);
+      runTree(`${name} 看门狗分支 leader 提前退场后孙抗 TERM 仍被组 KILL`, "", wrapperEarlyExit);
       // stdin 契约夹具(评审 P2):探测不得继承调用方 stdin——CLI 可能吃掉管道
       // 输入或在无 TTY 提示上等输入到超时。喂一行假输入,CLI 必须见到 EOF
       // (stdin-closed)而不是把它读走;secret 出现在输出里即红。

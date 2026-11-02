@@ -165,7 +165,16 @@ dws_run() {
       kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
     local wpid=$!
     wait "$pid" 2>/dev/null; rc=$?
-    kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+    # 升级链存活(评审 P2):到点标记已落 = 看门狗已在 TERM→KILL 升级链上,
+    # 父壳此刻不得 kill 它——leader 收 TERM 即死、抗 TERM 孙进程尚存时 wait
+    # 提前返回,旧形态的 kill $wpid 恰好砍断尚未发出组 KILL 的看门狗,升级链
+    # 最后一环永远不响,持凭证孙进程活过超时。改为陪跑到看门狗发完组 KILL 自行
+    # 退出(有界:最多再等一个 KILL_GRACE);仅正常完成路径(未见标记)才取消。
+    if [ -e "$tflag" ]; then
+      wait "$wpid" 2>/dev/null
+    else
+      kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+    fi
     [ -e "$tflag" ] && rc=124
   fi
   # 超时形态归一:TERM 死(143)与 KILL 死(137)都按 124 上报。
