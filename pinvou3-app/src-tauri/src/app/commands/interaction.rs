@@ -25,9 +25,26 @@ pub async fn compact_now(
     // 落地时，引擎内存中的回退前历史会整体覆写已截断的 transcript（对话
     // 复活、工作区仍回退、undo 永久消失）。与 rewind/undo 同款执行根标志
     // 探针（roots 解析失败按未回退放行，与历史行为一致）。
+    // r42 P2-1：内存标志探针盖不住崩溃回退——进程重启后标志已清，但
+    // pending_rewind.json 仍在（P1 唯一指针）。压缩的收缩钩子作废腿若不设防
+    // 会把暂记自己的目标快照一并作废（引导重试卡死 checkpoint_missing、
+    // 降级重试被 revision 拒、undo 被活暂记拒，直到下一次发送的
+    // target-missing 臂静默清暂记——崩溃边界从此无 undo），压缩 persist 本身
+    // 还会把回退前历史整体落盘。活暂记在飞时拒绝压缩，先完成/撤销/对账。
+    // 暂记窥视失败按放行（与 roots 解析失败同向——探测腿不得比被保护操作
+    // 更脆；作废腿的 preserve 集是第二道防线）。
     if let Ok(roots) = store.session_roots(&sid) {
         if pool.is_execution_root_rewinding(&roots.execution) {
             return Err("会话绑定的项目目录正在回退/回滚，请稍后再压缩".to_string());
+        }
+        if crate::features::code_checkpoints::peek_pending_rewind(&roots.ledger)
+            .map(|pending| pending.is_some())
+            .unwrap_or(false)
+        {
+            return Err(
+                "存在未完成的回退暂记，请先完成该回退（重试同一回退、撤销，或发送一条新消息自动对账）再压缩上下文"
+                    .to_string(),
+            );
         }
     }
     pool.compact_now(&sid)

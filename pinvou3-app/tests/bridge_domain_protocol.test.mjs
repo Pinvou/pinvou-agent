@@ -507,6 +507,12 @@ for (const [domain, methods] of Object.entries(desktopBridgeApi)) {
   assert.deepEqual(Object.keys(api[domain]).sort(), methods.sort(), `${domain} API surface changed`); // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic string order is the assertion's expectation
 }
 assert.equal(api.sendMessage, undefined, 'flat compatibility facade must not return');
+// r42 minor 10: the r8 incident class - a Proxy-stub surface cannot notice a
+// dropped factory-return entry. This suite executes the REAL bridge factory,
+// so asserting the callable pins the chat-side notice landing pad the same
+// way the sessions twins are pinned by session_nav_race.
+assert.equal(typeof api.chat.addSystemItem, 'function',
+  'chat factory must export callable addSystemItem (r8 incident class / r42 minor 10)');
 assert.equal(api.getState, undefined, 'flat state facade must not return');
 
 function sourceFiles(directory) {

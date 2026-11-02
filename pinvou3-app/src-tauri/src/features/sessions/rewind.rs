@@ -150,6 +150,19 @@ pub struct TruncateToTurnOutcome {
     pub had_compaction: bool,
 }
 
+/// `restore_rewound_turns_detailed` 的返回：恢复的消息条数 + 回退保留轮数 +
+/// 恢复出的轮数（r42 M4：编排层据此登记「仅对话」哨兵，哨兵 turn =
+/// kept_turns + restored_turns = 恢复后的全量轮数）。
+#[derive(Debug, Clone)]
+pub struct RestoredRewindTurns {
+    /// 追加回 transcript 的消息条数。
+    pub messages: usize,
+    /// 回退时保留的轮数（= 恢复前 transcript 的轮数，已复核相等）。
+    pub kept_turns: u32,
+    /// 本次恢复出的用户轮数。
+    pub restored_turns: u32,
+}
+
 fn rewound_turns_path() -> PathBuf {
     crate::platform::paths::sessions_root().join(REWOUND_TURNS_FILE)
 }
@@ -199,7 +212,8 @@ fn load_rewound_turns_map_with(
         Err(parse_error) => {
             // 损坏的 sidecar 不得全局锁死 rewind/undo：改名隔离（保留现场供人工
             // 恢复）后按空 map 继续——代价是存量备份记录对该会话不再可见（undo
-            // 入口消失），胜过整个功能报错卡死。
+            // 入口消失），胜过整个功能报错卡死。隔离名走平台原语（纳秒后缀，
+            // 见 quarantine_and_continue）。
             match mode {
                 RewindLoadMode::CallerHoldsLock => quarantine_and_continue(&path, parse_error),
                 RewindLoadMode::TryLockAndRecheck => {
@@ -393,7 +407,8 @@ impl SessionStore {
     }
 
     /// 回退反悔：把最新备份记录的被截消息追加回 transcript 尾部并持久化，随后从
-    /// sidecar 删除该条记录，返回恢复的消息条数。
+    /// sidecar 删除该条记录。r42 M4 起返回详细结果（消息数 + 轮数拆分），供
+    /// 编排层登记「仅对话」哨兵。
     ///
     /// 与 `truncate_to_user_turn` 同级的显式专用路径：不经过 update_messages 的
     /// `looks_like_truncating_overwrite` 守卫入口，
@@ -406,7 +421,10 @@ impl SessionStore {
     /// 内重新校验；不满足则如实报错、不动磁盘。调用方（编排命令）应在动代码
     /// （restore checkpoint）之前先用 `resolve_rewind_undo_state` 完成同样的预检
     /// （含 revision 与绑定快照核实），把「代码已反悔、对话未反悔」的窗口压到最小。
-    pub fn restore_rewound_turns(&self, id: &str) -> Result<usize> {
+    /// r42 M4：undo 的详细返回——恢复的消息数之外，再带回「回退保留轮数」
+    /// 与「恢复出的轮数」，供编排层在恢复后登记「仅对话」哨兵（把账本计数
+    /// 立即对齐到恢复后全量口径，调和门不再隐藏全部入口）。
+    pub fn restore_rewound_turns_detailed(&self, id: &str) -> Result<RestoredRewindTurns> {
         let _mutation = self.scheduled_mutation.lock();
         if self.is_scheduled_session(id)? {
             bail!("Cannot undo rewind for scheduled-run session '{id}'");
@@ -440,6 +458,13 @@ impl SessionStore {
                 bail!("回退后对话内容已被编辑，不可反悔");
             }
         }
+        let restored_turns = record
+            .removed_messages
+            .iter()
+            .filter(|message| {
+                crate::features::code_checkpoints::turns::counts_as_user_turn(message)
+            })
+            .count() as u32;
         let restored = record.removed_messages.len();
         session.messages.extend(record.removed_messages);
         session.metadata.message_count = session.messages.len();
@@ -454,7 +479,17 @@ impl SessionStore {
         if let Err(error) = persist_rewound_turns_map(&backups) {
             eprintln!("[sessions] remove consumed rewind backup for {id} failed: {error:#}");
         }
-        Ok(restored)
+        Ok(RestoredRewindTurns {
+            messages: restored,
+            kept_turns: record.kept_turns,
+            restored_turns,
+        })
+    }
+
+    /// [`Self::restore_rewound_turns_detailed`] 的消息数兼容包装（既有调用方
+    /// 与测试只关心恢复条数）。
+    pub fn restore_rewound_turns(&self, id: &str) -> Result<usize> {
+        Ok(self.restore_rewound_turns_detailed(id)?.messages)
     }
 
     /// Purge a session's rewind backups when delete/retention removes the
