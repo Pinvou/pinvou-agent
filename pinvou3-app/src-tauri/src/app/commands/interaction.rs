@@ -529,14 +529,17 @@ pub async fn summon_pinvou(
 /// 静默放行，grouping_key 作用域）/ deny（本会话对该确切操作记住拒绝，
 /// exact approval_key 作用域）。decision 先校验（登记摘除不可逆，非法值必须
 /// 原样 Err）；合法决策先摘除挂起登记（卡已收口，engine 侧审批 id 也随调用
-/// 消亡，不得残留），授予/拒绝缓存在 engine 调用成功后写入。不再 emit 事件
-/// ——前端对自己的卡做乐观更新，静默放行/硬拒本就没有卡。
+/// 消亡，不得残留），授予/拒绝缓存在 engine 调用成功后写入。决策落定后广播
+/// `chat:approval_resolved`（M5 收敛面）：决策可能来自第二窗口或 remote 表面，
+/// 其它表面的同 id 卡需就地落终态；前端只对未决卡生效（幂等），发起方自己的
+/// 卡走乐观更新、事件回声不覆盖已决卡。载荷不带 tool input（敏感面纪律）。
 #[tauri::command]
 pub async fn decide_approval(
     session_id: String,
     approval_id: String,
     decision: String,
     pool: State<'_, EnginePool>,
+    app: AppHandle,
 ) -> Result<(), String> {
     use crate::features::assistant::pending_approvals;
     // 先校验 decision：登记摘除不可逆，非法 decision 若在摘除后才发现，
@@ -571,6 +574,21 @@ pub async fn decide_approval(
     if outcome.is_ok() && decision == "deny" {
         // 拒绝记在 exact approval_key 上：换参数要重新请批（#1617 语义）。
         pending_approvals::remember_denial(&session_id, &pending.approval_key);
+    }
+    // 收敛广播在 engine 调用成功后（与缓存写入同序）：失败不广播——其它表面
+    // 的卡保持未决，发起方收到错误提示，卡由终态清扫或重试收口。
+    if outcome.is_ok() {
+        let payload = pending_approvals::approval_resolved_payload(
+            &session_id,
+            &approval_id,
+            &decision,
+        );
+        let _ = app.emit("chat:approval_resolved", payload.clone());
+        crate::features::remote_control::forward_app_event(
+            &app,
+            "chat:approval_resolved",
+            payload,
+        );
     }
     outcome
 }

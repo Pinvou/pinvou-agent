@@ -298,6 +298,39 @@ pub fn approval_surface_decision(
     }
 }
 
+/// `chat:guardrail_denied` 事件载荷的唯一构造点。`reason` 是稳定英文键
+/// （[`ApprovalDenyReason::reason_key`]），前端 i18n 据此映射三语文案。
+/// 刻意**不带 tool input 原文**——敏感参数不得进事件流（桌面 emit 与
+/// remote 转发共用本载荷）；卡片路径的 input 只走 `chat:approval_required`
+/// （用户已见面的场景）。
+pub fn guardrail_denied_payload(
+    session_id: &str,
+    tool_name: &str,
+    reason_key: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": session_id,
+        "tool_name": tool_name,
+        "reason": reason_key,
+    })
+}
+
+/// `chat:approval_resolved` 事件载荷的唯一构造点（tri-mode M5 收敛面）：
+/// 一处决策落定后广播终态，第二窗口 / 远端发起的决策也能把其它表面的卡
+/// 就地落终态。前端只对未决卡生效（幂等）；负载不带 tool input（同
+/// [`guardrail_denied_payload`] 的敏感面纪律）。
+pub fn approval_resolved_payload(
+    session_id: &str,
+    approval_id: &str,
+    decision: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "session_id": session_id,
+        "approval_id": approval_id,
+        "decision": decision,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +353,100 @@ mod tests {
             force_prompt: false,
             created_at_ms: now_ms(),
         }
+    }
+
+    /// M6b：硬拒通知载荷只带稳定键（session_id/tool_name/reason），刻意不带
+    /// tool input 原文——敏感参数不得进事件流（桌面 emit 与 remote 转发共用
+    /// 本载荷构造点）。字段集合扩大必须改这里。
+    #[test]
+    fn forkguard_guardrail_denied_payload_carries_stable_keys_only() {
+        let payload = guardrail_denied_payload("sess-1", "write_file", "guardrail_ask_off");
+        let obj = payload.as_object().expect("payload is a JSON object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["reason", "session_id", "tool_name"],
+            "deny payload carries exactly the stable keys (no tool input): {obj:?}"
+        );
+        assert_eq!(obj["reason"], "guardrail_ask_off");
+        let serialized = payload.to_string();
+        assert!(
+            !serialized.contains("input"),
+            "deny payload must not carry tool input: {serialized}"
+        );
+    }
+
+    /// M5 收敛面：决策终态广播载荷只带定位键 + 决策值（幂等去重靠
+    /// approval_id），不带 tool input。
+    #[test]
+    fn forkguard_approval_resolved_payload_carries_keys_and_decision_only() {
+        let payload = approval_resolved_payload("sess-1", "ap-1", "allow_for_session");
+        let obj = payload.as_object().expect("payload is a JSON object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["approval_id", "decision", "session_id"],
+            "resolved payload carries exactly the routing keys: {obj:?}"
+        );
+        assert_eq!(obj["decision"], "allow_for_session");
+    }
+
+    /// M6a：转发器调用点是纯函数真值表之外的实际接线——授予/拒绝实参对调
+    /// （round-1 B1 的复发形态：跨会话放行）或 ask/force 对调都会静默翻转
+    /// 处置，而真值表测试测不到调用点。钉住实参顺序与键维度：granted
+    /// （grouping key，lossy）在前、denied（exact approval_key）在后，
+    /// ask_on_guardrail 在 force_prompt 之前，且拒绝通知走唯一载荷构造点
+    /// （不得退回内联 json! 重新引入 input）。
+    #[test]
+    fn forkguard_forwarder_approval_surface_call_site_pins_argument_order() {
+        let src = include_str!("forwarder.rs");
+        let production = src.split("#[cfg(test)]").next().expect("non-empty source");
+        let call_start = production
+            .find("approval_surface_decision(")
+            .expect("the forwarder must route ApprovalRequired through the pure decision fn");
+        let call = &production[call_start..];
+        let call_end = call.find(");").expect("the decision call must terminate");
+        let call = &call[..call_end];
+        let granted = call
+            .find("session_granted(")
+            .expect("the grant cache read must feed the granted arm");
+        let denied = call
+            .find("session_denied(")
+            .expect("the denial cache read must feed the denied arm");
+        assert!(
+            granted < denied,
+            "positional argument order: granted (grouping key) must precede denied \
+             (exact key) — a swap silently approves denied operations"
+        );
+        let granted_arm = &call[granted..];
+        let denied_arm = &call[denied..];
+        assert!(
+            granted_arm.contains("&approval_grouping_key"),
+            "the granted arm must read the lossy grouping key"
+        );
+        assert!(
+            denied_arm.contains("&approval_key"),
+            "the denied arm must read the exact approval key"
+        );
+        assert!(
+            call.find("ask_on_guardrail").is_some(),
+            "the ask-on-guardrail arming must be an input to the decision"
+        );
+        let ask = call.find("ask_on_guardrail").expect("checked above");
+        let force = call
+            .find("approval_force_prompt")
+            .expect("the force flag must be an input to the decision");
+        assert!(
+            ask < force,
+            "positional argument order: ask_on_guardrail must precede approval_force_prompt"
+        );
+        assert!(
+            production.contains("guardrail_denied_payload("),
+            "the deny announcement must go through the single payload constructor \
+             (no inline json! that could reintroduce tool input)"
+        );
     }
 
     #[test]

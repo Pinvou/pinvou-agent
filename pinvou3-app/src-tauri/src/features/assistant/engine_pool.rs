@@ -5056,11 +5056,15 @@ impl EnginePool {
     /// Also refreshes the session's permission ruleset: the safety profile is
     /// a pure function of the mode, so the refresh is exactly the Yolo⇄other
     /// lane change's ruleset swap and an identical no-op otherwise — the
-    /// caller never has to track the previous mode. The change-mode send
-    /// uses `try_send` (refresh-class op, same class as the foundation's
-    /// posture edits) so a wedged engine cannot park the caller; a failed
-    /// send IS an error — the caller surfaces it instead of letting the
-    /// engine silently run on a stale posture.
+    /// caller never has to track the previous mode. Both sends are attempted
+    /// INDEPENDENTLY: a failed change-mode send must not skip the ruleset
+    /// swap (mode/approval self-heal on the next send via the per-turn
+    /// posture, but the ruleset would stay on the old profile until the next
+    /// refresh trigger). The change-mode send uses `try_send` (refresh-class
+    /// op, same class as the foundation's posture edits) so a wedged engine
+    /// cannot park the caller; a failed send IS an error — the caller
+    /// surfaces it instead of letting the engine silently run on a stale
+    /// posture.
     pub async fn sync_session_safety_posture(&self, session_id: &str) -> Result<()> {
         let Some(engine) = self.handle_for(session_id).await else {
             // No live engine: nothing to sync — the next spawn arms the
@@ -5069,13 +5073,21 @@ impl EnginePool {
         };
         let mode_state = self.store.mode_state(session_id);
         let op = safety_change_mode_op(&mode_state, self.bridge.allow_shell());
-        engine
-            .handle
-            .try_send(op)
-            .context(format!(
-                "sync_session_safety_posture {session_id}: change-mode send failed"
-            ))?;
-        self.refresh_session_permission_ruleset(session_id).await
+        let change_mode_result = engine.handle.try_send(op).context(format!(
+            "sync_session_safety_posture {session_id}: change-mode send failed"
+        ));
+        let ruleset_result = self.refresh_session_permission_ruleset(session_id).await;
+        match (change_mode_result, ruleset_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(change_mode), Err(ruleset)) => {
+                eprintln!(
+                    "[engine_pool] sync_session_safety_posture {session_id}: ruleset refresh \
+                     also failed after the change-mode failure: {ruleset:?}"
+                );
+                Err(change_mode)
+            }
+        }
     }
 
     /// Spawn-time arming (tri-mode safety): queue the freshly spawned

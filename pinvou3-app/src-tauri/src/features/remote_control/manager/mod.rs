@@ -341,6 +341,7 @@ const RUST_FORWARDED_EVENTS: &[&str] = &[
     "acp:event",
     "artifact:disk",
     "chat:approval_required",
+    "chat:approval_resolved",
     "chat:compaction",
     "chat:delta",
     "chat:reasoning_start",

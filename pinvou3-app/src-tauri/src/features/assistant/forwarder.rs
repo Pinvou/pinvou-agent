@@ -935,11 +935,12 @@ pub(crate) fn spawn_event_forwarder(
                                 });
                                 // 硬拒通知：reason 是稳定英文键（reason_key），前端
                                 // i18n 据此映射文案；不带 input 原文，避免敏感参数进事件流。
-                                let payload = json!({
-                                    "session_id": session_id,
-                                    "tool_name": tool_name,
-                                    "reason": reason.reason_key(),
-                                });
+                                // 载荷走唯一构造点（pending_approvals），字段集合有钉。
+                                let payload = crate::features::assistant::pending_approvals::guardrail_denied_payload(
+                                    &session_id,
+                                    &tool_name,
+                                    reason.reason_key(),
+                                );
                                 let _ = app.emit("chat:guardrail_denied", payload.clone());
                                 crate::features::remote_control::forward_app_event(
                                     &app,
