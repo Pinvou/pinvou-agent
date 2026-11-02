@@ -218,7 +218,7 @@ pub(crate) use crate::platform::connector_skills::{
 /// required for connected users to refresh at startup (otherwise the refresh
 /// waits for the post-first-frame refresh_connector_auth_gates backfill).
 /// 0.36: model-facing guidance gaps from the 2026-10-07 audit's undelivered
-/// fork-side items (no upstream sync, no code-behavior change): lark
+/// fork-side items (no upstream sync, no Rust behavior change): lark
 /// calendar `+meeting` row no longer routes video-conference link
 /// retrieval through `+get` (the reference documents meeting_id/meeting_note
 /// only) and states the `+create` default-VC fact; lark-shared gains the
@@ -228,18 +228,22 @@ pub(crate) use crate::platform::connector_skills::{
 /// replaced with the wo-prefix contact-search-only rule; wecomcli-contact /
 /// wecomcli-doc / wecomcli-doc-manage gain compact business-failure
 /// sections in the meeting pack's retry-cap style. Hooks:
-/// multiagent_depth_guard's opaque-source gate matches only the
-/// schema-documented top-level `"source_path"` string-value key — the bare
-/// `path` serde alias hit nested `path` fields inside plan payloads and
-/// false-denied legitimate calls (the deny message named only source_path);
+/// multiagent_depth_guard's opaque-source gate matches any string-valued
+/// `"source_path"` key (grep cannot count nesting depth, so nested
+/// occurrences still deny — conservative, fail-closed) — the bare `path`
+/// manual fallback (an optional_str fallback, not serde) hit nested `path`
+/// fields inside plan payloads and false-denied legitimate calls (the deny
+/// message named only source_path);
 /// instructions-work / instructions-work-bound now explain the
 /// `<context_update>` delta messages (only the code lane did, via
 /// CORE_EXECUTION_PROFILE_PROMPT). All entries registered in
 /// lark-skills/NOTICE.md and NOTICE-wecom.md for the next upstream sync
 /// replay. Next free slot after 0.35 (0.35 claimed by PR #808's
-/// comment-cleanup tree-text delivery). Skill trees are excluded from the
-/// content hash, so the semantic bump is required for connected users to
-/// refresh at startup.
+/// comment-cleanup tree-text delivery). The instructions files are inside
+/// the content hash, so the changed hash alone already forces the startup
+/// refresh; the slot bump additionally delivers the un-hashed surfaces —
+/// skill trees and the depth-guard hook twins, which have no backfill
+/// path — and keeps one coherent slot per delivered batch.
 pub const BUNDLE_VERSION: &str = concat!("0.36-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// Native ordinary/code instructions share this compile-time skeleton.
@@ -555,9 +559,11 @@ pub const DENY_SENSITIVE_PATHS_PS1: &str =
 /// 传入的正数深度覆盖字段（嵌套子代理的调用不经过 ToolCallBefore，由
 /// 继承上限与准入/并发额度兜底）；Workflow 的顶层 `source_path`
 /// 要求改用 inline script/plan，避免 hook 无法检查文件内参数。引擎侧
-/// 另有未写入 schema 的 `path` serde 别名，该别名不在此拦截（裸键匹配会
-/// 误伤 plan 载荷里的嵌套 `path` 字段；文件内覆盖由引擎 #5253 的
-/// min-clamp 兜底）。
+/// 另有未写入 schema 的 `path` 手工别名（`workflow_source` 的
+/// `optional_str` 回退，非 serde alias），该别名不在此拦截（裸键匹配会
+/// 误伤 plan 载荷里的嵌套 `path` 字段）。对 `path` 的拦截早于引擎
+/// #5253 的 min-clamp，且在 clamp 落地前是承重设计；现由该 clamp 兜底
+/// 文件内覆盖，此残留不构成执行缺口。
 pub const MULTIAGENT_DEPTH_GUARD_SH: &str =
     include_str!("../../../../resources/common/bundle/multiagent_depth_guard.sh");
 pub const MULTIAGENT_DEPTH_GUARD_PS1: &str =
@@ -1620,9 +1626,9 @@ mod tests {
                 // Nested "path" keys inside structured plan payloads are ordinary
                 // field names (child tool args etc.), not the schema-documented
                 // source_path bypass key: the opaque-source trigger must not fire
-                // on them (the guard used to match the bare "path" serde alias at
-                // any nesting depth and false-denied these calls; the alias stays
-                // un-intercepted by design, see the hook's header comment).
+                // on them (the guard used to match the bare "path" manual fallback
+                // at any nesting depth and false-denied these calls; the fallback
+                // stays un-intercepted by design, see the hook's header comment).
                 let nested_path = run_depth_guard(
                     &bundle,
                     "workflow",
@@ -1631,6 +1637,22 @@ mod tests {
                 assert!(
                     nested_path.status.success(),
                     "plan 载荷里的嵌套 path 字段不得触发 source_path 拦截: {nested_path:?}"
+                );
+
+                // Any string-valued "source_path" key still denies: grep cannot
+                // count JSON nesting depth, so nested occurrences inside
+                // free-form payloads (child args bags, responseSchema examples)
+                // are denied conservatively. Pin that behavior so a later edit
+                // cannot quietly narrow the gate past the documented shape
+                // (only the bare "path" carve-out is intentional).
+                let nested_source_path = run_depth_guard(
+                    &bundle,
+                    "workflow",
+                    r#"{"plan":{"goal":"ingest","children":[{"id":"a","args":{"source_path":"notes.md"}}]}}"#,
+                );
+                assert!(
+                    !nested_source_path.status.success(),
+                    "嵌套的字符串型 source_path 键仍应保守拦截（grep 无法计嵌套深度，仅 path 别名是有意放行）: {nested_source_path:?}"
                 );
             },
         );
