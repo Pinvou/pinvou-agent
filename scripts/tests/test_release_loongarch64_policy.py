@@ -189,27 +189,108 @@ def _build_synthetic_sysroot(root):
     return ma
 
 
-def _bash_env_with_gnu_sed(tmp):
-    """Production-like env: CI (Ubuntu) has GNU sed natively and takes the
-    unshimmed path; dev-macOS BSD sed cannot run the script's GNU
-    `sed -i -e` rewrite, so shim it to the equivalent `-i ''` form."""
+def _bash_env_with_gnu_tooling(tmp):
+    """Production-like env for executing script fragments locally.
+
+    CI (Ubuntu) ships the GNU toolchain natively and runs unshimmed; every
+    shim below is installed only when a host probe says the native tool
+    cannot serve the GNU contract the scripts were written against:
+
+    - sed: dev-macOS BSD sed cannot run the script's GNU `sed -i -e`
+      rewrite, so shim it to the equivalent `-i ''` form.
+    - grep: BSD grep spells the GNU --null flag differently (its -Z is
+      --decompress), so the scripts' `grep -lIZ` NUL-delimited scans would
+      emit newline-separated paths, their `read -d ''` consumers would
+      never iterate, and the missing-member nets would pass vacuously.
+      The shim applies to any host grep whose --version output lacks
+      "GNU grep", not only BSD grep.
+    - readelf: stock macOS ships no readelf; a minimal ELF-header reader
+      covers the `readelf -h` Machine probe on the synthetic fixtures.
+    """
     env = dict(os.environ)
+    shims = tmp / "bin"
+
+    def probe(argv):
+        return subprocess.run(argv, capture_output=True, text=True)
+
     system_sed = shutil.which("sed")
-    if not system_sed:
-        return env
-    probe = subprocess.run([system_sed, "--version"], capture_output=True, text=True)
-    if probe.returncode == 0 and "GNU sed" in probe.stdout:
-        return env
-    shim = tmp / "bin"
-    shim.mkdir()
-    shim_sed = shim / "sed"
-    shim_sed.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "-i" ]; then shift; set -- -i \'\' "$@"; fi\n'
-        f'exec "{system_sed}" "$@"\n'
-    )
-    shim_sed.chmod(0o755)
-    env["PATH"] = f"{shim}:{env.get('PATH', '')}"
+    if system_sed:
+        result = probe([system_sed, "--version"])
+        if not (result.returncode == 0 and "GNU sed" in result.stdout):
+            shims.mkdir(parents=True, exist_ok=True)
+            shim_sed = shims / "sed"
+            shim_sed.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "-i" ]; then shift; set -- -i \'\' "$@"; fi\n'
+                f'exec "{system_sed}" "$@"\n'
+            )
+            shim_sed.chmod(0o755)
+
+    system_grep = shutil.which("grep")
+    if system_grep:
+        result = probe([system_grep, "--version"])
+        if not (result.returncode == 0 and "GNU grep" in result.stdout):
+            shims.mkdir(parents=True, exist_ok=True)
+            shim_grep = shims / "grep"
+            shim_grep.write_text(
+                "#!/usr/bin/env python3\n"
+                "# Rewrite short-option clusters holding -Z into --null.\n"
+                "import os\n"
+                "import re\n"
+                "import sys\n"
+                f"REAL = {system_grep!r}\n"
+                "rewritten = []\n"
+                "for arg in sys.argv[1:]:\n"
+                "    if re.fullmatch(r'-[A-Za-z]*Z[A-Za-z]*', arg):\n"
+                "        cluster = arg.replace('Z', '')\n"
+                "        if len(cluster) > 1:\n"
+                "            rewritten.append(cluster)\n"
+                "        rewritten.append('--null')\n"
+                "    else:\n"
+                "        rewritten.append(arg)\n"
+                "os.execv(REAL, [REAL] + rewritten)\n"
+            )
+            shim_grep.chmod(0o755)
+
+    system_readelf = shutil.which("readelf")
+    readelf_is_gnu = False
+    if system_readelf:
+        result = probe([system_readelf, "--version"])
+        readelf_is_gnu = result.returncode == 0 and "GNU" in result.stdout
+    if not readelf_is_gnu:
+        shims.mkdir(parents=True, exist_ok=True)
+        shim_readelf = shims / "readelf"
+        shim_readelf.write_text(
+            "#!/usr/bin/env python3\n"
+            "# Interprets just enough of the ELF header for the Machine probe\n"
+            "# verify_sysroot runs on the synthetic fixtures of this test.\n"
+            "import struct\n"
+            "import sys\n"
+            "MACHINES = {\n"
+            "    3: 'Intel 80386',\n"
+            "    62: 'Advanced Micro Devices X86-64',\n"
+            "    183: 'AArch64',\n"
+            "    243: 'RISC-V',\n"
+            "    258: 'LoongArch',\n"
+            "}\n"
+            "operands = [a for a in sys.argv[1:] if not a.startswith('-')]\n"
+            "if '-h' not in sys.argv[1:] or not operands:\n"
+            "    sys.exit('readelf shim: only `readelf -h <file>` is implemented')\n"
+            "data = open(operands[0], 'rb').read()\n"
+            "if len(data) < 20 or not data.startswith(b'\\x7fELF'):\n"
+            "    sys.exit('readelf shim: not an ELF file')\n"
+            "endian = '>' if data[5] == 2 else '<'\n"
+            "_, e_machine = struct.unpack_from(endian + 'HH', data, 16)\n"
+            "elf_class = 'ELF64' if data[4] == 2 else 'ELF32'\n"
+            "print('ELF Header:')\n"
+            "print(f'  Class:                             {elf_class}')\n"
+            "machine = MACHINES.get(e_machine, f'<unknown>: 0x{e_machine:x}')\n"
+            "print(f'  Machine:                           {machine}')\n"
+        )
+        shim_readelf.chmod(0o755)
+
+    if shims.exists():
+        env["PATH"] = f"{shims}:{env.get('PATH', '')}"
     return env
 
 
@@ -1218,7 +1299,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             )
             root = Path(tmp) / "root"
             ma = _build_synthetic_sysroot(root)
-            env = _bash_env_with_gnu_sed(Path(tmp))
+            env = _bash_env_with_gnu_tooling(Path(tmp))
 
             proc = subprocess.run(
                 [
@@ -1547,7 +1628,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             )
             root = Path(tmp) / "root"
             ma = _build_synthetic_sysroot(root)
-            env = _bash_env_with_gnu_sed(Path(tmp))
+            env = _bash_env_with_gnu_tooling(Path(tmp))
             pruned = subprocess.run(
                 [
                     "bash",
