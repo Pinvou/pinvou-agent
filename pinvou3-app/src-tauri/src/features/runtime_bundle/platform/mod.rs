@@ -217,7 +217,30 @@ pub(crate) use crate::platform::connector_skills::{
 /// Skill trees are excluded from the content hash, so the semantic bump is
 /// required for connected users to refresh at startup (otherwise the refresh
 /// waits for the post-first-frame refresh_connector_auth_gates backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.35-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.36: model-facing guidance gaps from the 2026-10-07 audit's undelivered
+/// fork-side items (no upstream sync, no code-behavior change): lark
+/// calendar `+meeting` row no longer routes video-conference link
+/// retrieval through `+get` (the reference documents meeting_id/meeting_note
+/// only) and states the `+create` default-VC fact; lark-shared gains the
+/// CLI-not-installed/host-managed install pointer, the on-demand-auth
+/// reminder, and a central rate-limit default (per-reference specifics
+/// still win); wecomcli-meeting's open_vid≡userid equivalence claim
+/// replaced with the wo-prefix contact-search-only rule; wecomcli-contact /
+/// wecomcli-doc / wecomcli-doc-manage gain compact business-failure
+/// sections in the meeting pack's retry-cap style. Hooks:
+/// multiagent_depth_guard's opaque-source gate matches only the
+/// schema-documented top-level `"source_path"` string-value key — the bare
+/// `path` serde alias hit nested `path` fields inside plan payloads and
+/// false-denied legitimate calls (the deny message named only source_path);
+/// instructions-work / instructions-work-bound now explain the
+/// `<context_update>` delta messages (only the code lane did, via
+/// CORE_EXECUTION_PROFILE_PROMPT). All entries registered in
+/// lark-skills/NOTICE.md and NOTICE-wecom.md for the next upstream sync
+/// replay. Next free slot after 0.35 (0.35 claimed by PR #808's
+/// comment-cleanup tree-text delivery). Skill trees are excluded from the
+/// content hash, so the semantic bump is required for connected users to
+/// refresh at startup.
+pub const BUNDLE_VERSION: &str = concat!("0.36-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// Native ordinary/code instructions share this compile-time skeleton.
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
