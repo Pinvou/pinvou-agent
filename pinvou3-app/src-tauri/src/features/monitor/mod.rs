@@ -42,8 +42,9 @@ pub struct MonitorSnapshot {
     pub ram: Option<RamSnapshot>,
     pub vllm: Option<VllmSnapshot>,
     /// app 侧自测推理指标(TTFT / 生成速度 / 累计 tokens / KV)。与 vLLM `/metrics`
-    /// 无关,任何后端(本地 vLLM / LM Studio / Ollama / 云端 API)都有值——因为是在
-    /// 流式转发通路上就地测的。前端一律用这块显示这四项(vllm 块只剩队列/窗口/健康)。
+    /// 无关,任何后端(本地 vLLM / LM Studio / Ollama / 云端 API)都有值——TTFT/TPS
+    /// 优先取引擎 TurnUsage 的权威计时,引擎未上报完整对时回落流式转发通路上的
+    /// 墙钟重测。前端一律用这块显示这四项(vllm 块只剩队列/窗口/健康)。
     pub self_perf: SelfPerfSnapshot,
     pub app: AppSnapshot,
 }

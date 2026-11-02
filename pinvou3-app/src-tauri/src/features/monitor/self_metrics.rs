@@ -6,10 +6,11 @@
 //! 首个 MessageDelta / TurnUsage / ToolCallStarted / TurnComplete 五处调用;
 //! 读出由 facade `sample_all` 经 `MonitorState` 触发。
 //!
-//! 计时源语义（审计 A1）：TTFT / TPS 优先采用引擎 `TurnUsage` 事件携带的
-//! `first_token_ms` / `request_ms`——引擎在请求派发点起表,含真实网络首字节,
-//! 是权威源;墙钟 `Instant` 重测发生在转发通路上,含事件分发延迟,仅作引擎未
-//! 上报时的回落(旧引擎 / usage 未上报 / 非流式路径)。两组计时不同源不混拼。
+//! 计时源语义：TTFT / TPS 优先采用引擎 `TurnUsage` 事件携带的
+//! `first_token_ms` / `request_ms`——引擎在请求派发点起表(含真实网络首字节,
+//! 首 token 以首个内容事件计,思考 delta 也算),是权威源;墙钟 `Instant` 重测
+//! 发生在转发通路上,含事件分发延迟,仅作引擎未上报完整对时的回落(usage 未
+//! 上报 / 非流式 consult / 无内容流)。两组计时不同源不混拼。
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -56,17 +57,18 @@ struct TurnTiming {
     first: Option<Instant>,
     had_tool: bool,
     output_chars: u64,
-    /// 引擎 `TurnUsage` 上报的权威计时（审计 A1）：`first_token_ms` = 请求派发
-    /// → 首 token（含真实网络首字节），`request_ms` = 请求派发 → 流结束。
-    /// 收尾时优先于墙钟重测；`None` 表示引擎本轮未上报（回落墙钟）。
-    engine_ttft_ms: Option<u64>,
-    engine_request_ms: Option<u64>,
+    /// 引擎 `TurnUsage` 上报的权威计时：`(first_token_ms, request_ms)`——
+    /// `first_token_ms` = 请求派发 → 首 token（含真实网络首字节），`request_ms`
+    /// = 请求派发 → 流结束。整对原子存储：只有单一事件同时带全两个字段才落值，
+    /// 杜绝跨事件拼对；收尾时优先于墙钟重测；`None` 表示引擎本轮未上报完整对
+    /// （回落墙钟）。
+    engine_pair: Option<(u64, u64)>,
 }
 
 /// app 侧自测推理指标累加器。流式转发通路（engine.rs forwarder）在
-/// TurnStarted / 首个 MessageDelta / ToolCallStarted / TurnComplete 四处打点写入，
-/// `sample_all` 读出。`inflight` 按 `session_id` 键控——多 session 并发各测各的，
-/// 不串台；`perf` 是全局单调累计，各轮把自己的增量加进去。
+/// TurnStarted / 首个 MessageDelta / TurnUsage / ToolCallStarted / TurnComplete
+/// 五处打点写入，`sample_all` 读出。`inflight` 按 `session_id` 键控——多 session
+/// 并发各测各的，不串台；`perf` 是全局单调累计，各轮把自己的增量加进去。
 #[derive(Debug, Default)]
 pub struct SelfMetrics {
     perf: Mutex<SelfPerfInner>,
@@ -83,8 +85,7 @@ impl SelfMetrics {
                 first: None,
                 had_tool: false,
                 output_chars: 0,
-                engine_ttft_ms: None,
-                engine_request_ms: None,
+                engine_pair: None,
             },
         );
     }
@@ -105,9 +106,10 @@ impl SelfMetrics {
     }
 
     /// 引擎 `TurnUsage` 事件：记录本轮模型调用的权威计时。TurnUsage 每次模型
-    /// 调用发一条——纯文本轮恰一条；工具轮首条也先于 ToolCallStarted 到达，
-    /// 取首条上报值即可（工具轮收尾时整体跳过 TTFT/TPS，D2 不变）。字段缺失
-    /// （`None`，旧引擎 / 非流式路径）不落值，收尾整组回落墙钟。
+    /// 调用发一条——纯文本轮恰一条；带工具的轮会有多条，但收尾整体跳过
+    /// TTFT/TPS（D2 不变）。只有同时携带完整 `(first_token_ms, request_ms)`
+    /// 的事件才落值，且首条完整对生效——后续调用不覆盖，半对（None 混 Some）
+    /// 不落，杜绝用两次调用的字段拼对；收尾时若仍无完整对，整组回落墙钟。
     pub fn on_engine_usage(
         &self,
         session_id: &str,
@@ -115,11 +117,8 @@ impl SelfMetrics {
         request_ms: Option<u64>,
     ) {
         if let Some(t) = self.inflight.lock().get_mut(session_id) {
-            if t.engine_ttft_ms.is_none() {
-                t.engine_ttft_ms = first_token_ms;
-            }
-            if t.engine_request_ms.is_none() {
-                t.engine_request_ms = request_ms;
+            if t.engine_pair.is_none() {
+                t.engine_pair = first_token_ms.zip(request_ms);
             }
         }
     }
@@ -153,18 +152,18 @@ impl SelfMetrics {
         }
         if let Some(t) = timing {
             if !t.had_tool {
-                // 计时源优先级（审计 A1）：引擎 TurnUsage 字段是权威源
-                // (first_token_ms 从请求派发点起表,含真实网络首字节;request_ms
-                // 同钟收束于流结束,两者相减即纯生成窗口)。引擎整组字段缺失时
-                // (旧引擎 / usage 未上报 / 非流式路径)回落墙钟 Instant 重测;
-                // TTFT 与生成时长必须同源,不混拼两套时钟。
-                let (ttft_s, gen_s) = match (t.engine_ttft_ms, t.engine_request_ms) {
-                    (Some(ttft_ms), Some(request_ms)) => {
+                // 计时源优先级：引擎 TurnUsage 字段是权威源 (first_token_ms 从
+                // 请求派发点起表,含真实网络首字节;request_ms 同钟收束于流结束,
+                // 两者相减即纯生成窗口)。引擎未上报完整对时(usage 未上报 /
+                // 非流式 consult / 无内容流)回落墙钟 Instant 重测;TTFT 与生成
+                // 时长必须同源,不混拼两套时钟。
+                let (ttft_s, gen_s) = match t.engine_pair {
+                    Some((ttft_ms, request_ms)) => {
                         let ttft = ttft_ms as f64 / 1000.0;
                         let gen_window_s = request_ms.saturating_sub(ttft_ms) as f64 / 1000.0;
                         (Some(ttft), Some(gen_window_s))
                     }
-                    _ => match t.first {
+                    None => match t.first {
                         Some(first) => (
                             Some(first.duration_since(t.start).as_secs_f64()),
                             Some(first.elapsed().as_secs_f64()),
@@ -354,7 +353,7 @@ mod tests {
 
     #[test]
     fn self_metrics_engine_fields_are_authoritative_for_ttft_tps() {
-        // 审计 A1:引擎 TurnUsage 字段(含真实网络首字节)优先于墙钟重测。
+        // 引擎 TurnUsage 字段(含真实网络首字节)优先于墙钟重测。
         // 测试里墙钟近似 0,断言精确落在引擎值上即证明未走墙钟。
         let m = SelfMetrics::default();
         m.on_turn_started("s1");
@@ -377,7 +376,7 @@ mod tests {
 
     #[test]
     fn self_metrics_first_engine_usage_wins() {
-        // TurnUsage 每模型调用一条,首条上报值生效,后续调用不覆盖
+        // TurnUsage 每模型调用一条,首条完整对生效,后续调用不覆盖
         // (纯文本轮只有一条;多调用属工具轮,收尾被 D2 跳过)。
         let m = SelfMetrics::default();
         m.on_turn_started("s1");
@@ -390,9 +389,42 @@ mod tests {
     }
 
     #[test]
+    fn self_metrics_engine_pair_never_mixes_across_calls() {
+        // 半对(只有 ttft 或只有 request)不落值:两次调用各带一半,不得拼成完整对
+        // (否则生成窗口 = A 事件的 request − B 事件的 ttft,跨调用失真,例如流
+        // 中断重发时上一次尝试只留 request_ms 的场景)。此处直接驱动累加器钉逻辑。
+        let m = SelfMetrics::default();
+        m.on_turn_started("s1");
+        m.on_message_delta("s1", 4);
+        m.on_engine_usage("s1", Some(120), None);
+        m.on_engine_usage("s1", None, Some(4000));
+        m.on_turn_complete("s1", 10, 5, None, None);
+        let s = m.snapshot();
+        assert_eq!(s.ttft_count, 1);
+        assert!(
+            s.ttft_sum_s < 0.12,
+            "两个半对不得拼成引擎对,应整组回落墙钟,实际 {s:?}"
+        );
+
+        // 半对之后来的完整对整对生效:ttft 与窗口必须同来自第二条调用。
+        let m = SelfMetrics::default();
+        m.on_turn_started("s2");
+        m.on_engine_usage("s2", Some(120), None);
+        m.on_engine_usage("s2", Some(500), Some(4000));
+        m.on_turn_complete("s2", 10, 5, None, None);
+        let s = m.snapshot();
+        assert_eq!(s.ttft_count, 1);
+        assert!(
+            (s.ttft_sum_s - 0.5).abs() < 1e-9 && (s.tps_time_s - 3.5).abs() < 1e-9,
+            "应整对取自第二条调用(500,4000),不得拼成(120,4000),实际 {s:?}"
+        );
+        assert_eq!(s.tps_tokens, 5);
+    }
+
+    #[test]
     fn self_metrics_partial_engine_fields_fall_back_to_wall_clock() {
-        // 引擎只上报部分字段(非流式/重试路径 first_token_ms=None)时,TTFT 与
-        // 生成时长整组回落墙钟,不混拼两套时钟。测试里墙钟远小于引擎值。
+        // 引擎只上报部分字段(无内容流/非流式 consult 路径 first_token_ms=None)
+        // 时,TTFT 与生成时长整组回落墙钟,不混拼两套时钟。测试里墙钟远小于引擎值。
         let m = SelfMetrics::default();
         m.on_turn_started("s1");
         m.on_message_delta("s1", 4);
