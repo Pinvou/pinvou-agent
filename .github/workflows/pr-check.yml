@@ -383,6 +383,11 @@ jobs:
               - 'scripts/sync-version.mjs'
               - 'scripts/check-linux-glibc-floor.sh'
               - 'scripts/check-linux-elf-policy.sh'
+              # PR #810: the arm64 cross PipeWire prefix is a build input of
+              # the release arm64 leg; the floor suite bash -n's it and pins
+              # its sha256 mirror (same belt-and-braces rationale as the
+              # loong64 packaging entries above).
+              - 'scripts/ci-libpipewire-build-arm64.sh'
               - 'scripts/asr/build-sensevoice-runtime.sh'
               - 'scripts/asr/sensevoice-source.env'
               - 'scripts/repack-deb-xz.sh'
