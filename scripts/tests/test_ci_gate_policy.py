@@ -1,4 +1,8 @@
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -2574,20 +2578,24 @@ class CiGatePolicyTests(unittest.TestCase):
         # terminator (which could forge a second workflow command).
         self.assertIn('echo "::warning::[memory-setup] ${*//[', source)
         self.assertIn("${*//[$'\\r\\n']/ }", source)
-        # Slow paths that normally recover (first modprobe miss, the image
-        # swap pre-activation, the as-is swapon retry and the last-resort
-        # image swapfile after all layers) stay log-only; annotating them
-        # would leave a standing warning on every job and dilute real ones.
-        # The function body is pinned verbatim: turning it back into a
-        # ::warning:: annotation turns this red.
+        # The modprobe miss is now a standing plain warn: with the
+        # kernel-package install gone (ported from pinvou3 #2095/#2211), a
+        # missing module permanently degrades the primary layer, which
+        # deserves a visible annotation.
+        self.assertIn(
+            'warn "modprobe zram failed${modprobe_err:+: ${modprobe_err}};',
+            source,
+        )
+        # Slow paths that normally recover (the as-is swapon retry and the
+        # last-resort image swapfile after all layers) stay log-only;
+        # annotating them would leave a standing warning on every job and
+        # dilute real ones. The function body is pinned verbatim: turning it
+        # back into a ::warning:: annotation turns this red.
         self.assertIn(
             'warn_recoverable() { echo "[memory-setup] WARNING: $*" >&2; }',
             source,
         )
         for recoverable in (
-            'warn_recoverable "modprobe zram failed${modprobe_err:+: ${modprobe_err}};',
-            'warn_recoverable "no swap active; activating the image swapfile'
-            ' before the slow module install"',
             'warn_recoverable "swapon ${cand} failed as is; trying chmod 600'
             ' + mkswap + swapon once"',
             'warn_recoverable "no active swap after all layers; trying the'
@@ -2774,9 +2782,19 @@ class CiGatePolicyTests(unittest.TestCase):
         # call setup_disk_swap unconditionally (top level, no indentation)
         # and the 8G size is pinned. The 2026-10 degraded-mode branch (no
         # zram swap active) doubles the size to 16G — the sole overflow layer
-        # behind the ~14.2GB rust-test link peaks — and the flaky
-        # linux-modules-extra install retries once; both behaviors are
-        # pinned so the hardening cannot silently regress.
+        # behind the ~14.2GB rust-test link peaks. The 2026-11-02 port of
+        # pinvou3 #2095/#2211 removes the in-script kernel-package install
+        # (its 90s-timeout kill left dpkg interrupted and killed this repo's
+        # rust-lint run 41417350097 ~40s later) and adds repair_dpkg_state
+        # as the exit-path net for dpkg state poisoned by external sources
+        # (unattended-upgrades). The contract is pinned here: zero apt
+        # installs, no lock-timeout knob, clock-bounded configure retries
+        # (40s budget, 60s per-attempt cap, early stop on real failures),
+        # stderr passthrough, the updates-journal gate, the TERM route and
+        # the exit-path repair. These text pins are cheap drift alarms;
+        # production behavior is backed end-to-end by
+        # CiMemorySetupRepairBehaviorTests (an emptied function body or a
+        # dropped trap call turns red there with concrete diffs).
         source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
         self.assertNotIn("PINVOU3_CI_ENABLE_DISK_SWAP", source)
         self.assertIn("DISK_SWAP_SIZE_KIB=$((8 * 1024 * 1024))", source)
@@ -2785,18 +2803,90 @@ class CiGatePolicyTests(unittest.TestCase):
             "swapon --show=NAME --noheadings 2>/dev/null | grep -q '/dev/zram'",
             source,
         )
+        self.assertNotIn("apt-get install", source)
+        self.assertNotIn("-o DPkg::Lock::Timeout", source)
+        # Definition + EXIT trap + header-doc journal-gate mention: exactly
+        # 3; fewer means the net was split apart, and the behavior tests
+        # will give concrete diff data for it.
+        self.assertEqual(source.count("repair_dpkg_state"), 3)
+        self.assertIn("run_to 60 dpkg --configure -a", source)
+        self.assertIn("wait_deadline=$(( $(date +%s) + 40 ))", source)
         self.assertIn(
-            'warn "apt-get install ${modules_pkg} failed once; retrying"',
+            "    if (( attempt_secs >= 2 )) || (( $(date +%s) >= wait_deadline )); then",
+            source,
+        )
+        self.assertIn("    sleep 5\n  done", source)
+        self.assertIn(
+            'warn "dpkg --configure -a (attempt ${attempt}) failed after ${attempt_secs}s, retrying${configure_err:+: ${configure_err}}"',
+            source,
+        )
+        self.assertIn('log "dpkg admin state repaired (configure attempt ${attempt})"', source)
+        self.assertIn(
+            'compgen -G "${PINVOU3_CI_DPKG_UPDATES_DIR:-/var/lib/dpkg/updates}/[0-9]*" >/dev/null',
             source,
         )
         self.assertIn(
-            'warn "apt-get install ${modules_pkg} failed again; giving up on zram layers"',
+            'warn "dpkg --configure -a did not succeed; later apt-get steps in this job may still fail until it is run manually${audit_out:+ (dpkg --audit still reports: ${audit_out})}"',
             source,
         )
+        self.assertIn("trap 'exit 143' TERM", source)
+        self.assertIn("trap repair_dpkg_state EXIT", source)
         self.assertIn(
             'log "provisioning the mandatory /mnt disk swap"\nsetup_disk_swap',
             source,
         )
+
+    def test_memory_setup_module_failure_does_not_poison_dependency_install(self):
+        # End-to-end guard for the #2095/#2211 port: with the module
+        # unavailable (rc 1 or timeout 124) the loader must degrade straight
+        # to the fallback layers and never call apt-get or dpkg — a
+        # reintroduced in-script install would print PACKAGE_MANAGER_CALLED
+        # and turn this red.
+        source = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
+        # Execute the real module loader and main fallback flow with host
+        # operations stubbed. Never change the test machine's swap or sysfs.
+        loader = source.split("setup_zram() {", 1)[1].split("# Mandatory disk swap:", 1)[0]
+        main = source[source.index("if [[ ${PINVOU3_CI_DISABLE_ZRAM:-0}"):]
+        cases = ((1, "0", 0), (124, "0", 0), (1, "1", 0), (1, "0", 1))
+        for status, disabled, swap_status in cases:
+            with self.subTest(modprobe_status=status, disabled=disabled, swap_status=swap_status):
+                harness = r'''
+set -uo pipefail
+log() { echo "$*"; }
+warn() { echo "$*" >&2; }
+warn_recoverable() { warn "$@"; }
+run_to() { shift; "$@"; }
+modprobe() { echo "module unavailable" >&2; return "$MODULE_STATUS"; }
+apt-get() { echo "PACKAGE_MANAGER_CALLED"; return 1; }
+dpkg() { echo "PACKAGE_MANAGER_CALLED"; return 1; }
+swapon() { return 0; }
+any_swap_active() { return "$SWAP_STATUS"; }
+setup_disk_swap() { echo "disk-swap-kib=$DISK_SWAP_SIZE_KIB"; }
+setup_zswap_fallback() { echo "zswap-fallback"; }
+activate_image_swap_fallback() { echo "image-swap-fallback"; }
+zramctl() { :; }
+df() { :; }
+'''
+                shell = (
+                    harness
+                    + f"\nMODULE_STATUS={status}\nPINVOU3_CI_DISABLE_ZRAM={disabled}\n"
+                    + f"SWAP_STATUS={swap_status}\n"
+                    + "setup_zram() {" + loader + main
+                )
+                result = subprocess.run(
+                    ["bash", "-c", shell], capture_output=True, text=True, timeout=10,
+                    encoding="utf-8",
+                )
+                output = result.stdout + result.stderr
+                self.assertEqual(result.returncode, 0, output)
+                self.assertNotIn("PACKAGE_MANAGER_CALLED", output)
+                self.assertIn("disk-swap-kib=16777216", output)
+                self.assertIn("zswap-fallback", output)
+                if swap_status:
+                    self.assertIn("image-swap-fallback", output)
+                if disabled == "0":
+                    self.assertIn("module unavailable", output)
+                    self.assertIn("without installing kernel packages", output)
 
     def test_fetch_connectors_verifies_checksums_with_loud_diagnostics(self):
         # verify_file is called bare under `set -e` from three places (the
@@ -4008,6 +4098,251 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
                     " must not be added back (pulled in transitively by"
                     " libwebkit2gtk-4.1-dev or not needed by the build)",
                 )
+
+
+@unittest.skipUnless(shutil.which("bash"), "bash is required to run the script")
+@unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                 "the host-touching script must not be exercised as root")
+class CiMemorySetupRepairBehaviorTests(unittest.TestCase):
+    """Behavior-level regression tests for repair_dpkg_state (pinvou3 #2211
+    review round 3, ported 2026-11-02).
+
+    The contract text pins can stay green even with the repair function body
+    emptied (comments kept), so this class runs the real script end-to-end
+    with stubs (only the root guard neutralized), compressing the 40s
+    lock-wait budget to milliseconds via a fake clock and fake sleep.
+    Coverage: busy-lock fast fails retried on the clock, in-budget (>20s)
+    release repaired in place, over-budget release caught by the EXIT round,
+    real failures stopping early without burning the budget, clean state
+    never invoking configure, journal-only and unavailable-audit states both
+    entering repair. When the production repair behavior breaks (function
+    body emptied etc.), this class must turn red.
+    """
+
+    # Fake-clock base: the script takes no real sleep between start and the
+    # repair, so the stub clock still sits at this value there.
+    BASE = 1000000000
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = (ROOT / "scripts" / "ci-memory-setup.sh").read_text(encoding="utf-8")
+        guard = "if [[ ${EUID} -ne 0 ]]; then"
+        if guard not in cls.src:
+            raise AssertionError("root guard drifted; the behavior harness must be updated")
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp(prefix="memory-setup-repair-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.state = tmp / "state"
+        self.state.mkdir()
+        self.bin = tmp / "bin"
+        self.bin.mkdir()
+        self.updates = tmp / "updates"
+        self.updates.mkdir()
+        self.clock = self.state / "clock"
+        self.clock.write_text(str(self.BASE))
+        for name, body in self.STUBS.items():
+            stub = self.bin / name
+            stub.write_text(body)
+            stub.chmod(0o755)
+
+    # dpkg stub behavior: --audit reports dirty/unavailable per
+    # state/audit-dirty and state/audit-fail; --configure -a fast-fails with
+    # a busy lock (rc 2) before release-at, slow-fail simulates a real
+    # failure (advances the fake clock by 30s, rc 1); success cleans the
+    # dirty markers and the leftover journal, mirroring the converged state
+    # after a real dpkg repair.
+    STUBS = {
+        "date": """#!/usr/bin/env bash
+# Fake clock: the script only ever asks for +%s (epoch seconds).
+if [[ ${1:-} == "+%s" ]]; then
+  cat "$REPAIR_TEST_STATE/clock"
+  exit 0
+fi
+exit 0
+""",
+        "sleep": """#!/usr/bin/env bash
+# Fake sleep: advance the fake clock instead of really sleeping.
+case ${1:-} in
+  (*[!0-9]*|"") exit 0 ;;
+esac
+echo $(( $(cat "$REPAIR_TEST_STATE/clock") + $1 )) > "$REPAIR_TEST_STATE/clock"
+""",
+        "timeout": """#!/usr/bin/env bash
+# run_to invokes `timeout -k 15 SECS CMD...`; pass-through keeps the call
+# shape while the fake clock governs all timing.
+shift 3
+exec "$@"
+""",
+        "sysctl": """#!/usr/bin/env bash
+exit 0
+""",
+        "modprobe": """#!/usr/bin/env bash
+echo "modprobe: FATAL: Module zram not found in directory /lib/modules/$(uname -r)" >&2
+exit 1
+""",
+        "apt-get": """#!/usr/bin/env bash
+echo "E: could not get lock /var/lib/dpkg/lock-frontend - open" >&2
+exit 100
+""",
+        "swapon": """#!/usr/bin/env bash
+case ${1:-} in
+  (--show*) exit 0 ;;
+esac
+echo "swapon: ${1:-}: Invalid argument" >&2
+exit 1
+""",
+        "swapoff": """#!/usr/bin/env bash
+exit 1
+""",
+        "findmnt": """#!/usr/bin/env bash
+exit 1
+""",
+        "df": """#!/usr/bin/env bash
+exit 1
+""",
+        "fallocate": """#!/usr/bin/env bash
+exit 1
+""",
+        "mkswap": """#!/usr/bin/env bash
+exit 1
+""",
+        "dpkg": """#!/usr/bin/env bash
+state="${REPAIR_TEST_STATE:?}"
+echo "dpkg $* @$(cat "$state/clock")" >> "$state/dpkg-calls.log"
+if [[ ${1:-} == --audit ]]; then
+  if [[ -f "$state/audit-fail" ]]; then
+    exit 42
+  fi
+  if [[ -f "$state/audit-dirty" ]]; then
+    echo "The following packages have been kept back:"
+    echo "  linux-image-6.8.0-999-generic"
+  fi
+  exit 0
+fi
+if [[ ${1:-} == --configure ]]; then
+  if [[ -f "$state/release-at" ]]; then
+    now="$(cat "$state/clock")"
+    if (( now < $(cat "$state/release-at") )); then
+      echo "dpkg frontend lock was locked by another process with pid 2374" >&2
+      exit 2
+    fi
+  fi
+  if [[ -f "$state/slow-fail" ]]; then
+    now="$(cat "$state/clock")"
+    echo $(( now + 30 )) > "$state/clock"
+    echo "dpkg: error processing archive" >&2
+    exit 1
+  fi
+  rm -f "$state/audit-dirty" "$state/audit-fail"
+  if [[ -n ${PINVOU3_CI_DPKG_UPDATES_DIR:-} ]]; then
+    rm -f "${PINVOU3_CI_DPKG_UPDATES_DIR}"/[0-9]* 2>/dev/null
+  fi
+  exit 0
+fi
+exit 0
+""",
+    }
+
+    def _configure_calls(self):
+        log = self.state / "dpkg-calls.log"
+        if not log.exists():
+            return []
+        return [line for line in log.read_text().splitlines() if "--configure" in line]
+
+    def _run_script(self):
+        env = dict(os.environ)
+        env["PATH"] = f"{self.bin}{os.pathsep}{env.get('PATH', '')}"
+        env["REPAIR_TEST_STATE"] = str(self.state)
+        env["PINVOU3_CI_DPKG_UPDATES_DIR"] = str(self.updates)
+        env.pop("GITHUB_ACTIONS", None)
+        # The behavior harness must take the hosted main path: the production
+        # script safely exits early on RUNNER_ENVIRONMENT=self-hosted before
+        # installing the repair/traps (preserving administrator-provisioned
+        # memory), and that early exit itself is not under regression here.
+        # If the outer self-hosted environment leaked in (on a self-hosted
+        # runner this is exactly what happens), the behavior tests would see
+        # zero configure calls and spin empty. Pin hosted explicitly so the
+        # production early-exit branch stays unaffected.
+        env["RUNNER_ENVIRONMENT"] = "github-hosted"
+        script = self.state / "ci-memory-setup.sh"
+        script.write_text(self.src.replace(
+            "if [[ ${EUID} -ne 0 ]]; then", "if [[ 0 -ne 0 ]]; then"
+        ))
+        proc = subprocess.run(
+            ["bash", str(script)], capture_output=True, text=True, env=env, timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, f"script failed; stderr:\n{proc.stderr}")
+        return proc
+
+    def test_busy_lock_released_after_25s_is_repaired_in_exit_round(self):
+        # Review-round-3 regression: a busy lock released after ~25s must be
+        # waited out on the clock and repaired at the release point, not
+        # given up on after ~10s like a fixed 3x5s retry would. After the
+        # #2095/#2211 port the script itself no longer installs kernel
+        # packages, so the repair only ever runs once, via the EXIT trap.
+        (self.state / "audit-dirty").write_text("1")
+        (self.state / "release-at").write_text(str(self.BASE + 25))
+        proc = self._run_script()
+        calls = self._configure_calls()
+        # Attempts land on fake clock 0,5,10,15,20,25 — the 25s one finds
+        # the lock released and succeeds.
+        self.assertEqual(len(calls), 6, calls)
+        self.assertIn("dpkg admin state repaired (configure attempt 6)", proc.stdout)
+        self.assertNotIn("did not succeed", proc.stderr)
+
+    def test_lock_held_past_budget_gives_up_loudly(self):
+        (self.state / "audit-dirty").write_text("1")
+        (self.state / "release-at").write_text(str(self.BASE + 45))
+        proc = self._run_script()
+        calls = self._configure_calls()
+        # The single EXIT-trap round attempts at 0..40 = 9 calls: after the
+        # 40s budget burns down it gives up loudly and reports the still
+        # dirty audit; a lock released at 45s gets no second wait round —
+        # the leftover state is left to later steps and the warning.
+        self.assertEqual(len(calls), 9, calls)
+        self.assertTrue(
+            all(int(c.rsplit("@", 1)[1]) <= self.BASE + 40 for c in calls), calls,
+        )
+        self.assertIn("dpkg --configure -a did not succeed", proc.stderr)
+        self.assertIn("dpkg --audit still reports", proc.stderr)
+        self.assertNotIn("dpkg admin state repaired", proc.stdout)
+
+    def test_real_configure_failure_stops_early_without_burning_the_budget(self):
+        (self.state / "audit-dirty").write_text("1")
+        (self.state / "slow-fail").write_text("1")
+        proc = self._run_script()
+        calls = self._configure_calls()
+        # An attempt that itself ran 30s and still failed = a real error;
+        # waiting cannot fix it: the single EXIT-trap round stops after 1
+        # attempt instead of burning the whole 40s lock-wait budget.
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("failed after 30s", proc.stderr)
+        self.assertIn("did not succeed", proc.stderr)
+
+    def test_clean_state_never_invokes_configure(self):
+        proc = self._run_script()
+        self.assertEqual(self._configure_calls(), [])
+        self.assertNotIn("interrupted state", proc.stderr)
+        self.assertNotIn("repaired", proc.stdout)
+
+    def test_leftover_updates_journal_alone_triggers_repair(self):
+        # Audit silent but an all-digit journal left under updates/ — the
+        # same evidence apt's own "dpkg was interrupted" check keys on —
+        # must enter repair; success consolidates the journal for real (the
+        # stub cleans it in sync).
+        (self.updates / "12345").write_text("journal\n")
+        proc = self._run_script()
+        calls = self._configure_calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("dpkg admin state repaired (configure attempt 1)", proc.stdout)
+
+    def test_unrunnable_audit_falls_through_to_repair(self):
+        (self.state / "audit-fail").write_text("1")
+        proc = self._run_script()
+        calls = self._configure_calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("dpkg admin state repaired (configure attempt 1)", proc.stdout)
 
 
 if __name__ == "__main__":
