@@ -423,6 +423,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       turnAlreadyInProgress: "⚠️ This chat is already processing a turn. The duplicate send was not executed.",
       webSessionUnavailable: "This session is no longer available on the desktop. Reopen it from the session list.",
       compactStart: "⏳ Compacting context", compactDone: "✓ Context compacted", compactFail: "⚠️ Compaction failed", compactCancel: "Context compaction canceled", compactAuto: " (auto)",
+      toolGuardrailDenied: "Guardrail denied", toolGuardrailDeniedSessionDenied: "this exact operation was denied in this session (a changed request asks again)", toolGuardrailDeniedPlan: "Plan mode is read-only; denied", toolGuardrailDeniedAskOff: "ask-on-guardrail is off; denied outright",
+      webApprovalUnsupported: "⚠️ Approval needed — the web UI cannot decide it; the turn waits for a decision in the desktop app",
       compactPruneMerged: "Auto-compaction: tool-result cleanup, messages unchanged",
       compactInactive: "The session engine is not running yet. Send a message before compacting the context",
       gpuUnavailable: "GPU info unavailable",
@@ -557,6 +559,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       turnAlreadyInProgress: "⚠️ このチャットでは別のターンを処理中です。重複した送信は実行されませんでした。",
       webSessionUnavailable: "このセッションはデスクトップ側で利用できなくなりました。セッション一覧から開き直してください。",
       compactStart: "⏳ コンテキストを圧縮中", compactDone: "✓ コンテキスト圧縮完了", compactFail: "⚠️ 圧縮に失敗", compactCancel: "コンテキストの圧縮をキャンセルしました", compactAuto: "（自動）",
+      toolGuardrailDenied: "ガードレール拒否", toolGuardrailDeniedSessionDenied: "このセッションで拒否済みの操作です（内容が変われば再度確認）", toolGuardrailDeniedPlan: "Plan モードは読み取り専用のため拒否", toolGuardrailDeniedAskOff: "ガードレール確認がオフのため直接拒否",
+      webApprovalUnsupported: "⚠️ 承認が必要です — Web UI では決定できず、ターンはデスクトップアプリでの決定を待ちます",
       compactPruneMerged: "自動圧縮: ツール結果を整理、メッセージ数は不変",
       compactInactive: "セッション Engine はまだ起動していません。メッセージを送信してからコンテキストを圧縮してください",
       gpuUnavailable: "GPU 情報を取得できません",
@@ -691,6 +695,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       turnAlreadyInProgress: "⚠️ 当前会话已有一轮正在处理，本次重复发送未执行。",
       webSessionUnavailable: "该会话在桌面端已不可用，请从会话列表重新打开。",
       compactStart: "⏳ 正在压缩上下文", compactDone: "✓ 上下文压缩完成", compactFail: "⚠️ 压缩失败", compactCancel: "已取消上下文压缩", compactAuto: "（自动）",
+      toolGuardrailDenied: "守卫拦截", toolGuardrailDeniedSessionDenied: "该会话已拒绝此操作（换参数需重新请批）", toolGuardrailDeniedPlan: "Plan 模式为只读，已拒绝", toolGuardrailDeniedAskOff: "守卫询问已关闭，已直接拒绝",
+      webApprovalUnsupported: "⚠️ 需要审批——Web 端无法决策，turn 将在桌面端等待处理",
       compactPruneMerged: "自动压缩：已整理工具结果，消息数不变",
       compactInactive: "会话引擎尚未运行。请先发送一条消息，再压缩上下文",
       gpuUnavailable: "GPU 信息不可用",
@@ -4075,6 +4081,46 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     }
   });
 
+  // Web 宿主审批面（tri-mode）：Web bridge 不接审批卡（无 decide_approval
+  // 接线，桌面双车道才是产品面）。审批请求必须显式落系统通告——Auto 会话
+  // 的审批等待若静默，Web 端表现为无限转圈且无从知晓原因（unsupported-
+  // capability 显式信号，不是完整审批工作流）。同 approval_id 只落一条通告
+  // （engine 重放/remount 重灌不得刷屏；桌面同 id 去重出卡，Web 同口径）。
+  // guardrail 拒绝照稳定键映射三语文案；mode 广播走权威收敛点（芯片及时
+  // 跟随桌面/远端的切换）；chat:approval_resolved 无卡可收敛，不监听。
+  const webApprovalNoticeIds = new Set();
+  listen("chat:approval_required", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    if (webApprovalNoticeIds.has(approvalId)) return;
+    webApprovalNoticeIds.add(approvalId);
+    const tool = p.tool_name ? String(p.tool_name) : "";
+    addSystemItem(bt("webApprovalUnsupported") + (tool ? ": " + tool : ""), {
+      webApprovalUnsupported: true,
+      toolName: tool,
+    });
+  }); });
+  listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const reason = String(p.reason || "");
+    const reasonText = reason === "session_denied" ? bt("toolGuardrailDeniedSessionDenied")
+      : reason === "plan_mode" ? bt("toolGuardrailDeniedPlan")
+      : reason === "guardrail_ask_off" ? bt("toolGuardrailDeniedAskOff")
+      : reason;
+    addSystemItem(bt("toolGuardrailDenied") + ": " + (p.tool_name ? String(p.tool_name) + " — " : "") + reasonText, {
+      guardrailDenied: true,
+      toolName: String(p.tool_name || ""),
+      reason,
+    });
+  }); });
+  listen("chat:mode_changed", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    if (!p.session_id) return;
+    applyAuthoritativeModeState(String(p.session_id), p);
+    notify();
+  }); });
+
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     // Relay reconnects and the desktop event bridge may replay the last frame.
@@ -4884,9 +4930,14 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
   // The desktop-side companion queries for bound-workspace sessions have no
   // web backend counterpart (web/remote sessions carry no directory binding):
   // same-named stub methods keep the bridge API symmetric on both sides — the
-  // binding query always returns null (UI shows no binding indicator and the
-  // YOLO confirmation gate never fires), code permission prefs always read
-  // null, and the confirm write is a no-op.
+  // binding query always returns null (UI shows no binding indicator), code
+  // permission prefs always read null, and the confirm write is a no-op.
+  // Consequence (round-4, safe direction): needsYoloConfirmation(null) stays
+  // true forever, so a draft Yolo pick on web pops the confirmation modal on
+  // every click and confirming it is a no-op — the gate prompts repeatedly
+  // rather than ever skipping the risk notice. The confirm never lands a mode
+  // write; the modal is the honest dead end until the web confirm backend
+  // exists.
   async function getSessionWorkspaceBinding() { return null; }
   async function getCodePermissionPrefs() { return null; }
   async function confirmCodeYolo() { return null; }
