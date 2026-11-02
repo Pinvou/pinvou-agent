@@ -255,7 +255,8 @@ pub enum SettingsValue {
     ColorScheme(ColorScheme),
     Language(Language),
     Bool(bool),
-    /// `plan | yolo | none` (`none` clears the Option).
+    /// `plan | yolo | auto | none` (`none` clears the Option; `auto` stores
+    /// as the `*_auto` companion flag, never the legacy literal).
     Mode(Option<SerializableMode>),
     /// `true | false | none` (only `advanced.allow_shell`).
     OptionalBool(Option<bool>),
@@ -341,10 +342,16 @@ fn parse_bool(raw: &str) -> Result<bool, CliError> {
 fn parse_mode(raw: &str) -> Result<Option<SerializableMode>, CliError> {
     match raw {
         "plan" => Ok(Some(SerializableMode::Plan)),
+        // `auto` is a value the desktop legitimately holds (tri-mode). It is
+        // only a SETTER marker here: the settings.json lane vocabulary never
+        // stores the `auto` literal - the setter below stores the explicit
+        // Auto choice as the `*_auto` companion flag with a None legacy
+        // value, mirroring the desktop's `set_mode_default` pair contract.
+        "auto" => Ok(Some(SerializableMode::Auto)),
         "yolo" => Ok(Some(SerializableMode::Yolo)),
         "none" => Ok(None),
         other => Err(CliError::usage(format!(
-            "expected plan, yolo or none, got {other:?}"
+            "expected plan, yolo, auto or none, got {other:?}"
         ))),
     }
 }
@@ -420,7 +427,7 @@ fn parse_settings_value(key: SettingsKey, raw: &str) -> Result<SettingsValue, Cl
             .map_err(|_| usage("true | false")),
         SettingsKey::ModeDefaultsWork | SettingsKey::CodePermissionLastMode => parse_mode(raw)
             .map(SettingsValue::Mode)
-            .map_err(|_| usage("plan | yolo | none")),
+            .map_err(|_| usage("plan | yolo | auto | none")),
         SettingsKey::AdvancedAllowShell => parse_optional_bool(raw)
             .map(SettingsValue::OptionalBool)
             .map_err(|_| usage("true | false | none")),
@@ -2825,6 +2832,10 @@ fn mode_str(mode: Option<SerializableMode>) -> String {
         || "none".to_owned(),
         |mode| match mode {
             SerializableMode::Plan => "plan".to_owned(),
+            // Unreachable through the settings getters (the legacy field
+            // never stores Auto; the effective getter reports the companion
+            // flag instead) - this arm only keeps the match exhaustive.
+            SerializableMode::Auto => "auto".to_owned(),
             SerializableMode::Yolo => "yolo".to_owned(),
         },
     )
@@ -2898,12 +2909,24 @@ fn settings_get<S: CredentialStore>(
             prefs.sidebar.date_grouping.to_string(),
             serde_json::json!(prefs.sidebar.date_grouping),
         ),
+        // Effective-mode contract: the companion `*_auto` flag wins over the
+        // legacy field (the desktop resolves the same pair the same way), so
+        // an explicit Auto choice reports `auto` instead of a stale legacy
+        // spelling.
         SettingsKey::ModeDefaultsWork => {
-            let value = mode_str(prefs.mode_defaults.work);
+            let value = if prefs.mode_defaults.work_auto {
+                "auto".to_owned()
+            } else {
+                mode_str(prefs.mode_defaults.work)
+            };
             (value.clone(), serde_json::json!(value))
         }
         SettingsKey::CodePermissionLastMode => {
-            let value = mode_str(prefs.code_permission.last_mode);
+            let value = if prefs.code_permission.last_mode_auto {
+                "auto".to_owned()
+            } else {
+                mode_str(prefs.code_permission.last_mode)
+            };
             (value.clone(), serde_json::json!(value))
         }
         SettingsKey::AdvancedAllowShell => (
@@ -2968,11 +2991,22 @@ fn settings_set(
             (SettingsKey::SidebarDateGrouping, SettingsValue::Bool(v)) => {
                 prefs.sidebar.date_grouping = v;
             }
+            // Lane-default writes follow the desktop `set_mode_default` pair
+            // contract: the settings.json lane vocabulary never stores the
+            // `auto` literal. An explicit Auto choice stores the `*_auto`
+            // companion flag with a None legacy value; every other choice -
+            // including the `none` clear - stores the legacy value and
+            // CLEARS the companion, so a retained stale flag can no longer
+            // mask this write when the desktop resolves the effective mode.
             (SettingsKey::ModeDefaultsWork, SettingsValue::Mode(v)) => {
-                prefs.mode_defaults.work = v;
+                let is_auto = v == Some(SerializableMode::Auto);
+                prefs.mode_defaults.work = if is_auto { None } else { v };
+                prefs.mode_defaults.work_auto = is_auto;
             }
             (SettingsKey::CodePermissionLastMode, SettingsValue::Mode(v)) => {
-                prefs.code_permission.last_mode = v;
+                let is_auto = v == Some(SerializableMode::Auto);
+                prefs.code_permission.last_mode = if is_auto { None } else { v };
+                prefs.code_permission.last_mode_auto = is_auto;
             }
             (SettingsKey::AdvancedAllowShell, SettingsValue::OptionalBool(v)) => {
                 prefs.advanced.allow_shell = v;
@@ -5017,6 +5051,114 @@ mod tests {
                 .credential_state,
             CredentialState::Missing,
             "the cleared model must be marked missing, not configured"
+        );
+    }
+
+    /// Effective-mode contract (review P2): the desktop stores an explicit
+    /// Auto lane default as the `*_auto` companion flag with a None legacy
+    /// value. The CLI getter must report the effective value (not the stale
+    /// legacy spelling), and EVERY legacy write - including the `none` clear
+    /// - must clear the companion, so a retained stale flag can no longer
+    /// mask the CLI's choice when the desktop reloads and resolves the pair.
+    #[test]
+    fn mode_default_reads_and_writes_follow_the_effective_contract() {
+        let _env_lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _home = TempHome::new("mode-contract");
+
+        // Desktop-selected Auto on both lanes: the exact settings.json shape
+        // the desktop's `set_mode_default` pair contract produces.
+        UserPrefs::update_transaction(|prefs| {
+            prefs.code_permission.last_mode = None;
+            prefs.code_permission.last_mode_auto = true;
+            prefs.mode_defaults.work = None;
+            prefs.mode_defaults.work_auto = true;
+            Ok(())
+        })
+        .expect("seed desktop auto flags");
+
+        // Getter reports the effective value, not the stale legacy None.
+        let store = RecordingStore::new();
+        for key in [
+            SettingsKey::CodePermissionLastMode,
+            SettingsKey::ModeDefaultsWork,
+        ] {
+            let outcome =
+                settings_get(&store, Some(key), OutputMode::Human).expect("auto get succeeds");
+            assert!(
+                outcome.stdout.contains("auto"),
+                "{key:?} must report the companion Auto, got: {}",
+                outcome.stdout
+            );
+        }
+
+        // Desktop Auto -> CLI choice -> reload: a legacy write stores the
+        // value AND clears the companion, so the reloaded effective mode is
+        // the CLI's choice, not the seeded Auto.
+        settings_set(
+            SettingsKey::CodePermissionLastMode,
+            SettingsValue::Mode(Some(SerializableMode::Yolo)),
+            OutputMode::Human,
+        )
+        .expect("yolo set succeeds");
+        let prefs = UserPrefs::load();
+        assert_eq!(
+            prefs.code_permission.last_mode,
+            Some(SerializableMode::Yolo),
+            "the legacy value must carry the CLI choice"
+        );
+        assert!(
+            !prefs.code_permission.last_mode_auto,
+            "the companion flag must clear on a legacy choice - a retained flag would mask \
+             this write on the desktop"
+        );
+        let outcome = settings_get(
+            &store,
+            Some(SettingsKey::CodePermissionLastMode),
+            OutputMode::Human,
+        )
+        .expect("post-set get succeeds");
+        assert!(
+            outcome.stdout.contains("yolo") && !outcome.stdout.contains("auto"),
+            "the getter must report the CLI's choice after the write: {}",
+            outcome.stdout
+        );
+
+        // The `none` clear follows the same contract.
+        settings_set(
+            SettingsKey::ModeDefaultsWork,
+            SettingsValue::Mode(None),
+            OutputMode::Human,
+        )
+        .expect("none set succeeds");
+        let prefs = UserPrefs::load();
+        assert_eq!(prefs.mode_defaults.work, None);
+        assert!(
+            !prefs.mode_defaults.work_auto,
+            "the work companion must clear on the none clear too"
+        );
+
+        // `auto` itself stores as the pair (None legacy + companion), never
+        // the literal in the legacy field - the settings.json lane vocabulary
+        // must stay readable by pre-tri-mode binaries.
+        settings_set(
+            SettingsKey::ModeDefaultsWork,
+            SettingsValue::Mode(Some(SerializableMode::Auto)),
+            OutputMode::Human,
+        )
+        .expect("auto set succeeds");
+        let prefs = UserPrefs::load();
+        assert_eq!(prefs.mode_defaults.work, None, "legacy field stays None");
+        assert!(prefs.mode_defaults.work_auto, "the companion carries Auto");
+        let outcome = settings_get(
+            &store,
+            Some(SettingsKey::ModeDefaultsWork),
+            OutputMode::Human,
+        )
+        .expect("auto re-get succeeds");
+        assert!(
+            outcome.stdout.contains("auto"),
+            "the getter must report auto after an auto write: {}",
+            outcome.stdout
         );
     }
 
