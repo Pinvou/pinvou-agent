@@ -53,7 +53,13 @@ esac
 
 case "$requested_arch" in
   x86_64) target_arch="x86_64"; policy_arch="amd64"; cross_mode=0 ;;
-  aarch64) target_arch="aarch64"; policy_arch="arm64"; cross_mode=0 ;;
+  # aarch64: native on an arm host; since 2026-11 the release arm64 leg also
+  # cross-compiles it on an x86_64 runner (same env-driven mode as
+  # loongarch64 — the workflow provides the Debian cross compilers).
+  aarch64)
+    target_arch="aarch64"; policy_arch="arm64"
+    if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then cross_mode=0; else cross_mode=1; fi
+    ;;
   # loongarch64: release CI cross-compiles on an x86_64/arm64 runner, so the
   # host==requested assertion below is skipped and the cross toolchain comes
   # from the environment instead (see the dependency pre-check and cmake
@@ -114,10 +120,10 @@ if [ "$cross_mode" -eq 1 ]; then
     }
   done
   # The env-driven toolchain is only mandatory when actually cross-building;
-  # on a loongarch64 host the native compiler toolchain is enough.
+  # on a same-arch host the native compiler toolchain is enough.
   if [ "$requested_arch" != "$host_arch" ] \
     && [ -z "${CMAKE_TOOLCHAIN_FILE:-}" ] && [ -z "${CC:-}" ] && [ -z "${CXX:-}" ]; then
-    echo "loongarch64 cross build requires CC/CXX (loongarch64 cross compilers) or CMAKE_TOOLCHAIN_FILE in the environment" >&2
+    echo "$requested_arch cross build requires CC/CXX ($requested_arch cross compilers) or CMAKE_TOOLCHAIN_FILE in the environment" >&2
     exit 1
   fi
   # A native loongarch64 host uses its own strip; a real cross build needs
@@ -127,6 +133,8 @@ if [ "$cross_mode" -eq 1 ]; then
   # keeps working via STRIP override.
   if [ "$requested_arch" = "$host_arch" ]; then
     strip_bin="${STRIP:-strip}"
+  elif [ "$requested_arch" = "aarch64" ]; then
+    strip_bin="${STRIP:-aarch64-linux-gnu-strip}"
   else
     strip_bin="${STRIP:-loongarch64-unknown-linux-gnu-strip}"
   fi
