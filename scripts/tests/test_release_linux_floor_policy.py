@@ -15,10 +15,12 @@ ASR_SETUP_SCRIPT = ROOT / "scripts" / "asr" / "setup-sensevoice.sh"
 LINUX_OVERLAY = ROOT / "pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json"
 
 # Linux 发布基线:Ubuntu 22.04 (glibc 2.35) x86_64/arm64 + loongarch64 的
-# deepin 23/25 / UOS V25 (glibc 2.38)。x86_64/arm64 发布二进制链接构建机
-# glibc,runner 升级会静默抬高基线,因此 runner 标签与 glibc 守护都是有
-# 意决策;loongarch64 走交叉工具链 + deepin sysroot,基线由 sysroot 决定。
-# 本测试防止无意的基线漂移。
+# deepin 23/25 / UOS V25 (glibc 2.38)。x86_64 链接构建机 glibc;arm64 自
+# 2026-11 起交叉构建(计费的 arm 托管 runner 已弃用):x86_64 jammy 基座 +
+# jammy 档案的 :arm64 multiarch 目标库,基线仍由 jammy 钉住,等价于原生
+# arm runner 的发行版语义;loongarch64 走交叉工具链 + deepin sysroot,基线
+# 由 sysroot 决定。runner 标签、multiarch sysroot 与 glibc 守护都是有意
+# 决策;本测试防止无意的基线漂移。
 
 
 def _without_yaml_comments(block):
@@ -73,7 +75,15 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
     def test_linux_builds_pin_ubuntu_22_04_runners(self):
         # 带换行断言,避免 x64 段误匹配 ubuntu-22.04-arm 这类更长标签。
         self.assertIn("runs-on: ubuntu-22.04\n", self.x64_job)
-        self.assertIn("runs-on: ubuntu-22.04-arm\n", self.arm64_job)
+        # arm64 交叉构建(2026-11):宿主与 x64/loong64 一致钉在 x86_64
+        # jammy;目标侧基线来自 jammy 档案的 :arm64 multiarch 包,因此除
+        # runner 钉外还钉住 multiarch 开关与关键目标库——丢掉 :arm64 后缀
+        # 会静默链到宿主 amd64 库,属于基线漂移的另一种形态。
+        self.assertIn("runs-on: ubuntu-22.04\n", self.arm64_job)
+        self.assertNotIn("ubuntu-22.04-arm", self.arm64_job)
+        self.assertIn("dpkg --add-architecture arm64", self.arm64_job)
+        self.assertIn("libwebkit2gtk-4.1-dev:arm64", self.arm64_job)
+        self.assertIn("libssl-dev:arm64", self.arm64_job)
         self.assertNotIn("ubuntu-latest", self.x64_job.split("\n    steps:")[0])
         self.assertNotIn("ubuntu-24.04", self.arm64_job.split("\n    steps:")[0])
         # loongarch64 没有 GitHub 托管 loong64 runner:交叉构建必须钉在

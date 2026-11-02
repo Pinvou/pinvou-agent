@@ -284,15 +284,18 @@ jobs:
     name: 构建 Linux arm64 deb
     needs: check-version-bump
     if: needs.check-version-bump.outputs.build_required == 'true'
-    # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35),
-    # runner 钉在 ubuntu-22.04-arm,升级前先确认新基线决策。
-    runs-on: ubuntu-22.04-arm
-    # 2026-10 实测:近 19 次完全成功的 release 构建 37m12s–46m22s
-    # (历史观测峰值 48m14s 出自一次被取消 run 中的 arm64 job),
-    # 旧上限 90 本有约 2x 余量。放宽到 120 为工具链滚动、缓存冷启动等
-    # 长尾留余量,代价只是真挂死时多 30min 才被取消(成功时长不受影响)。
-    # 本次仅放宽有实测样本的 arm64(与按 1.5x 联动的 loong64);
-    # windows 150 与 macos 360 的余量比例更紧,见各自 job 注释观察。
+    # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35)。
+    # 2026-11 起改为 x86_64 ubuntu-22.04 全程交叉(宿主与 loongarch64 腿一致):
+    # arm64 托管 runner 按分钟计费(2026-10 该腿 $18.46 净额),交叉后归零。
+    # 与 loong64 的"外部工具链 + 第三方 sysroot"不同,arm64 走 Ubuntu 原生
+    # multiarch:dpkg --add-architecture arm64 后从 jammy 档案装 :arm64 版
+    # webkit/gtk/openssl/pipewire 等库——与原生 arm runner 同源同版本,
+    # glibc 2.35 基线由 jammy 的 arm64 档案钉住(不再是 arm runner 基座,
+    # 但守护语义不变,floor 检查照跑)。tauri-bundler 原生支持 aarch64 目标,
+    # 无需 loong64 那套手工 deb 组装。
+    runs-on: ubuntu-22.04
+    # 原生实测 37m12s–46m22s(19 次成功);交叉参考 loong64 先例约为原生
+    # 1.2x,先沿用 120(policy 按联动公式钉住,交叉实测落地后再校准)。
     timeout-minutes: 120
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
@@ -316,10 +319,31 @@ jobs:
       # job's comments for the conservative-tier trade-off and the known
       # fn-address identity boundary rust#160267; the RUSTFLAGS env covers
       # both the tauri main build and knowledge-host).
+      # 交叉语境下这些链接旗标语义不变:aarch64-linux-gnu-gcc -fuse-ld=lld
+      # 会调用 apt 的通用 ld.lld(LLVM lld 原生支持 aarch64),ThinLTO 仍由
+      # 宿主 rustc 进程执行(同 loong64 腿的机制注释)。
       RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--icf=safe --remap-path-prefix=${{ github.workspace }}=/"
       # release 编译 codewhale-tui 的 SIGBUS 同源风险防护(同 build-linux-x64,
-      # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。
+      # 正式入口按平台注入 RUSTC_WRAPPER,见 config.toml 注释)。交叉构建的
+      # rustc 仍是 x86_64 宿主进程,wrapper 原样生效(同 loong64 腿)。
       RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      # ── 交叉构建环境(2026-11 起) ──
+      # cargo 调 aarch64 交叉链接器(gcc-cross 前端,内部按 RUSTFLAGS 选 lld);
+      # CC/CXX/AR 供 cc/cmake 类构建脚本(aws-lc-sys 等)编译目标侧 C 代码。
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+      AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+      # pkg-config 只解析 arm64 侧:优先 1.0.7 pipewire 交叉前缀,其后是
+      # multiarch 系统库目录;不含 /usr/lib/x86_64-linux-gnu/pkgconfig,避免
+      # 交叉构建误链宿主架构库。ALLOW_CROSS 允许 pkg_config crate 在交叉
+      # 环境使用该解析结果。
+      PKG_CONFIG_LIBDIR: /usr/local/arm64/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+      PKG_CONFIG_ALLOW_CROSS: "1"
+      # libspa-sys 的 bindgen 在宿主跑 libclang,目标 triple 传给 clang;
+      # jammy 的 llvm-14 原生支持 aarch64 目标解析(不同于 loong64 需要
+      # llvm-18),钉路径避免 clang-sys 多目录探测漂移。
+      LIBCLANG_PATH: /usr/lib/llvm-14/lib
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7
@@ -332,48 +356,46 @@ jobs:
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
         run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
 
-      # The ARM64 image has ample headroom (72G-era ~34G; the 2026-10-01
-      # probe measured 79-102G free at job start on x64/arm), so the base
-      # tier already clears the 24G floor; deleting the tool cache would
-      # buy little and only force setup-node to re-download Node afterwards.
+      # 交叉构建的工具链 + multiarch sysroot + cargo target 目录全部落在工作
+      # 区/系统盘,先腾空间(同 loong64 腿;探针见 ci-memory-setup.sh)。
       - name: Prepare disk space for the release build
         run: |
-          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
-            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
-            python3 scripts/ci-rust-disk.py --min-free-gib 24
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE"             RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT"             python3 scripts/ci-rust-disk.py --min-free-gib 24
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Add the aarch64 Rust target
+        # 编排内不重复执行;显式一步让 target 缺失在该步骤即红,而不是埋在
+        # 几十分钟后的 cargo 构建里(同 loong64 腿的做法)。
+        run: rustup target add aarch64-unknown-linux-gnu
 
       # No rust-cache here — same read-only quota policy as build-linux-x64
       # (see that job's comment; pinned by test_release_cache_policy).
 
-      - name: 装 Tauri + pinvou3 Linux 系统依赖
+      - name: 装 Tauri + pinvou3 Linux 系统依赖 (host 工具链 + arm64 multiarch sysroot)
         run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          # Package list audited per-package on 2026-09-15 (single-package simulated install;
-          # removable when the installed set is unchanged): the gtk/soup/x11 trio is
-          # pulled in transitively by libwebkit2gtk-4.1-dev; librsvg2-dev is not needed (no rsvg crate in Cargo).
-          # libssl-dev stays: hf-hub -> native-tls -> openssl-sys is not vendored; appindicator is used for the tray.
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            libpipewire-0.3-dev libdrm-dev libgbm-dev libegl-dev \
-            build-essential pkg-config cmake lld
+          # host 侧只装构建工具(cc/cmake/pkg-config/lld 与 bindgen 用的
+          # libclang);webkit/gtk/soup/openssl/pipewire/drm/gbm/egl 等目标侧
+          # 头与库全部来自 jammy 档案的 :arm64 multiarch 包(与原生 arm
+          # runner 同源同版本,glibc 2.35 基线由此钉住)。包清单与原生腿
+          # 逐项对应(2026-09-15 审计注释见 x64 腿):webkit 三件套/openssl/
+          # appindicator/pipewire+drm+gbm+egl。
+          sudo apt-get install -y --no-install-recommends             build-essential pkg-config cmake lld             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu             libclang-14-dev             libwebkit2gtk-4.1-dev:arm64             libssl-dev:arm64             libayatana-appindicator3-dev:arm64             libpipewire-0.3-dev:arm64 libdrm-dev:arm64 libgbm-dev:arm64 libegl-dev:arm64
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
 
       # pipewire-rs 0.10 (computer_use Wayland capture, direct + via xcap) needs
-      # SPA static inline helpers that ubuntu-22.04's libpipewire 0.3.48 headers
-      # lack (libspa-sys bindgens against system headers at build time). Build
-      # the upstream 1.0.7 headers+lib into /usr/local so pkg-config resolves
-      # the prefix; idempotent, no runner-image drift. Mirrors the pr-check
-      # rust legs — the release build compiles the identical crate graph.
-      # See scripts/ci-libpipewire-build.sh for the full rationale.
-      - name: Build PipeWire 1.0.7 dev prefix (jammy SPA headers too old)
-        run: bash scripts/ci-libpipewire-build.sh
+      # SPA static inline helpers that jammy's libpipewire 0.3.48 headers lack
+      # (libspa-sys bindgens against system headers at build time) —— :arm64 的
+      # 0.3.48 有同样的缺口,因此为交叉目标单独构建 1.0.7 前缀到
+      # /usr/local/arm64(宿主版脚本见 ci-libpipewire-build.sh)。
+      - name: Build PipeWire 1.0.7 dev prefix for arm64 (jammy SPA headers too old)
+        run: bash scripts/ci-libpipewire-build-arm64.sh
 
       - name: Node.js
         uses: actions/setup-node@v7
@@ -391,9 +413,12 @@ jobs:
       # 连接器 CLI 不在构建期下载或打入安装包；用户首次连接时，应用按
       # connectors.lock.json 在线下载、校验并安装到用户目录。
       # VERSION bump 与人工触发都产出正式 artifact，完整使用 release profile。
+      # 交叉目标由 --target 指定;tauri-bundler 原生支持 aarch64 deb(不同于
+      # loong64 需 --no-bundle + 手工组装),产物名仍是 pinvou3_<version>_arm64.deb,
+      # 下游 repack/重命名/守护步骤与原生版逐字一致。
       - name: 构建 deb
         working-directory: pinvou3-app
-        run: node scripts/tauri/build.js build --bundles deb
+        run: node scripts/tauri/build.js build --bundles deb --target aarch64-unknown-linux-gnu
 
       # Repack deb (data.tar gzip-6 → xz -9), same as build-linux-x64.
       - name: Repack deb (data.tar gzip-6 → xz -9)
