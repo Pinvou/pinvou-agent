@@ -1,0 +1,182 @@
+[
+  {
+    "variant": "v2.0-plan-control",
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "turns": 4,
+    "passed_turns": 4,
+    "families": 2,
+    "passed_families": 2,
+    "elapsed_total_secs": 63.297,
+    "turn_median_secs": 12.846,
+    "turn_p90_secs": 23.334,
+    "family_median_secs": 31.648,
+    "request_count": 26,
+    "ttft_samples": 26,
+    "request_ttft_median_ms": 268.5,
+    "request_ttft_p90_ms": 1345.0,
+    "tool_calls": 24,
+    "failed_tools": 4,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 228448,
+      "output_tokens": 4908,
+      "cache_hit_tokens": 189784,
+      "cache_miss_tokens": 38664,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1634
+    },
+    "observed_tokens_per_successful_family": 116678.0,
+    "scenarios": {
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 12.846,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "v2.0-plan-control",
+    "model": "glm-5.3-flash",
+    "turns": 4,
+    "passed_turns": 4,
+    "families": 2,
+    "passed_families": 2,
+    "elapsed_total_secs": 158.569,
+    "turn_median_secs": 39.998,
+    "turn_p90_secs": 55.265,
+    "family_median_secs": 79.285,
+    "request_count": 21,
+    "ttft_samples": 21,
+    "request_ttft_median_ms": 3433.0,
+    "request_ttft_p90_ms": 4283.0,
+    "tool_calls": 23,
+    "failed_tools": 2,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 186657,
+      "output_tokens": 4459,
+      "cache_hit_tokens": 153536,
+      "cache_miss_tokens": 33121,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 2059
+    },
+    "observed_tokens_per_successful_family": 95558.0,
+    "scenarios": {
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 39.998,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "v2.1-followup",
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "turns": 8,
+    "passed_turns": 8,
+    "families": 6,
+    "passed_families": 6,
+    "elapsed_total_secs": 208.621,
+    "turn_median_secs": 22.663,
+    "turn_p90_secs": 59.484,
+    "family_median_secs": 41.374,
+    "request_count": 38,
+    "ttft_samples": 38,
+    "request_ttft_median_ms": 285.0,
+    "request_ttft_p90_ms": 1578.9,
+    "tool_calls": 37,
+    "failed_tools": 11,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 348805,
+      "output_tokens": 8231,
+      "cache_hit_tokens": 256832,
+      "cache_miss_tokens": 91973,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3090
+    },
+    "observed_tokens_per_successful_family": 59506.0,
+    "scenarios": {
+      "browser_host_boundary": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 59.585,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 3.351,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 22.663,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "v2.1-followup",
+    "model": "glm-5.3-flash",
+    "turns": 8,
+    "passed_turns": 8,
+    "families": 6,
+    "passed_families": 6,
+    "elapsed_total_secs": 240.436,
+    "turn_median_secs": 31.803,
+    "turn_p90_secs": 47.026,
+    "family_median_secs": 48.086,
+    "request_count": 30,
+    "ttft_samples": 30,
+    "request_ttft_median_ms": 3956.0,
+    "request_ttft_p90_ms": 4188.8,
+    "tool_calls": 29,
+    "failed_tools": 3,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 261831,
+      "output_tokens": 5380,
+      "cache_hit_tokens": 169536,
+      "cache_miss_tokens": 92295,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 2861
+    },
+    "observed_tokens_per_successful_family": 44535.2,
+    "scenarios": {
+      "browser_host_boundary": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 48.086,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 6.547,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 31.803,
+        "failed_checks": []
+      }
+    }
+  }
+]

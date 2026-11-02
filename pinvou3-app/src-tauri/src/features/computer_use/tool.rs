@@ -597,10 +597,6 @@ fn parse_action(input: &Value) -> Result<ParsedCall, ToolError> {
     Ok(ParsedCall { action, confirm_id })
 }
 
-// ---------------------------------------------------------------------------
-// Execution
-// ---------------------------------------------------------------------------
-
 /// Screenshot artifacts (the persisted PNG + the scale map).
 struct ShotOutcome {
     abs_path: PathBuf,

@@ -1,7 +1,5 @@
-//! L1 知识库：选定文件 → 解析(file_ingest) → 切块 → 入库 → 全文检索。
-//!
-//! 设计见 docs/本地文件与知识库-设计文档.html。本阶段做**全文版**(chunks_fts)，
-//! `chunks.vec` 列留 NULL；向量(embedding)是 Phase 3，检索届时升级为 fts+向量混合。
+//! L1 知识库：选定文件 → 解析(file_ingest) → 切块 → 入库 → 检索。
+//! 检索为 fts+向量混合（嵌入模型未挂载时纯 fts；见 retrieve_for_chat_with_vector 的 rrf_merge）。
 //! 复用 L0 的同一个 SQLite 连接(同库 index.db，见 [`super::store::Store::conn_arc`])。
 
 use std::collections::HashMap;

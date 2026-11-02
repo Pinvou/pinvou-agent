@@ -1,0 +1,390 @@
+{
+  "revision": "V2.4.5-review-r4",
+  "author": "Codex (OpenAI) / GPT-6; exact variant/reasoning level unavailable",
+  "date": "2026-10-28T04:50:11.555531+00:00",
+  "review": {
+    "url": "https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5677804087",
+    "id": 5677804087,
+    "state": "APPROVED",
+    "approved_head": "643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6",
+    "scope": "Items 1-5 are nonblocking recommendations handled in this follow-up. Approval at the old head is not an approval receipt for the new commit."
+  },
+  "parent_before_revision": "6141759f8aeeaf0b5431daac1331963f575fe847",
+  "foundation_before_revision": "643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6",
+  "foundation_head": "0af53af6c0648b544e4b79194acc9e4f408ef7a4",
+  "measurement_scope": "Deterministic follow-up checks only; no model/network task, full application regression or fresh Windows/macOS execution. Historical model measurements, manifests, R1-R3 source/verification receipts and prior visual/privacy boundaries stay frozen.",
+  "dispositions": [
+    {
+      "items": [
+        1,
+        3,
+        4
+      ],
+      "change": "Restore system-level plausible core-capability match and inspect-before-local ordering; qualify discovery by availability in system/shell/result/Skill guidance; clarify shell query antecedent and receipt punctuation. Preserve the one permitted exact-name probe, schema-only one retry, and refusal stop."
+    },
+    {
+      "item": 2,
+      "change": "Independently pin trusted host declarations in the discovery Skill and shell guidance, plus the exact-name-first LoadSkillTool description in existing tests."
+    },
+    {
+      "item": 5,
+      "change": "Exercise a custom discovery body beside an unchanged mcp-builder peer: refresh the peer and advance marker 12 while retaining custom bytes. Preserve absent peers and marker 11 in deletion cases. Installer/generation/digest unchanged."
+    },
+    {
+      "item": 6,
+      "change": "Excluded unchanged historical generation-10 digest gaps, Goal-family wording and strict release-Clippy baseline issue; no new feature claim."
+    }
+  ],
+  "foundation_inventory": {
+    "foundation_head": "0af53af6c0648b544e4b79194acc9e4f408ef7a4",
+    "baseline": "dcd4c200f72f0c1ffd60d8e7f6850313db879fc5",
+    "commits": 88,
+    "above_r1": 73,
+    "signed": 86,
+    "missing_signoff": [
+      "e9a7f48da169bf89399a11592e4d22a7b721cb39",
+      "f276729350a501153969fc648986b6352ee438f2"
+    ],
+    "files": 522,
+    "insertions": 90186,
+    "deletions": 39279,
+    "net": 50907,
+    "distinct_forkguards": 255
+  },
+  "foundation_gates": [
+    {
+      "name": "forkguard",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tui",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "forkguard_",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 55.21,
+      "summary": [
+        "test result: ok. 246 passed; 0 failed; 0 ignored; 0 measured; 12055 filtered out; finished in 9.44s"
+      ],
+      "log_sha256": "c7580ce183cbc7ad83626bde4525d797261fe921852cf2c87d6eb708c1a36b8b"
+    },
+    {
+      "name": "registry",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tui",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "registry_first",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.25,
+      "summary": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 12296 filtered out; finished in 0.01s"
+      ],
+      "log_sha256": "108f4ffe54dddf4bc94a7067a40a6706b26714b28995a1d208c0631e3a3118e5"
+    },
+    {
+      "name": "skill-tool",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tui",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "tools::skill::tests",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.29,
+      "summary": [
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 12287 filtered out; finished in 0.05s"
+      ],
+      "log_sha256": "622fa2fa330c52742f69832b961998029a3c2cefe91f3cd30caa8cc9d5434c26"
+    },
+    {
+      "name": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 5.29,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "-p",
+        "codewhale-tui",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "clippy::uninlined_format_args",
+        "-A",
+        "clippy::too_many_arguments",
+        "-A",
+        "clippy::unnecessary_map_or",
+        "-A",
+        "clippy::collapsible_if",
+        "-A",
+        "clippy::assertions_on_constants"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 35.83,
+      "summary": [],
+      "log_sha256": "164b2bb9945160a1da7726e182181fd7c72640a803e273c727da4564c2980cb8"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.04,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "final_positive_test_executions": 265,
+  "distinct_selected_tests": 263,
+  "test_count_note": "246 forkguard + 5 registry-first + 14 skill-tool final positive executions; two registry tests overlap forkguard. Preliminary and intentional deletion-control runs are separate.",
+  "parent_gates": [
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 2.08,
+      "summary": [
+        "architecture guard passed: no architecture debt increased"
+      ],
+      "log_sha256": "de5bff130d75700fdd1ec335b56d6149a8f099986718a127dbac577fcb556ea3"
+    },
+    {
+      "name": "fork-fast",
+      "command": [
+        "./scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.37,
+      "summary": [
+        "\u001b[32m指纹层全过 (--fast)\u001b[0m"
+      ],
+      "log_sha256": "3926502983e9909daa3dc6a04bfa0f4ac34594759b80d3645efea0d2a414fcd2"
+    },
+    {
+      "name": "python-fork",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "scripts.tests.test_fork_guard_floor",
+        "scripts.tests.test_fork_guard_ancestry"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.24,
+      "summary": [
+        "Ran 5 tests in 0.212s",
+        "OK"
+      ],
+      "log_sha256": "dcdbfa21964d51763eceb12640c7442e84e34bd773eb3a436c411d67e3e9c0f3"
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_seconds": 0.01,
+      "summary": [],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "mutation_controls": {
+    "gates": [
+      {
+        "name": "registry",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "codewhale-tui",
+          "--lib",
+          "--all-features",
+          "--locked",
+          "registry_first",
+          "--",
+          "--test-threads=1"
+        ],
+        "expected_exit": 101,
+        "exit_code": 101,
+        "expected_failed_tests": [
+          "registry_first_instruction_only_names_published_tools",
+          "registry_first_scenario"
+        ],
+        "summary": [
+          "test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 12296 filtered out; finished in 0.05s"
+        ],
+        "elapsed_seconds": 45.91,
+        "log_sha256": "661c17cd9c86bd70b7659dbdf13eaa7e6197bd91f3e56ce1e5d2b119ca7171c5"
+      },
+      {
+        "name": "skill-preamble",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "codewhale-tui",
+          "--lib",
+          "--all-features",
+          "--locked",
+          "forkguard_mcp_discovery_skill_conditions_registry_commands",
+          "--",
+          "--test-threads=1"
+        ],
+        "expected_exit": 101,
+        "exit_code": 101,
+        "expected_failed_tests": [
+          "forkguard_mcp_discovery_skill_conditions_registry_commands"
+        ],
+        "summary": [
+          "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12300 filtered out; finished in 0.00s"
+        ],
+        "elapsed_seconds": 0.23,
+        "log_sha256": "a2f53510c83bf59a0373192e7bd8e35f91b1a0145679ad6a9c69a4ff51793589"
+      },
+      {
+        "name": "load-description",
+        "command": [
+          "cargo",
+          "test",
+          "-p",
+          "codewhale-tui",
+          "--lib",
+          "--all-features",
+          "--locked",
+          "execute_lists_available_skills_for_empty_star_and_list_names",
+          "--",
+          "--test-threads=1"
+        ],
+        "expected_exit": 101,
+        "exit_code": 101,
+        "expected_failed_tests": [
+          "execute_lists_available_skills_for_empty_star_and_list_names"
+        ],
+        "summary": [
+          "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12300 filtered out; finished in 0.01s"
+        ],
+        "elapsed_seconds": 0.25,
+        "log_sha256": "e30274df5a05635cb797321bc1310e169a98d9e2163c2aaebff3c9343e5a237e"
+      }
+    ],
+    "restored": true,
+    "concurrent_edits_preserved": []
+  },
+  "mutation_control_summary": "Four deliberate production deletions across three commands fail exactly four independently pinned tests; sources restored byte-exact before final green runs.",
+  "initial_failure_disposition": {
+    "gate": {
+      "name": "forkguard",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "codewhale-tui",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "forkguard_",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "elapsed_seconds": 80.15,
+      "summary": [
+        "test result: FAILED. 245 passed; 1 failed; 0 ignored; 0 measured; 12055 filtered out; finished in 9.24s"
+      ],
+      "log_sha256": "3a6227290c3d72d3f629455dfa56835f5be615c654be3d7d1639c290edab97a3"
+    },
+    "reason": "The existing step-3 exact wording pin did not include the new availability qualifier. Updated the pin to retain the same step-1 cross-reference plus availability condition, then reran all final gates."
+  },
+  "production_first_check": {
+    "command": "cargo test -p codewhale-tui --lib --all-features --locked registry_first -- --test-threads=1",
+    "passed": 5,
+    "failed": 0,
+    "log_sha256": "e8bd0a2fcc4a87887b3d2f4cae775b360b6bcd0eb76f7c62c71c54eb11726ce6",
+    "scope": "Existing tests passed after production guidance edits and before adding regression pins."
+  },
+  "gitleaks": {
+    "version": "8.30.1",
+    "foundation_staged": {
+      "exit_code": 0,
+      "findings": 0
+    },
+    "foundation_commit": {
+      "range": "643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6..0af53af6c0648b544e4b79194acc9e4f408ef7a4",
+      "commits": 1,
+      "exit_code": 0,
+      "findings": 0,
+      "log_sha256": "f3a3859c3e57e5dadd65465b6abb929b2993e34972f29aa8c1d01b33b8c1d3b5"
+    },
+    "parent_staged": {
+      "status": "passed",
+      "exit_code": 0,
+      "findings": 0,
+      "command": [
+        "gitleaks",
+        "protect",
+        "--staged",
+        "--config",
+        ".gitleaks.toml",
+        "--redact"
+      ],
+      "scope": "R4 staged patch, including both new review receipts; rerun after final receipt update."
+    }
+  },
+  "publication_checks": {
+    "source_manifest": "source-manifest-review-r4.json",
+    "source_manifest_sha256": "6dde524ae552f2e5b3d3271d7f793e5cd9af5cb2314c64fd10a0f99d0c888336",
+    "current_source_hashes": 32,
+    "current_report_artifact_hashes": 19,
+    "frozen_json_files_verified_unchanged": 67,
+    "historical_register_sections": "R1/R2/R3 suffix verified exact against parent_before_revision",
+    "local_markdown_links": {
+      "checked": 68,
+      "missing": 0
+    },
+    "fork_fingerprint_entries": 272
+  },
+  "remaining_blocker": "Foundation PR125 remains open; public pinvou3-clean is 6e1ee88ee8f8ea28eec7be3d8add3a591468412a. Keep app draft at the real 0af53af6c candidate, then repin the actual maintenance squash, recount inventory/fingerprints and run applicable checks after integration. Do not bypass the public equality gate, merge, queue, update protected refs/tags or release."
+}

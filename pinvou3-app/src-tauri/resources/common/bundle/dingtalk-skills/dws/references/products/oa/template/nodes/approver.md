@@ -37,7 +37,7 @@
 
 ## 支持的选人规则
 
-审批人节点支持全部 10 种选人规则，详见 [`rules/`](../rules/) 目录：
+审批人节点支持全部 11 种选人规则，详见 [`rules/`](../rules/) 目录：
 
 | 规则类型 | 说明 | 使用场景 |
 |---------|------|---------|
@@ -51,6 +51,7 @@
 | [`target_formcomponent_approval`](../rules/target_formcomponent_approval.md) | 表单内联系人 | "按表单选的人走" |
 | [`target_label`](../rules/target_label.md) | 角色标签 | "财务审批"、"HR审批" |
 | [`target_matrix_approval`](../rules/target_matrix_approval.md) | 审批矩阵 | "从审批矩阵获取" |
+| [`target_connect_approval`](../rules/target_connect_approval.md) | 连接器动态获取 | "从连接器获取审批人"、"通过连接器动态审批" |
 
 ## 完整节点示例
 

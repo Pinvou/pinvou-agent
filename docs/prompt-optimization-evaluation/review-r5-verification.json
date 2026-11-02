@@ -1,0 +1,523 @@
+{
+  "revision": "V2.4.5-review-r5",
+  "author": "Codex (OpenAI) / GPT-6; exact variant/reasoning level unavailable",
+  "date": "2026-10-29T07:03:10.191908+00:00",
+  "review": {
+    "id": 5691934712,
+    "url": "https://github.com/Pinvou/pinvou-agent/pull/799#pullrequestreview-5691934712",
+    "state": "CHANGES_REQUESTED",
+    "reviewed_head": "1aac7942ccf84f9c3147e26f1e59ed9ca8802b4c"
+  },
+  "parent_before_revision": "1aac7942ccf84f9c3147e26f1e59ed9ca8802b4c",
+  "foundation_head": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c",
+  "measurement_scope": "Deterministic local regression and mutation controls only. No new provider/model calls, historical regrading, full application Rust run, native Windows/macOS or healthy Browser/card visual E2E. Full ready-PR CI remains a separate publication-time check.",
+  "dispositions": {
+    "major_1a": "All current presentation graders share the existing turn-bounded, ID/result-paired audit helper; event.failed must be explicitly false, and the exact path must belong to that same event. Product and transcript lists are never zipped. Unknown results cannot pass.",
+    "major_1b": "Full numeric-token matching rejects larger integers, signed/decimal near misses and identifier substrings; legitimate thousands separators and Chinese surrounding prose remain accepted.",
+    "major_1c": "New V1/V2 live rows carry grader_revision. Manifests cover every delegated case generation and reject cross-source resume; historical runner-specific acceptance/browser policies stay explicitly versioned. No historical row is rewritten.",
+    "major_2": "Use the actual merged f1eb10efc baseline; refresh current README/PR state and add linked supersession banners/past tense to candidate history. Preserve snapshot body with an explicit current-source pointer. Mark ready after checked publication so full applicable CI can run.",
+    "major_3": "Independently assert canonical todo_write/content/pending/success-before-card Plan guidance; browser error names must be fully backtick-delimited, with production-emission checks retained.",
+    "minor_1": "Correct stale deferred-presenter comment.",
+    "minor_2": "Use consistent artifact-card and tool-catalog terminology in current model-facing sources.",
+    "minor_3": "CI explicitly opts into exact Gitleaks allowance controls with the already pinned binary, and provider-free Linux namespace acceptance.",
+    "minor_4": "Both summarizers share family completeness/duplicate validation; a synthetic two-turn failure catches all-to-any inflation in each implementation.",
+    "minor_5": "Every bound session receives the stable scope caveat even when the primary chain has no rule files. Loading boundaries and unbound behavior remain unchanged.",
+    "minor_6": "Retain all user-requested reports/figures; mark SVG generated and disable textual SVG/PNG diffs.",
+    "minor_7": "Record the persistent eager-presenter schema cost in design/PR prose as a reviewer estimate, not a new model measurement.",
+    "minor_8": "Add five app-side regression fingerprints and replace the generic peer-case tuple needle with its marker condition. The existing composer fingerprint covers bundle integration.",
+    "minor_9": "Preserve invalid/timeout stdout separately, recover only an unterminated JSONL tail with original-byte backup after revision checks, allow only protocol headers through the proxy, identify frozen evaluator copies in their README and explain historical generation imports. No broad case-framework rewrite.",
+    "minor_10": "Move the evidence index ahead of condensed review bookkeeping; avoid repeating headline numbers."
+  },
+  "preservation": {
+    "old_parent": "715329954668745449678ea1549e47ddcc434514",
+    "old_base": "ab6ac99e67907d3909d94b4f839c7a6f70656140",
+    "reviewed_parent": "1aac7942ccf84f9c3147e26f1e59ed9ca8802b4c",
+    "reviewed_base": "3cec34e2b6b7da8fbb85b70050dae83ff8b4ee10",
+    "per_file_patch_identical": 164,
+    "identical_files": [
+      ".gitleaks.toml",
+      "docs/prompt-optimization-evaluation/.gitattributes",
+      "docs/prompt-optimization-evaluation/README.md",
+      "docs/prompt-optimization-evaluation/annotations-v2.4.5.jsonl",
+      "docs/prompt-optimization-evaluation/baseline-source-manifest.json",
+      "docs/prompt-optimization-evaluation/calibration-changes-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/calibration-v2.2-manifest.json",
+      "docs/prompt-optimization-evaluation/community-annotations.jsonl",
+      "docs/prompt-optimization-evaluation/community-calibration-changes.json",
+      "docs/prompt-optimization-evaluation/community-evidence-manifest.json",
+      "docs/prompt-optimization-evaluation/community-first-input.json",
+      "docs/prompt-optimization-evaluation/community-git-preservation.json",
+      "docs/prompt-optimization-evaluation/community-method-protocol.md",
+      "docs/prompt-optimization-evaluation/community-report.md",
+      "docs/prompt-optimization-evaluation/community-wire-parameters.json",
+      "docs/prompt-optimization-evaluation/core-summary-v2.0.json",
+      "docs/prompt-optimization-evaluation/excluded-v2.3-attempt1.json",
+      "docs/prompt-optimization-evaluation/extended-code-diagnostic-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/extended-code-diagnostic.json",
+      "docs/prompt-optimization-evaluation/extension-manifest-v2.4.5-glm-cloud.json",
+      "docs/prompt-optimization-evaluation/extension-manifest-v2.4.5-ornith-local.json",
+      "docs/prompt-optimization-evaluation/figures/01-results.png",
+      "docs/prompt-optimization-evaluation/figures/01-results.svg",
+      "docs/prompt-optimization-evaluation/figures/02-families.png",
+      "docs/prompt-optimization-evaluation/figures/02-families.svg",
+      "docs/prompt-optimization-evaluation/figures/03-latency.png",
+      "docs/prompt-optimization-evaluation/figures/03-latency.svg",
+      "docs/prompt-optimization-evaluation/figures/04-efficiency.png",
+      "docs/prompt-optimization-evaluation/figures/04-efficiency.svg",
+      "docs/prompt-optimization-evaluation/figures/pinvou-poster-v2.4.5.png",
+      "docs/prompt-optimization-evaluation/final-output-packets-v2.4.5.jsonl",
+      "docs/prompt-optimization-evaluation/frozen-evaluator-v2.4.5/prompt_eval_repair_cases.py",
+      "docs/prompt-optimization-evaluation/frozen-evaluator-v2.4.5/test_prompt_eval_repair.py",
+      "docs/prompt-optimization-evaluation/git-preservation-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/hardware.json",
+      "docs/prompt-optimization-evaluation/loaded-skill-body-audit-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/manifest-community-glm-cloud.json",
+      "docs/prompt-optimization-evaluation/manifest-community-ornith-local.json",
+      "docs/prompt-optimization-evaluation/manifest-v2.4.5-glm-cloud.json",
+      "docs/prompt-optimization-evaluation/manifest-v2.4.5-ornith-local.json",
+      "docs/prompt-optimization-evaluation/mount-preflight-v2.3.json",
+      "docs/prompt-optimization-evaluation/output-packet-mapping-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/pinvou-improvement-report-v2.4.5.pdf",
+      "docs/prompt-optimization-evaluation/post-freeze-api-diagnostic-v2.3.md",
+      "docs/prompt-optimization-evaluation/post-freeze-calibration-v2.2.md",
+      "docs/prompt-optimization-evaluation/post-run-evaluator-repair-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/post-run-regrade-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/poster-v2.4.5-prompt.txt",
+      "docs/prompt-optimization-evaluation/pr-public-head-boundary-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/pr-submission-ui-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/pr-submission-verification-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/prompts-v2.0.md",
+      "docs/prompt-optimization-evaluation/prompts-v2.1.md",
+      "docs/prompt-optimization-evaluation/prompts-v2.2.md",
+      "docs/prompt-optimization-evaluation/prompts-v2.3.md",
+      "docs/prompt-optimization-evaluation/prompts-v2.4.5.md",
+      "docs/prompt-optimization-evaluation/protocol-followup.json",
+      "docs/prompt-optimization-evaluation/protocol-v2.0.json",
+      "docs/prompt-optimization-evaluation/rejected-v2.3.json",
+      "docs/prompt-optimization-evaluation/render_report_figures.py",
+      "docs/prompt-optimization-evaluation/render_report_pdf.py",
+      "docs/prompt-optimization-evaluation/report-artifacts-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/report-v2.4.5.md",
+      "docs/prompt-optimization-evaluation/report.md",
+      "docs/prompt-optimization-evaluation/results-community-calibrated.jsonl",
+      "docs/prompt-optimization-evaluation/results-community-raw.jsonl",
+      "docs/prompt-optimization-evaluation/results-community-reviewed.jsonl",
+      "docs/prompt-optimization-evaluation/results-followup.jsonl",
+      "docs/prompt-optimization-evaluation/results-unbound-smoke.jsonl",
+      "docs/prompt-optimization-evaluation/results-v2.0.jsonl",
+      "docs/prompt-optimization-evaluation/results-v2.4.5-calibrated.jsonl",
+      "docs/prompt-optimization-evaluation/results-v2.4.5-path-corrected.jsonl",
+      "docs/prompt-optimization-evaluation/results-v2.4.5-raw.jsonl",
+      "docs/prompt-optimization-evaluation/results-v2.4.5-reviewed.jsonl",
+      "docs/prompt-optimization-evaluation/retest-v2.2-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.3-attempt2-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.3-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.1-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.2-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.3-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.4-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.5-protocol.md",
+      "docs/prompt-optimization-evaluation/review-r1-verification.json",
+      "docs/prompt-optimization-evaluation/review-r2-verification.json",
+      "docs/prompt-optimization-evaluation/review-r3-verification.json",
+      "docs/prompt-optimization-evaluation/review-r4-verification.json",
+      "docs/prompt-optimization-evaluation/semantic-adjudication-protocol.md",
+      "docs/prompt-optimization-evaluation/semantic-uncertainty-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/source-manifest-review-r1.json",
+      "docs/prompt-optimization-evaluation/source-manifest-review-r2.json",
+      "docs/prompt-optimization-evaluation/source-manifest-review-r3.json",
+      "docs/prompt-optimization-evaluation/source-manifest-review-r4.json",
+      "docs/prompt-optimization-evaluation/source-manifest-v2.1.json",
+      "docs/prompt-optimization-evaluation/source-manifest-v2.2.json",
+      "docs/prompt-optimization-evaluation/source-manifest-v2.3-attempt1-excluded.json",
+      "docs/prompt-optimization-evaluation/source-manifest-v2.3.json",
+      "docs/prompt-optimization-evaluation/source-manifest-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/source-manifest.json",
+      "docs/prompt-optimization-evaluation/summary-community-calibrated.json",
+      "docs/prompt-optimization-evaluation/summary-community-raw.json",
+      "docs/prompt-optimization-evaluation/summary-community-reviewed.json",
+      "docs/prompt-optimization-evaluation/summary-followup.json",
+      "docs/prompt-optimization-evaluation/summary-v2.0.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-calibrated-regression.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-calibrated.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-path-corrected-regression.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-path-corrected.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-raw-regression.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-raw.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-reviewed-regression.json",
+      "docs/prompt-optimization-evaluation/summary-v2.4.5-reviewed.json",
+      "docs/prompt-optimization-evaluation/supplemental-api-v2.3-manifest.json",
+      "docs/prompt-optimization-evaluation/third-root-command-diagnostic-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/trajectory-inputs-v2.4.5.jsonl",
+      "docs/prompt-optimization-evaluation/trajectory-overrides-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/transport-audit-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/verification-community-method.json",
+      "docs/prompt-optimization-evaluation/verification-v2.2.json",
+      "docs/prompt-optimization-evaluation/verification-v2.3.json",
+      "docs/prompt-optimization-evaluation/verification-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/verification.json",
+      "docs/prompt-optimization-evaluation/wire-parameters-v2.4.5.json",
+      "docs/prompt-optimization-evaluation/提升报告-V2.4.5.md",
+      "docs/提示词优化-普通模式与代码模式.md",
+      "pinvou-cli/crates/cli/examples/prompt_eval.rs",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-code.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-work-bound.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/mcp-servers/present_artifact_server.py",
+      "pinvou3-app/src-tauri/src/features/assistant/engine.rs",
+      "pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs",
+      "pinvou3-app/src-tauri/src/features/assistant/session_policy.rs",
+      "pinvou3-app/src-tauri/src/features/assistant/tool_policy.rs",
+      "pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs",
+      "pinvou3-app/tests/browser_core_protocol.test.mjs",
+      "pinvou3-app/tests/canonical_tool_contract.test.js",
+      "scripts/apply-prompt-adjudication.py",
+      "scripts/audit-prompt-eval.py",
+      "scripts/eval-prompt-community.py",
+      "scripts/eval-prompt-repair.py",
+      "scripts/eval-prompt-retest.py",
+      "scripts/eval-prompt-suite.py",
+      "scripts/prompt_eval_community_cases.py",
+      "scripts/prompt_eval_extra_alias.py",
+      "scripts/prompt_eval_extra_api.py",
+      "scripts/prompt_eval_model_proxy.py",
+      "scripts/prompt_eval_namespace_bootstrap.py",
+      "scripts/prompt_eval_repair_cases.py",
+      "scripts/prompt_eval_retest_calibration.py",
+      "scripts/prompt_eval_retest_cases.py",
+      "scripts/prompt_eval_sandbox.py",
+      "scripts/summarize-prompt-community.py",
+      "scripts/summarize-prompt-eval.py",
+      "scripts/tests/test_eval_digest_allowlist.py",
+      "scripts/tests/test_prompt_eval_adjudication.py",
+      "scripts/tests/test_prompt_eval_audit.py",
+      "scripts/tests/test_prompt_eval_community.py",
+      "scripts/tests/test_prompt_eval_community_stats.py",
+      "scripts/tests/test_prompt_eval_extra_api.py",
+      "scripts/tests/test_prompt_eval_namespace.py",
+      "scripts/tests/test_prompt_eval_repair.py",
+      "scripts/tests/test_prompt_eval_retest.py",
+      "scripts/tests/test_prompt_eval_retest_calibration.py"
+    ],
+    "expected_integration_differences": [
+      "CodeWhale",
+      "docs/fork-modifications.en.md",
+      "docs/fork-modifications.md",
+      "docs/fork-policy.en.md",
+      "docs/fork-policy.md",
+      "scripts/fork-guard.sh"
+    ],
+    "foundation_patch_ids": {
+      "candidate_patch": "218b47ed375065ac84ae878897301bd94b56fc4f",
+      "squash_patch": "218b47ed375065ac84ae878897301bd94b56fc4f"
+    },
+    "old_local_branch_preserved": "codex/pr799-review-r3"
+  },
+  "foundation_inventory": {
+    "head": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c",
+    "above_v0912": 86,
+    "above_r1": 71,
+    "signed": 84,
+    "missing_signoff": [
+      "e9a7f48da169bf89399a11592e4d22a7b721cb39",
+      "f276729350a501153969fc648986b6352ee438f2"
+    ],
+    "drift": "525 files changed, 91397 insertions(+), 39288 deletions(-)"
+  },
+  "python": {
+    "exit_code": 0,
+    "elapsed_seconds": 29.47,
+    "log_sha256": "8c38bd4942f052659c7244356dacee523e0edec099d5edf4b6ad1a845bf9816e",
+    "scope": "all script tests, digest controls and namespace acceptance explicitly enabled; includes final numeric punctuation control",
+    "tests": 617,
+    "failures": 0,
+    "skipped": 0,
+    "includes": "All script tests, exact eight-path positive/negative Gitleaks controls, and all seven namespace/proxy tests with both opt-ins enabled. Preliminary focused runs are not additional distinct cases."
+  },
+  "rust": {
+    "gates": [
+      {
+        "name": "session-policy",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "--locked",
+          "--no-default-features",
+          "session_policy",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 21.51,
+        "summary": [
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3783 filtered out; finished in 0.03s"
+        ],
+        "log_sha256": "8e41aea04a52ded4d9d1ffcfc43c762b5a8295c64586d7ee4fc851689afc9353"
+      },
+      {
+        "name": "project-rules",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "--locked",
+          "--no-default-features",
+          "project_rules",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.51,
+        "summary": [
+          "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3783 filtered out; finished in 0.02s"
+        ],
+        "log_sha256": "5e4abdb07be92696eb00006d11758c99f02fb020d63ea707a841753ba80537d7"
+      },
+      {
+        "name": "runtime-bundle",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "--locked",
+          "--no-default-features",
+          "runtime_bundle::",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 4.12,
+        "summary": [
+          "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 3723 filtered out; finished in 3.67s"
+        ],
+        "log_sha256": "be62a6404b0abe134b1a23f1ff475035e29d79fa5eb073052a3ad4b111256daf"
+      },
+      {
+        "name": "app-clippy",
+        "command": [
+          "cargo",
+          "clippy",
+          "--lib",
+          "--locked",
+          "--no-default-features",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 200.15,
+        "summary": [],
+        "log_sha256": "8205adbb86113c6aaad671fc72f1b3161fd959211507760a497fa0cdeb93e1b5"
+      },
+      {
+        "name": "format",
+        "command": [
+          "cargo",
+          "fmt",
+          "--",
+          "--check"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 1.66,
+        "summary": [],
+        "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "presenter-policy",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "--locked",
+          "--no-default-features",
+          "artifact_delivery_is_loaded_without_widening_code_mode_tools",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 1.01,
+        "summary": [
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3787 filtered out; finished in 0.00s"
+        ],
+        "log_sha256": "897eeb69574003ca90a6e52ffbbf3be6c4917de8318cdabcd7bced26d2bd50e0"
+      },
+      {
+        "name": "unattended-policy",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "--locked",
+          "--no-default-features",
+          "unattended_turn_denies_scheduled_task_write_family",
+          "--",
+          "--test-threads=1"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.43,
+        "summary": [
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3787 filtered out; finished in 0.01s"
+        ],
+        "log_sha256": "c38eab7da66c949396b2e35e6bc8611ce1dfb76dc6b43d554415fe4c432fbc5a"
+      }
+    ],
+    "final_positive_executions": 77,
+    "distinct_tests": 77,
+    "scope": "5 session-policy +5 project-rule +65 runtime-bundle +1 presenter-policy +1 unattended-policy; Linux aarch64, --no-default-features, serialized test execution. Initial cold-build run is separate and not double-counted.",
+    "environment": "Existing GCC 13 system headers supplied to bindgen; shared ignored CodeWhale/target, six build jobs, RUST_MIN_STACK=16777216. No toolchain/dependency metadata changes."
+  },
+  "node": {
+    "command": [
+      "node",
+      "--test",
+      "pinvou3-app/tests/browser_core_protocol.test.mjs",
+      "pinvou3-app/tests/canonical_tool_contract.test.js"
+    ],
+    "tests": 18,
+    "passed": 18,
+    "failed": 0,
+    "log_sha256": "09e1cc8ab913e732125e4a041fa550c4e285b5b903e05016c38bee09f3499947"
+  },
+  "actionlint": {
+    "version": "1.7.12",
+    "official_archive_sha256": "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6",
+    "command": [
+      "actionlint",
+      "-shellcheck=",
+      ".github/workflows/*.yml"
+    ],
+    "workflows": 9,
+    "exit_code": 0,
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "other_checks": {
+    "architecture": {
+      "exit_code": 0,
+      "log_sha256": "de5bff130d75700fdd1ec335b56d6149a8f099986718a127dbac577fcb556ea3"
+    },
+    "fork_fast": {
+      "exit_code": 0,
+      "fingerprint_array_entries": 280,
+      "distinct_forkguard_names": 255,
+      "count_method": "Actual Bash array length; the separate distinct-name floor is not another fingerprint.",
+      "log_sha256": "a03429372c81d5cff99034d6a029cef7a2a1855005d60589177d558293d65ae1"
+    },
+    "public_submodule": {
+      "exit_code": 0,
+      "log_sha256": "31e9b79336c461476f79d4d0541ed20e84817b43e3b1d1d43db50312e548f75e",
+      "result": "gitlink equals public pinvou3-clean f1eb10efc; immutable r3 remains 61cb769be, transition assertion unchanged."
+    }
+  },
+  "mutation_controls": [
+    {
+      "control": "new regression tests against exact reviewed pre-fix suite/audit in a temporary tree",
+      "exit_code": 1,
+      "failures": 2,
+      "log_sha256": "b999b655200fc15d7c5ff7461db7d1267e2998d20ee241073e40a84dc208ae6f"
+    },
+    {
+      "control": "browser/host-request-expired -> browser/host-request-expired-x in process-local instruction read",
+      "exit_code": 1,
+      "failed_tests": 1,
+      "log_sha256": "48a10e8243cb10a815150c600f9315ddd8b3163cbbf20c55caef4e9c4a2c3527",
+      "repository_bytes_unchanged": true
+    },
+    {
+      "control": "browser/host-consumer-unavailable -> browser/host-consumer-unavailable-x in process-local instruction read",
+      "exit_code": 1,
+      "failed_tests": 1,
+      "log_sha256": "b59c1567b9d995fe7d2a7b0b106f42289fdba1a803e155452a244947d1c5e898",
+      "repository_bytes_unchanged": true
+    },
+    {
+      "control": "browser/host-caller-not-live -> browser/host-caller-not-live-x in process-local instruction read",
+      "exit_code": 1,
+      "failed_tests": 1,
+      "log_sha256": "8146c5f870686c31e7582677e8e6cfa6ffd01caf982b532966c32febc0b546af",
+      "repository_bytes_unchanged": true
+    },
+    {
+      "control": "summarize-prompt-community.py all -> any in temporary source tree",
+      "exit_code": 1,
+      "failed_tests": 1,
+      "log_sha256": "6da136d079d6ae9be67d8258c80652d55ed5241d71d13cbee4027607d42dc54c"
+    },
+    {
+      "control": "summarize-prompt-eval.py all -> any in temporary source tree",
+      "exit_code": 1,
+      "failed_tests": 1,
+      "log_sha256": "8c9dfb53c78add9c92540f5134fd2702fe110ebbe958d5881b741b6f66e8037a"
+    },
+    {
+      "control": "current credential-header regression against exact reviewed proxy in temporary tree",
+      "exit_code": 1,
+      "failed_tests": 1,
+      "log_sha256": "cc5facee4d2616be1d6f6854c3d4959751184b8333902b9ab55bc0bf2cd108c4"
+    },
+    {
+      "control": "Production Plan todo_write -> todo_wr1te; independent assertion retained",
+      "command": [
+        "cargo",
+        "test",
+        "--lib",
+        "--locked",
+        "--no-default-features",
+        "plan_reminder_is_same_text_for_both_modes_for_now",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "expected_failed_tests": 1,
+      "elapsed_seconds": 26.03,
+      "log_sha256": "c741e605bb8a92dcd614b546c7001cd879176e6f53cd72a4408a8264ed4f5668"
+    }
+  ],
+  "mutation_scope": "Eight commands produce nine expected failed tests: exact old grading sources (two failures), three process-local browser read substitutions, two temporary all-to-any aggregate mutations, exact old proxy source, and one on-disk Plan tool-name mutation. Plan bytes restored exactly; final Rust/Node/Python checks green.",
+  "gitleaks": {
+    "version": "8.30.1",
+    "binary_archive_sha256": "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
+    "prior_head_scan": {
+      "command": "gitleaks detect --source . --config .gitleaks.toml --redact --log-opts=deae3ca0141390c06e14aa93610645088b8966d4..HEAD",
+      "head": "1aac7942ccf84f9c3147e26f1e59ed9ca8802b4c",
+      "commits": 659,
+      "exit_code": 0,
+      "findings": 0,
+      "log_sha256": "6a9e23b03f1f93e7d9a82dee52e31a8861508f508805c3b0b0fe0dba816da982"
+    },
+    "staged_revision_scan": {
+      "status": "passed",
+      "exit_code": 0,
+      "findings": 0,
+      "command": "gitleaks protect --staged --config .gitleaks.toml --redact",
+      "scope": "Complete R5 staged patch including new source/verification receipts; rerun after final receipt update."
+    },
+    "final_commit_scan": "Performed separately after committing; not included in the prior-head 659 count.",
+    "false_positive_triage": {
+      "file": ".github/workflows/secret-scan.yml",
+      "verification": "Flagged flat-manifest value equals SHA-256 of exact current workflow bytes. Use existing path/sha256 entry shape to identify digest semantics; no allowlist/rule change."
+    }
+  },
+  "publication_checks": {
+    "source_manifest": "source-manifest-review-r5.json",
+    "source_manifest_sha256": "77e772c39f2255b7b70888939ddc54c053ea8a7a767dcb78fd31cfe8f9588042",
+    "current_source_hashes": 50,
+    "current_report_artifact_hashes": 19,
+    "historical_evidence": {
+      "frozen_artifacts_verified_unchanged": 95,
+      "historical_prompt_body_sha256": "8ce282a02fa095d3a904b47f04f1274227e8d967a55d17369111cf9106b08cac",
+      "snapshot_change": "supersession banner only; original body exact",
+      "current_gitlink": "f1eb10efcfe2468fde42d1724d7f5f19d54b904c",
+      "mutable_publication_index": "report-artifacts-v2.4.5.json will be rehashed for current README/design only, preserving measured artifacts"
+    },
+    "local_markdown_links": {
+      "checked": 76,
+      "missing": 0,
+      "scope": "README, main English report, both registers and frozen-evaluator README"
+    }
+  },
+  "self_review": "Checked complete review scope, event identity/settlement, numeric boundaries, resume data preservation, delegated provenance, unchanged permission/loading and cache-prefix behavior, integration arithmetic, historical evidence boundaries, CI wiring and secret handling. No new dependency or unresolved behavioral choice.",
+  "excluded": "The existing scheduled-origin instruction overwrite is a main-line issue called out for a separate fix. Historical generation-10 Skill-body gaps, Goal wording and strict foundation-release Clippy remain at their disclosed boundaries; no foundation source changes in R5.",
+  "remaining_checks": "Publish the checked normal DCO descendant, mark ready and monitor new-head full applicable CI plus maintainer re-review. No merge, queue, protected branch/tag or release."
+}

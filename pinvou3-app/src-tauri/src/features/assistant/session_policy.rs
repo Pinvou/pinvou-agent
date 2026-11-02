@@ -23,11 +23,9 @@ use deepseek_tui::ApprovalMode;
 /// v0.9.5 起模型可见的进度工具只有 canonical `todo_write`(explanation/items 形式的
 /// `update_plan` 与 `checklist_write` 均为隐藏 replay 别名,不进模型目录);决策卡由
 /// engine 监听 todo_write 结果触发,方案步骤写进 todos.content,status 用 pending。
-const PLAN_REMINDER: &str = "你现在在 Plan 模式(只读调研)。本 turn:\n\
-     1. 想清楚后 → 调 `todo_write` 工具输出方案步骤(content 写清每一步,\
-     status 用 pending;系统会在你调 todo_write 后自动展示方案卡片)。\n\
-     2. **禁止**在 text 里描述方案/贴代码/写\"请点【就这么干】\"等按钮引导文字——\
-     方案卡片由系统在你调 todo_write 后自动展示,你写引导是死锁。";
+const PLAN_REMINDER: &str = "本轮为 Plan 模式，只读调研。\n\
+完成调研后，用 `todo_write` 提交方案步骤：每步写入 content，status 用 pending。\n\
+工具成功并结束本轮后，应用展示方案卡。正文只简述调研结论和未解决事项，不重复方案步骤或贴实现代码；不要要求用户点击尚未出现的按钮。";
 
 /// `load_skill` 工具名。不再由本策略恒返回：skill 按模式 scope 治理（组合目录）
 /// 落地后，code 会话按「组合目录是否为空」动态决定隐藏（见
@@ -262,6 +260,11 @@ mod tests {
         let code = SessionPolicy::for_mode(SessionMode::Code).plan_reminder();
         assert_eq!(plain, Some(PLAN_REMINDER));
         assert_eq!(plain, code, "两模式 Plan reminder 必须同文(行为不变)");
+        for reminder in [plain.unwrap(), code.unwrap()] {
+            assert!(reminder.contains("用 `todo_write` 提交方案步骤"));
+            assert!(reminder.contains("每步写入 content，status 用 pending"));
+            assert!(reminder.contains("工具成功并结束本轮后，应用展示方案卡"));
+        }
     }
 
     /// R-2 行为不变断言：两模式审批参数均为「全自动 + Auto」，与 D-2 前共享 op

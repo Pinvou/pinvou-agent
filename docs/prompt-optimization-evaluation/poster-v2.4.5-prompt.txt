@@ -1,0 +1,57 @@
+Tool: built-in image_gen.imagegen (not CLI fallback).
+Purpose: one illustrated Chinese summary poster requested by the user.
+Source: published V2.4.5 report and path-corrected known-regression summaries.
+
+Use case: productivity-visual / infographic-diagram.
+Create ONE polished Chinese portrait infographic poster summarizing the measured Pinvou prompt and app integration improvement. This is a shareable editorial data poster, not a screenshot, report page or product mockup. Portrait 3:4 composition, high resolution, impeccably readable Simplified Chinese typography. White/off-white paper, deep ink navy text, restrained teal improvements and warm rust-orange for the single tradeoff area; generous negative space, precise grid, elegant large numerals, subtle fine rules. No robots, stock illustration, 3D charts, fabricated logos, extra slogans, fake UI, device frames or QR codes.
+
+Use a top-to-bottom information hierarchy: compact brand and huge title; study-size strip; two equally weighted model comparison columns with before-to-after rates and large gains; compact efficiency row; three simple labeled workflow glyphs; clear but visually subordinate tradeoff area; legible methodology footer and small author/date. This is a factual balanced report, not a claim of universal success. The two model columns compare each model to its own baseline. Do not depict one as beating the other. Prefer exact text and numeric typography to complex charts. Any optional progress bars must be proportional, starting at zero, and have the exact labeled percentages.
+
+Render the following Chinese/English copy VERBATIM; numerical accuracy and glyph accuracy are essential. Do not add claims or any other copy.
+
+Header:
+"Pinvou"
+"提示词优化 · 实测提升"
+"V2.4.5"
+"540 个完整任务 · 620 个用户回合"
+
+Comparison section heading:
+"完整任务通过率"
+Local column:
+"Ornith 本地"
+"Ornith-1.5-35B-A3B-NVFP4"
+"64.6% → 83.1%"
+"+18.5 个百分点"
+"通过任务 84/130 → 108/130"
+Cloud column:
+"GLM 云端"
+"glm-5.3-flash"
+"83.1% → 96.9%"
+"+13.8 个百分点"
+"通过任务 108/130 → 126/130"
+
+Efficiency row:
+"观测总 Token"
+"本地 −7.8%"
+"云端 −7.4%"
+"输入 + 输出；不代表账单节省"
+
+Workflow section:
+"主要改善"
+"文件交付更完整"
+"多目录处理更稳"
+"方案与执行衔接更顺畅"
+
+Tradeoff area, rust-orange emphasis, do not omit:
+"仍有改进空间"
+"GLM P90 耗时 +13.4%"
+"两项细分场景各回退一次"
+"本地缺失输入 4→3/5 · GLM 英文技能格式 3→2/5"
+
+Methodology footer, smaller than hero copy but comfortably legible:
+"主表：26 类任务 × 5 次，每模型每版本 130 项"
+"两版本统一修正评分路径，提升幅度未因此增加"
+"全部为已知回归任务，无新留出集；尚未合并或发布"
+"2026-10-27 · 分析：Codex / GPT-6"
+
+Keep everything on ONE single poster. All text inside generous safe margins. The main rates and gains should dominate; leave enough whitespace to avoid cramped text. Do not truncate model names or footnotes.

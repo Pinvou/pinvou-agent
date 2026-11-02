@@ -292,7 +292,7 @@ Op::SyncSession {
 
 **实际行为**（2026-05-28 复核）：
 
-- 底座 `Engine::new` (`core/engine.rs:458`) 在 spawn 时强制调用 `system_prompt_for_mode_with_context_skills_session_and_approval`，pinvou3 没有也无法绕过。
+- 底座 `Engine::new`（CodeWhale `crates/tui/src/core/engine.rs`）在 spawn 时强制调用 `system_prompt_for_mode_with_context_skills_session_and_approval`，pinvou3 没有也无法绕过。
 - pinvou3 的 `SystemPrompt::Text(...)` 调用只出现在 `Op::SyncSession` 路径（切 session 时），而且 `system_prompt_override: false`，rehydrate 时会被 13 层拼装覆盖。
 - BASE_PROMPT 的所有内容（268 行英文）、environment、skills、authority、locale 双书签等**全部**仍在 pinvou3 用户的 system prompt 里。
 

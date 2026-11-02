@@ -1932,9 +1932,9 @@ fn update(
     //
     // Which cap is passed cannot change the outcome: `clean_candidate_sentence`
     // truncates AFTER stripping, so a non-empty stripped text stays non-empty
-    // for every cap, and only the exported work-context constant is reachable
-    // from the CLI (`PREFERENCE_TEXT_MAX_CHARS` and the timed cap are
-    // `pub(super)`).
+    // for every cap — the work-context constant is passed merely as a
+    // representative cap (round-41 review re-exported the store caps, so the
+    // CLI could name any of them).
     let normalized =
         feature::clean_candidate_sentence(content, feature::WORK_CONTEXT_TEXT_MAX_CHARS);
     if normalized.is_empty() {

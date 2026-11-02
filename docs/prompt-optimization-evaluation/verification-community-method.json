@@ -1,0 +1,95 @@
+{
+  "date": "2026-10-26",
+  "parent_base": "983c65e79",
+  "codewhale_base": "ea9fdc90f",
+  "final_passed": {
+    "app_rust": 3606,
+    "foundation_tui_rust": 12233,
+    "cli_workspace_rust": 284,
+    "knowledge_rust": 120,
+    "python": 524,
+    "node": 1390
+  },
+  "ignored": {
+    "app_rust": 18,
+    "foundation_tui_rust": 13,
+    "node": 16
+  },
+  "initial_failures_corrected": [
+    "obsolete duplicated tool-signature prompt assertion",
+    "slash-agent activation hint assertion",
+    "bundled skill matrix generation 11 to 12"
+  ],
+  "remaining_failure": {
+    "check": "user journey Web build",
+    "main_entry_bytes": 506191,
+    "limit_bytes": 506000,
+    "frontend_source_changed_by_this_task": false,
+    "untouched_baseline_reproduced": true,
+    "untouched_baseline_main_entry_bytes": 506191,
+    "untouched_baseline_limit_bytes": 506000,
+    "untouched_baseline_build_exit_code": 1,
+    "comparison_environment": "untouched parent and CodeWhale HEAD archives with the same installed toolchain"
+  },
+  "ui_smoke_log": {
+    "successful_check_records": 302,
+    "failed_check_records": 0,
+    "host": "Chromium with mock TauriBridge; not native model end-to-end"
+  },
+  "formal_model_test": {
+    "status": "completed",
+    "suite": "v2 isolated; v1 discarded entirely",
+    "task_trials": 320,
+    "user_turns": 380,
+    "reviewed_unique_task_output_packets": 362,
+    "annotations": 380,
+    "objective_complete_tasks": {
+      "ornith-local": {
+        "baseline": 60,
+        "candidate": 59,
+        "attempts_per_variant": 80
+      },
+      "glm-cloud": {
+        "baseline": 69,
+        "candidate": 80,
+        "attempts_per_variant": 80
+      }
+    },
+    "missing_final_usage_receipts": 0,
+    "prompt_or_model_settings_changed_during_matrix": false,
+    "supplemental_unbound_turns_excluded_from_primary": 8,
+    "post_freeze_extended_code_diagnostic": {
+      "passed": 15,
+      "attempts": 20
+    },
+    "git_project_checks": 120,
+    "unexpected_git_history_writes": 0,
+    "whole_primary_project_preservation_checks": 20,
+    "whole_primary_project_preservation_failures": 0
+  },
+  "not_real_model_verified": [
+    "healthy native browser and visual delivery-card rendering",
+    "scheduled execution and memory-on persistence",
+    "real user connectors and long-context compaction",
+    "Windows and macOS runtime",
+    "Qwen and an English-only prompt variant",
+    "future integration with newer origin/main and submodule gitlink"
+  ],
+  "reviewer": "Codex (OpenAI) / GPT-6; exact variant and reasoning level unavailable; same assistant as prompt author, not an independent human judge",
+  "pr_status": "not committed, pushed or created; disclosed local regression risks require a decision before submission",
+  "network_for_foundation_recheck": "reject-only external HTTP proxy; localhost fixtures bypass; live model env unchanged",
+  "namespace_acceptance": "real bwrap filesystem isolation and read-only generated-code verifier passed; proxy body/auth and stream cancellation passed",
+  "final_evidence_audit": {
+    "published_raw_objective_reviewed_turns_each": 380,
+    "objective_and_review_replays_match_exactly": true,
+    "all_three_summaries_reproduce_exactly": true,
+    "formal_runner_sources_matching_frozen_manifests": 7,
+    "v2_1_source_manifest_files_matching": 17,
+    "new_public_files_scanned_for_private_configuration_values": 52,
+    "private_configuration_matches_in_new_public_files": 0,
+    "original_document_complete_prefix_preserved": true,
+    "original_document_prefix_bytes": 104434,
+    "original_document_prefix_sha256": "894f76fb204a532c76f515844873dbf5c07850534ac5c3eb4d1100ec2dc17115",
+    "working_tree_committed": false
+  }
+}

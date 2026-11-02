@@ -1,0 +1,360 @@
+[
+  {
+    "variant": "baseline",
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "turns": 24,
+    "passed_turns": 19,
+    "families": 18,
+    "passed_families": 13,
+    "elapsed_total_secs": 203.672,
+    "turn_median_secs": 8.404,
+    "turn_p90_secs": 13.793,
+    "family_median_secs": 10.066,
+    "request_count": 84,
+    "ttft_samples": 84,
+    "request_ttft_median_ms": 298.5,
+    "request_ttft_p90_ms": 2137.6,
+    "tool_calls": 74,
+    "failed_tools": 4,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 757197,
+      "output_tokens": 11220,
+      "cache_hit_tokens": 482972,
+      "cache_miss_tokens": 274225,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3075
+    },
+    "observed_tokens_per_successful_family": 59109.0,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 3,
+        "turns": 4,
+        "median_secs": 12.001,
+        "failed_checks": [
+          "file_correct"
+        ]
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 9.774,
+        "failed_checks": []
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 11.904,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 2.902,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 0,
+        "turns": 2,
+        "median_secs": 8.553,
+        "failed_checks": [
+          "presented",
+          "presented"
+        ]
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 12.629,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 2,
+        "turns": 4,
+        "median_secs": 10.898,
+        "failed_checks": [
+          "plan_submitted",
+          "plan_submitted"
+        ]
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 3.264,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 4.505,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "baseline",
+    "model": "glm-5.3-flash",
+    "turns": 24,
+    "passed_turns": 23,
+    "families": 18,
+    "passed_families": 17,
+    "elapsed_total_secs": 653.8,
+    "turn_median_secs": 24.618,
+    "turn_p90_secs": 50.54,
+    "family_median_secs": 31.887,
+    "request_count": 87,
+    "ttft_samples": 87,
+    "request_ttft_median_ms": 4049.0,
+    "request_ttft_p90_ms": 4919.4,
+    "tool_calls": 80,
+    "failed_tools": 2,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 787310,
+      "output_tokens": 15028,
+      "cache_hit_tokens": 538944,
+      "cache_miss_tokens": 248366,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 8488
+    },
+    "observed_tokens_per_successful_family": 47196.4,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 23.907,
+        "failed_checks": []
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 23.578,
+        "failed_checks": []
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 29.707,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 9.028,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 1,
+        "turns": 2,
+        "median_secs": 45.278,
+        "failed_checks": [
+          "presented"
+        ]
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 61.227,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 40.771,
+        "failed_checks": []
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 8.805,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 10.736,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "candidate",
+    "model": "Ornith-1.5-35B-A3B-NVFP4",
+    "turns": 24,
+    "passed_turns": 24,
+    "families": 18,
+    "passed_families": 18,
+    "elapsed_total_secs": 342.509,
+    "turn_median_secs": 10.463,
+    "turn_p90_secs": 22.191,
+    "family_median_secs": 11.479,
+    "request_count": 111,
+    "ttft_samples": 111,
+    "request_ttft_median_ms": 284.0,
+    "request_ttft_p90_ms": 2294.0,
+    "tool_calls": 106,
+    "failed_tools": 12,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 2,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 991068,
+      "output_tokens": 17257,
+      "cache_hit_tokens": 666502,
+      "cache_miss_tokens": 324566,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 5877
+    },
+    "observed_tokens_per_successful_family": 56018.1,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 11.701,
+        "failed_checks": []
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 8.591,
+        "failed_checks": []
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 11.828,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 2.71,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 12.04,
+        "failed_checks": []
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 22.854,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 20.864,
+        "failed_checks": []
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 2.99,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 3.862,
+        "failed_checks": []
+      }
+    }
+  },
+  {
+    "variant": "candidate",
+    "model": "glm-5.3-flash",
+    "turns": 24,
+    "passed_turns": 24,
+    "families": 18,
+    "passed_families": 18,
+    "elapsed_total_secs": 723.934,
+    "turn_median_secs": 25.604,
+    "turn_p90_secs": 69.05,
+    "family_median_secs": 34.737,
+    "request_count": 98,
+    "ttft_samples": 98,
+    "request_ttft_median_ms": 4084.5,
+    "request_ttft_p90_ms": 4941.7,
+    "tool_calls": 92,
+    "failed_tools": 3,
+    "unsettled_tools": 0,
+    "tool_accounting_corrections": 0,
+    "partial_usage_turns": 0,
+    "turns_missing_usage": 0,
+    "usage": {
+      "input_tokens": 846710,
+      "output_tokens": 15859,
+      "cache_hit_tokens": 614976,
+      "cache_miss_tokens": 231734,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 7936
+    },
+    "observed_tokens_per_successful_family": 47920.5,
+    "scenarios": {
+      "artifact": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 24.993,
+        "failed_checks": []
+      },
+      "attachment": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 23.157,
+        "failed_checks": []
+      },
+      "code_fix": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 55.326,
+        "failed_checks": []
+      },
+      "consult": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 5.107,
+        "failed_checks": []
+      },
+      "multi_artifact": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 37.701,
+        "failed_checks": []
+      },
+      "multi_code": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 76.516,
+        "failed_checks": []
+      },
+      "plan_execute": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 35.513,
+        "failed_checks": []
+      },
+      "skill": {
+        "passed_turns": 4,
+        "turns": 4,
+        "median_secs": 11.796,
+        "failed_checks": []
+      },
+      "untrusted_data": {
+        "passed_turns": 2,
+        "turns": 2,
+        "median_secs": 13.071,
+        "failed_checks": []
+      }
+    }
+  }
+]

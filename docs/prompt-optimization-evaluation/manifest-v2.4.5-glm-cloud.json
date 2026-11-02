@@ -1,0 +1,59 @@
+{
+  "suite": "pinvou-community-method-v2-isolated",
+  "repetitions": 5,
+  "model": "glm-5.3-flash",
+  "model_alias": "glm-cloud",
+  "model_id": "glm-cloud",
+  "scenarios": [
+    "consult",
+    "artifact",
+    "code_fix",
+    "multi_artifact",
+    "multi_code",
+    "plan_execute",
+    "skill",
+    "attachment",
+    "untrusted_data",
+    "browser_host_boundary",
+    "semantic_revision",
+    "json_output",
+    "hidden_code",
+    "missing_input",
+    "skill_fidelity",
+    "code_consult",
+    "unbound_artifact",
+    "nested_root_rule",
+    "secondary_revision",
+    "relative_deadline",
+    "json_escape",
+    "skill_format",
+    "plan_secondary_readonly",
+    "relative_json",
+    "absolute_requested",
+    "absolute_json",
+    "third_root"
+  ],
+  "source_hashes": {
+    "eval-prompt-community.py": "8f706a26dbec7f3e5cfcdae868abce3238964059183b652a043217b0c108702a",
+    "prompt_eval_repair_cases.py": "62bb953f7921fbb53db3a783730177ee024fc5c9a3f45098c08b90df10eaddf7",
+    "eval-prompt-suite.py": "edf6caaae10bcbb3fa0d665b2cdc6bc6979635523169600d6ef3bef7c64bf2e2",
+    "audit-prompt-eval.py": "e4aa0254b436aa1569618bd2158fa738e258f4e5434bbd03df06b2bce9c42a91",
+    "prompt_eval_sandbox.py": "1f8c60797eb4fddc7e54156231efa300ae80276511e4dc515f835c79b85e9ab3",
+    "prompt_eval_model_proxy.py": "c189e92390baebd6d349c19ed84952b6f9fea3776af3cadc4749704ab040ed7a",
+    "prompt_eval_namespace_bootstrap.py": "17a76b6e02a3b04d9de3cd506dc49ce2496c387295c6dc6f3b663f8de18448f7"
+  },
+  "binary_hashes": {
+    "baseline": "40496fbea30c955824eba32d82291665837faafae0763f31d44f88e117d5f991",
+    "candidate": "78c5d92e002b3041d4bf64e5ccbd3f400178e3de4168b63f830a14be35864aac"
+  },
+  "runtime_hashes": {
+    "credential_cli": "70dbb8b69ae34adc421157c749c0ac4e2a03d1fffe1a36256a4dee5eb049678b",
+    "xvfb": "b41ff22341d3d9e9093261164295cfbddfe10225a94f9b6c45851f5f3de9c525"
+  },
+  "order": "Alternate AB/BA by repetition and case; one fresh home per trial; same-model pairs serialized",
+  "scope": "custom Pinvou suite; not official public benchmark scores",
+  "isolation": "bubblewrap mount/PID/network/IPC namespaces; one trial only; no harness, neighbors, real home or credentials; only scoped model proxy socket; generated-code verification read-only and networkless",
+  "transport": "real configured endpoints via streaming credential-isolating pass-through; request bodies unchanged",
+  "settings_policy": "configured routes and sampling, memory off, max_steps=40",
+  "configuration_visibility": "private routes/credentials omitted; only observed request-parameter whitelist is published"
+}
