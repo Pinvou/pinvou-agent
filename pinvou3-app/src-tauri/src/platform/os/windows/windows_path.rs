@@ -78,7 +78,19 @@ pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
 }
 
 pub fn filesystem_path_identity_key(path: &str) -> String {
-    path.replace('\\', "/").to_lowercase()
+    // `\\?\` and `\\?\UNC\` verbatim spellings (what std::fs::canonicalize
+    // returns on this platform) denote the same file as the plain spelling,
+    // an equivalence this OS guarantees — so the identity key must fold the
+    // prefix or stored verbatim roots never compare equal to compat-spelled
+    // candidates (compose's workspace ancestor grant failed exactly that way
+    // on Windows: the recorded provenance root stayed `\\?\C:\...` while the
+    // delivery judgment compared the compat spelling).
+    let stripped = path
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| path.strip_prefix(r"\\?\").map(str::to_string))
+        .unwrap_or_else(|| path.to_string());
+    stripped.replace('\\', "/").to_lowercase()
 }
 
 /// NTFS 默认大小写不敏感:组件前缀比较与 `path_component_eq` 同用折叠原语。
@@ -700,6 +712,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn identity_key_folds_verbatim_prefixes_to_the_plain_spelling() {
+        // The verbatim spellings std::fs::canonicalize returns denote the
+        // same file as the plain spelling, so stored verbatim roots and
+        // compat-spelled candidates must collapse onto one identity key —
+        // otherwise every stored-vs-resolved comparison (compose's workspace
+        // ancestor grant, project backing checks) silently misses on
+        // Windows while staying green on prefix-free POSIX spellings.
+        let plain = filesystem_path_identity_key(r"C:\Users\pinvou\project");
+        assert_eq!(
+            filesystem_path_identity_key(r"\\?\C:\Users\pinvou\project"),
+            plain,
+            "the verbatim drive prefix denotes the same file as the plain spelling"
+        );
+        assert_eq!(
+            filesystem_path_identity_key(r"\\?\UNC\server\share\dir"),
+            filesystem_path_identity_key(r"\\server\share\dir"),
+            "the verbatim UNC prefix denotes the same file as the plain UNC spelling"
+        );
+        // Separators and case fold exactly as before the prefix stripping.
+        assert_eq!(
+            filesystem_path_identity_key(r"C:\USERS\PINVOU\project"),
+            plain,
+            "NTFS case-insensitivity still folds"
+        );
+        assert_eq!(
+            filesystem_path_identity_key(r"C:/Users/pinvou/project"),
+            plain,
+            "forward separators still fold"
+        );
     }
 
     #[test]
