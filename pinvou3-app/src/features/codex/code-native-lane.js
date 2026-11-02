@@ -587,6 +587,10 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       if (lane.items.some(item => (
         item && item.type === 'approval' && item.approvalId === approvalId
       ))) return false;
+      // 重放墓碑（评审 P2）：get_pending_approvals 快照 await 期间该审批已
+      // 从另一表面落定时，chat:approval_resolved 先到而卡不在 lane，落空
+      // 分支留下墓碑；迟到的旧快照在这里被拦，不再把已决审批当活卡插回。
+      if (lane.approvalTombstones && lane.approvalTombstones.has(approvalId)) return false;
       lane.items.push({
         id: nextId(lane),
         type: 'approval',
@@ -632,6 +636,12 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
           changed = true;
         }
       });
+      // 无未决卡可落：决议来自快照在途窗口里的另一表面。留下墓碑，
+      // 在途快照回程不得把这个已决审批当活卡插回（lane 随会话重建，
+      // 墓碑生命周期天然不跨会话）。
+      if (!changed) {
+        (lane.approvalTombstones = lane.approvalTombstones || new Set()).add(resolvedId);
+      }
       return changed;
     }
     case 'chat:mode_changed': {

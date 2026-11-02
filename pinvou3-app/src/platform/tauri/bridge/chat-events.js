@@ -1296,11 +1296,34 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       return item && item.type === "approval" && item.approvalId === approvalId;
     });
   }
+  // 审批重放墓碑（评审 P2）：get_pending_approvals 快照在 await 期间，同一
+  // 审批可能已从另一表面落定——live 的 chat:approval_resolved 先到而此刻
+  // 无卡可落（快照在途/后台工作集尚未重放），随后旧快照回程会把它当活卡
+  // 插回。resolved 落空时把 id 记入本会话墓碑；approval_required 插卡与
+  // sessions.js 的重放同键检查，跨 await 的迟到快照不再复活已决审批。
+  // 键带 sid：审批 id 由引擎分配，不假设跨会话唯一。上限 512 逐条淘汰：
+  // 墓碑只服务在途快照窗口，登记表删除后重放本就不会再见到该 id，超限
+  // 丢弃是安全的。
+  function approvalTombstoneMap() {
+    return (state.approvalReplayTombstones = state.approvalReplayTombstones || new Map());
+  }
+  function tombstoneApproval(sid, approvalId) {
+    const map = approvalTombstoneMap();
+    if (map.size >= 512) {
+      const oldest = map.keys().next();
+      if (!oldest.done) map.delete(oldest.value);
+    }
+    map.set(String(sid) + "\u0000" + String(approvalId), true);
+  }
+  function approvalIsTombstoned(sid, approvalId) {
+    return !!approvalId && approvalTombstoneMap().has(String(sid) + "\u0000" + String(approvalId));
+  }
   listen("chat:approval_required", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     const approvalId = String(p.approval_id || "");
     if (!approvalId) return;
     if (hasChatItemForApproval(approvalId)) return;
+    if (approvalIsTombstoned(p.session_id, approvalId)) return;
     addChatItem({
       type: "approval",
       approvalId,
@@ -1341,6 +1364,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
         changed = true;
       }
     });
+    // 无未决卡可落：决议来自快照在途窗口里的另一表面。留下墓碑，
+    // 在途快照回程不得把这个已决审批当活卡插回。
+    if (!changed) tombstoneApproval(p.session_id, approvalId);
     if (changed) notify();
   }); });
 

@@ -784,6 +784,15 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       return item && item.type === "approval" && item.approvalId === approvalId;
     });
   }
+  // 审批重放墓碑（评审 P2，与 chat-events.js 同键同界）：重放的
+  // get_pending_approvals 快照在 await 期间可能已从另一表面落定——live 的
+  // chat:approval_resolved 落空时留下的墓碑，拦住旧快照回程把已决审批当
+  // 活卡插回。键带 sid；超限逐条淘汰是安全的（登记表删除后重放本就不会
+  // 再见到该 id）。
+  function approvalIsTombstoned(sid, approvalId) {
+    const map = state.approvalReplayTombstones;
+    return !!approvalId && !!map && map.has(String(sid) + "\u0000" + String(approvalId));
+  }
   async function replayPendingApprovals(sid) {
     if (!sid) return;
     let pending = [];
@@ -795,6 +804,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       pending.forEach(function (entry) {
         const approvalId = String(entry && entry.approvalId || "");
         if (!approvalId || hasApprovalChatItem(approvalId)) return;
+        if (approvalIsTombstoned(sid, approvalId)) return;
         addChatItem({
           type: "approval",
           approvalId,
