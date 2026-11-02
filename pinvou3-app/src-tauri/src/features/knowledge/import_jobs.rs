@@ -2,6 +2,13 @@
 //!
 //! 任务与文件状态写入知识库同一 SQLite；进程异常退出后将 `running` 文件恢复为
 //! `pending`，由用户明确续跑。正式文档分块的原子提交由 `L1Store` 完成。
+//!
+// architecture-guard: allow-target-cfg -- one Windows-only fixture below
+// (unique_existing_files_keeps_verbatim_and_plain_sensitive_siblings) must
+// create real `folder.`/`folder` sibling directories, which only coexist on
+// a Win32 filesystem; the fixture exercises this feature consumer against
+// the platform adapter's identity semantics, and moving it into the adapter
+// would invert the app->features->platform dependency.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
