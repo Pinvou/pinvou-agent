@@ -1,0 +1,28 @@
+{
+  "revision": "V2.4.5-review-r7",
+  "date": "2026-10-30T03:39:51.983988+00:00",
+  "parent_before_revision": "58431e750b924e4e438e012b5bb52c9a04e2184c",
+  "scope": "Changed unit fixture, current documentation and one localized Skill text. Existing runtime/CLI/grader production sources and frozen measurements inherit their exact approved R6 bytes. This manifest excludes its own hash and the verification receipt.",
+  "sources": [
+    {
+      "path": "docs/fork-modifications.en.md",
+      "sha256": "7756eaf46e2609752e6842daf45033f6a95efc11f78a6b9d93eede52cc85b1f1"
+    },
+    {
+      "path": "docs/fork-modifications.md",
+      "sha256": "d3e8e4235c996c99ba2b283d0e1b6ed37f52805453b6adec510c78dc862f60a8"
+    },
+    {
+      "path": "docs/prompt-optimization-evaluation/README.md",
+      "sha256": "cb699a2906105d7f5d5df5a39dab642a0bcbbe6126cd5b7e8d600c3af5090952"
+    },
+    {
+      "path": "pinvou3-app/src-tauri/resources/common/bundle/builtin-skills/visual-design/SKILL.md",
+      "sha256": "f8f00953347955a651d1e2efab5c5469908806f2974d72cd2cdb9113b18aa0c4"
+    },
+    {
+      "path": "scripts/tests/test_prompt_eval_provenance.py",
+      "sha256": "85eb80f928a2f9d2a1b5a3f84553638968c5bb0a2dc6bea7541d8ba24ecef2bc"
+    }
+  ]
+}

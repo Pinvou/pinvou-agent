@@ -1,0 +1,31 @@
+{
+  "version": "Codex-Prompt-V2.3",
+  "execution_attempt": 2,
+  "utc": "2026-10-26T14:28:50.505895+00:00",
+  "reason": "Reject candidate quality after complete known local date family: baseline5/5,candidate4/5 with same wrong October27 mechanism, plus candidate renamed public items keyword. Valid partial observations retained; no complete cloud or overall V2.3 performance claim.",
+  "receipted_turns": {
+    "ornith-local": 303,
+    "glm-cloud": 123
+  },
+  "known_local_date": {
+    "baseline": {
+      "passed": 5,
+      "attempts": 5
+    },
+    "candidate": {
+      "passed": 4,
+      "attempts": 5
+    }
+  },
+  "api_failure_packet": "c0ed9b28ae6c95ee",
+  "whole_attempt_excluded_from_accepted_comparison": true,
+  "stopping_disclosure": "The protocol allowed rejection after the full five-repetition date family or a new workflow blocker. It did not preregister a numeric4/5 cutoff. This is a conservative engineering quality rejection, not a claim of statistically significant regression from five samples; disclose the adaptive interpretation.",
+  "frozen_integrity_verified_before_edit": true,
+  "api_failure_confirmation": {
+    "packet_id": "c0ed9b28ae6c95ee",
+    "scope": "one observed post-freeze diagnostic, not a primary score change",
+    "signature_preserved": false,
+    "keyword_calls_correct": false
+  },
+  "accepted_final_comparison": false
+}
