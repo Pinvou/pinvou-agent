@@ -469,8 +469,8 @@ test('旧独立入口退役：多智能体经会话级开关 + spawn 级蜂群�
   );
   assert.equal(
     (poolSource.match(/map\(\|e\| \(e\.engine\.clone\(\), e\.steer_incarnation\)\)/g) || []).length,
-    2,
-    'steer and withdraw_steer must read the incarnation from the entry as their generation (consumption wiring: reverting to spawned_at_ms revives the same-tick collision; both sites must stay locked)',
+    3,
+    'steer, withdraw_steer, and the ack-based handle_with_incarnation helper must each read the incarnation from the entry as their generation (consumption wiring: reverting to spawned_at_ms revives the same-tick collision; every site must stay locked)',
   );
   const transcriptsSource = read('src-tauri', 'src', 'features', 'multiagent', 'transcripts.rs');
   assert.match(
