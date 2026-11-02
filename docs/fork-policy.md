@@ -1,6 +1,6 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-11-02。公开维护头 f1eb10efc 未动（已含 #114/#125）；本树的父仓 gitlink 与 `EXPECTED_HEAD` 领先公开维护头，指向评审候选 1785dae15（CodeWhale#131 评审头），#131 合入后重钉。
+> 最后更新：2026-11-02。公开维护头 f1eb10efc 未动（已含 #114/#125）；本树的父仓 gitlink 与 `EXPECTED_HEAD` 领先公开维护头，指向评审候选 28c0a0449（CodeWhale#131 评审头），#131 合入后重钉。
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -8,7 +8,7 @@
 
 ## 0. 当前维护基线与验证边界
 
-- 公开维护头仍为 `f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28 收口，#114 已合入为 `fe90f72f9`、#125 为 `f1eb10efc`），自那未动；本 PR 处于候选期——父仓 gitlink 与 `scripts/fork-guard.sh` 的 `EXPECTED_HEAD` 领先公开维护头，指向评审候选 `1785dae1584f0005ceacbc5153e3a48f010abbaa`（CodeWhale #131 评审头，基于 `f1eb10efc`）。公开维护分支未推进。
+- 公开维护头仍为 `f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28 收口，#114 已合入为 `fe90f72f9`、#125 为 `f1eb10efc`），自那未动；本 PR 处于候选期——父仓 gitlink 与 `scripts/fork-guard.sh` 的 `EXPECTED_HEAD` 领先公开维护头，指向评审候选 `28c0a04491fe89b113a8d0e1aa3b76550f7d6275`（CodeWhale #131 评审头，基于 `f1eb10efc`）。公开维护分支未推进。
 - 实测历史：公开维护分支为上游 v0.9.12 `dcd4c200f` 之上 86 个提交、84 个带 DCO sign-off（未签名的 squash 仍是 #107 `f27672935` 与 #116 `e9a7f48da1`）；候选 `1785dae15` 为 97 个提交、95 个带 sign-off，新增的 11 个提交即 #131 评审史（已登记单提交 `998ffe27e` + 加固提交 `41eab46f2` + 评审修复提交 `04c1f7843` + 复审修复二 `5c13fc561` + clippy 修复 `10b28ef5f` + 复审修复三 `f972884e5` + 复审修复四 `b94cc3175`：协议遗留载荷 serde 钉、同步/隔离姿态回执、pump 审批卡 force_prompt 旗标、武装面谓词合并 + 复审修复五 `1785dae15` 收敛第五轮 fresh-review 发现：窄化 provenance 轮次误报「(host)」转换行（改为抑制 emits、不污染 standing baseline）+ Auto-Review 窄化降级补结构化回执 + 2 条新钉），未签名例外不变。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件；候选窗口内 `scripts/verify-public-submodule.sh` 刻意保持红（它断言 gitlink 等于 `pinvou3-clean` 远端维护头，仍为 `f1eb10efc`），凭据是在候选检出树上跑绿的 `fork-guard.sh --fast`（第 1 层指纹全过；本地子模块停在等树 twin 提交——API 推送通道会重排提交对象头、树逐字节一致——第 0 层 head 对账仅在检出 `1785dae15` 本身时为绿），#131 合入后的登记批把 `EXPECTED_HEAD` 与 gitlink 重钉到 squash 并恢复门禁绿。
 - 实测 drift（`dcd4c200f..1785dae15`）：526 files, +95303/-39443，净增 55860；279 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。

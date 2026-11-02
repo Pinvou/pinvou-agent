@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 99 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 101 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,8 +7,8 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Review candidate: CodeWhale#131 (host-armed guardrail prompts + authority-transition notice) ahead of public maintenance.
-EXPECTED_HEAD="47ada186f9d81bad7e76fc912091b3819765d8f6"
-EXPECTED_COMMITS=99
+EXPECTED_HEAD="28c0a04491fe89b113a8d0e1aa3b76550f7d6275"
+EXPECTED_COMMITS=101
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
