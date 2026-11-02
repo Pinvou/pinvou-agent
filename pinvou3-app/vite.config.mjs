@@ -569,7 +569,17 @@ function enforceLazyChunks() {
 // 384 B headroom at the local node 24 measurement. The tauri bridge
 // classic scripts (bridge.js / bridge/*.js) are copied verbatim, not
 // bundled, so the bridge-side tri-mode additions do not move this entry.
-export const MAIN_ENTRY_BUDGET_BYTES = 492_000;
+//
+// 492_000 → 496_000 desktop only (tri-mode round-2 fixes, measured per
+// policy): the ChatView draft-mode chip branch (setDraftMode routing +
+// the draft Yolo gate extension), the plan-stuck Auto availability guard
+// (tool-renderers.jsx) and the zh strings for the approval-cancelled key.
+// Same-base build measures 491,616 → 492,003 B desktop; build:web stays
+// green under its own ceiling. The desktop ceiling takes the next
+// thousand step, leaving ~4.0 kB headroom. Bridge classic scripts remain
+// copied verbatim (the chat-events approval_resolved listener does not
+// move this entry).
+export const MAIN_ENTRY_BUDGET_BYTES = 496_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {

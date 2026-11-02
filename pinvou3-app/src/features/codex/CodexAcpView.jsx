@@ -508,6 +508,7 @@ const NATIVE_CHAT_EVENTS = [
   // tri-mode 审批面：弹卡（按 approvalId 幂等去重）、守卫硬拒通知、权威 mode
   // 广播（mode_changed 在订阅回调里走 refreshNativeControls，lane 无可视变化）。
   'chat:approval_required',
+  'chat:approval_resolved',
   'chat:guardrail_denied',
   'chat:mode_changed',
   'chat:transient_error',
@@ -546,12 +547,14 @@ function NativeUserInputCard({ item, responding, onSubmitAnswers, onCancelInput,
 
 // 原生车道的 tri-mode 审批卡：结构镜像主聊天 ApprovalCard（tool-renderers.jsx），
 // 决策走显式 sessionId 的 decide_approval，不经 bridge 全局 activeSession。
-// lane 是纯数据不持文案：终态存 cardState（allowed / allowed_session / denied），
-// 这里按键映射三语（statusKey copy = uiCodex）；按钮/标题复用根级 t.approval*。
+// lane 是纯数据不持文案：终态存 cardState（allowed / allowed_session / denied /
+// cancelled——turn 终态清扫与跨表面收敛回声共用），这里按键映射三语
+// （statusKey copy = uiCodex）；按钮/标题复用根级 t.approval*。
 const NATIVE_APPROVAL_STATUS_COPY = {
   allowed: 'nativeApprovalAllowed',
   allowed_session: 'nativeApprovalAllowedSession',
   denied: 'nativeApprovalDenied',
+  cancelled: 'nativeApprovalCancelled',
 };
 
 // chat:guardrail_denied 的稳定 reason 键 → 三语短文案（uiCodex）。未知键原样透出。
@@ -1748,7 +1751,10 @@ export function CodexAcpView({
     if (target === 'yolo') {
       const prefs = await refreshCodePermPrefs();
       if (needsYoloConfirmation(prefs)) {
-        setPendingYoloSwitch({ draft: !activeId });
+        // M4：门在 entry 捕获发起会话（chat 车道 pendingChatYoloSwitchSidRef
+        // 同约）——确认回程可能已切会话，落点必须仍是弹门的那一个，绝不
+        // 打到确认时刻的 live-active（那是一个从未见过门的会话）。
+        setPendingYoloSwitch({ draft: !activeId, sid: activeId || null });
         return;
       }
     }
@@ -1767,28 +1773,35 @@ export function CodexAcpView({
   }
 
   /// mode chip 切换的实际执行路径（不含 yolo 确认门）。
-  async function performNativeModeSwitch(target, { isPlan } = {}) {
-    if (!activeId) {
+  /// `targetSessionId` 显式钉住目标会话（M4：确认门回程用）——缺省读
+  /// live-active，与旧行为一致；目标非当前会话时只切它、不刷本会话控件
+  /// （权威 chat:mode_changed 广播会按会话归属自行收敛）。
+  async function performNativeModeSwitch(target, { isPlan } = {}, targetSessionId) {
+    const sid = (typeof targetSessionId === 'string' && targetSessionId)
+      ? targetSessionId
+      : activeId;
+    if (!sid) {
       stageDraftMode(target);
       return;
     }
+    const isActiveTarget = sid === activeId;
     setError('');
     try {
       if (target === 'plan' && !isPlan) {
-        await invoke('set_plan_mode_next', { sessionId: activeId });
+        await invoke('set_plan_mode_next', { sessionId: sid });
       } else if (target === 'yolo' && isPlan) {
-        await invoke('exit_plan_to_yolo', { sessionId: activeId });
+        await invoke('exit_plan_to_yolo', { sessionId: sid });
       } else if (target === 'yolo') {
         // Auto → Yolo（v3.5：旧代码此分支缺失，Yolo 点击静默落空）：统一走
         // set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
         // 确认门已在 switchNativeMode 施加。
-        await invoke('set_session_mode', { sessionId: activeId, mode: 'yolo' });
+        await invoke('set_session_mode', { sessionId: sid, mode: 'yolo' });
       } else if (target === 'auto') {
         // Auto（tri-mode 逐项审批档）：无一次性确认门（门只对 yolo）。
         // 统一走 set_session_mode（后端热同步安全姿态并广播 chat:mode_changed）。
-        await invoke('set_session_mode', { sessionId: activeId, mode: 'auto' });
+        await invoke('set_session_mode', { sessionId: sid, mode: 'auto' });
       }
-      await refreshNativeControls(activeId);
+      if (isActiveTarget) await refreshNativeControls(sid);
     } catch (err) { showError(err); }
   }
 
@@ -1829,7 +1842,9 @@ export function CodexAcpView({
       if (pending.draft) {
         stageDraftMode('yolo');
       } else {
-        await performNativeModeSwitch('yolo', { isPlan: true });
+        // M4：落点钉在弹门时捕获的会话——确认回程切了会话也切的是发起
+        // 会话（live-active 从未见过这张门卡，不得被顺带武装成 Yolo）。
+        await performNativeModeSwitch('yolo', { isPlan: true }, pending.sid);
       }
     } catch (err) {
       showError(err);

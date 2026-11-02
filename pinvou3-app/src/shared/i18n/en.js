@@ -92,7 +92,7 @@ const codexEn = {
   nativePlanSuperseded:'📜 Superseded by a newer plan', nativePlanHistorical:'📜 Past plan',
   nativePlanAcceptFailed:'⚠️ accept_plan failed: ', nativePlanDiscardFailed:'⚠️ discard_plan failed: ',
   // tri-mode approval card terminal states / guardrail hard-deny notice (reason keys mapped on the frontend).
-  nativeApprovalAllowed:'✅ Allowed', nativeApprovalAllowedSession:'✅ Allowed for this session', nativeApprovalDenied:'🚫 Denied',
+  nativeApprovalAllowed:'✅ Allowed', nativeApprovalAllowedSession:'✅ Allowed for this session', nativeApprovalDenied:'🚫 Denied', nativeApprovalCancelled:'✕ Cancelled',
   nativeGuardrailDenied:'Guardrail denied', nativeGuardrailDeniedSession:'This exact operation was denied in this session (a changed request asks again)',
   nativeGuardrailDeniedPlan:'Plan mode is read-only; denied', nativeGuardrailDeniedAskOff:'Ask-on-guardrail is off; denied outright',
   addAttachment:'Add attachment', commandsAvailable:'Commands reported by the Agent', commandsAfterSession:'Agent commands sync after a session is created',

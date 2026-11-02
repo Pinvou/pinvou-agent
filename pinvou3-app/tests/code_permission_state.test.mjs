@@ -352,12 +352,12 @@ try {
     );
     assert.match(
       performBody,
-      /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,300}?\} else if \(target === 'yolo'\) \{[\s\S]{0,300}?invoke\('set_session_mode', \{ sessionId: activeId, mode: 'yolo' \}\)/,
+      /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,300}?\} else if \(target === 'yolo'\) \{[\s\S]{0,300}?invoke\('set_session_mode', \{ sessionId: sid, mode: 'yolo' \}\)/,
       'Auto→Yolo 直达分支存在（旧代码缺失，Yolo 点击静默落空）',
     );
     assert.match(
       performBody,
-      /target === 'auto'[\s\S]{0,400}?invoke\('set_session_mode', \{ sessionId: activeId, mode: 'auto' \}\)/,
+      /target === 'auto'[\s\S]{0,400}?invoke\('set_session_mode', \{ sessionId: sid, mode: 'auto' \}\)/,
       'auto 目标直调 set_session_mode（后端热同步安全姿态），不弹确认门',
     );
     // 会话级「守卫命中时询问」开关：显式 sessionId 命令 + chip 接线。

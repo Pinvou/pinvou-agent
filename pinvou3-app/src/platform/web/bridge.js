@@ -212,9 +212,11 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     activeModelId: null,
     currentSessionModelId: null, // 当前 active session 显式绑定的模型;null=跟随全局默认
     superPermEnabled: false,
-    modeState: { mode: "yolo" },
+    modeState: { mode: "auto" },
     // Per-lane (work/code) global default modes (null = the lane was never
-    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
+    // explicitly chosen; tri-mode resolution: code/bound→plan, unbound
+    // plain→auto — an explicit Auto choice surfaces as "auto" via the
+    // backend's *_auto companion flags). Source of truth for
     // the draft-state chip display and switches: fetched at startup via
     // get_mode_defaults, written back on draft switches via set_mode_default.
     modeDefaults: { work: null, code: null },
@@ -6609,6 +6611,8 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     discardPlan,
     exitPlanToYolo,
     setPlanModeNext,
+    // tri-mode M1：草稿态三档切换统一走 lane 全局默认（ChatView 草稿分支直调）
+    setDraftMode,
     setModeLane,
     // Web stubs for desktop-only capabilities (bound-workspace sessions / YOLO
     // confirmation gate; API symmetric on both sides)

@@ -615,6 +615,25 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       });
       return true;
     }
+    case 'chat:approval_resolved': {
+      // 审批决策收敛广播（tri-mode M5）：决策可能来自第二窗口或 remote
+      // 表面，后端 decide_approval 落定后广播终态；本 lane 的同 id 未决卡
+      // 就地落终态。只对未决卡生效（幂等）：发起方已落的终态、终态清扫的
+      // cancelled 都不得被回声覆盖。负载不带 tool input（后端构造点有钉）。
+      const resolvedId = String(p.approval_id || p.approvalId || '');
+      if (!resolvedId) return false;
+      const decision = String(p.decision || '');
+      let changed = false;
+      lane.items.forEach(item => {
+        if (item && item.type === 'approval' && item.approvalId === resolvedId && !item.resolved) {
+          item.resolved = true;
+          item.cardState = decision === 'deny' ? 'denied'
+            : decision === 'allow_for_session' ? 'allowed_session' : 'allowed';
+          changed = true;
+        }
+      });
+      return changed;
+    }
     case 'chat:mode_changed': {
       // 权威 mode 广播：lane 自身不持 mode 展示（native controls 由
       // CodexAcpView.refreshNativeControls 按 sessionId 驱动，请求序号 +
@@ -688,6 +707,18 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
         if (!(item && item.type === 'tool' && (item.state === 'pending' || item.state === 'running'))) continue;
         item.state = 'done';
         item.success = item.success === null ? false : item.success;
+      }
+      // Approval-card terminal sweep (tri-mode, round-2 M3): mirrors the
+      // main lane's chat-events.js sweep — the backend registry is cleared
+      // at every terminal (emit_chat_terminal → clear_pending), so a stale
+      // active card's click can only ever yield "approval not found".
+      // Settle it in place as cancelled (status copy maps
+      // nativeApprovalCancelled) and stop the buttons, exactly like the
+      // main lane; only a session switch/remount previously cleared these.
+      for (const item of lane.items) {
+        if (!(item && item.type === 'approval' && !item.resolved)) continue;
+        item.resolved = true;
+        item.cardState = 'cancelled';
       }
       const terminalRecord = recordTurnCompleted(lane, p);
       lane.busy = false;

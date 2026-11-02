@@ -251,11 +251,13 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       grantRequest: null,
       confirmRequest: null,
     },
-    modeState: { mode: "yolo" },
+    modeState: { mode: "auto" },
     // Per-lane (work/code) global default modes (null = the lane was never
-    // explicitly chosen; defaults code→plan, work→yolo). Source of truth for
-    // the draft-state chip display and switches: fetched at startup via
-    // get_mode_defaults, written back on draft switches via set_mode_default.
+    // explicitly chosen; tri-mode resolution: code/bound→plan, unbound
+    // plain→auto — an explicit Auto choice surfaces as "auto" via the
+    // backend's *_auto companion flags). Source of truth for the draft-state
+    // chip display and switches: fetched at startup via get_mode_defaults,
+    // written back on draft switches via set_mode_default.
     modeDefaults: { work: null, code: null },
     // The lane the current chat page is in (work; the code page lane has its
     // own draft-control logic). The lane is a pure frontend concept, passed
@@ -1933,6 +1935,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const discardPlan = interactionFeature.discardPlan;
   const exitPlanToYolo = interactionFeature.exitPlanToYolo;
   const setPlanModeNext = interactionFeature.setPlanModeNext;
+  // tri-mode M1：草稿态三档切换统一写 lane 全局默认（ChatView 草稿分支直调）
+  const setDraftMode = interactionFeature.setDraftMode;
   const setModeLane = interactionFeature.setModeLane;
   const refreshModeDefaults = interactionFeature.refreshModeDefaults;
   const getCodePermissionPrefs = interactionFeature.getCodePermissionPrefs;
@@ -2365,6 +2369,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     discardPlan,
     exitPlanToYolo,
     setPlanModeNext,
+    // tri-mode M1：草稿态三档切换统一走 lane 全局默认（ChatView 草稿分支）
+    setDraftMode,
     setModeLane,
       // One-shot YOLO confirmation gate for bound-workspace sessions (same
       // source of truth as the code mode)

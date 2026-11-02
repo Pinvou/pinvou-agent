@@ -92,7 +92,7 @@ const codexJa = {
   nativePlanSuperseded:'📜 新しいプランで上書きされました', nativePlanHistorical:'📜 過去のプラン',
   nativePlanAcceptFailed:'⚠️ accept_plan に失敗: ', nativePlanDiscardFailed:'⚠️ discard_plan に失敗: ',
   // tri-mode 承認カードの終状態 / ガードレール拒否通知（安定 reason キーをフロント側で対応付け）。
-  nativeApprovalAllowed:'✅ 許可済み', nativeApprovalAllowedSession:'✅ このセッションでは許可済み', nativeApprovalDenied:'🚫 拒否済み',
+  nativeApprovalAllowed:'✅ 許可済み', nativeApprovalAllowedSession:'✅ このセッションでは許可済み', nativeApprovalDenied:'🚫 拒否済み', nativeApprovalCancelled:'✕ キャンセル済み',
   nativeGuardrailDenied:'ガードレール拒否', nativeGuardrailDeniedSession:'このセッションで拒否済みの操作です（内容が変われば再度確認）',
   nativeGuardrailDeniedPlan:'Plan モードは読み取り専用のため拒否', nativeGuardrailDeniedAskOff:'ガードレール確認がオフのため直接拒否',
   addAttachment:'添付ファイルを追加', commandsAvailable:'Agent が報告したコマンド', commandsAfterSession:'セッション作成後に Agent コマンドを同期',

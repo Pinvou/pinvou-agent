@@ -90,7 +90,9 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
         return;
       }
       state.modeState = {
-        mode: ms.mode || "yolo",
+        // tri-mode：缺省兜底与后端 resolved 默认一致（unbound plain → auto），
+        // 不再显示最宽档 yolo（round-2 M 家族：读失败兜底是最坏方向的谎言）。
+        mode: ms.mode || "auto",
         multiAgent: !!ms.multi_agent,
         askOnGuardrail: ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
       };
@@ -98,7 +100,7 @@ async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleS
       // get 失败同样不得用默认值覆盖已发生的权威改写。
       if ((modeStateEpochs[sid] || 0) !== epoch) return;
       if (state.activeSessionId !== sid) return;
-      state.modeState = { mode: "yolo", multiAgent: false, askOnGuardrail: true };
+      state.modeState = { mode: "auto", multiAgent: false, askOnGuardrail: true };
     }
   }
 
@@ -470,7 +472,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     const previousAsk = (state.modeState && state.modeState.askOnGuardrail) !== false;
     bumpModeStateEpoch(sid);
     state.modeState = {
-      mode: (state.modeState && state.modeState.mode) || "yolo",
+      mode: (state.modeState && state.modeState.mode) || "auto",
       multiAgent: !!(state.modeState && state.modeState.multiAgent),
       askOnGuardrail: !!enabled,
     };
@@ -481,7 +483,7 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     } catch (e) {
       runOnSession(sid, function () {
         state.modeState = {
-          mode: (state.modeState && state.modeState.mode) || "yolo",
+          mode: (state.modeState && state.modeState.mode) || "auto",
           multiAgent: !!(state.modeState && state.modeState.multiAgent),
           askOnGuardrail: previousAsk,
         };
@@ -524,8 +526,14 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
     } catch (e) {
       runSyncOnSession(sid, function () {
         card.submitting = false;
-        card.resolved = previous.resolved;
-        card.cardState = previous.cardState;
+        // M5：终态清扫（chat:done）可能在 await 期间已把卡就地落 cancelled。
+        // 恢复 pre-call 状态前必须让位终态——否则已取消的卡复活可点，后续
+        // 每次点击都追加失败提示。chat:approval_resolved 回声同理不覆盖
+        // 已决卡（回声处理只对未决卡生效）。
+        if (!card.resolved) {
+          card.resolved = previous.resolved;
+          card.cardState = previous.cardState;
+        }
       });
       addSystemItemFor(sid, bt("approvalDecisionFailed") + e);
     }

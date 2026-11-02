@@ -76,6 +76,58 @@ try {
     assert.equal(lane.items.filter(item => item.type === 'approval').length, 2);
   }
 
+  // ── round-2 M3：turn 终态清扫把未决审批卡就地落 cancelled（不再可点）──
+  {
+    const lane = createNativeLane();
+    applyNativeChatEvent(lane, 'chat:approval_required', {
+      session_id: 's1', approval_id: 'ap-t', tool_name: 'shell_exec',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    });
+    assert.equal(applyNativeChatEvent(lane, 'chat:done', { session_id: 's1', status: 'cancelled' }), true,
+      '终态清扫可视变化');
+    const card = lane.items.find(item => item.type === 'approval');
+    assert.equal(card.resolved, true, '终态卡必须落 resolved');
+    assert.equal(card.cardState, 'cancelled', '终态卡落 cancelled（渲染层映射三语取消文案）');
+    // 已决卡不被清扫改写：决策终态保留。
+    const lane2 = createNativeLane();
+    applyNativeChatEvent(lane2, 'chat:approval_required', {
+      session_id: 's1', approval_id: 'ap-d', tool_name: 'shell_exec',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    });
+    applyNativeChatEvent(lane2, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-d', decision: 'deny',
+    });
+    applyNativeChatEvent(lane2, 'chat:done', { session_id: 's1', status: 'interrupted' });
+    const decided = lane2.items.find(item => item.type === 'approval');
+    assert.equal(decided.cardState, 'denied', '已决卡的决策终态不被终态清扫覆盖');
+  }
+
+  // ── round-2 M5：chat:approval_resolved 收敛广播——未决卡落终态，已决卡不被回声覆盖 ──
+  {
+    const lane = createNativeLane();
+    applyNativeChatEvent(lane, 'chat:approval_required', {
+      session_id: 's1', approval_id: 'ap-r', tool_name: 'write_file',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    });
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-r', decision: 'allow_for_session',
+    }), true, '收敛广播落终态可视变化');
+    const card = lane.items.find(item => item.type === 'approval');
+    assert.equal(card.resolved, true);
+    assert.equal(card.cardState, 'allowed_session', '决策值映射 allowed / allowed_session / denied');
+    // 幂等：重复回声、对已决卡不得改写；未知 id 无操作。
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-r', decision: 'deny',
+    }), false, '已决卡不被回声覆盖');
+    assert.equal(card.cardState, 'allowed_session');
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-unknown', decision: 'deny',
+    }), false, '未知 id 无可视变化');
+  }
+
   // ── get_pending_approvals 重放通道：camelCase 查询字段 → 合成事件，幂等 ──
   // CodexAcpView.loadSession 用查询返回（serde camelCase）按事件 snake_case
   // 形状重灌；与 live 事件共用同一 approvalId 去重键。
@@ -217,8 +269,8 @@ try {
   // 一切进入 Yolo 的切换生效。
   assert.match(codexView, /if \(target === 'yolo'\) \{\s*\n\s*const prefs = await refreshCodePermPrefs\(\);/,
     '原生车道 Yolo 确认门不再绑定 isPlan');
-  assert.match(codexView, /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,200}?\} else if \(target === 'yolo'\) \{[\s\S]{0,300}?set_session_mode', \{ sessionId: activeId, mode: 'yolo' \}/,
-    'Plan 退回 exit_plan_to_yolo；Auto→Yolo 走 set_session_mode');
+  assert.match(codexView, /target === 'yolo' && isPlan\) \{[\s\S]{0,200}?exit_plan_to_yolo[\s\S]{0,200}?\} else if \(target === 'yolo'\) \{[\s\S]{0,300}?set_session_mode', \{ sessionId: sid, mode: 'yolo' \}/,
+    'Plan 退回 exit_plan_to_yolo；Auto→Yolo 走 set_session_mode（sid 显式钉目标，确认门回程切会话不打 live-active）');
   // v3.5：草稿暂存 auto 也随建会话应用（旧代码只认 plan/yolo）。
   assert.match(codexView, /staged\.mode === 'yolo'\) \{[\s\S]{0,160}?\} else if \(staged\.mode === 'auto'\) \{[\s\S]{0,200}?set_session_mode', \{ sessionId, mode: 'auto' \}/,
     '原生车道草稿暂存 auto 落地');
@@ -255,7 +307,8 @@ try {
     // chip 接线：askOnGuardrail + 开关回调 + 草稿态禁用（无会话可写）。
     assert.match(chatView, /askOnGuardrail=\{bs && bs\.modeState \? bs\.modeState\.askOnGuardrail : undefined\}/,
       '聊天车道 chip 读取 bridge modeState 的 askOnGuardrail');
-    assert.match(chatView, /askToggleDisabled=\{!activeSessionId\}/, '草稿态（无会话）禁用守卫开关');
+    assert.match(chatView, /askToggleDisabled=\{!activeSessionId\s*\|\|\s*!\(bridge\.interaction && typeof bridge\.interaction\.setAskOnGuardrail === 'function'\)\}/,
+      '草稿态（无会话）与无 setAskOnGuardrail 能力的表面（web）都禁用守卫开关');
     assert.match(chatView, /onToggleAskOnGuardrail=\{handleToggleAskOnGuardrail\}/, '开关回调接线');
     assert.match(chatView, /bridge\.interaction\.setAskOnGuardrail\(activeSessionId, enabled\)/,
       '开关走 bridge（乐观翻转 + 失败回滚在 bridge 层）');
@@ -266,6 +319,51 @@ try {
   assert.match(chatEvents, /item\.type === "approval" && !item\.resolved[\s\S]{0,120}?item\.cardState = "cancelled";/,
     'turn 终态清扫未决策审批卡');
   assert.match(chatEvents, /item\.type === "approval" && item\.approvalId === approvalId/, 'live 事件按 approvalId 去重');
+
+  // round-2 M5：决策收敛广播 chat:approval_resolved——只对未决卡生效（幂等），
+  // 决策值映射三终态；不覆盖发起方的乐观终态与终态清扫的 cancelled。
+  assert.match(chatEvents, /listen\("chat:approval_resolved", function \(e\) \{ onSessionEvent\(e, function \(\) \{[\s\S]{0,300}?item\.type === "approval" && item\.approvalId === approvalId && !item\.resolved[\s\S]{0,300}?decision === "deny" \? "denied"[\s\S]{0,120}?"allowed_session"/,
+    '收敛广播处理器只落未决卡并映射决策终态');
+  // round-2 M5：decideApproval 的失败恢复不得覆盖终态清扫已落的 cancelled
+  // （await 期间 chat:done 先到 → catch 恢复让位 resolved）。
+  assert.match(interaction, /card\.submitting = false;[\s\S]{0,300}?if \(!card\.resolved\) \{[\s\S]{0,200}?card\.cardState = previous\.cardState;/,
+    'decide 失败恢复让位终态（不复活已取消卡）');
+
+  // round-2 M1：聊天车道草稿态芯片切换必须落到 setDraftMode（绝不静默吞没），
+  // 且草稿 Yolo 过同一一次性确认门（codex 车道 needsYoloConfirmation 对草稿
+  // 生效，两车道同约）。
+  {
+    const handler = chatView.slice(
+      chatView.indexOf('async function handleModeChipSwitch'),
+      chatView.indexOf('async function handleToggleAskOnGuardrail'),
+    );
+    const draftAt = handler.indexOf('if (!activeSessionId) {');
+    const setSessionAt = handler.indexOf("bridge.interaction.setSessionMode(activeSessionId, 'auto')");
+    assert.ok(draftAt >= 0, 'handleModeChipSwitch 必须有草稿分支');
+    assert.ok(setSessionAt > draftAt, '草稿分支先于已物化会话的 setSessionMode 路径');
+    assert.match(handler, /await bridge\.interaction\.setDraftMode\(target\);/,
+      '草稿态 auto/yolo 切换写 lane 全局默认（setDraftMode），不吞没');
+    assert.match(handler, /chatYoloGateAllows\(null, 'yolo'\)/,
+      '未绑定草稿点 Yolo 过一次性确认门');
+    assert.match(chatView, /let boundTarget = chatYoloGateApplies\(\{[\s\S]{0,300}?if \(!boundTarget && !gateSid && gateTarget === 'yolo'\) boundTarget = true;/,
+      '草稿 Yolo 的门判定扩展（lane 默认作用于未来所有会话）');
+  }
+
+  // round-2 M4：codex Yolo 确认门在 entry 捕获发起会话，确认回程切会话也
+  // 落在弹门会话上（live-active 从未见过门卡）。
+  assert.match(codexView, /setPendingYoloSwitch\(\{ draft: !activeId, sid: activeId \|\| null \}\)/,
+    '确认门捕获发起会话 sid');
+  assert.match(codexView, /performNativeModeSwitch\('yolo', \{ isPlan: true \}, pending\.sid\)/,
+    '确认落点钉在弹门会话');
+  assert.match(codexView, /const sid = \(typeof targetSessionId === 'string' && targetSessionId\)\s*\n\s*\? targetSessionId\s*\n\s*: activeId;/,
+    'performNativeModeSwitch 支持显式目标会话');
+  assert.match(codexView, /const isActiveTarget = sid === activeId;/, '非当前会话目标不刷本会话控件');
+
+  // round-2 M3：codex 车道 turn 终态也清扫审批卡（与主车道同约，此前只有
+  // 主车道有——僵尸可点卡）。
+  assert.match(read('src', 'features', 'codex', 'code-native-lane.js'), /item\.type === 'approval' && !item\.resolved[\s\S]{0,80}?item\.cardState = 'cancelled';/,
+    'codex 车道终态清扫未决审批卡');
+
 
   // tool-renderers：ApprovalCard 三按钮 + PlanStuckCard 的 Auto/Yolo 双出路。
   assert.match(toolRenderers, /const ApprovalCard = \(\{ item, t, onDecide \}\) => \{/, '审批卡组件');

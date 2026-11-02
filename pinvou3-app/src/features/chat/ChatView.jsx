@@ -2896,21 +2896,26 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return null;
       }
       // Adjudicate the one-time YOLO gate for a click on `gateSid`.
-      // Returns true when the caller may proceed with its final action now
-      // (unbound, already confirmed, or bridge without prefs support);
-      // false when the confirmation card was opened (or the click went
-      // stale mid-await and the action must be abandoned).
-      async function chatYoloGateAllows(gateSid) {
+      // `gateTarget` ('yolo' for the draft route) extends the gate to the
+      // unbound draft: the lane default applies to every future session, so
+      // entering full-auto there must not skip the one-time confirmation
+      // (codex switchNativeMode parity). Returns true when the caller may
+      // proceed with its final action now (unbound, already confirmed, or
+      // bridge without prefs support); false when the confirmation card was
+      // opened (or the click went stale mid-await and the action must be
+      // abandoned).
+      async function chatYoloGateAllows(gateSid, gateTarget) {
         const sessionBinding = await resolveBindingForGate(gateSid);
         // If the user switched away during the query round-trip, the
         // adjudication belongs to the session captured at click time — the
         // action must be abandoned.
         if (gateSid !== activeSessionIdRef.current) return false;
-        const boundTarget = chatYoloGateApplies({
+        let boundTarget = chatYoloGateApplies({
           activeSessionId: gateSid,
           sessionBinding,
           draftWorkspacePath: bs && bs.draftWorkspacePath,
         });
+        if (!boundTarget && !gateSid && gateTarget === 'yolo') boundTarget = true;
         if (boundTarget && typeof bridge.interaction.getCodePermissionPrefs === 'function') {
           const prefs = await bridge.interaction.getCodePermissionPrefs();
           // Re-check after the second await as well.
@@ -2983,6 +2988,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (!bridge.available || !bridge.interaction) return;
         if (target === 'plan' && !isPlan) {
           await bridge.interaction.setPlanModeNext();
+          return;
+        }
+        // 草稿态（无已物化会话）：三档都必须落到 lane 全局默认
+        // （setDraftMode 支持 plan/yolo/auto 三值），绝不静默吞没——
+        // setSessionMode 对 !sid 是纯 no-op（round-2 M1），而
+        // setPlanModeNext/exitPlanToYolo 的草稿兜底早已是 setDraftMode；
+        // 未绑定草稿点 Yolo 同样过一次性确认门（codex 车道
+        // needsYoloConfirmation 对草稿生效，两车道同约）。
+        if (!activeSessionId) {
+          if (target !== 'auto' && target !== 'yolo') return;
+          if (target === 'yolo' && !(await chatYoloGateAllows(null, 'yolo'))) return;
+          await bridge.interaction.setDraftMode(target);
           return;
         }
         // Auto（tri-mode 逐项审批档）：无一次性确认门——门只对 yolo 生效。
@@ -4320,7 +4337,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   })()}
                   <ComposerModeChip t={t} bs={bs} compact={composerCompact} onSwitch={handleModeChipSwitch}
                     askOnGuardrail={bs && bs.modeState ? bs.modeState.askOnGuardrail : undefined}
-                    askToggleDisabled={!activeSessionId}
+                    askToggleDisabled={!activeSessionId
+                      || !(bridge.interaction && typeof bridge.interaction.setAskOnGuardrail === 'function')}
                     onToggleAskOnGuardrail={handleToggleAskOnGuardrail} />
                   {/* Scheduled run conversations expose no swarm toggle:
                       the backend's swarm_mode_available excludes them (the

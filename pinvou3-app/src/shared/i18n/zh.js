@@ -93,7 +93,7 @@ const codexZh = {
   nativePlanSuperseded:'📜 已被新方案覆盖', nativePlanHistorical:'📜 历史方案',
   nativePlanAcceptFailed:'⚠️ accept_plan 失败: ', nativePlanDiscardFailed:'⚠️ discard_plan 失败: ',
   // tri-mode 审批卡终态 / 守卫硬拒通知（reason 稳定键在前端按键映射）。
-  nativeApprovalAllowed:'✅ 已允许', nativeApprovalAllowedSession:'✅ 本会话允许', nativeApprovalDenied:'🚫 已拒绝',
+  nativeApprovalAllowed:'✅ 已允许', nativeApprovalAllowedSession:'✅ 本会话允许', nativeApprovalDenied:'🚫 已拒绝', nativeApprovalCancelled:'✕ 已取消',
   nativeGuardrailDenied:'守卫拦截', nativeGuardrailDeniedSession:'该会话已拒绝此操作（换参数需重新请批）',
   nativeGuardrailDeniedPlan:'Plan 模式为只读，已拒绝', nativeGuardrailDeniedAskOff:'守卫询问已关闭，已直接拒绝',
   addAttachment:'添加附件', commandsAvailable:'Agent 上报的命令', commandsAfterSession:'创建会话后同步 Agent 命令',

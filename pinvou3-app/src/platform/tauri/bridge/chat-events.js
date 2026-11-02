@@ -1318,6 +1318,29 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     notify();
   }); });
 
+  // 审批决策收敛广播（tri-mode M5）：决策可能来自第二窗口或 remote 表面，
+  // 后端 decide_approval 落定后广播终态；本表面的同 id 未决卡就地落终态。
+  // 只对未决卡生效（幂等）：发起方的乐观终态、终态清扫的 cancelled 都不得
+  // 被回声覆盖。负载不带 tool input（后端载荷构造点有钉）。
+  listen("chat:approval_resolved", function (e) { onSessionEvent(e, function () {
+    const p = e.payload || {};
+    const approvalId = String(p.approval_id || "");
+    if (!approvalId) return;
+    const decision = String(p.decision || "");
+    let changed = false;
+    state.chatItems.forEach(function (item) {
+      if (item && item.type === "approval" && item.approvalId === approvalId && !item.resolved) {
+        item.submitting = false;
+        item.resolved = true;
+        item.cardState = decision === "deny" ? "denied"
+          : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        item.statusLabel = "";
+        changed = true;
+      }
+    });
+    if (changed) notify();
+  }); });
+
   // 守卫硬拒（不出卡）：reason 是稳定英文键（后端 ApprovalDenyReason::reason_key），
   // 前端按键映射三语文案；未知键原样透出，保证可审计。
   listen("chat:guardrail_denied", function (e) { onSessionEvent(e, function () {

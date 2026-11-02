@@ -15,7 +15,7 @@ export const desktopBridgeApi = {
   vllm: ['discoverLocalVllm'],
   multiAgent: ['listSubagentTranscripts', 'readSubagentTranscript'],
   models: ['deleteModel', 'getImageInputCapability', 'loadSessionModel', 'probeLocalServerKind', 'revealModelApiKey', 'saveModel', 'setActiveModel', 'switchModel', 'testImageInputCapability', 'testModelConnection'],
-  interaction: ['acceptPlan', 'cancelUserInput', 'confirmCodeYolo', 'decideApproval', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'getCodePermissionPrefs', 'getPendingApprovals', 'inspectPinvou', 'planStuckGo', 'planStuckGoAuto', 'planStuckReplan', 'resolvePinvouReview', 'setAskOnGuardrail', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'setSessionMode', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
+  interaction: ['acceptPlan', 'cancelUserInput', 'confirmCodeYolo', 'decideApproval', 'discardPlan', 'dismissPinvouReview', 'editLastTurn', 'exitPlanToYolo', 'getCodePermissionPrefs', 'getPendingApprovals', 'inspectPinvou', 'planStuckGo', 'planStuckGoAuto', 'planStuckReplan', 'resolvePinvouReview', 'setAskOnGuardrail', 'setDraftMode', 'setModeLane', 'setMultiAgentMode', 'setPlanModeNext', 'setSessionMode', 'submitUserInput', 'summonPinvou', 'syncModeState', 'toggleSuperPerm'],
   rendering: ['renderMarkdown'],
   remoteControl: ['refreshRemoteControlQr', 'revokeRemoteHostWorkspace', 'startRemoteControl', 'stopRemoteControl'],
   artifacts: ['artifactInfo', 'downloadArtifact', 'listDeliverableIndex', 'openArtifactExternal', 'openContainingFolder', 'openScheduledTaskFolder', 'openUserExternalUrl', 'readArtifactImageB64', 'readArtifactText', 'readArtifactThumbnail', 'renderArtifactVisual', 'revealSessionFolder', 'writeArtifactText'],
