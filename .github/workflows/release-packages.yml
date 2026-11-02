@@ -397,6 +397,12 @@ jobs:
           # appindicator/pipewire+drm+gbm+egl。
           sudo apt-get install -y --no-install-recommends             build-essential pkg-config cmake lld             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu             libclang-14-dev             libwebkit2gtk-4.1-dev:arm64             libssl-dev:arm64             libayatana-appindicator3-dev:arm64             libpipewire-0.3-dev:arm64 libdrm-dev:arm64 libgbm-dev:arm64 libegl-dev:arm64 \
             libglib2.0-dev:arm64 libcap-dev:arm64
+          # 交叉 gcc 的 collect2 按 <triple>-ld.lld → ld.lld 的顺序在 PATH 找
+          # -fuse-ld=lld 指定的链接器,而 jammy 的 lld 包只提供不带前缀的
+          # /usr/bin/ld.lld —— 不加这个软链,全部 cargo 链接都会在最后一步
+          # "collect2: cannot find 'ld'" 失败(链接旗标由 policy 测试钉死,不能
+          # 改成绝对路径写法)。
+          sudo ln -sf "$(command -v ld.lld)" /usr/local/bin/aarch64-linux-gnu-ld.lld
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
