@@ -254,17 +254,19 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
 
 ## 8. 测试与登记
 
-- **底座**（CodeWhale#131）：本行为新增 20 条 `forkguard_` pin——提交
+- **底座**（CodeWhale#131）：本行为新增 22 条 `forkguard_` pin——提交
   `998ffe27e` 7 条 + 复审加固 6 条 + 评审修复 1 条 + 复审修复二 `5c13fc561`
   4 条（武装发布粘滞、armed composer 硬拒、armed Auto-Review 升级恒拒、
   preview 计划姿态与 live 线体哈希一致）+ 复审修复三 `f972884e5`
-  2 条（runtime pump 尊重 force_prompt、NotStarted 不吞 transition），逐条钉住上述五个武装面、
+  2 条（runtime pump 尊重 force_prompt、NotStarted 不吞 transition）+ 复审修复四
+  `b94cc3175` 2 条（sync 重置已上报姿态、isolated 轮不记录不消费），逐条钉住上述五个武装面、
   Auto-Review/Never 恒拒、授予缓存不可静默消费武装 hold、composer 不武装、
   子代理两个镜像面、transition 渲染/折叠/预览一致与武装不可回滚。
-  forkguard 行为名总数 255 → 275；门禁命令
+  forkguard 行为名总数 255 → 277；门禁命令
   `cargo test -p codewhale-tui --lib --locked forkguard_ -- --test-threads=1`
-  （复审修复三头 `f972884e5` 实测 260 过 / 0 挂，既有 fail-closed pin 原样绿）。
-  20 条逐名：
+  （复审修复四头 `b94cc3175` 实测 262 过 / 0 挂，既有 fail-closed pin 原样绿；
+  协议 crate 71/0 含新增遗留 ChangeMode 载荷 serde 钉）。
+  22 条逐名：
   `forkguard_armed_full_access_forced_hold_resolves_to_prompt`、
   `forkguard_armed_full_access_hold_prompts_instead_of_blocking`、
   `forkguard_armed_repo_law_hold_prompts_instead_of_blocking`、
@@ -288,7 +290,11 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
   （复审修复二新增，四条均突变验证转红）、
   `forkguard_pump_never_auto_approves_a_force_prompt_hold`、
   `forkguard_a_not_started_turn_neither_consumes_nor_records_the_transition`
-  （复审修复三新增，两条均突变验证转红）。
+  （复审修复三新增，两条均突变验证转红），
+  `forkguard_sync_session_clears_the_recorded_turn_meta_posture`、
+  `forkguard_an_isolated_turn_neither_consumes_nor_records_the_transition`
+  （复审修复四新增，两条均突变验证转红；本波第三项修复扩展 pump 钉的载荷断言、
+  不新增钉名）。
 - **应用侧**：`forkguard_approval_surface_record_dedupes_by_approval_id` /
   `_remove_returns_entry_and_cleans_empty_session` /
   `_grant_and_denial_scoping` / `_clear_session_wipes_memory` /
