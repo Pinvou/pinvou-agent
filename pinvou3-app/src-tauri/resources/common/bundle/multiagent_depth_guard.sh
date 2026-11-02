@@ -18,8 +18,20 @@ set -u
 tool_name="${DEEPSEEK_TOOL_NAME:-}"
 tool_args="${DEEPSEEK_TOOL_ARGS:-}"
 
+# Opaque-source gate.  The engine also honors a top-level "path" serde
+# alias for source_path (workflow_source in workflow/mod.rs), but that
+# alias is undocumented schema surface, and matching it as a bare key hit
+# ordinary nested "path" fields inside structured plan payloads (child
+# tool args etc.), denying legitimate calls; the deny message then named
+# only source_path.  The gate now triggers on the schema-documented key
+# shape — the quoted top-level "source_path" key with a string value —
+# and the message names exactly that key.  A call that aliases the same
+# input as a top-level "path" is not intercepted here; the engine's own
+# per-call max_depth min-clamp still bounds any override inside the file
+# it loads (#5253), so this residual is bounded by the same engine rule
+# this hook exists to state.
 if [ "$tool_name" = "workflow" ] &&
-  printf '%s' "$tool_args" | grep -Eq '(^|[^\\])"(source_path|path)"[[:space:]]*:'; then
+  printf '%s' "$tool_args" | grep -Eq '(^|[^\\])"source_path"[[:space:]]*:[[:space:]]*"'; then
   printf '%s\n' \
     '{"decision":"deny","reason":"Multi-agent mode requires the workflow source to be inlined in the call so child depth can be enforced; a source_path reference is rejected here. Inline the workflow source instead."}'
   exit 2

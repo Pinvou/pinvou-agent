@@ -530,8 +530,11 @@ pub const DENY_SENSITIVE_PATHS_PS1: &str =
 /// 多智能体会话的两层深度护栏。仅在多智能体 EngineConfig 中挂载，
 /// 普通对话不使用。会话上限允许一级代理再派生一层；hook 拦截主会话显式
 /// 传入的正数深度覆盖字段（嵌套子代理的调用不经过 ToolCallBefore，由
-/// 继承上限与准入/并发额度兜底）；Workflow 的
-/// `source_path` 要求改用 inline script/plan，避免 hook 无法检查文件内参数。
+/// 继承上限与准入/并发额度兜底）；Workflow 的顶层 `source_path`
+/// 要求改用 inline script/plan，避免 hook 无法检查文件内参数。引擎侧
+/// 另有未写入 schema 的 `path` serde 别名，该别名不在此拦截（裸键匹配会
+/// 误伤 plan 载荷里的嵌套 `path` 字段；文件内覆盖由引擎 #5253 的
+/// min-clamp 兜底）。
 pub const MULTIAGENT_DEPTH_GUARD_SH: &str =
     include_str!("../../../../resources/common/bundle/multiagent_depth_guard.sh");
 pub const MULTIAGENT_DEPTH_GUARD_PS1: &str =
@@ -1589,6 +1592,22 @@ mod tests {
                         && !opaque_reason.contains(" file ")
                         && opaque_reason.chars().count() <= 240,
                     "opaque workflow 拒绝原因必须原样通过引擎脱敏管线: {opaque_reason:?}"
+                );
+
+                // Nested "path" keys inside structured plan payloads are ordinary
+                // field names (child tool args etc.), not the schema-documented
+                // source_path bypass key: the opaque-source trigger must not fire
+                // on them (the guard used to match the bare "path" serde alias at
+                // any nesting depth and false-denied these calls; the alias stays
+                // un-intercepted by design, see the hook's header comment).
+                let nested_path = run_depth_guard(
+                    &bundle,
+                    "workflow",
+                    r#"{"plan":{"goal":"summarize docs","children":[{"id":"a","args":{"path":"docs/x.md"}}]}}"#,
+                );
+                assert!(
+                    nested_path.status.success(),
+                    "plan 载荷里的嵌套 path 字段不得触发 source_path 拦截: {nested_path:?}"
                 );
             },
         );
