@@ -1082,13 +1082,13 @@ async function main() {
       );
     }
 
-    // SenseVoice can only be built natively on the target architecture
-    // (build-sensevoice-runtime.sh requires requested_arch == host_arch and
-    // links the host glibc). Cross builds request the target architecture:
-    // either the pipeline pre-built the engine and set
-    // PINVOU3_LINUX_ASR_PREBUILT=1 (the step then requires it), or the
-    // script's architecture assertion fails fast; the overlay declaration is
-    // removed in prepareTauriArgs only when the step is skipped.
+    // This build cannot run build-sensevoice-runtime.sh itself for a cross
+    // target: the script's env-driven cross modes (aarch64 since 2026-11,
+    // loongarch64) are driven by the release pipeline. A cross build must
+    // therefore bring a pre-built engine (PINVOU3_LINUX_ASR_PREBUILT=1, the
+    // step then requires it) or skip ASR entirely (PINVOU3_SKIP_LINUX_ASR=1);
+    // the overlay declaration is removed in prepareTauriArgs only when the
+    // step is skipped.
     if (!skipLinuxAsr) prepareLinuxAsrRuntime(isCrossBuild ? { architecture: targetArch, prebuilt: prebuiltLinuxAsr } : {});
     // The bridge prepares the target architecture: it compiles nothing, it
     // only downloads, verifies and unpacks the official Node tarball, so a

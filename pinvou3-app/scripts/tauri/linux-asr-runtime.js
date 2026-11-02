@@ -65,8 +65,9 @@ function prepareLinuxAsrRuntime({
   if (prebuilt) {
     // The prebuilt engine is the packaging-time input produced by the release
     // pipeline: the pipeline runs build-sensevoice-runtime.sh for the target
-    // architecture ahead of packaging (in its cross mode for loongarch64,
-    // natively for x86_64/aarch64) and leaves the result at the same path the
+    // architecture ahead of packaging (in its env-driven cross mode for
+    // aarch64/loongarch64, natively for x86_64) and leaves the result at the
+    // same path the
     // script itself would write, so this step only verifies and accepts it
     // (same contract as the script's own cached-build fast path). The skip is
     // opt-in on purpose: skipping whenever a file happens to exist would

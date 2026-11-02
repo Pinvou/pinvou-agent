@@ -1,10 +1,10 @@
 // Resources in the architecture overlay that cannot always be prepared must
 // be removed correctly when their skip switch is set.
 //
-// The ASR runtime is declared in the tracked aarch64 overlay, but SenseVoice
-// can only be built natively on the target architecture
-// (build-sensevoice-runtime.sh asserts requested_arch == host_arch), so cross
-// builds must skip it. The file then does not exist while the overlay still
+// The ASR runtime is declared in the tracked aarch64 overlay, but this build
+// cannot run build-sensevoice-runtime.sh itself for a cross target (its
+// env-driven cross modes are driven by the release pipeline), so cross builds
+// must prebuild it or skip it. Without the engine file the overlay still
 // declares it, and `writeEffectiveArtifacts` stops with a missing-resource
 // error. Switch: PINVOU3_SKIP_LINUX_ASR=1, off by default.
 //
