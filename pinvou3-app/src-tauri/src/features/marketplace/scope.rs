@@ -4771,7 +4771,9 @@ mod tests {
             save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
             let gate = deny_first_register_connector_refresh("feishu", true).unwrap();
             assert!(
-                !gate.granted && !gate.relied_standing_consent && gate.relied_grant_token.is_empty(),
+                !gate.granted
+                    && !gate.relied_standing_consent
+                    && gate.relied_grant_token.is_empty(),
                 "fixture: the verdict guard declines the gate with no identity: {gate:?}"
             );
 
@@ -4783,8 +4785,7 @@ mod tests {
                 if let Some(ids) = file.scopes.get_mut("plain") {
                     ids.retain(|id| id != "feishu");
                 }
-                file.install_default_synced
-                    .push("plain:feishu".to_string());
+                file.install_default_synced.push("plain:feishu".to_string());
                 file.install_default_synced.push("code:feishu".to_string());
                 file.connect_granted.push("feishu".to_string());
                 file.connect_grant_tokens
