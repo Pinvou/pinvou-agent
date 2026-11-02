@@ -37,7 +37,7 @@ wecom-cli contact users search --json '<JSON 参数>'
 | 字段 | 类型 | 说明 |
 |---|---|--|
 | `users` | array | 命中的用户列表 |
-| `users[].userid` | string | 用户唯一标识 |
+| `users[].userid` | string | 用户唯一标识（企微通讯录内部成员为 `wo` 前缀） |
 | `users[].name` | string | 中文姓名 |
 | `users[].alias` | string | 英文名 / 别名（可能为空） |
 | `users[].email` | string | 邮箱（可能为空） |
