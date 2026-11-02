@@ -630,7 +630,7 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       // fail-neutral（与 chat-events 主车道同口径）：未知/缺失决策值按 no-op
       // 早退——审批面上的畸形载荷不得把未决卡映射成 "allowed"，宁可留着
       // 未决等权威回声/终态清扫。
-      if (decision !== 'deny' && decision !== 'allow' && decision !== 'allow_for_session') return false;
+      if (!['deny', 'allow', 'allow_for_session'].includes(decision)) return false;
       let changed = false;
       lane.items.forEach(item => {
         if (item && item.type === 'approval' && item.approvalId === resolvedId && !item.resolved) {
@@ -644,7 +644,8 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       // 在途快照回程不得把这个已决审批当活卡插回（lane 随会话重建，
       // 墓碑生命周期天然不跨会话）。
       if (!changed) {
-        (lane.approvalTombstones = lane.approvalTombstones || new Set()).add(resolvedId);
+        if (!lane.approvalTombstones) lane.approvalTombstones = new Set();
+        lane.approvalTombstones.add(resolvedId);
       }
       return changed;
     }

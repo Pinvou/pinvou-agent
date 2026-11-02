@@ -248,7 +248,7 @@ const expectedProtocolHashes = {
   // (approval card projection), chat:guardrail_denied (hard-deny notice) and
   // chat:mode_changed (authoritative mode broadcast through
   // applyAuthoritativeModeState).
-  chat: '049cd12d4582c0a507b37ca8bb36ccc2cedd757d21a379467e1755ffc70b76c6',
+  chat: '61177e6e4e7d8d270379d32af2106161752443b3ba3fd223eea345f86f70c011',
   // Recomputed for the tri-mode safety surface: chat-events.js gains three
   // listeners — chat:approval_required (approval card projection),
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
@@ -266,6 +266,10 @@ const expectedProtocolHashes = {
   // card matched, and chat:approval_required consults it — no new command
   // or event surface, only the in-body guard against a stale in-flight
   // get_pending_approvals snapshot reinserting a settled approval.
+
+  // Recomputed for the lint-clean decision guard: the same unknown-decision
+  // early return spelled as a includes() list (CI's unicorn rule), the same
+  // single listener and identical behavior.
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

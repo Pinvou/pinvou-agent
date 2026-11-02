@@ -1305,7 +1305,8 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // 墓碑只服务在途快照窗口，登记表删除后重放本就不会再见到该 id，超限
   // 丢弃是安全的。
   function approvalTombstoneMap() {
-    return (state.approvalReplayTombstones = state.approvalReplayTombstones || new Map());
+    if (!state.approvalReplayTombstones) state.approvalReplayTombstones = new Map();
+    return state.approvalReplayTombstones;
   }
   function tombstoneApproval(sid, approvalId) {
     const map = approvalTombstoneMap();
@@ -1352,7 +1353,7 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     const approvalId = String(p.approval_id || "");
     if (!approvalId) return;
     const decision = String(p.decision || "");
-    if (decision !== "deny" && decision !== "allow" && decision !== "allow_for_session") return;
+    if (!["deny", "allow", "allow_for_session"].includes(decision)) return;
     let changed = false;
     state.chatItems.forEach(function (item) {
       if (item && item.type === "approval" && item.approvalId === approvalId && !item.resolved) {

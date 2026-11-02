@@ -385,7 +385,7 @@ try {
   // 决策值映射三终态；不覆盖发起方的乐观终态与终态清扫的 cancelled。
   // round-4：未知/缺失决策值先按 no-op 早退（fail-neutral）——审批面上的
   // 畸形载荷不得把未决卡映射成 "allowed"。
-  assert.match(chatEvents, /listen\("chat:approval_resolved", function \(e\) \{ onSessionEvent\(e, function \(\) \{[\s\S]{0,520}?decision !== "deny" && decision !== "allow" && decision !== "allow_for_session"[\s\S]{0,200}?item\.type === "approval" && item\.approvalId === approvalId && !item\.resolved[\s\S]{0,300}?decision === "deny" \? "denied"[\s\S]{0,120}?"allowed_session"/,
+  assert.match(chatEvents, /listen\("chat:approval_resolved", function \(e\) \{ onSessionEvent\(e, function \(\) \{[\s\S]{0,520}?!\["deny", "allow", "allow_for_session"\]\.includes\(decision\)[\s\S]{0,200}?item\.type === "approval" && item\.approvalId === approvalId && !item\.resolved[\s\S]{0,300}?decision === "deny" \? "denied"[\s\S]{0,120}?"allowed_session"/,
     '收敛广播处理器拒识别未知决策、只落未决卡并映射三终态');
   // round-2 M5：decideApproval 的失败恢复不得覆盖终态清扫已落的 cancelled
   // （await 期间 chat:done 先到 → catch 恢复让位 resolved）。
