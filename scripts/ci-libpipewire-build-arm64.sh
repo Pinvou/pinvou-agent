@@ -66,9 +66,11 @@ c = 'aarch64-linux-gnu-gcc'
 cpp = 'aarch64-linux-gnu-g++'
 ar = 'aarch64-linux-gnu-ar'
 strip = 'aarch64-linux-gnu-strip'
-# meson(0.61)在交叉文件存在时会为 build machine 也找 cross 域的 pkg-config
-# 入口;显式声明后,PKG_CONFIG_LIBDIR(导出的 arm64 目录表)决定它解析哪侧。
-pkg-config = 'pkg-config'
+# 键名必须是 pkgconfig(一个词):meson 0.61 的 lookup 不做连字符规范化,
+# 写 pkg-config 会被当作未声明(交叉模式下又禁用 PATH 默认值),setup 必然
+# 报 "Pkg-config binary for machine 1 not found"。值配合导出的
+# PKG_CONFIG_LIBDIR(arm64 目录表)决定解析哪一侧。
+pkgconfig = 'pkg-config'
 
 [host_machine]
 system = 'linux'
