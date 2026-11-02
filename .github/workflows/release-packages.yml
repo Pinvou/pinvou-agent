@@ -463,13 +463,15 @@ jobs:
 
       # Repack deb (data.tar gzip-6 → xz -9), same as build-linux-x64.
       - name: Repack deb (data.tar gzip-6 → xz -9)
-        working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
+        working-directory: pinvou3-app/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb
         run: bash "$GITHUB_WORKSPACE/scripts/repack-deb-xz.sh" "pinvou3_${VERSION}_arm64.deb"
 
       # tauri deb 产物默认名 pinvou3_<version>_arm64.deb,重命名为统一全平台命名
-      # pinvou-agent_<version>-linux-arm64.deb(与制品 zip 名对齐)。
+      # pinvou-agent_<version>-linux-arm64.deb(与制品 zip 名对齐)。交叉构建的
+      # 产物目录按三元组分层(target/aarch64-unknown-linux-gnu/release/bundle),
+      # 与原生路径不同,以下步骤的路径均按此指向。
       - name: 校验产物 + 统一命名 + sha256
-        working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
+        working-directory: pinvou3-app/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb
         run: |
           set -euo pipefail
           SRC="pinvou3_${VERSION}_arm64.deb"
@@ -483,15 +485,15 @@ jobs:
 
       # glibc 下限守护(同 build-linux-x64,断言全部 ELF 的 GLIBC_ 符号 ≤ 2.35)。
       - name: glibc 下限守护 (Ubuntu 22.04 = glibc 2.35)
-        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-arm64.deb" arm64
+        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/pinvou-agent_${VERSION}-linux-arm64.deb" arm64
 
       - name: 上传 deb artifact
         uses: actions/upload-artifact@v7
         with:
           name: pinvou-agent-${{ needs.check-version-bump.outputs.version }}-linux-arm64
           path: |
-            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-arm64.deb
-            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-arm64.deb.sha256
+            pinvou3-app/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-arm64.deb
+            pinvou3-app/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-arm64.deb.sha256
           retention-days: 90
           if-no-files-found: error
 
