@@ -20,9 +20,12 @@ use serde::{Deserialize, Serialize};
 /// 历史：曾经只有 `Plan / Yolo` 两态（工作车道默认 Yolo，即全程自动批准）。
 /// `Auto` 是后加的中间档（对齐 Claude Code `acceptEdits`/`default` 的主流
 /// 形态）：普通可提示工具逐次请批，工作区内文件写走底座 carve-out 免弹卡。
-/// 旧侧车文件里的 `"plan"/"yolo"` 照常反序列化；`"auto"` 只会由新二进制
-/// 写入，旧二进制读到会整表回退 boot 缓存（durable_mode_entry 的既定语义，
-/// 一次性陈旧、无数据丢失）。
+/// 旧侧车文件里的 `"plan"/"yolo"` 照常反序列化。兼容面纪律：`"auto"` 只进
+/// `_session_mode_states.json` 侧车（旧二进制读到会整表回退 boot 缓存，
+/// durable_mode_entry 的既定语义，一次性陈旧）；settings.json 的 lane 默认
+/// 永不写 `"auto"` 字面量——显式 Auto 选择走 `*_auto` 伴随旗（见
+/// `platform::prefs`），否则旧二进制的整文件解析会失败并把下一次保存变成
+/// 默认值覆盖（持久设置丢失）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SerializableMode {
@@ -84,9 +87,12 @@ impl ModeLane {
     }
 }
 
-/// Return view of `get_mode_defaults`: the global default mode per lane
-/// (None = the lane was never explicitly chosen; the frontend resolves
-/// defaults as code→plan, work→yolo).
+/// Return view of `get_mode_defaults`: the global default mode per lane.
+/// None = the lane was never explicitly chosen; resolution then falls to
+/// the session kind (code/bound → Plan, unbound plain → Auto — tri-mode).
+/// An explicit Auto choice is surfaced as `Some(Auto)` here: the disk
+/// representation lives in dedicated `*_auto` companion flags, so the
+/// legacy settings.json vocabulary stays parseable by pre-tri-mode binaries.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ModeDefaultsView {
     pub work: Option<SerializableMode>,

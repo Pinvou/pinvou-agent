@@ -4062,8 +4062,16 @@ fn first_plan_write_accept_returns_to_resolved_default_not_yolo_sentinel() {
     );
     claim.commit();
     assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
-    // 重启不丢：accept 落定的 Auto 是持久化记录，不是哨兵回退。
+    // 重启不丢：accept 落定的 Auto 是持久化记录，不是 fallback 巧合——
+    // entry-less 的 resolved fallback 恰好也是 Auto，`mode_state` 区分不了
+    // 持久与回退，必须断言 durable 条目本身（round-2 评审：空真断言）。
+    assert_eq!(
+        store.durable_mode_entry(sid),
+        Some(SerializableMode::Auto),
+        "accept 落定的默认必须落成 durable 条目，而非依赖 fallback"
+    );
     let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.durable_mode_entry(sid), Some(SerializableMode::Auto));
     assert_eq!(reopened.mode_state(sid).mode, SerializableMode::Auto);
 
     // 显式 Yolo → Plan → accept：回到用户进 Plan 前的模式。
@@ -4884,6 +4892,63 @@ fn code_session_default_follows_code_lane_default() {
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Yolo);
     store.set_mode_default(ModeLane::Code, SerializableMode::Plan);
     assert_eq!(store.mode_state("code-2").mode, SerializableMode::Plan);
+}
+
+/// Tri-mode (M2) end-to-end: an explicit Auto lane default persists via the
+/// dedicated `*_auto` companion flags — settings.json never carries the
+/// `"auto"` literal, so a pre-tri-mode binary keeps parsing the whole file
+/// (an unknown variant there fails the parse and its next save would
+/// durably rewrite every unrelated preference from fallback defaults).
+#[test]
+fn set_mode_default_auto_persists_via_companion_flag_and_keeps_settings_legacy_parseable() {
+    let (store, _g) = isolated_store();
+    store.set_mode_default(ModeLane::Work, SerializableMode::Auto);
+    assert_eq!(
+        store.mode_defaults().work,
+        Some(SerializableMode::Auto),
+        "the view folds the companion flag back to Some(Auto)"
+    );
+    store.set_mode_default(ModeLane::Code, SerializableMode::Auto);
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Auto));
+    // Code-session resolution reads the companion flag, not a lost legacy
+    // value; the unbound-plain default is unchanged.
+    with_code_sessions(&store, &["m2-code-1"]);
+    assert_eq!(
+        store.mode_state("m2-code-1").mode,
+        SerializableMode::Auto,
+        "a fresh code session follows the explicit Auto default"
+    );
+    assert_eq!(
+        store.mode_state("m2-plain").mode,
+        SerializableMode::Auto,
+        "unbound plain default unchanged"
+    );
+    // The on-disk settings.json stays parseable by a pre-tri-mode binary.
+    let raw = std::fs::read_to_string(crate::platform::paths::settings_path())
+        .expect("set_mode_default persisted settings.json");
+    assert!(
+        !raw.contains("\"auto\""),
+        "settings.json must never carry the auto literal: {raw}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("settings.json parses");
+    assert_eq!(parsed["mode_defaults"]["work_auto"], serde_json::json!(true), "{raw}");
+    assert_eq!(parsed["code_permission"]["last_mode_auto"], serde_json::json!(true), "{raw}");
+    assert!(parsed["code_permission"]["last_mode"].is_null(), "{raw}");
+    // Explicit Plan/Yolo choices clear the companion flag and return to the
+    // legacy vocabulary (the work lane's Auto choice is untouched — per-lane
+    // independence).
+    store.set_mode_default(ModeLane::Code, SerializableMode::Yolo);
+    let raw = std::fs::read_to_string(crate::platform::paths::settings_path())
+        .expect("read settings.json");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("settings.json parses");
+    assert_eq!(parsed["code_permission"]["last_mode_auto"], serde_json::json!(false), "{raw}");
+    assert_eq!(parsed["code_permission"]["last_mode"], serde_json::json!("yolo"), "{raw}");
+    assert_eq!(parsed["mode_defaults"]["work_auto"], serde_json::json!(true), "{raw}");
+    assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
+    // Reboot: the Auto choice survives via the companion flags.
+    store.set_mode_default(ModeLane::Work, SerializableMode::Auto);
+    let reopened = reopen_store(&store).expect("reboot");
+    assert_eq!(reopened.mode_defaults().work, Some(SerializableMode::Auto));
 }
 
 /// A plain chat session bound to a user working directory: its default mode

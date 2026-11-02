@@ -314,10 +314,14 @@ impl SessionStore {
     /// lane (design merged into work, see `set_mode_default`).
     pub(crate) fn resolved_default_mode(&self, id: &str) -> SerializableMode {
         if self.is_code_session(id) || self.session_workspace_binding(id).is_some() {
-            self.code_permission
-                .read()
-                .last_mode
-                .unwrap_or(SerializableMode::Plan)
+            let cp = self.code_permission.read();
+            // Tri-mode (M2): the explicit-Auto choice lives in the companion
+            // flag; the legacy field never carries "auto" (settings.json
+            // vocabulary stays parseable by pre-tri-mode binaries).
+            if cp.last_mode_auto {
+                return SerializableMode::Auto;
+            }
+            cp.last_mode.unwrap_or(SerializableMode::Plan)
         } else {
             // Tri-mode safety: new unbound plain sessions start in Auto
             // (per-call approval cards, in-workspace writes modal-free), not
@@ -1209,13 +1213,25 @@ impl SessionStore {
     }
 
     /// View of the per-lane global default modes (in-memory mirror; the disk
-    /// truth for work lives in settings.json `mode_defaults.work`, for code in
-    /// `code_permission.last_mode`).
+    /// truth for work lives in settings.json `mode_defaults.work[_auto]`, for
+    /// code in `code_permission.last_mode[_auto]`). An explicit Auto choice
+    /// is folded back into the view here so callers keep seeing one
+    /// vocabulary: the legacy fields deliberately never carry "auto"
+    /// (pre-tri-mode binaries would fail the whole settings.json parse).
     pub fn mode_defaults(&self) -> ModeDefaultsView {
         let defaults = self.mode_defaults.read();
+        let code = self.code_permission.read();
         ModeDefaultsView {
-            work: defaults.work,
-            code: self.code_permission.read().last_mode,
+            work: if defaults.work_auto {
+                Some(SerializableMode::Auto)
+            } else {
+                defaults.work
+            },
+            code: if code.last_mode_auto {
+                Some(SerializableMode::Auto)
+            } else {
+                code.last_mode
+            },
         }
     }
 
@@ -1226,18 +1242,41 @@ impl SessionStore {
     /// field-level transaction; a write failure only logs (same tolerance as
     /// set_mode).
     pub fn set_mode_default(&self, lane: ModeLane, mode: SerializableMode) {
+        // Tri-mode (M2): `Auto` never enters the legacy `last_mode`/`work`
+        // vocabulary — a pre-tri-mode binary parsing the unknown enum variant
+        // fails the WHOLE settings.json (every unrelated preference falls
+        // back to system-locale defaults, and its next settings save then
+        // durably rewrites them). The choice rides the dedicated `*_auto`
+        // companion flags, which old binaries simply drop (unknown bool);
+        // the legacy fields only ever carry Plan/Yolo.
+        let legacy = if mode == SerializableMode::Auto {
+            None
+        } else {
+            Some(mode)
+        };
+        let auto_flag = mode == SerializableMode::Auto;
         match lane {
             ModeLane::Code => {
-                self.code_permission.write().last_mode = Some(mode);
+                let mut cp = self.code_permission.write();
+                cp.last_mode_auto = auto_flag;
+                cp.last_mode = legacy;
             }
             ModeLane::Work => {
-                self.mode_defaults.write().work = Some(mode);
+                let mut md = self.mode_defaults.write();
+                md.work_auto = auto_flag;
+                md.work = legacy;
             }
         }
         if let Err(error) = UserPrefs::update_transaction(|prefs| {
             match lane {
-                ModeLane::Code => prefs.code_permission.last_mode = Some(mode),
-                ModeLane::Work => prefs.mode_defaults.work = Some(mode),
+                ModeLane::Code => {
+                    prefs.code_permission.last_mode_auto = auto_flag;
+                    prefs.code_permission.last_mode = legacy;
+                }
+                ModeLane::Work => {
+                    prefs.mode_defaults.work_auto = auto_flag;
+                    prefs.mode_defaults.work = legacy;
+                }
             }
             Ok(())
         }) {
@@ -1294,9 +1333,10 @@ impl SessionStore {
     /// entry (that would pin a mode the user never chose), and the next
     /// mint consults the override via [`Self::ask_on_guardrail_seed`].
     /// Same critical-section discipline as [`Self::set_mode`]: in-memory
-    /// switch plus best-effort persist under the shared io mutex; a failed
-    /// persist is logged, not surfaced — the in-memory switch already took
-    /// effect.
+    /// switch plus durable RMW under the shared io mutex — but unlike
+    /// `set_mode` (log-only), a failed persist ROLLS BACK: the entry and the
+    /// override mirror are restored, so no reader sees a value the sidecar
+    /// does not carry (fail-consistent; docs §3.1 of safety-modes.md).
     pub fn set_ask_on_guardrail(&self, id: &str, enabled: bool) -> Result<()> {
         let _io = self.session_mode_states_io.lock();
         let previous = {
@@ -1318,12 +1358,24 @@ impl SessionStore {
         };
         // Mirror update before the sidecar RMW: readers of a failed persist
         // stay consistent via the rollback below.
+        let prior_override = self.ask_on_guardrail_overrides.read().get(id).copied();
         self.ask_on_guardrail_overrides.write().insert(id.to_string(), enabled);
         if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)], &[]) {
             if let Some(entry) = self.mode_states.write().get_mut(id) {
                 entry.ask_on_guardrail = previous;
             }
-            self.ask_on_guardrail_overrides.write().insert(id.to_string(), previous);
+            // Restore the override mirror to its exact pre-call state: pinning
+            // the resolved seed as an "explicit" override here would mask a
+            // later global-default change for the rest of the run.
+            let mut overrides = self.ask_on_guardrail_overrides.write();
+            match prior_override {
+                Some(value) => {
+                    overrides.insert(id.to_string(), value);
+                }
+                None => {
+                    overrides.remove(id);
+                }
+            }
             eprintln!("[sessions] persist ask_on_guardrail failed: {error:#}");
         }
         Ok(())
