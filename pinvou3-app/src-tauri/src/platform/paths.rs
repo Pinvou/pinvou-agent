@@ -75,9 +75,16 @@ fn replace_ascii_case_insensitive(text: &str, from: &str, to: &str) -> String {
             out.push_str(to);
             i += needle.len();
         } else {
-            let ch = text[i..].chars().next().expect("slice at a char boundary");
-            out.push(ch);
-            i += ch.len_utf8();
+            match text[i..].chars().next() {
+                Some(ch) => {
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+                // `i` always advances by whole characters, so the slice is
+                // exhausted rather than mid-char; the trailing push below
+                // copies nothing for an empty remainder.
+                None => break,
+            }
         }
     }
     out

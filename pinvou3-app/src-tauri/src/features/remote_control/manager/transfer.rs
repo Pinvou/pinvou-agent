@@ -393,14 +393,17 @@ pub(super) fn evict_oldest_ready_session_download(inner: &mut Inner) -> bool {
     let victim = inner
         .web_session_download_order
         .iter()
-        .find(|id| inner.web_session_downloads.get(*id).is_some_and(|d| d.ready))
+        .find(|id| {
+            inner
+                .web_session_downloads
+                .get(*id)
+                .is_some_and(|d| d.ready)
+        })
         .cloned();
     let Some(victim) = victim else {
         return false;
     };
-    inner
-        .web_session_download_order
-        .retain(|id| id != &victim);
+    inner.web_session_download_order.retain(|id| id != &victim);
     inner.web_session_downloads.remove(&victim).is_some()
 }
 

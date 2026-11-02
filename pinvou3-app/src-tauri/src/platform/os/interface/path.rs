@@ -122,7 +122,11 @@ pub(crate) fn volume_fold_suffix(component: &OsStr, suffix: &str) -> bool {
 /// 末分量带 `*` 的条目（黑名单清单自律，用于轮转日志等无法逐一枚举的
 /// 开放家族）在该分量位改用 [`path_component_prefix`] 做组件前缀匹配;
 /// 精确实体条目保持精确——`shadow` 若整体按前缀匹配,`shadowed` 这类
-/// 无辜同名文件会重新被拦（Round-9 复审 MAJOR）。
+/// 无辜同名文件会重新被拦（Round-9 复审 MAJOR）。注意:本实现按组件位
+/// 处理 `*`,中段分量上的 `*` 同样按前缀匹配(方向为过拦截,fail-
+/// closed);清单自律(仅末分量用 `*`)由加载侧纪律钉约束
+/// (`wildcard_entries_keep_list_discipline`),非本函数的运行时职责
+/// (Round-15 复审:文档此前只许诺末分量,与实现不一致)。
 pub fn path_starts_with_folded(path: &Path, prefix: &str) -> bool {
     let mut path_components = path.components();
     let mut prefix_components = Path::new(prefix).components();

@@ -237,6 +237,12 @@ fn should_filter_code_session_event(
 /// destroying them on every idle reconnect.
 fn apply_web_lease_change(inner: &mut Inner, web_rejoining: bool) {
     inner.subscriptions.clear();
+    // Round-15 复审(记录有意不对称):takeover 的 wipe 不做 reservation
+    // 豁免——`clear_web_attachments` 会删除带活跃 reservation 的附件暂存
+    // 目录,与容量逐出循环的 reservation-sparing 不同;此时在飞 turn 的
+    // 暂存源消失、该 turn 失败(错误链折叠为稳定码,影响为单次 turn)。
+    // 这是「换人即清场」语义的一部分:替换客户端不得触摸上一 lease 的
+    // 任何暂存数据,豁免会在 takeover 后留下可被新客户端探测的目录。
     if !web_rejoining {
         clear_web_attachments(inner);
     }
@@ -380,7 +386,6 @@ struct Inner {
     process_lock: Option<fd_lock::RwLockWriteGuard<'static, File>>,
     endpoint: Option<ActiveEndpoint>,
     idle_status: WebAccessStatusKind,
-    idle_error: Option<String>,
     stream: StreamState,
     subscriptions: HashSet<String>,
     bridge_generation: Option<String>,
@@ -412,7 +417,6 @@ impl Default for Inner {
             process_lock: None,
             endpoint: None,
             idle_status: WebAccessStatusKind::Idle,
-            idle_error: None,
             stream: StreamState::new(),
             subscriptions: HashSet::new(),
             bridge_generation: None,
@@ -1236,7 +1240,6 @@ impl RemoteControlManager {
             inner.rpc_ledger = RpcLedger::default();
             inner.stream.reset();
             inner.idle_status = WebAccessStatusKind::Stopped;
-            inner.idle_error = None;
             inner.endpoint.take()
         };
         if let Some(endpoint) = endpoint {
@@ -1951,10 +1954,10 @@ impl RemoteControlManager {
                 relay_url: remote_relay_ws_url(),
                 web_client_connected: false,
                 host_workspace_authorized: false,
-                last_error: inner
-                    .idle_error
-                    .clone()
-                    .or_else(|| self.policy_error.clone()),
+                // Round-15 复审 NIT:原 idle_error 字段从未被赋过非 None
+                // 值(恒等 None + or_else),已删除;idle 错误唯一来源是
+                // policy_error。
+                last_error: self.policy_error.clone(),
                 last_error_code: None,
             }
         }
@@ -2178,7 +2181,6 @@ impl RemoteControlManager {
         let (sender, mut receiver) = relay_client::spawn(config.clone());
         {
             let mut inner = self.inner.lock();
-            inner.idle_error = None;
             inner.idle_status = WebAccessStatusKind::Idle;
             inner.rpc_ledger = rpc_ledger;
             inner.rpc_cache.clear();
@@ -2470,7 +2472,6 @@ impl RemoteControlManager {
             reset_web_state(&mut inner);
             inner.stream.reset();
             inner.idle_status = WebAccessStatusKind::Revoked;
-            inner.idle_error = None;
             revoked
         };
         if let Some(endpoint) = revoked {
@@ -4542,9 +4543,11 @@ mod tests {
         // contains 仍全绿。钉死匹配合取的三个腿的原样文本:任一腿被删
         // 即红。
         assert!(
-            body.contains("(*swept_acknowledged
+            body.contains(
+                "(*swept_acknowledged
                     && !completion.ok
-                    && completion.error_code.as_deref() == Some(RPC_TIMED_OUT_CODE))"),
+                    && completion.error_code.as_deref() == Some(RPC_TIMED_OUT_CODE))"
+            ),
             "the repair predicate must keep all three legs (swept-marked, failed, \
              timeout-coded); loosening any leg rewrites never-executed requests' \
              honest timeouts into fabricated outcome_unknown",
@@ -5340,10 +5343,7 @@ mod tests {
         // 收到其 download_id,字节无人认领);引擎仍在写的未 ready 条目
         // 不可作受害者,此时保留既有满槽错误。
         let mut inner = Inner::default();
-        for (download_id, ready) in [
-            ("download_old", true),
-            ("download_new", false),
-        ] {
+        for (download_id, ready) in [("download_old", true), ("download_new", false)] {
             inner.web_session_downloads.insert(
                 download_id.to_string(),
                 WebSessionDownload {
@@ -5356,7 +5356,9 @@ mod tests {
                     last_touched: Instant::now(),
                 },
             );
-            inner.web_session_download_order.push_back(download_id.to_string());
+            inner
+                .web_session_download_order
+                .push_back(download_id.to_string());
         }
         assert!(transfer::evict_oldest_ready_session_download(&mut inner));
         assert!(!inner.web_session_downloads.contains_key("download_old"));
@@ -5828,10 +5830,7 @@ mod tests {
             emit_sites.push(search + rel);
             search += rel + "self.emit_status()".len();
         }
-        assert!(
-            !emit_sites.is_empty(),
-            "revoke must refresh the status"
-        );
+        assert!(!emit_sites.is_empty(), "revoke must refresh the status");
         for emit in emit_sites {
             for (lock_pos, lock_end) in &lock_spans {
                 assert!(
@@ -5843,7 +5842,6 @@ mod tests {
             }
         }
     }
-
 
     /// 接线钉(Round-10 复审 M2):撤销的安全语义「同步失效已铸发的
     /// workspace grants + 落盘 consent 旗标」只在命令路径的调用点生效——

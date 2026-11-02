@@ -380,6 +380,12 @@ fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevoc
     let mut keys = HashSet::new();
     for pending in &ledger.entries {
         if salvaged.entries.len() >= super::MAX_PENDING_REVOCATIONS {
+            // Round-15 复审 NIT:容量截断必须显式报数——静默丢掉的条目意味
+            // 着对应 endpoint 在 relay 侧保持可 join,直到人工清理。
+            eprintln!(
+                "[web-access] salvage dropped pending revocations past the capacity of {}: the dropped endpoints stay joinable at the relay until revoked manually",
+                super::MAX_PENDING_REVOCATIONS
+            );
             break;
         }
         if validate_pending_revocation(pending).is_err() {

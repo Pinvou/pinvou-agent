@@ -316,8 +316,9 @@ fn finish_organize_report(report: &mut MemoryOrganizeReport) {
         // 存储根;desktop 日志保留原始明细。
         let raw = format!("persist organize history: {error}");
         eprintln!("[memory] {raw}");
-        let detail =
-            crate::platform::paths::redact_storage_prefix(&format!("persist organize history: {error}"));
+        let detail = crate::platform::paths::redact_storage_prefix(&format!(
+            "persist organize history: {error}"
+        ));
         report.warnings.push(detail);
     }
     append_memory_review_diagnostic(
