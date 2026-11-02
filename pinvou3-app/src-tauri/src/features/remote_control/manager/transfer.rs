@@ -382,6 +382,28 @@ pub(super) fn take_web_session_download(
     Ok(inner.web_session_downloads.remove(download_id))
 }
 
+/// Round-15 复审:两个下载槽位都被「已就绪但无人拾取」的孤儿占住时
+/// (中继把 commit 响应丢了,手机拿不到 download_id,既无法拾取也无从
+/// 取消),重试会硬失败到 10 分钟 TTL Reaper 才自愈。 begin 在满槽时
+/// 先逐出最旧的 ready 条目(手机从未收到其 id,字节必然无人认领,重试
+/// 导出会开新下载);存在未 ready 条目说明引擎仍在写入,不可作受害者,
+/// 保留既有满槽错误。web_session_download_order 因此成为逐出顺序的
+/// 承载者(此前只写不读的死重)。
+pub(super) fn evict_oldest_ready_session_download(inner: &mut Inner) -> bool {
+    let victim = inner
+        .web_session_download_order
+        .iter()
+        .find(|id| inner.web_session_downloads.get(*id).is_some_and(|d| d.ready))
+        .cloned();
+    let Some(victim) = victim else {
+        return false;
+    };
+    inner
+        .web_session_download_order
+        .retain(|id| id != &victim);
+    inner.web_session_downloads.remove(&victim).is_some()
+}
+
 pub(super) fn read_web_session_download_chunk(
     inner: &mut Inner,
     download_id: &str,

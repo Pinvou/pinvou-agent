@@ -4424,3 +4424,36 @@ fn organize_report_persist_warning_folds_the_storage_prefix() {
         "the desktop log keeps the raw detail; only the outbound copy is folded",
     );
 }
+
+/// Round-15 复审(S14 F1):封界读原语的行为钉只覆盖 journal 与权威读两
+/// 条车道,其余车道(io 的 authority/body-match/commit 回读、organize 的
+/// 历史读)被改回裸 `fs::read_to_string`/`fs::read` 时现有钉全绿。源契
+/// 约扫三个文件生产半边的裸读调用行(注释行的字面提及不算)。
+#[test]
+fn memory_store_lanes_keep_raw_reads_routed_through_the_bounded_primitive() {
+    let scan = |source: &str| {
+        source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("tests must stay behind cfg(test)")
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .any(|line| line.contains("read_to_string") || line.contains("fs::read("))
+    };
+    assert!(
+        !scan(include_str!("io.rs")),
+        "io.rs must not read store files with raw unbounded reads; route through \
+         platform::filesystem::read_private_data_file"
+    );
+    assert!(
+        !scan(include_str!("organize.rs")),
+        "organize.rs must not read store files with raw unbounded reads"
+    );
+    assert!(
+        !scan(include_str!("util.rs")),
+        "util.rs must not read store files with raw unbounded reads"
+    );
+}
