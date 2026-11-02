@@ -491,7 +491,10 @@ mod tests {
         assert!(!session_granted(&session, "g-write"));
         remember_grant(&session, "g-write");
         assert!(session_granted(&session, "g-write"));
-        assert!(!session_granted(&session, "g-rm"), "未授予的 grouping key 不放行");
+        assert!(
+            !session_granted(&session, "g-rm"),
+            "未授予的 grouping key 不放行"
+        );
 
         // 会话维度：本会话的授予/拒绝不得跨会话生效（「本会话允许」≠ 进程级放行）。
         assert!(
@@ -507,7 +510,10 @@ mod tests {
         assert!(!session_denied(&session, "k-rm-rf"));
         remember_denial(&session, "k-rm-rf");
         assert!(session_denied(&session, "k-rm-rf"));
-        assert!(!session_denied(&session, "k-rm"), "exact key 之外的调用不受拒绝连坐");
+        assert!(
+            !session_denied(&session, "k-rm"),
+            "exact key 之外的调用不受拒绝连坐"
+        );
 
         // 授予与拒绝互不串作用域。
         assert!(!session_denied(&session, "g-write"));
@@ -549,7 +555,10 @@ mod tests {
         assert!(session_granted(&other, "g-1"), "他人授予不受本会话清理影响");
         assert!(!session_granted(&session, "g-1"), "本会话授予被摘除");
         clear_session(&other);
-        assert!(!session_granted(&other, "g-1"), "最后一个授予会话清理后撤销");
+        assert!(
+            !session_granted(&other, "g-1"),
+            "最后一个授予会话清理后撤销"
+        );
     }
 
     /// 处置真值表（定时任务无人值守路径不在此函数，另行短路）。
@@ -610,7 +619,14 @@ mod tests {
                 false,
                 Deny(PlanMode),
             ),
-            (SerializableMode::Plan, false, false, true, false, Deny(PlanMode)),
+            (
+                SerializableMode::Plan,
+                false,
+                false,
+                true,
+                false,
+                Deny(PlanMode),
+            ),
             // force_prompt 的 hold 不吃缓存。
             (SerializableMode::Auto, true, true, true, false, ShowCard),
             // Plan 防御性硬拒（底座本应拦截工具执行），force_prompt 也不例外。

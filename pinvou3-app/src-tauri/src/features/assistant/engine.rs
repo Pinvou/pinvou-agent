@@ -2028,7 +2028,9 @@ impl AppEngine {
         restrict_tools: bool,
     ) -> Result<()> {
         let approval =
-            crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(mode);
+            crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(
+                mode,
+            );
         self.send_reserved_user_message_impl(
             content,
             mode.to_app_mode(),
@@ -4240,12 +4242,7 @@ mod live_tests {
         // both — the old "skip first turn" branch, along with the warmed_sessions set it
         // read, was removed long ago; do not assume it still exists here.
         engine
-            .send_headless_user_message(
-                prompts[0].to_string(),
-                SerializableMode::Yolo,
-                None,
-                false,
-            )
+            .send_headless_user_message(prompts[0].to_string(), SerializableMode::Yolo, None, false)
             .await
             .expect("send_headless_user_message #1");
 

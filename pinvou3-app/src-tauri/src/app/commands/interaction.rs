@@ -578,17 +578,10 @@ pub async fn decide_approval(
     // 收敛广播在 engine 调用成功后（与缓存写入同序）：失败不广播——其它表面
     // 的卡保持未决，发起方收到错误提示，卡由终态清扫或重试收口。
     if outcome.is_ok() {
-        let payload = pending_approvals::approval_resolved_payload(
-            &session_id,
-            &approval_id,
-            &decision,
-        );
+        let payload =
+            pending_approvals::approval_resolved_payload(&session_id, &approval_id, &decision);
         let _ = app.emit("chat:approval_resolved", payload.clone());
-        crate::features::remote_control::forward_app_event(
-            &app,
-            "chat:approval_resolved",
-            payload,
-        );
+        crate::features::remote_control::forward_app_event(&app, "chat:approval_resolved", payload);
     }
     outcome
 }
@@ -699,10 +692,7 @@ async fn publish_session_mode_change(
 
 /// 会话引擎在位时把新安全姿态热同步进底座（`Op::ChangeMode`）；引擎不在位
 /// 则跳过——lazy spawn 的下一次发送自会按 store 里的 mode 组 op。
-async fn sync_engine_safety_posture(
-    session_id: &str,
-    pool: &EnginePool,
-) -> Result<(), String> {
+async fn sync_engine_safety_posture(session_id: &str, pool: &EnginePool) -> Result<(), String> {
     if pool.handle_for(session_id).await.is_some() {
         pool.sync_session_safety_posture(session_id)
             .await

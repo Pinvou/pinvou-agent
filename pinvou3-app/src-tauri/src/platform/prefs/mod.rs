@@ -4072,10 +4072,9 @@ mod tests {
         assert!(serialized.contains("\"yolo_confirmed\":true"));
         // An explicit opt-out round-trips (and the two default paths agree:
         // a written object without the field still reads true, above).
-        let opted_out: UserPrefs = serde_json::from_str(
-            r#"{"code_permission":{"ask_on_guardrail_default":false}}"#,
-        )
-        .unwrap();
+        let opted_out: UserPrefs =
+            serde_json::from_str(r#"{"code_permission":{"ask_on_guardrail_default":false}}"#)
+                .unwrap();
         assert!(!opted_out.code_permission.ask_on_guardrail_default);
     }
 

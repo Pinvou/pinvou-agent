@@ -339,7 +339,12 @@ mod tests {
     #[test]
     fn super_permission_reminder_pins_sudo_denied_contract() {
         let reminder = super_permission_turn_reminder();
-        for anchor in ["禁止用 sudo", "execpolicy 直接拒绝", "守卫命中时询问", "系统终端"] {
+        for anchor in [
+            "禁止用 sudo",
+            "execpolicy 直接拒绝",
+            "守卫命中时询问",
+            "系统终端",
+        ] {
             assert!(
                 reminder.contains(anchor),
                 "reminder lost `{anchor}`: {reminder}"

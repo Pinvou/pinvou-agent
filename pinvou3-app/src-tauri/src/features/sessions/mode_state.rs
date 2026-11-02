@@ -349,11 +349,13 @@ impl SessionStore {
         id: &str,
         default_mode: SerializableMode,
     ) -> &'m mut SessionModeState {
-        states.entry(id.to_string()).or_insert_with(|| SessionModeState {
-            mode: default_mode,
-            ask_on_guardrail: self.ask_on_guardrail_seed(id),
-            ..SessionModeState::default()
-        })
+        states
+            .entry(id.to_string())
+            .or_insert_with(|| SessionModeState {
+                mode: default_mode,
+                ask_on_guardrail: self.ask_on_guardrail_seed(id),
+                ..SessionModeState::default()
+            })
     }
 
     /// 设置 mode。砍 PlanPhase 后是 Plan/Yolo 唯一 setter(流转命令都调它),
@@ -630,9 +632,7 @@ impl SessionStore {
             // Tri-mode safety: execution after plan approval returns to the
             // mode the session was in before entering Plan (fallback Auto) —
             // approving a plan approves the work, not full-auto permission.
-            entry.mode = entry
-                .pre_plan_mode
-                .unwrap_or(SerializableMode::Auto);
+            entry.mode = entry.pre_plan_mode.unwrap_or(SerializableMode::Auto);
             entry.pending_plan_id = None;
             entry.plan_claim_in_flight = Some(plan_id.to_string());
             entry.clone()
@@ -724,8 +724,8 @@ impl SessionStore {
     #[cfg(test)]
     pub fn set_active_persona(&self, id: &str, persona_id: Option<String>) {
         let default_mode = self.resolved_default_mode(id);
-        self.mode_state_entry(&mut self.mode_states.write(), id, default_mode).active_persona =
-            persona_id;
+        self.mode_state_entry(&mut self.mode_states.write(), id, default_mode)
+            .active_persona = persona_id;
     }
 
     /// Publish the selected persona and its one-shot body as one state change.
@@ -1203,7 +1203,9 @@ impl SessionStore {
         for (id, mode) in modes {
             states
                 .entry(id)
-                .or_insert_with(|| SessionModeState::default_for_new_session(ask_on_guardrail_default))
+                .or_insert_with(|| {
+                    SessionModeState::default_for_new_session(ask_on_guardrail_default)
+                })
                 .mode = mode;
         }
     }
@@ -1311,10 +1313,9 @@ impl SessionStore {
         self.session_mode_states
             .write()
             .insert(id.to_string(), accepted_mode);
-        if let Err(error) = Self::apply_session_mode_mutation_locked(
-            &[(id.to_string(), accepted_mode)],
-            &[],
-        ) {
+        if let Err(error) =
+            Self::apply_session_mode_mutation_locked(&[(id.to_string(), accepted_mode)], &[])
+        {
             // The session id is deliberately kept out of the message: boot
             // logs persist to disk and must not accumulate raw session
             // identifiers (CodeQL cleartext-logging gate).
@@ -1359,7 +1360,9 @@ impl SessionStore {
         // Mirror update before the sidecar RMW: readers of a failed persist
         // stay consistent via the rollback below.
         let prior_override = self.ask_on_guardrail_overrides.read().get(id).copied();
-        self.ask_on_guardrail_overrides.write().insert(id.to_string(), enabled);
+        self.ask_on_guardrail_overrides
+            .write()
+            .insert(id.to_string(), enabled);
         if let Err(error) = Self::apply_ask_on_guardrail_mutation_locked(&[(id, enabled)], &[]) {
             if let Some(entry) = self.mode_states.write().get_mut(id) {
                 entry.ask_on_guardrail = previous;

@@ -4008,7 +4008,10 @@ impl EnginePool {
             content,
             display_message,
             mode,
-            crate::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
+            crate::features::assistant::platform::bridge::TurnApprovalPosture {
+                auto_approve: true,
+                approval_mode: deepseek_tui::ApprovalMode::Auto,
+            },
             restrict_tools_for_turn,
             expert_snapshot,
             expert_candidates,
@@ -4463,7 +4466,10 @@ impl EnginePool {
             .unwrap_or_default();
         let session_mode = self.store.mode_state(session_id).mode;
         // Tri-mode safety (S-1): posture from the session's SerializableMode.
-        let approval = crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(session_mode);
+        let approval =
+            crate::features::assistant::platform::bridge::TurnApprovalPosture::from_serialized_mode(
+                session_mode,
+            );
         let mode = session_mode.to_app_mode();
         let (reservation, _turn_gate) = self
             .admit_reserved_turn(
@@ -5120,9 +5126,7 @@ impl EnginePool {
             // clobber it with the mode-derived Floor.
             ruleset: self.session_scope_ruleset_for_engine(session_id, engine),
         }) {
-            log::warn!(
-                "[engine_pool] spawn arming {session_id} ruleset send failed: {error:#}"
-            );
+            log::warn!("[engine_pool] spawn arming {session_id} ruleset send failed: {error:#}");
         }
     }
 

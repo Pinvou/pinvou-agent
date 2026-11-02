@@ -8471,7 +8471,10 @@ mod tests {
                 "gui-session",
                 "hello".into(),
                 AppMode::Agent,
-                TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
+                TurnApprovalPosture {
+                    auto_approve: true,
+                    approval_mode: deepseek_tui::ApprovalMode::Auto,
+                },
                 None,
                 false,
             )

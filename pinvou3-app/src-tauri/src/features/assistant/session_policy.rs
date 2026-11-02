@@ -161,7 +161,10 @@ impl SessionPolicy {
     /// 发送线 / platform::bridge）；本方法现仅剩测试调用方，保留为测试胶水
     /// （不得再被当作生产兼容层引用）。`ask_on_guardrail` 是会话级运行状态
     /// 而非模式身份，不经本对象，由 bridge 从 mode_state 直取。
-    pub fn approval_params_for_mode(&self, mode: crate::core::mode_state::SerializableMode) -> (bool, ApprovalMode) {
+    pub fn approval_params_for_mode(
+        &self,
+        mode: crate::core::mode_state::SerializableMode,
+    ) -> (bool, ApprovalMode) {
         mode.approval_params()
     }
 }

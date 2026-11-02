@@ -3560,7 +3560,10 @@ fn session_mode_write_paths_publish_through_the_shared_sequence() {
         let write_at = body
             .find(".set_mode(")
             .unwrap_or_else(|| panic!("{signature}: store write missing"));
-        assert!(gate_at < write_at, "{signature}: gate must precede the store write");
+        assert!(
+            gate_at < write_at,
+            "{signature}: gate must precede the store write"
+        );
     }
 
     // accept_plan：发布必须紧跟 commit（claimed mode 在那里才最终落定），

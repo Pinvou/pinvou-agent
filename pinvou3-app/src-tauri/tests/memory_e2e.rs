@@ -624,7 +624,10 @@ async fn memory_llm_one_off_task_does_not_create_long_term_memory() {
             "这是一次性临时任务：今天午饭我可能吃面。不要把它当长期偏好。请只回答“收到”。"
                 .to_string(),
             AppMode::Agent,
-            pinvou3_lib::features::assistant::platform::bridge::TurnApprovalPosture { auto_approve: true, approval_mode: deepseek_tui::ApprovalMode::Auto },
+            pinvou3_lib::features::assistant::platform::bridge::TurnApprovalPosture {
+                auto_approve: true,
+                approval_mode: deepseek_tui::ApprovalMode::Auto,
+            },
             None,
             true,
         )

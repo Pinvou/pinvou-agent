@@ -4071,7 +4071,10 @@ fn first_plan_write_accept_returns_to_resolved_default_not_yolo_sentinel() {
         "accept 落定的默认必须落成 durable 条目，而非依赖 fallback"
     );
     let reopened = reopen_store(&store).expect("reboot");
-    assert_eq!(reopened.durable_mode_entry(sid), Some(SerializableMode::Auto));
+    assert_eq!(
+        reopened.durable_mode_entry(sid),
+        Some(SerializableMode::Auto)
+    );
     assert_eq!(reopened.mode_state(sid).mode, SerializableMode::Auto);
 
     // 显式 Yolo → Plan → accept：回到用户进 Plan 前的模式。
@@ -4931,8 +4934,16 @@ fn set_mode_default_auto_persists_via_companion_flag_and_keeps_settings_legacy_p
         "settings.json must never carry the auto literal: {raw}"
     );
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("settings.json parses");
-    assert_eq!(parsed["mode_defaults"]["work_auto"], serde_json::json!(true), "{raw}");
-    assert_eq!(parsed["code_permission"]["last_mode_auto"], serde_json::json!(true), "{raw}");
+    assert_eq!(
+        parsed["mode_defaults"]["work_auto"],
+        serde_json::json!(true),
+        "{raw}"
+    );
+    assert_eq!(
+        parsed["code_permission"]["last_mode_auto"],
+        serde_json::json!(true),
+        "{raw}"
+    );
     assert!(parsed["code_permission"]["last_mode"].is_null(), "{raw}");
     // Explicit Plan/Yolo choices clear the companion flag and return to the
     // legacy vocabulary (the work lane's Auto choice is untouched — per-lane
@@ -4941,9 +4952,21 @@ fn set_mode_default_auto_persists_via_companion_flag_and_keeps_settings_legacy_p
     let raw = std::fs::read_to_string(crate::platform::paths::settings_path())
         .expect("read settings.json");
     let parsed: serde_json::Value = serde_json::from_str(&raw).expect("settings.json parses");
-    assert_eq!(parsed["code_permission"]["last_mode_auto"], serde_json::json!(false), "{raw}");
-    assert_eq!(parsed["code_permission"]["last_mode"], serde_json::json!("yolo"), "{raw}");
-    assert_eq!(parsed["mode_defaults"]["work_auto"], serde_json::json!(true), "{raw}");
+    assert_eq!(
+        parsed["code_permission"]["last_mode_auto"],
+        serde_json::json!(false),
+        "{raw}"
+    );
+    assert_eq!(
+        parsed["code_permission"]["last_mode"],
+        serde_json::json!("yolo"),
+        "{raw}"
+    );
+    assert_eq!(
+        parsed["mode_defaults"]["work_auto"],
+        serde_json::json!(true),
+        "{raw}"
+    );
     assert_eq!(store.mode_defaults().code, Some(SerializableMode::Yolo));
     // Reboot: the Auto choice survives via the companion flags.
     store.set_mode_default(ModeLane::Work, SerializableMode::Auto);
