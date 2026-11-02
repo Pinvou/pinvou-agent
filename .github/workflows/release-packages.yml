@@ -376,6 +376,17 @@ jobs:
         run: |
           set -euo pipefail
           sudo dpkg --add-architecture arm64
+          # GitHub runner 自带的 sources.list 未带 arch 限定,加了 arm64 架构后
+          # 会对全部条目请求 arm64 索引而 404(security.ubuntu.com 的 jammy
+          # 各 pocket 无 binary-arm64)。既有条目钉回 amd64,arm64 单独走
+          # [arch=arm64] 源(azure 镜像与 runner 自身同源,含 -security)。
+          sudo sed -i -E 's|^deb ([^[[:space:]])|deb [arch=amd64,i386] \1|' /etc/apt/sources.list
+          printf '%s\n' \
+            'deb [arch=arm64] http://azure.archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse' \
+            'deb [arch=arm64] http://azure.archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse' \
+            'deb [arch=arm64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse' \
+            'deb [arch=arm64] http://azure.archive.ubuntu.com/ubuntu/ jammy-backports main restricted universe multiverse' \
+            | sudo tee /etc/apt/sources.list.d/arm64.list >/dev/null
           sudo apt-get update
           # host 侧只装构建工具(cc/cmake/pkg-config/lld 与 bindgen 用的
           # libclang);webkit/gtk/soup/openssl/pipewire/drm/gbm/egl 等目标侧
