@@ -4050,6 +4050,11 @@ fn pending_plan_ticket_is_compare_and_consumed_with_failure_restore() {
 fn first_plan_write_accept_returns_to_resolved_default_not_yolo_sentinel() {
     let (store, _g) = isolated_store();
     let sid = "first-plan-accept-session";
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威（与 multi-agent
+    // 清扫同一规则），重启断言的 durable 条目必须属于真实存在的会话。
+    store
+        .save_session_atomic(&chat_model_session(sid.to_string()))
+        .expect("materialize session record");
     // Chip 在首次切换前显示的正是这个 resolved 默认。
     assert_eq!(store.mode_state(sid).mode, SerializableMode::Auto);
     store
@@ -4108,6 +4113,11 @@ fn first_plan_write_accept_returns_to_resolved_default_not_yolo_sentinel() {
 fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
     let (store, _g) = isolated_store();
     let sid = "entryless-toggle-session";
+    // 真实会话记录（保持 entry-less：不写 mode）：启动幽灵清扫以记录文件
+    // 为存活权威，重启断言的 override 必须属于真实存在的会话。
+    store
+        .save_session_atomic(&chat_model_session(sid.to_string()))
+        .expect("materialize session record");
     // 无条目：解析值 = 全局默认。
     let global_default = store.mode_state(sid).ask_on_guardrail;
     store
@@ -4130,6 +4140,118 @@ fn ask_on_guardrail_toggle_persists_for_entry_less_sessions() {
     let reopened = reopen_store(&store).expect("reboot");
     reopened.load_ask_on_guardrail_overrides();
     assert_eq!(reopened.mode_state(sid).ask_on_guardrail, !global_default);
+}
+
+/// 启动幽灵清扫（retention 对齐，评审 round-7）：会话记录删除与 mode/
+/// ask-on-guardrail sidecar 清理之间崩溃（绕过 store.delete 直接删记录文件
+/// 模拟）留下的幽灵条目，重启后必须被清扫——mode 条目、显式 Auto 伴随旗与
+/// 守卫询问覆盖一并移除，回收 id 不得经铸造点静默继承幽灵的选择；幸存
+/// 会话的条目原样保留（两个会话只幽灵化一个，断言非平凡）。
+#[test]
+fn boot_ghost_sweep_clears_dead_id_mode_and_guardrail_override() {
+    let (store, _guard) = isolated_store();
+    let ghost_id = store
+        .create_new("ghost".into(), None, std::env::temp_dir())
+        .expect("create ghost")
+        .metadata
+        .id;
+    let survivor_id = store
+        .create_new("survivor".into(), None, std::env::temp_dir())
+        .expect("create survivor")
+        .metadata
+        .id;
+
+    // 幽灵：显式 Auto（共享表折叠 "plan" + 伴随旗 true）+ 关闭守卫询问；
+    // 幸存者：同样显式 Auto + 显式开启覆盖——重启后必须原样恢复。
+    store
+        .set_mode(&ghost_id, SerializableMode::Auto)
+        .expect("ghost mode");
+    store
+        .set_mode(&survivor_id, SerializableMode::Auto)
+        .expect("survivor mode");
+    store
+        .set_ask_on_guardrail(&ghost_id, false)
+        .expect("ghost toggle");
+    store
+        .set_ask_on_guardrail(&survivor_id, true)
+        .expect("survivor toggle");
+
+    // 模拟崩溃窗口：不经过 store.delete 的 purge，直接删会话记录文件。
+    std::fs::remove_file(paths::sessions_root().join(format!("{ghost_id}.json")))
+        .expect("crash: delete record file only");
+
+    let reopened = reopen_store(&store).expect("reboot");
+    // 幽灵 mode 条目从共享表与内存镜像两侧清除。
+    let durable_modes: std::collections::HashMap<String, SerializableMode> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_mode_states.json"))
+            .expect("mode sidecar"),
+    )
+    .expect("parse mode sidecar");
+    assert!(
+        !durable_modes.contains_key(&ghost_id),
+        "幽灵 mode 条目必须在启动清扫中移除: {durable_modes:?}"
+    );
+    assert!(
+        !reopened.session_mode_states.read().contains_key(&ghost_id),
+        "内存镜像不得再有幽灵 mode 条目"
+    );
+    // 显式 Auto 伴随旗随共享表条目一并清除（funnel 同一次移除两张表）。
+    let auto_flags: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_session_auto_modes.json"))
+            .expect("auto companion sidecar"),
+    )
+    .expect("parse auto companion sidecar");
+    assert!(
+        !auto_flags.contains_key(&ghost_id),
+        "幽灵的显式 Auto 伴随旗必须一并清除: {auto_flags:?}"
+    );
+    // 幽灵的守卫询问覆盖从 sidecar 与镜像两侧移除，回收 id 只能跟随全局
+    // 默认（true），不得继承幽灵的关闭选择。
+    let overrides: std::collections::HashMap<String, bool> = serde_json::from_str(
+        &std::fs::read_to_string(paths::sessions_root().join("_ask_on_guardrail.json"))
+            .expect("guardrail sidecar"),
+    )
+    .expect("parse guardrail sidecar");
+    assert!(
+        !overrides.contains_key(&ghost_id),
+        "幽灵 ask-on-guardrail 覆盖必须在启动清扫中移除: {overrides:?}"
+    );
+    assert!(
+        !reopened
+            .ask_on_guardrail_overrides
+            .read()
+            .contains_key(&ghost_id),
+        "覆盖镜像不得再有幽灵条目"
+    );
+    assert!(
+        reopened.mode_state(&ghost_id).ask_on_guardrail,
+        "回收 id 不得经铸造点继承幽灵的关闭选择"
+    );
+    // 幸存会话原样：共享表、伴随旗、覆盖与解析视图全部保留。
+    assert_eq!(
+        durable_modes.get(&survivor_id),
+        Some(&SerializableMode::Plan),
+        "幸存者的 Auto 折叠值必须原样保留"
+    );
+    assert_eq!(
+        auto_flags.get(&survivor_id),
+        Some(&true),
+        "幸存者的显式 Auto 伴随旗必须原样保留"
+    );
+    assert_eq!(
+        overrides.get(&survivor_id),
+        Some(&true),
+        "幸存者的显式开启覆盖必须原样保留"
+    );
+    assert_eq!(
+        reopened.mode_state(&survivor_id).mode,
+        SerializableMode::Auto,
+        "幸存会话的显式 Auto 必须原样恢复"
+    );
+    assert!(
+        reopened.mode_state(&survivor_id).ask_on_guardrail,
+        "幸存会话的显式开启覆盖必须原样恢复"
+    );
 }
 
 /// Tri-mode（评审 P2）：ask-on-guardrail 持久化失败必须作为失败上报，
@@ -5106,6 +5228,13 @@ fn workspace_bound_plain_session_defaults_to_plan_like_code() {
 fn code_mode_persists_per_session_across_restart() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2", "code-3"]);
+    // 真实会话记录：重启断言涉及的 code-1/code-2 必须是真实存在的会话
+    // （启动幽灵清扫以记录文件为存活权威）；code-3 只做 fallback 断言。
+    for id in ["code-1", "code-2"] {
+        store
+            .save_session_atomic(&chat_model_session(id.to_string()))
+            .expect("materialize code session record");
+    }
     store
         .set_mode("code-1", SerializableMode::Yolo)
         .expect("code-1 yolo");
@@ -5149,6 +5278,11 @@ fn code_mode_persists_per_session_across_restart() {
 fn code_session_accepted_mode_persists_on_commit_not_rollback() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1", "code-2"]);
+    // 真实会话记录：重启断言的 code-1 必须是真实存在的会话（启动幽灵清扫
+    // 以记录文件为存活权威）；code-2 只做 fallback 断言。
+    store
+        .save_session_atomic(&chat_model_session("code-1".to_string()))
+        .expect("materialize code-1 record");
     // Never explicitly switched → defaults to Plan on first use.
     assert_eq!(store.mode_state("code-1").mode, SerializableMode::Plan);
     store
@@ -5190,6 +5324,11 @@ fn code_session_accepted_mode_persists_on_commit_not_rollback() {
 fn plain_session_mode_persists_across_restart() {
     let (store, _g) = isolated_store();
     with_code_sessions(&store, &["code-1"]);
+    // 真实会话记录：重启断言的 plain-1 必须是真实存在的会话（启动幽灵
+    // 清扫以记录文件为存活权威）。
+    store
+        .save_session_atomic(&chat_model_session("plain-1".to_string()))
+        .expect("materialize plain-1 record");
     store
         .set_mode("plain-1", SerializableMode::Plan)
         .expect("plain plan");
@@ -5362,6 +5501,11 @@ fn legacy_design_default_survives_unrelated_prefs_write() {
 #[test]
 fn legacy_code_mode_states_file_is_loaded_as_fallback() {
     let (store, _g) = isolated_store();
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威，legacy 迁移的
+    // 条目必须属于真实存在的会话。
+    store
+        .save_session_atomic(&chat_model_session("code-legacy".to_string()))
+        .expect("materialize code-legacy record");
     let legacy = paths::sessions_root().join("_code_mode_states.json");
     std::fs::write(
         &legacy,
@@ -5390,6 +5534,13 @@ fn legacy_code_mode_states_file_is_loaded_as_fallback() {
 #[test]
 fn legacy_mode_states_survive_a_later_unrelated_mode_write() {
     let (store, _g) = isolated_store();
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威，迁移断言涉及的
+    // legacy 会话必须真实存在（fresh-session 只验证无关写入，不需要）。
+    for id in ["legacy-plan", "legacy-yolo"] {
+        store
+            .save_session_atomic(&chat_model_session(id.to_string()))
+            .expect("materialize legacy session record");
+    }
     let legacy = paths::sessions_root().join("_code_mode_states.json");
     std::fs::write(
         &legacy,
@@ -9604,6 +9755,14 @@ fn mode_persist_keeps_entries_written_after_boot() {
 #[test]
 fn session_auto_mode_is_downgrade_parseable_via_companion_flag() {
     let (store, _g) = isolated_store();
+    // 真实会话记录：启动幽灵清扫以记录文件为存活权威；auto-a/plan-b 持有
+    // mode 写入，old-c 是旧二进制重写共享表后断言存活的会话，都必须真实
+    // 存在。
+    for id in ["auto-a", "plan-b"] {
+        store
+            .save_session_atomic(&chat_model_session(id.to_string()))
+            .expect("materialize session record");
+    }
     store
         .set_mode_and_persist("auto-a", SerializableMode::Auto)
         .expect("persist auto mode");
@@ -9660,6 +9819,10 @@ fn session_auto_mode_is_downgrade_parseable_via_companion_flag() {
         serde_json::to_string(&rewritten).expect("serialize rewrite"),
     )
     .expect("old-binary map rewrite");
+    // old-c 的记录文件同样要真实存在（下一次 load 的幽灵清扫以它为存活权威）。
+    store
+        .save_session_atomic(&chat_model_session("old-c".to_string()))
+        .expect("materialize old-c record");
 
     store.load_session_mode_states();
     assert_eq!(

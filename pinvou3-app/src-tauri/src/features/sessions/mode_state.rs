@@ -1284,6 +1284,40 @@ impl SessionStore {
                 }
             }
         }
+        // Boot-time ghost sweep (retention parity with the multi-agent flags
+        // loader): a crash between the session-record delete and the sidecar
+        // purge leaves a dead id's entry behind, and a recycled id would
+        // silently inherit its mode — and, via the seeding point, its
+        // ask-on-guardrail override — through the boot mint. The shared map
+        // entry is the existence authority for the companion flag, so the
+        // funnel removes both together. Boot-time only: no concurrent writer
+        // holds the io mutex yet.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        let ghost_ids: Vec<String> = modes
+            .keys()
+            .filter(|id| !sessions_dir.join(format!("{id}.json")).is_file())
+            .cloned()
+            .collect();
+        if !ghost_ids.is_empty() {
+            match Self::apply_session_mode_mutation_locked(&[], &ghost_ids) {
+                Ok(()) => {
+                    for id in &ghost_ids {
+                        modes.remove(id);
+                    }
+                    eprintln!(
+                        "[sessions] swept {} ghost session mode entries",
+                        ghost_ids.len()
+                    );
+                }
+                Err(error) => {
+                    // Keep booting with the in-memory map intact: modes for
+                    // live sessions are still correct and the next boot
+                    // retries the sweep (same tolerance as the legacy
+                    // migration below).
+                    eprintln!("[sessions] sweep ghost session mode entries failed: {error:#}");
+                }
+            }
+        }
         if from_legacy && !modes.is_empty() {
             let upserts: Vec<(String, SerializableMode)> = modes
                 .iter()
@@ -1548,7 +1582,7 @@ impl SessionStore {
         // 文件缺失是常态（无开关翻写的会话家），静默；损坏/被截断则响亮记
         // 日志——与 load_session_mode_states 的读侧纪律一致，静默跳过会让
         // 「重启后开关全回默认」无从排查。
-        let Ok(overrides) =
+        let Ok(mut overrides) =
             serde_json::from_str::<std::collections::HashMap<String, bool>>(&content)
         else {
             eprintln!(
@@ -1556,6 +1590,43 @@ impl SessionStore {
             );
             return;
         };
+        // Boot-time ghost sweep for the override mirror (the mode-map
+        // loader's sweep cannot own this: it early-returns when its own
+        // sidecar file is absent, so an override ghost left by the same
+        // crash window — record deleted, purge interrupted — would survive
+        // forever and re-arm a recycled id through the seeding point
+        // (`ask_on_guardrail_seed`). Sweeping here pins the invariant
+        // unconditionally: after boot, no override survives for an id
+        // without a session record file. Boot-time only: no concurrent
+        // writer holds the io mutex yet.
+        let sessions_dir = crate::platform::paths::sessions_root();
+        let ghost_ids: Vec<String> = overrides
+            .keys()
+            .filter(|id| !sessions_dir.join(format!("{id}.json")).is_file())
+            .cloned()
+            .collect();
+        if !ghost_ids.is_empty() {
+            let ghost_refs: Vec<&str> = ghost_ids.iter().map(String::as_str).collect();
+            match Self::apply_ask_on_guardrail_mutation_locked(&[], &ghost_refs) {
+                Ok(()) => {
+                    for id in &ghost_ids {
+                        overrides.remove(id);
+                    }
+                    eprintln!(
+                        "[sessions] swept {} ghost ask-on-guardrail overrides",
+                        ghost_ids.len()
+                    );
+                }
+                Err(error) => {
+                    // Keep booting with the parsed map intact (same
+                    // tolerance as the mode-map loaders); the next boot
+                    // retries the sweep.
+                    eprintln!(
+                        "[sessions] sweep ghost ask-on-guardrail overrides failed: {error:#}"
+                    );
+                }
+            }
+        }
         {
             let mut mirror = self.ask_on_guardrail_overrides.write();
             *mirror = overrides.clone();
