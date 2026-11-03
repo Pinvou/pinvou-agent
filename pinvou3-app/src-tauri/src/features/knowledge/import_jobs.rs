@@ -5,10 +5,14 @@
 //!
 // architecture-guard: allow-target-cfg -- one Windows-only fixture below
 // (unique_existing_files_keeps_verbatim_and_plain_sensitive_siblings) must
-// create real `folder.`/`folder` sibling directories, which only coexist on
-// a Win32 filesystem; the fixture exercises this feature consumer against
-// the platform adapter's identity semantics, and moving it into the adapter
-// would invert the app->features->platform dependency.
+// create real `folder.`/`folder` sibling directories. The collision it
+// guards is a Win32 namespace semantic: plain parsing folds the trailing
+// dot of every component, so the two plain spellings resolve to one file
+// unless the literal `folder.` is reached through the verbatim grammar
+// (other filesystems keep the names lexically distinct); the fixture
+// exercises this feature consumer against the platform adapter's identity
+// semantics, and moving it into the adapter would invert the
+// app->features->platform dependency.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
