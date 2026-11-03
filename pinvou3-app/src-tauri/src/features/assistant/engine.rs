@@ -214,7 +214,12 @@ impl TurnAdmissionMetadata {
         Self {
             action: "accept_plan",
             plan_id,
-            mode: SerializableMode::Yolo,
+            // The flat `mode` is what remote/relay consumers read
+            // (`user_payload` emits it as `payload["mode"]`); it must carry
+            // the accepted session's actual mode, not the historical Yolo
+            // sentinel. The frontend reads the truthful `mode_state` either
+            // way, so the stale hard-code only lied to non-frontend readers.
+            mode: mode_state.mode,
             mode_state,
         }
     }
@@ -2644,7 +2649,7 @@ mod turn_lifecycle_tests {
         EmittedTerminal, TranscriptOperation, TurnAdmissionMetadata, TurnBoundCancelAction,
         TurnIdentity, TurnLifecycle, turn_bound_cancel_action,
     };
-    use crate::features::sessions::SessionModeState;
+    use crate::features::sessions::{SerializableMode, SessionModeState};
     use deepseek_tui::models::{ContentBlock, Message};
     use std::cell::Cell;
     use std::sync::Arc;
@@ -3661,7 +3666,14 @@ mod turn_lifecycle_tests {
         reservation
             .set_admission_metadata(TurnAdmissionMetadata::accept_plan(
                 "plan-ticket".to_string(),
-                SessionModeState::default(),
+                // Non-Yolo accepted mode on purpose: the flat `mode` field
+                // must mirror mode_state.mode (the accepted truth), not a
+                // hard-coded Yolo sentinel — Auto pins that the wire payload
+                // tells the truth for every accepted mode.
+                SessionModeState {
+                    mode: SerializableMode::Auto,
+                    ..SessionModeState::default()
+                },
             ))
             .expect("accept metadata");
         reservation
@@ -3685,8 +3697,10 @@ mod turn_lifecycle_tests {
             .user_payload("session-plan");
         assert_eq!(payload["action"], "accept_plan");
         assert_eq!(payload["plan_id"], "plan-ticket");
-        assert_eq!(payload["mode"], "yolo");
-        assert_eq!(payload["mode_state"]["mode"], "yolo");
+        // Flat mode = the accepted session's mode (Auto here), never a stale
+        // Yolo sentinel; it must agree with mode_state.mode.
+        assert_eq!(payload["mode"], "auto");
+        assert_eq!(payload["mode_state"]["mode"], "auto");
         assert_eq!(payload["content"], "✅ 就这么干");
         let fallback = reclaimed
             .fallback
