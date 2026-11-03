@@ -212,10 +212,10 @@ invokeResponse = async () => null;
   for (const anchor of [
     /function mapModeState\(ms\) \{[\s\S]{0,300}?askOnGuardrail: !ms \|\| ms\.ask_on_guardrail == null \? true : !!ms\.ask_on_guardrail/,
     /state\.modeState = mode\.ok && mode\.value\s*\n\s*\? \{[\s\S]{0,200}?askOnGuardrail: mode\.value\.ask_on_guardrail == null \? true : !!mode\.value\.ask_on_guardrail[\s\S]{0,120}?: \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \}/,
-    /function applyModeFromState\(st\) \{[\s\S]{0,200}?state\.modeState = mapModeState\(st\);/,
+    /function applyModeFromState\(st\) \{[\s\S]{0,400}?state\.modeState = mapModeState\(st\);/,
     /return \{ mode: d \|\| "yolo", multiAgent: false, askOnGuardrail: true \};/,
     /catch \{[\s\S]{0,200}?state\.modeState = \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \};/,
-    /mode: target,\s*\n\s*multiAgent: !!\(state\.modeState && state\.modeState\.multiAgent\),\s*\n\s*\/\/ 草稿跟随 lane 全局默认，无会话级子状态：按后端 default_true 投影。\s*\n\s*askOnGuardrail: true,/,
+    /mode: target,\s*\n\s*multiAgent: !!\(state\.modeState && state\.modeState\.multiAgent\),\s*\n\s*\/\/ A draft follows the lane's global default \(no session-level\s*\n\s*\/\/ substate\): project the backend default_true\.\s*\n\s*askOnGuardrail: true,/,
   ]) {
     assert.match(source, anchor, `web mode mapper must keep the ask_on_guardrail projection: ${anchor}`);
   }

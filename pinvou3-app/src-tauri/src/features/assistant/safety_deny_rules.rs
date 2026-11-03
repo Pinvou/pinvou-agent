@@ -2745,11 +2745,13 @@ mod tests {
 
     #[test]
     fn sudo_deny_covers_wrapper_and_path_spellings() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -2795,11 +2797,13 @@ mod tests {
     /// backup vocabulary, v2.2 stance.)
     #[test]
     fn reads_exfil_and_export_faces_are_deliberately_allowed() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -2844,11 +2848,13 @@ mod tests {
     /// vocabulary and custom multipart field names.
     #[test]
     fn exfil_upload_faces_are_denied() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -2961,11 +2967,13 @@ mod tests {
     /// a benign command does land in `NeedsApproval` under it.
     #[test]
     fn deny_faces_short_circuit_interactive_approval_modes() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3073,11 +3081,13 @@ mod tests {
 
     #[test]
     fn ordinary_commands_are_not_over_denied() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3197,11 +3207,13 @@ mod tests {
     /// registered residues.
     #[test]
     fn bare_root_destroy_is_denied() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3259,11 +3271,13 @@ mod tests {
     /// the R7 row claims. Benign verbs of the same tools stay allowed.
     #[test]
     fn wipe_word_complement_is_denied() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3313,11 +3327,13 @@ mod tests {
     /// the v3 scope — those vectors are pinned on the allow side below.
     #[test]
     fn win_native_spellings_are_denied() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3570,11 +3586,13 @@ mod tests {
     /// reads_exfil_and_export_faces_are_deliberately_allowed.)
     #[test]
     fn wildcard_reanchoring_closes_v1_residues() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3608,11 +3626,13 @@ mod tests {
     /// drive-root destroy targets.
     #[test]
     fn catastrophic_commands_are_denied() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
@@ -3695,11 +3715,13 @@ mod tests {
     /// faces are pinned on the allow side.
     #[test]
     fn persistence_writes_are_denied() {
-        // 与既有两条 composition pin 相同的 ENV_LOCK 纪律：经 engine()/
-        // real_home()/None-composition 读真实 HOME 家族，不得与并行改 HOME
-        // 的测试竞速。守卫必须先于第一处环境依赖读取——engine() 构造本身
-        // 也在 HOME 家族上（评审 P3）：锁前构造 + 锁后断言会观察到不同的
-        // HOME，构造与断言可能在描述两个家。
+        // Same ENV_LOCK discipline as the two composition pins: the
+        // engine()/real_home()/None-composition family reads the real HOME
+        // and must not race tests that mutate HOME in parallel. Acquire the
+        // guard BEFORE the first environment-dependent read - engine()
+        // construction itself is part of that family (reviewer P3):
+        // constructing before the lock and asserting after it can observe
+        // two different homes between construction and assertion.
         let _env_guard = crate::platform::paths::tests::ENV_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
