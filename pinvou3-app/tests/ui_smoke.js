@@ -2484,6 +2484,13 @@ async function expand(page) {
   await sleep(150);
   await clickText(page, 'YOLO');
   await sleep(300);
+  // Round-7 P2: the one-time Yolo gate is entry-scoped, so this unbound
+  // session gets the confirmation card; click through it — the scenario
+  // asserts the switch itself keeps the active stream running.
+  await page.evaluate(() => {
+    document.querySelector('[data-testid="native-yolo-confirm-ok"]')?.click();
+  });
+  await sleep(300);
   const modeSwitchDuringStream = await page.evaluate(async (invokeStart) => {
     const deltaHandlers = window.__TAURI_EVENT_HANDLERS__['chat:delta'] || [];
     for (const handler of deltaHandlers) {
