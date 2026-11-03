@@ -27,6 +27,7 @@ mod validation;
 
 pub(crate) use connectors::{mcp_json_unparseable, with_mcp_json_lock, write_json_pretty};
 
+// PR #302 WIP 拆分的子模块（main 的 Wave 2 没有接这块）—— 需要补 mod 声明。
 pub mod actions;
 pub mod builtin;
 pub mod bundle;
@@ -690,13 +691,25 @@ pub use types::{
 // callers) are test-only now and are `cfg(test)` along with their
 // implementations.
 pub use crate::features::marketplace::scope::{
+    ConnectGrantOutcome, RELIED_GRANT_LOST_CAUSE, RELIED_GRANT_REPLACEMENT_PENDING_CAUSE,
+    ReliedGrantCommit, commit_relied_connect_grant, complete_connect_grant,
+    deny_first_register_connector, deny_first_register_connector_refresh,
     load_disabled_bundles_for, load_disabled_bundles_startup, load_hidden_bundles_for,
-    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
-    sync_deny_all_scopes_refresh, unavailable_bundles_for,
+    save_disabled_bundles_for, save_disabled_bundles_for_with_toggled_ids, save_hidden_bundles_for,
+    sync_deny_all_scopes_after_install, unavailable_bundles_for,
 };
-// The connector gate is crate-internal (skill_gate.rs is the only caller);
-// no command layer or engine surface needs it.
-pub(crate) use crate::features::marketplace::scope::deny_first_register_connector;
+// The bare grant/revoke/refresh writers stay crate-internal: every connect
+// consent write must reach them through `deny_first_register_connector` /
+// `deny_first_register_connector_refresh` (owner-claim refusal + ledger gate
+// + the refresh variant's verdict guard and recovery hold). Both GATED
+// entries are cross-crate: the gesture variant for the real connect
+// completions (GUI + CLI), the ledger-gated refresh variant for the boot
+// backfill and the CLI's standalone `apply-skills` maintenance run — a
+// command with no connect gesture behind it must never lift a stored
+// no-ledger verdict (round-3 review).
+pub(crate) use crate::features::marketplace::scope::{
+    grant_connect_enable, grant_connect_enable_refresh, revoke_connect_enable,
+};
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
 
@@ -711,17 +724,23 @@ pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabl
 pub async fn apply_disabled_connectors_for(
     scope: ConnectorScope,
     connector_ids: Vec<String>,
+    toggled_ids: &[String],
 ) -> Result<(), String> {
     // Builtin plugins cannot be disabled (docs/builtin-toolset-contract.md
     // §3.1 defense in depth): the write fails loudly instead of silently
     // filtering the id out.
     builtin::reject_builtin_ids(&connector_ids)?;
+    let toggled_ids = toggled_ids.to_vec();
     // The composer whole-list write is fail-loud (main #563's contract, restored by round-19 MAJOR 1: this PR no longer downgrades to fire-and-forget): write failures propagate via `?`.
-    tokio::task::spawn_blocking(move || save_disabled_bundles_for(scope, &connector_ids))
-        .await
-        .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
+    tokio::task::spawn_blocking(move || {
+        save_disabled_bundles_for_with_toggled_ids(scope, &connector_ids, &toggled_ids)
+    })
+    .await
+    .map_err(|error| format!("apply_disabled_connectors_for join: {error}"))??;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
 
 use crate::core::session_mode::SessionMode;
 
@@ -7541,7 +7560,7 @@ pub(crate) mod tests {
     }
 
     /// A remote-server connector may have no static mcp_tools list (qcc is one).
-    /// Disabling it must derive prefix rules from the server name.
+    /// Disabling it must derive prefix rules from the server name, otherwise the
     #[test]
     fn model_tool_names_generates_prefix_rules_for_remote_servers() {
         with_temp_home(|| {
@@ -8956,13 +8975,13 @@ pub(crate) mod tests {
         });
     }
 
-    /// 连接器禁用联动技能、独立 skill 开关、同名包开关联动三个场景的组合目录断言
+    /// 连接器禁用联动技能、独立 skill 开关、同名不误伤三个场景的组合目录断言
     /// 已随 `enabled_skills_for` 移入 `assistant::skill_materialization` 的测试
     /// （marketplace → assistant 会构成 feature 依赖环，架构守卫拒绝）。
     /// 覆盖位置：`skill_materialization.rs` tests 中
     /// `companion_skill_excluded_when_connector_disabled` /
     /// `enabled_skills_respect_first_wins_and_scope_disabled` /
-    /// `disabling_package_hides_same_named_skill_unified`。
+    /// `disabling_connector_id_does_not_hide_same_named_user_skill`。
 
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {

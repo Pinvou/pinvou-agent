@@ -35,7 +35,7 @@ lark-cli calendar +agenda --as bot
 | Shortcut | 说明 |
 |----------|------|
 | `+agenda` | 查看日程安排（默认今天） |
-| [`+meeting`](references/lark-calendar-meeting.md) | 通过日程事件 ID 获取关联的视频会议信息（meeting_id、meeting_note），日程开过视频会议才会有meeting_id,**注意**: 视频会议链接获取走+get命令 |
+| [`+meeting`](references/lark-calendar-meeting.md) | 通过日程事件 ID 获取关联的视频会议信息，**只返回** `event_id` / `meeting_id` / `meeting_note`（日程开过视频会议才会有 `meeting_id`）。它不是视频会议的创建或取链接入口：日程创建时由 [`+create`](references/lark-calendar-create.md) 默认携带飞书视频会议（`vchat: {"vc_type": "vc"}`）；纪要 / 妙记等会中产物凭 `meeting_id` 走 `vc +detail`（见该 reference「下游链路」），不经 `+get` |
 | [`+create`](references/lark-calendar-create.md) | 创建日程并邀请参会人（ISO 8601 时间） |
 | [`+update`](references/lark-calendar-update.md) | 更新既有日程字段，或独立增量添加/移除参会人和会议室；重复性日程/例外必须传 `--apply-to`（详见 [重复性日程操作规范](references/lark-calendar-recurring.md)） |
 | `+delete` | 删除日程；重复性日程/例外必须传 `--apply-to`（详见 [重复性日程操作规范](references/lark-calendar-recurring.md)） |

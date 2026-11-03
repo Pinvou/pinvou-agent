@@ -55,7 +55,7 @@ const LONG_USER_PROMPT = [
   '要求修改下面这段 Markdown 产物内容。',
   '',
   '路径：',
-  'C:\\Users\\123\\.pinvou3\\sessions\\woxhexe j3yjd0\\workspace\\hello-world.md',
+  'C:\\Users\\123\\.pinvou3\\sessions\\session-fixture-02\\workspace\\hello-world.md',
   '',
   '选中文本：',
   '```markdown',

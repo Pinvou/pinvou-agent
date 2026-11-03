@@ -37,7 +37,7 @@ wecom-cli contact users search --json '<JSON 参数>'
 | 字段 | 类型 | 说明 |
 |---|---|--|
 | `users` | array | 命中的用户列表 |
-| `users[].userid` | string | 用户唯一标识 |
+| `users[].userid` | string | 用户唯一标识（企微通讯录内部成员为 `wo` 前缀） |
 | `users[].name` | string | 中文姓名 |
 | `users[].alias` | string | 英文名 / 别名（可能为空） |
 | `users[].email` | string | 邮箱（可能为空） |
@@ -56,3 +56,8 @@ wecom-cli contact users search --json '<JSON 参数>'
 ## 缺少参数
 
 > 必填参数缺失（未提供搜索关键词）且上下文无法推断时，用简洁自然语言向用户追问缺失信息，不得猜测默认值。
+
+## 业务失败处理
+
+- 同一操作失败后最多重试 **2 次**；仍失败则停止自动操作，向用户如实报告错误信息，等待人工介入。网络超时类错误可重试；权限不足、参数错误不应重试（重试无效）。
+- 关键词无命中（`users` 为空）时如实告知未找到该成员，不编造 userid；候选受 `hint` 限制时按「使用规则」如实说明，不把已返回条数当成完整名单。

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { BookOpen, Check, ChevronLeft, Download, Globe, Package, Server, Settings, Trash2, Upload, XIcon, Zap } from '../../components/icons.jsx';
 import { IosSearchField } from '../../components/IosControls.jsx';
@@ -14,7 +14,7 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { companionPackageMap } from '../../shared/companion-packages.js';
-import { applyConnectorFailure, CONSENT_SYNC_FAILURE_MARKER, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
+import { applyConnectorFailure, CONNECT_CONSENT_SYNC_FAILURE_MARKER, CONNECT_GRANT_COMMIT_FAILURE_MARKER, CONSENT_SYNC_FAILURE_MARKER, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
 
 // 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
 // 超过旧值 90s)。后端本地回调等待自身有 300s 上限,到时后端先显式失败;
@@ -296,10 +296,22 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     const createFlowStore = () => ({
       flow: null,
       tick: null,
+      // Latched while the LAST settled connect of this connector failed its consent persist or its
+      // post-auth skill write — the backend revokes the fresh grant (or never lands it) on either,
+      // so the connected banner must keep its title-only fallback (round-6 review P2).
+      // Lives on the module-level store, not the component: the failure can settle while the
+      // store view is unmounted, and the latch must survive remount AND card dismissal until
+      // a connect reaches done (review #741 P2 — a component-local latch restarted at false
+      // on remount, so the connected banner claimed enabled-by-default over a fail-closed backend).
+      consentSyncFailed: false,
       listenersReady: false,
       subs: new Set(),
       subscribe(fn) { this.subs.add(fn); return () => { this.subs.delete(fn); }; },
       setFlow(u) { this.flow = (typeof u === 'function') ? u(this.flow) : u; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
+      // Same broadcast discipline as setFlow: subscribers re-mirror both fields, so a latch-only
+      // change (the failure can land after the card was closed, where the flow write null-guards
+      // to a no-op) still wakes mounted components.
+      setConsentSyncFailed(v) { this.consentSyncFailed = !!v; this.subs.forEach(fn => { try { fn(this.flow); } catch { /* silent: one failing subscriber must not affect the rest of the broadcast */ } }); },
       startTick() {
         this.stopTick();
         this.tick = setInterval(() => this.setFlow(f => {
@@ -351,23 +363,40 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         });
         ev.listen(cfg.events.connected, cfg.connectedMode === 'apply' ? () => {
           conn.stopTick();
+          // A fresh connect reached done → an earlier consent-persist latch is stale. Store-level now
+          // (review #741 P2): on this fire-and-forget channel done precedes the consent settle, so if
+          // THIS connect's own persist fails, the classification below re-latches.
+          conn.setConsentSyncFailed(false);
           // Flow null = the card was closed (cancel) before the event landed;
           // writing would resurrect a zombie "done" card.
           conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
-          // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
+          // Connected → write skills per the rules (connect grants enable) + broadcast refresh; view-independent, so it lives in the global listener.
           // Round-33 MAJOR 2 + round-35 MAJOR 1 (review #455): the fire-and-forget write is consent-critical — a lost
-          // row leaves the connector live with zero consent until the next boot's ledger-gated backfill, silently. The
+          // grant leaves the connector off until the user reconnects, silently. The
           // failure is surfaced ON THE CARD via applyConnectorFailure (the console-only reportConnectorFailure call was
           // the round-35 review's finding — success toast + connected card while only the console saw the error): the
-          // backend message carries the shared consent marker (CONSENT_SYNC_FAILURE_MARKER, pinned on both sides —
-          // ima-pattern substring match) → the dedicated consent_persist_failed copy; anything else keeps the step's
-          // localized copy.
+          // backend message carries the connect consent marker (CONNECT_CONSENT_SYNC_FAILURE_MARKER, pinned on both
+          // sides — ima-pattern substring match) → the dedicated connect_consent_persist_failed copy; anything else
+          // keeps the step's localized copy. (feat/connector-connect-grants-enable: the connect channel records an
+          // ENABLE grant and is fail-closed on persist failure, hence its own marker/code — the install channels keep
+          // the original CONSENT_SYNC_FAILURE_MARKER and consent_persist_failed.)
           // Round-37 F2 (review #455): the collapse timer is armed only AFTER the write settles — arming it
           // synchronously let a failure resolving after 1.8s land on a nulled flow (the null guard no-op'ing),
           // re-creating the silent-failure state. A slow write keeps the done card up until it resolves; a failed
           // write swaps in the error card and stays (no auto-collapse on errors, same as the awaited branch).
+          // Round-38 (review #741): the composer tools-changed broadcast must ride the write's SETTLEMENT, not
+          // the done phase — done is written synchronously above while the consent grant settles later, so a
+          // done-phase broadcast lets a mounted composer refetch the pre-grant state and render the connector
+          // OFF until the next broadcast (and the round-3 review removed the shared done-phase broadcast for
+          // exactly that waste). Notify after the write settles instead, on BOTH paths: a failed write leaves
+          // abort/revoke state a refresh should still pick up (notifying when nothing changed is harmless).
+          // The awaited branch (dingtalk/tmeet) notifies in its own listener paths below — success included
+          // (round-3 review: the success notify previously lived only in the done phase of the mounted
+          // subscription, so an unmounted store view's composer never learned of a successful connect).
           invokeTauri(cfg.commands.applySkills).then(
             () => {
+              // Post-settle composer refresh (Round-38 above): the grant is now readable.
+              notifyComposerToolsChanged();
               // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived
               // connection state). The collapse must only close a card that already reached 'done': a stale timer
               // from the previous round must not destroy a card the user re-opened within the window (and strand the
@@ -376,12 +405,30 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             },
             (e) => {
               const msg = String(e && e.message ? e.message : e);
-              const failure = msg.includes(CONSENT_SYNC_FAILURE_MARKER)
-                ? { code: 'consent_persist_failed' }
-                : { code: 'skills_enable_failed' };
+              const failure = msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
+                ? { code: 'connect_consent_persist_failed' }
+                : msg.includes(CONNECT_GRANT_COMMIT_FAILURE_MARKER)
+                  ? { code: 'connect_consent_commit_incomplete' }
+                  : { code: 'skills_enable_failed' };
+              // Latch on the store BEFORE the flow write: the card may already be closed (the write
+              // below null-guards to a no-op) and the latch must survive that — plus any remount and
+              // dismissal — so the connected banner keeps the title-only copy (review #741 P2).
+              // EVERY rejection of this write is post-auth (round-6 review P2): a persist failure
+              // stays fail-closed, and an ordinary materialization failure REVOKES the fresh grant —
+              // either way the backend is not enabled-by-default, and the marker-only latch left the
+              // enabled-by-default banner showing over a disabled connector once the error card was
+              // dismissed.
+              // Round-9 review P2: the commit-incomplete class does NOT
+              // latch — its standing grant keeps the connector enabled, so
+              // the enabled banner stays truthful for it (unlike both
+              // fail-closed classes).
+              if (failure.code !== 'connect_consent_commit_incomplete') conn.setConsentSyncFailed(true);
               reportConnectorFailure(cfg.key, failure, 'cli');
               // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
               conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
+              // Round-38: notify on failure too — the write's abort/revoke paths still leave backend
+              // state a composer refresh should pick up (harmless when nothing changed).
+              notifyComposerToolsChanged();
             },
           );
         } : async () => {
@@ -397,6 +444,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               }
             }
             await invokeTauri(cfg.commands.applySkills);
+            // A fresh connect reached done → an earlier consent-persist latch is stale. Store-level
+            // now (review #741 P2); on the awaited channel done only trails a successful apply, so
+            // nothing re-latches afterwards.
+            conn.setConsentSyncFailed(false);
+            // Round-38 + round-3 review: the success notify lives here (post-apply,
+            // view-independent) instead of the mounted subscription's done phase —
+            // an unmounted store view's composer must learn of the connector
+            // flipping enabled too (parity with the catch below).
+            notifyComposerToolsChanged();
             // Same null guard as above: the awaited apply gives cancel a wide window.
             conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
             // Same done-only collapse guard as the apply-mode listener above: a
@@ -404,21 +460,36 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             setTimeout(() => conn.setFlow(f => (f && f.phase === 'done' ? null : f)), 1800);
           } catch (e) {
             // readinessAwait (tmeet) passes the readiness re-check's auth_failed through; a consent-persist failure
-            // (the backend copy carries the shared marker) reports consent_persist_failed — "Try again" cannot fix a
-            // persist failure; every other failure after authorization completed (dingtalk's awaited apply, tmeet's
-            // own skill write) reports skills_enable_failed — the sign-in demonstrably succeeded on those paths.
+            // (the backend copy carries the connect marker) reports connect_consent_persist_failed — "Try again"
+            // cannot fix a persist failure; every other failure after authorization completed (dingtalk's awaited
+            // apply, tmeet's own skill write) reports skills_enable_failed — the sign-in demonstrably succeeded on
+            // those paths.
             // Round-35 MAJOR 1 (review #455): without this classification the consent_persist_failed catalog entry
             // was unreachable for every connector.
             const authIncomplete = cfg.connectedMode !== 'applyAwait' && e && e.code === 'auth_failed';
             const msg = String(e && e.message ? e.message : e);
             const failure = authIncomplete
               ? e
-              : msg.includes(CONSENT_SYNC_FAILURE_MARKER)
-                ? { code: 'consent_persist_failed' }
-                : { code: 'skills_enable_failed' };
+              : msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
+                ? { code: 'connect_consent_persist_failed' }
+                : msg.includes(CONNECT_GRANT_COMMIT_FAILURE_MARKER)
+                  ? { code: 'connect_consent_commit_incomplete' }
+                  : { code: 'skills_enable_failed' };
+            // Latch on the store BEFORE the flow write — same closed-card/remount reasoning as the
+            // fire-and-forget branch above (review #741 P2). Both post-auth classes latch (round-6
+            // review P2): an ordinary materialization failure revokes the fresh grant exactly like
+            // a persist failure, so the banner keeps the title-only copy for either. Only the
+            // pre-apply auth failures (authIncomplete, tmeet's readiness re-check) stay unlatched —
+            // no grant was attempted, the backend state is untouched.
+            if (failure.code !== 'auth_failed' && failure.code !== 'connect_consent_commit_incomplete')
+              conn.setConsentSyncFailed(true);
             reportConnectorFailure(cfg.key, failure, 'qr');
             // Same null guard: a failure landing after the card was closed must not fabricate one.
             conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'qr') : f));
+            // Round-38 parity with the fire-and-forget branch (round-2 review m7): the awaited
+            // apply's failure path also churns backend state (deny-first grant + revoke), so the
+            // composer must refetch here too instead of waiting for the next unrelated broadcast.
+            notifyComposerToolsChanged();
           }
         });
         ev.listen(cfg.events.error, (e) => {
@@ -472,6 +543,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         }
       };
       // Cancel/close the flow card: mark cancelled + kill child processes + clear state.
+      // Deliberately does NOT clear conn.consentSyncFailed: the fail-closed backend outlives the
+      // dismissed error card, and the connected banner must keep its title-only fallback until a
+      // connect reaches done (review #741 P2 — clearing here re-armed the enabled-by-default claim).
       const resetFlow = ({ setBusyId }) => {
         conn.stopTick();
         invokeTauri(cfg.commands.cancel).catch(() => {});
@@ -545,11 +619,29 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     // mirrors store state into local rendering and finalizes on done/failure (alert dialog, connection-state
     // refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
     // tmeet's done toast uses a detailCopy phrase via doneTitle; others pass evaluated storeCopy.connectedTool(...).
-    const useConnectorFlowSubscription = ({ enabled, conn, ensureListeners, setFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle, toolId }) => {
+    // doneSettlesLater (the fire-and-forget 'apply' connectors): their done phase is written synchronously
+    // while the consent grant settles later, so the done toast stays title-only — the "enabled by default"
+    // subtitle would be a claim the write has not made yet (round-1 review), and the alert's installHint
+    // fallback must be suppressed along with it (round-3 review: the fallback copy still says "off by
+    // default", the exact claim this flow removes — a falsy subtitle alone renders it). The awaited
+    // branches' done already trails their apply, so their subtitle is accurate at done time.
+    // Returns consentSyncFailed: latched while the LAST settled connect of this connector failed its
+    // consent persist — the connected banner must not claim enabled-by-default over a fail-closed state,
+    // so it falls back to the title-only copy until the next connect reaches done (round-3 review).
+    // The latch itself lives on the module-level conn store (review #741 P2): the failure can settle
+    // while this view is unmounted, so owning it in component useState lost it on remount.
+    // useSyncExternalStore mirrors the store field into rendering — React re-reads the store on every
+    // mount, so a latch that landed while unmounted is picked up by hydration itself instead of a
+    // fresh useState(false) re-arming the enabled-by-default banner.
+    const useConnectorFlowSubscription = ({ enabled, conn, ensureListeners, setFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle, toolId, doneSettlesLater }) => {
       // The subscription effect runs once per enabled state; the toast copy goes
       // through a latest-ref so a "connected" toast raised after a mid-flow
       // language switch uses the current language, like the failure card does.
       const toastCopyRef = useRef(null);
+      const consentSyncFailed = useSyncExternalStore(
+        (onStoreChange) => conn.subscribe(onStoreChange),
+        () => conn.consentSyncFailed,
+      );
       useEffect(() => {
         toastCopyRef.current = { doneTitle, enabledSubtitle: detailCopy.actions.enabled };
       });
@@ -564,10 +656,22 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             if (ph === 'done') {
               setBusyId((current) => releaseBusy(current, toolId));
               loadBackendState();
-              setAlert({ visible: true, loading: false, title: toastCopyRef.current && toastCopyRef.current.doneTitle, subtitle: toastCopyRef.current && toastCopyRef.current.enabledSubtitle, isInstall: true, isError: false, toolId });
-              notifyComposerToolsChanged();
+              setAlert({ visible: true, loading: false, title: toastCopyRef.current && toastCopyRef.current.doneTitle, subtitle: doneSettlesLater ? undefined : toastCopyRef.current && toastCopyRef.current.enabledSubtitle, suppressHint: !!doneSettlesLater, isInstall: true, isError: false, toolId });
+              // The latch's stale-on-done clear moved to the store's done WRITES (both listener
+              // branches) — a transition observed here may be the hydration of a done that landed
+              // while unmounted, and a mount-time clear would resurrect the P2 bug in reverse.
+              // No composer broadcast here: for the fire-and-forget connectors
+              // done is written synchronously, so this broadcast landed BEFORE
+              // their consent grant settled — a provably wasted pre-grant
+              // refresh (round-3 review). Their authoritative composer refresh
+              // is the post-settle notify in the apply-mode listener (Round-38);
+              // the awaited branches notify in their own listener paths too, so
+              // every notify is settle-ordered and view-independent.
             } else if (ph === 'error') {
               setBusyId((current) => releaseBusy(current, toolId));
+              // The consent-persist latch is set at the store by the listener that CLASSIFIES the
+              // failure — the view may be unmounted here, and the error card may even never have
+              // been written (null-guarded). Latching in this mounted callback was the P2 bug.
             }
             prevPhase = ph;
           }
@@ -576,6 +680,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         return unsub;
       // eslint-disable-next-line react-hooks/exhaustive-deps -- subscription mounts/unmounts only with externalAuthAvailable; failures are stored as error codes and localized at render time, so resubscribing on copy changes is unnecessary
       }, [enabled]);
+      return consentSyncFailed;
     };
 
     // z-[200] modal backdrop: translucent black + background blur; clicking closes the dialog when onClose is
@@ -642,7 +747,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     <div className={`text-[13px] leading-relaxed break-all text-slate-500 dark:text-slate-400`}>
                       {alert.subtitle}
                     </div>
-                  ) : !alert.isError && (
+                  ) : !alert.isError && !alert.suppressHint && (
                     <div className={`text-[13px] leading-relaxed text-slate-500 dark:text-slate-400`}>
                       {alert.isInstall ? copy.installHint : copy.removeHint}
                     </div>
@@ -1297,16 +1402,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
       // 订阅跨视图 store：把 store 状态镜像进本组件渲染，并在完成/失败时做组件级收尾
       // (alert dialog, connection-state refresh). The real listeners/stopwatch live in the module-level conn singleton, surviving view switches.
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu' });
+      // consentSyncFailed latches a post-auth connect failure (consent persist OR skill enable —
+      // both leave the backend fail-closed) so the connected banner cannot claim
+      // enabled-by-default over it (round-3 review, round-6 review P2).
+      const feishuConsentSyncFailed = useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: feishuConn, ensureListeners: ensureFeishuListeners, setFlow: setFeishuFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.feishu), toolId: 'feishu', doneSettlesLater: true });
 
       // 订阅企业微信 store(镜像飞书):镜像进渲染 + 完成/失败收尾
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: wecomConn, ensureListeners: ensureWecomListeners, setFlow: setWecomFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.wecom), toolId: 'wecom' });
+      const wecomConsentSyncFailed = useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: wecomConn, ensureListeners: ensureWecomListeners, setFlow: setWecomFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.wecom), toolId: 'wecom', doneSettlesLater: true });
 
       // 订阅钉钉 store(镜像企微):镜像进渲染 + 完成/失败收尾
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: dingtalkConn, ensureListeners: ensureDingtalkListeners, setFlow: setDingtalkFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), toolId: 'dingtalk' });
+      const dingtalkConsentSyncFailed = useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: dingtalkConn, ensureListeners: ensureDingtalkListeners, setFlow: setDingtalkFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: storeCopy.connectedTool(storeCopy.toolNames.dingtalk), toolId: 'dingtalk' });
 
       // Subscribe to the tmeet store (mirrors the dingtalk one): mirror into rendering + done/failure finalization (done toast uses a dedicated phrase)
-      useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: tmeetConn, ensureListeners: ensureTmeetListeners, setFlow: setTmeetFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: detailCopy.actions.connectedTmeet, toolId: 'tmeet' });
+      const tmeetConsentSyncFailed = useConnectorFlowSubscription({ enabled: externalAuthAvailable, conn: tmeetConn, ensureListeners: ensureTmeetListeners, setFlow: setTmeetFlow, detailCopy, setBusyId, loadBackendState, setAlert, doneTitle: detailCopy.actions.connectedTmeet, toolId: 'tmeet' });
 
       // 合并后端安装状态到 mock 数据(飞书/企微/钉钉的 installed = 已连接)
       // 业务分类直接取条目数据 category(tool-common.jsx 已落业务类 id),不再按 id 硬编码映射。
@@ -2182,11 +2290,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         : null;
       // Detail page "Connected" banner (five connectors, one shared visual shell): CLI connectors need the connection
       // state ready and the flow card collapsed; ima has no flow card, connection state only. Mutually exclusive, at most one shows.
+      // Round-6 review: after a consent-persist or skill-enable failure the connection IS up but the
+      // connector is NOT enabled (fail-closed revoke) — the enabled-by-default banner copy would
+      // claim the opposite once the error card is dismissed, so a latched failure falls back to the
+      // title-only connected copy until the next connect reaches done.
+      const consentSyncFailedByTool = { feishu: feishuConsentSyncFailed, wecom: wecomConsentSyncFailed, dingtalk: dingtalkConsentSyncFailed, tmeet: tmeetConsentSyncFailed };
+      const connectedBannerText = (key) => (consentSyncFailedByTool[key]
+        ? storeCopy.connectedTool(storeCopy.toolNames[key])
+        : storeCopy.connectedBanner(storeCopy.toolNames[key]));
       const connectedBanners = [
-        { show: !!selectedTool?.feishuCli && feishuConnected && !feishuFlow, text: storeCopy.connectedBanner(storeCopy.toolNames.feishu) },
-        { show: !!selectedTool?.wecomCli && wecomConnected && !wecomFlow, text: storeCopy.connectedBanner(storeCopy.toolNames.wecom) },
-        { show: !!selectedTool?.dingtalkCli && dingtalkConnected && !dingtalkFlow, text: storeCopy.connectedBanner(storeCopy.toolNames.dingtalk) },
-        { show: !!selectedTool?.tmeetCli && tmeetConnected && !tmeetFlow, text: storeCopy.connectedBanner(storeCopy.toolNames.tmeet) },
+        { show: !!selectedTool?.feishuCli && feishuConnected && !feishuFlow, text: connectedBannerText('feishu') },
+        { show: !!selectedTool?.wecomCli && wecomConnected && !wecomFlow, text: connectedBannerText('wecom') },
+        { show: !!selectedTool?.dingtalkCli && dingtalkConnected && !dingtalkFlow, text: connectedBannerText('dingtalk') },
+        { show: !!selectedTool?.tmeetCli && tmeetConnected && !tmeetFlow, text: connectedBannerText('tmeet') },
         { show: !!selectedTool?.imaOpenapi && imaConnected, text: storeCopy.connectedBannerIma },
       ];
 

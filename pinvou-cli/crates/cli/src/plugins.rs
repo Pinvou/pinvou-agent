@@ -102,8 +102,10 @@
 //!   non-CLI package is derived in this module rather than in `readiness_for`,
 //!   so the desktop readiness card keeps its existing verdict.
 //! - enable/disable/project-skills → `load_disabled_bundles_for` +
-//!   `save_disabled_bundles_for` (the same load-modify-save the GUI's
-//!   `set_disabled_skills` / `set_disabled_connectors` persist through, with
+//!   `save_disabled_bundles_for_with_toggled_ids` (the same load-modify-save
+//!   the GUI's `set_disabled_skills` / `set_disabled_connectors` persist
+//!   through; an explicit enable names its actual target as the write's
+//!   toggle intent, committing the standing connect grant it accepts), with
 //!   the requested state verified against a fresh read-back of the persisted
 //!   list, resolved over the same normalized projection the mutation used —
 //!   recomputing the check over the list handed to the writer observed
@@ -137,7 +139,7 @@ use pinvou3_lib::features::marketplace::{
     builtin::is_builtin_tool,
     bundle::{BundleInfo, BundleKind, BundleRegistry, Readiness, keyring_target, readiness_for},
     load_disabled_bundles_for, package_export, plugin_import, recycle_bin,
-    save_disabled_bundles_for,
+    save_disabled_bundles_for_with_toggled_ids,
     scope::{
         CONSENT_SYNC_FAILURE_MARKER, project_skills_enabled,
         remove_bundle_from_disabled_scopes_exact, resolve_pack_owner_id,
@@ -2248,8 +2250,8 @@ fn set_enabled(
     let mut applied: Vec<&'static str> = Vec::new();
     for connector_scope in scope.scopes() {
         // The same load-modify-save the GUI persists a scope through
-        // (`load_disabled_bundles_for` → `save_disabled_bundles_for`, which
-        // marks the scope initialized). The load and the save are two
+        // (`load_disabled_bundles_for` → `save_disabled_bundles_for_with_toggled_ids`,
+        // which marks the scope initialized). The load and the save are two
         // separate in-process critical sections, exactly like the desktop
         // app's own toggle; a desktop-app write landing between them is
         // last-writer-wins (disclosed in docs/pinvou-cli.md). A failing disk
@@ -2269,14 +2271,29 @@ fn set_enabled(
         } else if !ids.iter().any(|existing| existing == &packages) {
             ids.push(packages.clone());
         }
-        save_disabled_bundles_for(connector_scope, &ids).map_err(|error| {
-            CliError::failed(format!(
-                "plugins {action}: could not update disabled bundles for {id} in \
+        // An explicit enable names its ACTUAL target as the write's toggle
+        // intent (the composer click's `toggledIds`): inside the same locked
+        // write the writer commits the standing connect grant's ownership
+        // token, and an older in-flight connect's compensating revoke —
+        // which matches only while its token still stands — can no longer
+        // undo the decision this command just persisted. A disable stays
+        // intent-less: entering the disabled list is the whole-list write's
+        // own explicit-OFF strip.
+        let toggled: &[String] = if enabled {
+            std::slice::from_ref(&packages)
+        } else {
+            &[]
+        };
+        save_disabled_bundles_for_with_toggled_ids(connector_scope, &ids, toggled).map_err(
+            |error| {
+                CliError::failed(format!(
+                    "plugins {action}: could not update disabled bundles for {id} in \
                      scope {}: {error}{}",
-                connector_scope.as_str(),
-                applied_scopes_suffix(&applied)
-            ))
-        })?;
+                    connector_scope.as_str(),
+                    applied_scopes_suffix(&applied)
+                ))
+            },
+        )?;
         // Round-44 review: verify against a REAL read-back of what the writer
         // persisted — the previous check recomputed the same pure function
         // over the same in-memory list, so the guard below was dead code and
@@ -2962,5 +2979,87 @@ mod tests {
                 "the failure must name the built-package-path problem: {error}"
             );
         }
+    }
+
+    /// The plugins arm of the composer toggle's P2: an explicit `plugins
+    /// enable` names its ACTUAL target as the write's toggle intent, so the
+    /// same locked write commits the standing connect grant's ownership
+    /// token and an older in-flight connect's compensating revoke — its
+    /// ownership predicate, pinned in the scope layer's tests — can no
+    /// longer undo the enable this command just persisted. The disable arm
+    /// stays intent-less: entering the disabled list is the whole-list
+    /// write's own explicit-OFF strip.
+    #[test]
+    fn plugins_enable_commits_the_standing_connect_grant_it_accepts() {
+        // Lock first, fixture second: the fixture's Drop restores the
+        // previous PINVOU3_HOME while the lock is still held.
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::support::test_support::TempHome::new("plugins-enable-grant");
+        let store = home.join("disabled_bundles.json");
+        std::fs::write(
+            &store,
+            r#"{"scopes":{"plain":["feishu"]},"initialized":["plain"]}"#,
+        )
+        .unwrap();
+
+        // Connect A's gesture grant through the same gated entry the CLI
+        // connect drives: it lifts plain's explicit row and lands grant +
+        // ownership token; A's materialization is now in flight.
+        let grant_a =
+            pinvou3_lib::features::marketplace::deny_first_register_connector("feishu", true)
+                .unwrap();
+        assert!(
+            grant_a.granted && grant_a.lifted_scopes.iter().any(|key| key == "plain"),
+            "fixture: the gesture grants and lifts plain's row: {grant_a:?}"
+        );
+
+        // The CLI enable through the real command writer, one scope. An
+        // empty tool snapshot leaves "feishu" un-remapped, so the mutation,
+        // the write's intent, and the read-back all key on the grant's
+        // package id.
+        set_enabled("feishu", ScopeArg::Plain, true, OutputMode::Json)
+            .expect("the enable must succeed");
+        let persisted = load_disabled_bundles_for(ConnectorScope::Plain);
+        assert!(
+            !persisted.iter().any(|id| id == "feishu"),
+            "the enable must read back ON: {persisted:?}"
+        );
+
+        // The verdict is defended: the ownership token is consumed in the
+        // same write, the grant itself stays standing behind the accepted ON
+        // (token-only commit), and the lifted row stays absent.
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+        assert!(
+            file["connect_grant_tokens"].get("feishu").is_none(),
+            "the plugins enable must commit the standing ownership token: {file}"
+        );
+        assert!(
+            file["connect_granted"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+            "the commit is token-only: the grant stands behind the accepted ON: {file}"
+        );
+        assert!(
+            !file["scopes"]["plain"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+            "the lifted row must stay absent behind the accepted ON: {file}"
+        );
+        // The production ownership predicate the compensating revoke
+        // evaluates, driven through the pub commit entry (the bare revoke is
+        // deliberately crate-internal): the older connect's pending
+        // compensation no longer matches the state the enable left behind.
+        assert_eq!(
+            pinvou3_lib::features::marketplace::commit_relied_connect_grant(
+                "feishu",
+                &grant_a.grant_token
+            )
+            .unwrap(),
+            pinvou3_lib::features::marketplace::ReliedGrantCommit::Superseded,
+            "the older connect's compensation must no longer match the token the enable committed"
+        );
     }
 }

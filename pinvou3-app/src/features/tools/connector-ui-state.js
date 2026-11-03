@@ -3,13 +3,34 @@
 // message in the current UI language; the raw backend diagnostic never
 // reaches the card (matching the Official repo's PR #442 behavior).
 
-// Round-37 F3 (review #455): the ONE consent-failure marker string, mirroring
-// `scope::CONSENT_SYNC_FAILURE_MARKER` on the Rust side (both pinned by
-// consent_marker_frontend.test.mjs + the Rust emitter pins). The three JS
-// matchers import this instead of hardcoding the literal, so one-site drift
-// cannot survive the pin.
+// Round-37 F3 (review #455): the install channels' consent-failure marker,
+// mirroring `scope::CONSENT_SYNC_FAILURE_MARKER` on the Rust side (both pinned
+// by consent_marker_frontend.test.mjs + the Rust emitter pins). Since the
+// connect channels grew their own marker below, exactly one JS matcher still
+// imports this — the ima connect card, whose backend stays on install-side
+// default-off registration — instead of hardcoding the literal, so one-site
+// drift cannot survive the pin.
 export const CONSENT_SYNC_FAILURE_MARKER =
   'persisting their default-off consent state failed';
+
+// feat/connector-connect-grants-enable: the CONNECT channel's twin marker,
+// mirroring `scope::CONNECT_CONSENT_SYNC_FAILURE_MARKER`. The CLI connector
+// connect flow records an ENABLE grant, so its persist failure is fail-closed
+// (nothing was exposed; the connector stays off until reconnect) — the store
+// cards must key it to its own `connect_consent_persist_failed` copy, not the
+// install channels' "turn it off" guidance.
+export const CONNECT_CONSENT_SYNC_FAILURE_MARKER =
+  "persisting the connector's connect-enabled consent failed";
+
+// Round-9 review P2: the COMMIT stage's twin marker, mirroring
+// `scope::CONNECT_GRANT_COMMIT_FAILURE_MARKER`. A relied-upon grant's
+// token-clearing commit that fails to persist leaves the standing grant +
+// ledger effective — the connector REMAINS enabled — so this class keys to
+// its own "stays enabled — reconnect to secure it" copy and must NOT latch
+// the consent-failure banner (the enabled banner is accurate here, unlike
+// the fail-closed persist failure above).
+export const CONNECT_GRANT_COMMIT_FAILURE_MARKER =
+  "finalizing the connector's connect-enabled consent failed";
 
 // Stable machine-readable error codes for user-facing messages.
 // Backends attach a snake_case `code` (or prefix the message with `code: ...`);

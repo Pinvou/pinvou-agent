@@ -512,7 +512,7 @@ for (const language of ['zh', 'en', 'ja']) {
 // cli_data_access_disabled is dingtalk's org-level CLI block: only an org
 // admin can fix it, so the copy carries the remediation instead of the
 // generic retry advice.
-const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'cli_data_access_disabled', 'consent_persist_failed', 'unknown'];
+const connectorErrorCodes = ['runtime_prepare_failed', 'cli_install_failed', 'auth_start_failed', 'registration_failed', 'auth_failed', 'skills_enable_failed', 'cli_data_access_disabled', 'consent_persist_failed', 'connect_consent_persist_failed', 'unknown'];
 for (const language of ['zh', 'en', 'ja']) {
   for (const code of connectorErrorCodes) {
     const copy = dict[language].uiToolStore.connectorErrors[code];
@@ -537,6 +537,12 @@ for (const language of ['zh', 'en', 'ja']) {
     typeof dict[language].uiToolStore.connectorErrors.consent_persist_failed,
     'string',
     `${language}.uiToolStore.connectorErrors.consent_persist_failed must exist and not be empty`
+  );
+  // feat/connector-connect-grants-enable: the connect channel's fail-closed twin.
+  assert.equal(
+    typeof dict[language].uiToolStore.connectorErrors.connect_consent_persist_failed,
+    'string',
+    `${language}.uiToolStore.connectorErrors.connect_consent_persist_failed must exist and not be empty`
   );
 }
 // The render lookup must resolve own keys only: `constructor`/`toString` pass the

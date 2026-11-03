@@ -21,15 +21,23 @@ pub(super) async fn refresh_tools_and_broadcast(app: &AppHandle, pool: &EnginePo
 /// 引擎 → 隐藏这些工具。空 = 全开。
 /// 持久:用户关一次,该 scope 所有新对话/新窗口都继承,直到手动开回。
 /// `scope` = "plain"(普通会话,缺省)或 "code"(原生代码会话);两个 scope 独立。
+/// `toggled_ids` = 本次点击真正操作的 id(composer 一次切换传一个)。声明式
+/// 意图:列表里没有、但被点名的 id 是一次显式「打开」,在同一把锁的事务里提交
+/// 其认可的 standing connect grant 令牌,陈旧连接的失败补偿不再撤销用户的
+/// 新裁决(composer 快照过期时落盘与点击一致、无行差可推断,意图必须随写
+/// 携带)。缺省 None = 旧语义,不提交任何令牌。
 #[tauri::command]
 pub async fn set_disabled_connectors(
     connector_ids: Vec<String>,
+    toggled_ids: Option<Vec<String>>,
     scope: Option<String>,
     app: AppHandle,
     pool: State<'_, EnginePool>,
 ) -> Result<(), String> {
     let scope = parse_connector_scope(scope.as_deref())?;
-    crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids).await?;
+    let toggled_ids = toggled_ids.unwrap_or_default();
+    crate::features::marketplace::apply_disabled_connectors_for(scope, connector_ids, &toggled_ids)
+        .await?;
     // 连接器禁用影响其 companion skills 的可见性（组合目录排除集变化）：
     // 重写在线会话组合目录 + 热刷工具白名单 + 热刷 CLI 硬拦截规则集（execpolicy）。
     refresh_tools_and_broadcast(&app, pool.inner()).await;
@@ -257,12 +265,25 @@ use serde_json::Value;
 /// 规则集不热刷会让在跑引擎对刚连接连接器的技能脚本/CLI 拦截过期）。
 #[tauri::command]
 pub async fn refresh_connector_auth_gates(
+    app: AppHandle,
     pool: tauri::State<'_, crate::features::assistant::engine_pool::EnginePool>,
 ) -> Result<ConnectorAuthGateRefresh, String> {
-    let result = connector_cli_domain::refresh_connector_auth_gates().await?;
-    // 技能目录可能已增删 → 技能脚本 deny 规则（code 默认全禁已装技能）要按新目录重算。
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
+    // Round-9 review P2: the backfill materializes skill dirs, so a session
+    // composed BEFORE the connector connected must get the rewrite too — the
+    // send path's ensure only rebuilds an ABSENT dir. Full wrap-up (live
+    // sessions + disallowed + rulesets + cross-window broadcast), same as the
+    // manual enable's write path below.
+    //
+    // The wrap-up must run on the ERROR path too: the aggregate always runs
+    // every connector's gate to completion and reports only the first error,
+    // so a failed gate does not undo a sibling's already-persisted grant +
+    // materialization — an early `?` here would leave a running conversation
+    // with its pre-refresh catalog/rules while that connector is live and
+    // enabled. The aggregate verdict is still returned verbatim: this
+    // projects persisted state, it does not soften the failure.
+    let result = connector_cli_domain::refresh_connector_auth_gates().await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    Ok(result?)
 }
 
 async_command_passthrough!(feishu_domain, feishu_ensure_cli() -> Result<Value, String>);
@@ -282,10 +303,24 @@ async_command_passthrough!(feishu_domain, feishu_logout() -> Result<Value, Strin
 /// CLI hard-deny stale = fail-open). Mirrors the hot-reload pattern of
 /// `ima_connect`.
 #[tauri::command]
-pub async fn feishu_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = feishu_domain::feishu_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
+pub async fn feishu_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
+    let result = feishu_domain::feishu_apply_skills().await;
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    Ok(result?)
 }
 async_command_passthrough!(feishu_domain, feishu_skills_state() -> Result<Value, String>);
 
@@ -302,10 +337,24 @@ async_command_passthrough!(wecom_domain, wecom_logout() -> Result<Value, String>
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
 #[tauri::command]
-pub async fn wecom_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = wecom_domain::wecom_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
+pub async fn wecom_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
+    let result = wecom_domain::wecom_apply_skills().await;
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    Ok(result?)
 }
 async_command_passthrough!(wecom_domain, wecom_skills_state() -> Result<Value, String>);
 
@@ -322,10 +371,24 @@ async_command_passthrough!(dingtalk_domain, dingtalk_logout() -> Result<Value, S
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
 #[tauri::command]
-pub async fn dingtalk_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = dingtalk_domain::dingtalk_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
+pub async fn dingtalk_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
+    let result = dingtalk_domain::dingtalk_apply_skills().await;
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    Ok(result?)
 }
 async_command_passthrough!(dingtalk_domain, dingtalk_skills_state() -> Result<Value, String>);
 
@@ -342,10 +405,24 @@ async_command_passthrough!(tmeet_domain, tmeet_logout() -> Result<Value, String>
 /// 同 `feishu_apply_skills`（五轮评审 M-6）：技能落盘/禁用集同步后热刷
 /// execpolicy 规则集。
 #[tauri::command]
-pub async fn tmeet_apply_skills(pool: State<'_, EnginePool>) -> Result<Value, String> {
-    let result = tmeet_domain::tmeet_apply_skills().await?;
-    pool.refresh_permission_rulesets().await;
-    Ok(result)
+pub async fn tmeet_apply_skills(
+    app: AppHandle,
+    pool: State<'_, EnginePool>,
+) -> Result<Value, String> {
+    let result = tmeet_domain::tmeet_apply_skills().await;
+    // Round-9 review P2: connect enables skills, so an already-composed
+    // session must receive them — the send path's ensure only rebuilds an
+    // ABSENT dir, and the composer notify refreshes the menu only. Full
+    // wrap-up (live sessions + disallowed + rulesets + broadcast), the same
+    // delivery step the manual enable runs. The wrap-up must run on the
+    // ERROR path too (round-11 review P2): the commit-stage failure class
+    // (and the lost/pending-replacement reliance declines) returns Err AFTER
+    // materialized files and standing grant/ledger state persist — the
+    // connector remains enabled — so an early `?` would leave existing
+    // sessions with their pre-connect catalogs/rules. This projects the
+    // persisted state; the error verdict is returned verbatim below.
+    refresh_tools_and_broadcast(&app, pool.inner()).await;
+    Ok(result?)
 }
 async_command_passthrough!(tmeet_domain, tmeet_skills_state() -> Result<Value, String>);
 
