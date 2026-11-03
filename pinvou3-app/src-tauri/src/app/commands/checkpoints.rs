@@ -1585,10 +1585,6 @@ mod tests {
         &src[start..end]
     }
 
-    /// r22 R2 pin（production_body 模式，engine_pool.rs 同款）：三个破坏性/
-    /// 预览入口的命令体必须真的询问压缩闩——压缩不持 turn 预约，turn-active
-    /// 探针对它全盲；删掉任意一处栅栏即红（接线 pin，非仅判定体 pin）。
-    #[test]
     /// r43 P2-2/P2-1：undo 的哨兵登记接线钉 + 三处活暂记拒绝的插值钉——
     /// 删除 register_conversation_only_turn 调用（r43 MAJOR-2 点名的 GUI 侧
     /// 根因、CLI 侧已同修）或把拒绝格式参数改回 attempt 自身字段都须变红。
@@ -1630,6 +1626,12 @@ mod tests {
         );
     }
 
+    /// r22 R2 pin（production_body 模式，engine_pool.rs 同款）：三个破坏性/
+    /// 预览入口的命令体必须真的询问压缩闩——压缩不持 turn 预约，turn-active
+    /// 探针对它全盲；删掉任意一处栅栏即红（接线 pin，非仅判定体 pin）。
+    /// r43：本测试的 #[test] 曾在 r42-M4 测试插入时被粘连吞掉（test-registry
+    /// guard 的 x2 双注册 = 邻居属性被偷的信号），属性归属已复位。
+    #[test]
     fn destructive_checkpoint_gates_ask_the_compaction_latch() {
         let src = include_str!("checkpoints.rs");
         // Cut at the test module so the probe's own strings can never satisfy
