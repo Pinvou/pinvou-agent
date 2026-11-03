@@ -10,9 +10,13 @@
 //! `first_token_ms` / `request_ms`——引擎在请求派发点起表(含真实网络首字节,
 //! 首 token 以首个内容事件计,思考 delta 也算),是权威源。完整对按模型调用
 //! 逐条累加:TTFT 取首条完整对,生成窗口与该调用的 output_tokens 成对累加,
-//! 多调用轮(续跑/reprompt)分子分母同源求和;墙钟 `Instant` 重测发生在转发
-//! 通路上,含事件分发延迟,仅作引擎未上报任何完整对时的回落(usage 未上报 /
-//! 非流式 consult / 无内容流)。两组计时不同源不混拼。
+//! 多调用轮(续跑/reprompt)窗口与逐条配对的 tokens 同源求和;墙钟 `Instant`
+//! 重测发生在转发通路上,含事件分发延迟,仅作引擎未上报任何完整对时的回落
+//! (usage 未上报 / 非流式 consult / 无内容流)。两组计时不同源不混拼。
+//! 「分子分母同源」以引擎分子非零为前提:provider 只报输入不报输出时引擎
+//! 分子为 0,收尾分子回落轮级 usage、再退字符估算,分母仍取引擎窗口。
+//! 统计范围:引擎内 subagent worker 与自动压缩摘要的调用不走流式通路、
+//! 不发 `TurnUsage`(usage 走成本侧通道),不在本累加内。
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -130,7 +134,7 @@ impl SelfMetrics {
         output_tokens: u32,
     ) {
         if let Some(t) = self.inflight.lock().get_mut(session_id) {
-            // (Some, Some) 才是完整对——与 Option::zip 同判,但要同时用两个值算窗口。
+            // (Some, Some) 才是完整对(与 Option::zip 同判);元组解构以便同取两值算窗口。
             if let (Some(ttft_ms), Some(req_ms)) = (first_token_ms, request_ms) {
                 if t.engine_ttft_ms.is_none() {
                     t.engine_ttft_ms = Some(ttft_ms);
@@ -176,10 +180,12 @@ impl SelfMetrics {
                 // 计时源优先级：引擎 TurnUsage 字段是权威源 (first_token_ms 从
                 // 请求派发点起表,含真实网络首字节;request_ms 同钟收束于流结束,
                 // 两者相减即纯生成窗口)。无工具轮的多次模型调用各自成对累加窗口
-                // 与 per-call tokens,收尾求和——TPS 是跨调用真实均速,分子分母
-                // 同源。引擎一条完整对都没上报时(usage 未上报 / 非流式 consult /
-                // 无内容流)回落墙钟 Instant 重测;TTFT 与生成时长必须同源,不混拼
-                // 两套时钟。
+                // 与 per-call tokens,收尾求和——TPS 是跨调用真实均速,引擎分子
+                // 非零时分子分母同源(引擎分子为 0 时分子回落,见下方)。引擎一条
+                // 完整对都没上报时(usage 未上报 / 非流式 consult / 无内容流)
+                // 回落墙钟 Instant 重测;TTFT 与生成时长必须同源,不混拼两套时钟。
+                // 被取消的纯文本轮:TurnUsage 先于取消检查发出,截断的窗口与
+                // tokens 照常计入(真实部分测量,与原墙钟路径同形)。
                 let (ttft_s, gen_s) = match t.engine_ttft_ms {
                     Some(ttft_ms) => {
                         let ttft = ttft_ms as f64 / 1000.0;

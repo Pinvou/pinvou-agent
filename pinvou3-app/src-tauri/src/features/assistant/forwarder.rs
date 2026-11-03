@@ -1723,7 +1723,7 @@ pub(crate) fn spawn_event_forwarder(
                         );
                     }
                     #[cfg(not(feature = "benchmark-hooks"))]
-                    let _ = (usage, duration_ms);
+                    let _ = duration_ms;
                 }
                 Event::ToolGateDecision {
                     agent_id,
@@ -2293,13 +2293,14 @@ mod transcript_persist_pins {
         // 监控 TTFT/TPS 的引擎计时接线只有这一处。self_metrics 的单元测试只覆盖
         // 累加器本体——换位突变(request_ms 当 ttft)或删掉整行调用都让它们全绿,
         // 故在此钉死调用形状(参数顺序 = 引擎字段顺序 + per-call 输出 tokens)。
-        // 去空白后匹配:rustfmt 把超宽调用折成多行也不影响判定。
+        // 去空白后匹配且不依赖尾逗号:rustfmt 把超宽调用折成多行,或将来折回
+        // 单行(尾逗号消失)都不影响判定。
         let body = forwarder_body();
         let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
         assert_eq!(
             flattened
                 .matches(
-                    "m.on_engine_usage(&session_id,first_token_ms,request_ms,usage.output_tokens,);"
+                    "m.on_engine_usage(&session_id,first_token_ms,request_ms,usage.output_tokens"
                 )
                 .count(),
             1,
