@@ -2091,9 +2091,16 @@ function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedweb(
     const collections = results[3];
     const legacyCollection = results[4];
     const memory = results[5];
+    // tri-mode 子状态（reviewer P3）：ask_on_guardrail 必须随权威读取保留，
+    // 丢弃会让 mounted 只读指示在远端已关（OFF）时按缺省开（ON）显示；
+    // 缺键按后端 default_true 投影（旧负载不把开关翻成关）。
     state.modeState = mode.ok && mode.value
-      ? { mode: mode.value.mode || "yolo", multiAgent: !!mode.value.multi_agent }
-      : { mode: "yolo", multiAgent: false };
+      ? {
+        mode: mode.value.mode || "yolo",
+        multiAgent: !!mode.value.multi_agent,
+        askOnGuardrail: mode.value.ask_on_guardrail == null ? true : !!mode.value.ask_on_guardrail,
+      }
+      : { mode: "yolo", multiAgent: false, askOnGuardrail: true };
     state.activePersona = persona.ok && persona.value && !deletedPersonaIds.has(persona.value.id) ? persona.value : null;
     if (snapshot.ok && snapshot.value && Array.isArray(snapshot.value.collections)) {
       applyMountedCollections(snapshot.value);
@@ -4911,11 +4918,17 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
   async function toggleSuperPerm() { return pinvouSharedweb().toggleSuperPerm(); }
 
   // ── Mode state ───────────────────────────────────────────────────
-  // 会话级读取：await 挂起期间用户可能已切走，响应返回后必须校验发起时的
-  // sid 仍是 active，否则把结果定向写回 sid 自己的 buffer，不污染当前显示。
-  // 另加请求序号（modeSyncSeq 声明见文件顶部）：同一会话内并发读取乱序返回时，
-  // 旧响应不得覆盖新响应（A→B→A 快速切换时 #1 的慢响应覆盖 #3 的新值，审计；
-  // tauri 版 epoch 对齐）。权威写回一律 bump 该序号，见 applyAuthoritativeModeState。
+  // 后端 modeState 负载 → 前端形状的唯一映射（reviewer P3）：tri-mode 子状态
+  // ask_on_guardrail 必须随读取保留——此前各 mapper 丢弃该键，mounted 只读
+  // 指示对缺失值按缺省开（ON）投影，远端已选的 OFF 被显示成开启。缺键按
+  // 后端 default_true 投影（旧负载不把开关翻成关），读取失败兜底同样按开。
+  function mapModeState(ms) {
+    return {
+      mode: (ms && ms.mode) || "yolo",
+      multiAgent: !!(ms && ms.multi_agent),
+      askOnGuardrail: !ms || ms.ask_on_guardrail == null ? true : !!ms.ask_on_guardrail,
+    };
+  }
   async function syncModeState() {
     const sid = state.activeSessionId;
     if (!sid) {
@@ -4930,15 +4943,15 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
       if (seq !== modeSyncSeq) return; // 已有更新的读取发起，本响应陈旧
       if (state.activeSessionId !== sid) {
         runSyncOnSession(sid, function () {
-          state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+          state.modeState = mapModeState(ms);
         });
         return;
       }
-      state.modeState = { mode: ms.mode || "yolo", multiAgent: !!ms.multi_agent };
+      state.modeState = mapModeState(ms);
     } catch {
       if (seq !== modeSyncSeq) return;
       if (state.activeSessionId !== sid) return;
-      state.modeState = { mode: "yolo", multiAgent: false };
+      state.modeState = { mode: "yolo", multiAgent: false, askOnGuardrail: true };
     }
   }
 
@@ -4953,7 +4966,7 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
     // is what the backend resolves for a fresh unbound plain session.
     const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
-    return { mode: d || (boundDraft ? "plan" : "auto"), multiAgent: false };
+    return { mode: d || (boundDraft ? "plan" : "auto"), multiAgent: false, askOnGuardrail: true };
   }
   async function refreshModeDefaults() {
     try {
@@ -4992,6 +5005,8 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
         state.modeState = {
           mode: target,
           multiAgent: !!(state.modeState && state.modeState.multiAgent),
+          // 草稿跟随 lane 全局默认，无会话级子状态：按后端 default_true 投影。
+          askOnGuardrail: true,
         };
       }
     } catch (e) { addSystemItem(bt("switchModeFailed") + e); }

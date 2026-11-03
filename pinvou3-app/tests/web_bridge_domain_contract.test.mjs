@@ -45,6 +45,7 @@ const windowObject = {
   crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000000' },
   performance: { now: () => 0 },
   addEventListener() {},
+  removeEventListener() {},
   setTimeout,
   clearTimeout,
 };
@@ -146,6 +147,79 @@ assert.equal(
   'web setSessionMode must stay a no-op without a session id (entering Auto stays desktop-only)',
 );
 invokeResponse = async () => null;
+
+// 评审 P3：Web mode mappers 必须保留 ask_on_guardrail 子状态。此前
+// syncSessionPresentationState / syncModeState / applyModeFromState 丢弃
+// 该键，mounted 只读指示（composer-controls 对缺失值按缺省开投影）把远端
+// 已选的 OFF 显示成开启。运行时驱动一次会话切换（权威读取带 OFF）与一次
+// 权威写回（set_session_mode 返回带 OFF），断言 live modeState 保留子状态；
+// 再驱动一次读取失败，断言兜底投影按 default_true（未知→开，与 tauri 桥
+// 同口径）。随后源码钉住三个 mapper 的缺键投影形状。
+// 会话切换会经 loadSessionForClient 等待桌面能力快照（waitForWebInvoke
+// Capabilities）；测试宿主没有真实 client，直接声明能力就绪让门立即放行。
+// Web 载荷走分块 RPC（web_access_load_session_chunk，base64 JSON），宿主
+// 补 atob 并返回单块 eof 载荷。
+windowObject.PinvouWebClient = { desktopCapabilitiesReady: true };
+windowObject.atob = encoded => Buffer.from(String(encoded || ''), 'base64').toString('binary');
+const webAskSessionPayload = Buffer.from(
+  JSON.stringify({ metadata: { id: 'web-ask-sid' }, messages: [] }),
+  'utf8',
+).toString('base64');
+invokeResponse = async (command, args) => {
+  if (command === 'web_access_load_session_chunk') {
+    return {
+      offset: 0,
+      total: Buffer.from(JSON.stringify({ metadata: { id: args && args.id }, messages: [] }), 'utf8').length,
+      download_id: 'dl-web-ask',
+      data_base64: webAskSessionPayload,
+      eof: true,
+    };
+  }
+  if (command === 'get_mode_state') {
+    return { mode: 'auto', multi_agent: false, ask_on_guardrail: false };
+  }
+  return null;
+};
+await api.sessions.switchToSession('web-ask-sid');
+assert.equal(flat.getState().activeSessionId, 'web-ask-sid', '切换必须落 live 会话');
+{
+  const ms = flat.getState().modeState;
+  assert.equal(ms.askOnGuardrail, false,
+    'switch-presentation mapper must retain a remote ask_on_guardrail=false');
+  assert.equal(ms.mode, 'auto', 'switch-presentation mapper keeps the resolved mode');
+}
+invokeResponse = async command => {
+  if (command === 'set_session_mode') {
+    return { mode: 'auto', multi_agent: false, ask_on_guardrail: false };
+  }
+  if (command === 'get_mode_state') {
+    return { mode: 'auto', multi_agent: false, ask_on_guardrail: false };
+  }
+  return null;
+};
+await api.interaction.setSessionMode('web-ask-sid', 'auto');
+assert.equal(flat.getState().modeState.askOnGuardrail, false,
+  'authoritative modeState convergence must retain ask_on_guardrail=false');
+invokeResponse = async command => (command === 'get_mode_state'
+  ? Promise.reject(new Error('read failed'))
+  : null);
+await api.interaction.setSessionMode('web-ask-sid', 'yolo');
+assert.equal(flat.getState().modeState.askOnGuardrail, true,
+  'an unknown substate must project default-true (backend default_true), not OFF');
+invokeResponse = async () => null;
+{
+  const source = read('bridge.js');
+  for (const anchor of [
+    /function mapModeState\(ms\) \{[\s\S]{0,300}?askOnGuardrail: !ms \|\| ms\.ask_on_guardrail == null \? true : !!ms\.ask_on_guardrail/,
+    /state\.modeState = mode\.ok && mode\.value\s*\n\s*\? \{[\s\S]{0,200}?askOnGuardrail: mode\.value\.ask_on_guardrail == null \? true : !!mode\.value\.ask_on_guardrail[\s\S]{0,120}?: \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \}/,
+    /function applyModeFromState\(st\) \{[\s\S]{0,200}?state\.modeState = mapModeState\(st\);/,
+    /return \{ mode: d \|\| "yolo", multiAgent: false, askOnGuardrail: true \};/,
+    /catch \{[\s\S]{0,200}?state\.modeState = \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \};/,
+    /mode: target,\s*\n\s*multiAgent: !!\(state\.modeState && state\.modeState\.multiAgent\),\s*\n\s*\/\/ 草稿跟随 lane 全局默认，无会话级子状态：按后端 default_true 投影。\s*\n\s*askOnGuardrail: true,/,
+  ]) {
+    assert.match(source, anchor, `web mode mapper must keep the ask_on_guardrail projection: ${anchor}`);
+  }
+}
 
 snapshotReads = 0;
 const state = api.state.getMany(['sessions', 'settings']);
