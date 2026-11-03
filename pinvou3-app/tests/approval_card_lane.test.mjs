@@ -416,6 +416,182 @@ try {
       }
     }
 
+    // ── reviewer P2（评审 5749588942 / 5749912714）：窗口关闭回收不得早于
+    // 返回快照的消费 ── 3f8f6a4d1 把「释放 pin + 回收」放进读回程的
+    // finally，而 pending 的消费（approvalIsTombstoned 过滤）在其后：窗口外
+    // 未钉的老墓碑——正是回程要据以拦卡的证据——会在消费前被关窗回收挤出，
+    // 已决审批以活卡插回。时序：老墓碑（窗口外落、未钉、最老）在返回快照
+    // 里 → 在途窗口内同会话决议把 map 顶过 512（窗口内全被钉；老 id 自身
+    // 的重复决议在窗口内转钉且保持最老位）→ 关窗时释放 pin 后回收挤出最老
+    // 未钉 = 老墓碑 → 消费时查无墓碑。修复后：窗口（释放 pin + 回收）只在
+    // 最后一个在途快照的返回 pending 已被消费或作废之后关闭；读取失败 /
+    // 消费抛错仍由关闭 finally 兜底（错误路径回归见本块末）。
+    {
+      const makeSessionsApi = () => {
+        const sessionsSource = read('src', 'shared', 'bridge-shared-helpers.js') + '\n'
+          + read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
+        const sessionsRoot = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+        vm.runInContext(sessionsSource, vm.createContext({
+          window: sessionsRoot, globalThis: sessionsRoot, console, Date, String, setTimeout, clearTimeout,
+        }), { filename: 'approval-card-lane-sessions-order.js' });
+        return sessionsRoot.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions;
+      };
+      const baseDi = invokeImpl => ({
+        state: pinState, // 与 chat-events 共用同一 state：墓碑 / pin / 在途计数跨面共享
+        listen: null, // 不挂会话事件监听（工厂对非函数 listen 跳过注册）
+        notify() {},
+        bt: key => key,
+        timeStr: () => '12:00',
+        invoke: invokeImpl,
+        sessionStates: { s1: { loadedFromDisk: true, messages: [], chatItems: [], artifacts: [] } }, // 快路径缓冲
+        runSyncOnSession(_sid, callback) { callback(); },
+        addChatItem(item) { pinState.chatItems.push(item); },
+        addSystemItem() {},
+        turnUsageDirty: {},
+        scheduledRunSessionOwners: {},
+        personaPlaceholderTitles: {},
+        currentStreamText: '', currentStreamId: 0,
+        pendingAssistantText: '', pendingAssistantBlocks: [],
+        itemIdSeq: 0, toolMeta: {},
+        filterSessionArtifacts: list => list || [],
+        scheduleShellPoll() {},
+        syncModeState: () => Promise.resolve(),
+        syncActivePersona: () => Promise.resolve(),
+        syncMountedCollection: () => Promise.resolve(),
+        loadMemoryOverview: () => Promise.resolve(),
+        reconcileArtifacts() {},
+        resetPendingAssistant() {},
+        rerenderFromMessages() {},
+      });
+      const resetReplayState = () => {
+        pinState.approvalReplayTombstones = new Map();
+        pinState.approvalReplayPinnedTombstones = new Set();
+        pinState.approvalReplayInFlight = new Map();
+        pinState.chatItems.length = 0;
+        pinState.activeSessionId = null; // 快路径要求目标会话 != 当前会话
+      };
+      // 在途窗口内构造「>512 且全部被钉」的关窗前态：511 条窗口内决议入图
+      // 入钉（此时 map 512 不触发插入淘汰），老墓碑 ap-old 对自身 id 的重复
+      // 决议（resolve 回声收敛场景）在窗口内转钉且保持最老插入位，再 1 条
+      // 决议已无可淘汰的未钉条目 → map 513 全钉，只能靠关窗回收缩回。
+      const floodInWindow = (prefix, oldId) => {
+        for (let i = 0; i < 511; i++) {
+          laneEmit('chat:approval_resolved', { approval_id: `${prefix}-${i}`, decision: 'allow' });
+        }
+        laneEmit('chat:approval_resolved', { approval_id: oldId, decision: 'allow' });
+        laneEmit('chat:approval_resolved', { approval_id: `${prefix}-extra`, decision: 'allow' });
+        assert.equal(pinState.approvalReplayTombstones.size, 513,
+          '关窗前态：513 条全被钉（511 洪泛 + 老墓碑转钉 + 1 超额，插入淘汰无可淘汰项）');
+        assert.equal(pinState.approvalReplayPinnedTombstones.size, 513,
+          '关窗前态：窗口内全部墓碑被 pin（含老墓碑的窗口内重复决议）');
+      };
+      const snapshotFor = oldId => [
+        { approvalId: oldId, toolName: 'shell_exec', description: 'd' },
+        { approvalId: 'ap-live', toolName: 'write_file', description: 'd' },
+      ];
+
+      // 1) 最后一个在途回程（单快照窗口）：消费必须先于关窗回收——未修复
+      //    时本用例失败（复现评审探针：老墓碑被回收挤出后活卡插回）。
+      {
+        resetReplayState();
+        laneEmit('chat:approval_resolved', { approval_id: 'ap-old', decision: 'deny' });
+        assert.ok(pinState.approvalReplayTombstones.has('s1\u0000ap-old') &&
+          !pinState.approvalReplayPinnedTombstones.has('s1\u0000ap-old'),
+          '前置：窗口外老墓碑已落且未被钉');
+        const api = makeSessionsApi()(baseDi(async name => {
+          if (name === 'get_pending_approvals') {
+            floodInWindow('ap-flood-a', 'ap-old'); // 读在途：窗口内全部转钉
+            return snapshotFor('ap-old');
+          }
+          return null;
+        }));
+        const switched = await api.switchToSessionInternal('s1');
+        assert.equal(switched, true, '重放随快路径完成');
+        assert.ok(pinState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-live'),
+          '同快照的无墓碑条目照常插卡（证明消费块确实执行）');
+        assert.ok(!pinState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-old'),
+          '核心断言：关窗回收不得早于消费——老墓碑必须在消费时仍在场拦住活卡插回');
+        assert.ok(!pinState.approvalReplayInFlight.has('s1'), '最后回程必须清理在途计数');
+        assert.equal(pinState.approvalReplayTombstones.size, 512,
+          '消费后的关窗回收仍把 map 修剪回 512 上界（回收不丢，只是延后到消费之后）');
+        assert.equal(pinState.approvalReplayPinnedTombstones.size, 0, '关窗释放全部 pin');
+      }
+
+      // 2) 同 sid 双快照：前一快照仍在途（计数>0）时，本回程不得关窗——
+      //    消费照常、pin 保持、map 保持超限；关窗（释放+回收）只属于最后
+      //    一个在途回程（见 3)）。
+      {
+        resetReplayState();
+        laneEmit('chat:approval_resolved', { approval_id: 'ap-old', decision: 'deny' });
+        pinState.approvalReplayInFlight.set('s1', 1); // 更早的同会话快照仍在途
+        let reads = 0;
+        const api = makeSessionsApi()(baseDi(async name => {
+          if (name === 'get_pending_approvals') {
+            reads += 1;
+            if (reads === 1) {
+              floodInWindow('ap-flood-b', 'ap-old');
+              return snapshotFor('ap-old');
+            }
+          }
+          return null;
+        }));
+        const switched = await api.switchToSessionInternal('s1');
+        assert.equal(switched, true, '重放随快路径完成');
+        assert.ok(pinState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-live'),
+          '非最后回程的快照仍照常消费');
+        assert.ok(!pinState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-old'),
+          '非最后回程：窗口未关，老墓碑仍在场拦住活卡');
+        assert.equal(pinState.approvalReplayInFlight.get('s1'), 1,
+          '计数>0：窗口不关，清理留给最后的在途回程');
+        assert.equal(pinState.approvalReplayTombstones.size, 513,
+          '窗口未关：map 保持超限（不提前回收）');
+        assert.ok(pinState.approvalReplayPinnedTombstones.size > 0, '窗口未关：pin 保持');
+      }
+
+      // 3) 最后回程（2) 的窗口收口者）：消费先于关窗回收，随后计数清零、
+      //    释放 pin、回收修剪回上界。
+      {
+        resetReplayState();
+        laneEmit('chat:approval_resolved', { approval_id: 'ap-old', decision: 'deny' });
+        const api = makeSessionsApi()(baseDi(async name => {
+          if (name === 'get_pending_approvals') {
+            floodInWindow('ap-flood-c', 'ap-old');
+            return snapshotFor('ap-old');
+          }
+          return null;
+        }));
+        const switched = await api.switchToSessionInternal('s1');
+        assert.equal(switched, true, '重放随快路径完成');
+        assert.ok(!pinState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-old'),
+          '最后回程：消费先于关窗回收，老墓碑拦住活卡插回');
+        assert.ok(pinState.chatItems.some(item => item.type === 'approval' && item.approvalId === 'ap-live'),
+          '最后回程的快照照常消费');
+        assert.ok(!pinState.approvalReplayInFlight.has('s1'), '最后回程清理在途计数');
+        assert.equal(pinState.approvalReplayTombstones.size, 512, '关窗回收修剪回 512 上界');
+        assert.equal(pinState.approvalReplayPinnedTombstones.size, 0, '关窗释放全部 pin');
+      }
+
+      // 4) 错误路径：读取抛错（pending 作废）也必须关窗——释放 pin + 回收
+      //    照旧，修复不得把窗口清理弄丢（try 体内提前 return 也要走 finally）。
+      {
+        resetReplayState();
+        const api = makeSessionsApi()(baseDi(async name => {
+          if (name === 'get_pending_approvals') {
+            floodInWindow('ap-flood-d', 'ap-never');
+            throw new Error('bridge read failed');
+          }
+          return null;
+        }));
+        const switched = await api.switchToSessionInternal('s1');
+        assert.equal(switched, true, '读取失败不得阻塞会话切换');
+        assert.equal(pinState.chatItems.filter(item => item.type === 'approval').length, 0,
+          '作废快照不插任何卡');
+        assert.ok(!pinState.approvalReplayInFlight.has('s1'), '错误路径必须关闭在途窗口');
+        assert.equal(pinState.approvalReplayTombstones.size, 512, '错误路径仍回收修剪回 512 上界');
+        assert.equal(pinState.approvalReplayPinnedTombstones.size, 0, '错误路径仍释放 pin');
+      }
+    }
+
     // ── 宿主 P2：未知终态处置（decision "unknown"）——主车道运行时 ──
     // 后端未知终态臂（ack + settle 双窗）摘除登记并广播 resolved-shaped
     // 事件、decision "unknown"。挂载面必须把卡渲染成不可决的未知态

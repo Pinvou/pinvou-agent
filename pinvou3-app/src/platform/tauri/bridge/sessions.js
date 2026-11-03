@@ -812,8 +812,13 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
   // chat-events.tombstoneApproval records the key into
   // approvalReplayPinnedTombstones and skips it at eviction; this side
   // releases the pins (by sid prefix) once the window closes (the last
-  // outstanding snapshot returned), so the pin set never accumulates
-  // across windows.
+  // outstanding snapshot returned AND its returned pending consumed or
+  // invalidated), so the pin set never accumulates across windows. The
+  // window must stay open through consumption: closing it at the read's
+  // return - before the approvalIsTombstoned filter below runs - let an
+  // in-window capacity reclaim evict the very tombstone the returned
+  // snapshot was about to consult (reviewer P2, reviews 5749588942 /
+  // 5749912714), resurrecting a decided approval as an active card.
   function releaseApprovalReplayPins(sid) {
     const pinned = state.approvalReplayPinnedTombstones;
     if (!pinned) return;
@@ -828,7 +833,11 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
   // shrink it back. Once this window's pins are released, the formerly
   // pinned entries are evictable again - trim the oldest unpinned entries
   // until the map is back within the cap (pins held by other sids' live
-  // windows stay protected).
+  // windows stay protected). Ordering invariant (reviewer P2): this only
+  // fires after the last outstanding snapshot's returned pending has been
+  // consumed or invalidated - reclaiming while the return was still
+  // outstanding let the trim delete the unpinned pre-window tombstone the
+  // pending was about to be filtered against.
   function reclaimApprovalReplayTombstones() {
     const map = state.approvalReplayTombstones;
     if (!map) return;
@@ -850,6 +859,38 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       pending = await invoke("get_pending_approvals", { sessionId: sid }) || [];
     } catch {
       pending = null; // best-effort recovery: a read failure must not block the session switch
+    }
+    // 窗口关闭序（评审 P2）：返回的 pending 必须先被消费（或作废），最后
+    // 一个在途回程才能关窗（释放 pin + 回收）。关窗放在消费段的 finally：
+    // 读取失败（pending 为 null）、终态栅栏作废、消费/notify 抛错，都仍会
+    // 经过这里关窗，错误路径的清理不丢。
+    try {
+      if (!pending || !pending.length) return;
+      if (approvalTerminalSeq(sid) !== terminalFence) return;
+      let changed = false;
+      runSyncOnSession(sid, function () {
+        pending.forEach(function (entry) {
+          const approvalId = String(entry && entry.approvalId || "");
+          if (!approvalId || hasApprovalChatItem(approvalId)) return;
+          if (approvalIsTombstoned(sid, approvalId)) return;
+          addChatItem({
+            type: "approval",
+            approvalId,
+            toolName: String(entry.toolName || ""),
+            description: String(entry.description || ""),
+            intentSummary: entry.intentSummary == null ? "" : String(entry.intentSummary),
+            input: entry.input === undefined ? null : entry.input,
+            forcePrompt: !!entry.forcePrompt,
+            resolved: false,
+            cardState: "active",
+            submitting: false,
+            statusLabel: "",
+            time: timeStr(),
+          });
+          changed = true;
+        });
+      });
+      if (changed) notify();
     } finally {
       const remaining = (state.approvalReplayInFlight.get(flightKey) || 1) - 1;
       if (remaining <= 0) {
@@ -860,32 +901,6 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
         state.approvalReplayInFlight.set(flightKey, remaining);
       }
     }
-    if (!pending || !pending.length) return;
-    if (approvalTerminalSeq(sid) !== terminalFence) return;
-    let changed = false;
-    runSyncOnSession(sid, function () {
-      pending.forEach(function (entry) {
-        const approvalId = String(entry && entry.approvalId || "");
-        if (!approvalId || hasApprovalChatItem(approvalId)) return;
-        if (approvalIsTombstoned(sid, approvalId)) return;
-        addChatItem({
-          type: "approval",
-          approvalId,
-          toolName: String(entry.toolName || ""),
-          description: String(entry.description || ""),
-          intentSummary: entry.intentSummary == null ? "" : String(entry.intentSummary),
-          input: entry.input === undefined ? null : entry.input,
-          forcePrompt: !!entry.forcePrompt,
-          resolved: false,
-          cardState: "active",
-          submitting: false,
-          statusLabel: "",
-          time: timeStr(),
-        });
-        changed = true;
-      });
-    });
-    if (changed) notify();
   }
 
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
