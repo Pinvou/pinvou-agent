@@ -1020,6 +1020,115 @@ async function connectWithCapabilities(events, listener) {
     'a young CLOSING socket must keep its full wedge window');
 }
 
+// Round-16 复审 MAJOR-1:救援把 socket 引用摘除后,其 close 事件可能在
+// 后继周期已经 join 协商完成之后才送达。晚到的 close 不得清当前周期的
+// 旗标、不得再排重连、更不得把健康后继打回未协商态(否则下一个入站
+// 事件撞上 !desktopCapabilitiesReady 就被 processRemoteEvent 判成
+// incompatible_desktop 永久关门——修复前的 probe 端到端复现,身份门是
+// 唯一闸口)。
+{
+  const late = bootClient();
+  const lateClient = late.window.PinvouWebClient;
+  await lateClient.policyPromise;
+  const events = [];
+  await lateClient.listen('chat:delta', (event) => events.push(event));
+  lateClient.markFrontendReady();
+  await Promise.resolve();
+  lateClient.markStateReady();
+
+  const deadSocket = late.MockWebSocket.instances[0];
+  deadSocket.open();
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  lateClient.lastInboundAt = Date.now();
+
+  // 静默掉链:socket 进入 CLOSING 且 close 事件永不到达,看门狗救援。
+  deadSocket.readyState = late.MockWebSocket.CLOSING;
+  lateClient._livenessCheck();
+  lateClient.closingStartedAt = Date.now() - 46_000;
+  lateClient._livenessCheck();
+  assert.equal(lateClient.socket, null, 'the wedged socket must be rescued');
+  takeReconnectTimer(late.timers).callback();
+
+  // 后继连上并完成全部协商(joined + capability snapshot)。
+  const successor = late.MockWebSocket.instances[1];
+  successor.open();
+  successor.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test_b',
+    desktop_connected: true,
+  });
+  successor.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_b',
+    seq: 0,
+    snapshot: {
+      capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] },
+    },
+  });
+  assert.equal(lateClient.joined, true, 'the successor cycle must be fully joined');
+  assert.equal(lateClient.desktopCapabilitiesReady, true,
+    'the successor cycle must have negotiated capabilities');
+
+  // 旧 socket 的 close 事件此刻才送达:必须被身份门整单忽略。
+  deadSocket.emit('close', {});
+  assert.equal(lateClient.socket, successor,
+    'a late close of a rescued socket must not detach its successor');
+  assert.equal(lateClient.joined, true,
+    'a late close of a rescued socket must not clobber the successor join state');
+  assert.equal(lateClient.desktopCapabilitiesReady, true,
+    'a late close of a rescued socket must not wipe negotiated capabilities');
+  assert.equal(lateClient.leaseId, 'lease_test_b',
+    'a late close of a rescued socket must not clear the successor lease');
+  assert.equal(late.timers.filter(timer => timer.delay < 10_000).length, 0,
+    'a late close of a rescued socket must not schedule a second reconnect');
+
+  // 后继依然健康:入站事件照常派发,不触发 incompatible_desktop 永久关门。
+  successor.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_b',
+    seq: 1,
+    payload: { text: 'after-late-close' },
+  });
+  await lateClient.eventDispatch;
+  assert.equal(lateClient.closedPermanently, false,
+    'a healthy successor must never be closed as incompatible_desktop by a stale close');
+  assert.equal(events.length, 1, 'the successor must keep dispatching inbound events');
+}
+
+// Round-16 复审:CLOSED 态与 CLOSING 同楔——close 事件可能永远不会送达
+// (浏览器未交付即回收),同一 wedge 窗口后同样必须救援,而不是永久忽略。
+{
+  const closed = bootClient();
+  const closedClient = closed.window.PinvouWebClient;
+  await closedClient.policyPromise;
+  const closedSocket = closed.MockWebSocket.instances[0];
+  closedSocket.open();
+  closedClient.lastInboundAt = Date.now();
+  closedSocket.readyState = closed.MockWebSocket.CLOSED;
+
+  closedClient._livenessCheck();
+  assert.equal(closedClient.closingStartedAt > 0, true,
+    'the wedge clock must be recorded for a CLOSED socket too');
+  closedClient.closingStartedAt = Date.now() - 46_000;
+  closedClient._livenessCheck();
+  assert.equal(closedClient.socket, null,
+    'a CLOSED socket wedged past the window must be dropped like CLOSING');
+  takeReconnectTimer(closed.timers).callback();
+  assert.equal(closed.MockWebSocket.instances.length, 2,
+    'the CLOSED rescue must funnel through the ordinary backoff reconnect');
+}
+
 // 页面重新可见：未连接时立即重连；不得凭空丢弃健康的 OPEN 连接（后台标签页
 // 定时器被节流，唤醒后的存活判断交给看门狗与 online 事件）。
 {

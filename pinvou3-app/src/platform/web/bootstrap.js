@@ -303,7 +303,15 @@
       });
       socket.addEventListener("message", (event) => this.handleMessage(event.data, socket));
       socket.addEventListener("close", () => {
-        if (this.socket === socket) this.socket = null;
+        // Round-16 复审 MAJOR-1:晚到的 close 只许处置它自己的 socket。
+        // CLOSING/CLOSED 救援会把 socket 引用先行摘除(this.socket=null),
+        // 其 close 事件因此可能在后继周期已经 join 之后才送达;若此时仍
+        // 无条件清旗标/再排重连,健康后继会被打回未协商态——下一个入站
+        // 事件撞上 !desktopCapabilitiesReady 就被 processRemoteEvent 判成
+        // incompatible_desktop 永久关门(probe 端到端复现)。身份不符的
+        // close 是纯噪声:旗标属于当前周期,与这颗旧 socket 无关。
+        if (this.socket !== socket) return;
+        this.socket = null;
         this.joined = false;
         this.desktopOnline = false;
         this.desktopCapabilitiesReady = false;
@@ -316,6 +324,9 @@
         if (!this.closedPermanently) this.scheduleReconnect("连接已断开，正在重试…");
       });
       socket.addEventListener("error", () => {
+        // Round-16 复审:与 close 处理器同一身份门——被救援摘除的 socket
+        // 晚到的 error 同样是噪声,不得把后继周期的旗标/投机计数打脏。
+        if (this.socket !== socket) return;
         // 看门狗/网络恢复的投机关闭在半开 socket 上会先触发 error(部分
         // 浏览器把失败的关闭握手报成 error+close):这与自然死亡不同——
         // 验证尚未开始,既不能计入投机失败,也不能提前点亮 connecting,
@@ -406,13 +417,21 @@
         try { this.socket.close(); } catch { /* already closing */ }
         return;
       }
-      // Round-15 复审:CLOSING 态此前被永久忽略——投机 close() 在静默掉
-      // 的链路上(NAT 超时、无 online 事件)可能永远收不到 close 事件,
-      // 引擎的 closing-handshake 超时差异让「已连接但死链路」楔在客户端
-      // 自己的 45s/120s 常量之外。与 CONNECTING 楔口同一救援:超过同一
-      // 窗口仍在 CLOSING,丢弃 socket 引用并走普通退避重连(非投机:
-      // 该 socket 从未证明存活)。
-      if (this.socket.readyState === WebSocket.CLOSING) {
+      // Round-15 复审:CLOSING/CLOSED 态此前被永久忽略——投机 close() 在
+      // 静默掉线的链路上(NAT 超时、无 online 事件)可能永远收不到 close
+      // 事件,引擎的 closing-handshake 超时差异让「已连接但死链路」楔在
+      // 客户端自己的 45s/120s 常量之外。与 CONNECTING 楔口同一救援:超过
+      // 同一窗口仍在 CLOSING/CLOSED,丢弃 socket 引用并走普通退避重连。
+      // 语义与「close 事件已送达」的投机路径严格同构(round-16 复审:原
+      // 注释的「非投机」与实现不符,按真实语义改写)——被救 socket 从未
+      // 证明存活,其死既不计投机失败也不清 speculativeReconnect;后继
+      // 周期自己的 join 验证决定 UI 是否走出 connected。投机周期内
+      // scheduleReconnect 的文案抑制是投机语义本身,与送达路径一致;
+      // 只有后继自己验证失败(close 先于 join ack 送达)才会计数升级。
+      if (
+        this.socket.readyState === WebSocket.CLOSING
+        || this.socket.readyState === WebSocket.CLOSED
+      ) {
         if (!this.closingStartedAt) {
           this.closingStartedAt = Date.now();
           return;
