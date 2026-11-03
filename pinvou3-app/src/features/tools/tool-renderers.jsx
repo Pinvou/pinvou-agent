@@ -731,10 +731,15 @@ const ToolOutput = ({ item, t }) => {
     // 同组静默放行，grouping key 作用域）/ deny（本会话对该确切操作记住
     // 拒绝，exact approval key 作用域）。乐观提交态与终态由 bridge
     // （interaction.decideApproval）写回 item；这里只按 item 渲染。
+    // full = 完整原文（评审 P2：审批前必须能查看完整的较长输入，不能只看 400 字符前缀）。
+    // 与 CodexAcpView 的 nativeApprovalInputView 保持同一规则——两处渲染语义一致。
     const approvalInputView = (input) => {
       if (input == null) return null;
       if (typeof input === 'string') {
-        return { pre: input.length > 400 ? `${input.slice(0, 400)}…` : input };
+        if (input.length > 400) {
+          return { pre: `${input.slice(0, 400)}…`, full: input };
+        }
+        return { pre: input };
       }
       if (typeof input !== 'object') return { pre: String(input) };
       const keys = Object.keys(input);
@@ -748,7 +753,10 @@ const ToolOutput = ({ item, t }) => {
       }
       let text;
       try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
-      return { pre: text.length > 400 ? `${text.slice(0, 400)}…` : text };
+      if (text.length > 400) {
+        return { pre: `${text.slice(0, 400)}…`, full: text };
+      }
+      return { pre: text };
     };
     const ApprovalInputBlock = ({ inputView, t }) => {
       if (!inputView) return null;
