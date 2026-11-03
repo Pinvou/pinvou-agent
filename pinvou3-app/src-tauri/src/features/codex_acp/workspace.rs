@@ -1,4 +1,7 @@
 // architecture-guard: allow-target-cfg -- the cfg(unix)-gated test fixtures in this file share one non-portable shape: a real symlink. The round-12 baseline-gate convergence pin, the round-48 untracked-diff regression (refuses an escaping link, reads a local one canonically), and the round-51 fingerprint/baseline pins (a dirty symlink→regular-file must be skipped, never hashed through, and the tracked-ness oracle must answer literal paths so a glob-metacharacter filename cannot alias a tracked file) all need std::os::unix::fs::symlink or a `*`-bearing filename that Windows cannot express; the semantics under test are platform-independent, only the fixtures cannot be.
+// Round-15 复审:例外现在同时覆盖测试模块内 macOS 门控的 APFS 大小写折叠
+// 行为钉(case_variant_spellings_are_blocked_end_to_end)——该钉在非 macOS
+// 平台 trivially-true,门控而非静默全绿。
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -1114,6 +1117,10 @@ pub(super) fn resolve_workspace_references(
 }
 
 pub fn resolve_workspace_file(root: &Path, relative_path: &str) -> Result<PathBuf> {
+    // Round-15 复审(记录桌面豁免):本解析与 resolve_workspace_resource 不做
+    // 凭据组件检查——调用点(open/reveal/resource)全部桌面命令,内容进本
+    // 地外部应用/阅读器而非模型上下文,手机不可达;Web 侧一律走
+    // preview/search/diff 的双腿策略车道。
     let relative = normalize_relative_path(relative_path)?;
     resolve_existing_path(root, &relative, false)
 }
