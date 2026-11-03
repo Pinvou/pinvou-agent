@@ -186,7 +186,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 # 6→8 公开签名零变化，watcher.rs / file_watcher.rs 源码无需改动。
 notify = "8"
 
-# 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重（docs/本地知识底座-产品形态与架构.md）
+# 本地知识底座 L0：全系统元数据索引 + 秒搜 + 去重
 # rusqlite bundled —— 自带 SQLite + FTS5（名/路径秒搜），不依赖系统 libsqlite，
 # 对 .deb 离线分发友好（与 file_ingest 二进制依赖降 recommends 的思路一致）。
 rusqlite = { version = "0.40.2", features = ["bundled"] }

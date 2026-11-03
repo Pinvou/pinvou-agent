@@ -1317,7 +1317,7 @@ pub struct ExportedSessionArchive {
 }
 
 /// Sanitize the archive default file name: keep only the base file name,
-/// strip any existing extension, and reject control and path-sensitive
+/// strip an existing `.tar.xz` suffix, and reject control and path-sensitive
 /// characters; abnormal input falls back to
 /// `pinvou-session-<first 8 chars of id>.tar.xz` (the fallback stem keeps
 /// only `[A-Za-z0-9_-]`, matching the upstream valid character set of

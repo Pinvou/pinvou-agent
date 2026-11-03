@@ -1,0 +1,13 @@
+{
+  "system": "Linux",
+  "kernel": "6.17.0-1026-nvidia",
+  "architecture": "aarch64",
+  "logical_cpus": 20,
+  "memory_kib": {
+    "MemTotal": 127600752,
+    "SwapTotal": 83886072
+  },
+  "gpu": [
+    "NVIDIA GB10, [N/A], 580.159.03"
+  ]
+}

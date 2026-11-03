@@ -458,7 +458,6 @@ def main() -> int:
     if not all_records:
         stats.add_warning("查询完成，但未得到任何记录")
 
-    # 从原始记录中提取每个用户的考勤组名称
     group_name_map = cmn.extract_group_names_from_records(all_records, user_ids)
 
     rows_dict = aggregate_daily(all_records, columns, user_ids, user_name_map, stats)

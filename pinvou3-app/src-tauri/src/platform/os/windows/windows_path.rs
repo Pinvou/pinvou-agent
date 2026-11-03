@@ -88,8 +88,9 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // namespace is case-insensitive, so the prefix match itself must fold
     // too: a lowercase `\\?\unc\…` spelling is the same share as the
     // uppercase form (Round-15 复审 F3;此前字节精确 strip 只漏判成不同
-    // key,fail-closed 方向).
+    // key,fail-closed 方向)。
     let folded_prefix = path.to_ascii_lowercase();
+    let verbatim = folded_prefix.starts_with(r"\\?\unc\") || folded_prefix.starts_with(r"\\?\");
     let stripped = if folded_prefix.starts_with(r"\\?\unc\") {
         format!(r"\\{}", &path["\\\\?\\UNC\\".len()..])
     } else if folded_prefix.starts_with(r"\\?\") {
@@ -107,7 +108,56 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // 限于 grant 嵌套判定把一个异拼目录当成已授予根(后续操作落在新目录
     // 上,不泄露原根内容);完美模拟 $UpCase 需要 std 之外的简单大小写映
     // 射,残留按已接受取舍记录。
-    super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"))
+    let folded = super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"));
+    if !has_win32_normalization_sensitive_component(path) {
+        return folded;
+    }
+    // The prefix fold above is only sound while that equivalence holds.
+    // Win32 normalization strips a trailing `.` (or space) from every PLAIN
+    // path component before resolution, so the plain spelling
+    // `...\folder.\report.txt` resolves to `...\folder\report.txt`, while
+    // the verbatim spelling keeps the literal `folder.` directory — two
+    // different files that must not share one identity key, or key-based
+    // dedup (`unique_existing_files` knowledge-import roots, grant/binding
+    // identity matches) silently drops one of them. Mirror the OS: the
+    // plain spelling is keyed by its NORMALIZED form (components stripped),
+    // so plain dotted/spaced names compare equal to their resolved plain
+    // spelling exactly as Win32 resolves them; the verbatim spelling is
+    // literal, so its key keeps the unstripped components under a `\\?/`
+    // namespace marker that no plain key can produce. (Round-15 fix wave
+    // reconcile:the namespace guard合入本波的共享折叠表层——两个方向
+    // 互不削弱。)
+    if verbatim {
+        return format!(r"\\?/{folded}");
+    }
+    let normalized = stripped
+        .split(['\\', '/'])
+        .map(|component| {
+            if component == "." || component == ".." {
+                component.to_string()
+            } else {
+                component.trim_end_matches(['.', ' ']).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    super::super::interface::volume_fold_spelling(&normalized)
+}
+
+/// Whether any component's spelling is rewritten by Win32 path
+/// normalization on resolution (a trailing `.` or trailing space): for
+/// those paths the verbatim `\\?\` prefix changes meaning instead of only
+/// skipping redundant parsing, so `filesystem_path_identity_key` must not
+/// fold the plain and verbatim spellings together. `.`/`..` navigation
+/// components are excluded — they are lexical, never trailing-dot names,
+/// and a verbatim spelling of one resolves to nothing rather than to a
+/// distinct file.
+fn has_win32_normalization_sensitive_component(path: &str) -> bool {
+    path.split(['\\', '/']).any(|component| {
+        component != "."
+            && component != ".."
+            && (component.ends_with('.') || component.ends_with(' '))
+    })
 }
 
 /// NTFS 默认大小写不敏感:组件前缀比较与 `path_component_eq` 同用折叠原语。
@@ -781,6 +831,81 @@ mod tests {
             filesystem_path_identity_key(r"C:/Users/pinvou/project"),
             plain,
             "forward separators still fold"
+        );
+    }
+
+    #[test]
+    fn identity_key_keeps_namespace_spellings_distinct_for_sensitive_components() {
+        // Negative regression for the fold that
+        // `identity_key_folds_verbatim_prefixes_to_the_plain_spelling`
+        // pins for ordinary paths. Win32 normalization strips a trailing
+        // `.`/space from every PLAIN component, so the plain spelling
+        // `...\folder.\report.txt` resolves to `...\folder\report.txt`
+        // while the verbatim `\\?\...\folder.\report.txt` keeps the
+        // literal `folder.` directory — two different files. The prefix
+        // fold must NOT collapse the namespace spellings once such a
+        // component appears, or key-based dedup (`unique_existing_files`
+        // import roots, grant/binding identity) silently drops one source.
+        let plain_sensitive = filesystem_path_identity_key(r"C:\data\import\folder.\report.txt");
+        let verbatim_sensitive =
+            filesystem_path_identity_key(r"\\?\C:\data\import\folder.\report.txt");
+        assert_ne!(
+            plain_sensitive, verbatim_sensitive,
+            "plain and verbatim spellings of a trailing-dot path denote different files"
+        );
+        // The plain spelling is keyed by its NORMALIZED form: Win32 strips
+        // the trailing `.`/space before resolution, so the dotted spelling
+        // and the dotless spelling are one file and must share one key
+        // (mutation pin for the plain-side normalization — losing it would
+        // over-split dedup for the same file).
+        assert_eq!(
+            filesystem_path_identity_key(r"C:\data\import\folder.\report.txt"),
+            filesystem_path_identity_key(r"C:\data\import\folder\report.txt"),
+            "plain dotted spelling resolves to the dotless name — one file, one key"
+        );
+        assert_eq!(
+            filesystem_path_identity_key(r"C:\data\import\folder \report.txt"),
+            filesystem_path_identity_key(r"C:\data\import\folder\report.txt"),
+            "plain trailing-space spelling resolves to the stripped name — one file, one key"
+        );
+        // Within one namespace the fold still applies: case and separators
+        // fold exactly as before, only the namespace forms stay apart.
+        assert_eq!(
+            filesystem_path_identity_key(r"C:\DATA\import\folder.\report.txt"),
+            plain_sensitive,
+            "case folding still applies to the plain spelling"
+        );
+        assert_eq!(
+            filesystem_path_identity_key(r"\\?\C:/data/import/folder./report.txt"),
+            verbatim_sensitive,
+            "separator folding still applies to the verbatim spelling"
+        );
+        // The guard is component-targeted: a verbatim spelling of an
+        // ordinary path (no trailing dot/space) keeps folding onto the
+        // plain key — that equivalence really is OS-guaranteed.
+        assert_eq!(
+            filesystem_path_identity_key(r"\\?\C:\data\import\folder\report.txt"),
+            filesystem_path_identity_key(r"C:\data\import\folder\report.txt"),
+            "ordinary paths keep the plain/verbatim fold"
+        );
+        // Trailing-space components are equally normalization-sensitive.
+        assert_ne!(
+            filesystem_path_identity_key(r"C:\data\import\folder \report.txt"),
+            filesystem_path_identity_key(r"\\?\C:\data\import\folder \report.txt"),
+            "trailing-space components keep the namespace forms distinct too"
+        );
+        // UNC spellings get the same namespace distinction.
+        assert_ne!(
+            filesystem_path_identity_key(r"\\server\share\folder.\report.txt"),
+            filesystem_path_identity_key(r"\\?\UNC\server\share\folder.\report.txt"),
+            "verbatim UNC spellings of sensitive paths stay distinct from plain UNC"
+        );
+        // `.`/`..` navigation components are not trailing-dot names: they
+        // must not flip a path into the marked verbatim namespace.
+        assert_eq!(
+            filesystem_path_identity_key(r"\\?\C:\data\.\folder\..\folder\report.txt"),
+            filesystem_path_identity_key(r"C:\data\.\folder\..\folder\report.txt"),
+            "navigation components are not normalization-sensitive names"
         );
     }
 

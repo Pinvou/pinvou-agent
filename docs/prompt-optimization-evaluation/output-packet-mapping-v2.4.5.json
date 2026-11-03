@@ -1,0 +1,5428 @@
+{
+  "6f267b08928325c1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "4e94ebd727ee614d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "e8eb215ee29b7bc7": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "c81c6a0789252e3f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "d7f6d0f302da391c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "0d2170c630425718": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "32abbbd7522eba8d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "07d161cdafa57680": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "53248baaf6252413": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "cb2ec64c9cdb6de6": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "ebcefe2a8da40131": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "5be2db023fe1edbd": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "ff68c7a1f9153af2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "714fda6c60d34a05": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "515a712ac5eb0132": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "e45e8c31a1e91991": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "233b000211ac609a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "449f200c24df5219": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "5442c8a4b06b4bff": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "2454536a3880ca04": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "faf7dc5abbccb72b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "f9308f7b0bbf0108": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "18e54741dd69ef59": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "30d24081ff8a8614": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "1ffabbcc80660526": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "1ba422368e6325ed": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "93975f1e66c4d86f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "faab550452c87d2d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "daa74bdc1248e449": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "json_output",
+      "turn": 0
+    }
+  ],
+  "088c93d90230dcdf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "f937391c2b52165a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "726b64e0c6b364e4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "8c24648473ea125b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "e9a2c97c2deba2a1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "2a75e4e99c81c8cb": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "3f15023634d3bbb4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "b73add8d8d52f37e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "335bc9fb734a1d16": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "9b66f33623fedbb3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "e3a4f4779d05d85b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "4ecc5fdc16b10f3c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "124cd5a2ec7aa869": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "25b580a5433d9364": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "0368851343c457f0": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "e3a4172c0b56aadf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "d04fde960f646bbf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "2154487894b92989": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "7823f315f3118348": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "json_escape",
+      "turn": 0
+    }
+  ],
+  "6e0e9cbc9ee91c30": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill_format",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill_format",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "5ee766f9a20b592f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "da49dacef4a6237d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "34b98c12f6197d15": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "84f49e33aec9300f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "relative_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "relative_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "af7261a125b94731": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "relative_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "0a8d68e56e7ae772": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "absolute_requested",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "absolute_requested",
+      "turn": 0
+    }
+  ],
+  "922ddb674e244511": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "absolute_json",
+      "turn": 0
+    }
+  ],
+  "b15fa5fe7efa4d23": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "absolute_json",
+      "turn": 0
+    }
+  ],
+  "d6cafe39bb6d3942": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "943570e30e5cdeb9": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "18cf7d9fefc2cd6f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "54fd4bd28e8990e2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "f733fb62ae72fa09": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "270f6067a434b9dd": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "4f78dcdc0c0b5220": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "0ee5d6ab2b2852bb": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "7ba892b9ae8d64cf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "c0fbc160c2437231": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "2bf11bcb64c14881": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "3b86fcad5bbca110": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "d19d17928d8ac01e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "cb4539e42d4b2b2b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "5927740635cd0831": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "423d9a23f6ba55c4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "33828116257ff8b2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "14b93f9e05d0bd9d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "a6b6b16bb4912c4c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "50e232ed27bcc3ae": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 1
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "11c5b8b2cab82869": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "ab7a9065a589ed48": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "3a25205c2ac9876b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "0f19c452fa4264df": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "5834be580531e435": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "untrusted_data",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "6952d18f687b68f7": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "67c601605ff12784": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "aade6ec1f7c20526": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "2d3c70ddedd1335e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "e77f4fa4962dd833": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "992f1fb3041e3c39": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "2b6c64857659b38d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "59224542948fd00e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "78ef62da96ce7628": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "1172ab38acf408f1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "3dd3d3d284e09c4f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "ae0883bb4a3ead16": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "99dafcb3385aecd8": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "0a22a02b0e2b0057": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "87bd82ca92d1825e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "597691a657b1c352": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "21d2a9c1a9add100": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "d2c6d60742c782eb": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "10bcf552be3cc5ee": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "b808799d7caaa4d6": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "571663b051d0bbbf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "07e64b711dea5802": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "relative_deadline",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "f235df5c0595323d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "a0ce778874d2fb96": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "2f9371a3bd90dd01": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "53ef6dc72f4fffd5": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "c30a9642a4d3424c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "cf780a8f8a596c74": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "absolute_requested",
+      "turn": 0
+    }
+  ],
+  "f516ca922da56e49": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "absolute_json",
+      "turn": 0
+    }
+  ],
+  "279ba88a753fab00": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "495ea9a9d7592695": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "673782e1d4908cb2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "e20fa3f521066db5": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "2c41b10a8dd4216d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "57ff478a6f5f14e1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "879be451d70d8738": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "0da17b0c6aa28b6e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "dc1a45cf76c5cc01": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "f54b4379228706ce": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "b5570f2e94bb78d4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "3fb79afeb9750ce4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "a78e12419c83e2c2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "42bd1b4420bd172d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "dfd700d650e259d8": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "7b685d08b9a34141": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "33842078b79b7543": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "5b7e17312486a8ce": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "9ee6451f36b8a812": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "eabaedb0e5381e05": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "de902a73d9f11bde": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "e50270a9ae239cbf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "4722f7ccaf561d30": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "da72f893c0aa3ba1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "9614435c04cf4a40": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "8ffce4903416ecaf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "f0e72306bf43f8d4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "02697b3b920cb2b6": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "22b885fcb3847f1b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "754b8c828e38db73": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "321b0023a1d3c02a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "eaa9fdf594ce0dee": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "032bb730ff3f6556": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "910b34acdf2870c6": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "6dd8287f2abefcf7": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "aa9ee2675540af29": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "4e6bce229e546e6b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "8405ceea64b27c0f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "dd1da723c30519aa": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "584f65fe6f4006de": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "298b889cba35acba": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "9f1f55a417f2bf35": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "f3a3417b6691ecfb": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "cdf764aee1bf0fd2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "b465cc3b2205d07c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "89c4027a35a5e36a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "087c3b2bb9d8afad": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "4aadb871b029a882": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "db5f3bb01579a4d4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "48e232293c9d324d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "042de9aef589888b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "cae5dfe581817a0d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "758eedfbbb6da984": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "6682c08ed07ffe35": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "f372647e35f118b1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "bd0edbed78513444": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "08495f848e9af117": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "3a115ce06b9c75a4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "f349c4dab050c9ff": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "9510d3852f3a8052": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "34a933cfb762672f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "ec7def39273a0ae3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "29447af53e028826": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "cffb051645da3f0a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "5fcc3a0bcc26ffa3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "53e746c392a41fbe": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "efbf0687d9e5c293": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "d5f21f41d9aa84e4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "b04ad669173f607b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "8688103e5ae2f2b1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "cbb26a38a63b6b76": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "9eafd575357b8cce": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "6eba40f4d75fe703": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "dd875ae95c9a5d07": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "4590270255c3fe97": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "4684e2f8e116dd9c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "0048c68794b68a6a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "5d9b12e1c0e114a4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "75beb4b5ad2db418": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "684cd01dd3cab6d5": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "cdbd90befd0061db": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "6c29eaf00da41e19": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "493ab3c6b274773b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "9faedfd92cf52ea8": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "353cc3d7af917ae1": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "417ce062a2818975": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "f05dfce3f129cfe9": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "c89166c69791d6d4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "205d667b623cb2db": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "3a34122a7bc6fba9": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "c71f0c1f69707d2d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "edf879f00aa0ea70": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "b3071ec13f5b30bf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "3001a71bc2a115c8": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "4b905bbde71414c4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "714007d5300e2004": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "83767d8aeb42804c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "6128a5553d628099": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "f3ee75563369b33c": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "482b933f6ac214b3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "338cfdc0dbaeb43b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "e6659f47d7944f88": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "7d63ac09ab66898d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "4824068a037e025f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "b47cbfcb6d0600a5": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "relative_json",
+      "turn": 0
+    },
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "c0da6569a39a2a24": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "d923e149e6b0beb0": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "5ae15e8f9a3e9e93": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "a4866d45a0881089": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "687275307a6bc443": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "becedf3a5e0f4816": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "d71a8ceba8deefdd": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "52e77d304afb29c2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "6f646e67c7cb5ee2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "8d71a3621d32d854": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "d98cc861b8473ac5": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "f1aa2a5673b8f122": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "d6c31c3742f9aef4": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "8937a578f69dd17e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "2c59c26568c8a9b0": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "7d24c8b76a529885": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "4e4b792d4e181294": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "8b00a77577840d7f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "0821f556686d6871": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "40c12dde373d3d77": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "3f006598a6f024bc": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "fbfa9e7d03277074": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "9c1781aa0c92dff7": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "06dee6cfdf6bf0db": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "e0306d524775bc6f": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "dbaacffb047c98d5": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "8340c1ab218a1039": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "c9a3fcbd932d8fa9": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "d08366dfb4b7ead3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "2c9ae7b4eb7633f8": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "2ed9c1f1ee0f8a7a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "f82e076ee3b60a6b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "33c9ab2ee7cfb388": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "22356e75471534f3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "1b5bc854db6f873e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "8042c2fbb7fc5ebe": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "690ad57e6518d94a": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "a40f2f0e2f221322": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "9cc1c22a60a6c04e": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "7f7f4226c7f8c414": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "c7ac75614dfd4426": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "44b456b990b37bcf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "b677f09a6666fa6b": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "dc4c8701097fa5cf": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "84323401e51c5fc3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "e77b757fc3eecdbe": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "3cedf7a1e058d9e2": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "2e8fc9e95b56d7b3": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "f1faf0bc57e21108": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "60bc2ccf76fd0aca": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "a09f1eb6d7d0bdfa": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "375c39cbc4853c29": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "deafa9a79a199e3d": [
+    {
+      "model_id": "glm-cloud",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "33f66d14e2094635": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "e8c913ad89d2cf54": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "fb870f844fd83d18": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "8e263a26bc74c8ad": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "62e6efc34a3d133d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "3db937c96cedb5ba": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "d8748f8395dcaf4a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "b6b25ff44233f8a8": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "e054d7c8c7deb0fa": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "ef68b818cce9f2e0": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "90541847a88c6903": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "7aeb5ad2f190f3b9": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "7c63604464d30078": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "9b71e83b0d46233a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "2e4e0692b9d30ebd": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "84bf0ad114f9fccc": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "51a64c7d52f2ba33": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "6903b1ab92533af4": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "ee06e17c2ee89f6a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "c6e7612272de9aba": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "e467548ffca478be": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "ff73f51b4515211d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "f50d75c988e7eee7": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "f89e1f3959f7699e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "7ec6297b977b4844": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "5de366d373cb737b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "e43e3d7ae5610537": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "58dee09a06d88eee": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "5022e50a5d3a4dda": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "json_output",
+      "turn": 0
+    }
+  ],
+  "293ce3fbc2038c92": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "974d70b68808cb5d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "7a90c05cbe505ee5": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "116fa9da38edffea": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "ac229db099c24811": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "4e331b5ab0d47cca": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "f14e836419e3879b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "92fdfc9e503804ff": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "ac75ba132ce5c307": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "0b65e6dd389db748": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "c110da28e8094eab": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "bf4c082db362f4d1": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "c247663e21162cbf": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "e6721b385c590f41": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "2f16ce0879fa4d5d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "40e042ecb475675b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "3a92b0657a8017e4": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "6840591f7fc2ada1": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "relative_deadline",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "fbda9d944f80e4c4": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "json_escape",
+      "turn": 0
+    }
+  ],
+  "c2752aff664e5366": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "f9a73d98c3374f50": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "19b1dc3a21c11ed5": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "6aa0f4c90fcb9a05": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "8fea2a65fe03ac3f": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "relative_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "relative_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "ce0b6011334ef62e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "46220c9359ffc877": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "absolute_json",
+      "turn": 0
+    }
+  ],
+  "c4825a87a77a2dc2": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "absolute_json",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "absolute_json",
+      "turn": 0
+    }
+  ],
+  "2867d085370b2f39": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "f05854a2ddff3d5d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 0,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "28a29575daaf12ca": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "f8c74420c3fccae1": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "1ae945d56fc7c81f": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "bee27e14ac1620f8": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "d06eb563fbe7fa31": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "df8bf56c5b020248": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "0fcb1e0cb704483a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "7ce402d7e12a8678": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "d2f4c8ef7df74744": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "83bf106a9a6edfa8": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "546338dbf6a5f8a3": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "488fa3f84f8ca990": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "e0830526f68266f6": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "4b4c7cad2e55d774": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "80124484b0591c1f": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "8f60f3b14d0cf774": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "6fde6969b82bff59": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "4d1cac81782abfaf": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "e40c0ab136811c2e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "538acb064d817614": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "937b1bbf5924bb13": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "f8f648f60979c222": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "4480f2fa24c96a4c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "04c8c8f83b25873b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "2dc1901e6a84a693": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "a687a3d8026c03ff": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "a5f3ba40a0747193": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "08435e6c5939e2a2": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "26768b36bfe430f5": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "e43557248cfa742a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "6179177cfc76cb93": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "ea5538e97f9c62f9": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "ecb208e031b9200d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "75e705eb199a24bd": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "dde578ae29f9c72a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "93c4989ec73bc469": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "dc914cd8ebe1f4d1": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "85da8408e6f94894": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "b2203e56f545c25e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "9c7c4d9325e45954": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "dc8bef830293ea7d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "640c7528d737fd7c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "dc0e33d9ede6ff26": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "18a0a9faa96bb8d2": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "c4b55877d9c5db11": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "json_escape",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "json_escape",
+      "turn": 0
+    }
+  ],
+  "83268a84a02334d2": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "2c054f62b71b4352": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "81eeb585595823cd": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "4ce90eaaa135e535": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "4e5c3de7b10ceb0b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "621a9ce2b508d6b9": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "db2c1df47715a3b0": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 1,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "29402438c5df5c63": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "200d34b10686a55b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "12070e85f9061bc6": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "cbb640c854658140": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "5a71841354861d0f": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "0d083fbed34c0409": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "7773b69edc0edbeb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "551e529592e44854": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "084ca038158153fc": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "2fbea9b0b58523aa": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "b2631b867d7a4ceb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "961abb55ed93a8fb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "3832e82aaee037fa": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "95654bdfd4ca755d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "d6e671ace4bb1669": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "38c3721b54aee956": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "218f0d01df839345": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "447169f0dd0fe306": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "af7c789d01f89699": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "140bbb6705611ea6": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "c65ae1dbc9c22fd0": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "8f3820e8ab8d07d6": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "b39399b596c876a8": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "1a9c32b148d72fbb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "f6641a8256bae304": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "cfd536e059172d06": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "cbad9608ed8c7c65": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "359568c6c06759da": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "5b489efbbb9141f5": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "10abede1218a2d64": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "4ef3f36966db7a1c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "1eac3348f5fb0e04": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "45247a488a7680da": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "8264fda2dcbd3da2": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "76e02cc996664366": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "c5fded8a0928b252": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "58b2f81e62414f88": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "504b8045dd254265": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "a75895391918aae0": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "660a31934015e09d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "7657f205f7fc4fdb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "e2866eefc37724cc": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "9d6a430cefb5c77d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "3b3db1f206a56eae": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "ef737312d37c4a7b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "6f7fae15d0260982": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "288521250abc3b2b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "e77ccd16ecb9466a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "3b9f8d75c088a725": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "fc823afc6381c514": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "absolute_requested",
+      "turn": 0
+    }
+  ],
+  "2456d3855e2a12ec": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "absolute_json",
+      "turn": 0
+    }
+  ],
+  "93974fafe5363747": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "816a693625a322fe": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 2,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "5714d3ae5e0ba98c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "f4636dc8fd852e77": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "adf63ce05d5b34b3": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "0b808ffb0cff4988": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "6acec464df75b8b8": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "50d9524eb90dbb8d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "f11b969f5862b72c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "3e24ccd2cd9c264d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "fb0fbf98a2b06992": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "0135dd10cca2713e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "b0a6df3aadc4e51b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "220f201de633de81": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "1a098704e194c756": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "d780829809f1b409": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "c45d10da4e18776b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "2d735f0d7855c04c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "91eba3f78b4545f9": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "855a4b30d01c834f": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "2682dc59855f0b72": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "db4eed4c45e3e12a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "c4cba43cfa1962ab": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "bfeb8ead5fa359a6": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "cadd690970e385d5": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "728e8e580c9ac28a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "beeb98378b20e2e5": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "07d114a13116f272": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "849de28382340480": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "f6faaebd71e49ddf": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "8aa29fa20d05b735": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "json_output",
+      "turn": 0
+    },
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "json_output",
+      "turn": 0
+    }
+  ],
+  "2685e2fa32eeeab1": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "a5ac95eb9751022e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "8851b86769705388": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "f0a6511971296076": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "348fdacc23d34b9b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "57e469ed343b92a1": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "62b77cb0b64d1f16": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "fb1f10af91478d56": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "9b6da1fae16bba79": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "c85169db7f3e1542": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "7e9381f079925860": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "75590d09f6168ffc": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "f35d056681c385cd": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "c4fb17820a8f8e89": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "5d3458ac1d683ac2": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "78571182c0f7fe81": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "306bb0070d92db30": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "60783b12882278b3": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "8554a6f69a62bb6c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "3eb19945e0375fc7": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "65e16707cdc87a74": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "35007349d0f4f9f9": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "57b5b4a62a8747cc": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "21ed30383f598f98": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "absolute_requested",
+      "turn": 0
+    }
+  ],
+  "21cfa37ee2d2a645": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "absolute_requested",
+      "turn": 0
+    }
+  ],
+  "8a1c307dd2dcc4ce": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "absolute_json",
+      "turn": 0
+    }
+  ],
+  "e95ec0b516676744": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "74e3fd8f928f5f01": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 3,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "e4ba0b06cb215ffb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "7fdb71ea5724d64d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "consult",
+      "turn": 0
+    }
+  ],
+  "80726f067cb174f6": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "079932970f543759": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "0fd4ab343c2c25fb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 0
+    }
+  ],
+  "ef259a15cc5dc53d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "artifact",
+      "turn": 1
+    }
+  ],
+  "261f9e2389ccbbbd": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "ee724c90e3969eca": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "code_fix",
+      "turn": 0
+    }
+  ],
+  "74113ceef9253fe4": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "34037a06417aeffb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "multi_artifact",
+      "turn": 0
+    }
+  ],
+  "e426b05381b4512d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "d22dcedf522eaec5": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "multi_code",
+      "turn": 0
+    }
+  ],
+  "9bc490670e57f159": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "0d170a0dc6ae10d0": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "7ccbef14873a3208": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 0
+    }
+  ],
+  "7ea6728c7c1e6bea": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "plan_execute",
+      "turn": 1
+    }
+  ],
+  "85446e15f481cfcc": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "303278110afdcdbb": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "f5d8fc054cab4e1a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 0
+    }
+  ],
+  "13a2b605a23e364c": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill",
+      "turn": 1
+    }
+  ],
+  "def398bc230189db": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "723bb55e2ec56cec": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "attachment",
+      "turn": 0
+    }
+  ],
+  "3e2a1483dcdb242e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "cc4fe02876033e53": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "untrusted_data",
+      "turn": 0
+    }
+  ],
+  "0ea63c6b872a820a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "dc2f551f97c7e34f": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "browser_host_boundary",
+      "turn": 0
+    }
+  ],
+  "4916a8cc95136140": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "defb34abf803c58e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "semantic_revision",
+      "turn": 0
+    }
+  ],
+  "1bab62cb511a8476": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "fad65215fed7a095": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "hidden_code",
+      "turn": 0
+    }
+  ],
+  "443e0399c0a0566b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "9655b38d93b9b5fa": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "missing_input",
+      "turn": 0
+    }
+  ],
+  "2b11cba39274388e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill_fidelity",
+      "turn": 0
+    }
+  ],
+  "e9142410bfe70dc9": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "8c5ce94ac6f7e0de": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "code_consult",
+      "turn": 0
+    }
+  ],
+  "b70182ed99ecd00d": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "2ad40aa957151764": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "5775010d18d590c1": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 0
+    }
+  ],
+  "a77ecc447b510785": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "unbound_artifact",
+      "turn": 1
+    }
+  ],
+  "90301fd1fea66404": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "771eac5bd354d567": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "nested_root_rule",
+      "turn": 0
+    }
+  ],
+  "562e3ea90e401962": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "91a87a497da84297": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "secondary_revision",
+      "turn": 0
+    }
+  ],
+  "2c49f37e86bb99bc": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "2d1e347e0d16f556": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "relative_deadline",
+      "turn": 0
+    }
+  ],
+  "0610a1a283fab4b2": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "55462ebf3a0959ea": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "skill_format",
+      "turn": 0
+    }
+  ],
+  "3b7919cceaf15708": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "3acd05114ca3313b": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "plan_secondary_readonly",
+      "turn": 0
+    }
+  ],
+  "8c6250d5c1242a9e": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "cad73ca03ad7c893": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "relative_json",
+      "turn": 0
+    }
+  ],
+  "85d4db96af16f5d6": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "absolute_requested",
+      "turn": 0
+    }
+  ],
+  "d853382149144f0a": [
+    {
+      "model_id": "ornith-local",
+      "variant": "baseline",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ],
+  "0ce5bbc8effa7363": [
+    {
+      "model_id": "ornith-local",
+      "variant": "candidate",
+      "repetition": 4,
+      "scenario": "third_root",
+      "turn": 0
+    }
+  ]
+}

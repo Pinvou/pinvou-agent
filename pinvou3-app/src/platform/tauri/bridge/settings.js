@@ -93,8 +93,9 @@ async function getImageInputCapability(...args) { return pinvouSharedtauriSettin
   // overwrite a newer one (audit b). The last request sequence wins.
   let modelsLoadSeq = 0;
 async function loadModels() { return pinvouSharedtauriSettings().loadModels(); }
-  // model 对象字段须是 snake_case(SavedModel serde):
-  // {id,name,preset,context_window_tokens,max_output_tokens,model,base_url,api_key,credential_action,image_capability_override,vision_model_id}
+  // model 对象字段须与 Rust 侧 SavedModel 的 serde 契约逐字段一致(snake_case):
+  // 字段清单以 src-tauri/src/platform/prefs/mod.rs 的 SavedModel 定义为准,此处
+  // 不逐一列举以免两处漂移。
  async function saveModel(model) {
    await invoke("save_model", { model });
    await loadModels();

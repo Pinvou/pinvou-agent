@@ -1,0 +1,19 @@
+{
+  "utc": "2026-10-26T13:14:39.668038+00:00",
+  "reason": "Invalid harness: namespace explicitly mounted only primary/secondary, so third selected root was absent for both binaries. Production candidate is unchanged. Stop the entire attempt, retain all partial records, repair mounting and restart all versions/models/families; do not reuse selected rows.",
+  "receipted_turns": {
+    "ornith-local": 93,
+    "glm-cloud": 40
+  },
+  "whole_attempt_excluded": true,
+  "stopping_scope": "Harness defect discovered from early third-root outputs; not evidence of a product multi-root defect.",
+  "version": "Codex-Prompt-V2.3",
+  "execution_attempt": 1,
+  "candidate_binary_sha256": "08219cb61b218dcc7c1742bb31b1d886fda4bee3ebb270b02b5d7f9fa6e8caf4",
+  "baseline_binary_sha256": "40496fbea30c955824eba32d82291665837faafae0763f31d44f88e117d5f991",
+  "original_namespace_source_sha256": "1709b1c321bf5fff331c19895b534bd7aae1932580cedb45b40f3182e4b02792",
+  "corrected_namespace_source_sha256": "1f8c60797eb4fddc7e54156231efa300ae80276511e4dc515f835c79b85e9ab3",
+  "successor_protocol": "retest-v2.3-attempt2-protocol.md",
+  "production_changed_after_observations": false,
+  "initial_transfer_cases_previously_observed": true
+}

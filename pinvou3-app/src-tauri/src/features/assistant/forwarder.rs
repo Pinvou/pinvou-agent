@@ -273,17 +273,17 @@ fn persist_mcp_boot_receipt(
 /// 关键点：监听 `Event::ApprovalRequired` 并主动 `approve_tool_call`。
 /// 注意底座语义：`auto_approve = true` 时 `registered_tool_approval_required`
 /// 会直接**旁路**可绕过的 Required 审批、不发事件（turn_loop.rs，非绕过名单仅
-/// rlm_eval / start_mcp_server）。因此本臂对普通会话只在 auto_approve 关闭的
+/// rlm_eval / rlm / start_mcp_server）。因此本臂对普通会话只在 auto_approve 关闭的
 /// 场景（例如定时任务按 profile）收到事件；普通会话仍沿用既有批准策略。
 ///
 /// Plan ready 触发：监听 `update_plan` 工具结果 + TurnComplete，
 /// 若 active session mode=Plan + 本 turn 调过 update_plan + plan 非空 →
-/// 设 phase=Ready + emit `chat:plan_ready` 含 plan snapshot。
+/// 登记待决 plan（PlanPhase 已砍，不设 phase）+ emit `chat:plan_ready` 含 plan snapshot。
 ///
 /// **多引擎并发**:每个 session 一个独立 engine + 一个独立 forwarder,所以这里捕获
 /// 的 `session_id` 唯一标识本 forwarder 服务的 session。**所有 emit 的 payload 都带
 /// `session_id`**,前端按它把事件分流到对应 session 的缓冲;TurnComplete 里的 mode
-/// 判据(plan_ready / M2 / M3)也全部基于本 `session_id`,不再读全局 `store.active_id()`
+/// 判据(plan_ready)也全部基于本 `session_id`,不再读全局 `store.active_id()`
 /// (并发下 active 会变,读全局会把判据算到错误 session 上)。返回 forwarder 的
 /// `JoinHandle`,EnginePool 回收 session 时 `abort()` 它。
 pub(crate) fn spawn_event_forwarder(

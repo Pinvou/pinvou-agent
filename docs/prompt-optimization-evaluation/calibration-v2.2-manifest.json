@@ -1,0 +1,17 @@
+{
+  "method": "closed-progress-expression-equivalence-v3",
+  "recorded_at_utc": "2026-10-26T12:01:01.035737+00:00",
+  "stage": "post-freeze output calibration before tallying variant impact; production and live runner unchanged",
+  "sources": {
+    "scripts/prompt_eval_retest_calibration.py": "b50ac187378e65ae0abad3a467195324dccbc72126d592fb95e43d03da71c476",
+    "scripts/tests/test_prompt_eval_retest_calibration.py": "bba5149384e96f310492805910837726428354003d99582494da743355a9ab57",
+    "docs/prompt-optimization-evaluation/post-freeze-calibration-v2.2.md": "2492b59c0c6872ec9e4e789aeb8279b6ef02daf3fbf1c38b1c084828dff84f84"
+  },
+  "controls": {
+    "tests": 9,
+    "passed": 9,
+    "failed": 0
+  },
+  "raw_results_retained": true,
+  "supersedes": "v1/v2; no published result exported; source/manifests/control evidence retained privately"
+}

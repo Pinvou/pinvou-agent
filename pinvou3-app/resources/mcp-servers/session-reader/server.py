@@ -1047,7 +1047,6 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT,
     }, None
 
 
-# ---------------------------------------------------------------------------
 def _check_message_session_id(sessions_dir, session_id, label):
     """Full validation for a send participant: charset/isolation rules (validate_session_id) plus existence (head probe, never a full read). Returns (path, title, error)."""
     id_error = validate_session_id(session_id)

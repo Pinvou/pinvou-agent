@@ -1,10 +1,12 @@
 //! Contract tests for the `sessions` and `artifacts` families (GUI-parity
 //! project). Parse-level coverage runs against the typed command tree;
 //! execute-level coverage only touches pure-storage paths: every test runs
-//! against a throwaway `PINVOU3_HOME` and boots `SessionStore` directly in
-//! the test process — the same standalone constructor the CLI uses. No
-//! engine, network, model, or display is involved anywhere in this file, so
-//! no `#[ignore]` opt-in tests are needed.
+//! against a throwaway `PINVOU3_HOME` — normally booting `SessionStore`
+//! directly in the test process (the same standalone constructor the CLI
+//! uses); the one exception (the corrupt-index stderr test) spawns the real
+//! binary against the same throwaway home. No engine, network, model, or
+//! display is involved anywhere in this file, so no `#[ignore]` opt-in
+//! tests are needed.
 
 mod common;
 
@@ -470,7 +472,7 @@ fn sessions_delete_refuses_a_corrupt_index_instead_of_persisting_an_empty_table(
 
     // Round-45 review: the delete only needs the index's PATH, so it must
     // not load the corrupt file — the app-side `load_or_empty` prints a
-    // zh "starting empty" stderr line on exactly this corruption, which
+    // "starting empty" stderr line on exactly this corruption, which
     // polluted the refusal output the user has to act on. The in-process
     // harness cannot capture that stderr, so this runs the real binary
     // (inheriting the fixture home) against a fresh session (the refusal

@@ -1,0 +1,343 @@
+{
+  "version": "V2.4.5",
+  "author": "Codex (OpenAI)",
+  "model": "GPT-6; exact variant/reasoning level unavailable",
+  "scope": "Report reproduction checks; retained full integration and later execution notes are separately labeled. No new model calls.",
+  "report_data_audit": [
+    {
+      "layer": "raw",
+      "user_turns": 620,
+      "whole_tasks": 540,
+      "full_and_non_browser_summaries_exactly_reproduced": true
+    },
+    {
+      "layer": "calibrated",
+      "user_turns": 620,
+      "whole_tasks": 540,
+      "full_and_non_browser_summaries_exactly_reproduced": true
+    },
+    {
+      "layer": "reviewed",
+      "user_turns": 620,
+      "whole_tasks": 540,
+      "full_and_non_browser_summaries_exactly_reproduced": true
+    },
+    {
+      "layer": "path-corrected",
+      "user_turns": 620,
+      "whole_tasks": 540,
+      "full_and_non_browser_summaries_exactly_reproduced": true
+    }
+  ],
+  "output_packets": 543,
+  "mapped_turns": 620,
+  "distinct_tool_input_trajectories": 435,
+  "source_comparison": {
+    "freeze": "source-manifest-v2.4.5.json",
+    "matching_files": [
+      "CodeWhale/crates/tui/assets/skills-catalog-matrix.json",
+      "CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md",
+      "CodeWhale/crates/tui/src/commands/groups/core/agent.rs",
+      "CodeWhale/crates/tui/src/core/engine.rs",
+      "CodeWhale/crates/tui/src/core/engine/tests.rs",
+      "CodeWhale/crates/tui/src/core/engine/tool_catalog.rs",
+      "CodeWhale/crates/tui/src/skills/mod.rs",
+      "CodeWhale/crates/tui/src/skills/system.rs",
+      "CodeWhale/crates/tui/src/skills/system/tests.rs",
+      "CodeWhale/crates/tui/src/skills/tests.rs",
+      "CodeWhale/crates/tui/src/tools/subagent/mod.rs",
+      "CodeWhale/crates/tui/src/tools/subagent/tests.rs",
+      "pinvou-cli/crates/cli/examples/prompt_eval.rs",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-code.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-shared.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-work-bound.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/instructions-work.md",
+      "pinvou3-app/src-tauri/resources/common/bundle/mcp-servers/present_artifact_server.py",
+      "pinvou3-app/src-tauri/src/features/assistant/engine.rs",
+      "pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs",
+      "pinvou3-app/src-tauri/src/features/assistant/session_policy.rs",
+      "pinvou3-app/src-tauri/src/features/assistant/tool_policy.rs",
+      "pinvou3-app/src-tauri/src/features/runtime_bundle/platform/mod.rs",
+      "CodeWhale/crates/tui/src/skills/system/fixtures/mcp-discovery-v11.md",
+      "eval-prompt-community.py",
+      "prompt_eval_community_cases.py",
+      "eval-prompt-suite.py",
+      "audit-prompt-eval.py",
+      "prompt_eval_sandbox.py",
+      "prompt_eval_model_proxy.py",
+      "prompt_eval_namespace_bootstrap.py",
+      "eval-prompt-retest.py",
+      "prompt_eval_retest_cases.py",
+      "apply-prompt-adjudication.py",
+      "summarize-prompt-community.py",
+      "prompt_eval_extra_alias.py",
+      "eval-prompt-repair.py",
+      "prompt_eval_retest_calibration.py",
+      "prompt_eval_extra_api.py",
+      "tests/test_prompt_eval_extra_api.py",
+      "CodeWhale/Cargo.lock",
+      "pinvou-cli/Cargo.lock",
+      "pinvou3-app/src-tauri/Cargo.lock",
+      "pinvou3-app/package-lock.json",
+      "docs/prompt-optimization-evaluation/retest-v2.4.1-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.2-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.3-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.4-protocol.md",
+      "docs/prompt-optimization-evaluation/retest-v2.4.5-protocol.md"
+    ],
+    "differences": [
+      {
+        "category": "evaluation_sources",
+        "path": "prompt_eval_repair_cases.py",
+        "frozen_sha256": "62bb953f7921fbb53db3a783730177ee024fc5c9a3f45098c08b90df10eaddf7",
+        "current_sha256": "086a2c76e166b53f29aa32f278d4328dadcf1cc574357acd89e9032c0da67f8e"
+      },
+      {
+        "category": "evaluation_sources",
+        "path": "tests/test_prompt_eval_repair.py",
+        "frozen_sha256": "f0da5ef7f567f081a40fec338abc2ae0e1c24119a9e0a7a1dc1b7ac7ac451a83",
+        "current_sha256": "591adf660b6091d28ca9d3d00502aefb70f377f5d7600927b0e0af44f4dd0ec7"
+      }
+    ],
+    "foundation_files_unchanged_from_prior_full_integration": [
+      "CodeWhale/crates/tui/assets/skills-catalog-matrix.json",
+      "CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md",
+      "CodeWhale/crates/tui/src/commands/groups/core/agent.rs",
+      "CodeWhale/crates/tui/src/core/engine.rs",
+      "CodeWhale/crates/tui/src/core/engine/tests.rs",
+      "CodeWhale/crates/tui/src/core/engine/tool_catalog.rs",
+      "CodeWhale/crates/tui/src/skills/mod.rs",
+      "CodeWhale/crates/tui/src/skills/system.rs",
+      "CodeWhale/crates/tui/src/skills/system/tests.rs",
+      "CodeWhale/crates/tui/src/skills/tests.rs",
+      "CodeWhale/crates/tui/src/tools/subagent/mod.rs",
+      "CodeWhale/crates/tui/src/tools/subagent/tests.rs",
+      "CodeWhale/crates/tui/src/skills/system/fixtures/mcp-discovery-v11.md"
+    ]
+  },
+  "prior_full_integration": {
+    "receipt": "verification-v2.2.json",
+    "scope": "Earlier full workspace/app/Node/CLI/knowledge/build/journey checks; not rerun for this report. Foundation guidance/installer files above retain matching hashes; later app edits rely on separately recorded focused checks."
+  },
+  "later_execution_notes": {
+    "provenance": "Prior continuation records of executed checks. Original private command logs are not part of this public export; these are retained execution notes, not freshly rerun checks.",
+    "application": {
+      "prompt_contracts": 18,
+      "bundle": 65,
+      "project_rules": 5,
+      "bound_plain_session": 1,
+      "clippy_lib_deny_warnings": "passed"
+    },
+    "foundation": {
+      "fmt": "passed",
+      "installer_without_fix": {
+        "passed": 0,
+        "failed": 1
+      },
+      "installer_restored": {
+        "passed": 1,
+        "failed": 0
+      },
+      "nonexistent_root_existing_test": {
+        "passed": 1,
+        "failed": 0
+      },
+      "clippy_workspace_all_targets_all_features_locked": "passed with repository CI allow list",
+      "post_measurement_test_only_change": "repo_law.rs: &[ghost_root.clone()] -> std::slice::from_ref(&ghost_root)",
+      "clippy_command": [
+        "cargo",
+        "clippy",
+        "--manifest-path",
+        "CodeWhale/Cargo.toml",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--",
+        "-D",
+        "warnings",
+        "-A",
+        "clippy::uninlined_format_args",
+        "-A",
+        "clippy::too_many_arguments",
+        "-A",
+        "clippy::unnecessary_map_or",
+        "-A",
+        "clippy::collapsible_if",
+        "-A",
+        "clippy::assertions_on_constants"
+      ],
+      "installer_test": "forkguard_skill_upgrade_refreshes_shipped_mcp_discovery_and_preserves_user_edits",
+      "nonexistent_root_test": "a_genuinely_nonexistent_root_stays_lawless_for_raw_spellings"
+    },
+    "namespace_opt_in": {
+      "run": 7,
+      "failed": 0
+    }
+  },
+  "fresh_report_checks": [
+    {
+      "name": "grader-control-with-measured-defect",
+      "command": [
+        "python3",
+        "-c",
+        "from pathlib import Path\nimport importlib.util,sys,unittest\nfrom unittest.mock import patch\nrepo=Path.cwd();sys.path.insert(0,str(repo/'scripts'))\ndef load(name,path):\n spec=importlib.util.spec_from_file_location(name,path);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module\nmeasured=load('measured_repair_cases',repo/'docs/prompt-optimization-evaluation/frozen-evaluator-v2.4.5/prompt_eval_repair_cases.py')\ntests=load('current_repair_controls',repo/'scripts/tests/test_prompt_eval_repair.py')\nsuite=unittest.defaultTestLoader.loadTestsFromName('RepairControls.test_third_root_namespace_command_matches_controller_fixture',tests)\nassert suite.countTestCases()==1\nwith patch.object(tests.cases,'grade',measured.grade):result=unittest.TextTestRunner(verbosity=2).run(suite)\nsys.exit(0 if result.wasSuccessful() else 1)\n"
+      ],
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "elapsed_secs": 0.133,
+      "summaries": [
+        "AssertionError: False is not true",
+        "Ran 1 test in 0.066s",
+        "FAILED (failures=1)"
+      ]
+    },
+    {
+      "name": "grader-fixed-controls",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_prompt_eval_repair.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.758,
+      "summaries": [
+        "Ran 10 tests in 0.709s",
+        "OK"
+      ]
+    },
+    {
+      "name": "python-full",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_*.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 24.406,
+      "summaries": [
+        "ok: /usr/bin/true architecture arm64",
+        "ok: /usr/bin/true GLIBC_2.34 ≤ GLIBC_2.35",
+        "python3 -m unittest: error: argument --min-free-gib: --min-free-gib must be >= 1 GiB",
+        "python3 -m unittest: error: argument --min-free-gib: --min-free-gib must be >= 1 GiB",
+        "python3 -m unittest: error: argument --min-free-gib: invalid int value: 'abc'",
+        "python3 -m unittest: error: argument --only-session: expected one argument",
+        "Ran 582 tests in 24.083s",
+        "OK (skipped=3)"
+      ]
+    },
+    {
+      "name": "namespace-opt-in",
+      "command": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "scripts/tests",
+        "-p",
+        "test_prompt_eval_namespace.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 1.233,
+      "summaries": [
+        "Ran 7 tests in 1.174s",
+        "OK"
+      ]
+    },
+    {
+      "name": "node-prompt-contracts",
+      "command": [
+        "node",
+        "--test",
+        "pinvou3-app/tests/browser_core_protocol.test.mjs",
+        "pinvou3-app/tests/canonical_tool_contract.test.js"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.197,
+      "summaries": [
+        "ok 5 - BrowserCore tool-name order follows the fallback schema catalog",
+        "ok 6 - BrowserCore wait schema discloses the native timeout ceiling",
+        "ok 7 - BrowserCore documents non-retryable partial form outcomes",
+        "ok 8 - BrowserCore navigation tools acknowledge requests without claiming page load",
+        "ok 9 - BrowserCore schemas state the real URL gate and uid lifetime",
+        "ok 10 - work instructions define a durable and verified loopback preview workflow",
+        "ok 11 - shared instructions keep the deferred-tool doctrine, credential red line, and real settings path",
+        "ok 12 - shared shell instructions preserve interpreter, transport, and probe safety",
+        "ok 13 - artifact title stays single-sourced and bound workspaces require explicit delivery",
+        "ok 14 - page runtime exposes DOM-only capabilities and no host bridge",
+        "ok 15 - page runtime scrolls an offscreen element before resolving a native input point",
+        "ok 16 - every core tool schema stays free of empty subschemas that MFJS providers drop",
+        "ok 17 - runtime guidance does not teach retired or hidden replay tool names",
+        "ok 18 - runtime guidance uses live schemas and canonical app entry points",
+        "# tests 18",
+        "# pass 18",
+        "# fail 0",
+        "# skipped 0"
+      ]
+    },
+    {
+      "name": "architecture",
+      "command": [
+        "python3",
+        "scripts/architecture-guard.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 2.046,
+      "summaries": [
+        "architecture guard passed: no architecture debt increased"
+      ]
+    },
+    {
+      "name": "fork-fast",
+      "command": [
+        "bash",
+        "scripts/fork-guard.sh",
+        "--fast"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.697,
+      "summaries": []
+    },
+    {
+      "name": "version",
+      "command": [
+        "node",
+        "scripts/sync-version.mjs",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.053,
+      "summaries": []
+    },
+    {
+      "name": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "elapsed_secs": 0.045,
+      "summaries": []
+    }
+  ]
+}

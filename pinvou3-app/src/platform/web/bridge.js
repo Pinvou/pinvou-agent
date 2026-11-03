@@ -1828,7 +1828,7 @@ function addAuthoritySyncNotice(text) { return pinvouSharedweb().addAuthoritySyn
 function addOrMergePruneCompaction(compactId) { return pinvouSharedweb().addOrMergePruneCompaction(compactId); }
 function timeStr() { return pinvouSharedweb().timeStr(); }
 
-  // ── Flush helpers (same as main.js) ──────────────────────────────
+  // ── Flush helpers ──────────────────────────────────────────────
   function flushPendingTextBlock() {
     if (pendingAssistantText) {
       pendingAssistantBlocks.push({ type: "text", text: pendingAssistantText });
@@ -2926,7 +2926,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       }).catch(function () {});
       return;
     }
-    if (isBusyFor(sid)) return;            // doFinal 等又起了新 turn → 留给那轮的 done 再 flush
+    if (isBusyFor(sid)) return;            // 已在生成中（新一轮已起）→ 留给那轮的 done 再 flush
     const q = sid === state.activeSessionId ? state.queued : (sessionStates[sid] && sessionStates[sid].queued);
     if (!q || q.length === 0) return;
     const item = q.shift();
@@ -4019,7 +4019,6 @@ function finalizeStreamingReasoning(index) { return pinvouSharedweb().finalizeSt
     const text = e.payload && e.payload.text || "";
     pendingAssistantText += text;
     currentStreamText += text;
-    // Update the streaming chat item
     const item = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     const firstDelta = !item;
     if (item) {
@@ -4082,7 +4081,6 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     flushPendingTextBlock();
     pendingAssistantBlocks.push({ type: "tool_use", id: p.id, name: p.name, input: p.args || {} });
 
-    // Finalize current streaming bubble
     flushPendingStreamRender();
     const streamItem = state.chatItems.find(function (it) { return it.id === currentStreamId; });
     if (streamItem) {
@@ -4111,7 +4109,6 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
       // 展开看不到 SKILL.md 全文（防设计系统泄露），但保留"加载了技能"的痕迹。
     }
 
-    // Add tool card
     addChatItem({
       type: "tool", toolId: p.id, name: p.name, args: p.args,
       output: null, success: null, state: "running", sessionId: p.session_id || state.activeSessionId,
@@ -4149,7 +4146,7 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
 
     // present_artifact 结束：成功 → 弹成品卡(点击打开);失败 → 落普通工具卡显错误,
     // 让 AI 从 tool_result 看到错误自行重试。成品卡是真工具调用,tool_use 已进
-    // messages(tool_start line 784),rerenderFromMessages 按 name 还原,切会话不丢。
+    // messages(chat:tool_start),rerenderFromMessages 按 name 还原,切会话不丢。
     if (meta && isPresentArtifactTool(meta.name)) {
       if (p.success) {
         // 用 server 解析好的绝对路径(present_artifact_server.py 的 abs_path),而非模型可能
