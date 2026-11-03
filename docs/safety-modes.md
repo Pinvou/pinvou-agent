@@ -253,6 +253,13 @@ execpolicy 硬拒规则集按会话 mode 组装（`features/assistant/safety_den
     选择；伴随旗不脱离映射条目复活——共享表条目缺失时以映射为准。
   行为钉：`session_auto_mode_is_downgrade_parseable_via_companion_flag`
   （旧词表 reader 整表可解析 + 旧二进制改写后 Auto 仍由伴随旗找回）。
+- **旧写者兼容边界（显式兼容决策，评审 P2）**：旧二进制不识别伴随旗，
+  它对共享表的写入不区分「坍缩 Auto 的被动重写」与「用户显式改选
+  Plan」——因此 `plan`+`true` 旗在读回时一律按显式 Auto 升级。受支持的
+  互操作边界由此划定：**旧二进制不能把带旗会话改选为 Plan**；需要回落
+  Plan 须使用新版二进制（新代码的显式 Plan 写入会同步清除伴随旗）。有意
+  不做 mtime 启发式、也不为旧写者扩展持久格式；该取舍经维护者确认后就此
+  封存。
 - 无持久记录时的默认解析矩阵：
 
 | 会话形态 | 默认 |
@@ -346,6 +353,9 @@ narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(h
 
 ## 9. 已知边界
 
+- **旧写者不能把带旗会话改选为 Plan**：`plan`+伴随旗的读回一律按显式
+  Auto 升级（旧格式无法区分「坍缩 Auto」与旧版显式 Plan，见第 6 节的
+  兼容决策）；这是有意封存的互操作边界，不是缺陷。
 - **Web 端显式不支持审批卡**：四类事件已进 Relay 转发白名单
   （`src/platform/web/access-policy.json`：approval_required /
   approval_resolved / guardrail_denied / mode_changed）。Web bridge 不渲染
