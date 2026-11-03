@@ -261,7 +261,7 @@ mod tests {
             manifest.data_access,
             ["sessions.read".to_string(), "sessions.write".to_string()]
         );
-        assert_eq!(manifest.tool_features.len(), 3);
+        assert_eq!(manifest.tool_features.len(), 4);
         for tool in [
             "mcp_session-reader_read_session",
             "mcp_session-reader_list_sessions",
@@ -282,6 +282,14 @@ mod tests {
                 .unwrap_or_else(|| panic!("tool_features is missing the send tool")),
             &["session-messaging".to_string()],
             "the send tool serves only the messaging feature"
+        );
+        assert_eq!(
+            manifest
+                .tool_features
+                .get("mcp_session-reader_create_session")
+                .unwrap_or_else(|| panic!("tool_features is missing the create tool")),
+            &["session-creation".to_string()],
+            "the create tool serves only the session-creation feature"
         );
     }
 

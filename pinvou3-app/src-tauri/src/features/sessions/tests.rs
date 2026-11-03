@@ -1266,6 +1266,63 @@ fn validate_workspace_roots_rejects_an_over_cap_declaration() {
     );
 }
 
+/// Round-23 M1 (#657): the pinvou3 home (settings.json, connector
+/// credentials, sessions/, spool roots) is refused as a project workspace —
+/// binding it would present privileged state as an unattended opening
+/// turn's project. Deleting the scope clause turns this red. Round-29
+/// hygiene: runs against a relocated PINVOU3_HOME under the env lock —
+/// the real ~/.pinvou3 used to be created and read as a side effect, and
+/// the env write raced parallel tests.
+#[test]
+fn validate_user_workspace_path_refuses_pinvou3_home() {
+    use super::validators::validate_user_workspace_path;
+
+    let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+    let home = std::env::temp_dir().join(format!(
+        "pinvou3-home-refusal-{}-{}",
+        std::process::id(),
+        crate::platform::paths::tests::unique_suffix()
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+    std::fs::create_dir_all(&home).expect("seed relocated home");
+    let validated = validate_user_workspace_path(home.to_str().expect("utf8"));
+    assert!(
+        validated.is_err(),
+        "the pinvou3 home must be refused: {:?}",
+        validated
+    );
+    let inside = home.join("sessions");
+    std::fs::create_dir_all(&inside).expect("seed sessions dir");
+    assert!(
+        validate_user_workspace_path(inside.to_str().expect("utf8")).is_err(),
+        "paths inside the pinvou3 home must also be refused"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Round-29 minor: the volume-root clause had no test, and the retired
+/// `len() <= 3` heuristic misclassified 1-2 character top-level
+/// directories as volume roots. Pins the refusal on the real root; the
+/// happy path for ordinary directories is pinned by the validator tests
+/// above.
+#[test]
+fn validate_user_workspace_path_refuses_volume_root() {
+    use super::validators::validate_user_workspace_path;
+
+    let root = if cfg!(windows) { r"C:\" } else { "/" };
+    let canonical_root = std::path::Path::new(root)
+        .canonicalize()
+        .expect("the volume root canonicalizes");
+    let error = validate_user_workspace_path(canonical_root.to_str().expect("utf8"))
+        .expect_err("the volume root must be refused");
+    assert!(
+        error.to_string().contains("volume root"),
+        "refusal must name the volume root: {error}"
+    );
+}
+
 fn text_message(role: &str, text: &str) -> Message {
     Message {
         role: role.into(),
