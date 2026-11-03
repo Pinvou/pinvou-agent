@@ -120,6 +120,16 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
   `scheduled_tool_should_auto_approve` 分支，优先级原样保留）；它不走交互审批
   面，也正因此无人值守引擎的规则档恒为 Full（第 5 节）。无人值守**以外**的
   定时/多智能体会话与普通对话同序。
+- **windowless 宿主确定性 decline**：无窗宿主 lane（`pinvou agent run` /
+  基准 / 评测 boot lane，`run_windowless_host` / `run_bare_host` 打
+  `windowless_host` 进程级标记）没有审批决策消费者，而共享池的 turn 姿态
+  （auto-approve）+ 存储武装会把可提示面以交互审批升起——无人能应答的卡把
+  任务钉到 deadline。转发器在定时无人值守臂之后新增 windowless 臂：交互审批
+  一律确定性 decline（deny，fail-safe；force_prompt hold 同样 decline——它
+  请求的正是人，而这里没有人），不登记 pending、不弹审批事件；模型看到拒绝
+  可改道，任务得以完成。定时无人值守臂保留在先（任务保存策略的非 force 确定性
+  放行不变）。未来若为 headless 显式接入决策工作流（如 runtime 决策 API），
+  该臂需随之收敛为「显式连接的消费者」判定。
 - **composer `!` 不武装**：用户手敲的命令输入即批准（#5191），typed deny 仍
   硬拒，execpolicy/sandbox 仍是硬边界；武装只作用于模型来源调用。
 - **子代理镜像主线**：继承 auto-approve 的子代理对 delegated typed-ask 也

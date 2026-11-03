@@ -21,6 +21,7 @@ pub(crate) mod swarm;
 pub(crate) mod timing;
 pub(crate) mod tool_policy;
 pub(crate) mod turn_shell_tasks;
+pub(crate) mod windowless_host;
 
 #[cfg(test)]
 mod multiagent_regression_tests;

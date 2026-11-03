@@ -878,6 +878,33 @@ pub(crate) fn spawn_event_forwarder(
                                 );
                             }
                         });
+                    } else if crate::features::assistant::windowless_host::is_windowless_host() {
+                        // 评审 P2：windowless 宿主（`pinvou agent run` / 基准 /
+                        // 评测 boot lane）没有决策消费者——无窗口、无审批面，
+                        // 而共享池的 turn 姿态（auto-approve）+ 存储武装会把
+                        // 可提示面（repo-law hold / typed ask / 沙箱升级 /
+                        // execpolicy 拒绝升级 / force_prompt hold）以交互审批
+                        // 升起。无人能应答的卡把任务钉到 deadline。语义选择
+                        // （与 safety-modes §3.4「确定性 allow/deny 永不弹卡」
+                        // 同一方向）：确定性 decline——工具不执行，模型看到
+                        // 拒绝并可改道，任务得以完成。拒绝是 fail-safe 方向
+                        // （授予等于静默执行无人请批准的工作）；force_prompt
+                        // hold 同样 decline——它请求的正是人，而这里没有人。
+                        // 不登记 pending、不发审批事件：无人可答的卡不得铸造，
+                        // decline 只经引擎自身的工具拒绝进 transcript。无人
+                        // 值守定时执行保留上方任务保存策略臂（非 force 工具
+                        // 仍可确定性放行），故本臂排其后。
+                        eprintln!(
+                            "[pinvou3-app] declining tool {} id={} (windowless host has no approval consumer)",
+                            tool_name, id
+                        );
+                        let h = approve_handle.clone();
+                        let id_clone = id.clone();
+                        tokio::spawn(async move {
+                            if let Err(error) = h.deny_tool_call(id_clone).await {
+                                eprintln!("[pinvou3-app] windowless decline failed: {error:#}");
+                            }
+                        });
                     } else {
                         use crate::features::assistant::pending_approvals::{
                             ApprovalSurfaceDecision, approval_surface_decision,

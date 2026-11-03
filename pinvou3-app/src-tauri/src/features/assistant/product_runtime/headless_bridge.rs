@@ -1392,6 +1392,10 @@ where
     ensure_isolated_debug_home()?;
     let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
+    // Boot fact for the forwarder's approval surface: this process has no
+    // window and no decision consumer, so an interactive ask must resolve
+    // deterministically (see crate::features::assistant::windowless_host).
+    crate::features::assistant::windowless_host::mark_windowless_host();
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     // Reuse lib.rs's single generate_context expansion point: a second
     // expansion inside this crate triggers duplicate
@@ -1575,6 +1579,9 @@ where
 {
     let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
+    // Same boot fact as run_windowless_host: no window, no decision
+    // consumer (see crate::features::assistant::windowless_host).
+    crate::features::assistant::windowless_host::mark_windowless_host();
     let joined = async_runtime.spawn(work());
     match async_runtime.block_on(joined) {
         Ok(result) => result,
