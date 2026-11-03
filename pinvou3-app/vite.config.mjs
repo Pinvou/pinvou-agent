@@ -556,7 +556,17 @@ function enforceLazyChunks() {
 // ceiling already sits the next thousand step above the unchanged web
 // entry and stays 128_000. This cap does not promise headroom for
 // unrelated main changes.
-export const MAIN_ENTRY_BUDGET_BYTES = 486_000;
+//
+// 486_000 → 487_000 desktop only (PR #826, measured per policy): the
+// computer-use virtual display target joins the shared startup graph
+// (bridge patch helpers and facade entry, settings and consent surface
+// additions, en dict keys); same-base build against main@682674a86
+// measures 485,878 → 486,295 B desktop (+417 B) and 127,596 → 127,596 B
+// web (byte count unchanged — the virtual display rides the desktop
+// bridge only). The desktop ceiling takes the next thousand step,
+// leaving 705 B headroom; the web ceiling stays 128_000. This cap does
+// not promise headroom for unrelated main changes.
+export const MAIN_ENTRY_BUDGET_BYTES = 487_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {
