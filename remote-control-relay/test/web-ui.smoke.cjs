@@ -534,7 +534,12 @@ async function main() {
     const cursor = JSON.parse(sessionStorage.getItem(`pinvou.web.cursor.${id}`) || '{}');
     return cursor.after_seq === expectedSeq;
   }, { timeout: 8_000 }, endpointId, barrierAfterSeq + 1);
-  record('client_ready 后 replay 事件才推进浏览器游标', true);
+  const replayedCursor = await desktopPage.evaluate(id => (
+    JSON.parse(sessionStorage.getItem(`pinvou.web.cursor.${id}`) || '{}').after_seq
+  ), endpointId);
+  record('client_ready 后 replay 事件才推进浏览器游标',
+    replayedCursor === barrierAfterSeq + 1,
+    `replayedCursor=${replayedCursor} expected=${barrierAfterSeq + 1}`);
 
   const desktopLayout = await waitForSharedUi(desktopPage, 1440, 900);
   record('共享 WebUI 在 1440x900 电脑浏览器完整渲染', desktopLayout.textLength > 10);

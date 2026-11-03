@@ -44,6 +44,18 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// `cleanup_warning` 会随成功负载进入手机可读的命令响应
+/// （`update_memory_preference` / `update_work_context_memory` /
+/// `get_memory_overview` 均在 Web 访问策略内），因此警告里的宿主路径必须
+/// 脱敏：存储根前缀折叠为 `~/.pinvou3`，文件名与错误文本保留，桌面端诊断
+/// 不受影响，绝对路径不跨 relay。同一策略也用于随成功负载出站的
+/// `snapshot_path` / `runtime_path` 展示字段（内容仅作展示，无回读消费方）。
+/// Round-5 复审:委托平台共享的 `redact_storage_prefix`(remote_control
+/// 管理器同一实现),不再维护第三份平行脱敏实现。
+pub(crate) fn display_redacted(path: &Path) -> String {
+    paths::redact_storage_prefix(&path.display().to_string())
+}
+
 /// Stored-text caps per store, shared by the write path (which re-cleans every
 /// incoming text) and by organize validation (which must validate against the
 /// same cap so a passing action is not silently truncated when stored).
@@ -423,7 +435,7 @@ fn resolve_topic_authorities<T: Clone>(
             // instead of a hard error — mirroring the soft handling in
             // reconcile_topic_migration_journals_unlocked.
             if let Err(error) = fs::remove_file(&duplicate) {
-                cleanup_failures.push(format!("{}: {error}", duplicate.display()));
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&duplicate)));
             }
         }
         debug_assert!(authority_path.is_file());
@@ -582,7 +594,9 @@ where
     };
     write_topic_migration_journal_unlocked(journal_path, &journal)?;
     write(new_path, value)?;
-    let raw = fs::read_to_string(new_path)?;
+    // Round-14 复审:提交后复读同样走有界原语(刚写出的文件常态远小于
+    // 上限;并发追加越界按坏档处理)。
+    let raw = crate::platform::filesystem::read_private_data_file(new_path)?;
     let committed = serde_json::from_str::<T>(&raw).map_err(invalid_data)?;
     if !validate(&committed) {
         return Err(io::Error::new(
@@ -597,12 +611,12 @@ where
             continue;
         }
         if let Err(error) = remove(stale) {
-            cleanup_failures.push(format!("{}: {error}", stale.display()));
+            cleanup_failures.push(format!("{}: {error}", display_redacted(&stale)));
         }
     }
     if cleanup_failures.is_empty() {
         if let Err(error) = remove(journal_path) {
-            cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+            cleanup_failures.push(format!("{}: {error}", display_redacted(&journal_path)));
         }
     }
     Ok(TopicMutation {
@@ -670,6 +684,22 @@ fn write_topic_migration_journal_unlocked(
 pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::DeserializeOwned>(
     dir: &Path,
 ) -> io::Result<TopicReconciliation> {
+    reconcile_topic_migration_journals_unlocked_with::<T, _>(dir, |path: &Path| {
+        fs::remove_file(path)
+    })
+}
+
+/// Round-5 复审:移除动作注入缝(同 commit 车道的
+/// `commit_topic_migration_unlocked_with`),让 journal 移除失败这个脱敏点
+/// 能被跨平台确定性测试直接驱动,而不必依赖平台特定语义。
+pub(super) fn reconcile_topic_migration_journals_unlocked_with<T, F>(
+    dir: &Path,
+    remove_file: F,
+) -> io::Result<TopicReconciliation>
+where
+    T: serde::de::DeserializeOwned,
+    F: Fn(&Path) -> io::Result<()>,
+{
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -687,9 +717,13 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
         if !name.starts_with(".topic-migration-") || !name.ends_with(".journal") {
             continue;
         }
-        let journal = match fs::read_to_string(&journal_path).and_then(|raw| {
-            serde_json::from_str::<TopicMigrationJournal>(&raw).map_err(invalid_data)
-        }) {
+        // Round-14 复审:journal 是存储目录内可被外部种植的文件,整读走
+        // 共享有界原语(常规文件门 + 16 MiB 上限);超界/非常规文件按
+        // 坏档同路隔离,不再无界读入。
+        let journal = match crate::platform::filesystem::read_private_data_file(&journal_path)
+            .and_then(|raw| {
+                serde_json::from_str::<TopicMigrationJournal>(&raw).map_err(invalid_data)
+            }) {
             Ok(journal) => journal,
             Err(_) => {
                 // An unparsable journal (truncated write or disk corruption)
@@ -710,12 +744,14 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
             continue;
         }
         let authority = dir.join(&journal.authority_file);
-        let authority_valid = fs::read_to_string(&authority).is_ok_and(|raw| {
-            serde_json::from_str::<T>(&raw).is_ok()
-                && stable_id_with_prefix("authority", &raw) == journal.authority_hash
-        });
+        // Round-14 复审:权威校验复读与 journal 同批收口。
+        let authority_valid = crate::platform::filesystem::read_private_data_file(&authority)
+            .is_ok_and(|raw| {
+                serde_json::from_str::<T>(&raw).is_ok()
+                    && stable_id_with_prefix("authority", &raw) == journal.authority_hash
+            });
         if !authority_valid {
-            fs::remove_file(&journal_path)?;
+            remove_file(&journal_path)?;
             continue;
         }
         let mut journal_cleanup_pending = false;
@@ -724,15 +760,15 @@ pub(super) fn reconcile_topic_migration_journals_unlocked<T: serde::de::Deserial
             if stale == authority || !stale.exists() {
                 continue;
             }
-            if let Err(error) = fs::remove_file(&stale) {
+            if let Err(error) = remove_file(&stale) {
                 journal_cleanup_pending = true;
                 hidden_files.insert(stale.clone());
-                cleanup_failures.push(format!("{}: {error}", stale.display()));
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&stale)));
             }
         }
         if !journal_cleanup_pending {
-            if let Err(error) = fs::remove_file(&journal_path) {
-                cleanup_failures.push(format!("{}: {error}", journal_path.display()));
+            if let Err(error) = remove_file(&journal_path) {
+                cleanup_failures.push(format!("{}: {error}", display_redacted(&journal_path)));
             }
         }
     }
@@ -791,7 +827,7 @@ where
         if path == new_path || path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let same_topic = fs::read_to_string(&path)
+        let same_topic = crate::platform::filesystem::read_private_data_file(&path)
             .ok()
             .and_then(|raw| serde_json::from_str::<T>(&raw).ok())
             .map(|item| {
@@ -874,12 +910,18 @@ pub(super) fn update_work_context_unlocked(
     normalize_work_context(&mut updated);
     let dir = work_context_dir();
     fs::create_dir_all(&dir)?;
-    let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
     let mut stale_paths =
         work_context_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
-    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
-        stale_paths.push(old_path);
+    // Round-11 复审 minor:existing.id 来自磁盘上的记录文件(clean_scalar
+    // 不限字符集),拼进清理路径前必须是单分量普通文件名——种植的
+    // `"id": "../x"` 会让清理臂 remove 到存储目录之外。非普通文件名的旧
+    // 记录跳过清理(新记录照常落盘,孤儿文件等待手工清理)。
+    if is_plain_filename(&existing.id) {
+        let old_path = dir.join(format!("{}.json", existing.id));
+        if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+            stale_paths.push(old_path);
+        }
     }
     let mutation =
         commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {
@@ -919,7 +961,7 @@ pub(super) fn delete_work_context_unlocked(id: &str) -> io::Result<bool> {
             .map(clean_id)
             .map(|file_id| file_id == id)
             .unwrap_or(false);
-        let matched_by_body = fs::read_to_string(&path)
+        let matched_by_body = crate::platform::filesystem::read_private_data_file(&path)
             .ok()
             .and_then(|raw| serde_json::from_str::<WorkContextFile>(&raw).ok())
             .map(|item| clean_id(&item.id) == id || clean_id(&item.topic) == id)
@@ -1649,7 +1691,7 @@ pub(super) fn disabled_runtime_snapshot(session_id: &str) -> io::Result<RuntimeM
     write_text_atomic(&path, "")?;
     Ok(RuntimeMemorySnapshot {
         session_id: session_id.to_string(),
-        runtime_path: path.display().to_string(),
+        runtime_path: display_redacted(&path),
         block: String::new(),
         items: Vec::new(),
     })
@@ -1727,12 +1769,18 @@ pub(super) fn update_preference_unlocked(
     };
     let dir = paths::user_memory_preferences_dir();
     fs::create_dir_all(&dir)?;
-    let old_path = dir.join(format!("{}.json", existing.id));
     let new_path = dir.join(format!("{new_id}.json"));
     let mut stale_paths =
         preference_stale_paths_unlocked(&dir, &new_path, &existing.topic, &updated.topic)?;
-    if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
-        stale_paths.push(old_path);
+    // Round-11 复审 minor:与 update_work_context 同判据——磁盘载入的
+    // existing.id(clean_scalar 不限字符集)拼进清理路径前必须是单分量
+    // 普通文件名,否则种植的 `"id": "../x"` 会让清理臂 remove 到偏好
+    // 目录之外。非普通文件名的旧记录跳过清理。
+    if is_plain_filename(&existing.id) {
+        let old_path = dir.join(format!("{}.json", existing.id));
+        if old_path != new_path && old_path.exists() && !stale_paths.contains(&old_path) {
+            stale_paths.push(old_path);
+        }
     }
     let mutation =
         commit_topic_migration_unlocked(&new_path, &updated, &stale_paths, |committed| {
@@ -1772,7 +1820,7 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
             .map(clean_id)
             .unwrap_or_default();
         let matched_by_file = file_id == id;
-        let matched_by_body = fs::read_to_string(&path)
+        let matched_by_body = crate::platform::filesystem::read_private_data_file(&path)
             .ok()
             .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
             .map(|pref| clean_id(&pref.id) == id)
@@ -1880,7 +1928,7 @@ fn write_preference_unlocked(item: &PendingMemoryItem) -> io::Result<()> {
             if path == target || path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let same_topic = fs::read_to_string(&path)
+            let same_topic = crate::platform::filesystem::read_private_data_file(&path)
                 .ok()
                 .and_then(|raw| serde_json::from_str::<PreferenceFile>(&raw).ok())
                 .map(|pref| normalize_preference_topic(&pref.topic) == topic)
@@ -2240,4 +2288,44 @@ fn compact_pending_memory_items(items: &[PendingMemoryItem]) -> Vec<PendingMemor
         PENDING_MEMORY_ACTIVE_MAX_STORED,
         PENDING_MEMORY_RESOLVED_MAX_STORED,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_redacted_folds_storage_root_prefix() {
+        crate::platform::test_support::with_temp_home("pinvou-redact-test", || {
+            let home = crate::platform::paths::pinvou3_home();
+            let under = home.join("user/memory/snapshot.md");
+            assert_eq!(
+                display_redacted(&under),
+                "~/.pinvou3/user/memory/snapshot.md"
+            );
+            let outside = std::env::temp_dir().join("elsewhere/notes.md");
+            assert_eq!(display_redacted(&outside), outside.display().to_string());
+            // 相对路径原样保留(展示字段不构造相对路径,此处只钉不误伤)。
+            let relative = std::path::Path::new("notes.md");
+            assert_eq!(display_redacted(relative), "notes.md");
+        });
+    }
+
+    #[test]
+    fn runtime_snapshot_payloads_carry_redacted_paths() {
+        crate::platform::test_support::with_temp_home("pinvou-runtime-redact", || {
+            let snapshot = disabled_runtime_snapshot("sess-redact-1").expect("disabled snapshot");
+            assert!(
+                !snapshot.runtime_path.contains(
+                    crate::platform::paths::pinvou3_home()
+                        .display()
+                        .to_string()
+                        .as_str()
+                ),
+                "runtime_path must not leak the absolute storage root: {}",
+                snapshot.runtime_path
+            );
+            assert!(snapshot.runtime_path.starts_with("~/.pinvou3/"));
+        });
+    }
 }

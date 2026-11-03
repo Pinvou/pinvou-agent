@@ -1257,11 +1257,36 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     std::fs::create_dir_all(workspace_dir.join(".ssh")).unwrap();
     std::fs::write(workspace_dir.join(".ssh").join("id_rsa"), "PRIVATE KEY").unwrap();
     std::fs::write(workspace_dir.join(".env"), "TOKEN=secret\n").unwrap();
+    // Round-10 复审 MAJOR:`.env.local` 是组件前缀(`.env.`)家族成员,
+    // 前缀腿只在 `resolve_session_artifact` 的 `.or_else` 接线上,上游
+    // 单元钉钉不到这个消费点——经真实 parse_args+execute 分发驱动(进程
+    // 内,非 CARGO_BIN_EXE 生成;round-11 复审更正措辞),删掉前缀腿即红。
+    std::fs::write(workspace_dir.join(".env.local"), "TOKEN=local\n").unwrap();
     // An ordinary deliverable whose name merely contains a blacklisted string
     // must keep working: the policy is about path components, not substrings.
     std::fs::write(workspace_dir.join("environment.md"), "# notes\n").unwrap();
+    // Round-11 复审 minor:目录作用域尾序列(通用命名凭据文件)在 CLI
+    // 镜像同源生效;读向钉住 `.m2/settings.xml`,写向钉住 `.env.local`。
+    std::fs::create_dir_all(workspace_dir.join(".m2")).unwrap();
+    std::fs::write(workspace_dir.join(".m2").join("settings.xml"), "<server/>").unwrap();
+    // Round-14 复审 M2:`*.env` 后缀腿同样只在 `resolve_session_artifact`
+    // 的 `.or_else` 接线上(上游镜像单元钉驱动的是 check_sensitive_path,
+    // 钉不到这个消费点)——与 round-10 前缀腿的 `.env.local` 同口径,经
+    // 真实分发驱动,删掉后缀腿即红。
+    std::fs::create_dir_all(workspace_dir.join("deploy")).unwrap();
+    std::fs::write(
+        workspace_dir.join("deploy").join("production.env"),
+        "TOKEN=prod\n",
+    )
+    .unwrap();
 
-    for relative in [".ssh/id_rsa", ".env"] {
+    for relative in [
+        ".ssh/id_rsa",
+        ".env",
+        ".env.local",
+        ".m2/settings.xml",
+        "deploy/production.env",
+    ] {
         let error = expect_failed(&["pinvou", "artifacts", "read", &id, relative]);
         assert!(
             error
@@ -1276,6 +1301,21 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     assert_eq!(
         std::fs::read_to_string(workspace_dir.join(".env")).unwrap(),
         "TOKEN=secret\n"
+    );
+    // Round-11 复审 minor:写向同样经前缀/尾序列腿(.env.local 与
+    // .m2/settings.xml 的写拒绝在 resolve_session_artifact 上游,文件不动)。
+    expect_failed(&["pinvou", "artifacts", "write", &id, ".env.local", "--stdin"]);
+    expect_failed(&[
+        "pinvou",
+        "artifacts",
+        "write",
+        &id,
+        ".m2/settings.xml",
+        "--stdin",
+    ]);
+    assert_eq!(
+        std::fs::read_to_string(workspace_dir.join(".m2").join("settings.xml")).unwrap(),
+        "<server/>"
     );
 
     let outcome =

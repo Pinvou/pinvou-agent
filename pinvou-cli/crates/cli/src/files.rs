@@ -271,10 +271,35 @@ fn translate_ingest_error(message: &str) -> String {
     }
     // `platform::path_policy::check_sensitive_components`.
     if let Some(rest) = message.strip_prefix("path ") {
+        // 前缀/后缀变体的分隔符更长,必须先于精确组件变体尝试,否则会把
+        // "prefix .env." / "suffix .env" 整体当成组件名回显。
+        if let Some((path, prefix)) = rest.split_once(" crosses sensitive component prefix ") {
+            return format!(
+                "{path} crosses the credential path component prefix `{prefix}`; files under \
+                 credential locations are never read into a model context"
+            );
+        }
+        if let Some((path, suffix)) = rest.split_once(" crosses sensitive component suffix ") {
+            return format!(
+                "{path} crosses the credential path component suffix `{suffix}`; files under \
+                 credential locations are never read into a model context"
+            );
+        }
         if let Some((path, component)) = rest.split_once(" crosses sensitive component ") {
             return format!(
                 "{path} crosses the credential path component `{component}`; files under \
                  credential locations are never read into a model context"
+            );
+        }
+        // Round-14 review: the directory-scoped-tail message this PR's third
+        // blocklist list made reachable (`path X crosses a directory-scoped
+        // credential file`, from `blocked_path_tail_hit`) gets the same
+        // family guidance copy its four siblings carry; without the arm it
+        // falls through verbatim.
+        if let Some(path) = rest.strip_suffix(" crosses a directory-scoped credential file") {
+            return format!(
+                "{path} sits under a credential directory sequence; files under credential \
+                 locations are never read into a model context"
             );
         }
         if let Some(path) = rest.strip_suffix(" is in system-sensitive area") {
@@ -485,4 +510,73 @@ fn translate_ingest_warning(warning: &str) -> String {
         }
     }
     warning.to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-12 复审:后缀变体(`*.env` 家族)的翻译臂——分隔符同样比
+    /// 精确组件变体长,必须先于后者尝试,否则 "`suffix .env`" 会被整体
+    /// 当组件名回显。
+    #[test]
+    fn ingest_error_translation_splits_the_component_suffix_delimiter_first() {
+        let upstream = "path /home/u/deploy/production.env crosses sensitive component suffix .env";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential path component suffix `.env`"),
+            "the suffix arm must win: {translated}"
+        );
+        assert!(
+            !translated.contains("`suffix .env`"),
+            "the exact-component split must not echo the suffix delimiter's tail: {translated}"
+        );
+    }
+
+    /// Round-5 复审:前缀变体分隔符更长、必须先于精确组件变体尝试——
+    /// 顺序颠倒会把 "`prefix .env.`" 整体当组件名回显。此前的翻译臂
+    /// 没有任何单元测试钉住(上游消息形状见 path_policy 的 format!)。
+    #[test]
+    fn ingest_error_translation_splits_the_component_prefix_delimiter_first() {
+        let upstream = "path /home/u/.env.local crosses sensitive component prefix .env.";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential path component prefix `.env.`"),
+            "the prefix arm must win: {translated}"
+        );
+        assert!(
+            !translated.contains("`prefix .env.`"),
+            "the exact-component split must not echo the prefix delimiter's tail: {translated}"
+        );
+
+        let upstream = "path /home/u/keys/id_rsa crosses sensitive component id_rsa";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential path component `id_rsa`"),
+            "the exact-component arm must still fire: {translated}"
+        );
+
+        let upstream = "path /etc/shadow is in system-sensitive area";
+        assert!(
+            translate_ingest_error(upstream).contains("system-sensitive area"),
+            "the system-area arm must still fire"
+        );
+    }
+
+    /// Round-14 review: the directory-scoped-tail message (reachable since
+    /// the `BLOCKED_PATH_TAILS` leg joined `check_sensitive_components`)
+    /// must get the family guidance copy instead of the raw pass-through.
+    #[test]
+    fn ingest_error_translation_covers_the_directory_scoped_tail_arm() {
+        let upstream = "path /home/u/.m2/settings.xml crosses a directory-scoped credential file";
+        let translated = translate_ingest_error(upstream);
+        assert!(
+            translated.contains("credential directory sequence"),
+            "the tail arm must add the family guidance: {translated}"
+        );
+        assert!(
+            !translated.starts_with("path /home/u/.m2/settings.xml crosses"),
+            "the raw message must not pass through verbatim: {translated}"
+        );
+    }
 }

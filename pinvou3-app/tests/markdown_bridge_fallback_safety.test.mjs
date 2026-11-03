@@ -8,9 +8,9 @@
 // renderMarkdown 的返回仍由 ChatView.jsx 的 dangerouslySetInnerHTML 消费，
 // 原文返回会让 <img onerror=...> 等危险输入原样注入（fail-open）。
 //
-// 现有 render_markdown.test.js 把正则实现复制了一份，不执行真实 bridge 代码，
-// 覆盖不到「共享脚本缺失」这条路径。本测试改为在 vm 里加载真实 web/bridge.js，
-// 在「同时移除两个渲染器」的条件下断言危险输入被转义。
+// 原 render_markdown.test.js 曾把正则实现复制一份、不执行真实 bridge 代码，
+// 覆盖不到「共享脚本缺失」这条路径（该文件已随 #296 测试清理删除）。本测试改为
+// 在 vm 里加载真实 web/bridge.js，在「同时移除两个渲染器」的条件下断言危险输入被转义。
 //
 // 注：tauri/bridge.js 的 renderMarkdown 与 web 逐字相同（同一修复），但完整加载
 // tauri bridge 需要大量 __PINVOU_TAURI_BRIDGE_FEATURES__ 注册 mock，成本不匹配；

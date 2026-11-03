@@ -332,7 +332,12 @@ fn finish_organize_report(report: &mut MemoryOrganizeReport) {
 /// Most recent organize reports, newest first; empty when the file is missing or
 /// corrupt.
 pub fn load_organize_history() -> Vec<MemoryOrganizeReport> {
-    let Ok(raw) = std::fs::read_to_string(io::organize_history_path()) else {
+    // Round-14 review: the history file lives in the store dir and is
+    // externally plantable, so the read goes through the shared bounded
+    // primitive like every other memory-store read; an oversize/planted
+    // file simply reads as absent.
+    let Ok(raw) = crate::platform::filesystem::read_private_data_file(&io::organize_history_path())
+    else {
         return Vec::new();
     };
     // Tolerant per-entry parsing: one corrupt entry (partial write / manual edit)
