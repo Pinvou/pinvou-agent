@@ -44,6 +44,10 @@ use pinvou3_lib::features::sessions::SessionStore;
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
+/// Stable refusal code for the sensitive-component gate (round-16 复审 NIT:
+/// 单一命名定义点;契约钉按此拼写断言,门删除或码漂移都转红)。
+const ARTIFACT_CROSSES_SENSITIVE_COMPONENT: &str = "artifact_crosses_sensitive_component";
+
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_SUFFIXES as SENSITIVE_PATH_COMPONENT_SUFFIXES;
 /// The credential-component blocklist, IMPORTED from
@@ -411,8 +415,11 @@ fn resolve_session_artifact(
         .or_else(|| crosses_sensitive_component_suffix(&canonical).map(str::to_string))
         .or(directory_scoped_tail);
     if let Some(blocked) = blocked {
+        // Round-16 复审(NIT):拒绝码此前是内联 format! 字面量;提为常量
+        // 使单一命名定义点与 sessions_contract 的读/写方向钉共享同一拼写
+        // (钉仍按字面量断言以检测漂移)。
         return Err(CliError::failed(format!(
-            "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
+            "{ARTIFACT_CROSSES_SENSITIVE_COMPONENT}: {} crosses `{blocked}`; credential paths are \
              never read or written through this command",
             canonical.display()
         )));

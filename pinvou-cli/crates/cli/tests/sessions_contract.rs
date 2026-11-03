@@ -1309,10 +1309,12 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     // 门删除转红;`expect_failed` 返回 CliError,消息携带稳定码。
     for target in [".env.local", ".m2/settings.xml"] {
         let error = expect_failed(&["pinvou", "artifacts", "write", &id, target, "--stdin"]);
+        // Round-16 复审(NIT):与读向钉同一 starts_with 前缀断言——码是
+        // 消息的稳定前缀,前缀断言比 contains 略强且两侧一致。
         assert!(
             error
                 .to_string()
-                .contains("artifact_crosses_sensitive_component"),
+                .starts_with("artifact_crosses_sensitive_component"),
             "write to {target} must be refused by the sensitive gate, not the markdown \
              suffix check; got: {error}"
         );
