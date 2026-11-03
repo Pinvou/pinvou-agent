@@ -978,6 +978,48 @@ async function connectWithCapabilities(events, listener) {
     'a young CONNECTING socket must keep its full wedge window');
 }
 
+// Round-15 复审:CLOSING 态此前被看门狗永久忽略——静默掉链路上的投机
+// close 可能永远收不到 close 事件,「已连接但死链路」楔在客户端自己的
+// 常量之外。超过同一 wedge 窗口的 CLOSING socket 必须被丢弃并走退避
+// 重连;窗口内的年轻 CLOSING socket 不受影响;OPEN socket 不受影响。
+{
+  const stuck = bootClient();
+  const stuckClient = stuck.window.PinvouWebClient;
+  await stuckClient.policyPromise;
+  const stuckSocket = stuck.MockWebSocket.instances[0];
+  stuckSocket.open();
+  stuckClient.lastInboundAt = Date.now();
+  stuckSocket.readyState = stuck.MockWebSocket.CLOSING;
+
+  stuckClient._livenessCheck();
+  assert.equal(stuck.MockWebSocket.instances.length, 1,
+    'the first observation of a CLOSING socket only starts its wedge clock');
+  assert.equal(stuckClient.closingStartedAt > 0, true,
+    'the wedge clock must be recorded for the CLOSING socket');
+
+  stuckClient.closingStartedAt = Date.now() - 46_000;
+  stuckClient._livenessCheck();
+  assert.equal(stuckClient.socket, null,
+    'a CLOSING socket wedged past the window must be dropped');
+  takeReconnectTimer(stuck.timers).callback();
+  assert.equal(stuck.MockWebSocket.instances.length, 2,
+    'the rescue must funnel through the ordinary backoff reconnect');
+  assert.notEqual(stuck.MockWebSocket.instances[1], stuckSocket,
+    'the dead socket must not be reused');
+
+  const young = bootClient();
+  const youngClosing = young.window.PinvouWebClient;
+  await youngClosing.policyPromise;
+  const youngSocket = young.MockWebSocket.instances[0];
+  youngSocket.open();
+  youngClosing.lastInboundAt = Date.now();
+  youngSocket.readyState = young.MockWebSocket.CLOSING;
+  youngClosing.closingStartedAt = Date.now();
+  youngClosing._livenessCheck();
+  assert.equal(young.MockWebSocket.instances.length, 1,
+    'a young CLOSING socket must keep its full wedge window');
+}
+
 // 页面重新可见：未连接时立即重连；不得凭空丢弃健康的 OPEN 连接（后台标签页
 // 定时器被节流，唤醒后的存活判断交给看门狗与 online 事件）。
 {

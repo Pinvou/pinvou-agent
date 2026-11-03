@@ -246,6 +246,15 @@ for (const command of [
     assert.ok(defined.has(command),
       `${command} is anti-pinned but no longer defined in remote_control.rs`);
   }
+  // Round-15 复审 M1:反向存在钉——Web 策略放行的 web_access_* 必须仍
+  // 定义于 remote_control.rs。只删 Rust 命令而策略留名时,正向钉全绿,
+  // 手机在运行时 invoke 到不存在的命令(此前只有 Rust→策略单方向)。
+  for (const command of allowed) {
+    if (command.startsWith('web_access_')) {
+      assert.ok(defined.has(command),
+        `${command} is allowed by the web policy but no longer defined in remote_control.rs`);
+    }
+  }
 }
 
 // Round-11 复审 M4:事件半边的反钉——web_access:* 事件全部管理专用
@@ -253,7 +262,10 @@ for (const command of [
 // event_subscribe 是订阅控制)。结构化扫描 Rust 管理器与 JS 桥里的
 // web_access:* 字面量:任何一个都不允许出现在 Web 策略事件名单里,
 // 新增同名事件即被扫进(此前事件半边没有任何反向钉)。
-for (const source of [remoteControlManager, desktopRemoteControlBridge]) {
+// Round-15 复审 M5:命令层(app/commands/remote_control.rs)也emit
+// web_access:* 字面量(转发/状态通道),此前只有 manager 与 JS 桥被扫,
+// 命令层新增同名事件逃过反钉。
+for (const source of [remoteControlManager, desktopRemoteControlBridge, remoteControlCommands]) {
   for (const match of source.matchAll(/"web_access:([a-z_]+)"/g)) {
     const eventName = `web_access:${match[1]}`;
     assert.equal(allowedEvents.has(eventName), false,
@@ -1137,8 +1149,13 @@ assert.match(composerShared, /bridge\.models\.switchModel\(activeSessionId, id\)
 assert.match(settingsView, /\{canManageModels && editingModel && \(/);
 assert.match(toolStoreView, /if \(!can\('toolStoreMutations'\)\) \{/);
 assert.match(toolStoreView, /const canMutateToolStore = can\('toolStoreMutations'\);/);
-assert.ok((toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length >= 4,
-  'all tool install, uninstall, and import handlers must fail closed in WebUI');
+// Round-15 复审 M2:下限 >=4 会容忍删掉 8 个卫兵中的 4 个仍全绿;收敛
+// 为精确计数,新增卫兵时随钉更新(与本文件其他精确计数钉同约定)。
+assert.equal(
+  (toolStoreView.match(/if \(!canMutateToolStore(\s*\|\|\s*busyRef\.current)?\) return;/g) || []).length,
+  8,
+  'all tool install, uninstall, and import handlers must fail closed in WebUI; \
+   if a guard was deliberately removed or added, update this count consciously');
 // 回收站 Web 只读降级：list_recycled_plugins 为只读命令（access-policy 放行），
 // 恢复/导出/彻底删除的动作按钮整块挂 canMutateToolStore 门控，处理函数自身
 // fail-closed（含 purge——其确认弹窗入口虽由门控按钮触发，处理函数仍须自守）。

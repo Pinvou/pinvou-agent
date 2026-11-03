@@ -186,6 +186,9 @@
       this.lastInboundAt = 0;
       // Set on every connect(): wedge-window start for the liveness watchdog.
       this.connectStartedAt = 0;
+      // First CLOSING observation by the watchdog (same wedge rescue);
+      // cleared on every connect() and speculative close.
+      this.closingStartedAt = null;
       this.livenessTimer = null;
       this.pending = new Map();
       this.listeners = new Map();
@@ -286,6 +289,7 @@
       // a CONNECTING socket may be abandoned.
       this.lastInboundAt = Date.now();
       this.connectStartedAt = Date.now();
+      this.closingStartedAt = null;
       socket.addEventListener("open", () => {
         this.sendRaw({
           v: protocolVersion,
@@ -402,6 +406,23 @@
         try { this.socket.close(); } catch { /* already closing */ }
         return;
       }
+      // Round-15 复审:CLOSING 态此前被永久忽略——投机 close() 在静默掉
+      // 的链路上(NAT 超时、无 online 事件)可能永远收不到 close 事件,
+      // 引擎的 closing-handshake 超时差异让「已连接但死链路」楔在客户端
+      // 自己的 45s/120s 常量之外。与 CONNECTING 楔口同一救援:超过同一
+      // 窗口仍在 CLOSING,丢弃 socket 引用并走普通退避重连(非投机:
+      // 该 socket 从未证明存活)。
+      if (this.socket.readyState === WebSocket.CLOSING) {
+        if (!this.closingStartedAt) {
+          this.closingStartedAt = Date.now();
+          return;
+        }
+        if (Date.now() - this.closingStartedAt <= LIVENESS_CONNECT_WEDGE_TIMEOUT_MS) return;
+        this.closingStartedAt = null;
+        this.socket = null;
+        this.scheduleReconnect("连接已断开，正在重试…");
+        return;
+      }
       if (this.socket.readyState !== WebSocket.OPEN) return;
       if (Date.now() - this.lastInboundAt <= LIVENESS_SILENCE_TIMEOUT_MS) return;
       // A cycle that never became usable — no join ack, or an ack whose
@@ -417,6 +438,7 @@
     // copies that relied on an edit-together comment — one method removes the
     // drift hazard instead of pinning it.
     speculativeClose(socket) {
+      this.closingStartedAt = null;
       if (!this.joined || (this.awaitingCapabilitySnapshot && !this.desktopCapabilitiesReady)) {
         this.speculativeFailures += 1;
       }

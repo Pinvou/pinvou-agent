@@ -393,8 +393,12 @@ for (const [domain, files] of Object.entries(protocolSources)) {
     ];
   });
   const hash = crypto.createHash('sha256').update(signatures.join('\n')).digest('hex');
-  if (!expectedProtocolHashes[domain]) console.log(`${domain}: ${hash}`);
-  else assert.equal(hash, expectedProtocolHashes[domain], `${domain} bridge protocol changed`);
+  // Round-15 复审 M4:缺条目曾是 fail-open(打一行日志即绿)——新增或
+  // 改名 domain 会在无钉状态下溜走。缺条目现在显式红:有意识地重算并
+  // 落表后才允许通过。
+  assert.ok(expectedProtocolHashes[domain],
+    `${domain} must have a pinned protocol hash; recompute it consciously and add the entry (current: ${hash})`);
+  assert.equal(hash, expectedProtocolHashes[domain], `${domain} bridge protocol changed`);
 }
 
 // The shared payload base carries the invoke/listen bodies that the batch dedup
