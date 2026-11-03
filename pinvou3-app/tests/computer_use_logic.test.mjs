@@ -210,7 +210,7 @@ assert.deepEqual(
 // may only ever under-claim isolation, never over-claim it.
 assert.equal(computerUseTarget('virtual'), 'virtual', 'the exact wire value resolves to virtual');
 assert.equal(computerUseTarget('physical'), 'physical', 'an explicit physical resolves to physical');
-assert.equal(computerUseTarget(undefined), 'physical', 'a missing target (old payload) falls back to physical');
+assert.equal(computerUseTarget(), 'physical', 'a missing target (old payload) falls back to physical');
 assert.equal(computerUseTarget(null), 'physical', 'a null target falls back to physical');
 assert.equal(computerUseTarget(''), 'physical', 'an empty target falls back to physical');
 assert.equal(computerUseTarget('VIRTUAL'), 'physical', 'the wire value is case-sensitive: anything else is physical');

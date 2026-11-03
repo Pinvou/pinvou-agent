@@ -100,7 +100,7 @@ use super::super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS,
     HOLD_CANCEL_POLL_MS, MACOS_UNICODE_STRING_UTF16_UNITS, MAX_SCROLL_CLICKS,
     MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints,
-    map_scroll, normalize_typed_newlines, split_type_runs, utf16_chunks,
+    normalize_typed_newlines, split_type_runs, utf16_chunks,
 };
 // TCC preflights and their user-facing error strings are shared with the
 // physical macOS backend (same grants, same System Settings guidance — a
@@ -346,7 +346,10 @@ unsafe fn build_descriptor() -> Result<Retained<AnyObject>, ComputerUseError> {
     // SAFETY: alloc is sent to the class obtained from the Obj-C runtime;
     // the Allocated result is consumed by init_or_err immediately.
     let allocated: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
-    let descriptor = init_or_err(allocated, "CGVirtualDisplayDescriptor alloc/init failed")?;
+    // SAFETY: the receiver is an Allocated descriptor freshly built above;
+    // init_or_err itself only sends the probed `init` selector.
+    let descriptor =
+        unsafe { init_or_err(allocated, "CGVirtualDisplayDescriptor alloc/init failed")? };
 
     // SAFETY: each setter below is probed (responds_to) on this exact class
     // before anything is sent; arguments are encoded primitives, CGSize, or
@@ -436,7 +439,9 @@ unsafe fn apply_mode(display: &AnyObject, mode: &AnyObject) -> Result<(), Comput
     };
     // SAFETY: alloc/init as above.
     let allocated: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
-    let settings = init_or_err(allocated, "CGVirtualDisplaySettings alloc/init failed")?;
+    // SAFETY: the receiver is an Allocated settings object freshly built
+    // above; init_or_err itself only sends the probed `init` selector.
+    let settings = unsafe { init_or_err(allocated, "CGVirtualDisplaySettings alloc/init failed")? };
     // SAFETY: setModes:/applySettings: are probed; the slice builds an
     // NSArray that retains the mode for its lifetime.
     unsafe {
@@ -1787,7 +1792,17 @@ impl ComputerUseBackend for MacosVirtualDisplayBackend {
             ui_tree: false,
             target: DisplayTarget::Virtual,
             target_note: capability_target_note(),
-            notes: capability_notes(),
+            notes: {
+                let mut notes = capability_notes();
+                // CGEventPostToPid needs the Accessibility TCC grant just
+                // like the physical backend's CGEvent path; surface the
+                // live grant state so the input note is honest per machine.
+                if !accessibility_granted() {
+                    notes.push_str("\ninput additionally requires the Accessibility permission: ");
+                    notes.push_str(&accessibility_error().to_string());
+                }
+                notes
+            },
         }
     }
 
@@ -2267,6 +2282,9 @@ pub(crate) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
 #[cfg(test)]
 mod tests {
     use super::*;
+    // map_scroll is only exercised by the scroll-parity pins; keeping it
+    // out of the lib-target imports avoids an unused-import deny there.
+    use super::super::helpers::map_scroll;
 
     /// The private class-name table is load-bearing: these exact names are
     /// the Apple CGVirtualDisplay private API surface (DeskPad lineage).

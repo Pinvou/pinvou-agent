@@ -1482,7 +1482,7 @@ function emit(harness, event, payload) {
   // Session path mirrors the preference.
   const perSession = createHarness({ initialState: { enabled: true }, status: virtualStatus });
   await perSession.feature.refreshStatus('s1');
-  let last = perSession.published().at(-1);
+  const last = perSession.published().at(-1);
   assert.equal(last.preferVirtualDisplay, false,
     'the session read must publish preferVirtualDisplay');
   assert.equal(last.virtualDisplayState, 'ready',
