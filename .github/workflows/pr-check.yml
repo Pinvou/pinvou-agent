@@ -3119,13 +3119,15 @@ jobs:
   # Cache policy: this leg gets the same restorable treatment as
   # macos-rust-check — the save/restore fallback, separate-key, cached-dir
   # and rmeta-only rationale are documented once at the Cargo cache step below.
-  # Still compile-only (no test execution): cli-test already runs the CLI
+  # Mostly compile-only (no suite execution): cli-test already runs the CLI
   # contract suite on Linux, and executing it here too would double the macOS
-  # runner minutes for a second copy of behavior Linux already exercises —
-  # sound while no #[cfg(all(test, target_os = "macos"))] module exists (the
-  # round-42 audit found none); the Windows leg now RUNS its platform-gated
-  # pinvou-cli tests for exactly the reason this rationale does not extend
-  # there: a platform-gated test compiles on no other leg at all.
+  # runner minutes for a second copy of behavior Linux already exercises.
+  # Compile-only stopped being fully sound once the workspace carried a
+  # macOS-gated test (the round-42 audit found none; the round-16 follow-up
+  # wave added the first), so the gated pin RUNS below with the Windows leg's
+  # filtered pattern — a platform-gated test compiles on no other leg at all,
+  # and a rename must fail loudly instead of silently degrading this leg back
+  # to compile-only.
   # Triggers: ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
   # (a PR that is green alone can still combine into a macOS-only compile break,
   # and Linux cannot type-check #[cfg(target_os = "macos")] code, so "Linux
@@ -3223,6 +3225,35 @@ jobs:
         run: >-
           cargo check --manifest-path pinvou-cli/Cargo.toml
           -p adapter-gaia --features test-support --all-targets --locked
+
+      # Round-16 follow-up review: the macOS-gated production alias-flag pin
+      # (system_prefix_hits_run_through_the_production_alias_flag) compiles on
+      # no other leg, so compile-only could not detect the regression it pins
+      # (flipping the production flag back to false reopens the /private/etc/*
+      # lanes with every Linux lane green — the round-6 M2 hole). Same
+      # filtered-run pattern as the Windows leg: zero-match guard keeps a
+      # rename from becoming a silent pass; the run stays filtered rather than
+      # running the whole CLI lib suite because onboarding that suite to macOS
+      # belongs to a dedicated change.
+      - name: pinvou-cli macOS-gated unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          run_filtered() {
+            log="/tmp/pinvou_cli_macos_tests.log"
+            cargo "$@" 2>&1 | tee "$log"
+            grep -qE 'running [1-9][0-9]* tests?' "$log" || {
+              echo "FAIL: filter '$*' matched 0 tests (a renamed test must not become a silent pass)" >&2
+              exit 1
+            }
+            grep -q "^test result: ok" "$log" || {
+              echo "FAIL: filter '$*' had failing tests" >&2
+              exit 1
+            }
+          }
+          run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked system_prefix_hits_run_through_the_production_alias_flag
+          echo "MACOS_CLI_TIMING step=cli-macos-tests elapsed_seconds=$((SECONDS-started)) status=0"
 
   # LoongArch64 交叉编译检查:GitHub 没有 loong64 runner,目标编译只能交叉,
   # 而发布 job 的完整交叉构建(packaging + ASR/knowledge 交叉产物)太重,
