@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   bannerErrorReset,
   computerUseConsentView,
+  computerUseTarget,
   extractComputerUseScreenshotPath,
   formatComputerUseConfirmAction,
 } from '../src/features/computer-use/computer-use-logic.js';
@@ -200,6 +201,28 @@ assert.deepEqual(
   computerUseConsentView({ enabled: true, granted: true, stopped: false }),
   { enabled: true, stopped: false, showBanner: true, grantRequest: null, confirmRequest: null },
   'granted and not stopped keeps the non-dismissible banner visible',
+);
+
+// ── Consent target resolution (fail-neutral) ─────────────────────────────
+// Newer backends mark grant/confirm payloads (and the granted slice) with
+// target "virtual" when the agent works inside the isolated virtual display.
+// A missing, null, or malformed value MUST resolve to "physical": the dialogs
+// may only ever under-claim isolation, never over-claim it.
+assert.equal(computerUseTarget('virtual'), 'virtual', 'the exact wire value resolves to virtual');
+assert.equal(computerUseTarget('physical'), 'physical', 'an explicit physical resolves to physical');
+assert.equal(computerUseTarget(undefined), 'physical', 'a missing target (old payload) falls back to physical');
+assert.equal(computerUseTarget(null), 'physical', 'a null target falls back to physical');
+assert.equal(computerUseTarget(''), 'physical', 'an empty target falls back to physical');
+assert.equal(computerUseTarget('VIRTUAL'), 'physical', 'the wire value is case-sensitive: anything else is physical');
+assert.equal(computerUseTarget('virtual '), 'physical', 'a padded near-match is physical, not virtual');
+assert.equal(computerUseTarget(0), 'physical', 'a non-string value falls back to physical');
+// computerUseConsentView itself passes the request objects through by
+// reference, so the target rides along unchanged (no reshaping, no copying).
+const virtualGrantRequest = { sessionId: 's1', target: 'virtual' };
+assert.deepEqual(
+  computerUseConsentView({ enabled: true, grantRequest: virtualGrantRequest }),
+  { enabled: true, stopped: false, showBanner: false, grantRequest: virtualGrantRequest, confirmRequest: null },
+  'a virtual grant request passes through to the view untouched',
 );
 
 // ── Structured confirm description rendering ─────────────────────────────
@@ -579,16 +602,21 @@ function allText(root) {
 
 const dialogCopy = {
   bannerTitle: 'Agent is controlling your computer',
+  bannerTitleVirtual: 'Agent is working in an isolated virtual display',
   bannerNote: 'note',
   bannerStop: 'Stop control',
-  grantTitle: 'Grant',
+  grantTitle: 'Grant control of your computer',
+  grantTitleVirtual: 'Grant an isolated virtual display',
   grantDesc: 'desc',
+  grantDescVirtual: 'The agent works in an isolated virtual display, not on your screen.',
   grantAllow: 'Allow',
   grantDeny: 'Deny',
   unreadableTarget: '【読み取れないターゲット】',
   confirmTitle: 'Confirm this action',
   confirmActionLabel: 'Action',
   confirmElementLabel: 'Target element',
+  confirmTargetVirtual: 'Target: isolated virtual display',
+  confirmTargetPhysical: 'Target: your screen',
   confirmOnce: 'Allow this once',
   confirmDeny: 'Deny',
   fullTextWarning: 'The agent will type exactly this text.',
@@ -613,7 +641,7 @@ function confirmSlice(confirmId, typePreviewFull) {
 }
 
 try {
-  const { ComputerUseDialogs } = await vite.ssrLoadModule('/src/features/computer-use/ComputerUseConsent.jsx');
+  const { ComputerUseBanner, ComputerUseDialogs } = await vite.ssrLoadModule('/src/features/computer-use/ComputerUseConsent.jsx');
   const runtime = createReactRuntime();
   globalThis.__pinvouConsentReact = runtime;
   let tree = null;
@@ -785,6 +813,67 @@ try {
     'a structured text_preview feeds the inline preview block');
   assert.equal(findByTestId(tree, 'computer-use-confirm-text-too-long'), null,
     'a shipped preview suppresses the too-long hint');
+
+  // ── UI-5. Target-aware consent copy (virtual display vs physical screen) ──
+  // The grant dialog must say explicitly that a "virtual" request works
+  // inside the isolated virtual display and NOT on the user's screen; the
+  // confirm dialog shows a small target line; a missing field must render
+  // the physical copy everywhere (fail-neutral). Allow/Deny semantics,
+  // buttons and testids stay identical across both variants.
+  runtime.reset();
+  tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1', target: 'virtual' } });
+  let grantText = allText(tree);
+  assert.ok(grantText.includes(dialogCopy.grantTitleVirtual),
+    'a virtual grant request renders the virtual title');
+  assert.ok(grantText.includes(dialogCopy.grantDescVirtual),
+    'a virtual grant request renders the virtual description');
+  assert.equal(grantText.includes(dialogCopy.grantTitle), false,
+    'the physical title must not leak into the virtual dialog');
+  assert.ok(findByTestId(tree, 'computer-use-grant-allow'), 'the Allow button stays');
+  assert.ok(findByTestId(tree, 'computer-use-grant-deny'), 'the Deny button stays');
+  tree = render({ enabled: true, stopped: false, grantRequest: { sessionId: 's1' } });
+  grantText = allText(tree);
+  assert.ok(grantText.includes(dialogCopy.grantTitle),
+    'a request without the target field renders the physical title');
+  assert.equal(grantText.includes(dialogCopy.grantTitleVirtual), false,
+    'the virtual copy must not appear for a target-less request');
+  assert.equal(findByTestId(tree, 'computer-use-grant-allow').props.disabled, false,
+    'Allow stays enabled in the physical fallback dialog');
+
+  const virtualConfirmSlice = { enabled: true, granted: true, stopped: false,
+    confirmRequest: { sessionId: 's1', action: 'type', element: 'Reply box',
+      confirmId: 'cu-t-v', target: 'virtual' } };
+  tree = render(virtualConfirmSlice);
+  let confirmText = allText(tree);
+  assert.ok(confirmText.includes(dialogCopy.confirmTargetVirtual),
+    'a virtual confirm renders the virtual target line');
+  assert.equal(confirmText.includes(dialogCopy.confirmTargetPhysical), false,
+    'the physical target line must not leak into the virtual dialog');
+  tree = render(confirmSlice('cu-t-p'));
+  confirmText = allText(tree);
+  assert.ok(confirmText.includes(dialogCopy.confirmTargetPhysical),
+    'a confirm without the target field renders the physical target line');
+  assert.equal(confirmText.includes(dialogCopy.confirmTargetVirtual), false,
+    'the virtual target line must not appear without the field');
+
+  // Banner: the virtual grant reads less alarming but keeps role="alert",
+  // the Stop button and the testid; a slice without grantedTarget (old
+  // backend, or a grant decided before the field existed) stays physical.
+  const bannerSlice = (extra) => ({ enabled: true, granted: true, stopped: false, ...extra });
+  let bannerTree = runtime.render(ComputerUseBanner, { slice: bannerSlice({ grantedTarget: 'virtual' }), copy: dialogCopy });
+  const bannerNode = findByTestId(bannerTree, 'computer-use-banner');
+  assert.ok(bannerNode, 'the banner testid stays on the virtual variant');
+  assert.equal(bannerNode.props.role, 'alert', 'role=alert survives the virtual variant');
+  assert.ok(findByTestId(bannerTree, 'computer-use-stop'), 'the Stop button survives the virtual variant');
+  assert.ok(allText(bannerTree).includes(dialogCopy.bannerTitleVirtual),
+    'a virtual grant renders the virtual banner title');
+  assert.equal(allText(bannerTree).includes(dialogCopy.bannerTitle), false,
+    'the physical banner title must not leak into the virtual banner');
+  bannerTree = runtime.render(ComputerUseBanner, { slice: bannerSlice(), copy: dialogCopy });
+  assert.ok(allText(bannerTree).includes(dialogCopy.bannerTitle),
+    'a slice without grantedTarget renders the physical banner title');
+  assert.equal(allText(bannerTree).includes(dialogCopy.bannerTitleVirtual), false,
+    'the virtual banner title must not appear without the field');
 } finally {
   await vite.close();
   rmSync(stubDir, { recursive: true, force: true });

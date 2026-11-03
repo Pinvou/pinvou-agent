@@ -21,6 +21,19 @@ const files = [
   // refactored to symbolic labels first; disclosed rather than smuggled
   // past an allowlist.
   'src/features/chat/session-mention.js',
+  // Computer-use consent surfaces (virtual-display wave): every string comes
+  // from uiComputerUse in shared/i18n (zh/en/ja), including the virtual
+  // banner note (bannerNoteVirtual) and the target-aware dialog copy.
+  'src/features/computer-use/ComputerUseConsent.jsx',
+  // Pure view-function logic for the same feature: carries no UI copy.
+  'src/features/computer-use/computer-use-logic.js',
+  // SettingsView is NOT listed: the scanner reports 2 pre-existing CJK
+  // literals in it — the language picker's endonym labels ('中文', '日本語' on
+  // the SSegmented options line), which are DELIBERATE: a language selector
+  // names every language in its own script, so these are not single-language
+  // UI copy and localizing them would be wrong. Disclosed per the ChatView
+  // precedent rather than weakening the scanner with an endonym exemption.
+  // All other SettingsView copy goes through shared/i18n.
 ];
 // 用 fileURLToPath 而非 new URL(...).pathname：后者在 Windows 上会得到 '/D:/...',
 // 再经 path.resolve 会拼成 'D:\D:\...' 双盘符路径导致 ENOENT。

@@ -1659,7 +1659,7 @@ function hasStoredCredential(record) {
      * rapid clicks cannot interleave contradictory set_enabled calls
      * (matching the consent dialog's single-flight standard).
      */
-    const ComputerUseSettingSection = ({ t }) => {
+    const ComputerUseSettingSection = ({ t, platformCapabilities }) => {
       const slice = useBridgeState(['computerUse']);
       const computerUse = (slice && slice.computerUse) || {};
       const [actionError, setActionError] = useState('');
@@ -1671,6 +1671,45 @@ function hasStoredCredential(record) {
       // consent dialog's useConsentAction flightRef.
       const flightRef = useRef({ busy: false, settledAt: 0 });
       const unsupported = computerUse.platformSupported === false;
+      // Virtual-display preference row (frozen status contract: the backend
+      // always reports `preferVirtualDisplay`). The switch binds to the
+      // PERSISTED PREFERENCE, not the derived state (review finding): an
+      // active virtual session with the preference off must show the switch
+      // OFF while the state-driven hint line below keeps describing the live
+      // session ("Agent is working in an isolated virtual display…") — the
+      // live backend's target was decided once, at creation, so the state
+      // legitimately disagrees with the preference. While the projection is
+      // still "unknown" (no authoritative read yet), the row stays RENDERED
+      // (discoverability: the user must see the option exists before the
+      // first status lands; hiding it here would fight the section's
+      // unsupported gate above, which remains the only hider) but the switch
+      // is disabled AND unchecked: unchecked because the slice's default
+      // (true, mirroring the backend default) is not an authoritative answer,
+      // and a checked-ON-disabled switch would assert a preference nobody
+      // confirmed yet. No authoritative read also means no preference write
+      // is submitted (an older backend without the command would only produce
+      // a confusing failure). Same single-flight pattern as the master toggle
+      // above, with its own ref so the two switches never block each other.
+      const virtualState = computerUse.virtualDisplayState || 'unknown';
+      const virtualUnknown = virtualState === 'unknown';
+      const virtualPref = computerUse.preferVirtualDisplay !== false;
+      const virtualDetail = typeof computerUse.virtualDisplayDetail === 'string'
+        ? computerUse.virtualDisplayDetail
+        : '';
+      const [virtualPending, setVirtualPending] = useState(false);
+      const [virtualError, setVirtualError] = useState('');
+      const virtualFlightRef = useRef({ busy: false, settledAt: 0 });
+      // Per-platform note rows: gated on the dedicated semantic capability
+      // `virtualDisplayNote` ("" | "windows" | "macos" from
+      // get_platform_capabilities) — the capability is the semantic source;
+      // an older proxy that keyed these rows off the dependency-installer
+      // bits (usesBundledDependencyInstaller / usesHomebrewDependencyInstaller)
+      // broke the moment installer semantics changed, so it is gone. Static
+      // product notes, shown only while the feature toggle is on.
+      const showWindowsVirtualNote = !!computerUse.enabled
+        && platformCapabilities?.virtualDisplayNote === 'windows';
+      const showMacosVirtualNote = !!computerUse.enabled
+        && platformCapabilities?.virtualDisplayNote === 'macos';
       // An emergency stop latches `stopped` without touching the toggle: the
       // switch still reads ON but every consent surface is dead until the
       // user toggles off and back on (set_enabled's re-enable is the only
@@ -1721,6 +1760,20 @@ function hasStoredCredential(record) {
           .catch((error) => setActionError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error))))
           .finally(() => { setPermBusy(false); void refreshPermStatus(); });
       };
+      // Status hint line beneath the virtual toggle, driven by the status
+      // projection. "unavailable" is special-cased: the backend detail is an
+      // English diagnostic (never localized), so it renders verbatim as
+      // secondary text under the localized lead line instead of being shown
+      // alone. A failed write replaces the status line with the error until
+      // the next attempt.
+      const virtualHint = virtualState === 'ready'
+        ? t.uiComputerUse.virtualStateReady
+        : virtualState === 'active'
+          ? t.uiComputerUse.virtualStateActive
+          : virtualState === 'disabled'
+            ? t.uiComputerUse.virtualStateDisabled
+            : null;
+      const virtualUnavailable = virtualState === 'unavailable';
       return (
         <IOSSection title={t.uiComputerUse.settingsSection}>
           {permValue && (
@@ -1773,6 +1826,64 @@ function hasStoredCredential(record) {
               }}
             />
           </IOSRow>
+          {!unsupported && (
+            <IOSRow
+              label={t.uiComputerUse.settingsVirtualToggle}
+              desc={
+                <>
+                  <span className="block">{t.uiComputerUse.settingsVirtualHint}</span>
+                  {virtualError ? (
+                    <span className="block mt-0.5">{virtualError}</span>
+                  ) : virtualUnavailable ? (
+                    <span className="block mt-0.5">
+                      <span className="block">{t.uiComputerUse.virtualStateUnavailableLead}</span>
+                      {virtualDetail && <span className="block">{virtualDetail}</span>}
+                    </span>
+                  ) : (
+                    virtualHint && <span className="block mt-0.5">{virtualHint}</span>
+                  )}
+                </>
+              }
+            >
+              <IOSSwitch
+                checked={virtualUnknown ? false : virtualPref}
+                disabled={virtualPending || virtualUnknown}
+                onChange={(value) => {
+                  const flight = virtualFlightRef.current;
+                  if (flight.busy || Date.now() - flight.settledAt < COMPUTER_USE_TOGGLE_GUARD_MS) return;
+                  if (!bridge.available || !bridge.computerUse) return;
+                  flight.busy = true;
+                  setVirtualError('');
+                  setVirtualPending(true);
+                  // The wrapper re-reads the authoritative status before
+                  // resolving, so the switch and the hint line below it move
+                  // to the persisted value (or roll back on failure) without
+                  // a separate refresh here.
+                  bridge.computerUse.setVirtualDisplayPreference(value)
+                    .then(() => {
+                      flight.settledAt = Date.now();
+                    })
+                    .catch((error) => {
+                      setVirtualError(t.uiComputerUse.actionFailed(String(error && error.message ? error.message : error)));
+                    })
+                    .finally(() => {
+                      flight.busy = false;
+                      setVirtualPending(false);
+                    });
+                }}
+              />
+            </IOSRow>
+          )}
+          {showWindowsVirtualNote && (
+            <div className={`px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>
+              {t.uiComputerUse.virtualNoteWindows}
+            </div>
+          )}
+          {showMacosVirtualNote && (
+            <div className={`px-4 py-2.5 text-[12px] leading-relaxed text-[#8A8A8E] dark:text-[#8E8E93]`}>
+              {t.uiComputerUse.virtualNoteMacos}
+            </div>
+          )}
         </IOSSection>
       );
     };
@@ -2827,7 +2938,7 @@ function hasStoredCredential(record) {
                 </IOSRow>
               </IOSSection>
             )}
-            {canUseComputerUse && <ComputerUseSettingSection t={t} />}
+            {canUseComputerUse && <ComputerUseSettingSection t={t} platformCapabilities={platformCapabilities} />}
             {canInstallDependencies && <div id="settings-dependencies">
               <IOSSection
                 title={t.depCheckTitle}

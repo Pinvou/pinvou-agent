@@ -213,6 +213,12 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // Linux. Fail-closed so the settings toggle stays disabled until
       // load_platform_capabilities corrects the slice.
       globalShortcutsAvailable: false,
+      // Semantic selector for the computer-use virtual-display note row
+      // ("" | "windows" | "macos"). Fail-closed "": no per-platform note
+      // renders until load_platform_capabilities answers with the compiled
+      // target's selector — the notes are desktop product copy, so the web
+      // lane (which never loads the Tauri command) simply keeps "".
+      virtualDisplayNote: "",
     },
     settings: null,
     selectedPet: "lingling",
@@ -247,6 +253,33 @@ function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(te
       // Defaults false (fail closed): on an unsupported OS the toggle must
       // not render enabled until the first get_status corrects the slice.
       platformSupported: false,
+      // Virtual-display projection, fail-closed: "unknown" until the first
+      // computer_use_get_status that carries the new fields lands (an older
+      // backend never grows them, and the settings row stays hidden while
+      // unknown). `virtualDisplayDetail` holds the backend's English
+      // diagnostic ("" when absent) — rendered verbatim as secondary text
+      // under a localized lead line, never parsed.
+      virtualDisplayState: "unknown",
+      virtualDisplayDetail: "",
+      // The persisted "prefer isolated virtual display" PREFERENCE (frozen
+      // status contract, always serialized camelCase). Default true — the
+      // backend's own default (design §2) — so the settings switch renders a
+      // meaningful value before the first status lands; the first status that
+      // carries the field corrects it. The settings switch binds to THIS field,
+      // not to the derived virtualDisplayState above (an active virtual session
+      // with the preference off must show the switch off while the hint line
+      // keeps describing the live session).
+      preferVirtualDisplay: true,
+      // Server truth for WHERE this session's backend was created to run
+      // ("virtual" | "physical"), mirrored from computer_use_get_status.
+      // Fail-closed default null: "no authoritative answer yet" — the slice
+      // only grows a concrete value once a status that carries the field
+      // lands, and `grantedTarget` below reconciles from it (status wins).
+      sessionDisplayTarget: null,
+      // Where the granted session operates ("virtual" | "physical"),
+      // recorded from the grant_required payload at Allow time; the consent
+      // banner picks its copy from it. Fail-neutral default: physical.
+      grantedTarget: "physical",
       sessionId: null,
       grantRequest: null,
       confirmRequest: null,
@@ -2399,6 +2432,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       confirm: computerUseFeature.confirm,
       deny: computerUseFeature.deny,
       setEnabled: computerUseFeature.setEnabled,
+      setVirtualDisplayPreference: computerUseFeature.setVirtualDisplayPreference,
       requestPermissions: computerUseFeature.requestPermissions,
       permissionStatus: computerUseFeature.permissionStatus,
     },
