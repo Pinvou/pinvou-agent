@@ -1623,6 +1623,17 @@ mod tests {
             "the worker gate must pin its own endpoint_not_found literal; the shared \
              folding predicate classifies it as recoverable for the register loop"
         );
+        // Round-16 follow-up 复审(M5):推导行同属门语义——翻转
+        // is_none_or → is_some_and(仅反义改写)会让外来 endpoint 的
+        // endpoint_not_found 帧重新判为非终态,两条现有断言全绿,12s 循环
+        // 复活。按逐字节形态钉住 none-or 推导。
+        assert!(
+            body.contains(".is_none_or(|scope| scope.is_empty() || scope == endpoint_id)"),
+            "the scope derivation must stay none-or (missing endpoint_id or an \
+             empty/self scope counts as scoped to self); flipping it to is_some_and \
+             reopens the infinite connect→revoke loop while both gate-leg pins \
+             stay green"
+        );
     }
 
     /// 接线钉(Round-15 复审 MA5,轻量半):run_loop 的注册类 reject 帧必须

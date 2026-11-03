@@ -6271,6 +6271,17 @@ mod tests {
             after_binding.contains("state_ready"),
             "state_ready must be consumed downstream of its binding, not bound and discarded",
         );
+        // Round-16 follow-up 复审(M5):存在性断言钉不住极性——把
+        // `if !state_ready {` 反转成 `if state_ready {`(变成只对未就绪
+        // 客户端放行业务事件)时,绑定与下游消费两条断言仍全绿。钉住否定
+        // 臂的逐字节形态(函数体内唯一)。
+        assert!(
+            after_binding.contains("if !state_ready {"),
+            "the readiness gate must stay negated (a not-ready client resets the \
+             stream and must not receive business events); inverting the polarity \
+             passes business events to not-ready clients while both presence pins \
+             stay green"
+        );
     }
 
     /// 接线钉(Round-11 复审 minor):`reserve_web_attachments` 的拒绝串
@@ -6400,6 +6411,18 @@ mod tests {
             body.contains("let mut merged = held;"),
             "the merge must seed from the in-process backlog (memory wins conflicts); \
              seeding from the ledger silently inverts the documented precedence"
+        );
+        // Round-16 follow-up 复审(M5):种子行钉不住冲突臂——同键同值处
+        // 若被改写成 retain+push 覆盖(账本版本胜),种子行仍绿。按逐字节
+        // 形态钉住「键不存在才追加」的守卫形态:同键不同值的冲突保留内存
+        // 版本(在飞工人重试的正是它)。
+        assert!(
+            body.contains(
+                "if !merged.iter().any(|existing| {\n                    pending_revocation_key(existing) == pending_revocation_key(entry)\n                }) {\n                    merged.push(entry.clone());\n                }"
+            ),
+            "the conflict arm must stay append-only-on-absent-key: a retain+push \
+             overwrite of the same key flips conflict resolution to ledger-wins \
+             while the seed pin stays green"
         );
     }
 
