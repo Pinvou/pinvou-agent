@@ -4096,9 +4096,10 @@ mod live_tests {
     // 污染）由 `platform::test_support::EnvRestore` 承担（快照为 OsString，
     // 恢复语义与原 String 版一致），与 engine_pool / multiagent 回归测试共用。
 
-    /// 真机集成(#[ignore]):打真 vLLM 跑一轮,drain rx_event 时**照 forwarder 四臂
-    /// 原样喂 SelfMetrics**,证明真实事件流(TurnStarted→MessageDelta→TurnComplete+真
-    /// usage)累加出合理指标 + 事件顺序符合预期(TurnStarted 在首 MessageDelta 前)。
+    /// 真机集成(#[ignore]):打真 vLLM 跑一轮,drain rx_event 时**照 forwarder 五臂
+    /// 原样喂 SelfMetrics**,证明真实事件流(TurnStarted→MessageDelta→TurnUsage→
+    /// TurnComplete+真usage)累加出合理指标 + 事件顺序符合预期(TurnStarted 在首
+    /// MessageDelta 前)。
     ///
     ///   DEEPSEEK_ALLOW_INSECURE_HTTP=1 DEEPSEEK_FORCE_HTTP1=1 \
     ///   cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml \
@@ -4159,6 +4160,14 @@ mod live_tests {
                 }
                 Event::MessageDelta { content, .. } => {
                     m.on_message_delta(sid, content.chars().count());
+                }
+                Event::TurnUsage {
+                    usage,
+                    first_token_ms,
+                    request_ms,
+                    ..
+                } => {
+                    m.on_engine_usage(sid, first_token_ms, request_ms, usage.output_tokens);
                 }
                 Event::ToolCallStarted { .. } => {
                     seq.push(format!("t{turn}:ToolCallStarted"));
