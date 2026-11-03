@@ -2321,21 +2321,27 @@ test("survives a desktop frame the relay cannot serialize and lets a fresh web c
     const web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
 
+    const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
     const deepPayload = `${"[".repeat(20000)}0${"]".repeat(20000)}`;
     desktop.ws.send(`{"v":2,"type":"event","payload":${deepPayload}}`);
 
-    if (await deepFrameRejectedAtIngress(desktop, web, isolated)) return;
-
-    // #781 之后该帧类已在入口被拒(上面的 bad_json 断言),桌面帧不再能
-    // 杀死 web socket——旧尾巴的 waitForClose 在现行为下不可达(round-16
-    // 复审 M4:测试名承诺的重连旗标从未被驱动)。改为显式断开/重入,使
-    // 本测试对名字承诺的 web_rejoining=true 有真实断言。
-    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
-    await expectNoMessage(desktop.ws, "error");
+    // #781 之后该帧类已在入口被拒(bad_json,套接字全开);更老的树会把帧
+    // 转发出去并杀死 web socket。两条世界线在此汇合后再显式断开/重入——
+    // round-16 复审 M4:此前的早退让重入尾巴不可达,测试名承诺的
+    // web_rejoining=true 从未被驱动;尾巴必须放在早退之前可达的位置。
+    const ingressError = await nextMessageOrTimeout(desktop.ws, "error");
+    if (ingressError) {
+      assert.equal(ingressError.code, "bad_json");
+      assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+      assert.equal(web.ws.readyState, web.ws.OPEN);
+      await expectStillOpen(web.ws);
+    } else {
+      // 无入口上限的树:帧已转发,坏帧杀死了 web socket。
+      await waitForClose(web.ws);
+    }
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
 
-    const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
     closeSocket(web.ws);
     await disconnected;
     const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");

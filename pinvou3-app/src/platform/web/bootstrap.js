@@ -309,7 +309,9 @@
         // 无条件清旗标/再排重连,健康后继会被打回未协商态——下一个入站
         // 事件撞上 !desktopCapabilitiesReady 就被 processRemoteEvent 判成
         // incompatible_desktop 永久关门(probe 端到端复现)。身份不符的
-        // close 是纯噪声:旗标属于当前周期,与这颗旧 socket 无关。
+        // close 是纯噪声:旗标属于当前周期,与这颗旧 socket 无关。事件
+        // 处理失败主动摘除的 socket 同样落进门内,但那条路径自己排重连
+        // (handleRemoteEvent 的 catch),不依赖本处理器的无条件分支。
         if (this.socket !== socket) return;
         this.socket = null;
         this.joined = false;
@@ -719,6 +721,10 @@
           this.desktopCapabilitiesReady = false;
           this.leaseId = null;
           try { sourceSocket.close(); } catch { /* already closing */ }
+          // Delegating the reconnect to the close event instead left a zombie
+          // "connected" client with no transport whenever close() delivered
+          // normally; scheduleReconnect self-guards, so the gated late
+          // close/error events stay harmless.
           this.scheduleReconnect("事件处理失败，正在重新连接…");
         });
       return this.eventDispatch;

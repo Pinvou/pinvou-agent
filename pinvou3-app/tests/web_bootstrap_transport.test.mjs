@@ -1144,6 +1144,149 @@ async function connectWithCapabilities(events, listener) {
     'the CLOSED rescue must funnel through the ordinary backoff reconnect');
 }
 
+// Round-16 follow-up 复审 N1:事件处理失败路径主动摘除 socket(catch 处理器
+// 置 this.socket=null 后 close),其 close 事件因此被身份门判为噪声——重连
+// 必须由 catch 处理器自己排定;委托给 close 事件会在 close() 正常送达时留下
+// 「connected 但无传输」的僵尸 UI(修复前 probe 端到端复现,看门狗对
+// !this.socket 也不再兜底)。迟到的 close/error 仍不得干扰后继周期。
+{
+  const failed = bootClient();
+  const failedClient = failed.window.PinvouWebClient;
+  await failedClient.policyPromise;
+  const events = [];
+  await failedClient.listen('chat:delta', (event) => {
+    events.push(event);
+    throw new Error('listener failed');
+  });
+  failedClient.markFrontendReady();
+  await Promise.resolve();
+  failedClient.markStateReady();
+
+  const deadSocket = failed.MockWebSocket.instances[0];
+  deadSocket.open();
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  deadSocket.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_test',
+    seq: 0,
+    snapshot: {
+      capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] },
+    },
+  });
+  assert.equal(failedClient.connectionState.status, 'connected');
+
+  // 事件处理失败:socket 被摘除,重连必须当场排定,而不是等一个已被身份门
+  // 吞掉的 close 事件。
+  deadSocket.message({
+    v: 2,
+    type: 'event',
+    event: 'chat:delta',
+    stream_epoch: 'epoch_test',
+    seq: 1,
+    payload: { text: 'poison' },
+  });
+  await failedClient.eventDispatch;
+  assert.equal(deadSocket.closeCalled, true,
+    'the failed socket must be detached immediately');
+  assert.equal(failedClient.socket, null,
+    'the failed socket must not stay registered');
+  assert.equal(failed.timers.filter(timer => timer.delay < 10_000).length, 1,
+    'the catch path must schedule its own reconnect (the gated close event cannot)');
+  const reconnect = takeReconnectTimer(failed.timers);
+  reconnect.callback();
+
+  // 后继连上并完成协商;死 socket 的 close/error 此刻才送达:必须整单忽略,
+  // 既不打脏后继状态,也不追加第二条重连定时器。
+  const successor = failed.MockWebSocket.instances[1];
+  successor.open();
+  successor.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test_b',
+    desktop_connected: true,
+  });
+  successor.message({
+    v: 2,
+    type: 'desktop_snapshot',
+    stream_epoch: 'epoch_b',
+    seq: 0,
+    snapshot: {
+      capabilities: { protocol_version: 2, commands: [], events: ['chat:delta'] },
+    },
+  });
+  assert.equal(failedClient.joined, true, 'the successor cycle must be fully joined');
+  deadSocket.emit('close', {});
+  deadSocket.emit('error', {});
+  assert.equal(failedClient.socket, successor,
+    'the late close/error of a replay-detached socket must not detach its successor');
+  assert.equal(failedClient.joined, true, 'the late events must not clobber the join state');
+  assert.equal(failedClient.desktopCapabilitiesReady, true,
+    'the late events must not wipe negotiated capabilities');
+  assert.equal(failedClient.connectionState.status, 'connected',
+    'the late error must not flip the healthy successor back to connecting');
+  assert.equal(failed.timers.filter(timer => timer.delay < 10_000).length, 0,
+    'the late events must not schedule a second reconnect');
+}
+
+// Round-16 follow-up 复审 M8:error 门此前无测试钉住(删掉 error 门单独
+// 变异时全套仍绿)。救援摘除的 socket 迟到的 error 不得把健康后继打回
+// connecting、不得污染投机失败计数——与 close 门同一身份语义。
+{
+  const late = bootClient();
+  const lateClient = late.window.PinvouWebClient;
+  await lateClient.policyPromise;
+  const deadSocket = late.MockWebSocket.instances[0];
+  deadSocket.open();
+  deadSocket.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test',
+    desktop_connected: true,
+  });
+  lateClient.lastInboundAt = Date.now();
+
+  deadSocket.readyState = late.MockWebSocket.CLOSING;
+  lateClient._livenessCheck();
+  lateClient.closingStartedAt = Date.now() - 46_000;
+  lateClient._livenessCheck();
+  assert.equal(lateClient.socket, null, 'the wedged socket must be rescued');
+  takeReconnectTimer(late.timers).callback();
+
+  const successor = late.MockWebSocket.instances[1];
+  successor.open();
+  successor.message({
+    v: 2,
+    type: 'web_client_joined',
+    endpoint_id: 'endpoint_test',
+    lease_id: 'lease_test_b',
+    desktop_connected: true,
+  });
+  assert.equal(lateClient.connectionState.status, 'connected');
+  assert.equal(lateClient.joined, true);
+
+  deadSocket.emit('error', {});
+  assert.equal(lateClient.socket, successor,
+    'a late error of a rescued socket must not detach its successor');
+  assert.equal(lateClient.connectionState.status, 'connected',
+    'a late error of a rescued socket must not flip the UI to connecting');
+  assert.equal(late.timers.filter(timer => timer.delay < 10_000).length, 0,
+    'a late error of a rescued socket must not schedule a reconnect');
+
+  // 门在位时投机计数不被污染:紧随其后的一次真实自然死亡仍按原语义计数。
+  successor.close();
+  assert.equal(takeReconnectTimer(late.timers).delay >= 0, true,
+    'a real death after the gated late error must still reach the reconnect funnel');
+}
+
 // 页面重新可见：未连接时立即重连；不得凭空丢弃健康的 OPEN 连接（后台标签页
 // 定时器被节流，唤醒后的存活判断交给看门狗与 online 事件）。
 {
