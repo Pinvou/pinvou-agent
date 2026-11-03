@@ -33,16 +33,16 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   is a tooling preview, not a model change).
 // - glm: GLM-5.3 launched on 2026-08-19 (China) / 2026-08-18 (z.ai), and is
 //   still the API enum default on both sites (docs.bigmodel.cn / docs.z.ai,
-//   re-verified 2026-10-13; no GLM retirement announced).
+//   re-verified 2026-11-03; no GLM retirement announced).
 // - gemini: gemini-3.8-flash launched on 2026-09-02 and is still the current
-//   Flash flagship (ai.google.dev changelog re-verified 2026-10-13; the Oct 8
+//   Flash flagship (ai.google.dev changelog re-verified 2026-11-03; the Oct 8
 //   entry deprecated gemini-3.7-flash / gemini-3.5-flash with auto-routing to
 //   3.8-flash / 3.6-flash). Gemini 4 Argon (gemini-4-argon) went GA on
 //   2026-10-13 as the new overall flagship and joins the gemini group above
 //   the Flash rows; the preset default stays the Flash mainline — see the
 //   gemini group.
 // - xai: grok-4.7 still holds the official "coding/agent recommended" slot
-//   (docs.x.ai models page re-verified 2026-10-13: "For everything else,
+//   (docs.x.ai models page re-verified 2026-11-03: "For everything else,
 //   including code, use Grok 4.7"); no newer model exists on the public API.
 // - openai: gpt-6.1-sol takes the default (2026-10-13): OpenAI's own
 //   latest-model reference ranks gpt-6-astra for the most demanding work and
@@ -66,7 +66,7 @@ import xaiIcon from '../../brand-icons/xai.svg';
 //   scheduled 2028-01-11 on Azure's retirement schedule).
 // - anthropic: claude-opus-5-5 (2026-09-22) keeps the default per the
 //   official models overview "start with Claude Opus 5.5 for most workloads"
-//   (re-verified 2026-10-13). The 09-22 "coming weeks" watch item resolved:
+//   (re-verified 2026-11-03). The 09-22 "coming weeks" watch item resolved:
 //   claude-sonnet-5-5 shipped 2026-09-28 and claude-haiku-5-5 shipped
 //   2026-10-07 (both verified on their anthropic.com announcement pages) —
 //   see the anthropic group.
@@ -392,7 +392,8 @@ const MODEL_CATALOG = {
       vendor: 'kimi',
       baseUrl: 'https://api.kimi.com/coding/v1',
       // The overseas Kimi Code plan serves https://api.kimi.ai/coding/v1
-      // (kimi.com/code/docs, checked 2026-09-28); registered as an
+      // (kimi.com/code/docs, checked 2026-09-28; re-checked 2026-11-03);
+      // registered as an
       // alias so saved configs classify into this group — note the alias
       // only classifies; the exact-route K3 effort gate still pins
       // api.kimi.com/coding/v1, so an overseas-host config gets no K3
@@ -405,7 +406,9 @@ const MODEL_CATALOG = {
       // 以上支持 1M"), the default effort is max, and unknown ids silently
       // fall back to the non-thinking K2.8 Preview. kimi-for-coding-highspeed
       // serves K2.7 Code Highspeed at 256K. K3.1 Pro / K3.1 Pro Highspeed
-      // (2026-10-23, kimi.com/code/docs whats-new) are the plan's new
+      // (2026-10-23 per the whats-new; re-checked 2026-11-03 against the
+      // models-overview page, which states the highspeed variant is the
+      // same model with identical constraints) are the plan's new
       // flagship tier: 1M context tier-gated by plan, native vision incl.
       // video, thinking cannot be disabled (400), effort low/high/max — the
       // officially documented [1m] Claude Code declarations moved to
@@ -416,7 +419,7 @@ const MODEL_CATALOG = {
       // follow-up to cover them).
       items: [
         { model: 'k3.1-pro', imageCapable: true, title: 'k3.1-pro', desc: 'K3.1 Pro 新旗舰，原生视觉，1M 按档开放' },
-        { model: 'k3.1-pro-highspeed', title: 'k3.1-pro-highspeed', desc: 'K3.1 Pro 高速款' },
+        { model: 'k3.1-pro-highspeed', imageCapable: true, title: 'k3.1-pro-highspeed', desc: 'K3.1 Pro 高速款' },
         { model: 'k3', imageCapable: true, title: 'k3', desc: 'K3 长上下文模型' },
         { model: 'k3-256k', imageCapable: true, title: 'k3-256k', desc: 'K3 256K 上下文，价格更低' },
         { model: 'kimi-for-coding', imageCapable: true, title: 'kimi-for-coding', desc: 'K2.8 Preview，最高 1M（按会员档位）' },
@@ -475,7 +478,9 @@ const MODEL_CATALOG = {
       // api.moonshot.cn API host is unchanged): kimi-k3.1-pro (2026-10-23) is
       // the flagship and the official migration target for every retirement
       // notice ("原生支持视觉理解，100 万 token 上下文窗口"), with
-      // kimi-k3.1-pro-highspeed alongside; kimi-k3 demotes to previous
+      // kimi-k3.1-pro-highspeed alongside (the models-overview page states
+      // it is "同一模型、参数约束完全一致，仅输出速度不同" — same 1M window
+      // and native vision, only faster output); kimi-k3 demotes to previous
       // flagship and stays fully served. The whole K2 series stopped onboarding
       // new users 2026-10-31 and the official models page plans to take all
       // K2 models offline "by the end of December 2026" — the K2 rows carry
@@ -486,7 +491,7 @@ const MODEL_CATALOG = {
       // base covers K3.1 (upstream; see MODEL_PRESET_DEFS).
       items: [
         { model: 'kimi-k3.1-pro', imageCapable: true, title: 'kimi-k3.1-pro', desc: '最新旗舰，原生视觉，1M 上下文' },
-        { model: 'kimi-k3.1-pro-highspeed', title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
+        { model: 'kimi-k3.1-pro-highspeed', imageCapable: true, title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
         { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '上代旗舰（当前默认），1M 上下文' },
         { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 12 月底下线' },
         { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 12 月底下线' },
@@ -506,9 +511,11 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.moonshot.ai/v1',
       // Mirror of the China group (separate account/key system); the
       // platform.kimi.ai docs list the same lineup (re-checked 2026-11-03).
+      // The highspeed K3.1 variant is the same model with identical
+      // constraints (see the China group comment).
       items: [
         { model: 'kimi-k3.1-pro', imageCapable: true, title: 'kimi-k3.1-pro', desc: '最新旗舰，原生视觉，1M 上下文' },
-        { model: 'kimi-k3.1-pro-highspeed', title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
+        { model: 'kimi-k3.1-pro-highspeed', imageCapable: true, title: 'kimi-k3.1-pro-highspeed', desc: '最新旗舰高速款' },
         { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: '上代旗舰，1M 上下文' },
         { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: '代码场景；K2 系列已停新用户，官方拟 12 月底下线' },
         { model: 'kimi-k2.7-code-highspeed', imageCapable: true, title: 'kimi-k2.7-code-highspeed', desc: '高速代码场景；K2 系列拟 12 月底下线' },
@@ -613,6 +620,15 @@ const MODEL_CATALOG = {
       // api.minimax.cn config gets no M3 effort tiers until the base learns
       // the new host (upstream CodeWhale change; switching the default
       // app-side alone would silently drop the M3 tier UI).
+      // Output-cap disclosure (2026-11-03 fix pass): MiniMax publishes no
+      // max-output figure for M3.1-Flash anywhere in the official docs
+      // (api-overview / models FAQ / text-generation guide — only request
+      // examples), and the base exact route only knows "MiniMax-M3", so the
+      // GA id rides the engine's 8192 uncatalogued fail-close (sibling M3,
+      // which the base catalogues, caps at 64K). No figure is invented
+      // here; long-generation users should set max_tokens explicitly or
+      // stay on M3 until the base learns the id or the vendor documents
+      // the cap.
       // International and China use separate account/key systems.
       endpointAliases: ['https://api.minimax.cn/v1'],
       items: [
@@ -1152,12 +1168,16 @@ const MODEL_CATALOG = {
       // Bearer + chat-completions API, so it rides the generic OpenAI
       // wire with the vendor stamped for classification. Rows mirror the
       // live models overview: codestral-latest is the dedicated coding
-      // model (256K context — also the base DEFAULT_MISTRAL_MODEL
-      // spelling); mistral-medium-latest (128K, multimodal) and
+      // model (256K context); mistral-medium-latest (128K, multimodal) and
       // mistral-small-latest (image understanding) are officially
       // multimodal; mistral-large-latest's modality is not documented, so
       // its row stays unannotated. No effort/tier control exists in the
-      // base for this vendor, so no tier UI is exposed.
+      // base for this vendor, so no tier UI is exposed. Default drift
+      // (upstream follow-up, same class as the Meta muse-spark-1.2 one):
+      // the base's DEFAULT_MISTRAL_MODEL is "mistral-code-latest"
+      // (provider_defaults.rs), a coding spelling this catalog does not
+      // list; the rows stay explicit-id, so app-side resolution is
+      // unaffected.
       items: [
         { model: 'codestral-latest', title: 'codestral-latest', desc: '编码特化模型，256K 上下文' },
         { model: 'mistral-medium-latest', imageCapable: true, title: 'mistral-medium-latest', desc: '多模态中坚款，128K' },
@@ -1338,11 +1358,16 @@ const MODEL_CATALOG = {
       // additionally lists Kimi-K3, MiniMax-M3, Qwen3.8-2.4T-A95B, dated
       // DeepSeek V4 variants (V4-Pro-0813 / V4-Flash-0731 / V4-Flash-Vision-
       // Exp), gemma-4 and gpt-oss rows, while the CN-only Qwen/Qwen3.8-27B
-      // and Pro/ tiers are absent — those global-only rows are deliberately
-      // not cataloged because the marketing plaza shows bare names without
-      // org prefixes and /v1/models needs an authenticated key, so their
-      // exact wire ids stay unverified (the shared rows below appear on
-      // both plazas).
+      // is absent from the global plaza — those global-only rows are
+      // deliberately not cataloged because the marketing plaza shows bare
+      // names without org prefixes and /v1/models needs an authenticated
+      // key, so their exact wire ids stay unverified. The two Pro/ rows
+      // below are NOT global-plaza listings: they are the same
+      // API-reference keeps as the CN group (they have left the public
+      // plazas; kept for existing configs and the official API doc, which
+      // still names them). Only the unprefixed deepseek-ai/DeepSeek-V4-Pro
+      // / -V4-Flash and moonshotai/Kimi-K2.7-Code rows are verified shared
+      // between both plazas.
       items: [
         { model: 'deepseek-ai/DeepSeek-V4-Pro', title: 'deepseek-ai/DeepSeek-V4-Pro', desc: '高能力模型' },
         { model: 'deepseek-ai/DeepSeek-V4-Flash', title: 'deepseek-ai/DeepSeek-V4-Flash', desc: '快速响应' },
@@ -1497,24 +1522,31 @@ function catalogItemMatchesModel(item, model) {
 // vendor's official docs on 2026-09-11 (snapshot rows that joined on
 // 2026-09-28 — e.g. the Doubao -260915 pair — re-verified in that refresh):
 // the whole current Claude family, all
-// of Gemini, every Grok catalog row (including grok-4.5 / grok-4.20-0309-*,
-// whose detail pages state
-// text, image → text), the GPT-5.x/6 rows, kimi-k3 / k2.7-code / k2.6 and the
+// of Gemini, every annotated Grok catalog row (grok-4.5 /
+// grok-4.20-0309-*, whose detail pages state
+// text, image → text; grok-4.20-multi-agent-0309 joined on 2026-11-03
+// without a modality statement and stays deliberately unannotated), the
+// GPT-5.x/6 rows, kimi-k3 / k2.7-code / k2.6 and the
 // Kimi Code rows, deepseek-flash(V4.1), MiniMax-M3, qwen3.8-max/3.8-flash/
 // 3.7-plus/3.7-flash/3.6-flash, the eight Doubao rows (including the
-// coding-specialized preview), glm-5.3-flash and
-// mimo-v2.5 are officially multimodal; qwen3.7-max, glm-5.2/5.3,
-// deepseek-v4-pro, MiniMax-M2.x and mimo-v2.5-pro are officially text-only
-// (mimo-v2.5-pro: one en-US model-list rendering showed a Full-modal
-// Understanding cell that the zh-CN primary list lacks — see the mimo
-// group comment),
-// annotated false. Later additions carry their own dated basis:
+// coding-specialized preview) and glm-5.3-flash are officially
+// multimodal; qwen3.7-max, glm-5.2/5.3, deepseek-v4-pro and MiniMax-M2.x
+// are officially text-only,
+// annotated false (the retired mimo rows left the catalog in the
+// 2026-11-03 refresh; their Rust-side entries stay for stored configs).
+// Later additions carry their own dated basis:
 // gpt-6.1-sol (2026-10-13; model page lists input modalities text and
 // image), claude-sonnet-5-5 (screenshot-driven
 // benchmark play on its announcement page), claude-haiku-5-5 (Visual
 // reasoning benchmark), and gemini-4-argon (GA 2026-10-13; model page
-// lists text/image/video/audio/PDF inputs) — all annotated true on the
-// same public-fact basis.
+// lists text/image/video/audio/PDF inputs); the 2026-11-03 refresh adds
+// kimi-k3.1-pro / k3.1-pro and both highspeed spellings (whats-new
+// 2026-10-23: native vision incl. video; the highspeed variant is the
+// same model per the models-overview page), MiniMax-M3.1-Flash (GA
+// 2026-10-19; rides the "minimax-m3" substring entry), gpt-6.1-terra
+// (2026-10-26), muse-spark-1.3 (dev.meta.ai: text/image/PDF/video) and
+// mistral-medium-latest / mistral-small-latest (docs.mistral.ai models
+// overview) — all annotated true on the same public-fact basis.
 // Returns the first explicit annotation (true/false) in scan order; an
 // unannotated hit does not short-circuit the scan;
 // returns null on no hit or when no hit carries an annotation (the "auto"

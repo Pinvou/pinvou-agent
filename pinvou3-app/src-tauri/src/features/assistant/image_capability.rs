@@ -77,11 +77,16 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
             // K3.1 Pro / K3.1 Pro Highspeed (2026-10-23, kimi.com/code/docs
             // whats-new): the K3.1 generation is thinking-only — requests
             // that turn thinking off are rejected with 400 — same class as
-            // the bare-K3 ids above.
+            // the bare-K3 ids above. The `[1m]` spellings are the same
+            // models with the documented 1M declaration (the ACP catalog's
+            // models1m suggestion and the direct-platform bracket form);
+            // this list is exact-match, so they need their own arms.
             | "k3.1-pro"
             | "k3.1-pro-highspeed"
             | "kimi-k3.1-pro"
             | "kimi-k3.1-pro-highspeed"
+            | "k3.1-pro[1m]"
+            | "kimi-k3.1-pro[1m]"
             | "kimi-k2.7-code"
             | "kimi-k2.7-code-highspeed"
             | "kimi-for-coding"
@@ -224,9 +229,15 @@ const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     // K3.1 Pro (2026-10-23, kimi.com/code/docs): officially "native vision"
     // like K3, but the bare-id spelling contains no "kimi-k3" substring and
     // a bare "k3.1" or "k3" substring would over-match, so it rides the
-    // exact table like its K3 siblings. The highspeed variant has no
-    // per-model modality statement yet and stays out (Unknown).
+    // exact table like its K3 siblings. The highspeed variant is the same
+    // model — the models-overview page states "同一模型、参数约束完全一致，
+    // 仅输出速度不同" (re-checked 2026-11-03) — so the prefixed
+    // kimi-k3.1-pro-highspeed already resolves Supported through the
+    // "kimi-k3" substring entry, and the bare spelling joins this exact
+    // table on the same grounds as k3.1-pro (spelling-consistent: both
+    // spellings of each tier resolve identically).
     "k3.1-pro",
+    "k3.1-pro-highspeed",
     "mimo-v2.5",
     // Tencent Token Plan official hyphenated parallel spelling (same as the
     // frontend minimax-m3 row's legacyAliases): it does not contain the
@@ -341,13 +352,33 @@ mod tests {
             "kimi-k2.6",
             "K3",
             "k3-256k",
+            // K3.1 generation (thinking-only, 2026-10-23): all four
+            // spellings plus the [1m] declarations — this list is
+            // exact-match, so every spelling needs its own arm (2026-11-03
+            // fix wave; the probe used to omit thinking for the [1m]
+            // forms and misclassify the probe as image-incapable).
+            "k3.1-pro",
+            "k3.1-pro-highspeed",
+            "kimi-k3.1-pro",
+            "kimi-k3.1-pro-highspeed",
+            "k3.1-pro[1m]",
+            "kimi-k3.1-pro[1m]",
         ] {
             assert!(
                 moonshot_model_requires_explicit_thinking(name),
                 "{name} 应命中 always-thinking 名单"
             );
         }
-        for name in ["gpt-4o", "deepseek-v4-pro", "qwen-vl-max", "kimi-k2.5"] {
+        // k3 rides the effort ladder (off → reasoning_effort:low, never
+        // disabled), so its [1m] declaration must NOT hit the list — pin
+        // the boundary so a copy-paste widening turns red here.
+        for name in [
+            "gpt-4o",
+            "deepseek-v4-pro",
+            "qwen-vl-max",
+            "kimi-k2.5",
+            "k3[1m]",
+        ] {
             assert!(
                 !moonshot_model_requires_explicit_thinking(name),
                 "{name} 不应误判为 always-thinking"
@@ -465,12 +496,9 @@ mod tests {
             // MiMo (2026-09-11): multimodal is mimo-v2.5; the text-only
             // mimo-v2.5-pro must not be caught by accident, hence the exact
             // equality table (see EXACT_VERIFIED_IMAGE_CAPABLE_MODELS).
-            // Note: one en-US MiMo model-list rendering shows a
-            // Full-modal Understanding cell for v2.5-pro that the zh-CN
-            // primary list lacks, against the deprecation page's text-only
-            // wording — the conservative
-            // annotation stays until the rows retire 2026-10-21 (see the
-            // frontend mimo group comment).
+            // The mimo rows left the frontend catalog in the 2026-11-03
+            // refresh (v2.5 retired 2026-10-21 per the deprecation page);
+            // this entry stays for stored configs of the retired rows.
             (ModelPreset::Mimo, "mimo-v2.5"),
             // The 2026-09-22 V2.6 series is omni-modal; all three tiers hit
             // the "mimo-v2.6" substring entry.
@@ -486,6 +514,23 @@ mod tests {
             (ModelPreset::OpenaiCompatible, "k3-256k"),
             (ModelPreset::Kimi, "kimi-k2.7-code"),
             (ModelPreset::Kimi, "kimi-k2.6"),
+            // 2026-11-03 refresh additions — per-entry anchors so silently
+            // deleting an entry cannot keep the suite green (qwen2-vl
+            // precedent): K3.1 Pro is natively multimodal (whats-new
+            // 2026-10-23; the highspeed variant is the same model per the
+            // models-overview page, so all four spellings resolve — the
+            // prefixed ones through the "kimi-k3" substring, the bare ones
+            // through the exact table).
+            (ModelPreset::Kimi, "kimi-k3.1-pro"),
+            (ModelPreset::Kimi, "kimi-k3.1-pro-highspeed"),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro"),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro-highspeed"),
+            // Meta muse-spark-1.3 (dev.meta.ai: text/image/PDF/video) and
+            // the two Mistral multimodal rows (docs.mistral.ai models
+            // overview).
+            (ModelPreset::OpenaiCompatible, "muse-spark-1.3"),
+            (ModelPreset::OpenaiCompatible, "mistral-medium-latest"),
+            (ModelPreset::OpenaiCompatible, "mistral-small-latest"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(
@@ -523,6 +568,13 @@ mod tests {
             (ModelPreset::Mimo, "mimo-v2.5-pro"),
             (ModelPreset::OpenaiCompatible, "muse-spark-1.1"),
             (ModelPreset::OpenaiCompatible, "k3s-local-text"),
+            // 2026-11-03 conservative boundary pins: the Mistral rows
+            // without a modality statement and unrelated K3.1-suffixed
+            // names must stay Unknown (the exact table admits only the
+            // documented tiers, not suffix families).
+            (ModelPreset::OpenaiCompatible, "codestral-latest"),
+            (ModelPreset::OpenaiCompatible, "mistral-large-latest"),
+            (ModelPreset::OpenaiCompatible, "k3.1-pro-max"),
         ] {
             let model = saved_model(preset, name);
             assert_eq!(

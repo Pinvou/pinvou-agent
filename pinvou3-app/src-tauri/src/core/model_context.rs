@@ -245,6 +245,26 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // "1M token context window" ("100 万 token 上下文窗口"); the base kimi
     // rows stop at k3/k2.x exact ids that cannot cover the k3.1 wire id.
     ("kimi-k3.1-pro", 1_048_576),
+    // Kimi Code group spelling of the same model (the primary row id of the
+    // kimi_coding_plan catalog group). model_name_matches has no
+    // vendor-prefix tolerance, so the kimi-k3.1-pro row above cannot carry
+    // it, and the base kimi-code arms are exact "k3" / "k3-256k" only —
+    // without this row the bare spelling resolves None → the engine falls
+    // to 128K while the FE row documents 1M. The -highspeed suffix rides
+    // the tolerance of this row: platform.kimi.com/docs/api/models-overview
+    // states the highspeed variant is "同一模型、参数约束完全一致" (same
+    // model, identical constraints; only output speed differs), so it is
+    // the same 1M window — re-checked 2026-11-03.
+    ("k3.1-pro", 1_048_576),
+    // muse-spark-1.3 (Meta group headline row, 2026-11-03 refresh):
+    // officially 1,048,576 context per the dev.meta.ai quickstart/models
+    // pages the catalog row cites. No base chain row exists (the base
+    // default is muse-spark-1.2), so without it the engine falls to 128K
+    // while the FE row documents 1M. The dev.meta.ai pages were not
+    // reachable from the dev environment on the 2026-11-03 fix pass —
+    // re-verify against dev.meta.ai when reachable (gpt-6-family
+    // precedent).
+    ("muse-spark-1.3", 1_048_576),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。
@@ -358,6 +378,26 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // flashx wire id, so it resolves None. The dot spelling cannot
     // suffix-inherit the dash rows under model_name_matches either.
     ("glm-5.3-flashx", 131_072),
+    // Kimi K3.1 Pro (2026-10-23 flagship, both catalog spellings): the
+    // official API docs document max_completion_tokens "默认为 131072，最大
+    // 可设置为 1048576" for the whole K3 series incl. the highspeed variant
+    // (platform.kimi.com/docs/api/chat, re-checked 2026-11-03). The hard
+    // cap is registered; the engine still intersects with its 64K
+    // automatic-request default, so without these rows the K2-sunset
+    // migration target fail-closes to the 8192 uncatalogued guess — an 8×
+    // regression against kimi-k3's catalogued 64K. The bare Kimi Code
+    // spelling needs its own row (no vendor-prefix tolerance); both
+    // -highspeed spellings ride the suffix tolerance of their rows (same
+    // model per the models-overview page, see the PINVOU_KNOWN comment).
+    ("kimi-k3.1-pro", 1_048_576),
+    ("k3.1-pro", 1_048_576),
+    // muse-spark-1.3: officially 131,072 output per the dev.meta.ai
+    // quickstart/models figures the catalog row cites (unreachable from
+    // the dev environment on the 2026-11-03 fix pass — re-verify when
+    // reachable). Without it the operator-tier quartile branch
+    // `(window/4).clamp(1, 8192)` re-clamps the declared 1M window to
+    // 8192 — the same truncation this table exists to stop.
+    ("muse-spark-1.3", 131_072),
 ];
 
 /// Documented max-output anchors for models the base catalog has no output
@@ -490,6 +530,17 @@ mod tests {
             // suffix tolerance of the GA row above.
             ("minimax-m3.1-flash-preview", 1_000_000),
             ("kimi-k3.1-pro", 1_048_576),
+            // The Kimi Code spelling is a separate wire id (no vendor-prefix
+            // tolerance) with its own row; the highspeed suffix rides the
+            // tolerance of both K3.1 rows (same model per the
+            // models-overview page, re-checked 2026-11-03).
+            ("k3.1-pro", 1_048_576),
+            ("k3.1-pro-highspeed", 1_048_576),
+            ("kimi-k3.1-pro-highspeed", 1_048_576),
+            // Meta group headline row: no base chain row exists (the base
+            // default is muse-spark-1.2), so the supplemental row keeps the
+            // engine at the documented 1M instead of the 128K fallback.
+            ("muse-spark-1.3", 1_048_576),
         ] {
             assert_eq!(resolved_context_window(model), Some(expected), "{model}");
         }
@@ -660,6 +711,30 @@ mod tests {
             Some(384_000)
         );
         assert_eq!(resolved_output_limit("glm-5.3-flashx"), Some(131_072));
+        // K3.1 Pro (2026-11-03 fix wave): the documented hard cap keeps the
+        // K2-sunset migration target off the 8192 uncatalogued fail-close.
+        // All four spellings must resolve — the bare Kimi Code id carries
+        // no vendor prefix, and the highspeed variants are the same model
+        // (models-overview page), so they ride the suffix tolerance.
+        assert_eq!(resolved_output_limit("kimi-k3.1-pro"), Some(1_048_576));
+        assert_eq!(
+            resolved_output_limit("kimi-k3.1-pro-highspeed"),
+            Some(1_048_576)
+        );
+        assert_eq!(resolved_output_limit("k3.1-pro"), Some(1_048_576));
+        assert_eq!(resolved_output_limit("k3.1-pro-highspeed"), Some(1_048_576));
+        // muse-spark-1.3: the documented 131,072 output keeps the declared
+        // 1M window from re-clamping to 8192 in the operator quartile
+        // branch.
+        assert_eq!(resolved_output_limit("muse-spark-1.3"), Some(131_072));
+        // MiniMax-M3.1-Flash stays deliberately unanchored: no vendor
+        // max-output figure is published anywhere in the official docs
+        // (api-overview / models FAQ / text-generation guide,
+        // re-checked 2026-11-03), and this table registers documented
+        // figures only. It therefore keeps the 8192 fail-close — the
+        // group comment and PR disclose this; this pin makes an invented
+        // figure or a silent anchor visible in review.
+        assert_eq!(resolved_output_limit("minimax-m3.1-flash"), None);
         // Ids the base resolves stay None here: neither matches a table row
         // under model_name_matches ("deepseek-v4-flash" does not carry the
         // "deepseek-flash" row as a dash-suffix prefix; "glm-5.3-flash" is

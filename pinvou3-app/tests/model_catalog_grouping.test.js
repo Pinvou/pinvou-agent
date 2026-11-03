@@ -1382,8 +1382,16 @@ test('providerCatalog overlays and preset labels for the custom Responses group 
   // the en/ja providerCatalog overlays, so deleting e.g.
   // providerCatalog.openai_responses from en.js/ja.js would serve en/ja users
   // the raw Chinese catalog copy with a green suite (the exact regression
-  // class the round-2 review caught). Extract the block and require the
-  // custom-endpoint group rows (both siblings, so neither can silently go).
+  // class the round-2 review caught). Require an overlay for EVERY catalog
+  // group except the local one — 2026-11-03 widening: the refresh's four new
+  // groups previously had no pin here, so deleting providerCatalog.mistral
+  // kept the suite green (see the r1 review). A future group cannot land
+  // without its en/ja copy either.
+  const catalogKeys = Object.values(MODEL_CATALOG)
+    .flat()
+    .map(group => group.key)
+    .filter(key => key && key !== 'local');
+  assert.ok(catalogKeys.length >= 32, `unexpectedly few catalog groups: ${catalogKeys.length}`);
   const extractProviderCatalog = file => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', file), 'utf8');
     const start = src.indexOf('providerCatalog:{');
@@ -1394,23 +1402,31 @@ test('providerCatalog overlays and preset labels for the custom Responses group 
   };
   for (const file of ['en.js', 'ja.js']) {
     const block = extractProviderCatalog(file);
-    for (const group of ['openai_compatible', 'openai_responses']) {
-      const entry = block.match(new RegExp(`${group}:\\{title:'([^']+)',desc:'([^']+)'\\}`));
+    for (const group of catalogKeys) {
+      // Entries carry an optional configTitle between title and desc
+      // (custom-endpoint groups omit it).
+      const entry = block.match(
+        new RegExp(`${group}:\\{title:'([^']+)'(?:,configTitle:'([^']+)')?,desc:'([^']+)'\\}`)
+      );
       assert.ok(entry, `${file} providerCatalog is missing the ${group} title/desc overlay`);
       assert.ok(entry[1].trim(), `${file} ${group} overlay title must be non-empty`);
-      assert.ok(entry[2].trim(), `${file} ${group} overlay desc must be non-empty`);
+      assert.ok(entry[3].trim(), `${file} ${group} overlay desc must be non-empty`);
     }
   }
-  // The preset label and customModelTitles row must exist in all three
+  // The preset label and customModelTitles rows must exist in all three
   // dictionaries (the sub-label assertions above use stub dictionaries, so a
   // simultaneous deletion from all three real dicts would otherwise stay
-  // green).
+  // green). customModelTitles intentionally covers a subset of groups (the
+  // rest fall back to the generic template), so the all-groups scan above
+  // does not apply to it — the 2026-11-03 groups are pinned explicitly.
   for (const file of ['en.js', 'ja.js', 'zh.js']) {
     const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'shared', 'i18n', file), 'utf8');
     assert.ok(/modelPresetOpenaiResponses:\s*'[^']+'/.test(src), `${file} is missing the modelPresetOpenaiResponses label`);
     const titles = src.match(/customModelTitles\s*=?\s*\{([^}]*)\}/);
     assert.ok(titles, `${file} must keep a customModelTitles table`);
-    assert.ok(/openai_responses:'[^']+'/.test(titles[1]), `${file} customModelTitles is missing the openai_responses row`);
+    for (const group of ['openai_responses', 'mistral', 'meta', 'together', 'groq']) {
+      assert.ok(new RegExp(`${group}:'[^']+'`).test(titles[1]), `${file} customModelTitles is missing the ${group} row`);
+    }
   }
 });
 

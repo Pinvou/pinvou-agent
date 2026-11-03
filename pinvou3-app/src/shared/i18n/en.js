@@ -1210,7 +1210,7 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '轻量款，支持图像理解':'Lightweight tier with image understanding',
   '当前默认，1M 上下文多模态':'Current default, 1M context, multimodal',
   '上一代，仍在服务':'Previous generation, still served',
-  '快速响应（用量第一）':'Fast responses (top by usage)',
+  '快速响应（用量第一）':'Fast responses (#1 by usage)',
   '多模态高性价比（用量第二）':'Multimodal and cost-effective (#2 by usage)',
   'MiniMax GA 新旗舰':'MiniMax GA flagship',
   'MiniMax 上代旗舰':'MiniMax previous-generation flagship',
