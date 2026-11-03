@@ -132,6 +132,40 @@ pub(crate) fn combine_drag_errors(
     }
 }
 
+/// Merge the hold and key-release results of `hold_key` — the held-key twin
+/// of [`combine_drag_errors`] (same single-failure pass-through and
+/// kind-preservation rule). The release always runs, but a
+/// `Result::and`-style merge keeps only the FIRST error: a caller cancel plus
+/// a failed release then reported "the keys are released" while the release
+/// had actually failed — stranding keys undisclosed (the drag merge fixed the
+/// same inversion for the mouse button). The truthful wording mirrors the
+/// physical X11/Wayland hold paths: "release failed (...); the keys may
+/// still be held down".
+pub(crate) fn combine_hold_errors(
+    hold_result: Result<(), ComputerUseError>,
+    release_result: Result<(), ComputerUseError>,
+) -> Result<(), ComputerUseError> {
+    match (hold_result, release_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        // Only the hold was interrupted (caller cancel) and the release
+        // succeeded: the cancel verdict stands, now stating the outcome.
+        (Err(hold_error), Ok(())) => {
+            Err(hold_error.same_kind(format!("{hold_error}; the keys are released")))
+        }
+        // Only the release failed: the stranded-keys warning and the step
+        // label must both surface.
+        (Ok(()), Err(release)) => Err(release.same_kind(format!(
+            "key release failed ({release}); the keys may still be held down"
+        ))),
+        // Both: the cancel fact AND the failed release surface together —
+        // never the false "the keys are released" all-clear.
+        (Err(hold_error), Err(release)) => Err(hold_error.same_kind(format!(
+            "{hold_error}; its key release also failed ({release}); \
+             the keys may still be held down"
+        ))),
+    }
+}
+
 /// Scroll direction → enigo (axis, signed clicks). enigo convention:
 /// Vertical positive is down / negative up, Horizontal positive is right /
 /// negative left.
@@ -515,6 +549,84 @@ mod tests {
         // A move-only failure is returned verbatim, kind included.
         let move_only = combine_drag_errors(Err(denied()), Ok(())).unwrap_err();
         assert!(matches!(move_only, ComputerUseError::Unavailable { .. }));
+    }
+
+    /// A hold-interrupt (caller cancel) sample for [`combine_hold_errors`].
+    fn cancelled_hold() -> ComputerUseError {
+        ComputerUseError::unavailable("hold_key was cancelled (caller timeout or stop)")
+    }
+
+    /// A key-release-failure sample for [`combine_hold_errors`].
+    fn failed_key_release() -> ComputerUseError {
+        ComputerUseError::failed("keyup: injected 0/1 events")
+    }
+
+    /// Lives here rather than in one backend so every target runs it (same
+    /// rule as the drag merge pin): a `Result::and` merge kept the FIRST
+    /// error, so a cancel plus a failed release reported "the keys are
+    /// released" and swallowed the release failure — keys could stay held
+    /// down undisclosed. Precedence pin: BOTH facts surface, and the false
+    /// all-clear never does.
+    #[test]
+    fn hold_error_merging_surfaces_stranded_keys() {
+        // Both succeed: nothing to merge.
+        assert!(combine_hold_errors(Ok(()), Ok(())).is_ok());
+        // Cancel + clean release: the cancel verdict now states the outcome.
+        let cancelled = combine_hold_errors(Err(cancelled_hold()), Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(cancelled.contains("hold_key was cancelled"), "{cancelled}");
+        assert!(cancelled.contains("the keys are released"), "{cancelled}");
+        // Release-only failure: the stranded-keys warning and the step label
+        // must both surface.
+        let release_only = combine_hold_errors(Ok(()), Err(failed_key_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            release_only.contains("key release failed"),
+            "{release_only}"
+        );
+        assert!(
+            release_only.contains("the keys may still be held down"),
+            "{release_only}"
+        );
+        // Both fail: the cancel fact AND the failed release surface together.
+        let both = combine_hold_errors(Err(cancelled_hold()), Err(failed_key_release()))
+            .unwrap_err()
+            .to_string();
+        assert!(both.contains("hold_key was cancelled"), "{both}");
+        assert!(both.contains("its key release also failed"), "{both}");
+        assert!(both.contains("the keys may still be held down"), "{both}");
+        assert!(
+            !both.contains("the keys are released"),
+            "the false all-clear must not appear when the release failed: {both}"
+        );
+    }
+
+    /// Kind preservation for the held-key merge (the cancel verdict is
+    /// `Unavailable` — category-based upstream handling keys on it; a release
+    /// failure carries its own kind through untouched).
+    #[test]
+    fn hold_error_merging_preserves_the_unavailable_kind() {
+        let merged =
+            combine_hold_errors(Err(cancelled_hold()), Err(failed_key_release())).unwrap_err();
+        assert!(
+            matches!(merged, ComputerUseError::Unavailable { .. }),
+            "the merged error must keep the cancel verdict's kind, got {merged}"
+        );
+        let release_only =
+            combine_hold_errors(Ok(()), Err(ComputerUseError::unavailable("portal died")))
+                .unwrap_err();
+        assert!(
+            matches!(release_only, ComputerUseError::Unavailable { .. }),
+            "a release failure's own kind must survive, got {release_only}"
+        );
+        assert!(
+            release_only
+                .to_string()
+                .contains("the keys may still be held down"),
+            "{release_only}"
+        );
     }
 
     #[test]

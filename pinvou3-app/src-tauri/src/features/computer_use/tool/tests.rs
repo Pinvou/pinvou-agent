@@ -3,7 +3,9 @@ use crate::features::computer_use::backend::ComputerUseBackend;
 use crate::features::computer_use::guard::{
     PHYSICAL_INPUT_LOCK_TIMEOUT, set_physical_input_lock_timeout_for_tests,
 };
-use crate::features::computer_use::types::{Capabilities, Capture, ElementInfo, Key};
+use crate::features::computer_use::types::{
+    Capabilities, Capture, DisplayTarget, ElementInfo, Key,
+};
 use std::sync::Mutex as StdMutex;
 
 /// A chord summary containing character keys shows only named keys plus a
@@ -160,6 +162,19 @@ struct MockState {
     /// redaction on the execution-error path: the error goes into the audit,
     /// the typed content must still never appear).
     type_error: Option<String>,
+    /// The display target this mock reports (`Capabilities.target`): the
+    /// default is Physical like every real physical backend; set Virtual to
+    /// drive the target-marker/payload scenarios.
+    display_target: DisplayTarget,
+    /// Recorded open_app calls (program, args): the execution surface for
+    /// the `open` action (the "NOT executed" assertions for other actions
+    /// need the same shape here).
+    opened: Vec<(String, Vec<String>)>,
+    /// When non-empty, open_app returns this error (injected virtual-backend
+    /// failure; pins that a failed open propagates without a receipt pid).
+    open_error: Option<String>,
+    /// The pid open_app reports (fixed so receipt assertions are exact).
+    open_pid: u32,
 }
 
 impl Default for MockState {
@@ -198,6 +213,10 @@ impl Default for MockState {
             drag_error: false,
             capture_error: false,
             type_error: None,
+            display_target: DisplayTarget::Physical,
+            opened: Vec::new(),
+            open_error: None,
+            open_pid: 4321,
         }
     }
 }
@@ -239,6 +258,8 @@ impl ComputerUseBackend for MockBackend {
             input: !state.no_input_cap,
             ui_tree: state.ui_tree_cap,
             notes: "mock".to_string(),
+            target: state.display_target,
+            target_note: String::new(),
         }
     }
 
@@ -338,6 +359,16 @@ impl ComputerUseBackend for MockBackend {
     fn hold_key(&mut self, keys: &[Key], ms: u64) -> Result<(), ComputerUseError> {
         self.state.lock().held.push((keys.to_vec(), ms));
         Ok(())
+    }
+
+    fn open_app(&mut self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
+        let mut state = self.state.lock();
+        if let Some(error) = &state.open_error {
+            return Err(ComputerUseError::unavailable(error.clone()));
+        }
+        let pid = state.open_pid;
+        state.opened.push((program.to_string(), args.to_vec()));
+        Ok(pid)
     }
 
     fn ui_tree(&mut self, _opts: &UiTreeOptions) -> Result<String, ComputerUseError> {
@@ -511,6 +542,7 @@ fn read_audit_records(_fixture: &TestFixture) -> Vec<AuditRecord> {
                 value["consent"].as_str().unwrap_or_default(),
             );
             record.target = value["target"].as_str().map(str::to_string);
+            record.display_target = value["display_target"].as_str().map(str::to_string);
             record.result = value["result"].as_str().map(str::to_string);
             record.error = value["error"].as_str().map(str::to_string);
             record.duration_ms = value["duration_ms"].as_u64();
@@ -1693,6 +1725,7 @@ fn minimal_input(action: &str) -> Value {
         "type" => json!({"action": "type", "text": "a"}),
         "key" => json!({"action": "key", "text": "a"}),
         "hold_key" => json!({"action": "hold_key", "text": "a", "ms": 10}),
+        "open" => json!({"action": "open", "program": "xeyes"}),
         other => json!({"action": other}),
     }
 }
@@ -5224,7 +5257,9 @@ fn denylist_matches_beyond_the_display_truncation_window() {
 #[test]
 fn confirm_payload_pins_structured_fields() {
     let payload_for = |action: ComputerUseAction| {
-        build_confirm_payload("s1", "cu-test", &action, "summary", "element", None, false)
+        build_confirm_payload(
+            "s1", "cu-test", &action, "summary", "element", None, false, "physical",
+        )
     };
     let key = payload_for(ComputerUseAction::KeyChord {
         keys: vec![Key::Char('s')],
@@ -5276,6 +5311,7 @@ fn confirm_payload_pins_structured_fields() {
         "element",
         None,
         true,
+        "physical",
     );
     assert!(
         masked.get("chord").is_none(),
@@ -5293,10 +5329,455 @@ fn confirm_payload_pins_structured_fields() {
         "element",
         None,
         true,
+        "physical",
     );
     assert_eq!(
         masked_mixed["chord"], "ctrl",
         "only the named (non-secret) keys survive masking: {masked_mixed}"
     );
     assert_eq!(masked_mixed["chord_masked_chars"], 1, "{masked_mixed}");
+}
+
+// ---------------------------------------------------------------------------
+// Virtual display target disclosure (§2/§4): markers, payloads, audit
+// ---------------------------------------------------------------------------
+
+/// The screenshot result carries the stable per-target marker (§4): frozen
+/// strings the model reads and the frontend never parses (it reads only the
+/// path). Both spellings are pinned; a reword breaks consumers that key on
+/// them.
+#[test]
+fn shot_result_text_carries_the_stable_target_marker() {
+    let shot = ShotOutcome {
+        abs_path: PathBuf::from("/tmp/shot.png"),
+        rel_path: "attachments/computer_use/shot.png".to_string(),
+        png: Vec::new(),
+        map: ScaleMap {
+            shot_w: 16,
+            shot_h: 16,
+            dev_w: 16,
+            dev_h: 16,
+            origin_x: 0,
+            origin_y: 0,
+            input_scale_x: 1.0,
+            input_scale_y: 1.0,
+            input_aligned: true,
+        },
+    };
+    let physical = shot_result_text(&shot, DisplayTarget::Physical);
+    assert!(
+        physical.contains("[target: user's desktop]"),
+        "physical marker missing: {physical}"
+    );
+    let virtual_shot = shot_result_text(&shot, DisplayTarget::Virtual);
+    assert!(
+        virtual_shot.contains("[target: isolated virtual display]"),
+        "virtual marker missing: {virtual_shot}"
+    );
+    assert!(
+        !virtual_shot.contains("[target: user's desktop]"),
+        "the two markers must be mutually exclusive: {virtual_shot}"
+    );
+}
+
+/// The AUTO-captured screenshot (a session's first coordinate action) is
+/// rendered through the same shot_result_text path as explicit/follow-up
+/// captures (review finding): the model must see the frozen "[target: …]"
+/// marker and the coordinate-space header even when the action attaches NO
+/// follow-up capture — mouse_move is exactly that action (needs a map, attaches
+/// nothing), so its result text is the only screenshot text the model gets.
+#[tokio::test]
+async fn auto_captured_screenshot_carries_the_target_marker() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    // A benign element covers the screening point (screens Clear); the mock
+    // reports the default Physical target, so the physical marker must appear.
+    fixture.mock.lock().element = Some(benign_element(0, 0, 16, 16));
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "mouse_move", "x": 3, "y": 4}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => panic!("execute failed: {e}"),
+    };
+    assert!(result.success, "{}", result.content);
+    assert!(
+        result.content.contains("captured automatically"),
+        "fixture: the auto-capture notice must be present: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("screenshot saved:"),
+        "the auto-captured outcome must ride shot_result_text (coordinate header): {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("[target: user's desktop]"),
+        "the auto-captured screenshot must carry the target marker: {}",
+        result.content
+    );
+    assert!(
+        !result
+            .content
+            .contains("[target: isolated virtual display]"),
+        "a physical mock must never claim the virtual marker: {}",
+        result.content
+    );
+}
+
+/// `open` reaches the backend (execution surface), reports the pid in the
+/// receipt, requires the session grant like every Input action, is NOT
+/// screened for T3 (nothing is on screen yet), and carries the pid +
+/// follow-up-screenshot reminder. Also pins the schema/parser/SUPPORTED-
+/// ACTIONS parity leg for the new action.
+#[tokio::test]
+async fn open_action_executes_through_the_backend_and_reports_the_pid() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "open", "program": "xeyes", "args": ["-foo", "bar"]}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let content = result
+        .ok()
+        .map(|r| r.content)
+        .expect("open succeeds against the mock backend");
+    assert!(
+        content.contains("opened xeyes with 2 arg(s) (pid 4321)"),
+        "receipt must carry program, arg count and pid: {content}"
+    );
+    assert!(
+        content.contains("screenshot next"),
+        "receipt must remind the model to screenshot: {content}"
+    );
+    let mock = fixture.mock.lock();
+    assert_eq!(
+        mock.opened.as_slice(),
+        [(
+            "xeyes".to_string(),
+            vec!["-foo".to_string(), "bar".to_string()]
+        )],
+        "the backend must receive program + args verbatim"
+    );
+    // No clicks/typing happened: `open` is its own action, not a composite.
+    assert!(mock.clicked.is_empty() && mock.typed.is_empty());
+}
+
+/// A physical backend keeps the trait's explicit-unsupported default: the
+/// model sees an honest error (never a silent desktop launch). The mock here
+/// overrides nothing beyond the default because MockBackend implements
+/// open_app, so this pins the TOOL layer's error surfacing of the default
+/// via a minimal inline backend.
+#[tokio::test]
+async fn open_action_fails_explicitly_on_a_physical_backend() {
+    struct NoOpenBackend;
+    impl ComputerUseBackend for NoOpenBackend {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                screenshot: true,
+                input: true,
+                ui_tree: false,
+                notes: "no-open".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
+            }
+        }
+        fn capture(&mut self) -> Result<Capture, ComputerUseError> {
+            Err(ComputerUseError::unsupported("screenshot", "mock"))
+        }
+        fn cursor_position(&mut self) -> Result<(i32, i32), ComputerUseError> {
+            Err(ComputerUseError::unsupported("cursor_position", "mock"))
+        }
+        fn move_to(&mut self, _x: i32, _y: i32) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn click(&mut self, _b: MouseButton, _c: u8) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn mouse_down(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn mouse_up(&mut self, _b: MouseButton) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn drag(&mut self, _f: (i32, i32), _t: (i32, i32)) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn scroll(&mut self, _d: ScrollDirection, _c: u32) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn type_text(&mut self, _t: &str) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn key_chord(&mut self, _k: &[Key]) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn hold_key(&mut self, _k: &[Key], _m: u64) -> Result<(), ComputerUseError> {
+            Err(ComputerUseError::unsupported("input", "mock"))
+        }
+        fn ui_tree(&mut self, _o: &UiTreeOptions) -> Result<String, ComputerUseError> {
+            Err(ComputerUseError::unsupported("ui_tree", "mock"))
+        }
+        fn element_at_point(
+            &mut self,
+            _x: i32,
+            _y: i32,
+        ) -> Result<Option<ElementInfo>, ComputerUseError> {
+            Err(ComputerUseError::unsupported("element_at_point", "mock"))
+        }
+        // open_app intentionally NOT overridden: the trait default is the
+        // physical-backend contract under test.
+    }
+    let shared = Arc::new(ComputerUseShared::new());
+    shared.set_enabled(true);
+    let events: Arc<StdMutex<Vec<(String, Value)>>> = Arc::new(StdMutex::new(Vec::new()));
+    let backend =
+        BackendHandle::lazy(|| Ok(Box::new(NoOpenBackend) as Box<dyn ComputerUseBackend>));
+    let tool = ComputerUseTool::with_parts(
+        "s-test".to_string(),
+        Arc::clone(&shared),
+        backend,
+        Arc::new(RecordingSink(Arc::clone(&events))),
+    );
+    shared.grant_session("s-test");
+    let result = tool
+        .execute(
+            json!({"action": "open", "program": "xeyes"}),
+            &ToolContext::new(std::path::PathBuf::from(
+                std::env::temp_dir().join("pinvou3-cu-open-physical"),
+            )),
+        )
+        .await;
+    // Gate/backend failures come back as a soft error result (the tool never
+    // throws for backend errors — the model reads the message).
+    let content = result
+        .ok()
+        .map(|r| r.content)
+        .expect("execution returns a result");
+    assert!(
+        content.contains("only available on a virtual display target"),
+        "the trait default's explicit unsupported text must surface: {content}"
+    );
+    assert!(
+        content.contains("computer use action failed"),
+        "the failure must carry the backend-error framing: {content}"
+    );
+}
+
+/// `open` parameter validation mirrors the schema: program required and
+/// non-empty, NUL rejected, args must be strings, over-cap inputs rejected.
+#[test]
+fn open_parameter_validation_matches_the_schema_bounds() {
+    let parsed = parse_action(&json!({"action": "open", "program": "xeyes"}))
+        .expect("args-less open parses");
+    match parsed.action {
+        ComputerUseAction::Open { program, args } => {
+            assert_eq!(program, "xeyes");
+            assert!(args.is_empty(), "missing args default to empty");
+        }
+        other => panic!("wrong action parsed: {other:?}"),
+    }
+    for (input, expected) in [
+        (json!({"action": "open"}), "program is required for open"),
+        (json!({"action": "open", "program": ""}), "non-empty string"),
+        (json!({"action": "open", "program": "a\u{0}b"}), "NUL"),
+        (json!({"action": "open", "program": 42}), "must be a string"),
+        (
+            json!({"action": "open", "program": "x", "args": "not-an-array"}),
+            "array of strings",
+        ),
+        (
+            json!({"action": "open", "program": "x", "args": [1]}),
+            "array of strings",
+        ),
+        (
+            json!({"action": "open", "program": "x", "args": ["a\u{0}"]}),
+            "NUL",
+        ),
+        (
+            json!({"action": "open", "program": "x", "extra": 1}),
+            "not accepted for open",
+        ),
+    ] {
+        let err = parse_action(&input)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            err.contains(expected),
+            "expected {expected} in the rejection for {input}: {err}"
+        );
+    }
+    // Over-cap program and args.
+    let long = "x".repeat(MAX_OPEN_PROGRAM_CHARS + 1);
+    let err = parse_action(&json!({"action": "open", "program": long}))
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(err.contains("too long for open"), "{err}");
+    let many: Vec<String> = (0..=MAX_OPEN_ARGS).map(|i| i.to_string()).collect();
+    let err = parse_action(&json!({"action": "open", "program": "x", "args": many}))
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(err.contains("more than"), "{err}");
+}
+
+/// The lazy factory's creation helper refreshes the cached availability
+/// snapshot on BOTH creation outcomes, so a runtime install/removal of the
+/// virtual stack (e.g. `xvfb`) flips the settings hint on the next status
+/// read without a restart. Fresh shared state carries the "not been probed
+/// yet" placeholder; after the helper runs — even when `create` FAILS — a
+/// real probe verdict must have replaced it. The probe verdict itself is
+/// host-dependent (the stack may or may not be installed), but BOTH of its
+/// outcomes differ from the placeholder, so the inequality pins the refresh
+/// deterministically. The pref-off resolution ("disabled" + "") is frozen and
+/// host-independent, so it pins the flip path separately.
+#[test]
+fn create_backend_reporting_availability_refreshes_snapshot_on_both_outcomes() {
+    // Failure arm: the placeholder snapshot must still be replaced.
+    let shared = ComputerUseShared::new();
+    let placeholder = shared.virtual_availability();
+    assert_eq!(placeholder.state, "unavailable");
+    assert!(
+        placeholder.detail.contains("not been probed yet"),
+        "fixture assumption: fresh state carries the placeholder: {placeholder:?}"
+    );
+    let err = match create_backend_reporting_availability(&shared, true, |_prefer| {
+        Err(ComputerUseError::unavailable("mock: creation failed"))
+    }) {
+        // No expect_err: the backend trait object is not Debug, and the
+        // failure arm (not a panic helper) is the point of this pin.
+        Err(error) => error,
+        Ok(_) => panic!("the injected failure must propagate"),
+    };
+    assert!(err.to_string().contains("mock: creation failed"), "{err}");
+    let refreshed = shared.virtual_availability();
+    assert!(
+        matches!(refreshed.state, "available" | "unavailable"),
+        "a real refresh resolves to a probe verdict, never a placeholder: {refreshed:?}"
+    );
+    assert_ne!(
+        refreshed.detail, placeholder.detail,
+        "the placeholder must never survive a refresh (failure arm)"
+    );
+
+    // The frozen pref-off resolution: deterministic on every host (the
+    // preference collapses the snapshot to "disabled" with an empty detail).
+    shared.set_display_pref(false);
+    let disabled = shared.virtual_availability();
+    assert_eq!(
+        disabled.state, "disabled",
+        "pref off resolves to the frozen disabled state regardless of the probe"
+    );
+    assert_eq!(disabled.detail, "");
+
+    // Success arm: the same refresh rides a successful creation.
+    let shared = ComputerUseShared::new();
+    let mock = Arc::new(Mutex::new(MockState::default()));
+    let backend = create_backend_reporting_availability(&shared, true, |_prefer| {
+        Ok(Box::new(MockBackend { state: mock }) as Box<dyn ComputerUseBackend>)
+    })
+    .expect("the injected success propagates");
+    let _ = backend.capabilities();
+    let snapshot = shared.virtual_availability();
+    assert_ne!(
+        snapshot.detail, placeholder.detail,
+        "the placeholder must never survive a refresh (success arm)"
+    );
+}
+
+/// The grant_required payload discloses the display target (§2). The mock
+/// reports Physical, so the payload must read "physical"; the frozen
+/// spellings are "virtual" | "physical" and the frontend treats a missing
+/// field as physical (fail-neutral), so presence + spelling is the contract.
+#[tokio::test]
+async fn grant_required_payload_carries_the_display_target() {
+    let (fixture, _restore) = fixture();
+    // No grant: the first Input action fails with GrantRequired and emits.
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "open", "program": "xeyes"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(result.is_ok(), "gate rejections are soft results");
+    let events = fixture.events.lock().map(|e| e.clone()).unwrap_or_default();
+    let payload = events
+        .iter()
+        .rev()
+        .find(|(name, _)| name == EVENT_GRANT_REQUIRED)
+        .map(|(_, p)| p.clone())
+        .expect("grant_required emitted");
+    assert_eq!(payload["session_id"], "s-test", "{payload}");
+    assert_eq!(
+        payload["target"], "physical",
+        "the mock's recorded target must ride the grant payload: {payload}"
+    );
+}
+
+/// The audit record's `display_target` reflects the backend's recorded
+/// decision: physical for the default mock (a "virtual" value here would
+/// mean the fallback decided wrongly), and absent from nothing — every
+/// executed/rejected action that passed the capability read carries it.
+#[tokio::test]
+async fn audit_record_carries_the_display_target() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let result = fixture
+        .tool
+        .execute(
+            json!({"action": "open", "program": "xeyes"}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    assert!(result.is_ok());
+    let records = read_audit_records(&fixture);
+    let record = records
+        .iter()
+        .find(|r| r.action == "open")
+        .expect("the open call is audited");
+    assert_eq!(
+        record.display_target.as_deref(),
+        Some("physical"),
+        "the audit must record the mock's physical target: {records:?}"
+    );
+}
+
+/// The `open` receipt records the program name (never the args) in the
+/// audit target summary — args can embed long paths; the count rides the
+/// result text, the audit keeps the bounded line.
+#[tokio::test]
+async fn open_audit_target_names_the_program_only() {
+    let (fixture, _restore) = fixture();
+    fixture.shared.grant_session("s-test");
+    let _ = fixture
+        .tool
+        .execute(
+            json!({"action": "open", "program": "xeyes", "args": ["-a", "-b"]}),
+            &context(&fixture.workspace),
+        )
+        .await;
+    let records = read_audit_records(&fixture);
+    let record = records
+        .iter()
+        .find(|r| r.action == "open")
+        .expect("the open call is audited");
+    let target = record.target.clone().unwrap_or_default();
+    assert!(
+        target.contains("open xeyes"),
+        "the audit target must name the program: {target}"
+    );
+    assert!(
+        !target.contains("-a"),
+        "args must not ride the audit target line: {target}"
+    );
 }

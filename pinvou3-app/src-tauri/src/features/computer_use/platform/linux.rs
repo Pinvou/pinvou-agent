@@ -64,8 +64,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use super::super::backend::ComputerUseBackend;
 use super::super::guard::raw_element_binding;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
     MAX_NAME_CHARS, MAX_SCROLL_CLICKS, combine_drag_errors, drag_waypoints,
@@ -1516,6 +1516,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                      AT-SPI bounds best-effort on Wayland",
                     self.session.desktop_label()
                 ),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         } else {
             let input_note = if self.input.is_some() {
@@ -1573,6 +1575,8 @@ impl ComputerUseBackend for LinuxComputerUseBackend {
                     self.session.desktop_label(),
                     if ui_tree { "" } else { " unavailable" },
                 ),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
     }

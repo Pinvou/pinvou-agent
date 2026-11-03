@@ -90,8 +90,8 @@ use objc2_foundation::{NSPoint, NSSize, NSString};
 
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
@@ -198,11 +198,15 @@ fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
     ComputerUseError::failed(format!("{context}: {err}"))
 }
 
-fn screen_recording_granted() -> bool {
+// TCC preflights + error strings are `pub(super)` so the virtual-display
+// backend (features/computer_use/platform/virtual_display/macos_virtual.rs)
+// reuses the exact same grant checks and user-facing guidance instead of a
+// drifting copy (extraction is visibility-only, no behavior change).
+pub(super) fn screen_recording_granted() -> bool {
     CGPreflightScreenCaptureAccess()
 }
 
-fn accessibility_granted() -> bool {
+pub(super) fn accessibility_granted() -> bool {
     // SAFETY: no arguments, purely queries this process's TCC grant state,
     // shows no dialog, callable on any thread.
     unsafe { AXIsProcessTrusted() }
@@ -217,11 +221,11 @@ pub fn permission_status() -> Option<(bool, bool)> {
     Some((screen_recording_granted(), accessibility_granted()))
 }
 
-fn screen_recording_error() -> ComputerUseError {
+pub(super) fn screen_recording_error() -> ComputerUseError {
     ComputerUseError::unavailable(SCREEN_RECORDING_DENIED)
 }
 
-fn accessibility_error() -> ComputerUseError {
+pub(super) fn accessibility_error() -> ComputerUseError {
     ComputerUseError::unavailable(ACCESSIBILITY_DENIED)
 }
 
@@ -1400,6 +1404,8 @@ impl ComputerUseBackend for MacosComputerUseBackend {
             screenshot: true,
             input: true,
             ui_tree: true,
+            target: DisplayTarget::Physical,
+            target_note: String::new(),
             notes: "macos: all input coordinates are CGEvent global points (screenshot px / \
                     backing scale factor); mouse events are posted as native CGEvents and \
                     keyboard/wheel go through enigo; Screen Recording + Accessibility TCC \

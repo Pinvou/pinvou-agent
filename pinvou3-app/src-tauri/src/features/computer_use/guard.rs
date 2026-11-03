@@ -27,9 +27,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use super::backend::BackendRegistry;
+use super::platform::VirtualAvailabilitySnapshot;
+use super::types::DisplayTarget;
 
 /// The validity window of a T3 confirmation: an unanswered pending must
 /// expire on its own — after expiry it reads as nonexistent and can no longer
@@ -1140,6 +1142,25 @@ pub struct ComputerUseShared {
     /// lives in this module; the OS-side termination action is forwarded to
     /// the backend here.
     pub backends: BackendRegistry,
+    /// Mirrors the persisted `computer_use.prefer_virtual_display` setting
+    /// (default TRUE — "operate on an isolated virtual display whenever
+    /// possible"). Read at backend creation for the ONE-TIME virtual-vs-
+    /// physical fallback decision, and by the status command to resolve the
+    /// `virtualDisplayState` snapshot. Replayed at startup by lib.rs next to
+    /// the master toggle.
+    display_pref: AtomicBool,
+    /// Cached global availability snapshot ("available" | "unavailable" |
+    /// "disabled" + detail) resolved from the preference and the cheap
+    /// platform probe. Refresh points: startup replay, the preference
+    /// command, and after a (linux) backend creation reports. The probe is
+    /// binary/class presence only — never a server spawn.
+    virtual_availability: RwLock<VirtualAvailabilitySnapshot>,
+    /// Per-session display-target registry: session id → the target its
+    /// backend was created for (set at backend creation, cleared at tool
+    /// teardown). The status command reads it to answer "active" — a live
+    /// session is currently driving a virtual display — which no global
+    /// probe snapshot can express.
+    session_targets: Mutex<HashMap<String, DisplayTarget>>,
 }
 
 impl Default for ComputerUseShared {
@@ -1150,7 +1171,12 @@ impl Default for ComputerUseShared {
 
 impl ComputerUseShared {
     /// `enabled` defaults to false — the tool rejects everything until the
-    /// setting is turned on.
+    /// setting is turned on. `display_pref` defaults to TRUE (the virtual
+    /// display is preferred whenever possible, per the design's
+    /// user-confirmed scope), but with the availability snapshot parked at
+    /// "unavailable": until a platform probe actually runs (startup replay /
+    /// preference command), reporting "ready" would promise a backend that
+    /// was never checked.
     pub fn new() -> Self {
         Self {
             enabled: AtomicBool::new(false),
@@ -1163,11 +1189,108 @@ impl ComputerUseShared {
             }),
             grant_requests: Mutex::new(HashSet::new()),
             backends: BackendRegistry::default(),
+            display_pref: AtomicBool::new(true),
+            virtual_availability: RwLock::new(VirtualAvailabilitySnapshot {
+                state: "unavailable",
+                detail: "the virtual display has not been probed yet".to_string(),
+            }),
+            session_targets: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
+    }
+
+    /// The persisted virtual-display preference (in-memory mirror, default
+    /// TRUE). Read at backend creation for the one-time target decision.
+    pub fn prefer_virtual_display(&self) -> bool {
+        self.display_pref.load(Ordering::SeqCst)
+    }
+
+    /// Flip the virtual-display preference (the settings command calls this
+    /// AFTER persisting to settings.json, same order as the master toggle)
+    /// and refresh the cached availability snapshot in the same step: a flip
+    /// that left the snapshot stale would let `virtualDisplayState` report
+    /// "ready" for a preference the user just turned off (the startup replay
+    /// and the linux backend-creation reports refresh through the same
+    /// helper). No consent sweep rides this flip: it changes where future
+    /// sessions are created, not any live consent state.
+    pub fn set_display_pref(&self, prefer_virtual: bool) {
+        self.display_pref.store(prefer_virtual, Ordering::SeqCst);
+        self.refresh_virtual_availability();
+    }
+
+    /// Cache a freshly resolved global availability snapshot (startup
+    /// replay / preference command / linux backend-creation reports).
+    pub(crate) fn set_virtual_availability(&self, snapshot: VirtualAvailabilitySnapshot) {
+        *self.virtual_availability.write() = snapshot;
+    }
+
+    /// Re-probe the platform and cache the resolved snapshot. The refresh
+    /// entry point for the startup replay and the preference command: the
+    /// probe is cheap (binary/class presence only, never a server spawn),
+    /// so this is safe on every status-affecting call.
+    pub(crate) fn refresh_virtual_availability(&self) {
+        let availability = super::platform::probe_virtual_display();
+        let snapshot =
+            super::platform::resolve_snapshot(self.prefer_virtual_display(), &availability);
+        self.set_virtual_availability(snapshot);
+    }
+
+    /// The cached global availability snapshot (status projection input).
+    pub(crate) fn virtual_availability(&self) -> VirtualAvailabilitySnapshot {
+        self.virtual_availability.read().clone()
+    }
+
+    /// Resolve the status-level `virtualDisplayState` string (§2, frozen
+    /// vocabulary): "active" wins over everything (a live session IS driving
+    /// a virtual display right now), then the cached snapshot's
+    /// "disabled" / "unavailable" / "available"→"ready".
+    pub(crate) fn virtual_display_state(&self) -> (&'static str, String) {
+        let (state, detail) = {
+            let snapshot = self.virtual_availability.read();
+            (snapshot.state, snapshot.detail.clone())
+        };
+        if self.has_active_virtual_session() {
+            return ("active", detail);
+        }
+        match state {
+            "available" => ("ready", detail),
+            other => (other, detail),
+        }
+    }
+
+    /// Register the display target a session's backend was created for
+    /// (called from the tool's backend-creation path; overwrite = the
+    /// same-session successor tool re-registered).
+    pub(crate) fn set_session_target(&self, session_id: &str, target: DisplayTarget) {
+        self.session_targets
+            .lock()
+            .insert(session_id.to_string(), target);
+    }
+
+    /// Drop the session's target row (tool teardown). Missing rows are fine.
+    pub(crate) fn clear_session_target(&self, session_id: &str) {
+        self.session_targets.lock().remove(session_id);
+    }
+
+    /// The display target the session's backend was created for (None = no
+    /// live row: tool not constructed / torn down, or an unknown session id).
+    /// The status command projects this as `sessionDisplayTarget` so the
+    /// frontend banner can pick its copy from server truth after a window
+    /// reload, where the event-derived `grantedTarget` no longer exists.
+    pub(crate) fn session_target(&self, session_id: &str) -> Option<DisplayTarget> {
+        self.session_targets.lock().get(session_id).copied()
+    }
+
+    /// Whether any live session's backend currently targets the virtual
+    /// display ("active" in the status vocabulary).
+    pub(crate) fn has_active_virtual_session(&self) -> bool {
+        self.session_targets
+            .lock()
+            .values()
+            .any(|target| *target == DisplayTarget::Virtual)
     }
 
     /// The settings toggle (called by the integration layer's settings

@@ -58,9 +58,22 @@ pub use self::tool::ComputerUseTool;
 // ---- Tool name (types): the canonical "computer_use" spelling, re-exported
 // ---- for the composition root and command surface ----
 pub use self::types::{EVENT_STATE_CHANGED, TOOL_NAME};
+// Display-target vocabulary for the command-surface tests (the enum itself
+// stays internal to the feature; production status code reads it through
+// the guard's accessors).
+#[cfg(test)]
+pub(crate) use self::types::DisplayTarget;
+// Virtual-availability snapshot type for the command-surface tests.
+#[cfg(test)]
+pub(crate) use self::platform::VirtualAvailabilitySnapshot;
 
 // ---- Platform capability entry points (platform): consumed by Tauri commands ----
-pub(crate) use self::platform::{backend_supported, permission_status, request_permissions};
+pub(crate) use self::platform::{
+    backend_supported, permission_status, request_permissions, set_main_thread_app_handle,
+};
+// Crash-orphan sweep for the virtual display stacks (lib.rs setup calls it
+// once; a no-op on platforms without a persistent-runtime target).
+pub(crate) use self::platform::sweep_orphans as sweep_virtual_display_orphans;
 
 /// The model-facing availability announcement, rendered into the session
 /// system prompt by the bridge while the master switch is on (Work **and**
@@ -81,7 +94,8 @@ pub(crate) fn instruction_block() -> &'static str {
     // Chinese-language static prompt plus English capability sections (the
     // Browser capabilities section is English too).
     "## Computer use
-- This session can see and operate the real desktop through the `computer_use` tool: `screenshot` shows the actual screen, and further actions move the mouse, click, scroll, and type on this computer. The tool is in your tool list; take a `screenshot` first and work in its pixel coordinates.
+- This session can see and operate a desktop through the `computer_use` tool: `screenshot` shows the actual screen, and further actions move the mouse, click, scroll, type, and launch apps (`open`) on this computer. The tool is in your tool list; take a `screenshot` first and work in its pixel coordinates.
+- When the screenshot's `[target: …]` line says \"isolated virtual display\", you are working on an isolated virtual display: nothing you do reaches the user's real desktop, so launch apps there with `open` and work freely. When it says \"user's desktop\", every action is visible to the user: minimize disruption, keep actions to the minimum the task needs, and say what you are about to do before doing it.
 - Reading the screen (screenshot, cursor position, element tree) needs no approval. The FIRST action that moves the mouse or presses a key fails on purpose while the app shows the user a control-grant dialog: tell the user to approve it, and retry only after they say they did (the grant covers the rest of the session). If control was granted earlier but a new action reports it missing (the session went idle or the app restarted), ask the user to grant again — do not loop retries.
 - A pending per-action confirmation (delete / submit / pay / accept-class targets) blocks every input action until the user answers the dialog; wait instead of retrying, and never try to click the dialog itself.
 - On macOS, `accessibility_denied` / `screen_recording_denied` mean the user must grant the permission in System Settings → Privacy & Security (the Accessibility pane is labeled \"Device Control and Data Access\" on recent macOS; Screen Recording keeps its name) and then FULLY QUIT AND REOPEN the app — a grant reaches an already-running process only at launch. Say both steps, not just the settings path.

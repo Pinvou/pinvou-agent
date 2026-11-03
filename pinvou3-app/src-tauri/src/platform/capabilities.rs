@@ -29,6 +29,14 @@ pub(crate) struct DesktopCapabilities {
     /// sessions (including XWayland, whose X server sees no system-wide keys)
     /// must not offer the feature.
     pub(crate) global_shortcuts_available: bool,
+    /// Semantic selector for the computer-use virtual-display fidelity note
+    /// ("windows" | "macos" | ""): the platform whose note row the settings
+    /// page should show, "" where none applies (Linux runs the real Xvfb
+    /// stack and has no per-platform caveat copy). Deliberately its own
+    /// capability — the frontend must not proxy the dependency-installer
+    /// bits for it, since installer semantics and this note can change
+    /// independently.
+    pub(crate) virtual_display_note: &'static str,
 }
 
 fn browser_product_enabled_for(os: &str) -> bool {
@@ -72,6 +80,13 @@ pub(crate) fn current() -> DesktopCapabilities {
         // 测试在宿主上钉住。
         local_embed_supported: !cfg!(all(target_os = "linux", target_arch = "loongarch64")),
         global_shortcuts_available,
+        virtual_display_note: if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            ""
+        },
     }
 }
 
@@ -183,6 +198,34 @@ mod tests {
         assert!(supports_codex_acp("windows"));
         assert!(supports_codex_acp("macos"));
         assert!(!supports_codex_acp("android"));
+    }
+
+    /// The virtual-display note selector is a frozen three-value vocabulary
+    /// ("windows" | "macos" | ""): the frontend gates its settings note rows
+    /// on exact equality, so any other spelling would silently hide every
+    /// note, and an empty string must mean "no note platform" (Linux runs
+    /// the real Xvfb stack and has no per-platform caveat copy). Host-pinned
+    /// against the compiled target; the other arms are covered by the
+    /// cross-target compile checks.
+    #[test]
+    fn virtual_display_note_tracks_the_compiled_target() {
+        assert!(
+            matches!(current().virtual_display_note, "" | "windows" | "macos"),
+            "the note selector must stay inside the frozen vocabulary"
+        );
+        if cfg!(any(target_os = "windows", target_os = "macos")) {
+            assert!(
+                !current().virtual_display_note.is_empty(),
+                "a note platform must name itself, got {:?}",
+                current().virtual_display_note
+            );
+        } else {
+            assert_eq!(
+                current().virtual_display_note,
+                "",
+                "a non-note platform must answer the empty selector"
+            );
+        }
     }
 
     #[test]

@@ -135,6 +135,16 @@ pub trait ComputerUseBackend: Send {
     fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
         let _ = flag;
     }
+    /// Launch an application inside the display target. Virtual backends only;
+    /// physical backends keep the default (explicit Unsupported) — opening apps
+    /// on the user's real desktop is out of scope and disruptive.
+    fn open_app(&mut self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
+        let _ = (program, args);
+        Err(ComputerUseError::unsupported(
+            "open",
+            "launching applications is only available on a virtual display target",
+        ))
+    }
 }
 
 enum BackendRequestKind {
@@ -182,6 +192,12 @@ enum BackendRequestKind {
     },
     FocusedElement,
     ReleaseOsGrant,
+    /// Launch an app inside the display target (virtual backends; physical
+    /// backends answer with the trait's explicit-unsupported default).
+    OpenApp {
+        program: String,
+        args: Vec<String>,
+    },
     Shutdown,
 }
 
@@ -192,6 +208,8 @@ enum BackendReply {
     Unit,
     Tree(String),
     Element(Option<ElementInfo>),
+    /// The spawned child's pid (open_app).
+    Pid(u32),
 }
 
 type BackendResult = Result<BackendReply, ComputerUseError>;
@@ -285,6 +303,10 @@ fn dispatch(
         },
         BackendRequestKind::ReleaseOsGrant => match backend.release_os_grant() {
             Ok(()) => BackendReply::Unit,
+            Err(error) => return Some(Err(error)),
+        },
+        BackendRequestKind::OpenApp { program, args } => match backend.open_app(&program, &args) {
+            Ok(pid) => BackendReply::Pid(pid),
             Err(error) => return Some(Err(error)),
         },
         BackendRequestKind::Shutdown => return None,
@@ -965,6 +987,20 @@ impl BackendHandle {
         self.unit_control(BackendRequestKind::ReleaseOsGrant)
     }
 
+    /// Launch an application inside the backend's display target. Only
+    /// virtual backends implement it (the trait default answers
+    /// explicit-unsupported for physical backends — opening apps on the
+    /// user's real desktop is out of scope); returns the spawned child's pid.
+    pub fn open_app(&self, program: &str, args: &[String]) -> Result<u32, ComputerUseError> {
+        match self.inner.request(BackendRequestKind::OpenApp {
+            program: program.to_string(),
+            args: args.to_vec(),
+        })? {
+            BackendReply::Pid(pid) => Ok(pid),
+            _ => Err(ComputerUseError::failed("unexpected backend reply")),
+        }
+    }
+
     /// Best-effort physical button release through the control lane
     /// (bypasses the in-flight gate, queues behind any in-flight action).
     /// Emergency cleanup for sessions that may die mid-drag: a model that
@@ -1193,6 +1229,7 @@ fn emergency_cleanup(handle: BackendHandle) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::DisplayTarget;
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -1208,6 +1245,8 @@ mod tests {
                 input: true,
                 ui_tree: false,
                 notes: "mock".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
 
@@ -1341,6 +1380,8 @@ mod tests {
                     input: false,
                     ui_tree: false,
                     notes: String::new(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
                 }
             }
             fn capture(&mut self) -> Result<Capture, ComputerUseError> {
@@ -1427,6 +1468,8 @@ mod tests {
                     input: true,
                     ui_tree: false,
                     notes: "test".to_string(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
                 }
             }
             fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {
@@ -1590,6 +1633,8 @@ mod tests {
                 input: true,
                 ui_tree: false,
                 notes: "panic-on-type".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
 
@@ -1903,6 +1948,8 @@ mod tests {
                 input: true,
                 ui_tree: false,
                 notes: "probe".to_string(),
+                target: DisplayTarget::Physical,
+                target_note: String::new(),
             }
         }
 
@@ -2297,6 +2344,8 @@ mod tests {
                     input: true,
                     ui_tree: false,
                     notes: "test".to_string(),
+                    target: DisplayTarget::Physical,
+                    target_note: String::new(),
                 }
             }
             fn set_cancel_flag(&mut self, flag: Option<Arc<AtomicBool>>) {

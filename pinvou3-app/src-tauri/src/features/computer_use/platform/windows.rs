@@ -77,8 +77,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::super::backend::ComputerUseBackend;
 use super::super::guard::raw_element_binding;
 use super::super::types::{
-    Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
-    UiTreeOptions,
+    Capabilities, Capture, ComputerUseError, DisplayTarget, ElementInfo, Key, MouseButton,
+    ScrollDirection, UiTreeOptions,
 };
 use super::helpers::{
     CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
@@ -977,6 +977,8 @@ impl ComputerUseBackend for WindowsComputerUseBackend {
             input: true,
             ui_tree: true,
             notes,
+            target: DisplayTarget::Physical,
+            target_note: String::new(),
         }
     }
 
