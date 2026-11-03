@@ -182,6 +182,11 @@ const MAX_PENDING_REVOCATIONS_FILE_BYTES: usize = 256 * 1024;
 const MAX_RPC_LEDGER_FILE_BYTES: usize = 1024 * 1024;
 const MAX_WEB_SESSION_DOWNLOAD_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const WEB_SESSION_TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
+/// Round-16 复审(M2):满槽逐出的新鲜度窗。「ready」区分不出「响应丢失
+/// 的孤儿」与「手机已持 id、仍在分块读取的下载」;窗口内被读过的条目
+/// (chunk 读取会刷新 last_touched)不当受害者。窗口远小于 TTL:真孤儿
+/// 的清理最多延后一个窗口,仍远早于 10 分钟 Reaper。
+const WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW: Duration = Duration::from_secs(30);
 const WEB_SESSION_TRANSFER_REAPER_INTERVAL: Duration = Duration::from_secs(60);
 
 /// 这些 error 码终结本次注册(relay_client 的 run_loop 停止重连),manager
@@ -5338,26 +5343,33 @@ mod tests {
 
     #[test]
     fn full_download_slots_evict_the_oldest_ready_orphan() {
-        // Round-15 复审:满槽时 begin 先逐出最旧的 ready 孤儿(手机从未
-        // 收到其 download_id,字节无人认领);引擎仍在写的未 ready 条目
-        // 不可作受害者,此时保留既有满槽错误。
-        let mut inner = Inner::default();
-        for (download_id, ready) in [("download_old", true), ("download_new", false)] {
-            inner.web_session_downloads.insert(
-                download_id.to_string(),
+        // Round-15 复审:满槽时 begin 先逐出最旧的 ready 孤儿(响应丢失,
+        // 手机拿不到 download_id);引擎仍在写的未 ready 条目不可作受害者,
+        // 此时保留既有满槽错误。Round-16 复审(M2):受害判据加新鲜度窗
+        // ——「ready」区分不出孤儿与读中下载(分块读取刷新 last_touched),
+        // 停更超窗的 ready 条目才可逐;窗内的 ready 条目同样保留。
+        let aged = |id: &str, ready: bool| {
+            (
+                id.to_string(),
                 WebSessionDownload {
                     session_id: "session_a".into(),
-                    reservation_id: format!("reservation_{download_id}"),
+                    reservation_id: format!("reservation_{id}"),
                     file: tempfile::tempfile().unwrap(),
                     reserved_bytes: 1,
                     total: 1,
                     ready,
-                    last_touched: Instant::now(),
+                    last_touched: Instant::now()
+                        - WEB_SESSION_DOWNLOAD_EVICTION_ACTIVE_WINDOW
+                        - std::time::Duration::from_secs(1),
                 },
-            );
+            )
+        };
+        let mut inner = Inner::default();
+        for (download_id, entry) in [aged("download_old", true), aged("download_new", false)] {
             inner
                 .web_session_download_order
-                .push_back(download_id.to_string());
+                .push_back(download_id.clone());
+            inner.web_session_downloads.insert(download_id, entry);
         }
         assert!(transfer::evict_oldest_ready_session_download(&mut inner));
         assert!(!inner.web_session_downloads.contains_key("download_old"));
@@ -5368,6 +5380,63 @@ mod tests {
         assert!(!transfer::evict_oldest_ready_session_download(&mut inner));
         assert_eq!(inner.web_session_downloads.len(), 1);
         assert_eq!(inner.web_session_download_order, ["download_new"]);
+
+        // Round-16 复审(M2):窗内的 ready 条目(正在被分块读取)不当
+        // 受害者——不刷新 last_touched 的秒级读取间隙不得把读中下载逐出。
+        let fresh_ready = aged("download_fresh", true);
+        inner
+            .web_session_downloads
+            .insert("download_fresh".into(), {
+                let mut entry = fresh_ready.1;
+                entry.last_touched = Instant::now();
+                entry
+            });
+        inner
+            .web_session_download_order
+            .push_back("download_fresh".into());
+        assert!(!transfer::evict_oldest_ready_session_download(&mut inner));
+        assert!(inner.web_session_downloads.contains_key("download_fresh"));
+        assert_eq!(
+            inner.web_session_download_order,
+            ["download_new", "download_fresh"]
+        );
+    }
+
+    /// 接线钉(Round-16 复审 MAJOR-2):begin 的满槽逐出接线此前测试不可
+    /// 见——直接驱动 `begin_web_session_download` 需要 AppHandle(单元
+    /// 测试无法构造),唯有的逐出行为钉经 helper 驱动,删除 begin 内的
+    /// 接线(或把 `>=` 改成 `>`、或把调用挪到容量检查之后变死代码)全套
+    /// 件保持绿(突变实证)。按本模块「helper 级测试钉不住接线点」的既
+    /// 有约定(mod.rs:5530)改用源钉:钉住 if 行与调用的逐字节形态及
+    /// 「先逐出、后容量门」的顺序。
+    #[test]
+    fn begin_session_download_wires_the_eviction_before_the_capacity_gate() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub fn begin_web_session_download(")
+            .expect("begin_web_session_download must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("begin body must be terminated by the next fn")];
+        let gate = body
+            .find("if inner.web_session_downloads.len() >= MAX_WEB_SESSION_DOWNLOADS {")
+            .expect(
+                "the full-slot eviction gate must stay in begin: deleting the \
+                     wiring silently reverts the orphan-wedge fix to hard failure",
+            );
+        let call = body
+            .find("transfer::evict_oldest_ready_session_download(&mut inner);")
+            .expect("the eviction call must stay wired inside the gate");
+        let capacity = body
+            .find("ensure_web_session_download_capacity(&inner, reserved_bytes)?;")
+            .expect("the capacity gate must stay in begin");
+        assert!(
+            gate < call && call < capacity,
+            "begin must evict the oldest aged ready orphan BEFORE the capacity \
+             gate; moving the call after it (or flipping the threshold) would \
+             strand the orphan-wedge fix as dead code"
+        );
     }
 
     #[test]
@@ -5707,6 +5776,9 @@ mod tests {
                 last_touched: Instant::now(),
             },
         );
+        inner
+            .web_session_download_order
+            .push_back("download_a".to_string());
         inner.web_session_downloads.insert(
             "download_a".to_string(),
             WebSessionDownload {
@@ -5740,6 +5812,14 @@ mod tests {
             inner.web_session_downloads.contains_key("download_a"),
             "a rejoin must keep session downloads"
         );
+        // Round-16 复审(M2 测试缝):顺序队列与映射必须同进退——只清映射
+        // 不清队列的突变会让陈旧 id 成为下一次逐出的幽灵受害者。
+        assert!(
+            inner
+                .web_session_download_order
+                .contains(&"download_a".to_string()),
+            "a rejoin must keep the download eviction order consistent with the map"
+        );
 
         // Takeover (fresh client replaces a live one): the wipe must stay so
         // the replacing client cannot touch the previous lease's transfers.
@@ -5747,6 +5827,10 @@ mod tests {
         assert!(inner.web_attachments.is_empty());
         assert!(inner.web_attachment_uploads.is_empty());
         assert!(inner.web_session_downloads.is_empty());
+        assert!(
+            inner.web_session_download_order.is_empty(),
+            "a takeover wipe must clear the eviction order alongside the map"
+        );
 
         std::fs::remove_dir_all(&staging).ok();
     }
@@ -5904,6 +5988,22 @@ mod tests {
             body.contains("folder access remains enabled"),
             "the error must tell the user the revocation did not take effect"
         );
+        // Round-16 复审(M1c):失败臂的「重发状态」此前无钉——只删这一处
+        // emit_status 时全套件保持绿(B1 钉只要求函数内存在任意一处 emit,
+        // 而函数末尾本就有一处)。断言 emit 落在失败臂窗口内(persist
+        // if-let 与错误文案之间),删臂内 emit 即红。
+        let failure_arm_start = body
+            .find("if let Err(error) = persist_config(&config)")
+            .expect("the persist failure arm must exist");
+        let failure_arm_end = body
+            .find("folder access remains enabled")
+            .expect("the actionable failure message must exist");
+        let failure_arm = &body[failure_arm_start..failure_arm_end];
+        assert!(
+            failure_arm.contains("self.emit_status();"),
+            "the failure arm must re-emit status so the UI shows the truthful \
+             still-authorized consent state instead of the optimistic revoked row"
+        );
     }
 
     /// 接线钉(Round-15 复审 minor:满队楔死恢复路径)。stop/refresh 对
@@ -5953,15 +6053,47 @@ mod tests {
             refresh_body.contains("[web-access] refresh ignores pending-revocation replay failure"),
             "the post-commit replay before activate must tolerate failure like stop does",
         );
+        // Round-16 复审(M1b):入口回放的 fail-closed `?` 此前是可选断言
+        // (both-optional 的 if-let)——删除入口 `?` 行时本钉仍全绿,entry
+        // 路径可被静默改成容错。改为必选断言 + 顺序校验。
         let entry_form = refresh_body.find("self.replay_pending_revocations()?;");
+        assert!(
+            entry_form.is_some(),
+            "the entry-path replay must stay fail-closed (`?`): refresh may not \
+             run against an undrained revocation backlog"
+        );
         let tolerate_form =
             refresh_body.find("[web-access] refresh ignores pending-revocation replay failure");
-        if let (Some(entry), Some(tolerate)) = (entry_form, tolerate_form) {
-            assert!(
-                entry < tolerate,
-                "the fail-closed entry replay must precede the committed-rotation tolerate arm",
-            );
-        }
+        assert!(
+            tolerate_form.is_some(),
+            "the committed-rotation tolerate arm must exist",
+        );
+        assert!(
+            entry_form < tolerate_form,
+            "the fail-closed entry replay must precede the committed-rotation tolerate arm",
+        );
+        // Round-16 复审(M1a):stop 的 rpc-ledger 删除降级此前无钉——退回
+        // `remove_rpc_ledger()?` 会让一次已生效的停用上报失败,而
+        // stop_current 无法被行为测试驱动(无 mock_app),全套件保持绿。
+        let stop_body = source
+            .split("pub fn stop_current(")
+            .nth(1)
+            .expect("stop_current must exist");
+        let stop_end = ["\n    fn ", "\n    pub fn ", "\n    #[test]"]
+            .iter()
+            .filter_map(|marker| stop_body.find(marker))
+            .min()
+            .unwrap_or(stop_body.len());
+        let stop_body = &stop_body[..stop_end];
+        assert!(
+            !stop_body.contains("remove_rpc_ledger()?"),
+            "stop must not propagate an rpc-ledger removal failure: the stop has \
+             already taken effect and a `?` would report a completed stop as failed"
+        );
+        assert!(
+            stop_body.contains("[web-access] stop ignores rpc-ledger removal failure"),
+            "a failed rpc-ledger removal must degrade to a log, not fail the stop",
+        );
     }
 
     /// 接线钉(Round-10 复审 minor):`web_access:status` 载荷携带配对
