@@ -132,12 +132,10 @@ fn crosses_sensitive_component_suffix(canonical: &Path) -> Option<&'static str> 
 /// the prefix list here silently missed the macOS `/private/{etc,var,tmp}`
 /// alias expansion that `check_sensitive_components` gained — canonicalized
 /// spellings on macOS resolve `/etc/...` to `/private/etc/...`, which matches
-/// no list entry, so the GUI refused paths this mirror shipped. Disclosed
-/// asymmetry (Round-15 复审 F3): this lane keeps the pre-PR shape of
-/// applying the component legs without the system-prefix leg; the upstream
-/// list widening that added `/var/root/` therefore widens the documented
-/// root-install divergence (GUI refuses every artifact under a root home,
-/// the CLI still serves them) rather than closing it.
+/// no list entry, so the GUI refused paths this mirror shipped. (Round-17
+/// 复审订正:the disclosed session-artifact asymmetry lives on the
+/// `resolve_session_artifact` gate below, not on this fn — this one does
+/// apply the system-prefix leg; see the comment at that gate.)
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
     check_sensitive_canonical(canonical, cfg!(target_os = "macos"))
 }
@@ -406,6 +404,16 @@ fn resolve_session_artifact(
     // model context, which is the read direction. The round-11 audit adds the
     // directory-scoped tails (gh/Maven/sops/Chrome credential files can sit
     // inside a session workspace just the same).
+    //
+    // Disclosed asymmetry (Round-15 复审 F3; Round-17 复审订正注释归属——
+    // 这条披露属于本 session-artifact 车道,不是 check_sensitive_path,后
+    // 者是带系统前缀腿的完整镜像):this lane deliberately keeps the
+    // credential-component legs WITHOUT the system-prefix leg (containment
+    // already proves the target is inside session storage). The upstream
+    // list widening that added `/var/root/` therefore widens the documented
+    // root-install divergence (GUI refuses every artifact under a root home
+    // via `check_sensitive_components`, this CLI lane still serves them)
+    // rather than closing it — see the module doc for the standing contract.
     let directory_scoped_tail =
         pinvou3_lib::platform::path_policy::blocked_path_tail_hit(&canonical)
             .map(|tail| tail.join("/"));
@@ -702,6 +710,10 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn system_prefix_hits_run_through_the_production_alias_flag() {
+        // 前两条是 flag 突变的判别断言(flag→false 时 alias 展开消失、
+        // `/private/…` 撞不上任何 raw 清单项而放行);第三条是对照:raw
+        // 拼写 `/etc/shadow` 不经 alias 展开也命中,钉住「raw 半边 OR
+        // alias 半边」里 raw 那一半不被误删。
         assert!(super::check_sensitive_path(Path::new("/private/etc/shadow")).is_err());
         assert!(super::check_sensitive_path(Path::new("/private/var/root/x")).is_err());
         assert!(super::check_sensitive_path(Path::new("/etc/shadow")).is_err());

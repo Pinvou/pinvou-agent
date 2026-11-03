@@ -1304,9 +1304,9 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     );
     // Round-11 复审 minor:写向同样经前缀/尾序列腿(.env.local 与
     // .m2/settings.xml 的写拒绝在 resolve_session_artifact 上游,文件不动)。
-    // Round-15 复审 F2:此前只断言 expect_failed——markdown 后缀检查会先
-    // 拒绝非 .md 目标,敏感门被删时钉仍全绿(装饰性)。断言拒绝码使
-    // 门删除转红;`expect_failed` 返回 CliError,消息携带稳定码。
+    // Round-15 复审 F2:此前只断言 expect_failed——敏感门被删后,markdown
+    // 后缀检查仍会拒绝这些非 .md 目标,钉因此保持全绿(装饰性)。断言拒
+    // 绝码使门删除转红;`expect_failed` 返回 CliError,消息携带稳定码。
     for target in [".env.local", ".m2/settings.xml"] {
         let error = expect_failed(&["pinvou", "artifacts", "write", &id, target, "--stdin"]);
         // Round-16 复审(NIT):与读向钉同一 starts_with 前缀断言——码是
