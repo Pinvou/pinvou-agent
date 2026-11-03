@@ -17,7 +17,9 @@
 
   // 抹平裸 <script>/<style>/<iframe> 等危险标签：在 marked.parse 【之后】做替换而非之前，
   // 只命中正文裸写的 HTML，不会双重转义代码块里已被转义的 `<script>` 字面量。
-  const DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/gi;
+  // 本正则（含 u 旗标）与 shared/markdown-renderer.js 的 DANGEROUS_TAGS_RE 逐字节同构，
+  // 由 tests/markdown_bridge_fallback_safety.test.mjs 守护，不要单边改动。
+  const DANGEROUS_TAGS_RE = /<(\/?(?:script|style|iframe|object|embed|link|meta)\b[^>]*)>/giu;
 
   function neutralizeRawDangerousTags(html) {
     return html.replaceAll(DANGEROUS_TAGS_RE, function (_, inner) { return "&lt;" + inner + "&gt;"; });
