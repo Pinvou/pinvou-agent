@@ -7,9 +7,10 @@ CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # Review candidate: CodeWhale#131 (host-armed guardrail prompts + authority-transition notice) ahead of public maintenance,
-# plus the PR809 round-12 fix 3cf2cdff9 (child approval cache keys scoped to the operation).
-EXPECTED_HEAD="3cf2cdff9d3a93fdc344eb2ee0cdad2eedb2ccb0"
-EXPECTED_COMMITS=106
+# plus the PR809 round-13 fix 8c4e8e7aa (the compat SSE approval.required envelope
+# carries approval_force_prompt, same as the pump payloads).
+EXPECTED_HEAD="8c4e8e7aa446cec2f9d0653f671b449424339be8"
+EXPECTED_COMMITS=107
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
