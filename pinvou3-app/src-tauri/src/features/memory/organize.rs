@@ -311,8 +311,13 @@ pub async fn organize_memory_with_llm(
 /// write the completion diagnostic.
 fn finish_organize_report(report: &mut MemoryOrganizeReport) {
     if let Err(error) = persist_organize_report(report) {
-        let detail = format!("persist organize history: {error}");
-        eprintln!("[memory] {detail}");
+        // Round-15 复审 minor:report.warnings 随 organize_memory 载荷与
+        // 历史查询出站(Web 允许清单内),与其他 memory 警告同口径折叠
+        // 存储根;desktop 日志保留原始明细。
+        let raw = format!("persist organize history: {error}");
+        eprintln!("[memory] {raw}");
+        let detail =
+            crate::platform::paths::redact_storage_prefix(&format!("persist organize history: {error}"));
         report.warnings.push(detail);
     }
     append_memory_review_diagnostic(

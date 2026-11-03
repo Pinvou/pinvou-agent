@@ -4393,3 +4393,34 @@ fn memory_block_marker_gate_is_case_insensitive() {
     assert!(contains_memory_block_marker("<pinvou_user_memory>"));
     assert!(!contains_memory_block_marker("ordinary preference text"));
 }
+
+/// Round-15 复审 minor:`finish_organize_report` 把 persist 失败推进
+/// `report.warnings`——该载荷随 organize_memory 命令与历史查询出站
+/// (Web 允许清单内),与其他 memory 警告同口径折叠存储根。退回裸
+/// `format!(…)` 推送时本钉转红(desktop 日志保留原始明细,与折叠并行)。
+#[test]
+fn organize_report_persist_warning_folds_the_storage_prefix() {
+    let source = include_str!("organize.rs");
+    let start = source
+        .find("fn finish_organize_report(")
+        .expect("finish_organize_report must exist");
+    let body = &source[start..];
+    let end = ["\nfn ", "\npub fn ", "\n#[cfg(test)]"]
+        .iter()
+        .filter_map(|marker| body.find(marker))
+        .min()
+        .unwrap_or(body.len());
+    let body = &body[..end];
+    assert!(
+        body.contains("redact_storage_prefix"),
+        "the organize report persist warning rides phone-visible payloads and must fold the storage prefix",
+    );
+    assert!(
+        body.contains("report.warnings.push(detail)"),
+        "the warning must still reach the report (folded), not be dropped",
+    );
+    assert!(
+        body.contains("eprintln!(\"[memory] {raw}\")"),
+        "the desktop log keeps the raw detail; only the outbound copy is folded",
+    );
+}
