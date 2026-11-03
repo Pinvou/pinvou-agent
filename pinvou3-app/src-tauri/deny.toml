@@ -49,14 +49,14 @@ ignore = [
     # RUSTSEC-2026-0194 (quick-xml quadratic complexity) and
     # RUSTSEC-2026-0195 (NsReader memory exhaustion) no longer match:
     # both advisories are fixed in quick-xml >=0.41.0, and the lockfile
-    # resolves 0.41.0 + 0.42.0（0.42 来自本仓直接依赖与 calamine 0.37/plist 1.10.3;
+    # resolves 0.41.0 + 0.42.0（0.42 来自本仓直接依赖与 calamine 0.38/plist 1.10.3;
     # 残留的 0.41.0 仅在 wayland-scanner/xcb 的 Linux 构建链,同样在修复线上）。
     # Without an ignore entry, a future dependency downgrade below
     # 0.41 would trip the advisory and fail CI again — reassess then.
     #
     # RUSTSEC-2026-0367/0368/0369 (zip 8.x extract-family) RETIRED:
-    # calamine 0.37 requires zip ^9, and all three workspaces now pin
-    # calamine = "0.37" — the graph converges on a single zip 9.0.5 and no
+    # calamine 0.38 requires zip ^9, and all three workspaces now pin
+    # calamine = "0.38" — the graph converges on a single zip 9.1.0 and no
     # longer contains a vulnerable zip. The round-30 reachability note (the
     # graph never calls the wholesale `ZipArchive::extract()` /
     # stream-extract APIs — every direct zip consumer iterates `by_index`
@@ -91,7 +91,7 @@ unmaintained = "workspace"
 # unsound="all" 探针恰好只命中它。GTK hold 移动时在此重评。
 unsound = "workspace"
 # Restored to "deny": the supported non-yanked dependency update this block
-# waited for has landed — calamine 0.37 with a single zip 9.0.5 in the graph —
+# waited for has landed — calamine 0.38 with a single zip 9.1.0 in the graph —
 # so yanked releases are denied again. Reassess immediately if an advisory
 # affects the pinned version.
 yanked = "deny"

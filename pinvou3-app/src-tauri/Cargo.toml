@@ -197,8 +197,13 @@ walkdir = "2"
 # 模型(bge-m3 ONNX)用户本地下载，UserDefinedEmbeddingModel 从目录加载，不走 HF 自动下载。
 # 电子表格解析（file_ingest 用）：读 xlsx/xls/ods 的全部工作表。
 # 0.37 要求 zip ^9（见上）与 quick-xml ^0.42（ReDoS 修复线,见 RUSTSEC-2026-0194/0195）。
+# 0.38：修 RUSTSEC-2026-0436（CFB/OLE2 解析器对恶意输入 panic/无界分配,见该通告;
+# zip ^9 与 quick-xml ^0.42 约束不变）。注意：本 bump 的极小 lock 更新会让 resolver
+# 把图中 range requirement 边（errno/tempfile/cssparser-macros 等对 windows-sys/
+# getrandom/syn 的 ">=x,<y" 需求）重 pick 到较旧版本——21 个条目共 22 条边随本
+# bump 移动,系 cargo 1.99 的规范输出（byte-reproducible）,非人工改动,勿手工回改。
 # 残留的 quick-xml 0.41 仅来自 wayland-scanner/xcb 的 Linux 构建链（`cargo tree -i quick-xml`）。
-calamine = "0.37"
+calamine = "0.38"
 # XLSX structure preservation: inspect OOXML cell styles, formulas, and merged
 # ranges that calamine's value-only Range intentionally does not expose.
 quick-xml = "0.42"
