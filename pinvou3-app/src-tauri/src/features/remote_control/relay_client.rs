@@ -1587,4 +1587,70 @@ mod tests {
                 .contains(&"endpoint_not_found")
         );
     }
+
+    /// 接线钉(Round-15 复审 MA5):吊销 worker 的终态闸门语义只存在于
+    /// run_revocation_loop 的这一个内联判定——`terminal.is_some()` 单独
+    /// 成闸(把 `|| (scoped_to_self && …endpoint_not_found…)` 腿删掉)会
+    /// 复活注释里预言的 12s 无限 connect→revoke 循环,而
+    /// terminal_message / terminal_relay_message 的单元测试看不见这个
+    /// 调用点,全套件保持绿。钉死双腿合取的原样形态与 endpoint_not_found
+    /// 字面量:删腿、退回单腿、改名任一突变即红。
+    #[test]
+    fn revocation_worker_gate_wires_the_worker_terminal_legs() {
+        let source = include_str!("relay_client.rs");
+        let start = source
+            .find("async fn run_revocation_loop")
+            .expect("run_revocation_loop must exist");
+        let tail = &source[start..];
+        let end = ["\nasync fn ", "\nfn ", "\n#[cfg(test)]", "\nmod "]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("run_revocation_loop body must be terminated by the next item");
+        let body = &tail[..end];
+        assert!(
+            body.contains(
+                "let worker_terminal = terminal.is_some()
+                                        || (scoped_to_self"
+            ),
+            "the revocation worker gate must keep the two-leg disjunction: terminal \
+             frames AND self-scoped endpoint_not_found both end the worker; reverting \
+             to `terminal.is_some()` alone resurrects the 12s infinite connect→revoke \
+             loop after relay state loss"
+        );
+        assert!(
+            body.contains("== Some(\"endpoint_not_found\")"),
+            "the worker gate must pin its own endpoint_not_found literal; the shared \
+             folding predicate classifies it as recoverable for the register loop"
+        );
+    }
+
+    /// 接线钉(Round-15 复审 MA5,轻量半):run_loop 的注册类 reject 帧必须
+    /// 先经 stamp_unscoped_registration_error 补戳再转发——删除该调用点后
+    /// 帮助函数单元测试仍绿(manager 的空 id 防线兜底,故降级为轻量钉)。
+    #[test]
+    fn run_loop_stamps_unscoped_registration_errors_before_forwarding() {
+        let source = include_str!("relay_client.rs");
+        let start = source
+            .find("async fn run_loop")
+            .expect("run_loop must exist");
+        let tail = &source[start..];
+        let end = ["\nasync fn ", "\nfn ", "\n#[cfg(test)]", "\nmod "]
+            .iter()
+            .filter_map(|marker| tail.find(marker))
+            .min()
+            .expect("run_loop body must be terminated by the next item");
+        let body = &tail[..end];
+        assert!(
+            body.contains(
+                "if stamp_unscoped_registration_error(
+                                            &mut value,
+                                            &config.endpoint_id,
+                                        )"
+            ),
+            "run_loop must stamp unscoped registration errors with the endpoint it is \
+             registering before forwarding; deleting the call site makes late terminal \
+             frames unattributable to the manager's explicit-match gate"
+        );
+    }
 }

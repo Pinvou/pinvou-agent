@@ -484,8 +484,20 @@ assert.doesNotMatch(codexWorkspacePanel, /invoke\('get_codex_workspace_(?:change
   'the shared workspace UI must not bypass the Web-safe command adapter');
 assert.doesNotMatch(codexView, /invoke\('cancel_codex_acp'/,
   'the shared ACP UI must not bypass the Web-safe cancellation adapter');
+// Round-15 复审 HIGH(突变实证):`?.[0] || ''` 会把提取漂移(改名、箭头
+// 函数化、重排版去掉列 0 的 `\n}`)变成对空串 trivially-true 的
+// doesNotMatch——workspacePath 泄漏防线无声熄灭而全套件保持绿。先断言
+// 提取非空,再跑反钉。
+const createAcpSessionSource =
+  acpPlatformClient.match(/export function createAcpSession[\s\S]*?\n\}/)?.[0];
+assert.ok(
+  createAcpSessionSource,
+  'createAcpSession must be extractable for the workspacePath anti-pin; if this \
+   assertion fires the function was renamed or restructured and the pin below \
+   must be re-anchored',
+);
 assert.doesNotMatch(
-  acpPlatformClient.match(/export function createAcpSession[\s\S]*?\n\}/)?.[0] || '',
+  createAcpSessionSource,
   /web_access_create_codex_acp_session[\s\S]*?workspacePath/,
   'Web code-session creation must submit only the opaque workspace handle',
 );
