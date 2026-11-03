@@ -2172,7 +2172,43 @@ test("a state above the clamped capacity loads and refuses only new revocations"
   }
 });
 
-test("survives a desktop frame the relay cannot serialize and keeps the web client joined", async () => {
+test("rejects a web frame whose envelope would exceed the desktop bound with frame_too_large", async () => {
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_envelope_${Date.now()}`;
+  const accessToken = "access-token-envelope-000000000000001";
+  const desktopSecret = "desktop-secret-envelope-00000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // 大于「桌面界限 − 信封余量」、小于 ingress 上限:此前被 ingress 放行、
+    // 转发后超桌面 tungstenite 界限,桌面强制断线(自愈闪断);现在在转发
+    // 前以 frame_too_large 明确拒绝。
+    const pad = "x".repeat(4_150_000);
+    web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-big", command: "chat", args: { pad } }));
+
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the oversized web frame");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+
+    // 同一 web 会话随后仍可正常转发(错误是帧级的,不断链)。
+    web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-b", after_seq: 0 }));
+    await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("survives a desktop frame the relay cannot serialize and lets a fresh web client rejoin with the rejoin flag", async () => {
   const isolated = await spawnRelay();
   const endpointId = `endpoint_deep_event_${Date.now()}`;
   const accessToken = "access-token-deep-event-00000000000001";
