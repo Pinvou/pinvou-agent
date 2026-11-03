@@ -261,7 +261,7 @@ async function connectWithCapabilities(events, listener) {
 
 {
   let handled = 0;
-  const { client, socket, storage } = await connectWithCapabilities(['chat:delta'], () => {
+  const { client, socket, storage, timers } = await connectWithCapabilities(['chat:delta'], () => {
     handled += 1;
     throw new Error('listener failed');
   });
@@ -278,6 +278,11 @@ async function connectWithCapabilities(events, listener) {
   assert.equal(handled, 1);
   assert.equal(socket.closeCalled, true);
   assert.equal(JSON.parse(storage.get('pinvou.web.cursor.endpoint_test')).after_seq, 0);
+  // The catch path invalidates the socket itself, so the close event is noise
+  // under the close handler's identity gate: the recovery must schedule the
+  // replay reconnect directly, not wait for a close event that never runs.
+  assert.equal(timers.filter(timer => timer.delay < 10_000).length, 1,
+    'event-processing failure must schedule a reconnect for replay');
 }
 
 {
@@ -1090,6 +1095,16 @@ async function connectWithCapabilities(events, listener) {
     'a late close of a rescued socket must not clear the successor lease');
   assert.equal(late.timers.filter(timer => timer.delay < 10_000).length, 0,
     'a late close of a rescued socket must not schedule a second reconnect');
+
+  // 晚到的 error 同样是噪声:身份门必须整单忽略——不计投机失败、不把
+  // connected 打回 connecting(删除 error 处理器的身份门时这两条都翻红,
+  // 此前该门没有突变覆盖)。
+  const failuresBeforeLateError = lateClient.speculativeFailures;
+  deadSocket.emit('error', {});
+  assert.equal(lateClient.speculativeFailures, failuresBeforeLateError,
+    'a late error of a rescued socket must not count a speculative failure');
+  assert.equal(lateClient.connectionState.status, 'connected',
+    'a late error of a rescued socket must not flip the UI back to connecting');
 
   // 后继依然健康:入站事件照常派发,不触发 incompatible_desktop 永久关门。
   successor.message({

@@ -422,12 +422,17 @@
       // 事件,引擎的 closing-handshake 超时差异让「已连接但死链路」楔在
       // 客户端自己的 45s/120s 常量之外。与 CONNECTING 楔口同一救援:超过
       // 同一窗口仍在 CLOSING/CLOSED,丢弃 socket 引用并走普通退避重连。
-      // 语义与「close 事件已送达」的投机路径严格同构(round-16 复审:原
-      // 注释的「非投机」与实现不符,按真实语义改写)——被救 socket 从未
-      // 证明存活,其死既不计投机失败也不清 speculativeReconnect;后继
-      // 周期自己的 join 验证决定 UI 是否走出 connected。投机周期内
-      // scheduleReconnect 的文案抑制是投机语义本身,与送达路径一致;
-      // 只有后继自己验证失败(close 先于 join ack 送达)才会计数升级。
+      // (Round-16 复审订正:原注释的「非投机」与实现不符;「与送达路径
+      // 严格同构」也不成立——送达路径对非 speculativeSource 的投机
+      // socket 会计一次投机失败(close 处理器的计账分支),救援不记,失
+      // 败阶梯晚一个周期补上;joined 后从 OPEN 静默被救的 socket 其实证
+      // 明过存活。真实的行为契约是:救援的死不计投机失败、不清
+      // speculativeReconnect,后继周期自己的 join 验证决定 UI 是否走出
+      // connected。)投机周期内 scheduleReconnect 的文案抑制是投机语义
+      // 本身,与送达路径一致;只有后继自己验证失败(close 先于 join ack
+      // 送达)才会计数升级。救援只摘 socket/closingStartedAt——joined/
+      // leaseId 等旗标保持旧周期值直到后继 join ack,与「瞬态断线不卸载
+      // UI」的既有设计一致。
       if (
         this.socket.readyState === WebSocket.CLOSING
         || this.socket.readyState === WebSocket.CLOSED
@@ -702,10 +707,19 @@
           // Invalidate this socket immediately so already-queued messages from
           // the same connection cannot overtake the failed event. The durable
           // cursor is unchanged, so the desktop replays it after reconnect.
+          // The invalidation detaches the socket, so its close event is noise
+          // under the close handler's identity gate: this path must reset the
+          // cycle flags and schedule the replay reconnect itself (a round-16
+          // probe asserted the reconnect timer and found none — the designed
+          // stateNotReady / sequence-gap recovery stalled until an OS
+          // online/visibilitychange event).
           this.socket = null;
-          try { sourceSocket.close(); } catch {
-            this.scheduleReconnect("事件处理失败，正在重新连接…");
-          }
+          this.joined = false;
+          this.desktopOnline = false;
+          this.desktopCapabilitiesReady = false;
+          this.leaseId = null;
+          try { sourceSocket.close(); } catch { /* already closing */ }
+          this.scheduleReconnect("事件处理失败，正在重新连接…");
         });
       return this.eventDispatch;
     }
