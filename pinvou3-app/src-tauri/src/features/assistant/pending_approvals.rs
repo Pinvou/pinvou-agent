@@ -412,6 +412,23 @@ pub fn guardrail_denied_payload(
     })
 }
 
+/// 引擎审批 ack 的「未知终态」判定（评审 P2）。CodeWhale fb4f5e63f 起
+/// approve/deny 句柄带 ack + settle 双窗确认契约（`EngineHandle::
+/// approve_tool_call` 文档）：确定拒绝（stale id / 未能持久提交 / 未被
+/// 引擎消费 / 决策通道关闭）与未知终态（双窗都超时，决策仍可能在引擎侧
+/// 迟交并执行——durable commit 无截止时间）是两种不同的 `Err`。宿主区分
+/// 这两类：确定拒绝的卡仍是活的未决请求（按栅栏恢复可重试），未知终态
+/// 不得恢复活跃决策控件（迟交没有宿主对账事件，恢复即许诺一次可能已被
+/// 消费的决策可以重来）。错误类型在底座 crate 内 pub(crate)，宿主无法按
+/// 类型 downcast，只能按 Display 措辞判定；措辞漂移会让未知终态落回
+/// 确定拒绝臂——恢复可重试的未决卡是旧（不诚实）行为，靠测试钉住契约
+/// 措辞防静默漂移。
+pub(crate) fn approval_outcome_is_unknown(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .contains("approval decision outcome is unknown")
+}
+
 /// `chat:approval_resolved` 事件载荷的唯一构造点（tri-mode M5 收敛面）：
 /// 一处决策落定后广播终态，第二窗口 / 远端发起的决策也能把其它表面的卡
 /// 就地落终态。前端只对未决卡生效（幂等）；负载不带 tool input（同
@@ -488,6 +505,40 @@ mod tests {
             "resolved payload carries exactly the routing keys: {obj:?}"
         );
         assert_eq!(obj["decision"], "allow_for_session");
+    }
+
+    /// 未知终态判定的契约钉（评审 P2）：类型在底座 crate 内 pub(crate)，
+    /// 宿主按 Display 措辞判定——底座 `ApprovalAckUnknownError` 的措辞
+    /// （"approval decision outcome is unknown: …"）漂移会静默把未知终态
+    /// 落回确定拒绝臂（恢复可重试的未决卡 = 旧的不诚实行为），这里把两类
+    /// `Err` 的字面措辞钉住。确定拒绝措辞取自底座 `ack_answer` 的
+    /// `NotApplied` 两臂与决策通道关闭；任何一臂措辞变化本测试即红。
+    #[test]
+    fn forkguard_approval_outcome_unknown_classifier_separates_the_engine_contracts() {
+        // 未知终态：ack + settle 双窗超时（ApprovalAckUnknownError Display）。
+        let unknown = anyhow::anyhow!(
+            "approval decision outcome is unknown: the engine did not \
+             acknowledge within 5s ack + 10s settle, and the decision may \
+             still be committed and executed"
+        );
+        assert!(
+            approval_outcome_is_unknown(&unknown),
+            "the settle-expiry wording must classify as unknown"
+        );
+        // 确定拒绝三臂：stale id / 未被消费 / 通道关闭，均不得判成未知。
+        let refused_stale = anyhow::anyhow!(
+            "approval decision was not applied: the tool call id is stale \
+             or its outcome could not be committed"
+        );
+        let refused_dropped =
+            anyhow::anyhow!("approval decision was dropped without being consumed by the engine");
+        let channel_closed = anyhow::anyhow!("channel closed");
+        for error in [&refused_stale, &refused_dropped, &channel_closed] {
+            assert!(
+                !approval_outcome_is_unknown(error),
+                "a determinate refusal must keep the retryable restore: {error}"
+            );
+        }
     }
 
     /// M6a：转发器调用点是纯函数真值表之外的实际接线——授予/拒绝实参对调

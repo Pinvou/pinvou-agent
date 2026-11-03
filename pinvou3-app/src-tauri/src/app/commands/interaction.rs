@@ -594,15 +594,30 @@ pub async fn decide_approval(
     let outcome = match result {
         Ok(()) => Ok(()),
         Err(error) => {
-            // 发送时引擎在场：化身预检 + 注册表栅栏（见上；插回的比较与
-            // 插入在 restore_if_generation_is 的同一临界区内完成）。
-            let engine_still_live = pool.engine_incarnation(&session_id).await == Some(incarnation);
-            if engine_still_live {
-                pending_approvals::restore_if_generation_is(
-                    &session_id,
-                    pending,
-                    registry_generation,
-                );
+            // 引擎 Err 分两类（ack/settle 契约，判定见
+            // approval_outcome_is_unknown）——只有确定拒绝恢复登记：
+            // (a) 确定拒绝（stale id / 未能持久提交 / 未被引擎消费 / 通道
+            //     关闭）：决策确定未生效，卡仍是活的未决请求。发送时引擎
+            //     在场：化身预检 + 注册表栅栏（见上；插回的比较与插入在
+            //     restore_if_generation_is 的同一临界区内完成），本表面可
+            //     重试、其它表面的点击仍能收口。
+            // (b) 未知终态（ack + settle 双窗超时）：决策仍可能在引擎侧
+            //     迟交并执行，而迟交没有宿主对账事件、也无法再建立本应许
+            //     诺的会话级授予/拒绝记忆——恢复活跃决策控件等于许诺一次
+            //     可能已被消费的决策可以重来。与注册表栅栏同一保守方向：
+            //     不恢复登记（remount 不复活该卡，点击的终态只体现在
+            //     transcript），错误文本如实携带引擎的未知措辞供各表面呈
+            //     现。缓存与收敛广播本就只在成功后写入/发出，此处无新增。
+            if !pending_approvals::approval_outcome_is_unknown(&error) {
+                let engine_still_live =
+                    pool.engine_incarnation(&session_id).await == Some(incarnation);
+                if engine_still_live {
+                    pending_approvals::restore_if_generation_is(
+                        &session_id,
+                        pending,
+                        registry_generation,
+                    );
+                }
             }
             return Err(format!("decide_approval({decision}): {error:#}"));
         }

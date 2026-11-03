@@ -3698,6 +3698,26 @@ fn decide_approval_side_effect_ordering_is_pinned() {
             .is_some(),
         "the send-failure restore must be gated on the engine incarnation fence"
     );
+    // The engine's ack/settle contract splits Err into a determinate refusal
+    // (decision provably not applied → the card stays a live pending request,
+    // restore keeps it retryable) and an UNKNOWN outcome (both ack windows
+    // expired → the decision may still be late-committed and executed, and a
+    // late commit has no host reconciliation event and cannot establish the
+    // promised session grant/denial memory). Restoring active decision
+    // controls for an unknown outcome promises a fresh decision on a possibly
+    // consumed approval (review P2): the restore must sit inside the
+    // determinate arm — the unknown-outcome classifier must gate it, and the
+    // unknown arm must not re-register the entry by any other means.
+    let classifier_at = body
+        .find("pending_approvals::approval_outcome_is_unknown(&error)")
+        .unwrap_or_else(|| panic!("unknown-outcome classifier missing"));
+    let restore_at2 = body
+        .rfind("pending_approvals::restore_if_generation_is(")
+        .unwrap_or_else(|| panic!("failure-arm restore missing"));
+    assert!(
+        classifier_at < restore_at2,
+        "the restore must be gated on the unknown-outcome classification"
+    );
 }
 
 /// `chat:mode_changed` 的 payload 契约：mode 为 snake_case 序列化值，
