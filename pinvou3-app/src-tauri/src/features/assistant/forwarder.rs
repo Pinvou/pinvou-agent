@@ -1688,11 +1688,18 @@ pub(crate) fn spawn_event_forwarder(
                     ..
                 } => {
                     // 常规构建也消费引擎计时字段。监控 TTFT/TPS 以引擎为权威源
-                    // (first_token_ms 从请求派发点起表,含真实网络首字节),墙钟
-                    // Instant 重测含转发/分发延迟,仅作引擎未上报完整对时的回落。
+                    // (first_token_ms 从请求派发点起表,含真实网络首字节),并附
+                    // 该调用的 output_tokens:TPS 分子与生成窗口按调用严格配对,
+                    // 无工具多调用轮(续跑/reprompt)逐条累加。墙钟 Instant 重测
+                    // 含转发/分发延迟,仅作引擎未上报完整对时的回落。
                     // benchmark-hooks 的 eval 里程碑照旧,与 self_metrics 互不影响。
                     if let Some(m) = &self_metrics {
-                        m.on_engine_usage(&session_id, first_token_ms, request_ms);
+                        m.on_engine_usage(
+                            &session_id,
+                            first_token_ms,
+                            request_ms,
+                            usage.output_tokens,
+                        );
                     }
                     #[cfg(feature = "benchmark-hooks")]
                     if crate::features::assistant::timing::eval_observation_enabled(&session_id) {
@@ -2285,13 +2292,18 @@ mod transcript_persist_pins {
     fn engine_usage_wiring_feeds_self_metrics_once() {
         // 监控 TTFT/TPS 的引擎计时接线只有这一处。self_metrics 的单元测试只覆盖
         // 累加器本体——换位突变(request_ms 当 ttft)或删掉整行调用都让它们全绿,
-        // 故在此钉死调用形状(参数顺序 = 引擎字段顺序)。
+        // 故在此钉死调用形状(参数顺序 = 引擎字段顺序 + per-call 输出 tokens)。
+        // 去空白后匹配:rustfmt 把超宽调用折成多行也不影响判定。
         let body = forwarder_body();
+        let flattened: String = body.chars().filter(|c| !c.is_whitespace()).collect();
         assert_eq!(
-            body.matches("m.on_engine_usage(&session_id, first_token_ms, request_ms)")
+            flattened
+                .matches(
+                    "m.on_engine_usage(&session_id,first_token_ms,request_ms,usage.output_tokens,);"
+                )
                 .count(),
             1,
-            "TurnUsage must feed SelfMetrics exactly once, args in engine field order"
+            "TurnUsage must feed SelfMetrics exactly once, args in engine field order + per-call output_tokens"
         );
     }
 }
