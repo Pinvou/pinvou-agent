@@ -35,8 +35,14 @@ const TURN_REMINDER_ON: &str = "超级权限【已开启】(sudo 免密)。需�
 
 /// OFF-state per-turn reminder. The settings path must match the i18n labels
 /// (uiSettings.permissions + uiSettingsDetail.advancedPermission); the old
-/// 【设置→系统权限】 path pointed at a nonexistent location.
-const TURN_REMINDER_OFF: &str = "超级权限【已关闭】。**禁止用 sudo**(别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`;命中 execpolicy Deny 规则,默认直接拒绝,会话开启「守卫命中时询问」时改为弹审批卡由用户决定)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 权限与环境 → 高级执行权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。";
+/// 【设置→系统权限】 path pointed at a nonexistent location. The sudo deny
+/// claim is scoped per posture like the ON-state reminder (reviewer P3): the
+/// sudo command-word block is a Sensitive face of the Full profile only
+/// (`SafetyRuleProfile::for_mode`), so a Yolo session (Floor profile) carries
+/// zero sudo rules regardless of this toggle — a blanket "denied by default /
+/// card when armed" claim would overstate strictness there. Only the sudoers
+/// floor (`visudo`, sudoers writes) stays mechanically gated on every posture.
+const TURN_REMINDER_OFF: &str = "超级权限【已关闭】。**禁止用 sudo**(别试 `sudo xxx` 也别试 `echo '' | sudo -S xxx`;Plan/Auto 档命中 execpolicy Deny 规则,默认直接拒绝,开启「守卫命中时询问」时改弹审批卡由用户决定;Yolo 全自动档不设这道门,仅 `visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时弹卡由用户决定)。需要 root(写 `/etc`、`apt`、`systemctl` 等)时:告诉用户去【设置 → 权限与环境 → 高级执行权限】打开开关后重试,或把命令贴给用户自己跑;优先找免 root 替代(`--user`、`~/.local`)。";
 
 pub fn super_permission_turn_reminder() -> &'static str {
     if super_permission_is_enabled() {
@@ -142,6 +148,15 @@ mod tests {
             "execpolicy Deny",
             "禁止用 sudo",
             "守卫命中时询问",
+            // tri-mode doctrine (reviewer P3, mirroring the ON-state scoping):
+            // the OFF claim must stay posture-scoped — the sudo command-word
+            // block is Full-profile-only (Sensitive face), so Yolo has no
+            // mechanical sudo gate regardless of this toggle, and the pin
+            // keeps the conditional sudoers-floor wording rather than a
+            // blanket "仍拒绝" that would overstate the armed case.
+            "Plan/Auto 档命中 execpolicy Deny 规则",
+            "Yolo 全自动档不设这道门",
+            "sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时弹卡",
         ] {
             assert!(
                 TURN_REMINDER_OFF.contains(anchor),

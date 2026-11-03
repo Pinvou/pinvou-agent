@@ -16,7 +16,12 @@ pub fn disable_super_permission() -> Result<(), String> {
 }
 
 pub fn super_permission_turn_reminder() -> &'static str {
-    "macOS 不支持超级权限开关。**禁止用 sudo**(应用内默认被 execpolicy 直接拒绝,会话开启「守卫命中时询问」时改为弹审批卡由用户决定)。需要 root 的操作请引导用户在系统终端手动执行。"
+    // The sudo deny claim is scoped per posture (reviewer P3, mirroring the
+    // Linux ON/OFF reminders): the sudo command-word block is a Sensitive
+    // face of the Full profile only (`SafetyRuleProfile::for_mode`), so a
+    // Yolo session (Floor profile) carries zero sudo rules on this host too —
+    // only the sudoers floor stays mechanically gated on every posture.
+    "macOS 不支持超级权限开关。**禁止用 sudo**(应用内 Plan/Auto 档默认被 execpolicy 直接拒绝,开启「守卫命中时询问」时改弹审批卡由用户决定;Yolo 全自动档不设这道门,仅 `visudo` 等 sudoers 底线命令在关闭「守卫命中时询问」时仍拒绝、开启时弹卡由用户决定)。需要 root 的操作请引导用户在系统终端手动执行。"
 }
 
 #[cfg(test)]
@@ -35,6 +40,10 @@ mod tests {
             "禁止用 sudo",
             "execpolicy 直接拒绝",
             "守卫命中时询问",
+            // tri-mode doctrine (reviewer P3): the deny claim must stay
+            // posture-scoped (sudo block is Full-profile-only; Yolo drops it).
+            "Plan/Auto 档默认被 execpolicy 直接拒绝",
+            "Yolo 全自动档不设这道门",
             "系统终端",
         ] {
             assert!(
