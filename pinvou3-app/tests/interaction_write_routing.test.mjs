@@ -301,7 +301,9 @@ test('setAskOnGuardrail 失败重读窗口内落地的 mode_changed 广播存活
   setAsk.reject(new Error('persist failed'));               // 失败 → 回滚 ask=false
   // setImmediate 排空微任务：跨 realm await 多耗 tick，须确保 catch 回滚已
   // 落地、重读已发起，广播才算落在「重读窗口内」。
-  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => {
+    setImmediate(resolve);
+  });
   // 广播在重读窗口内落地（负载形状同 chat:mode_changed：mode/ask_on_guardrail）。
   rt.broadcastModeState('chat-a', { mode: 'plan', ask_on_guardrail: true });
   reRead.resolve({ mode: 'yolo', multi_agent: false, ask_on_guardrail: false }); // 陈旧快照
