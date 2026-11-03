@@ -200,22 +200,29 @@ invokeResponse = async command => {
 await api.interaction.setSessionMode('web-ask-sid', 'auto');
 assert.equal(flat.getState().modeState.askOnGuardrail, false,
   'authoritative modeState convergence must retain ask_on_guardrail=false');
-invokeResponse = async command => (command === 'get_mode_state'
-  ? Promise.reject(new Error('read failed'))
-  : null);
+// An old backend payload without the key (unknown substate) must project
+// default-true (backend default_true), not OFF - and must not reset the
+// converged OFF when a later read fails outright.
+invokeResponse = async command => {
+  if (command === 'set_session_mode') return { mode: 'yolo', multi_agent: false };
+  if (command === 'get_mode_state') return Promise.reject(new Error('read failed'));
+  return null;
+};
 await api.interaction.setSessionMode('web-ask-sid', 'yolo');
 assert.equal(flat.getState().modeState.askOnGuardrail, true,
   'an unknown substate must project default-true (backend default_true), not OFF');
+assert.equal(flat.getState().modeState.mode, 'yolo',
+  'the convergence keeps the returned resolved mode');
 invokeResponse = async () => null;
 {
   const source = read('bridge.js');
   for (const anchor of [
     /function mapModeState\(ms\) \{[\s\S]{0,300}?askOnGuardrail: !ms \|\| ms\.ask_on_guardrail == null \? true : !!ms\.ask_on_guardrail/,
     /state\.modeState = mode\.ok && mode\.value\s*\n\s*\? \{[\s\S]{0,200}?askOnGuardrail: mode\.value\.ask_on_guardrail == null \? true : !!mode\.value\.ask_on_guardrail[\s\S]{0,120}?: \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \}/,
-    /function applyModeFromState\(st\) \{[\s\S]{0,400}?state\.modeState = mapModeState\(st\);/,
-    /return \{ mode: d \|\| "yolo", multiAgent: false, askOnGuardrail: true \};/,
+    /function applyModeFromState\(st\) \{[\s\S]{0,400}?askOnGuardrail: st\.ask_on_guardrail == null \? true : !!st\.ask_on_guardrail,/,
+    /return \{ mode: d \|\| \(boundDraft \? "plan" : "auto"\), multiAgent: false, askOnGuardrail: true \};/,
     /catch \{[\s\S]{0,200}?state\.modeState = \{ mode: "yolo", multiAgent: false, askOnGuardrail: true \};/,
-    /mode: target,\s*\n\s*multiAgent: !!\(state\.modeState && state\.modeState\.multiAgent\),\s*\n\s*\/\/ A draft follows the lane's global default \(no session-level\s*\n\s*\/\/ substate\): project the backend default_true\.\s*\n\s*askOnGuardrail: true,/,
+    /mode: target,\s*\n\s*multiAgent: !!\(state\.modeState && state\.modeState\.multiAgent\),\s*\n\s*\/\/ [^\n]*default_true[\s\S]{0,80}?askOnGuardrail: true,/,
   ]) {
     assert.match(source, anchor, `web mode mapper must keep the ask_on_guardrail projection: ${anchor}`);
   }

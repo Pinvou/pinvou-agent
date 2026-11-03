@@ -493,7 +493,7 @@ try {
   // 表），本次读取已陈旧，应用它会覆盖更新的权威状态；丢弃后回滚值兜底
   // （syncModeState 同一契约）。没有这道校验，双击相反开关且两次写都失败
   // 时，后到的陈旧重读可能盖掉并发广播刚收敛的显示。
-  assert.match(interaction, /const rereadEpoch = modeStateEpochs\[sid\] \|\| 0;[\s\S]{0,300}?if \(\(modeStateEpochs\[sid\] \|\| 0\) === rereadEpoch\) \{[\s\S]{0,120}?applyAuthoritativeModeState\(sid, ms\);/,
+  assert.match(interaction, /const epoch = modeStateEpochs\[sid\] \|\| 0;[\s\S]{0,300}?if \(\(modeStateEpochs\[sid\] \|\| 0\) === epoch\) applyAuthoritativeModeState\(sid, ms\);/,
     'setAskOnGuardrail 失败重读必须捕获并校验 epoch（陈旧读取不得覆盖权威广播）');
   assert.match(interaction, /async function decideApproval\(approvalId, decision, targetSessionId\)/,
     '决策回传支持显式目标会话');
