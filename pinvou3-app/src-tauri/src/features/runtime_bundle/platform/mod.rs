@@ -229,9 +229,10 @@ pub(crate) use crate::platform::connector_skills::{
 /// wecomcli-doc / wecomcli-doc-manage gain compact business-failure
 /// sections in the meeting pack's retry-cap style, with bounded automatic
 /// retries restricted to read-only ops — a timed-out write is an unknown
-/// outcome that must be reconciled by readback/search first (append/overwrite
-/// references carry the workflow), and an inconclusive outcome stops and
-/// reports instead of re-writing; the scoped aux persona
+/// outcome with no call-correlatable receipt: readbacks and name searches
+/// cannot attribute the result to this call, so the automation stops and
+/// reports "outcome unknown" for user confirmation instead of judging or
+/// re-writing (append/overwrite references carry the workflow); the scoped aux persona
 /// (bridge.rs AUX_SESSION_INSTRUCTIONS) explains the trailing
 /// `# userselect:` quote envelope while the zero-tool fallback persona
 /// stays verbatim. Hooks:
