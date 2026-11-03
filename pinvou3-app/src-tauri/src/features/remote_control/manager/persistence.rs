@@ -378,13 +378,24 @@ enum RevocationLedgerLoad {
 fn salvage_pending_revocations(ledger: &PendingRevocationLedger) -> PendingRevocationLedger {
     let mut salvaged = PendingRevocationLedger::default();
     let mut keys = HashSet::new();
-    for pending in &ledger.entries {
+    for (index, pending) in ledger.entries.iter().enumerate() {
         if salvaged.entries.len() >= super::MAX_PENDING_REVOCATIONS {
             // Round-15 复审 NIT:容量截断必须显式报数——静默丢掉的条目意味
             // 着对应 endpoint 在 relay 侧保持可 join,直到人工清理。
+            // Round-16 复审:报数之外逐个点名(哪几把凭据还在 relay 侧
+            // joinable 是人工清理的输入);截断集 ≤ 待吊销总量,该路径本身
+            // 已是异常分支,逐条点名的日志量可接受。
+            let dropped: Vec<String> = ledger
+                .entries
+                .iter()
+                .skip(index)
+                .map(|pending| pending.endpoint_id.clone())
+                .collect();
             eprintln!(
-                "[web-access] salvage dropped pending revocations past the capacity of {}: the dropped endpoints stay joinable at the relay until revoked manually",
-                super::MAX_PENDING_REVOCATIONS
+                "[web-access] salvage dropped {} pending revocations past the capacity of {} (endpoints stay joinable at the relay until revoked manually): {}",
+                ledger.entries.len() - index,
+                super::MAX_PENDING_REVOCATIONS,
+                dropped.join(", ")
             );
             break;
         }

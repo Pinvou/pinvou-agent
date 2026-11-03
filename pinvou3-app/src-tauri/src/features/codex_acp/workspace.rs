@@ -296,6 +296,9 @@ pub fn preview_workspace_file(root: &Path, relative_path: &str) -> Result<Worksp
 }
 
 pub fn resolve_workspace_resource(root: &Path, resource_path: &str) -> Result<PathBuf> {
+    // Round-16 复审(记录桌面豁免):与 resolve_workspace_file 同一豁免——
+    // 本解析不做凭据组件检查;调用点(open/reveal/resource)全部桌面命令,
+    // 内容进本地外部应用/阅读器而非模型上下文,手机不可达。
     let root = canonical_workspace(root)?;
     let path = resource_path_from_uri(resource_path)?;
     let candidate = if path.is_absolute() {
