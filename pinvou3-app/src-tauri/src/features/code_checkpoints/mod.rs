@@ -613,7 +613,18 @@ fn clear_stale_git_locks_older_than(repo: &Path, min_age: std::time::Duration) -
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // r44 MAJOR-3：file_type 不跟随链接（path.is_dir 会跟随）——unbound
+            // 布局下影子仓库在 agent 可写工作区内，植入的符号链接目录会让清扫
+            // 递归进链接目标，把工作区外（甚至任意路径）的 *.lock 当陈旧锁删除。
+            // 与 estimate_workspace_bytes / shadow_repo_bytes 的走读约定同向：
+            // 链接一律不下钻。
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
                 cleared |= sweep_refs(&path, depth - 1, is_stale);
             } else if path.extension().is_some_and(|ext| ext == "lock")
                 && is_stale(&path)
@@ -982,17 +993,47 @@ fn purge_secret_survivors_exactly(repo: &Path, work_tree: &Path) -> Result<()> {
     if survivor_paths.is_empty() {
         return Ok(());
     }
-    // r41 minor 12：幸存者一次批量 `rm --cached --`（精确路径 rm 无 icase
+    // r41 minor 12：幸存者批量 `rm --cached --`（精确路径 rm 无 icase
     // 怪癖，多路径同批安全）——此前逐条 spawn 使大变体集的每次 rewind 产生
-    // 成百上千个 git 子进程（单个 120s 预算、聚合无界）。两次 spawn 收口。
-    let mut rm_args: Vec<&str> = vec!["rm", "-r", "--cached", "--quiet", "-f", "--"];
-    rm_args.extend(survivor_paths.iter().map(String::as_str));
-    let output = git(repo, work_tree, &rm_args)?;
-    if !output.status.success() {
-        bail!(
-            "git rm --cached 幸存变体失败: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    // 成百上千个 git 子进程（单个 120s 预算、聚合无界）。r44 minor 12：分块
+    // 批处理——几百个幸存路径一次性传参在 Windows 上超出 argv/命令行上限
+    // （32k 字符），spawn 直接失败 → 该工作区的 rewind 永久 fail-closed。
+    // 每块同时受条数（200）与字符预算（28k）约束。
+    let mut chunk: Vec<&str> = Vec::new();
+    let mut chunk_chars = 0usize;
+    for path in &survivor_paths {
+        chunk.push(path.as_str());
+        chunk_chars += path.len() + 1;
+        if chunk.len() >= 200 || chunk_chars >= 28_000 {
+            let output = git(
+                repo,
+                work_tree,
+                &["rm", "-r", "--cached", "--quiet", "-f", "--"]
+                    .iter()
+                    .copied()
+                    .chain(chunk.iter().copied())
+                    .collect::<Vec<&str>>(),
+            )?;
+            if !output.status.success() {
+                bail!(
+                    "git rm --cached 幸存变体失败: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            chunk.clear();
+            chunk_chars = 0;
+        }
+    }
+    if !chunk.is_empty() {
+        let mut rm_args: Vec<&str> = vec!["rm", "-r", "--cached", "--quiet", "-f", "--"];
+        rm_args.extend(chunk.iter().copied());
+        let output = git(repo, work_tree, &rm_args)?;
+        if !output.status.success() {
+            bail!(
+                "git rm --cached 幸存变体失败: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
     }
     let remaining = git_ok(repo, work_tree, &list_args)?;
     if !remaining
@@ -1098,8 +1139,14 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // loose 对象残留）对其他用户可读；与模块自身 index/pending/spill 的
     // 0600 文件姿态对齐为 0700 目录。平台差异由 platform 层原语承载
     // （Windows 无 POSIX mode：继承应用数据/工作树 ACL，既有平台姿态，
-    // 非绑定布局随工作树披露）。
-    let _ = crate::platform::filesystem::enforce_private_directory_mode(&repo);
+    // 非绑定布局随工作树披露）。r44 minor 9：chmod 被拒（EACCES 等）至少
+    // 留 warn——影子仓库群组可读而无人知晓不是可接受静默。
+    if let Err(error) = crate::platform::filesystem::enforce_private_directory_mode(&repo) {
+        log::warn!(
+            "[checkpoints] private-directory mode enforcement failed on {}: {error:#}",
+            repo.display()
+        );
+    }
     // config 幂等：按执行根 fs 语义探测（存量仓库同样每次校正）。该配置只承载
     // git 原生大小写语义（Makefile/makefile alias、仅大小写改名）；秘密排除的
     // 大小写不敏感由 info/exclude 的字符类模式保证，不靠此配置（见下）。
@@ -1118,6 +1165,10 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     // sshCommand/protocol.ext 键可驱动任意命令执行。
     // 1) info/attributes 最高优先级 `* !filter` 等四条钉死 worktree 属性引用
     //    （probe 验证有效：即使 config 里有 filter 定义，`!filter` 属性使其不被调用）。
+    //    r44 M5：补 `* !text / !eol / !ident` 三条——项目 .gitattributes 的
+    //    `* text=auto` 与 autocrlf=true 同型（字节面被规范化：CRLF 工作文件
+    //    每次回退后变 LF），违反「快照/恢复保持原字节」契约；r40-M4 钉
+    //    autocrlf 时立的字节面先例由此补齐。
     // 2) 移除 config 中的 filter/extensions/remote/protocol 危险键（r17 的实现
     //    是死代码：`--name-only --get-regexp` 输出 `filter.pwn.clean`（key 名，
     //    无空格），`find(' ')` 恒 None；修复为截取最后一个点之前的节名）。
@@ -1131,7 +1182,7 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     let attrs_tmp = info_attrs.with_extension("tmp");
     fs::write(
         &attrs_tmp,
-        "* !filter\n* !diff\n* !merge\n* !working-tree-encoding\n",
+        "* !filter\n* !diff\n* !merge\n* !working-tree-encoding\n* !text\n* !eol\n* !ident\n",
     )
     .context("写入 info/attributes 临时文件失败")?;
     fs::rename(&attrs_tmp, &info_attrs).context("替换 info/attributes 失败")?;
@@ -1491,7 +1542,14 @@ fn entry_has_valid_commit(entry: &CheckpointMeta) -> bool {
     if is_conversation_only_entry(entry) {
         return true;
     }
-    let commit = entry.commit.trim();
+    // r44 minor 1：不留 trim 容忍——校验放行的 commit 会被复用探针按**原文**
+    // 插值进 rev-parse（"  <sha>  ^{tree}" 恒 128），而末条永不淘汰 = 全部
+    // 后续快照/prepare 无自愈楔死（r43-B1 的形状经校验器刻意容忍的字节重演）。
+    // 带空白 → 直接判损走隔离+重建（自愈）。
+    let commit = &entry.commit;
+    if commit.trim() != commit {
+        return false;
+    }
     let valid_len = commit.len() == 40 || commit.len() == 64;
     valid_len && commit.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -1805,11 +1863,18 @@ fn create_checkpoint_preserving(
             let target = (index.entries.len() / 2).max(1);
             let drain_count = index.entries.len() - target;
             let evicted = evict_oldest(&mut index, drain_count);
+            // r44 minor 4：先落盘裁剪后的索引、再 gc——顺序颠倒时 gc 与
+            // save_index 之间崩溃/ENOSPC 会让磁盘索引引用已被 prune 掉的
+            // 对象（undo 的 still_there 探测照常通过、restore 才报 bad
+            // object）。save 失败仍返回 Err：索引未裁剪成功本轮不登记。
+            save_index(ledger_root, &index)?;
             let _ = git(&repo, &execution_root, &["gc", "--prune=now", "--quiet"]);
             eprintln!(
                 "[checkpoints] shadow repo over {}MB budget, pruned {evicted} oldest entries",
                 MAX_SHADOW_REPO_BYTES / 1024 / 1024,
             );
+            // r44 minor 4：裁剪腿已在 gc 前落盘，跳过末尾的重复 save。
+            return Ok(meta);
         }
         save_index(ledger_root, &index)?;
         Ok(meta)
@@ -1895,6 +1960,11 @@ pub struct CheckpointListWithTurnCount {
 /// 下一次 rewind 的 `turn > keep` 作废会自然清掉它（ref 删除对空 commit
 /// 条目跳过）；登记失败 best-effort（窗口退回诚实隐藏，与修复前等价）。
 pub fn register_conversation_only_turn(ledger_root: &Path, turn: u32) -> Result<()> {
+    // r44 M1 同源：进程内 with_index_write_lock 盖不住跨进程（CLI undo 的
+    // 哨兵登记 vs GUI 快照的 load→save）——登记走账本围栏互斥（load→save
+    // 全跨度持围栏）。
+    let fence_key = fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _write_fence = acquire_ledger_write_fence(&fence_key)?;
     with_index_write_lock(ledger_root, || {
         let mut index = load_index(ledger_root)?;
         let seq = index.entries.len() + 1;
@@ -2076,7 +2146,17 @@ pub fn matching_pending_pre_restore(
     // 失败直到 revision 变化。索引读失败（瞬态 IO）不再是「淘汰」同义词：
     // 活暂记在飞时删暂记会孤儿化 P1，读失败如实上抛由调用方拒绝本次回退。
     if !checkpoint_entry_present(ledger_root, &pending.pre_restore_id)? {
-        let _ = fs::remove_file(&path);
+        // r44 minor 3：删除前回读比对——成员校验（索引 IO）窗口内对端的
+        // pending 写入可能整体替换文件，裸删会孤儿化对端崩溃 apply 的重试
+        // 凭据。字节一致才删；已被替换则留给对端协议收口。
+        match fs::read(&path) {
+            Ok(current) if current == bytes => {
+                let _ = fs::remove_file(&path);
+            }
+            _ => log::warn!(
+                "[checkpoints] stale pending was replaced concurrently; leaving the peer's pending in place"
+            ),
+        }
         return Ok(None);
     }
     Ok(Some(pending.pre_restore_id))
@@ -2304,6 +2384,11 @@ fn acquire_write_fence(fence_path: PathBuf, refusal: String) -> Result<WriteFenc
         let _ = fs::create_dir_all(parent);
     }
     let token = now_nanos().to_string();
+    // r44 minor 2：偷取重试封顶——残留改名失败（权限/AV 占用）会让裸 loop
+    // 无界空转；封顶后如实拒绝。age 不可读（metadata 失败）不再静默视为
+    // 陈旧：宁如实拒绝，不可误偷活围栏。
+    const STALE_RECLAIM_ATTEMPTS: usize = 3;
+    let mut reclaim_attempts = 0usize;
     loop {
         match fs::OpenOptions::new()
             .write(true)
@@ -2331,7 +2416,14 @@ fn acquire_write_fence(fence_path: PathBuf, refusal: String) -> Result<WriteFenc
                     .map(|elapsed| elapsed.as_secs());
                 match age {
                     Some(age) if age < WRITE_FENCE_STALE_SECS => bail!("{refusal}"),
+                    _ if age.is_none() => {
+                        bail!("{refusal}（残留锁元数据不可读，无法安全判定陈旧）")
+                    }
                     _ => {
+                        reclaim_attempts += 1;
+                        if reclaim_attempts > STALE_RECLAIM_ATTEMPTS {
+                            bail!("{refusal}（残留锁反复偷取失败）");
+                        }
                         // 崩溃残留：改名留证后重试（rename 目标带纳秒后缀，
                         // Windows 上不与现存文件冲突）。
                         let _ = fs::rename(
@@ -2413,7 +2505,16 @@ pub fn apply_restore(
     let execution_root = canonical_execution_root(execution_root)?;
     // r42 M5：apply 多子进程窗口与并发 diff 的 index 写互斥（围栏语义见
     // [`acquire_execution_root_write_fence`]；持有至函数返回，Drop 释放）。
+    // r43→r44 M1：**执行根围栏必须与账本围栏成对获取**（固定顺序 exec →
+    // ledger，prepare/apply 顺序执行不嵌套，无死锁面）——r43-M1 只给 create/
+    // prepare 挂了账本围栏而 apply 只拿执行根围栏：两个键落在不同文件、
+    // 永不竞争，CLI 的 prepare 仍能落进 GUI apply 的窗口（r42-M5 错误成功
+    // 形状经 prepare 腿复活）。成对获取后，持账本围栏的 create/prepare 与
+    // 持双围栏的 apply 在账本键上互斥，声称的互锁真正落线。
     let _write_fence = acquire_execution_root_write_fence(&execution_root)?;
+    let ledger_fence_key =
+        fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _ledger_fence = acquire_ledger_write_fence(&ledger_fence_key)?;
     // r42 M6：恢复面的 junction 拒绝——checkout-index 穿联接写根外是 rc=0
     // 静默灾难，fail-closed 并如实给出联接清单。
     let reparse = execution_root_reparse_dirs(&execution_root);
@@ -2743,8 +2844,13 @@ pub fn diff_checkpoint(
     }
     let execution_root = canonical_execution_root(execution_root)?;
     // r42 M5：diff 的 add -A 与 apply 窗口互斥（跨进程围栏，语义见
-    // [`acquire_execution_root_write_fence`]）。
+    // [`acquire_execution_root_write_fence`]）。r44 M1：与 apply 同款成对
+    // 获取（exec → ledger，固定顺序），diff 的 add -A 与 create/prepare 的
+    // add -A 在账本键上互斥。
     let _write_fence = acquire_execution_root_write_fence(&execution_root)?;
+    let ledger_fence_key =
+        fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let _ledger_fence = acquire_ledger_write_fence(&ledger_fence_key)?;
     // r42 M6：diff 的 add -A 与 create 的 add -A 同样会递归进入 junction，
     // 把执行根外内容吸进影子 index/objects——同款 fail-closed。
     let reparse = execution_root_reparse_dirs(&execution_root);
@@ -5197,6 +5303,44 @@ mod tests {
             "t2",
         )
         .expect("create succeeds after the ledger fence is released");
+    }
+
+    /// r44 M1 互锁回归：**apply 必须尊重账本围栏**——r43-M1 版 apply 只拿
+    /// 执行根围栏、两个键永不竞争，声称的「create/prepare ↔ apply 互锁」
+    /// 没有落线（评审点名的 CLI×GUI 腿：CLI prepare 持账本围栏期间，GUI
+    /// apply 的 add -A 写入窗口照开）。现在 apply 成对获取（exec → ledger）：
+    /// 持账本围栏的并发 prepare/create 期间 apply 如实拒绝，释放后恢复。
+    /// 这是双向互锁中证明「apply 检查账本键」的那条腿；「create/prepare
+    /// 检查账本键」已由 snapshot_and_prepare_refuse_while_the_ledger_fence_
+    /// is_held 钉住。
+    #[test]
+    fn apply_respects_the_ledger_fence_held_by_a_concurrent_prepare() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("interlock-ledger");
+        let exec = TestDir::new("interlock-exec");
+        exec.write("a.txt", "a\n");
+        let created = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("bootstrap checkpoint");
+        // 模拟 CLI prepare / create 在飞：持账本围栏（真实 prepare 经
+        // create_checkpoint_preserving 拿的就是这把键）。
+        let fence_key = canonical_execution_root(ledger.path()).expect("canonical ledger root");
+        let ledger_fence = acquire_ledger_write_fence(&fence_key).expect("acquire ledger fence");
+        let apply_error = apply_restore(ledger.path(), exec.path(), &created).unwrap_err();
+        assert!(
+            format!("{apply_error:#}").contains("在飞"),
+            "持账本围栏期间 apply 必须被互锁拒绝（r44 M1）: {apply_error:#}"
+        );
+        drop(ledger_fence);
+        apply_restore(ledger.path(), exec.path(), &created)
+            .expect("apply succeeds after the concurrent prepare releases the ledger fence");
     }
 
     /// r42 M4 回归：「仅对话」哨兵——登记后列表计数立即对齐恢复后口径

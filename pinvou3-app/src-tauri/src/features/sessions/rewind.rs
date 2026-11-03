@@ -403,6 +403,15 @@ impl SessionStore {
             }
             persist_rewound_turns_map(&backups).context("回退备份写入失败，已中止截断")?;
         }
+        // 记录识别标记（r44 minor 10）：回吐时只弹自己压入的那条——推入与
+        // 回吐之间并发的第二个截断可能压入新记录，盲弹会误删对端记录。
+        let pushed_marker = {
+            let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            load_rewound_turns_map()
+                .ok()
+                .and_then(|backups| backups.get(id).and_then(|records| records.last().cloned()))
+                .map(|record| record.rewound_at)
+        };
 
         session.metadata.message_count = session.messages.len();
         session.metadata.updated_at = Utc::now();
@@ -410,7 +419,31 @@ impl SessionStore {
         // 显式放行路径：直接持久化截断结果，不走 update_messages，
         // 因此不触发 looks_like_truncating_overwrite；
         // 该守卫对其它调用方的保护保持不变。
-        self.persist_then_reconcile(&session, "turn rewind truncation")?;
+        if let Err(error) = self.persist_then_reconcile(&session, "turn rewind truncation") {
+            // r44 minor 10：sidecar 记录已落盘而 transcript 持久化失败——
+            // 不回吐则幻影记录经 records.last() 永久卡死 undo（「回退后已
+            // 产生新轮次」条件恒不满足）并污染下一次回退的陈旧快照作废。
+            // best-effort 回吐（锁纪律与推入同款；只弹自己那条），原始错误
+            // 仍是主失败原因。
+            {
+                let _backup_guard = REWIND_BACKUP_LOCK.lock();
+                if let Ok(mut backups) = load_rewound_turns_map() {
+                    let pop = backups.get_mut(id).is_some_and(|records| {
+                        records
+                            .last()
+                            .is_some_and(|record| Some(record.rewound_at.clone()) == pushed_marker)
+                    });
+                    if pop
+                        && backups
+                            .get_mut(id)
+                            .is_some_and(|records| records.pop().is_some())
+                    {
+                        let _ = persist_rewound_turns_map(&backups);
+                    }
+                }
+            }
+            return Err(error);
+        }
         Ok(TruncateToTurnOutcome {
             rewound_turns: total_turns - keep_turns,
             had_compaction,

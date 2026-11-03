@@ -956,6 +956,13 @@ pub async fn rewind_to_turn(
     // 执行根互斥：check-and-set 置位后同根会话的新 turn 预约（含 scheduled）
     // 全部被拒；另一个回退已在飞时如实拒绝（胜者优先，败者不持 Guard）。
     let _root_guard = pool.begin_execution_root_rewind(&execution)?;
+    // r44 minor 5：压缩闩在根互斥置位后复检——首查与置位之间 compact_now
+    // 可再入（探针后 enqueue、不持任何闸），闩粘滞最长 15 分钟：此前只查
+    // 一次时，置位窗口内入场的压缩既不被打断、又让随后的所有回退以误导性
+    // 文案吃闭门羹。flag 持有期间压缩 persist 若落地会整体覆写截断结果。
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩对话，请稍候再回退".to_string());
+    }
     // r35 MAJOR-1：将引擎驱逐提前到 restore 之前——否则引擎在 restore/截断
     // 窗口内的空闲 persist（MCP 启动失败注释等 idle append）会把回退前
     // transcript 整体写回磁盘（对话复活、工作区仍回退 = 不可接受分叉）。
@@ -1201,7 +1208,17 @@ pub async fn rewind_to_turn(
     // conversationOnlyRequested 推导会说「文件未动」而失实。
     let degraded_bound = match pre_restore_id.as_deref() {
         // 仅对话降级绑定的 P1（restored_checkpoint 恒 None 的那条腿）。
-        Some(p1) if restored_checkpoint.is_none() => checkpoints::find_checkpoint(&ledger, p1).ok(),
+        // r44 minor 6：`.ok()` 会把瞬态索引读失败吞成 None——而这条腿的
+        // 语义恰恰是「文件已动」的降级回退（r40-M2），误标成「文件未动」
+        // 比中止更糟。读失败在此如实中止（此刻尚未截断，中止点是干净的），
+        // 与 r39-M2 全量腿的同款探针 map_err 对齐。
+        Some(p1) if restored_checkpoint.is_none() => Some(
+            checkpoints::find_checkpoint(&ledger, p1).map_err(|error| {
+                format!(
+                    "读取降级回退绑定的回滚点失败（检查点索引暂不可读）: {error:#}。本轮已中止，对话未截断"
+                )
+            })?,
+        ),
         _ => None,
     };
     let outcome = tauri::async_runtime::spawn_blocking(move || {
@@ -1392,6 +1409,11 @@ pub async fn undo_last_rewind(
         .map_err(|error| format!("预约会话 turn 失败（会话忙碌？）: {error:#}"))?;
     // 执行根互斥：与 rewind_to_turn 同款（check-and-set 置位 + 在途 peer 复查）。
     let _root_guard = pool.begin_execution_root_rewind(&execution)?;
+    // r44 minor 5：压缩闩在根互斥置位后复检（与 rewind_to_turn 同款——
+    // 首查与置位之间 compact_now 可再入）。
+    if pool.is_compaction_in_flight(&session_id) {
+        return Err("会话正在压缩对话，请稍候再反悔".to_string());
+    }
     reject_if_peer_busy(
         &store,
         &pool,

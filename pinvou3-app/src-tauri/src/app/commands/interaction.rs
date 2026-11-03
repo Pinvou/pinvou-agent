@@ -258,6 +258,12 @@ pub async fn accept_plan(
     // scheduled 会话维持无快照（与 chat()/fork 拒绝口径一致）。
     // r39 minor 6：scheduled 腿用与拒绝门同款别名挫败谓词（此前只查注册表
     // 精确键）；读失败按 scheduled 处理（跳过快照 = 诚实降级）。
+    // r44 minor 7：读失败至少留成因日志（该会话快照被无声禁用）。
+    if store.is_scheduled_session(&session_id).is_err() {
+        log::warn!(
+            "[pinvou3][accept_plan] scheduled-registry read failed sid={session_id}; per-turn snapshots are disabled for this turn (fail-scheduled direction)"
+        );
+    }
     if !store.is_scheduled_session(&session_id).unwrap_or(true)
         && !crate::features::sessions::is_aux_session_id(&session_id)
     {

@@ -340,6 +340,13 @@ pub(crate) async fn chat_with_reservation(
     // 读失败按 scheduled 处理（跳过快照 = 诚实降级，不与 fork 拒绝口径分叉）。
     // 上方 142 行的 is_scheduled 只服务附件目录/图像路由（注册表规范会话语义），
     // 与本门刻意不同谓词。
+    // r44 minor 7：读失败静默走「按 scheduled 跳过快照」此前无任何日志——
+    // 该会话的每轮快照被无声禁用、回退入口全无，至少要留下成因。
+    if store.is_scheduled_session(&sid).is_err() {
+        log::warn!(
+            "[pinvou3][chat] scheduled-registry read failed sid={sid}; per-turn snapshots are disabled for this turn (fail-scheduled direction)"
+        );
+    }
     if !store.is_scheduled_session(&sid).unwrap_or(true)
         && !crate::features::sessions::is_aux_session_id(&sid)
     {
