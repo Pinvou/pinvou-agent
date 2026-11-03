@@ -1141,8 +1141,11 @@ fn validate_program(program: &str) -> Result<&str, ComputerUseError> {
 /// against `kCGWindowOwnerName` during pid discovery, never used to launch.
 fn launched_program_stem(program: &str) -> String {
     let name = program.rsplit('/').next().unwrap_or(program);
-    let stem = name.strip_suffix(".app").unwrap_or(name);
-    stem.to_ascii_lowercase()
+    // Lowercase first so the `.app` strip is case-insensitive ("My.APP"
+    // bundles exist in the wild); the stem is only ever compared against a
+    // lowercased owner name, so no original-case information is lost.
+    let lowered = name.to_ascii_lowercase();
+    lowered.strip_suffix(".app").unwrap_or(&lowered).to_string()
 }
 
 /// Whether a discovered window's owner name matches the launched program's
@@ -2640,7 +2643,7 @@ mod tests {
         };
         assert!(window.contains(120, 10));
         assert!(!window.contains(20, 10));
-        // Intersects the virtual display parked right of a 1440-wide main.
+        // Overlaps the virtual display parked right of a 1440-wide main.
         let vd = CGRect {
             origin: CGPoint { x: 1440.0, y: 0.0 },
             size: CGSize {
@@ -2648,11 +2651,26 @@ mod tests {
                 height: 800.0,
             },
         };
-        assert!(window.intersects(vd));
+        let overlapping = HitWindow {
+            pid: 42,
+            x: 1500.0,
+            y: 0.0,
+            width: 50.0,
+            height: 40.0,
+            normal_level: true,
+            owner_name: None,
+        };
+        assert!(overlapping.intersects(vd));
+        // Touching the VD's left edge is exclusive, mirroring rect_intersects.
+        let touching = HitWindow {
+            x: 1390.0,
+            ..overlapping
+        };
+        assert!(!touching.intersects(vd));
         let far = HitWindow {
             x: 0.0,
             y: 0.0,
-            ..window
+            ..overlapping
         };
         assert!(!far.intersects(vd));
     }
