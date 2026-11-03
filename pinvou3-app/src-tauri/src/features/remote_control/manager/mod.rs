@@ -5406,7 +5406,14 @@ mod tests {
             )
         };
         let mut inner = Inner::default();
-        for (download_id, entry) in [aged("download_old", true), aged("download_new", false)] {
+        // Round-16 follow-up 复审(M1):两个 ready 且超窗的候选——受害者
+        // 必须是插入序最旧的那个;倒序(.rev(),LIFO)变异会逐出较新候选,
+        // 本断言因此对顺序真实敏感。
+        for (download_id, entry) in [
+            aged("download_old", true),
+            aged("download_second", true),
+            aged("download_new", false),
+        ] {
             inner
                 .web_session_download_order
                 .push_back(download_id.clone());
@@ -5414,7 +5421,16 @@ mod tests {
         }
         assert!(transfer::evict_oldest_ready_session_download(&mut inner));
         assert!(!inner.web_session_downloads.contains_key("download_old"));
+        assert!(inner.web_session_downloads.contains_key("download_second"));
         assert!(inner.web_session_downloads.contains_key("download_new"));
+        assert_eq!(
+            inner.web_session_download_order,
+            ["download_second", "download_new"]
+        );
+
+        // 第二次逐出按同一 FIFO 语义取下一个最旧 ready 候选。
+        assert!(transfer::evict_oldest_ready_session_download(&mut inner));
+        assert!(!inner.web_session_downloads.contains_key("download_second"));
         assert_eq!(inner.web_session_download_order, ["download_new"]);
 
         // 只剩未 ready(引擎写入中):无受害者,返回 false 且原样保留。
@@ -5477,6 +5493,36 @@ mod tests {
             "begin must evict the oldest aged ready orphan BEFORE the capacity \
              gate; moving the call after it (or flipping the threshold) would \
              strand the orphan-wedge fix as dead code"
+        );
+    }
+
+    /// 接线钉(Round-16 follow-up 复审 M2):commit 把 ready 翻真的同一临
+    /// 界区必须刷新 last_touched——begin→commit 跨度可能超过逐出新鲜度窗,
+    /// 若只翻 ready 而不刷新,一个刚提交、手机尚未开始分块读取的下载会以
+    /// 「ready 且停更超窗」的形态立刻成为可逐出受害者。helper 级测试构造
+    /// 不了 Manager(AppHandle),按本模块约定用源钉钉住翻真与刷新的相邻
+    /// 形态;删除刷新行的变异使本钉变红。
+    #[test]
+    fn commit_marks_download_ready_with_a_fresh_last_touched() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn commit_web_session_download(")
+            .expect("commit_web_session_download must exist");
+        let body = &source[start..];
+        let body = &body[..body
+            .find("\n    fn ")
+            .expect("commit body must be terminated by the next fn")];
+        let ready_flip = body
+            .find("download.ready = true;")
+            .expect("commit must flip the download ready at the reservation it verified");
+        let freshness = body.find("download.last_touched = Instant::now();").expect(
+            "commit must refresh last_touched together with the ready flip: \
+                     deleting it makes a just-committed download instantly evictable \
+                     when its begin->commit span crosses the eviction window",
+        );
+        assert!(
+            ready_flip < freshness && freshness - ready_flip < 200,
+            "the freshness refresh must stay adjacent to the ready flip"
         );
     }
 
@@ -5853,8 +5899,10 @@ mod tests {
             inner.web_session_downloads.contains_key("download_a"),
             "a rejoin must keep session downloads"
         );
-        // Round-16 复审(M2 测试缝):顺序队列与映射必须同进退——只清映射
-        // 不清队列的突变会让陈旧 id 成为下一次逐出的幽灵受害者。
+        // Round-16 复审(M2 测试缝):顺序队列与映射必须同进退。陈旧 id
+        // 本身不会被逐出(受害者判据要求映射在场,缺失即跳过),漏清队列
+        // 的实际危害是死重:陈旧 id 在下一次 prune(仅在 begin/commit 内
+        // 运行)按映射 retain 掉之前一直占位;钉住两处清理的一致性。
         assert!(
             inner
                 .web_session_download_order
