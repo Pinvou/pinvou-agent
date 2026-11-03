@@ -148,8 +148,12 @@ test('Tencent Token Plan is a separate catalog: distinguished from Coding Plan b
   // model custom. GLM-5 / GLM-5.1 retired 2026-10-09 (announce 2469) and
   // their rows are removed; kimi-k2.5 was removed platform-wide (announce
   // 2414) and is no longer a catalog row in either group. The live table's
-  // additions (deepseek/deepseek-flash, mimo-v2.6-flash) are listed.
-  const planBase = 'https://api.lkeap.cloud.tencent.com/plan/v3';
+  // additions (deepseek/deepseek-flash, mimo-v2.6-flash) are listed. The
+  // 2026-11-03 refresh moved the group default to the migrated tokenhub
+  // host (docs 130119/130060 updated 2026-10-22, announce 101147); the
+  // legacy lkeap URL stays registered as an endpoint alias so both hosts
+  // classify the same rows.
+  const planBase = 'https://tokenhub.tencentmaas.com/plan/v3';
   const mkTokenPlan = model => mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: planBase, model });
   const planModels = [
     'tc-code-latest',
@@ -157,7 +161,7 @@ test('Tencent Token Plan is a separate catalog: distinguished from Coding Plan b
     'kimi-k3', 'kimi-k2.7-code',
     'deepseek/deepseek-flash',
     'deepseek-v4-pro-202606', 'deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro',
-    'deepseek-v4-flash-202605', 'deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash',
+    'deepseek-v4-flash-202605', 'deepseek/deepseek-v4-flash',
     'minimax-m3', 'minimax-m-3-0', 'minimax-m2.7', 'minimax-m-2-7',
     'hy3', 'hy3-preview', 'hy3-202608', 'hy4-preview',
     'mimo-v2.6-flash',
@@ -165,12 +169,18 @@ test('Tencent Token Plan is a separate catalog: distinguished from Coding Plan b
   for (const model of planModels) {
     assert.strictEqual(isPresetModel(mkTokenPlan(model)), true, model);
   }
+  // The legacy lkeap Token Plan host stays an endpoint alias: same rows,
+  // same classification.
+  for (const model of ['tc-code-latest', 'glm-5.3', 'deepseek/deepseek-flash']) {
+    assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/plan/v3', model })), true, `legacy lkeap alias classifies ${model}`);
+  }
   assert.strictEqual(isPresetModel(mkTokenPlan('glm-5')), false, 'glm-5 retired 2026-10-09 (announce 2469); row removed');
   assert.strictEqual(isPresetModel(mkTokenPlan('glm-5-0')), false, 'glm-5-0 parallel spelling is removed together with the glm-5 row');
   assert.strictEqual(isPresetModel(mkTokenPlan('glm-5.1')), false, 'glm-5.1 retired 2026-10-09 (announce 2469); row removed');
   assert.strictEqual(isPresetModel(mkTokenPlan('glm-5-1')), false, 'glm-5-1 parallel spelling is removed together with the glm-5.1 row');
   assert.strictEqual(isPresetModel(mkTokenPlan('kimi-k2.5')), false, 'kimi-k2.5 is retired; no Tencent Cloud group lists it anymore');
   assert.strictEqual(isPresetModel(mkTokenPlan('kimi-k-2-5')), false, 'kimi-k-2-5 parallel spelling is no longer listed either');
+  assert.strictEqual(isPresetModel(mkTokenPlan('deepseek/deepseek-v4-flash-0731')), false, 'the 0731 alias went offline 2026-10-31 (announce 2496); dropped from legacyAliases');
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/coding/v3', model: 'glm-5.2' })), false, 'Token Plan-exclusive models must not match the Coding Plan catalog');
   assert.strictEqual(providerLabelForModel(mkTokenPlan('glm-5.2'), t), '腾讯云 Token Plan / Tencent Cloud Token Plan');
 });
@@ -265,23 +275,30 @@ test('2026-09-28 catalog refresh lands in their provider groups (preset recognit
   const zaiCoding = 'https://api.z.ai/api/coding/paas/v4';
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: bigmodelCoding, model: 'glm-5.1' })), true);
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'glm', base_url: zaiCoding, model: 'glm-5.1' })), true);
-  // MiniMax: the subscription-only preview tier joins both groups.
-  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimaxi.com/v1', 'MiniMax-M3.1-Flash-Preview')), true);
-  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimax.io/v1', 'MiniMax-M3.1-Flash-Preview')), true);
-  // MiMo: the 2026-09-22 V2.6 series leads the group; the retiring v2.5
-  // rows stay classifiable.
+  // MiniMax: M3.1-Flash went GA on 2026-10-19 and joins both groups (the
+  // retired "-Preview" spelling keeps classifying through the row's
+  // legacyAliases).
+  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimaxi.com/v1', 'MiniMax-M3.1-Flash')), true);
+  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimax.io/v1', 'MiniMax-M3.1-Flash')), true);
+  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimaxi.com/v1', 'MiniMax-M3.1-Flash-Preview')), true, 'the retired Preview spelling stays registered as a legacyAlias');
+  // MiMo: the 2026-09-22 V2.6 series leads the group; the v2.5 ids hard-fail
+  // since 2026-10-21 10:00 (UTC+8) and their rows are removed (configs fall
+  // to the custom listing, endpoint classification unaffected).
   assert.strictEqual(isPresetModel(mkCloud('mimo', 'mimo', 'https://api.xiaomimimo.com/v1', 'mimo-v2.6-pro')), true);
   assert.strictEqual(isPresetModel(mkCloud('mimo', 'mimo', 'https://api.xiaomimimo.com/v1', 'mimo-v2.6-flash')), true);
-  assert.strictEqual(isPresetModel(mkCloud('mimo', 'mimo', 'https://api.xiaomimimo.com/v1', 'mimo-v2.5-pro')), true);
+  assert.strictEqual(isPresetModel(mkCloud('mimo', 'mimo', 'https://api.xiaomimimo.com/v1', 'mimo-v2.5-pro')), false, 'mimo-v2.5-pro hard-fails since 2026-10-21; row removed');
   // Doubao: the 260915 snapshots join the official group; the new Ark
   // Coding Plan group classifies with its auto shell model.
   assert.strictEqual(isPresetModel(mkCloud('doubao', 'doubao', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-seed-2-1-pro-260915')), true);
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'doubao', base_url: 'https://ark.cn-beijing.volces.com/api/coding/v3', model: 'ark-code-latest' })), true);
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'doubao', base_url: 'https://ark.cn-beijing.volces.com/api/coding/v3', model: 'kimi-k2.8-preview' })), true);
   // Alibaba Coding Plan group classifies with the plan's exact ids (intl
-  // alias host included; kimi-k2.5 stays excluded platform-wide).
+  // alias host included; kimi-k2.5 was re-mirrored in the 2026-11-03
+  // refresh — the official coding-plan pages still list it and Alibaba
+  // serves the gateway on its own infrastructure, so the earlier
+  // platform-wide-retirement exclusion premise did not hold here).
   assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'qwen3.7-plus' })), true);
-  assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'kimi-k2.5' })), false);
+  assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'kimi-k2.5' })), true);
   // (qwen3-coder-plus used to pin the intl alias host here; the official
   // page dropped it in the 2026-10-10 refresh — see the 2026-10-13 test.)
   // Aggregator groups: org-prefixed ids classify per vendor, and the new
@@ -360,6 +377,61 @@ test('2026-10-13 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3-coder-next')), false);
   assert.strictEqual(isPresetModel(mkAlibabaPlan('glm-4.7')), false);
   assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding-intl.dashscope.aliyuncs.com/v1', model: 'qwen3.5-plus' })), true, 'the intl alias host classifies the same rows');
+});
+
+test('2026-11-03 catalog refresh lands in their provider groups (preset recognition)', () => {
+  const mkCloud = (preset, vendor, base, model) => mk({ preset, provider_kind: 'official_api', vendor, base_url: base, model });
+  const mkPlan = (vendor, base, model) => mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor, base_url: base, model });
+  // Kimi: K3.1 Pro (2026-10-23) is the official flagship and joins both
+  // regional groups plus the Kimi Code lane; the preset default stays
+  // kimi-k3 (the base's tiered route only learns bare K3 ids and K3.1 Pro's
+  // thinking cannot be disabled — see the kimi group comment), so the K3.1
+  // rows keep the generic moonshot ladder.
+  assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.cn/v1', 'kimi-k3.1-pro')), true);
+  assert.strictEqual(isPresetModel(mkCloud('kimi', 'kimi', 'https://api.moonshot.ai/v1', 'kimi-k3.1-pro-highspeed')), true);
+  assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro')), true);
+  assert.strictEqual(isPresetModel(mkPlan('kimi', 'https://api.kimi.com/coding/v1', 'k3.1-pro-highspeed')), true);
+  assert.strictEqual(catalogImageCapableForModel('kimi-k3.1-pro'), true);
+  assert.strictEqual(catalogImageCapableForModel('k3.1-pro'), true);
+  assert.deepStrictEqual([...(reasoningEffortTiersForModel({ preset: 'kimi', vendor: 'kimi', model: 'kimi-k3.1-pro', base_url: 'https://api.moonshot.cn/v1' }) || [])], ['off', 'high'], 'K3.1 Pro rides the generic moonshot arm (no exact-route ladder yet; off carries the documented disable-rejected cliff — see the kimi group comment)');
+  // MiniMax: the GA rename carries the retired Preview spelling as a
+  // legacyAlias on both regional groups.
+  assert.strictEqual(isPresetModel(mkCloud('minimax', 'minimax', 'https://api.minimaxi.com/v1', 'MiniMax-M3.1-Flash')), true);
+  // OpenAI: gpt-6.1-terra (2026-10-26) joins; it keeps the Responses ladder
+  // through the gpt-6 prefix.
+  assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6.1-terra')), true);
+  assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'openai', model: 'gpt-6.1-terra' }) || [])], ['low', 'medium', 'high', 'max']);
+  // xAI: the multi-agent 4.20 row joins with no image annotation and no
+  // tier exposure (the base effort gate covers grok-4.6/4.5 only, and the
+  // multi-agent effort semantics differ anyway).
+  assert.strictEqual(isPresetModel(mkCloud('xai', 'xai', 'https://api.x.ai/v1', 'grok-4.20-multi-agent-0309')), true);
+  assert.strictEqual(catalogImageCapableForModel('grok-4.20-multi-agent-0309'), null);
+  assert.strictEqual(reasoningEffortTiersForModel({ preset: 'xai', vendor: 'xai', model: 'grok-4.20-multi-agent-0309', base_url: 'https://api.x.ai/v1' }), null);
+  // Ark Coding Plan: the two retired rows fall to the custom listing and
+  // the economy DeepSeek row joins.
+  const arkBase = 'https://ark.cn-beijing.volces.com/api/coding/v3';
+  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'kimi-k2.7-code')), false, 'kimi-k2.7-code went offline 2026-10-28 (docs 2578680); row removed');
+  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'minimax-m3')), false, 'minimax-m3 went offline 2026-11-02 (docs 2578680); row removed');
+  assert.strictEqual(isPresetModel(mkPlan('doubao', arkBase, 'deepseek-v4.1-flash-economy')), true);
+  // Tencent Token Plan: the migrated tokenhub host classifies like the
+  // legacy lkeap alias (the plan table itself gained no new text rows this
+  // cycle); the retired 0731 alias is dropped above.
+  assert.strictEqual(isPresetModel(mkPlan('tencent', 'https://tokenhub.tencentmaas.com/plan/v3', 'deepseek/deepseek-flash')), true);
+  assert.strictEqual(isPresetModel(mkPlan('tencent', 'https://tokenhub.tencentmaas.com/plan/v3', 'minimax-m-2-7')), true, 'the parallel lowercase alias classifies on the new host too');
+  // New vendor groups (Mistral / Meta / Together / Groq): plain
+  // OpenAI-compatible rows classify per vendor with no tier exposure.
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'mistral', 'https://api.mistral.ai/v1', 'codestral-latest')), true);
+  assert.strictEqual(catalogImageCapableForModel('mistral-medium-latest'), true);
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'meta', 'https://api.meta.ai/v1', 'muse-spark-1.3')), true);
+  assert.strictEqual(catalogImageCapableForModel('muse-spark-1.3'), true);
+  assert.strictEqual(catalogImageCapableForModel('muse-spark-1.1'), null, 'muse-spark-1.1 stays unannotated (the Rust negative test treats it as Unknown)');
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'together', 'https://api.together.xyz/v1', 'moonshotai/Kimi-K3')), true);
+  assert.strictEqual(isPresetModel(mkCloud('openai_compatible', 'groq', 'https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile')), true);
+  assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'mistral', model: 'codestral-latest', base_url: 'https://api.mistral.ai/v1' }), null);
+  assert.strictEqual(reasoningEffortTiersForModel({ preset: 'openai_compatible', vendor: 'meta', model: 'muse-spark-1.3', base_url: 'https://api.meta.ai/v1' }), null);
+  // DeepSeek mainline: the 1017 snapshot serves behind the unchanged
+  // deepseek-flash id, so no new official-group row exists.
+  assert.strictEqual(isPresetModel(mkCloud('deepseek', 'deepseek', 'https://api.deepseek.com', 'deepseek-flash')), true);
 });
 
 test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (default_model_matches_vendor_docs_2026_10_13)', () => {

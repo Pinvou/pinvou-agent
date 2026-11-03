@@ -74,6 +74,14 @@ pub fn moonshot_model_requires_explicit_thinking(model: &str) -> bool {
         model.trim().to_ascii_lowercase().as_str(),
         "k3" | "k3-256k"
             | "kimi-k3"
+            // K3.1 Pro / K3.1 Pro Highspeed (2026-10-23, kimi.com/code/docs
+            // whats-new): the K3.1 generation is thinking-only — requests
+            // that turn thinking off are rejected with 400 — same class as
+            // the bare-K3 ids above.
+            | "k3.1-pro"
+            | "k3.1-pro-highspeed"
+            | "kimi-k3.1-pro"
+            | "kimi-k3.1-pro-highspeed"
             | "kimi-k2.7-code"
             | "kimi-k2.7-code-highspeed"
             | "kimi-for-coding"
@@ -184,6 +192,18 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "kimi-k3",
     "kimi-k2.7-code",
     "kimi-k2.6",
+    // Meta Model API (2026-11-03 catalog refresh, dev.meta.ai): muse-spark-1.3
+    // (the current default) is officially multimodal (text/image/PDF/video
+    // input). The entry is spelled with the full minor version on purpose:
+    // muse-spark-1.1 stays Unknown (the negative test below pins that), and
+    // no per-model modality statement covers it this refresh.
+    "muse-spark-1.3",
+    // Mistral (2026-11-03 catalog refresh, docs.mistral.ai): the models
+    // overview lists mistral-medium-latest as multimodal and
+    // mistral-small-latest with image understanding; codestral-latest /
+    // mistral-large-latest carry no modality statement and stay Unknown.
+    "mistral-medium-latest",
+    "mistral-small-latest",
 ];
 
 /// Exact (lowercased equality) entries: short generic ids whose substring
@@ -201,6 +221,12 @@ const VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
 const EXACT_VERIFIED_IMAGE_CAPABLE_MODELS: &[&str] = &[
     "k3",
     "k3-256k",
+    // K3.1 Pro (2026-10-23, kimi.com/code/docs): officially "native vision"
+    // like K3, but the bare-id spelling contains no "kimi-k3" substring and
+    // a bare "k3.1" or "k3" substring would over-match, so it rides the
+    // exact table like its K3 siblings. The highspeed variant has no
+    // per-model modality statement yet and stays out (Unknown).
+    "k3.1-pro",
     "mimo-v2.5",
     // Tencent Token Plan official hyphenated parallel spelling (same as the
     // frontend minimax-m3 row's legacyAliases): it does not contain the

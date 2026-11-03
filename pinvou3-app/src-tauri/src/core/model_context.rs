@@ -53,6 +53,12 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // override table (the catalog desc is already annotated as 1M).
     ("grok-4.20-0309-reasoning", 1_000_000),
     ("grok-4.20-0309-non-reasoning", 1_000_000),
+    // grok-4.20-multi-agent-0309 (catalog row since the 2026-11-03 refresh,
+    // docs.x.ai pricing table) is also officially 1M; its distinct spelling
+    // matches neither sibling row nor any base entry, so without this row
+    // the engine would fall to 128K while the monitor's Xai "grok-4.20"
+    // substring fallback shows 1M — the divergence the rows above correct.
+    ("grok-4.20-multi-agent-0309", 1_000_000),
     // The ACP preset keeps the pre-retirement legacy spelling
     // grok-4.20-reasoning (an append-only legacy datalist option); the base
     // known table only recognizes the -0309- spelling, so the old spelling
@@ -137,6 +143,13 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // engine-side resolution has no prefs fallback — see the monitor
     // `preset_default_models_resolve_engine_context_window` test).
     ("gpt-6.1-sol", 1_050_000),
+    // gpt-6.1-terra (2026-10-26, developers.openai.com changelog/models) is
+    // the 6.1 efficient tier: same family figures as the rows above
+    // (1,050,000 context / 128,000 output per the Azure Foundry capability
+    // table). No base gpt-6-family row exists, so without it the engine
+    // falls to 128K and diverges from the monitor page's Openai preset
+    // fallback of 1.05M — same anchor logic as its siblings.
+    ("gpt-6.1-terra", 1_050_000),
 ];
 
 /// pinvou3 supplemental table: applies only when the base chain (catalog /
@@ -221,10 +234,17 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // model from glm-5.3 (multimodal, 200 tokens/s), so it is listed
     // explicitly.
     ("glm-5.3-flashx", 1_000_000),
-    // MiniMax M3.1 Flash Preview (2026-09, platform.minimax.cn model intro):
-    // 1M context; the base's minimax rows are exact spellings that cannot
+    // MiniMax M3.1 Flash (GA since 2026-10-19, platform.minimax.cn): 1M
+    // context; the base's minimax rows are exact spellings that cannot
     // cover the m3.1 wire id (the ".1" remainder does not start with '-').
-    ("minimax-m3.1-flash-preview", 1_000_000),
+    // The row is spelled with the GA wire id; the retired "-Preview" id
+    // (the 2026-09 catalog spelling) rides the suffix tolerance of
+    // model_name_matches, so stored configs of either generation resolve.
+    ("minimax-m3.1-flash", 1_000_000),
+    // Kimi K3.1 Pro (2026-10-23, platform.kimi.com models page): officially
+    // "1M token context window" ("100 万 token 上下文窗口"); the base kimi
+    // rows stop at k3/k2.x exact ids that cannot cover the k3.1 wire id.
+    ("kimi-k3.1-pro", 1_048_576),
 ];
 
 /// 解析 pinvou3 已知模型的上下文窗口。
@@ -284,6 +304,10 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // same Azure capability table as above (page updated 2026-10-08) — a
     // first-party official figure, unlike the corroborated gpt-6 rows above.
     ("gpt-6.1-sol", 128_000),
+    // gpt-6.1-terra rides the same family capability table (added to the
+    // catalog in the 2026-11-03 refresh) — same first-party figure and the
+    // same Responses-wire reasoning-as-output concern as its siblings.
+    ("gpt-6.1-terra", 128_000),
     // claude-sonnet-5-5 / claude-haiku-5-5: Max Output 128K for the whole
     // 5.5 generation per the models-overview comparison table (checked
     // 2026-10-13; the exact-match base output table stops at claude-sonnet-5
@@ -461,7 +485,11 @@ mod tests {
             ("mimo-v2.6-pro-ultraspeed", 1_000_000),
             ("grok-4.7", 500_000),
             ("glm-5.3-flashx", 1_000_000),
+            ("minimax-m3.1-flash", 1_000_000),
+            // The retired "-Preview" catalog spelling (2026-09) rides the
+            // suffix tolerance of the GA row above.
             ("minimax-m3.1-flash-preview", 1_000_000),
+            ("kimi-k3.1-pro", 1_048_576),
         ] {
             assert_eq!(resolved_context_window(model), Some(expected), "{model}");
         }
@@ -494,6 +522,12 @@ mod tests {
             resolved_context_window("grok-4.20-0309-non-reasoning"),
             Some(1_000_000)
         );
+        // The multi-agent 4.20 row (2026-11-03 catalog refresh) carries the
+        // same 1M figure and no base row of its own.
+        assert_eq!(
+            resolved_context_window("grok-4.20-multi-agent-0309"),
+            Some(1_000_000)
+        );
         // The pre-retirement legacy spelling kept by the ACP preset: the base
         // has no row, so without the override the engine falls to 128K and
         // diverges from the monitor page's prefs "grok-4.20" substring
@@ -524,6 +558,20 @@ mod tests {
         // base gpt-6-family row), so removing the row would turn the monitor
         // `preset_default_models_resolve_engine_context_window` red too.
         assert_eq!(resolved_context_window("gpt-6.1-sol"), Some(1_050_000));
+        // gpt-6.1-terra (2026-11-03 catalog row) rides the same anchor
+        // logic as its 6.1 sibling.
+        assert_eq!(resolved_context_window("gpt-6.1-terra"), Some(1_050_000));
+        // MiniMax M3.1 Flash went GA (2026-10-19): the GA wire id and the
+        // retired "-Preview" spelling must both resolve through the same
+        // row.
+        assert_eq!(
+            resolved_context_window("MiniMax-M3.1-Flash"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            resolved_context_window("MiniMax-M3.1-Flash-Preview"),
+            Some(1_000_000)
+        );
         // gemini-4-argon (GA 2026-10-13, catalog row since 2026-10-14) rides
         // the same anchor logic as gemini-3.8-flash: no base row exists (the
         // base gemini rows stop at 3.7/3.1), and the monitor's Gemini
@@ -543,6 +591,8 @@ mod tests {
         // 128,000 (Azure capability table), riding the same Responses-wire
         // reasoning-as-output concern as the gpt-6 rows above.
         assert_eq!(resolved_output_limit("gpt-6.1-sol"), Some(128_000));
+        // gpt-6.1-terra joins the same family table (2026-11-03 refresh).
+        assert_eq!(resolved_output_limit("gpt-6.1-terra"), Some(128_000));
         // gpt-5.4-mini rides the Responses wire too (prefix predicate) and has
         // no base output row; without the anchor it fail-closes to 8192 while
         // reasoning meters as output on that wire.

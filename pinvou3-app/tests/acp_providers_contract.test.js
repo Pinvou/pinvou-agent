@@ -785,9 +785,11 @@ const CATALOG = fs.readFileSync(
   'utf8'
 );
 assert.doesNotMatch(CATALOG, /\[1M\]/, '1M 变体必须统一小写 [1m]');
+// 2026-10-23 起，官方 Claude Code 页面的 [1m] 声明移到 k3.1-pro[1m]；旧的
+// k3[1m] 不再出现在官方页面，但按 append-only 保留为存量建议。
 assert.ok(
-  CATALOG.includes("models1m: ['k3[1m]']"),
-  'Kimi Code 预设的 1M 变体必须仅 k3[1m]'
+  CATALOG.includes("models1m: ['k3.1-pro[1m]', 'k3[1m]']"),
+  'Kimi Code 预设的 1M 变体必须为 k3.1-pro[1m] + append-only 的 k3[1m]'
 );
 assert.ok(
   PROVIDER_FORM.includes('activePreset.models1m'),

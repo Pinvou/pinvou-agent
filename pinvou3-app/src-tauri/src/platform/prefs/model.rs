@@ -78,21 +78,28 @@ pub(super) fn migrated_minimax_base_url(value: &str) -> Option<String> {
 }
 
 /// Identifies known Coding Plan/Token Plan endpoints as (vendor, canonical
-/// base_url). The two Tencent Cloud subscription tiers (checked against the
-/// official docs, 2026-08):
-/// - Coding Plan /coding/v3: overview 1823/130092 (2026-08-21),
-///   OpenAI-compatible; the same page also offers an Anthropic-compatible
-///   /coding/anthropic endpoint (not used by this repo);
-/// - Token Plan /plan/v3: access guide 1823/130075 and plan doc 1823/130119,
-///   OpenAI-compatible; a different subscription from Coding Plan with a
-///   different model lineup.
+/// base_url). The two Tencent Cloud subscription tiers (re-checked against
+/// the official docs 2026-11-03; previously 2026-08):
+/// - Coding Plan /coding/v3: overview 1823/130092 (updated 2026-10-15),
+///   OpenAI-compatible on api.lkeap.cloud.tencent.com; the same page also
+///   offers an Anthropic-compatible /coding/anthropic endpoint (not used by
+///   this repo);
+/// - Token Plan /plan/v3: docs 1823/130119 + 130060 (both updated
+///   2026-10-22) — the platform migrated off the lkeap domain per announce
+///   101147 and now documents only https://tokenhub.tencentmaas.com/plan/v3
+///   (plus Anthropic /plan/anthropic and Responses /plan/v3/responses
+///   surfaces, unused by this repo). The tokenhub host is the canonical
+///   identity for new saves; the legacy lkeap URL keeps its own arm so
+///   stored configs classify unchanged on reload (whether the old host
+///   still serves is unannounced). A different subscription from Coding
+///   Plan with a different model lineup.
 /// Both tiers go through the generic OpenAI route: identify only backfills
 /// vendor/coding_plan metadata and does not take part in wire routing;
 /// dropping either arm makes stored configs lose separate reasoning-field
 /// parsing.
 /// The Volcengine Ark Coding Plan (coding-plan-personal-get-started,
-/// 2026-09-28) and the Alibaba Model Studio Coding Plan
-/// (help.aliyun.com/zh/model-studio/coding-plan, 2026-09-28) are modeled the
+/// re-checked 2026-11-03) and the Alibaba Model Studio Coding Plan
+/// (help.aliyun.com/zh/model-studio/coding-plan) are modeled the
 /// same way; both have dedicated /api/coding hosts distinct from their
 /// pay-as-you-go endpoints. The China Alibaba host is canonical; the intl
 /// host (coding-intl) and the overseas Kimi host (api.kimi.ai) are separate
@@ -116,6 +123,13 @@ pub(super) fn identify_coding_plan_endpoint(
         "https://api.lkeap.cloud.tencent.com/coding/v3" => {
             Some(("tencent", "https://api.lkeap.cloud.tencent.com/coding/v3"))
         }
+        // Token Plan canonical host since the 2026-10 platform migration
+        // (announce 101147); see the doc comment above for the legacy arm.
+        "https://tokenhub.tencentmaas.com/plan/v3" => {
+            Some(("tencent", "https://tokenhub.tencentmaas.com/plan/v3"))
+        }
+        // Legacy Token Plan host (kept for stored configs saved before the
+        // migration; the frontend registers it as an endpoint alias).
         "https://api.lkeap.cloud.tencent.com/plan/v3" => {
             Some(("tencent", "https://api.lkeap.cloud.tencent.com/plan/v3"))
         }
@@ -204,7 +218,10 @@ impl ModelPreset {
     /// 否则 OpenAI-compat API 报 `model_not_found`。
     ///
     /// Checked against the official docs on 2026-10-13 (previous full check
-    /// 2026-09-28; synced in the same batch as the frontend model-catalog.js
+    /// 2026-09-28; the 2026-11-03 catalog refresh re-verified every value
+    /// and kept them all — including kimi, which deliberately stays
+    /// kimi-k3 until the base learns the K3.1 exact route; synced in the
+    /// same batch as the frontend model-catalog.js
     /// MODEL_PRESET_DEFS). This table is the only hand-written Rust-side
     /// mirror, locked by `default_model_matches_vendor_docs_2026_10_13`.
     pub fn default_model(&self) -> &'static str {
@@ -487,6 +504,15 @@ mod tests {
                 "https://api.lkeap.cloud.tencent.com/plan/v3",
                 "tencent",
                 "https://api.lkeap.cloud.tencent.com/plan/v3",
+            ),
+            // Token Plan canonical host since the 2026-10 platform migration
+            // (announce 101147): identified as its own canonical URL so new
+            // saves persist the tokenhub identity while legacy lkeap configs
+            // keep classifying through the arm above.
+            (
+                "https://tokenhub.tencentmaas.com/plan/v3",
+                "tencent",
+                "https://tokenhub.tencentmaas.com/plan/v3",
             ),
             (
                 "https://ark.cn-beijing.volces.com/api/coding/v3",

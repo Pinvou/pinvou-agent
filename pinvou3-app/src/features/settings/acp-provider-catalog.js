@@ -7,8 +7,9 @@
 // developers.openai.com / api-docs.deepseek.com / platform.kimi.com /
 // docs.bigmodel.cn / help.aliyun.com(model-studio) / platform.minimax.io /
 // docs.x.ai); per-vendor inline comments keep their own check dates, and
-// only the anthropic / openai / minimax entries were re-checked again on
-// 2026-10-13. Presets only provide the base URL and protocol; the model is
+// the anthropic / openai / minimax / moonshot / kimi-code entries were
+// re-checked again on 2026-11-03. Presets only provide the base URL and
+// protocol; the model is
 // filled in by the user (see ProviderFormModal: picking a preset does not
 // auto-fill the model). Lists are append-only: relay stations may
 // still proxy older models, and tests/acp_providers_ui_smoke.js depends on
@@ -34,34 +35,46 @@ export const ACP_PROVIDER_PRESETS = [
   // newest tiers.
   { key: 'anthropic', nameKey: 'presetAnthropic', name: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', baseUrlAnthropic: 'https://api.anthropic.com', wireApi: 'anthropic', models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
   // gpt-6.1-sol (2026-09-29 model data, announced at DevDay the same day)
-  // prepended as the new near-Astra flagship; gpt-6-sol / gpt-6-luna
-  // (GPT-6 family expansion, September 2026) stay. gpt-5.3-codex stays
+  // prepended as the new near-Astra flagship; gpt-6.1-terra (2026-10-26)
+  // joins above it and gpt-6-sol / gpt-6-luna (GPT-6 family expansion,
+  // September 2026) stay. gpt-5.3-codex stays
   // valid for Responses-only ACP hosts (watch item: deprecated on
   // 2026-10-01, shutdown 2027-04-01 per the OpenAI deprecations page).
-  { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
-  { key: 'moonshot', nameKey: 'presetMoonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
+  { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
+  // kimi-k3.1-pro / -highspeed (2026-10-23) prepend as the newest flagship
+  // tiers; the K2 rows stay (append-only) — the official models page now
+  // plans the whole K2 series to go offline end of December 2026.
+  { key: 'moonshot', nameKey: 'presetMoonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
   // 注意：models 为**发送给 API 的模型 ID**（官方配置中 models."kimi-code/k3"
   // 表名的 kimi-code/ 前缀是别名，实际请求的 model 字段是无前缀的 "k3"）。
-  // Kimi Code hosts only one 1M variant, k3 (the other tiers such as
-  // k3-256k have no 1M declaration; kimi-for-coding now serves K2.8 Preview
-  // with native 1M, but declares no [1m] variant — none may be invented).
+  // Kimi Code's officially documented [1m] declarations moved to
+  // k3.1-pro[1m] (2026-10-23; the official Claude Code page names
+  // k3.1-pro / k3.1-pro[1m]); the earlier k3[1m] declaration no longer
+  // appears there but stays as an append-only legacy suggestion.
+  // kimi-for-coding still serves K2.8 Preview with tier-gated 1M and
+  // declares no [1m] variant — none may be invented.
   // The overseas Anthropic-compatible base URL is https://api.kimi.ai/coding
   // (domestic: api.kimi.com/coding, kimi.com/code/docs, 2026-09-28); the
   // preset ships the domestic value only, and overseas-key users must
   // replace it manually in the form (keys are region-bound and not
   // interchangeable).
-  { key: 'kimi-code', nameKey: 'presetKimiCode', name: 'Kimi Code', baseUrl: 'https://api.kimi.com/coding/v1', baseUrlAnthropic: 'https://api.kimi.com/coding', wireApi: 'kimi', models: ['k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'], models1m: ['k3[1m]'] },
+  { key: 'kimi-code', nameKey: 'presetKimiCode', name: 'Kimi Code', baseUrl: 'https://api.kimi.com/coding/v1', baseUrlAnthropic: 'https://api.kimi.com/coding', wireApi: 'kimi', models: ['k3.1-pro', 'k3.1-pro-highspeed', 'k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'], models1m: ['k3.1-pro[1m]', 'k3[1m]'] },
   // models1m only carries officially documented [1m] declarations: the
-  // official Claude Code preset page (api-docs.deepseek.com) names just
-  // deepseek-flash[1m]; the v4-flash/v4-pro [1m] entries previously listed
-  // here were undocumented and have been removed (2026-09-28).
+  // official Claude Code preset page (api-docs.deepseek.com) named just
+  // deepseek-flash[1m] when checked on 2026-09-28; that page could not be
+  // re-located on 2026-11-03 (both models now expose 1M as base context on
+  // the pricing page, which makes the suffix declaration moot), and the
+  // entry stays as an append-only harmless suggestion.
   { key: 'deepseek', nameKey: 'presetDeepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', baseUrlAnthropic: 'https://api.deepseek.com/anthropic', wireApi: 'openai', models: ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro'], models1m: ['deepseek-flash[1m]'] },
   // glm-5.3-flashx added after glm-5.3-flash (2026-09-28): multimodal speed
   // tier, standard API only (not open on the Coding Plan endpoint).
   { key: 'zhipu', nameKey: 'presetZhipu', name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wireApi: 'openai', models: ['glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6', 'glm-4.7-flash'] },
   { key: 'qwen', nameKey: 'presetQwen', name: '通义千问 Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', wireApi: 'openai', models: ['qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus'] },
   { key: 'doubao', nameKey: 'presetDoubao', name: '豆包 Doubao', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', wireApi: 'openai', models: [] },
-  { key: 'minimax', nameKey: 'presetMinimax', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', wireApi: 'openai', models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] },
+  // MiniMax-M3.1-Flash (GA 2026-10-19, PAYG-served) prepends; the M2.x rows
+  // stay append-only with the platform retirement (offline 2026-11-18) in
+  // mind.
+  { key: 'minimax', nameKey: 'presetMinimax', name: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', wireApi: 'openai', models: ['MiniMax-M3.1-Flash', 'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'] },
   // grok-4.20-reasoning is a legacy spelling kept for existing configs
   // (append-only); the official wire id is the -0309- dated
   // spelling (docs.x.ai models page, 2026-09-11), added alongside under the
@@ -76,37 +89,42 @@ export const ACP_PROVIDER_PRESETS = [
 // Official on-list model suggestions for the form's model field (datalist;
 // other model names can be typed freely).
 // As listed in each vendor's official docs as of 2026-09-28 (anthropic /
-// openai / minimax re-verified 2026-10-13; new tiers are
+// openai / minimax / moonshot re-verified 2026-11-03; new tiers are
 // added at the top of their vendor group):
 export const ACP_MODEL_PRESETS = [
   // Anthropic (platform.claude.com; opus-5-5 (2026-09-22) is the official
   // default recommendation, fable-5-1 the highest-capability tier;
   // sonnet-5-5 shipped 2026-09-28 and haiku-5-5 on 2026-10-07)
   'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5',
-  // OpenAI (developers.openai.com; gpt-6.1-sol (2026-09-29) is the new
-  // near-Astra flagship, the GPT-6 family stays; gpt-5.3-codex is the
-  // current Codex coding model, Responses-only)
-  'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2',
-  // DeepSeek (deepseek-flash = V4.1-Flash is the current mainline; per the
-  // official 2026-09-10 confirmation, v4-pro keeps serving past 09-14 with
-  // unchanged billing; the deepseek-chat/reasoner old aliases are retired)
+  // OpenAI (developers.openai.com; gpt-6.1-terra (2026-10-26) is the 6.1
+  // efficient tier above the near-Astra flagship gpt-6.1-sol (2026-09-29);
+  // the GPT-6 family stays; gpt-5.3-codex is the
+  // current Codex coding model, Responses-only, deprecated 2026-10-01 with
+  // shutdown 2027-04-01)
+  'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2',
+  // DeepSeek (deepseek-flash = V4.1-Flash is the current mainline, serving
+  // the 1017 snapshot behind the unchanged id since 2026-10-17; per the
+  // official 2026-09-10 changelog confirmation, v4-pro keeps serving past
+  // 09-14 with unchanged billing; the deepseek-chat/reasoner old aliases
+  // are retired)
   'deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro',
   // Moonshot open platform (platform.kimi.com; kimi-k2.5 and the moonshot-v1
-  // series were fully retired on 2026-08-31; kimi-k3 is the flagship pick,
-  // kimi-k2.7-code targets coding)
-  'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed',
+  // series were fully retired on 2026-08-31; kimi-k3.1-pro (2026-10-23) is
+  // the flagship pick with kimi-k3 demoting to previous flagship;
+  // kimi-k2.7-code targets coding and the whole K2 series is slated to go
+  // offline end of December 2026)
+  'kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed',
   // Zhipu GLM (docs.bigmodel.cn; glm-5.3 is the current flagship,
   // glm-5.3-flashx the multimodal speed tier)
   'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx', 'glm-5.2', 'glm-5.1', 'glm-5', 'glm-4.7', 'glm-4.6', 'glm-4.7-flash',
   // Qwen (Alibaba Cloud Model Studio; the qwen3.8 family is the current
   // flagship/fast mainline)
   'qwen3.8-max', 'qwen3.8-flash', 'qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash', 'qwen3-coder-plus',
-  // MiniMax (M3 is the latest flagship; the official notice retires the
-  // M2.5/M2.7 series on 2026-11-18 with new-user access ending 2026-10-19,
-  // so M2.7 stays listed with the date in mind; M2.5/M2.1/M2 are historical
-  // models; M3.1-Flash-Preview is subscription-channel only for now and is
-  // not listed as a PAYG preset suggestion)
-  'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed',
+  // MiniMax (M3.1-Flash went GA on 2026-10-19 and is PAYG-served; M3 stays
+  // the 1M multimodal flagship; the official notice retires the
+  // M2.5/M2.7 series on 2026-11-18 with new-user access ended 2026-10-19,
+  // so M2.7 stays listed with the date in mind)
+  'MiniMax-M3.1-Flash', 'MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed',
   // xAI (grok-4.7 is the official coding/agent recommended flagship since
   // September 2026; -0309- is the official wire id
   // spelling, and grok-4.20-reasoning is the legacy spelling, append-only)
