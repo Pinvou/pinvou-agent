@@ -633,14 +633,22 @@ export function applyNativeChatEvent(lane, name, payload, options = {}) {
       const decision = String(p.decision || '');
       // fail-neutral（与 chat-events 主车道同口径）：未知/缺失决策值按 no-op
       // 早退——审批面上的畸形载荷不得把未决卡映射成 "allowed"，宁可留着
-      // 未决等权威回声/终态清扫。
-      if (!['deny', 'allow', 'allow_for_session'].includes(decision)) return false;
+      // 未决等权威回声/终态清扫。decision "unknown"（宿主 P2）是后端未知
+      // 终态臂的权威处置（ack + settle 双窗超时，登记已摘除）：卡改为不可
+      // 决的 unknown 态（resolved 保持 false，迟到的权威决议事件仍可就地
+      // 收口，turn 终态清扫也会接管），按钮面不再邀请对可能已被消费的
+      // 决策重复点击；除该值外的未知值仍是畸形载荷 no-op。
+      if (!['deny', 'allow', 'allow_for_session', 'unknown'].includes(decision)) return false;
       let changed = false;
       lane.items.forEach(item => {
         if (item && item.type === 'approval' && item.approvalId === resolvedId && !item.resolved) {
-          item.resolved = true;
-          item.cardState = decision === 'deny' ? 'denied'
-            : decision === 'allow_for_session' ? 'allowed_session' : 'allowed';
+          if (decision === 'unknown') {
+            item.cardState = 'unknown';
+          } else {
+            item.resolved = true;
+            item.cardState = decision === 'deny' ? 'denied'
+              : decision === 'allow_for_session' ? 'allowed_session' : 'allowed';
+          }
           changed = true;
         }
       });

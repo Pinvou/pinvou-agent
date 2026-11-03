@@ -754,13 +754,20 @@ const ToolOutput = ({ item, t }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = !!item.resolved;
       const submitting = !done && !!item.submitting;
-      const lockButtons = submitting || webReadOnly;
+      // Unknown outcome (host P2): the backend dropped the pending entry
+      // after the engine's ack+settle windows expired - the decision may
+      // still be late-committed, so the card must stop inviting a re-decision
+      // (a fresh click can only fail). resolved stays false, so a late
+      // authoritative resolution event still reconciles the card.
+      const unknownOutcome = !done && !submitting && item.cardState === 'unknown';
+      const lockButtons = submitting || webReadOnly || unknownOutcome;
       const statusText = done
         ? (item.statusLabel
           || (item.cardState === 'denied' ? t.approvalDenied
             : item.cardState === 'allowed_session' ? t.approvalAllowedSession
             : item.cardState === 'cancelled' ? t.uiCancelled
             : t.approvalAllowed))
+        : unknownOutcome ? t.approvalOutcomeUnknown
         : submitting ? t.approvalSubmitting
         : webReadOnly ? t.uiMultiAgent.webActionHint
         : '';
@@ -797,7 +804,7 @@ const ToolOutput = ({ item, t }) => {
             )
           ) : null}
           <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
-          {done ? (
+          {done || unknownOutcome ? (
             <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>
           ) : (
             <>

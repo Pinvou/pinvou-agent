@@ -3718,6 +3718,41 @@ fn decide_approval_side_effect_ordering_is_pinned() {
         classifier_at < restore_at2,
         "the restore must be gated on the unknown-outcome classification"
     );
+    // The unknown arm must broadcast the unknown disposition to the mounted
+    // surfaces (reviewer P2, second pass): the registry restore fence only
+    // covers remounts, while the mounted cards (chat lane / codex native
+    // lane) keep their active decision controls unless told otherwise - the
+    // UI would keep inviting a re-decision on a possibly-consumed approval
+    // whose fresh click can only fail. The disposition rides the
+    // resolved-shaped event channel through the single payload constructor
+    // with decision "unknown" (emit + remote forward, same as the success
+    // convergence), BEFORE the command returns its Err. The determinate arm
+    // must NOT broadcast (the card stays a live retryable pending request).
+    let unknown_arm = &body[classifier_at..];
+    let payload_at = unknown_arm
+        .find("approval_resolved_payload(")
+        .unwrap_or_else(|| panic!("unknown disposition payload missing"));
+    let emit_at = unknown_arm
+        .find(r#"app.emit("chat:approval_resolved""#)
+        .unwrap_or_else(|| panic!("unknown disposition emit missing"));
+    let forward_at = unknown_arm
+        .find("forward_app_event(")
+        .unwrap_or_else(|| panic!("unknown disposition remote forward missing"));
+    assert!(
+        payload_at < emit_at && emit_at < forward_at,
+        "the disposition must use the single payload constructor, then emit, then forward"
+    );
+    assert!(
+        unknown_arm[payload_at..payload_at + 160].contains("\"unknown\""),
+        "the disposition payload must carry the unknown decision value"
+    );
+    let err_return_at = body
+        .rfind("decide_approval({decision}): {error:#}")
+        .unwrap_or_else(|| panic!("failure-arm Err return missing"));
+    assert!(
+        classifier_at < err_return_at && classifier_at + forward_at < err_return_at,
+        "the unknown disposition must broadcast before the command returns its error"
+    );
 }
 
 /// `chat:mode_changed` 的 payload 契约：mode 为 snake_case 序列化值，

@@ -549,6 +549,12 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
         // 恢复 pre-call 状态前必须让位终态——否则已取消的卡复活可点，后续
         // 每次点击都追加失败提示。chat:approval_resolved 回声同理不覆盖
         // 已决卡（回声处理只对未决卡生效）。
+        // 未知终态（宿主 P2）：后端在返回 Err 前已广播 decision "unknown"
+        // 的收敛事件；事件先落时卡已是不可决的 unknown 态——恢复 pre-call
+        // 的 active 会把它翻回可点（对可能已被消费的决策再邀一次点击），
+        // 必须让位。事件后落时这里照旧恢复，随后的收敛事件再把卡改写为
+        // unknown（只对未决卡生效），两种到达顺序都收敛到不可决。
+        if (card.cardState === "unknown") return;
         if (!card.resolved) {
           card.resolved = previous.resolved;
           card.cardState = previous.cardState;

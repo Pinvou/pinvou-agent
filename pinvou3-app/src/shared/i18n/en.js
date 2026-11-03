@@ -93,6 +93,7 @@ const codexEn = {
   nativePlanAcceptFailed:'⚠️ accept_plan failed: ', nativePlanDiscardFailed:'⚠️ discard_plan failed: ',
   // tri-mode approval card terminal states / guardrail hard-deny notice (reason keys mapped on the frontend).
   nativeApprovalAllowed:'✅ Allowed', nativeApprovalAllowedSession:'✅ Allowed for this session', nativeApprovalDenied:'🚫 Denied', nativeApprovalCancelled:'✕ Cancelled',
+  nativeApprovalOutcomeUnknown:'⚠️ Outcome unknown - check the session for the actual result',
   nativeGuardrailDenied:'Guardrail denied', nativeGuardrailDeniedSession:'This exact operation was denied in this session (a changed request asks again)',
   nativeGuardrailDeniedPlan:'Plan mode is read-only; denied', nativeGuardrailDeniedAskOff:'Ask-on-guardrail is off; denied outright',
   addAttachment:'Add attachment', commandsAvailable:'Commands reported by the Agent', commandsAfterSession:'Agent commands sync after a session is created',
@@ -596,6 +597,7 @@ export const dictEn = {
         approvalTitle: 'Tool call awaiting your approval', approvalIntent: 'Model intent',
         approvalAllow: 'Allow', approvalAllowSession: 'Allow for this session', approvalDeny: 'Deny',
         approvalAllowed: '✅ Allowed', approvalAllowedSession: '✅ Allowed for this session', approvalDenied: '🚫 Denied', approvalSubmitting: 'Submitting…',
+        approvalOutcomeUnknown: '⚠️ Outcome unknown - the engine may still commit this decision late; check the session for the actual result',
         // Pinvou review card. 品/悟 glyphs are brand marks, kept; surrounding text follows language.
         pvLoadingPin: 'Pinvou 品 · Review', pvLoadingWu: 'Pinvou 悟 · Explore',
         pvLoadingPinSub: 'Checking point by point, hunting for issues', pvLoadingWuSub: 'Comparing completeness dimensions, finding gaps',

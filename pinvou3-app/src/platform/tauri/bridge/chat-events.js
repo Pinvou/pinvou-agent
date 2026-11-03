@@ -1309,16 +1309,22 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // 无卡可落（快照在途/后台工作集尚未重放），随后旧快照回程会把它当活卡
   // 插回。resolved 落空时把 id 记入本会话墓碑；approval_required 插卡与
   // sessions.js 的重放同键检查，跨 await 的迟到快照不再复活已决审批。
-  // 键带 sid：审批 id 由引擎分配，不假设跨会话唯一。上限 512 逐条淘汰：
-  // 墓碑只服务在途快照窗口，登记表删除后重放本就不会再见到该 id，超限
-  // 丢弃是安全的——但在途窗口内的墓碑除外（reviewer P3）：会话切换发出的
-  // get_pending_approvals 快照可能包含某条刚落定的审批，其墓碑正是回程
-  // 拦截的唯一证据；足够多的无关决议（absent 卡 + 未终态 target turn，
-  // 终态代栅栏管不到）能在旧快照回程前把它挤出 512 上限，已决审批被当
-  // 活卡插回，后端不会再对该请求授权。因此在途快照窗口内落下的墓碑被
-  // pin 住（sessions.js 重放发出/回程维护 approvalReplayInFlight 计数，
-  // 窗口关闭后按 sid 释放 approvalReplayPinnedTombstones），淘汰跳过被钉
-  // 条目；无未钉条目可淘汰时允许 map 暂时超限，钉集合随快照回程释放。
+  // Key includes the sid: approval ids are engine-assigned, never assumed
+  // globally unique. Cap = 512 oldest-first eviction. Dropping beyond the
+  // cap is safe because a tombstone only serves the in-flight snapshot
+  // window and the backend registry no longer re-presents the id — EXCEPT
+  // for tombstones created inside that window (reviewer P3): a
+  // get_pending_approvals snapshot issued on session switch may still
+  // contain a just-resolved approval whose tombstone is the only evidence
+  // blocking the late snapshot return; enough unrelated resolutions (absent
+  // card + nonterminal target turn, where the terminal-seq fence does not
+  // apply) can evict it before the return and resurrect a decided approval
+  // as an actionable card the backend never reauthorizes. Tombstones created
+  // while a snapshot is in flight are therefore pinned (sessions.js maintains
+  // the approvalReplayInFlight counter at snapshot issue/return and releases
+  // approvalReplayPinnedTombstones per sid when the window closes); eviction
+  // skips pinned entries, and the map may temporarily exceed the cap when
+  // every entry is pinned.
   function approvalTombstoneMap() {
     if (!state.approvalReplayTombstones) state.approvalReplayTombstones = new Map();
     return state.approvalReplayTombstones;
@@ -1372,19 +1378,31 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // 被回声覆盖。负载不带 tool input（后端载荷构造点有钉）。未知/缺失决策
   // 值按 no-op 处理（fail-neutral）：审批面上的畸形载荷不得把卡映射成
   // "allowed"——宁可留着未决等权威回声/终态清扫。
+  // decision "unknown" (host P2) is the backend's authoritative unknown-
+  // outcome disposition (ack + settle windows expired, registry entry
+  // dropped): the card moves to the non-decidable "unknown" state
+  // (resolved stays false - a late authoritative resolution event still
+  // reconciles it in place, and the turn-terminal sweep takes over
+  // otherwise), so the button face stops inviting a re-decision on a
+  // possibly-consumed approval. Any other unknown value stays a malformed
+  // no-op.
   listen("chat:approval_resolved", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
     const approvalId = String(p.approval_id || "");
     if (!approvalId) return;
     const decision = String(p.decision || "");
-    if (!["deny", "allow", "allow_for_session"].includes(decision)) return;
+    if (!["deny", "allow", "allow_for_session", "unknown"].includes(decision)) return;
     let changed = false;
     state.chatItems.forEach(function (item) {
       if (item && item.type === "approval" && item.approvalId === approvalId && !item.resolved) {
         item.submitting = false;
-        item.resolved = true;
-        item.cardState = decision === "deny" ? "denied"
-          : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        if (decision === "unknown") {
+          item.cardState = "unknown";
+        } else {
+          item.resolved = true;
+          item.cardState = decision === "deny" ? "denied"
+            : decision === "allow_for_session" ? "allowed_session" : "allowed";
+        }
         item.statusLabel = "";
         changed = true;
       }

@@ -329,6 +329,42 @@ try {
       assert.ok(pinnedState.approvalReplayTombstones.size > 512,
         '窗口内 pin 优先于容量上界（暂时超限，窗口关闭释放后恢复淘汰）');
     }
+
+    // ── 宿主 P2：未知终态处置（decision "unknown"）——主车道运行时 ──
+    // 后端未知终态臂（ack + settle 双窗）摘除登记并广播 resolved-shaped
+    // 事件、decision "unknown"。挂载面必须把卡渲染成不可决的未知态
+    // （resolved=false 但 cardState=unknown，按钮面消失），不得保留可点
+    // 的 active；迟到的权威决议事件仍要能就地收口（reconcile）。
+    {
+      pinState.approvalReplayTombstones = new Map();
+      pinState.approvalReplayPinnedTombstones = new Set();
+      pinState.approvalReplayInFlight = new Map();
+      pinState.chatItems.length = 0;
+      laneEmit('chat:approval_required', {
+        approval_id: 'ap-unk', tool_name: 'shell_exec',
+        description: 'd', input: null, force_prompt: false,
+      });
+      laneEmit('chat:approval_resolved', { approval_id: 'ap-unk', decision: 'unknown' });
+      const unknownCard = pinState.chatItems.find(item => item.type === 'approval' && item.approvalId === 'ap-unk');
+      assert.ok(unknownCard, '未知终态处置必须在场出卡后再落未知态');
+      assert.equal(unknownCard.cardState, 'unknown', '未知终态卡必须落 unknown 态');
+      assert.equal(unknownCard.resolved, false, '未知终态不得落 resolved（迟到权威决议仍可对账）');
+      assert.equal(unknownCard.submitting, false, '未知终态必须清除提交中标志');
+      // 迟到权威决议就地收口（reconcile）：resolved=true + 终态。
+      laneEmit('chat:approval_resolved', { approval_id: 'ap-unk', decision: 'deny' });
+      assert.equal(unknownCard.resolved, true, '迟到的权威决议必须收口未知卡');
+      assert.equal(unknownCard.cardState, 'denied', '收口后卡落真实终态');
+      // 确定拒绝语义不变：回声只对未决卡生效的既有约束不受影响。
+      // 除 "unknown" 外的未知值仍是畸形载荷 no-op（fail-neutral 保留）。
+      laneEmit('chat:approval_required', {
+        approval_id: 'ap-mal2', tool_name: 'shell_exec',
+        description: 'd', input: null, force_prompt: false,
+      });
+      laneEmit('chat:approval_resolved', { approval_id: 'ap-mal2', decision: 'allow_all' });
+      const malformed = pinState.chatItems.find(item => item.type === 'approval' && item.approvalId === 'ap-mal2');
+      assert.equal(malformed.cardState, 'active', '畸形决策值仍按 no-op（fail-neutral）');
+      assert.equal(malformed.resolved, false, '畸形决策值不得落终态');
+    }
   }
 
   // ── round-4 fail-neutral 的 native 车道同口径：未知决策值不得落终态 ──
@@ -353,6 +389,43 @@ try {
       session_id: 's1', approval_id: 'ap-mal',
     }), false, '缺失决策值 no-op');
     assert.equal(lane.items.find(item => item.type === 'approval').cardState, 'active');
+  }
+
+  // ── 宿主 P2：未知终态处置——原生车道（CodexAcpView lane）运行时 ──
+  // decision "unknown" 把卡落成不可决的 unknown 态（resolved=false，
+  // NativeApprovalCard 的按钮面消失），不再邀请对可能已被消费的决策重复
+  // 点击；迟到的权威决议事件仍可就地收口。确定拒绝（无广播）路径不变。
+  {
+    const lane = createNativeLane();
+    applyNativeChatEvent(lane, 'chat:approval_required', {
+      session_id: 's1', approval_id: 'ap-nunk', tool_name: 'shell_exec',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    });
+    assert.equal(applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-nunk', decision: 'unknown',
+    }), true, '未知终态处置落 unknown 态（可视变化）');
+    const unknownCard = lane.items.find(item => item.type === 'approval');
+    assert.equal(unknownCard.cardState, 'unknown', '原生车道未知卡必须落 unknown 态');
+    assert.equal(unknownCard.resolved, false, '未知态不落 resolved（迟到权威决议仍可收口）');
+    // 迟到权威决议就地收口。
+    applyNativeChatEvent(lane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-nunk', decision: 'allow_for_session',
+    });
+    assert.equal(unknownCard.resolved, true, '迟到权威决议收口未知卡');
+    assert.equal(unknownCard.cardState, 'allowed_session', '收口后落真实终态');
+    // 无卡可落（absent 卡）时 unknown 仍落墓碑：登记已摘除，迟到重放不得复活。
+    const absentLane = createNativeLane();
+    assert.equal(applyNativeChatEvent(absentLane, 'chat:approval_resolved', {
+      session_id: 's1', approval_id: 'ap-absent-unk', decision: 'unknown',
+    }), false);
+    applyNativeChatEvent(absentLane, 'chat:approval_required', {
+      session_id: 's1', approval_id: 'ap-absent-unk', tool_name: 'shell_exec',
+      description: 'd', input: null, intent_summary: null,
+      approval_key: 'k', approval_grouping_key: 'g', force_prompt: false,
+    });
+    assert.equal(absentLane.items.filter(item => item.type === 'approval').length, 0,
+      'unknown 落空也留墓碑（登记已摘除，重放不得复活）');
   }
 
   // ── chat:guardrail_denied：硬拒通知（不出卡）+ 稳定 reason 键透传 ──
@@ -528,12 +601,15 @@ try {
   // round-2 M5：决策收敛广播 chat:approval_resolved——只对未决卡生效（幂等），
   // 决策值映射三终态；不覆盖发起方的乐观终态与终态清扫的 cancelled。
   // round-4：未知/缺失决策值先按 no-op 早退（fail-neutral）——审批面上的
-  // 畸形载荷不得把未决卡映射成 "allowed"。
-  assert.match(chatEvents, /listen\("chat:approval_resolved", function \(e\) \{ onSessionEvent\(e, function \(\) \{[\s\S]{0,520}?!\["deny", "allow", "allow_for_session"\]\.includes\(decision\)[\s\S]{0,200}?item\.type === "approval" && item\.approvalId === approvalId && !item\.resolved[\s\S]{0,300}?decision === "deny" \? "denied"[\s\S]{0,120}?"allowed_session"/,
+  // 畸形载荷不得把未决卡映射成 "allowed"。宿主 P2：权威 "unknown" 处置
+  // 加入白名单（落 unknown 态），其余未知值仍是畸形 no-op。
+  assert.match(chatEvents, /listen\("chat:approval_resolved", function \(e\) \{ onSessionEvent\(e, function \(\) \{[\s\S]{0,560}?!\["deny", "allow", "allow_for_session", "unknown"\]\.includes\(decision\)[\s\S]{0,260}?item\.type === "approval" && item\.approvalId === approvalId && !item\.resolved[\s\S]{0,300}?decision === "deny" \? "denied"[\s\S]{0,120}?"allowed_session"/,
     '收敛广播处理器拒识别未知决策、只落未决卡并映射三终态');
   // round-2 M5：decideApproval 的失败恢复不得覆盖终态清扫已落的 cancelled
-  // （await 期间 chat:done 先到 → catch 恢复让位 resolved）。
-  assert.match(interaction, /card\.submitting = false;[\s\S]{0,300}?if \(!card\.resolved\) \{[\s\S]{0,200}?card\.cardState = previous\.cardState;/,
+  // （await 期间 chat:done 先到 → catch 恢复让位 resolved）。宿主 P2：
+  // 同一恢复还必须让位已落地的 unknown 处置（卡已是 unknown 态时不得
+  // 翻回 active，见 unknown 守卫的独立钉）。
+  assert.match(interaction, /card\.submitting = false;[\s\S]{0,800}?if \(!card\.resolved\) \{[\s\S]{0,200}?card\.cardState = previous\.cardState;/,
     'decide 失败恢复让位终态（不复活已取消卡）');
 
   // round-2 M1：聊天车道草稿态芯片切换必须落到 setDraftMode（绝不静默吞没），
@@ -580,6 +656,54 @@ try {
   assert.match(toolRenderers, /export \{[^}]*ApprovalCard[^}]*\}/, 'ApprovalCard 必须导出');
   assert.match(toolRenderers, /onGo\(item\.id, 'auto'\)/, 'plan-stuck 卡的 Auto 出路（经 onGo 的 mode 参数）');
   assert.match(toolRenderers, /onGo\(item\.id, 'yolo'\)/, 'plan-stuck 卡的 Yolo 出路');
+
+  // ── 宿主 P2：未知终态处置在两个挂载面都渲染成不可决的未知态 ──
+  // 后端未知终态臂（ack + settle 双窗）登记已摘除 + 广播 decision
+  // "unknown"；resolved-shaped 收敛事件把挂载卡改成 cardState "unknown"
+  // （resolved 保持 false，迟到权威决议仍可收口）。按钮面必须消失：
+  // 渲染分支走 `done || unknownOutcome`（与终态同一臂），lockButtons 覆盖
+  // unknownOutcome，状态文案读 approvalOutcomeUnknown / nativeApproval-
+  // OutcomeUnknown（i18n 三语齐备）。determine 拒绝臂不广播，行为不变。
+  {
+    const approvalSlice = toolRenderers.slice(
+      toolRenderers.indexOf('const ApprovalCard = ({ item, t, onDecide }) => {'),
+      toolRenderers.indexOf('export { ToolOutput'),
+    );
+    assert.match(approvalSlice, /const unknownOutcome = !done && !submitting && item\.cardState === 'unknown';/,
+      '未知终态判定（resolved=false + cardState=unknown + 非提交中）');
+    assert.match(approvalSlice, /const lockButtons = submitting \|\| webReadOnly \|\| unknownOutcome;/,
+      '未知态必须锁按钮');
+    assert.match(approvalSlice, /done \|\| unknownOutcome \? \([\s\S]{0,200}?statusText\}<\/div>\s*\) : \(/,
+      '未知态走终态渲染臂（按钮面消失）');
+    assert.match(approvalSlice, /unknownOutcome \? t\.approvalOutcomeUnknown/,
+      '未知态状态文案读 approvalOutcomeUnknown');
+    const nativeSlice = codexView.slice(
+      codexView.indexOf('function NativeApprovalCard'),
+      codexView.indexOf('// 原生车道的 Plan 方案审批卡'),
+    );
+    assert.match(nativeSlice, /const unknownOutcome = !done && !submitting && item\.cardState === 'unknown';/,
+      '原生车道未知终态判定');
+    assert.match(nativeSlice, /done \|\| unknownOutcome \? \(/,
+      '原生车道未知态走终态渲染臂（按钮面消失）');
+    assert.match(nativeSlice, /copy\.nativeApprovalOutcomeUnknown/,
+      '原生车道未知态文案读 nativeApprovalOutcomeUnknown');
+    for (const lang of ['en', 'ja', 'zh']) {
+      const copy = read('src', 'shared', 'i18n', `${lang}.js`);
+      assert.ok(copy.includes('approvalOutcomeUnknown:'), `${lang}: approvalOutcomeUnknown 必须三语齐备`);
+      assert.ok(copy.includes('nativeApprovalOutcomeUnknown:'), `${lang}: nativeApprovalOutcomeUnknown 必须三语齐备`);
+    }
+    // 后端广播源钉在 interaction.rs 的 ordering pin（cargo 侧）；这里钉
+    // 主车道/原生车道两枚监听器都认 "unknown" 决策值（缺一处即红）。
+    assert.match(chatEvents, /\["deny", "allow", "allow_for_session", "unknown"\]\.includes\(decision\)/,
+      '主车道收敛监听器必须认 unknown 决策值');
+    const nativeLaneSource = read('src', 'features', 'codex', 'code-native-lane.js');
+    assert.match(nativeLaneSource, /\['deny', 'allow', 'allow_for_session', 'unknown'\]\.includes\(decision\)/,
+      '原生车道收敛分支必须认 unknown 决策值');
+    // decideApproval 失败恢复必须让位已落地的 unknown 处置（事件先落时
+    // 不得把卡翻回 active）。
+    assert.match(interaction, /if \(card\.cardState === "unknown"\) return;[\s\S]{0,300}?card\.cardState = previous\.cardState;/,
+      '失败恢复必须让位已落地的 unknown 处置（事件先落时不翻回 active）');
+  }
 
   // composer chip：三档选项（Yolo→Auto→Plan，从最宽松到最严格）+ 仅非 Plan 档显示守卫开关。
   assert.match(composerControls, /switchTo\('yolo'\)[\s\S]{0,600}?switchTo\('auto'\)[\s\S]{0,600}?switchTo\('plan'\)/,

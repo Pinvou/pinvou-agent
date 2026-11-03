@@ -93,6 +93,7 @@ const codexJa = {
   nativePlanAcceptFailed:'⚠️ accept_plan に失敗: ', nativePlanDiscardFailed:'⚠️ discard_plan に失敗: ',
   // tri-mode 承認カードの終状態 / ガードレール拒否通知（安定 reason キーをフロント側で対応付け）。
   nativeApprovalAllowed:'✅ 許可済み', nativeApprovalAllowedSession:'✅ このセッションでは許可済み', nativeApprovalDenied:'🚫 拒否済み', nativeApprovalCancelled:'✕ キャンセル済み',
+  nativeApprovalOutcomeUnknown:'⚠️ 結果不明 - セッションでの実際の結果を確認してください',
   nativeGuardrailDenied:'ガードレール拒否', nativeGuardrailDeniedSession:'このセッションで拒否済みの操作です（内容が変われば再度確認）',
   nativeGuardrailDeniedPlan:'Plan モードは読み取り専用のため拒否', nativeGuardrailDeniedAskOff:'ガードレール確認がオフのため直接拒否',
   addAttachment:'添付ファイルを追加', commandsAvailable:'Agent が報告したコマンド', commandsAfterSession:'セッション作成後に Agent コマンドを同期',
@@ -595,6 +596,7 @@ const jaBase = {
         approvalTitle: '承認が必要なツール呼び出し', approvalIntent: 'モデルの意図',
         approvalAllow: '許可', approvalAllowSession: 'このセッションでは許可', approvalDeny: '拒否',
         approvalAllowed: '✅ 許可済み', approvalAllowedSession: '✅ このセッションでは許可済み', approvalDenied: '🚫 拒否済み', approvalSubmitting: '送信中…',
+        approvalOutcomeUnknown: '⚠️ 結果不明 - エンジンが後からこの決定を反映する可能性があります。セッションでの実際の結果を確認してください',
         // 品悟レビューカード。品/悟 の字はブランド表記として保持、周囲の文言は言語に追従。
         pvLoadingPin: 'Pinvou 品 · レビュー', pvLoadingWu: 'Pinvou 悟 · 発散補完',
         pvLoadingPinSub: '一つずつ照合し、問題を洗い出し中', pvLoadingWuSub: '完全性の観点を比較し、補強点を発散中',

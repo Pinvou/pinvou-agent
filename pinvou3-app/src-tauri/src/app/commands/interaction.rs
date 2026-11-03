@@ -608,6 +608,15 @@ pub async fn decide_approval(
             //     不恢复登记（remount 不复活该卡，点击的终态只体现在
             //     transcript），错误文本如实携带引擎的未知措辞供各表面呈
             //     现。缓存与收敛广播本就只在成功后写入/发出，此处无新增。
+            //     但登记摘除只管 remount：已挂载的卡（聊天车道 / 代码
+            //     原生车道）各自持着 active 决策控件，若不同步告知，UI
+            //     仍邀请对一道可能已被消费的决策再点一次（后续每次点击
+            //     只能失败，评审 P2）。未知臂走 resolved 广播通道携带
+            //     decision "unknown"（resolved-shaped 事件、负载仍出自
+            //     唯一构造点）：两个挂载面把卡渲染成不可决的未知态
+            //     （resolved 保持 false，迟到的权威决议事件仍可就地
+            //     对账收口）；确定拒绝臂不广播（卡仍是活的未决请求，
+            //     本表面可重试、其它表面的点击仍能收口——行为不变）。
             if !pending_approvals::approval_outcome_is_unknown(&error) {
                 let engine_still_live =
                     pool.engine_incarnation(&session_id).await == Some(incarnation);
@@ -618,6 +627,18 @@ pub async fn decide_approval(
                         registry_generation,
                     );
                 }
+            } else {
+                let payload = pending_approvals::approval_resolved_payload(
+                    &session_id,
+                    &approval_id,
+                    "unknown",
+                );
+                let _ = app.emit("chat:approval_resolved", payload.clone());
+                crate::features::remote_control::forward_app_event(
+                    &app,
+                    "chat:approval_resolved",
+                    payload,
+                );
             }
             return Err(format!("decide_approval({decision}): {error:#}"));
         }

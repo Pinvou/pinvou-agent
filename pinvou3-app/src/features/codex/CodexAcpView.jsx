@@ -590,7 +590,14 @@ function nativeApprovalInputView(input) {
 function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
   const done = !!item.resolved;
   const submitting = !done && !!responding;
-  const statusText = done ? (copy[NATIVE_APPROVAL_STATUS_COPY[item.cardState]] || '') : '';
+  // Unknown outcome (host P2): the backend dropped the pending entry after
+  // the engine's ack+settle windows expired; the card must stop inviting a
+  // re-decision (a fresh click can only fail). resolved stays false, so a
+  // late authoritative resolution event still reconciles the card.
+  const unknownOutcome = !done && !submitting && item.cardState === 'unknown';
+  const statusText = done
+    ? (copy[NATIVE_APPROVAL_STATUS_COPY[item.cardState]] || '')
+    : unknownOutcome ? (copy.nativeApprovalOutcomeUnknown || '') : '';
   const inputView = nativeApprovalInputView(item.input);
   return (
     <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
@@ -618,7 +625,7 @@ function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
         )
       ) : null}
       <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
-      {done ? (
+      {done || unknownOutcome ? (
         <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
@@ -1805,12 +1812,16 @@ export function CodexAcpView({
     } catch (err) { showError(err); }
   }
 
-  /// 会话级「守卫命中时询问」开关（tri-mode）：乐观翻转 → set_ask_on_guardrail
-  /// → refreshNativeControls 权威复核。失败不回滚请求发起时捕获的旧值：
-  /// 两次相反的写入都失败时，各自回滚自己捕获的值会把显示停在两次写都没
-  /// 落库的状态上（reviewer P3）——失败同样走 refreshNativeControls 权威
-  /// 重读收敛到后端事实；其请求序号 + 归属守卫在重读在途期间切会话或有
-  /// 更新权威刷新时丢弃本次陈旧读取（chat:mode_changed 同款代际保护）。
+  /// Session-level ask-on-guardrail toggle (tri-mode): optimistic flip →
+  /// set_ask_on_guardrail → refreshNativeControls authoritative re-check.
+  /// On failure do NOT roll back to the value captured at request start:
+  /// two opposite writes that both reject would each restore their own
+  /// captured value, leaving the display at a setting neither write
+  /// committed (reviewer P3). Failure takes the same refreshNativeControls
+  /// authoritative re-read and converges to the backend truth; its
+  /// request-id generation + ownership guard drops this stale read when the
+  /// session switches or a newer authoritative refresh lands mid-flight
+  /// (same generation protection as chat:mode_changed).
   async function toggleNativeAskOnGuardrail(enabled) {
     const targetSessionId = activeId;
     if (!targetSessionId) return; // 草稿态无会话级开关（跟随全局默认，物化时落后端）

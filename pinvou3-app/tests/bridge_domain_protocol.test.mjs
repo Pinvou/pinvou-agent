@@ -247,8 +247,12 @@ const expectedProtocolHashes = {
   // surface: chat-events.js gains three listeners — chat:approval_required
   // (approval card projection), chat:guardrail_denied (hard-deny notice) and
   // chat:mode_changed (authoritative mode broadcast through
-  // applyAuthoritativeModeState).
-  chat: '80e7c43b608f1b5e71a58367ed5cc03dea12a91fe8ade07bae449f1dab85e9b1',
+  // applyAuthoritativeModeState). Recomputed for the reviewer P2/P3 waves:
+  // the approval_resolved listener gains the authoritative "unknown"
+  // disposition branch (non-decidable unknown card state) and its captured
+  // body carries the tombstone-pinning window comments; event names, invoke
+  // shapes and authoritative payload handling remain unchanged.
+  chat: '0b04dad221717ca5d95ee4872a50e9374a215d15e26b51265c49dd2a2cac8142',
   // Recomputed for the tri-mode safety surface: chat-events.js gains three
   // listeners — chat:approval_required (approval card projection),
   // chat:guardrail_denied (hard-deny notice) and chat:mode_changed
