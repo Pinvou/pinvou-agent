@@ -1064,10 +1064,15 @@ impl RemoteControlManager {
             match queue_pending_revocation(previous) {
                 Ok(()) => self.sync_pending_revocation_backlog(previous),
                 // Round-15 复审:满队不再楔死轮换——rotation 是恢复路径,
-                // 33 次无 relay 连接的轮换后队列写满,`?` 传播会让此后每次
-                // refresh 都失败。降级为记日志继续(旧凭据的吊销意图留在
-                // 原地,与 stop 的容错读取同一理由);同键不同密钥的冲突仍
-                // 按 round-14 记录的设计边界 fail-closed。
+                // 第 33 次无 relay 连接的轮换起队列写满,`?` 传播会让此后每
+                // 次 refresh 都失败。降级为记日志继续;代价必须说真话
+                // (Round-17 复审订正,原注释「吊销意图留在原地」失实):
+                // 满队的这次轮换,旧凭据的吊销意图没有落在任何一侧——队
+                // 列写满在追加前即拒绝、backlog 同步随之跳过、下方
+                // persist_config 再覆写 web-access.json——旧 endpoint 在
+                // relay 侧保持可 join,直到 relay 过期或人工清理,与 salvage
+                // 截断日志同一诚实口径。同键不同密钥的冲突仍按 round-14
+                // 记录的设计边界 fail-closed。
                 Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
                     eprintln!(
                         "[web-access] refresh ignores full pending-revocation queue: {error}"
@@ -1227,7 +1232,10 @@ impl RemoteControlManager {
             match queue_pending_revocation(config) {
                 Ok(()) => self.sync_pending_revocation_backlog(config),
                 // Round-15 复审:满队不楔停用(恢复路径,理由同 refresh
-                // 臂);同键不同密钥冲突保持 round-14 的 fail-closed 边界。
+                // 臂);代价与 refresh 臂同一口径如实记录——这次停用的吊
+                // 销意图没有落在任何一侧,endpoint 在 relay 侧保持可 join
+                // 到过期/人工清理。同键不同密钥冲突保持 round-14 的
+                // fail-closed 边界。
                 Err(error) if error.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX) => {
                     eprintln!("[web-access] stop ignores full pending-revocation queue: {error}");
                 }
@@ -4990,6 +4998,39 @@ mod tests {
             desktop_secret: pending.desktop_secret,
             allow_host_workspace: false,
         }
+    }
+
+    /// Round-17 复审:stop/refresh 的满队降级臂按共享前缀
+    /// PENDING_REVOCATION_QUEUE_FULL_PREFIX 判别,但错误文本与该常量的绑
+    /// 定此前无钉——把 persistence.rs 的 format! 改回异 wording 字面量的
+    /// 突变会让降级臂失配、满队楔死回归复活而全套件保持绿(降级臂钉只
+    /// 断言「引用了常量且无 `?`」,看不见文本漂移)。钉死判别契约本身:
+    /// 满队错误必须以共享前缀开头。
+    #[test]
+    fn full_revocation_queue_error_carries_the_shared_degrade_prefix() {
+        let directory = std::env::temp_dir().join(format!(
+            "pinvou-revocation-queue-full-{}-{}",
+            std::process::id(),
+            crate::features::remote_control::short_token(12)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("pending.json");
+        for index in 0..MAX_PENDING_REVOCATIONS {
+            queue_pending_revocation_at(
+                &path,
+                test_pending_revocation(&format!("ep_queue_full_{index}")),
+            )
+            .expect("filling the queue exactly to capacity must succeed");
+        }
+        let overflow =
+            queue_pending_revocation_at(&path, test_pending_revocation("ep_queue_full_overflow"))
+                .expect_err("the entry past capacity must be refused");
+        assert!(
+            overflow.starts_with(PENDING_REVOCATION_QUEUE_FULL_PREFIX),
+            "the full-queue error must carry the shared degrade prefix so the \
+             stop/refresh recovery arms can recognize it: {overflow}"
+        );
+        std::fs::remove_dir_all(directory).ok();
     }
 
     #[test]
