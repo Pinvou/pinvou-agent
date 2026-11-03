@@ -1324,7 +1324,10 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // the approvalReplayInFlight counter at snapshot issue/return and releases
   // approvalReplayPinnedTombstones per sid when the window closes); eviction
   // skips pinned entries, and the map may temporarily exceed the cap when
-  // every entry is pinned.
+  // every entry is pinned — the excess is reclaimed at window close
+  // (sessions.js trims the oldest unpinned entries back to the cap once the
+  // pins are released; the single-evict insert below alone would never
+  // shrink an oversized map back down).
   function approvalTombstoneMap() {
     if (!state.approvalReplayTombstones) state.approvalReplayTombstones = new Map();
     return state.approvalReplayTombstones;

@@ -822,6 +822,23 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       if (key.startsWith(prefix)) pinned.delete(key);
     }
   }
+  // Window-close reclaim (reviewer P3, review 5748578652): a window that
+  // pinned more records than the 512 cap leaves the map oversized, and the
+  // single-evict insert path in chat-events.tombstoneApproval can never
+  // shrink it back. Once this window's pins are released, the formerly
+  // pinned entries are evictable again - trim the oldest unpinned entries
+  // until the map is back within the cap (pins held by other sids' live
+  // windows stay protected).
+  function reclaimApprovalReplayTombstones() {
+    const map = state.approvalReplayTombstones;
+    if (!map) return;
+    const pinned = state.approvalReplayPinnedTombstones;
+    for (const key of map.keys()) {
+      if (map.size <= 512) break;
+      if (pinned && pinned.has(key)) continue;
+      map.delete(key);
+    }
+  }
   async function replayPendingApprovals(sid) {
     if (!sid) return;
     const terminalFence = approvalTerminalSeq(sid);
@@ -838,6 +855,7 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       if (remaining <= 0) {
         state.approvalReplayInFlight.delete(flightKey);
         releaseApprovalReplayPins(sid);
+        reclaimApprovalReplayTombstones();
       } else {
         state.approvalReplayInFlight.set(flightKey, remaining);
       }

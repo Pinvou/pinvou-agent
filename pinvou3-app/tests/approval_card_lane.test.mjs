@@ -324,10 +324,96 @@ try {
         '被钉墓碑必须拦住在途快照回程的活卡插回');
       // 窗口内 pin 优先于容量上界：窗口内落下的墓碑全部被钉（它们都可能是
       // 某个在途快照的回程证据），map 暂时超限；sessions.js 在最后一个在途
-      // 快照回程的 finally 释放 pin（见上方源码钉），此后 512 淘汰恢复上界
-      // （对照组已证明无 pin 时淘汰语义完好）。
+      // 快照回程的 finally 释放 pin 并把 map 修剪回上界（见下方的窗口关闭
+      // 回收回归；对照组已证明无 pin 时淘汰语义完好）。
       assert.ok(pinnedState.approvalReplayTombstones.size > 512,
         '窗口内 pin 优先于容量上界（暂时超限，窗口关闭释放后恢复淘汰）');
+
+      // 窗口关闭回收（评审 5748578652）：>512 全被钉的窗口关闭后，sessions.js
+      // 必须在释放 pin 的同一 finally 里把 map 修剪回 512 上界——单条淘汰的
+      // 插入路径永远不会把超限 map 缩回去。其他会话（s2）仍在途窗口内的被钉
+      // 墓碑保持保护；窗口内被钉的条目释放后重新可淘汰。走真实回程路径：
+      // sessions.js 的 switchToSessionInternal 快路径 → replayPendingApprovals
+      // 的 finally（release + reclaim）。
+      {
+        const sessionsSource = read('src', 'shared', 'bridge-shared-helpers.js') + '\n'
+          + read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
+        const sessionsRoot = { __PINVOU_TAURI_BRIDGE_FEATURES__: {} };
+        vm.runInContext(sessionsSource, vm.createContext({
+          window: sessionsRoot, globalThis: sessionsRoot, console, Date, String, setTimeout, clearTimeout,
+        }), { filename: 'approval-card-lane-sessions-reclaim.js' });
+        const sessionsApi = sessionsRoot.__PINVOU_TAURI_BRIDGE_FEATURES__.sessions({
+          state: pinState, // 与 chat-events 共用同一 state：墓碑 / pin / in-flight 表跨面共享
+          listen: null, // 不挂会话事件监听（工厂对非函数 listen 跳过注册）
+          notify() {},
+          bt: key => key,
+          timeStr: () => '12:00',
+          invoke: async (name) => {
+            if (name === 'get_pending_approvals') {
+              // 快照已发出（s1 计数=1）：真实在途窗口内落下墓碑——s2 的另一
+              // 窗口墓碑（最老）+ 560 条 s1 洪泛，窗口内全部被钉，map 暂时超限。
+              laneListeners.get('chat:approval_resolved')({
+                event: 'chat:approval_resolved',
+                payload: { session_id: 's2', approval_id: 'ap-s2-pin', decision: 'allow' },
+              });
+              for (let i = 0; i < 560; i++) {
+                laneEmit('chat:approval_resolved', { approval_id: `ap-flood-c-${i}`, decision: 'allow' });
+              }
+              assert.equal(pinState.approvalReplayTombstones.size, 561,
+                '在途窗口内 pin 优先于容量上界（561 条全部在册）');
+              assert.equal(pinState.approvalReplayPinnedTombstones.size, 561,
+                '在途窗口内落下的墓碑全部被钉');
+            }
+            return null; // 空登记表：回程走 finally 的释放 + 回收
+          },
+          sessionStates: { s1: { loadedFromDisk: true, messages: [], chatItems: [], artifacts: [] } }, // 快路径缓冲（loadWorkingSetFrom 会把 buffer 字段拷回 state）
+          runSyncOnSession(_sid, callback) { callback(); },
+          addChatItem(item) { pinState.chatItems.push(item); },
+          addSystemItem() {},
+          turnUsageDirty: {},
+          scheduledRunSessionOwners: {},
+          personaPlaceholderTitles: {},
+          currentStreamText: '', currentStreamId: 0,
+          pendingAssistantText: '', pendingAssistantBlocks: [],
+          itemIdSeq: 0, toolMeta: {},
+          filterSessionArtifacts: list => list || [],
+          scheduleShellPoll() {},
+          syncModeState: () => Promise.resolve(),
+          syncActivePersona: () => Promise.resolve(),
+          syncMountedCollection: () => Promise.resolve(),
+          loadMemoryOverview: () => Promise.resolve(),
+          reconcileArtifacts() {},
+          resetPendingAssistant() {},
+          rerenderFromMessages() {},
+        });
+        pinState.approvalReplayTombstones = new Map();
+        pinState.approvalReplayPinnedTombstones = new Set();
+        pinState.approvalReplayInFlight = new Map([['s2', 1]]); // 仅 s2 的窗口在途
+        pinState.chatItems.length = 0;
+        pinState.artifacts = [];
+        pinState.activeSessionId = null; // 快路径要求目标会话 != 当前会话
+        const s2Key = `s2\u0000ap-s2-pin`;
+        const switched = await sessionsApi.switchToSessionInternal('s1');
+        assert.equal(switched, true, '快路径切换必须完成在途重放（含窗口关闭回收）');
+        assert.equal(pinState.approvalReplayTombstones.size, 512,
+          '窗口关闭即回收：释放 pin 后超限 map 修剪回 512 上界');
+        assert.ok(!pinState.approvalReplayTombstones.has(tombstoneKey('ap-flood-c-0')),
+          '窗口内被钉的条目释放后重新可淘汰（最老者被回收）');
+        assert.ok(pinState.approvalReplayTombstones.has(s2Key),
+          '其他会话仍在途窗口内的被钉墓碑不参与回收');
+        assert.ok(pinState.approvalReplayPinnedTombstones.has(s2Key),
+          's2 窗口仍持 pin（其窗口未关闭）');
+        assert.deepEqual([...pinState.approvalReplayInFlight.keys()], ['s2'],
+          '仅 s2 的在途计数保留（s1 窗口已关闭）');
+        // 窗口关闭后的下一个插入维持上界：单条淘汰照旧，窗口内条目与普通条目同权。
+        laneEmit('chat:approval_resolved', { approval_id: 'ap-post-window', decision: 'allow' });
+        assert.ok(pinState.approvalReplayTombstones.has(tombstoneKey('ap-post-window')),
+          '窗口关闭后墓碑照常落下');
+        assert.ok(pinState.approvalReplayTombstones.size <= 512,
+          '下一个插入后 map 仍在 512 上界内');
+        assert.ok(!pinState.approvalReplayTombstones.has(tombstoneKey('ap-flood-c-49')),
+          '次老的窗口期条目被下一个插入照常挤出（淘汰语义恢复）');
+      }
     }
 
     // ── 宿主 P2：未知终态处置（decision "unknown"）——主车道运行时 ──
@@ -926,6 +1012,8 @@ try {
       '重放快照发出前必须登记在途窗口计数（墓碑 pin 的依据）');
     assert.match(sessionsBridge, /\} finally \{[\s\S]{0,300}?releaseApprovalReplayPins\(sid\);/,
       '重放回程（含读取失败）必须在 finally 关闭在途窗口并释放 pin');
+    assert.match(sessionsBridge, /releaseApprovalReplayPins\(sid\);[\s\S]{0,120}?reclaimApprovalReplayTombstones\(\);/,
+      '窗口关闭释放 pin 后必须在同一 finally 回收超限墓碑（map 回到 512 上界）');
     const chatEvents = read('src', 'platform', 'tauri', 'bridge', 'chat-events.js');
     assert.match(chatEvents, /const inFlight = \(state\.approvalReplayInFlight && state\.approvalReplayInFlight\.get\(String\(sid\)\)\) \|\| 0;[\s\S]{0,200}?state\.approvalReplayPinnedTombstones\.add\(key\);/,
       '在途快照窗口内落下的墓碑必须被 pin（淘汰不得丢弃活证据）');
