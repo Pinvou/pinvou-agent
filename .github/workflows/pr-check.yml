@@ -2316,6 +2316,8 @@ jobs:
             'multiagent_depth_guard_enforces_two_level_inputs' \
             'features::marketplace::tests::reinstall_upload_with_unlocked_pip_dependencies_contract' \
             'features::marketplace::scope::tests::' \
+            'reconcile_' \
+            'release_env_defaults_guard' \
             'before_landing' \
             'before_anything_lands' \
             'preserves_consent_state' \

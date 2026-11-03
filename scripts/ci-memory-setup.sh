@@ -31,17 +31,26 @@
 #      (lz4 -> zstd), the device size (fixed 24 GiB -> 2x RAM) and the pool
 #      cap (50% -> 70% of RAM). Load the image's existing module via
 #      modprobe zram -> zstd -> 2x-RAM disksize -> mem_limit -> mkswap ->
-#      swapon -p 100. If the module is missing, use the fallback layers
-#      below. Never install kernel packages in this best-effort,
-#      timeout-bounded step: killing a package transaction can leave dpkg
-#      interrupted and break the subsequent required dependency install
-#      (the 2026-11-02 rust-lint run 41417350097 failed exactly this way;
-#      ported from pinvou3 #2095/#2211).
+#      swapon -p 100. On hosted images the module lives in the
+#      linux-modules-extra package, so on a modprobe miss this script runs
+#      one capped apt install (30s update + 130s install, both with
+#      DPkg::Lock::Timeout 60) and retries modprobe; repair_dpkg_state
+#      gives an interrupted-dpkg state an earlier, in-flow recovery
+#      attempt than the EXIT backstop (best effort: its 40s lock wait and
+#      configure window are bounded, and the wrapper's SIGKILL can still
+#      preempt both). The nominal 30+130+60 budget fits the 240s wrapper,
+#      but the lock wait, kill grace, initial modprobe and image-swap
+#      preactivation sit on top of it, so a compound-pathological run can
+#      exceed the wrapper — zram is still a required layer here because
+#      dropping to disk-only swap risks OOM on the ~14.2GB rust-test link
+#      peaks (pinvou3 #2211's original design, repo decision 2026-11-02),
+#      and only an install that genuinely fails gives up to the fallback
+#      layers below.
 #      The 2026-09-12 hosted job hangs once blamed on zram (Pinvou/pinvou3
 #      run 34708283784) were re-classified as a transient environment
 #      incident: the same script ran green with zram loaded in this repo
 #      the same day. The countermeasure is structural, not a rollback: every
-#      userspace external call (modprobe, fallocate, mkswap,
+#      userspace external call (modprobe, apt-get, fallocate, mkswap,
 #      swapon, swapoff) runs under `timeout` with a SIGKILL backstop, and
 #      any failure degrades loudly to the next layer. Residual risk that no
 #      userspace measure can remove: an in-kernel hang (module load or a
@@ -125,9 +134,10 @@ else
   warn() { echo "[memory-setup] WARNING: $*" >&2; }
 fi
 
-# Steps that normally recover a few lines later (the as-is swapon retry
-# and the last-resort image-swapfile attempt after all layers fail) must not
-# burn a standing ::warning
+# Steps that normally recover a few lines later (first modprobe miss on
+# hosted images, the image-swap pre-activation belonging to that same
+# recovery, the as-is swapon retry, and the last-resort image-swapfile
+# attempt after all layers fail) must not burn a standing ::warning
 # annotation on every job; keep them visible in the log only.
 # Unrecovered failures still use warn.
 warn_recoverable() { echo "[memory-setup] WARNING: $*" >&2; }
@@ -198,9 +208,13 @@ repair_dpkg_state() {
   fi
   warn "dpkg was left in an interrupted state; running 'dpkg --configure -a' so later apt-get steps in this job do not fail"
   # 40s matches the observed bound on how long the orphaned dpkg held the
-  # frontend lock after its parent was killed. This script performs no
-  # package installs of its own, so this wait only ever spends the script's
-  # residual exit window; if the lock is still held after the wait, the
+  # frontend lock after its parent was killed. The capped module install
+  # above can be killed by its own 130s cap (or, on the compound-pathological
+  # day, by the wrapper), so this wait draws on the script's residual
+  # window — it is NOT part of the nominal 30 + 130 + 60 budget in
+  # setup_zram (30+130+40+60 alone already passes 240s, before the kill
+  # grace and preactivation extras), so on compound paths the wrapper's
+  # SIGKILL bounds it; if the lock is still held after the wait, the
   # give-up warning below names the state for whichever step hits it next.
   wait_deadline=$(( $(date +%s) + 40 ))
   while :; do
@@ -222,14 +236,16 @@ repair_dpkg_state() {
   audit_out="$(dpkg --audit 2>/dev/null || true)"
   warn "dpkg --configure -a did not succeed; later apt-get steps in this job may still fail until it is run manually${audit_out:+ (dpkg --audit still reports: ${audit_out})}"
 }
-# EXIT trap is the only repair entry point: the script itself never
-# installs packages (the zram layer must not mutate package-manager state),
-# so there is no in-flow repair call. The workflow-side `timeout 240`
-# wrapper TERM's sudo->bash; route TERM through exit so the trap still runs
-# the repair once the in-flight command returns. Best effort: bash runs no
-# traps while a foreground command is active, and if the wrapper's SIGKILL
-# lands first, no repair runs — a later job step then sees the same
-# "dpkg was interrupted" state and this script's warning is absent.
+# Primary repair entry point is the in-flow call right after the capped
+# module install in setup_zram; this EXIT trap is the backstop for kills
+# the in-flow call cannot cover (a wrapper TERM between commands, or jobs
+# that never reach the install path, e.g. PINVOU3_CI_DISABLE_ZRAM=1). The
+# workflow-side `timeout 240` wrapper TERM's sudo->bash; route TERM through
+# exit so the trap still runs the repair once the in-flight command
+# returns. Best effort: bash runs no traps while a foreground command is
+# active, and if the wrapper's SIGKILL lands first, no repair runs — a
+# later job step then sees the same "dpkg was interrupted" state and this
+# script's warning is absent.
 trap repair_dpkg_state EXIT
 trap 'exit 143' TERM
 
@@ -254,16 +270,61 @@ DISK_SWAP_SIZE_KIB=$((8 * 1024 * 1024))
 DISK_SWAP_PRIORITY=10
 
 setup_zram() {
-  # Only load modules already supplied by the image. A timed-out kernel
-  # package install can outlive apt, hold the dpkg lock, or leave an
-  # interrupted transaction (pinvou3 #2095's merge queue failure, replayed
-  # by this repo's rust-lint run 41417350097 on 2026-11-02). This optional
-  # layer must never mutate package-manager state; missing or hung modules
-  # degrade to disk swap and zswap instead.
+  # Module load first; on hosted images the zram module lives in the
+  # linux-modules-extra package (base linux-modules dropped it in the
+  # 2026-10-12 image refresh), so install it and retry modprobe before
+  # giving up. Every external call is timeout-capped, with its stderr kept
+  # in the warning so the actual failure reason survives in the log.
   local modprobe_err
   if ! modprobe_err="$(run_to 60 modprobe zram 2>&1)"; then
-    warn "modprobe zram failed${modprobe_err:+: ${modprobe_err}}; using fallback swap without installing kernel packages"
-    return 1
+    warn_recoverable "modprobe zram failed${modprobe_err:+: ${modprobe_err}}; installing linux-modules-extra-$(uname -r) and retrying"
+    # The module-install path (apt-get, up to minutes) is the slowest stretch
+    # of this script and the only one the workflow-side `timeout 240` can
+    # realistically interrupt. Activate the image swapfile BEFORE it, so a
+    # mid-apt kill degrades to "plain swap" and never to zero swap; if zram
+    # comes up afterwards it simply takes over as the higher-priority layer.
+    if ! any_swap_active; then
+      warn_recoverable "no swap active; activating the image swapfile before the slow module install"
+      activate_image_swap_fallback
+    fi
+    # DPkg::Lock::Timeout makes both apt calls WAIT for a held dpkg/apt lock
+    # (unattended-upgrades at boot, an orphaned dpkg from a killed attempt)
+    # instead of failing instantly; jammy's apt 2.4 supports the option.
+    if ! run_to 30 apt-get update -qq -o DPkg::Lock::Timeout=60; then
+      warn "apt-get update failed; the module install below may fail too"
+    fi
+    # Single install attempt: the 2026-10-01 transient this used to retry was
+    # a slow node (>120s, 129s with zero apt output against the old 90s cap),
+    # not lock contention, and a blind retry only ever failed instantly on
+    # the lock still held by the first attempt's orphaned dpkg. The cap is
+    # 130s, not 90: the install measures 43-110s (slow-node tail ~95-110s,
+    # mostly the update-initramfs trigger), and this repo keeps zram as a
+    # required layer — dropping to disk-only swap risks OOM on the ~14.2GB
+    # rust-test link peaks, so the install is budgeted to complete rather
+    # than abandoned (pinvou3 #2211's original design, repo decision
+    # 2026-11-02). At 90s the timeout killed apt-get mid-dpkg and left
+    # packages half-configured (this repo's rust-lint run 41417350097 died
+    # exactly that way); repair_dpkg_state below cleans up, but the zram
+    # layer would be lost for the job. Nominal budget inside the
+    # workflow-side 240s wrapper: 30 + 130 + 60 (repair) + ~10s overhead —
+    # the 40s lock wait, kill grace and preactivation extras are NOT in
+    # that sum; the wrapper's SIGKILL stays the outer bound, so in-flow
+    # repair is an earlier opportunity, not a guaranteed completion.
+    local modules_pkg="linux-modules-extra-$(uname -r)"
+    if ! run_to 130 apt-get install -y -qq --no-install-recommends \
+      -o DPkg::Lock::Timeout=60 \
+      "${modules_pkg}"; then
+      warn "apt-get install ${modules_pkg} failed; repairing dpkg state, then retrying modprobe"
+    fi
+    # Run this even on a successful install: a timeout kill elsewhere could
+    # still have left the admin state dirty, and the check is a cheap no-op
+    # when it is clean. This is what keeps the job's own later apt-get steps
+    # (rust-test system dependencies, release package builds) safe.
+    repair_dpkg_state
+    if ! modprobe_err="$(run_to 60 modprobe zram 2>&1)"; then
+      warn "modprobe zram still failing after module install${modprobe_err:+: ${modprobe_err}}; giving up on zram"
+      return 1
+    fi
   fi
 
   local size_file=/sys/block/zram0/disksize
@@ -475,8 +536,8 @@ else
   warn "zram layer unavailable; continuing with the remaining swap layers"
 fi
 
-# Degraded-mode headroom (2026-10): when no zram swap is active — a missing
-# module or explicit opt-out — the disk swapfile is the ONLY
+# Degraded-mode headroom (2026-10): when no zram swap is active — a failed
+# modules-extra install or explicit opt-out — the disk swapfile is the ONLY
 # overflow layer behind the ~14.2GB rust-test link peaks, and 8G was sized
 # assuming zram would exist. Double it in that case; on the current image
 # family (146G root, 79-102G free) the disk cost is minor next to the

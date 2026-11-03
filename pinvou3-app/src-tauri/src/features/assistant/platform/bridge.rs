@@ -4250,6 +4250,11 @@ mod tests {
 
     #[test]
     fn execution_root_resolver_overrides_session_workspace_only_when_hit() {
+        // Session-private roots derive from PINVOU3_HOME, and this test
+        // compares two env-dependent evaluations — hold the crate env lock
+        // so a parallel env writer cannot flip the value in between (the
+        // race surfaced as an interleave flake during the round-9 wave).
+        let (_env_lock, _env) = locked_env(&["PINVOU3_HOME"]);
         let mut bridge = fixture_bridge();
         let private = crate::platform::paths::session_workspace_dir("sess-plain");
         // No resolver injected: every session uses its session-private
@@ -9766,6 +9771,11 @@ mod tests {
     /// to `low` must not silently rewrite what the app sends.
     #[test]
     fn stored_off_reasoning_effort_reaches_the_responses_wire_verbatim() {
+        // Round-11 复审:`responses_wire_suppressed` 读 DEEPSEEK_* 环境变量,
+        // 而 multiagent 回归测试在持锁状态下写这些变量——本测试不持锁时,
+        // 断言随机翻红(gates 实锤 1/3 次)。与姊妹测试同款:持 ENV_LOCK
+        // 排除并发写者。
+        let (_lock, _env) = locked_env(&["DEEPSEEK_MODEL", "DEEPSEEK_PROVIDER"]);
         let mut bridge = fixture_bridge();
         set_active_model(
             &mut bridge,

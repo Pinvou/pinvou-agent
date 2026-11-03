@@ -26,9 +26,10 @@
 //! is its `BLOCKED_PREFIXES` half (`/etc/shadow`, `/proc/`, `/root/`, …). Those
 //! are system locations, and `resolve_session_artifact` has already proved the
 //! canonical target is inside this session's own storage — so every one of them
-//! is unreachable here by construction, except `/root/`, which is the ordinary
-//! home of a root-owned install and would therefore refuse *every* artifact
-//! rather than any sensitive one. The component blacklist is the half that
+//! is unreachable here by construction, except `/root/` (and its macOS
+//! counterpart `/var/root/`, added in the round-14 review) under a root-owned
+//! install, where the entry would refuse *every* artifact rather than any
+//! sensitive one. The component blacklist is the half that
 //! still bites inside session storage (an agent can create a file named `.env`
 //! or a `.ssh/` directory in its own workspace) and it is mirrored in full.
 
@@ -43,6 +44,8 @@ use pinvou3_lib::features::sessions::SessionStore;
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 
+use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_PREFIXES as SENSITIVE_PATH_COMPONENT_PREFIXES;
+use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENT_SUFFIXES as SENSITIVE_PATH_COMPONENT_SUFFIXES;
 /// The credential-component blocklist, IMPORTED from
 /// `platform::path_policy::BLOCKED_COMPONENTS` (the module was widened from
 /// `pub(crate)` for exactly this consumer): the lists can no longer drift.
@@ -53,25 +56,33 @@ const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
 /// that both surfaces read one constant.
 use pinvou3_lib::platform::path_policy::BLOCKED_COMPONENTS as SENSITIVE_PATH_COMPONENTS;
 
-/// The system-prefix blocklist, imported from
-/// `platform::path_policy::BLOCKED_PREFIXES` for the same reason.
+/// The component half of `path_policy::check_sensitive_components`: the
+/// credential-component blocklist, IMPORTED from
+/// `platform::path_policy::BLOCKED_COMPONENTS` so the lists cannot drift.
 ///
 /// Only consulted for paths the user names freely — the round-45 lane set is
 /// `files ingest`, `artifacts read`/`write`, `feedback submit
 /// --attach/--body-file`, `agent run --attach`, `memory add --file`, `voice
 /// postprocess --text-file/--draft-file`, and `personas create/update
-/// --file`. See the module docs for the session-storage caveat: targets
-/// already proved inside session storage take the component half
-/// ([`crosses_sensitive_component`]) while the prefix half cannot apply.
-use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
-
-/// The component half of `path_policy::check_sensitive_components`.
+/// --file`; the round-11 audit adds the lanes that joined later through the
+/// same gate: `agent run --prompt-file`, the scheduled prompt-file lane, and
+/// `knowledge collections add-sources`. See the module docs for the
+/// session-storage caveat: targets already proved inside session storage take
+/// the component half ([`crosses_sensitive_component`], the `.env.*`
+/// component-prefix rule [`crosses_sensitive_component_prefix`], the `*.env`
+/// component-suffix rule [`crosses_sensitive_component_suffix`], and the
+/// directory-scoped credential tails [`blocked_path_tail_hit`], all wired at
+/// the [`resolve_session_artifact`] call site) while the *system*-prefix half
+/// (unix system areas) cannot apply to them.
 ///
 /// Takes an already-canonicalized path (the upstream contract) and answers with
 /// the blacklisted component it crosses, if any. The comparison delegates to
-/// `pinvou3_lib::platform::path_component_eq` (byte-exact on unix, ASCII
-/// case-insensitive on Windows — a case-sensitive compare there would let
-/// `ID_RSA` through on a filesystem that treats it as the same file).
+/// `pinvou3_lib::platform::path_component_eq` (byte-exact on non-macOS unix;
+/// on macOS and Windows the shared primitive ASCII fast-paths then applies
+/// Unicode simple-case folding (ſ/K) plus the NTFS `$UpCase` U+0131 mapping —
+/// those default volumes fold
+/// case at the filesystem layer, so a byte-exact compare would let
+/// `ID_RSA`-style spellings through the lexical check).
 fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
     SENSITIVE_PATH_COMPONENTS.iter().copied().find(|blocked| {
         canonical.components().any(|component| {
@@ -80,23 +91,88 @@ fn crosses_sensitive_component(canonical: &Path) -> Option<&'static str> {
     })
 }
 
+/// The component-prefix half (`BLOCKED_COMPONENT_PREFIXES`, the `.env.*`
+/// credential variants), with the same platform-aware compare as the exact
+/// half via `pinvou3_lib::platform::path_component_prefix`.
+fn crosses_sensitive_component_prefix(canonical: &Path) -> Option<&'static str> {
+    SENSITIVE_PATH_COMPONENT_PREFIXES
+        .iter()
+        .copied()
+        .find(|prefix| {
+            canonical.components().any(|component| {
+                pinvou3_lib::platform::path_component_prefix(component.as_os_str(), prefix)
+            })
+        })
+}
+
+/// The component-suffix half (`BLOCKED_COMPONENT_SUFFIXES`, the `*.env`
+/// environment-file variants), with the same platform-aware compare via
+/// `pinvou3_lib::platform::path_component_suffix`.
+fn crosses_sensitive_component_suffix(canonical: &Path) -> Option<&'static str> {
+    SENSITIVE_PATH_COMPONENT_SUFFIXES
+        .iter()
+        .copied()
+        .find(|suffix| {
+            canonical.components().any(|component| {
+                pinvou3_lib::platform::path_component_suffix(component.as_os_str(), suffix)
+            })
+        })
+}
+
 /// Mirror of the whole `path_policy::check_sensitive_components` predicate
 /// (components *and* system prefixes), for user-named paths that are not
-/// confined to session storage.
+/// confined to session storage. The system-prefix half delegates to the
+/// upstream composed predicate (`canonical_system_prefix_hit`, which wraps
+/// `BLOCKED_PREFIXES` with the macOS `/private/{etc,var,tmp}` alias expansion,
+/// published for exactly this consumer in the Round-6 review): hand-looping
+/// the prefix list here silently missed the macOS `/private/{etc,var,tmp}`
+/// alias expansion that `check_sensitive_components` gained — canonicalized
+/// spellings on macOS resolve `/etc/...` to `/private/etc/...`, which matches
+/// no list entry, so the GUI refused paths this mirror shipped.
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
+    check_sensitive_canonical(canonical, cfg!(target_os = "macos"))
+}
+
+/// The post-canonicalization decision behind [`check_sensitive_path`], with
+/// the macOS symlink-alias flag as an explicit parameter (Round-7 review
+/// M3). `cfg!(target_os = "macos")` is false on every other platform, under
+/// which the composed system-prefix predicate reduces source-identically to
+/// a plain hand loop over `BLOCKED_PREFIXES` — so the alias arm is only
+/// mutation-detectable if tests can force the flag through this consumer
+/// instead of calling the upstream predicate directly. A regression that
+/// swaps `canonical_system_prefix_hit(canonical, alias_symlinks)` back for
+/// the no-alias hand loop must turn the alias pins here red on every
+/// platform, not just on macOS.
+fn check_sensitive_canonical(canonical: &Path, alias_symlinks: bool) -> Result<(), String> {
     if let Some(blocked) = crosses_sensitive_component(canonical) {
         return Err(format!(
             "{} crosses the credential path component `{blocked}`",
             canonical.display()
         ));
     }
-    let text = canonical.to_string_lossy();
-    if let Some(prefix) = SENSITIVE_PATH_PREFIXES
-        .iter()
-        .find(|prefix| text.starts_with(**prefix))
-    {
+    if let Some(prefix) = crosses_sensitive_component_prefix(canonical) {
         return Err(format!(
-            "{} is in the system-sensitive area {prefix}",
+            "{} crosses the credential path component prefix `{prefix}`",
+            canonical.display()
+        ));
+    }
+    if let Some(suffix) = crosses_sensitive_component_suffix(canonical) {
+        return Err(format!(
+            "{} crosses the credential path component suffix `{suffix}`",
+            canonical.display()
+        ));
+    }
+    // Round-11 复审 minor:目录作用域尾序列(gh/Maven/sops/Chrome 的通用
+    // 命名凭据文件)与 GUI 同源——上游单一谓词,不手抄清单。
+    if pinvou3_lib::platform::path_policy::blocked_path_tail_hit(canonical).is_some() {
+        return Err(format!(
+            "{} crosses a directory-scoped credential file",
+            canonical.display()
+        ));
+    }
+    if pinvou3_lib::platform::path_policy::canonical_system_prefix_hit(canonical, alias_symlinks) {
+        return Err(format!(
+            "{} is in the system-sensitive area",
             canonical.display()
         ));
     }
@@ -318,8 +394,18 @@ fn resolve_session_artifact(
     // does not even require — but an agent can create `.env` or `.ssh/id_rsa`
     // inside its own workspace, and there the GUI refuses while the CLI did
     // not. Same refusal on read and write: the risk is the content reaching a
-    // model context, which is the read direction.
-    if let Some(blocked) = crosses_sensitive_component(&canonical) {
+    // model context, which is the read direction. The round-11 audit adds the
+    // directory-scoped tails (gh/Maven/sops/Chrome credential files can sit
+    // inside a session workspace just the same).
+    let directory_scoped_tail =
+        pinvou3_lib::platform::path_policy::blocked_path_tail_hit(&canonical)
+            .map(|tail| tail.join("/"));
+    let blocked = crosses_sensitive_component(&canonical)
+        .map(str::to_string)
+        .or_else(|| crosses_sensitive_component_prefix(&canonical).map(str::to_string))
+        .or_else(|| crosses_sensitive_component_suffix(&canonical).map(str::to_string))
+        .or(directory_scoped_tail);
+    if let Some(blocked) = blocked {
         return Err(CliError::failed(format!(
             "artifact_crosses_sensitive_component: {} crosses `{blocked}`; credential paths are \
              never read or written through this command",
@@ -597,6 +683,10 @@ fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Round-6 复审:生产半边已上收为上游组合谓词,系统前缀清单只剩测试
+    // 在用——随用随导入,避免非测试构建的 unused_imports 硬门报错。
+    use pinvou3_lib::platform::path_policy::BLOCKED_PREFIXES as SENSITIVE_PATH_PREFIXES;
+    use pinvou3_lib::platform::path_policy::canonical_system_prefix_hit;
 
     fn parse(arguments: &[&str]) -> Result<ArtifactsCommand, CliError> {
         let ["artifacts", rest @ ..] = arguments else {
@@ -744,13 +834,139 @@ mod tests {
             );
             assert!(check_sensitive_path(&path).is_err(), "{component}");
         }
-        for prefix in SENSITIVE_PATH_PREFIXES {
-            let path = PathBuf::from(format!("{prefix}probe"));
+        // Round-8 复审 MAJOR:.git 内部(远端 URL 常内嵌 oauth2:TOKEN@
+        // 形态凭据)按嵌套路径同样拒绝;.gitignore/.github 等仅共享前缀
+        // 的不同组件不受影响(GUI 镜像同源同语义)。
+        let nested = Path::new("/home/u/repo/.git/config");
+        assert_eq!(crosses_sensitive_component(nested), Some(".git"));
+        assert!(check_sensitive_path(nested).is_err(), ".git/config");
+        assert!(
+            crosses_sensitive_component(Path::new("/home/u/repo/.gitignore")).is_none(),
+            ".gitignore is a different component and must stay readable"
+        );
+        for prefix in SENSITIVE_PATH_COMPONENT_PREFIXES {
+            let path = PathBuf::from("/home/u/.pinvou3/sessions/s-1/workspace")
+                .join(format!("{prefix}local"));
+            assert_eq!(
+                crosses_sensitive_component_prefix(&path),
+                Some(*prefix),
+                "{prefix} variant must be refused"
+            );
+            assert!(check_sensitive_path(&path).is_err(), "{prefix} variant");
+        }
+        for prefix in SENSITIVE_PATH_PREFIXES
+            .iter()
+            .copied()
+            .filter(|prefix| !prefix.ends_with('*'))
+        {
+            // 组件序列语义(与上游 path_starts_with_folded 同一谓语):前缀
+            // 自身与其嵌套路径必须被拒;仅共享前缀字节的同名文件不是系统区
+            // 文件(`/etc/shadowprobe`、`/var/log/authprobe` 是普通可读
+            // 文件)。末分量带 `*` 的开放家族条目(轮转日志)单独驱动,
+            // `{prefix}probe` 的放行断言不适用。
+            let base = Path::new(prefix);
             assert!(
-                check_sensitive_path(&path).is_err(),
+                check_sensitive_path(base).is_err(),
                 "{prefix} must be refused"
             );
+            assert!(
+                check_sensitive_path(&base.join("probe")).is_err(),
+                "{prefix}/probe must be refused"
+            );
+            if !prefix.ends_with('/') {
+                assert!(
+                    check_sensitive_path(&PathBuf::from(format!("{prefix}probe"))).is_ok(),
+                    "{prefix}probe is a different file and must stay readable"
+                );
+            }
         }
+        // Round-9 复审 MAJOR(GUI 镜像同源同语义):组件化改写曾把字节前
+        // 缀时代的真实家族成员静默放行——`shadow-` 哈希备份、`auth.log`
+        // 本体及其轮转名必须经 CLI 消费方拒绝;Round-10 复审 MAJOR 补上
+        // 备份家族(`.bak`/`.old`/`.pacnew`/`~`),与 GUI 共用同一清单。
+        // 无辜同名保持放行。
+        for variant in [
+            "/etc/shadow-",
+            "/etc/gshadow-",
+            "/etc/shadow.bak",
+            "/etc/shadow.lock",
+            "/etc/gshadow.bak",
+            "/etc/sudoers.bak",
+            "/etc/sudoers.old",
+            "/etc/sudoers.pacnew",
+            "/etc/sudoers.tmp",
+            "/etc/sudoers~",
+            "/var/log/auth.log",
+            "/var/log/auth.log.1",
+            "/var/log/auth.log.2.gz",
+            "/var/log/auth.log.10",
+        ] {
+            assert!(
+                check_sensitive_path(Path::new(variant)).is_err(),
+                "{variant} must be refused"
+            );
+        }
+        assert!(
+            check_sensitive_path(Path::new("/etc/sudoers.d/01-admin")).is_err(),
+            "sudoers.d drop-ins must be refused"
+        );
+        for benign in [
+            "/etc/shadowed",
+            "/etc/shadowprobe",
+            "/var/log/authprobe",
+            "/var/log/autolog.txt",
+        ] {
+            assert!(
+                check_sensitive_path(Path::new(benign)).is_ok(),
+                "{benign} must stay readable"
+            );
+        }
+        // 大小写变体语义与 GUI 镜像一致(path_policy 的平台折叠):折叠平台
+        // 上 /Etc/Sudoers 必须命中;字节精确平台上是不同路径,放行
+        // (round-5 复审:case-variant 钉此前只存在于 GUI 镜像)。
+        let folded = cfg!(target_os = "macos") || cfg!(target_os = "windows");
+        assert_eq!(
+            check_sensitive_path(Path::new("/Etc/Sudoers")).is_err(),
+            folded,
+            "case variants follow the platform's volume folding (GUI mirror parity)"
+        );
+        // Round-6 复审 M2:镜像必须吃上游组合谓词的 /private 别名展开——
+        // macOS 的调用方全部先 canonicalize,/etc/... 落到镜像时已是
+        // /private/etc/... 拼写,手抄前缀循环在这类拼写上整体漏过。别名
+        // 参数是显式入参,所有平台都能直接驱动:开启时 /private/etc/shadow
+        // 命中,/private/etc 的普通邻居与 /private/etcfoo 不受牵连;关闭时
+        // (Linux 语义)/private/etc 是普通目录,字节精确不命中。
+        assert!(
+            canonical_system_prefix_hit(Path::new("/private/etc/shadow"), true),
+            "the macOS aliased spelling must hit through the composed predicate"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/shadowprobe"), true),
+            "the component boundary must survive the alias splice"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etcfoo/shadow"), true),
+            "only exact aliased roots expand, not shared-prefix names"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/usr/local/tool"), true),
+            "unrelated /private subtrees stay unaliased"
+        );
+        // Round-10 复审 minor:别名展开覆盖 var 腿——macOS 上轮转日志的
+        // canonical 拼写是 /private/var/log/...,只钉 etc 腿时收窄别名
+        // 清单不会红。
+        assert!(
+            canonical_system_prefix_hit(Path::new("/private/var/log/auth.log.1"), true),
+            "the aliased /var spelling of the rotated auth log must hit"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/var/log/authprobe"), true),
+            "the component boundary must survive the aliased /var leg"
+        );
+        assert!(
+            !canonical_system_prefix_hit(Path::new("/private/etc/shadow"), false),
+            "without the alias parameter the aliased spelling is an ordinary path (Linux semantics)"
+        );
         // Names that merely contain a blacklisted string are not components.
         for benign in [
             "/home/u/.pinvou3/sessions/s-1/workspace/environment.md",
@@ -760,8 +976,118 @@ mod tests {
         ] {
             let path = PathBuf::from(benign);
             assert_eq!(crosses_sensitive_component(&path), None, "{benign}");
+            assert_eq!(crosses_sensitive_component_prefix(&path), None, "{benign}");
             assert!(check_sensitive_path(&path).is_ok(), "{benign}");
         }
+    }
+
+    /// Round-12 review P2: the `*.env` component-suffix family must ship
+    /// through the mirror exactly like the GUI — `production.env`-style
+    /// names read back via `artifacts read` otherwise. The fold variants
+    /// (`PRODUCTION.ENV`) are pinned at the interface level for every list
+    /// entry; the pin here is the CONSUMER wiring — deleting the
+    /// `.or_else` suffix leg at [`resolve_session_artifact`]/inside
+    /// [`check_sensitive_canonical`] keeps every other pin green.
+    #[test]
+    fn env_component_suffix_refused_through_the_mirror() {
+        let blocked = std::env::temp_dir()
+            .join("s-1")
+            .join("deploy")
+            .join("production.env");
+        assert!(
+            check_sensitive_path(&blocked).is_err(),
+            "production.env must be refused through the suffix leg"
+        );
+        let benign = std::env::temp_dir().join("s-1").join("dotenv.md");
+        assert!(
+            check_sensitive_path(&benign).is_ok(),
+            "dotenv.md is not an environment file"
+        );
+    }
+
+    /// Round-14 review M2/M3: the directory-scoped-tail leg inside
+    /// [`check_sensitive_canonical`] is CONSUMER wiring the upstream pins
+    /// cannot see (they drive `path_policy` directly), and git's XDG
+    /// credential store is the same `credential.helper store` plaintext
+    /// format as the blocked `~/.git-credentials`, one directory deeper.
+    /// Deleting the mirror's tail leg keeps every other pin green while
+    /// every gate lane reopens (`agent run --prompt-file
+    /// ~/.config/gh/hosts.yml`, `feedback submit --attach
+    /// ~/.m2/settings.xml`, `artifacts write --file
+    /// ~/.config/sops/age/keys.txt`) — this pin is the one that turns red.
+    #[test]
+    fn directory_scoped_tails_refused_through_the_mirror() {
+        let blocked = [
+            "/home/u/.config/gh/hosts.yml",
+            "/home/u/.m2/settings.xml",
+            "/home/u/.config/sops/age/keys.txt",
+            // Round-14 review M3: git's XDG credential store and its config
+            // sibling of the blocked `~/.gitconfig`.
+            "/home/u/.config/git/credentials",
+            "/home/u/.config/git/config",
+        ];
+        for raw in blocked {
+            assert!(
+                check_sensitive_path(Path::new(raw)).is_err(),
+                "{raw} must be refused through the mirror's tail leg"
+            );
+        }
+        for benign in [
+            "/home/u/repo/hosts.yml",
+            "/home/u/repo/credentials",
+            "/home/u/repo/git/config",
+            "/home/u/.config/git/config.toml",
+        ] {
+            assert!(
+                check_sensitive_path(Path::new(benign)).is_ok(),
+                "{benign} is an ordinary file at an unrelated location"
+            );
+        }
+    }
+
+    /// Round-7 review M3: the alias arm must be drivable through the CLI
+    /// consumer, not only through the upstream predicate. Pure path-string
+    /// logic (no filesystem), so these run on every platform: with the
+    /// alias flag on, the macOS-aliased spelling is refused; with it off,
+    /// the same spelling is an ordinary path (Linux semantics); and the
+    /// component boundary survives the alias splice. A regression that
+    /// replaces the composed predicate with the no-alias `BLOCKED_PREFIXES`
+    /// hand loop keeps `check_sensitive_path` green on every CI host and
+    /// turns only the first assertion here red.
+    #[test]
+    fn sensitive_canonical_alias_arm_is_driven_through_the_consumer() {
+        assert!(
+            check_sensitive_canonical(Path::new("/private/etc/shadow"), true).is_err(),
+            "the aliased spelling must be refused when alias expansion is on"
+        );
+        assert!(
+            check_sensitive_canonical(Path::new("/private/etc/shadow"), false).is_ok(),
+            "without alias expansion the aliased spelling is an ordinary path"
+        );
+        assert!(
+            check_sensitive_canonical(Path::new("/private/etc/shadowprobe"), true).is_ok(),
+            "the component boundary must survive the alias splice"
+        );
+    }
+
+    /// Round-7 review NIT: the case-variant pin for the component-prefix
+    /// half through the consumer — the `.env.` prefix rule must match
+    /// `.ENV.LOCAL` exactly on the folding platforms (macOS/Windows) and
+    /// stay a different, readable path on byte-exact Linux, mirroring the
+    /// `/Etc/Sudoers` pin above. The benign sibling stays readable on every
+    /// platform.
+    #[test]
+    fn sensitive_canonical_component_prefix_case_variant_follows_platform_folding() {
+        let folded = cfg!(target_os = "macos") || cfg!(target_os = "windows");
+        assert_eq!(
+            check_sensitive_canonical(Path::new("/ws/.ENV.LOCAL"), false).is_err(),
+            folded,
+            "case variants of the `.env.` prefix rule follow the platform's volume folding"
+        );
+        assert!(
+            check_sensitive_canonical(Path::new("/ws/environment.md"), false).is_ok(),
+            "the benign sibling must stay readable on every platform"
+        );
     }
 
     /// The feedback bundle and the persona sidecar hold user-authored text;

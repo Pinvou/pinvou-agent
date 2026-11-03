@@ -2012,6 +2012,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const startRemoteControl = remoteControlFeature.startRemoteControl;
   const stopRemoteControl = remoteControlFeature.stopRemoteControl;
   const refreshRemoteControlQr = remoteControlFeature.refreshRemoteControlQr;
+  const revokeRemoteHostWorkspace = remoteControlFeature.revokeRemoteHostWorkspace;
   const dependenciesFeature = installBridgeFeature("dependencies", { state, notify, invoke, listen, bt });
   const checkDependencies = dependenciesFeature.checkDependencies;
   const installDependencies = dependenciesFeature.installDependencies;
@@ -2386,6 +2387,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       startRemoteControl,
       stopRemoteControl,
       refreshRemoteControlQr,
+      revokeRemoteHostWorkspace,
     },
     artifacts: {
       artifactInfo,

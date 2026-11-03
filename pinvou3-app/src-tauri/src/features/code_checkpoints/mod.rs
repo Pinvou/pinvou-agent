@@ -100,6 +100,11 @@ const SHADOW_EXCLUDES: &[&str] = &[
 /// 变体的全覆盖）。
 /// 扩展名对齐 file_ingest.rs 的 secret 分类
 /// （key/pem/p12/pfx/keystore/jks/gpg/pgp）与 gitleaks 的私钥约定。
+/// 与 `platform/path_policy.rs` 的 `BLOCKED_COMPONENTS` 刻意不同步:那是
+/// 「手机/模型上下文禁入」语义(逐组件、含 .envrc/.pgpass 等从不该出本地
+/// 的文件),本清单是「gitignore 模式、允许 .env.production 等可提交约定
+/// 文件」语义。新增凭据名时两侧都要评估,不要从一侧推导另一侧
+/// (round-5 复审 S06:两清单已在其语义边界内各自演化)。
 /// 代价是这些文件不随回退恢复，属可接受取舍（设计文档已知限制有记录）。
 const SECRET_EXCLUDES: &[&str] = &[
     ".env",
@@ -1746,6 +1751,15 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
+    // Round-12 复审 P2（r44 集成合并自 main 移植）：add -A 之后每轮重跑
+    // secret purge——工作树 .gitignore 的否定规则（`!.env`）按 gitignore(5)
+    // 优先级压过 info/exclude，会在每个快照把敏感文件重新收进影子 index；
+    // 一次性迁移 purge 只在升级时清一次，挡不住下一轮重入。幂等，干净仓库
+    // 上是一次廉价的空扫描。本分支原以「validate fail-closed + read-tree
+    // --empty 自愈」处理同型击穿（r14-M-B「此处不清——每轮双写」的取舍被
+    // main 的 Round-12 P2 分析取代）：现在秘密在 validate 之前即被摘除，
+    // turn 保留回退入口而非整轮 bail；账本路径仍由 validate fail-closed。
+    purge_secret_patterns_from_index(&repo, &execution_root)?;
     // r22 R1：被否定行击穿而暂存的依赖/构建条目在此摘除（每回合幂等自愈，
     // 存量被击穿 index 无需迁移 marker），排除语义=「不进快照」而非 bail。
     purge_shadow_excludes_from_index(&repo, &execution_root)?;
@@ -3203,6 +3217,35 @@ mod tests {
     use super::*;
     use crate::features::code_checkpoints::turns::is_step_budget_notification;
     use deepseek_tui::models::{ContentBlock, Message, Role};
+
+    /// Round-12 复审 P2:快照路径的 add -A 之后必须紧跟 purge。工作树
+    /// `.gitignore` 的否定规则(`!.env`)按 gitignore(5) 优先级压过
+    /// info/exclude,会在每个快照把敏感文件重新收进影子 index——一次性
+    /// 迁移 purge 只在升级时清一次,挡不住下一轮重入。源码契约钉:删掉
+    /// 快照流程里的 purge 调用必须在此变红(restore 路径的 read-tree 后
+    /// purge 与 ensure_repo 的迁移 purge 是另两处独立防线,不受影响)。
+    #[test]
+    fn snapshot_purge_follows_the_add_in_the_capture_flow() {
+        let source = include_str!("mod.rs");
+        let capture = source
+            .split("fn create_checkpoint_preserving(")
+            .nth(1)
+            .expect("create_checkpoint_preserving must exist");
+        let capture_body = capture
+            .split("\nfn ")
+            .next()
+            .expect("capture body must be extractable");
+        let add = capture_body
+            .find("&[\"add\", \"-A\"]")
+            .expect("capture must stage through add -A");
+        let purge = capture_body
+            .find("purge_secret_patterns_from_index(&repo, &execution_root)")
+            .expect("the snapshot-path purge must follow the add -A");
+        assert!(
+            purge > add,
+            "the snapshot-path purge must run after the add -A to re-close the gitignore-negation hole"
+        );
+    }
 
     /// Upgrade regression: index entries written before `CheckpointMeta.label`
     /// was restored carry no `label` key. The field must deserialize with its

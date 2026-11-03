@@ -138,6 +138,13 @@ function buildWebBridgeContext() {
     out.includes('&lt;script') && !out.includes('<script'),
     `shared fallback must neutralize raw <script>, got: ${out}`,
   );
+  // u 旗标回归：`i`+`u` 的 Unicode 简单折叠（U+017F ſ→s）必须命中。此前兜底副本
+  // 漏了 u 旗标，<ſcript> 这类折叠形态在兜底路径原样穿过 neutralize。
+  const outFolded = windowObject.TauriBridge.renderMarkdown('x <ſcript>evil()</ſcript> y');
+  assert.ok(
+    outFolded.includes('&lt;ſcript') && !outFolded.includes('<ſcript'),
+    `shared fallback must neutralize unicode-folded <ſcript> (needs u flag), got: ${outFolded}`,
+  );
   console.log('✓ web bridge delegates to shared fallback to neutralize dangerous tags');
 }
 
@@ -184,6 +191,61 @@ for (const bridgeRel of [['src', 'platform', 'web', 'bridge.js'], ['src', 'platf
     `${bridgeRel.join('/')} must keep forwarding renderMarkdown to the shared cluster`,
   );
   console.log(`✓ ${bridgeRel.join('/')} forwards renderMarkdown to the shared cluster`);
+}
+
+// ── Case 5: 两份 sanitize 危险标签词表（DANGEROUS_TAGS_RE）必须逐字节同构 ──
+// markdown-renderer.js（npm 主车道，ESM）与 markdown-bridge-fallback.js（bridge 兜底
+// 车道，普通 script 无法 import ESM）各持一份 DANGEROUS_TAGS_RE，本应逐字镜像。
+// 此前兜底副本漏了 u 旗标：`i`+`u` 的 Unicode 简单折叠（U+017F ſ→s、U+212A K→k）
+// 在兜底路径失效，<ſcript> 等折叠形态不被中和而主车道正常。这里读两文件源文本，
+// 断言正则字面量（含旗标）逐字节一致，防止再次单边漂移。
+{
+  const rendererSource = readApp('src', 'shared', 'markdown-renderer.js');
+  const fallbackSource = readApp('src', 'shared', 'markdown-bridge-fallback.js');
+  const extractWordlist = source =>
+    source.match(/^[ \t]*const DANGEROUS_TAGS_RE = (\/.+\/[a-z]+);$/m)?.[1];
+  const rendererLiteral = extractWordlist(rendererSource);
+  const fallbackLiteral = extractWordlist(fallbackSource);
+  assert.ok(rendererLiteral, 'markdown-renderer.js must declare DANGEROUS_TAGS_RE');
+  assert.ok(fallbackLiteral, 'markdown-bridge-fallback.js must declare DANGEROUS_TAGS_RE');
+  assert.equal(
+    fallbackLiteral,
+    rendererLiteral,
+    'DANGEROUS_TAGS_RE must stay byte-identical across renderer and bridge fallback (flags included)',
+  );
+  // 显式钉住 u 旗标：字节同构已隐含它，但让回归的失败原因一目了然。
+  assert.match(
+    rendererLiteral,
+    /\/[a-z]*u$/,
+    'DANGEROUS_TAGS_RE must keep the u flag (unicode case folds: <ſcript>, <linK(U+212A)>…)',
+  );
+  // 行为抽查：iu 折叠形态必须命中（这正是 gi 副本当初漏掉的向量）。
+  // 用 match 而非 test：词表正则带 g 旗标，test 会跨断言携带 lastIndex。
+  const [, body, flags] = rendererLiteral.match(/^\/(.+)\/([a-z]+)$/);
+  const wordlistRe = new RegExp(body, flags);
+  assert.ok('<ſcript>alert(1)</ſcript>'.match(wordlistRe), 'unicode-folded <ſcript> must match');
+  assert.ok('<lin\u{212A} src=x>x</lin\u{212A}>'.match(wordlistRe), 'kelvin-sign-folded <linK> must match');
+  assert.ok('<script>\u{1F977}x()</script>'.match(wordlistRe), 'astral-adjacent tags must match');
+
+  // 同类漂移面：兜底不能 import ESM，只能持有 DOMPurify FORBID 词表副本
+  // （renderer 侧单一来源为 MARKDOWN_FORBID_TAGS / MARKDOWN_FORBID_ATTR）。
+  // 锁内容一致（引号风格允许不同），防禁列表静默漂移。
+  const parseWordlist = (source, name) => {
+    const match = source.match(new RegExp(`${name}[ \t]*[:=][ \t]*(\\[[^\\n]*\\])`));
+    assert.ok(match, `${name} must be declared as an array literal`);
+    return JSON.parse(match[1].replaceAll("'", '"'));
+  };
+  assert.deepEqual(
+    parseWordlist(fallbackSource, 'FORBID_TAGS'),
+    parseWordlist(rendererSource, 'MARKDOWN_FORBID_TAGS'),
+    'FORBID_TAGS content must match MARKDOWN_FORBID_TAGS',
+  );
+  assert.deepEqual(
+    parseWordlist(fallbackSource, 'FORBID_ATTR'),
+    parseWordlist(rendererSource, 'MARKDOWN_FORBID_ATTR'),
+    'FORBID_ATTR content must match MARKDOWN_FORBID_ATTR',
+  );
+  console.log('✓ sanitize wordlists are identical across renderer and bridge fallback');
 }
 
 console.log('\nmarkdown bridge fallback safety: ok');

@@ -167,9 +167,15 @@ impl WebWorkspaceGrantStore {
         reservation: WebWorkspaceGrantReservation,
         endpoint_id: &str,
         now: Instant,
+        allow_host_workspace: bool,
     ) -> bool {
         self.remove_expired(now);
-        if reservation.endpoint_id != endpoint_id
+        // Round-8 复审 minor:restore 此前只校验 endpoint/TTL/不存在——
+        // reserve → revoke → 会话创建失败 → restore 会把 grant 放回已
+        // 撤销授权的映射里(不变量只靠 bind-time 复查兜底)。撤销后拒绝
+        // 复活,与「已发出的 grant 也随之立刻作废」的文档契约一致。
+        if !allow_host_workspace
+            || reservation.endpoint_id != endpoint_id
             || reservation.expires_at <= now
             || self.entries.contains_key(&reservation.handle)
         {
@@ -301,7 +307,17 @@ mod tests {
             .reserve(&handle, "endpoint-one", now + Duration::from_secs(1))
             .unwrap();
         assert!(!store.contains(&handle));
-        assert!(!store.restore(reservation, "endpoint-two", now + Duration::from_secs(2)));
+        // Round-8 复审 minor:撤销授权后 restore 必须拒绝复活 grant
+        // (reserve → revoke → 创建失败 → restore 不再把授权放回映射)。
+        assert!(
+            !store.restore(
+                reservation,
+                "endpoint-one",
+                now + Duration::from_secs(2),
+                false
+            ),
+            "a revoked host-workspace authorization must not be resurrected"
+        );
         assert!(!store.contains(&handle));
 
         store.issue(
@@ -314,7 +330,33 @@ mod tests {
         let reservation = store
             .reserve(&handle, "endpoint-one", now + Duration::from_secs(3))
             .unwrap();
-        assert!(store.restore(reservation, "endpoint-one", now + Duration::from_secs(4)));
+        assert!(
+            !store.restore(
+                reservation,
+                "endpoint-two",
+                now + Duration::from_secs(4),
+                true
+            ),
+            "a foreign endpoint must still be refused"
+        );
+        assert!(!store.contains(&handle));
+
+        store.issue(
+            handle.clone(),
+            "endpoint-one".to_string(),
+            path.clone(),
+            test_identity(3),
+            now,
+        );
+        let reservation = store
+            .reserve(&handle, "endpoint-one", now + Duration::from_secs(5))
+            .unwrap();
+        assert!(store.restore(
+            reservation,
+            "endpoint-one",
+            now + Duration::from_secs(6),
+            true
+        ));
         assert_eq!(
             store
                 .reserve(&handle, "endpoint-one", now + Duration::from_secs(5))
@@ -331,9 +373,14 @@ mod tests {
             now,
         );
         let reservation = store
-            .reserve(&handle, "endpoint-one", now + Duration::from_secs(6))
+            .reserve(&handle, "endpoint-one", now + Duration::from_secs(7))
             .unwrap();
-        assert!(!store.restore(reservation, "endpoint-one", now + WEB_WORKSPACE_GRANT_TTL));
+        assert!(!store.restore(
+            reservation,
+            "endpoint-one",
+            now + WEB_WORKSPACE_GRANT_TTL,
+            true
+        ));
         assert!(!store.contains(&handle));
     }
 

@@ -198,7 +198,9 @@ pub fn validate_upload_location(canon: &Path) -> Result<(), String> {
 // `path_component_eq` / `python_command` 在 macOS 由 mod.rs 经本模块 glob
 // 消费（未被显式 re-export 遮蔽），转发计为已用。
 #[cfg(unix)]
-pub use super::posix::{path_component_eq, python_command};
+pub use super::posix::{
+    path_component_eq, path_component_prefix, path_component_suffix, python_command,
+};
 
 // macOS 经 macos_path 直接 re-export posix 实现（经 mod.rs 显式 re-export 遮蔽
 // 本转发，unused_imports=deny 会拦），且 validate_upload_location 的 unix 臂现
@@ -214,6 +216,16 @@ pub use super::posix::filesystem_path_identity_key;
 #[cfg(not(unix))]
 pub fn path_component_eq(component: &OsStr, expected: &str) -> bool {
     component == OsStr::new(expected)
+}
+
+#[cfg(not(unix))]
+pub fn path_component_prefix(component: &OsStr, prefix: &str) -> bool {
+    component.to_string_lossy().starts_with(prefix)
+}
+
+#[cfg(not(unix))]
+pub fn path_component_suffix(component: &OsStr, suffix: &str) -> bool {
+    component.to_string_lossy().ends_with(suffix)
 }
 
 #[cfg(not(unix))]

@@ -4485,7 +4485,16 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // Linux-only like `non_utf8_spool_names_are_quarantined` below: the
+    // fixture needs directory entries whose name bytes are not valid UTF-8.
+    // macOS APFS rejects every such name at the syscall layer (EILSEQ,
+    // errno 92 "Illegal byte sequence" — verified for trailing 0xFF, lone
+    // continuation bytes, CESU-8 surrogates, and overlong encodings), so
+    // the squatter premise cannot be constructed there; names APFS accepts
+    // are all valid UTF-8 and always reach the ordinary batch path. The
+    // non-UTF-8 directory-entry behavior is covered by the Linux rust-test
+    // leg.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn non_utf8_squatters_do_not_starve_legitimate_records() {
         use std::os::unix::ffi::OsStringExt;

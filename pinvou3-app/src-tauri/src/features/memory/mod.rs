@@ -37,6 +37,7 @@ pub use self::types::{
 pub use self::types::profile_label_would_be_wiped;
 
 // ---- 路径访问器（io）----
+pub(crate) use self::io::display_redacted;
 // E2E 集成测试（src-tauri/tests/memory_e2e.rs）经 crate 根使用其中一部分，
 // 因此这些保持 pub；仅内部使用的访问器（organize_history_path /
 // pending_memory_path / never_memory_path）已在 io 内降为 pub(crate)，
