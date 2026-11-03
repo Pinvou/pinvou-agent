@@ -2661,18 +2661,18 @@ mod tests {
             owner_name: None,
         };
         assert!(overlapping.intersects(vd));
-        // Touching the VD's left edge is exclusive, mirroring rect_intersects.
-        let touching = HitWindow {
-            x: 1390.0,
-            ..overlapping
-        };
-        assert!(!touching.intersects(vd));
+        // `HitWindow` is not `Copy` (owner_name), so each struct-update
+        // consumes its base: chain far -> touching instead of branching
+        // from `overlapping` twice.
         let far = HitWindow {
             x: 0.0,
             y: 0.0,
             ..overlapping
         };
         assert!(!far.intersects(vd));
+        // Touching the VD's left edge is exclusive, mirroring rect_intersects.
+        let touching = HitWindow { x: 1390.0, ..far };
+        assert!(!touching.intersects(vd));
     }
 
     /// Launch-program classification: `.app` bundles (case-insensitive) go
