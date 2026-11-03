@@ -227,7 +227,11 @@ pub(crate) use crate::platform::connector_skills::{
 /// still win); wecomcli-meeting's open_vid≡userid equivalence claim
 /// replaced with the wo-prefix contact-search-only rule; wecomcli-contact /
 /// wecomcli-doc / wecomcli-doc-manage gain compact business-failure
-/// sections in the meeting pack's retry-cap style; the scoped aux persona
+/// sections in the meeting pack's retry-cap style, with bounded automatic
+/// retries restricted to read-only ops — a timed-out write is an unknown
+/// outcome that must be reconciled by readback/search first (append/overwrite
+/// references carry the workflow), and an inconclusive outcome stops and
+/// reports instead of re-writing; the scoped aux persona
 /// (bridge.rs AUX_SESSION_INSTRUCTIONS) explains the trailing
 /// `# userselect:` quote envelope while the zero-tool fallback persona
 /// stays verbatim. Hooks:
@@ -559,16 +563,21 @@ pub const DENY_SENSITIVE_PATHS_SH: &str =
 pub const DENY_SENSITIVE_PATHS_PS1: &str =
     include_str!("../../../../resources/common/bundle/deny_sensitive_paths.ps1");
 
-/// 多智能体会话的两层深度护栏。仅在多智能体 EngineConfig 中挂载，
-/// 普通对话不使用。会话上限允许一级代理再派生一层；hook 拦截主会话显式
-/// 传入的正数深度覆盖字段（嵌套子代理的调用不经过 ToolCallBefore，由
-/// 继承上限与准入/并发额度兜底）；Workflow 的顶层 `source_path`
-/// 要求改用 inline script/plan，避免 hook 无法检查文件内参数。引擎侧
-/// 另有未写入 schema 的 `path` 手工别名（`workflow_source` 的
-/// `optional_str` 回退，非 serde alias），该别名不在此拦截（裸键匹配会
-/// 误伤 plan 载荷里的嵌套 `path` 字段）。对 `path` 的拦截早于引擎
-/// #5253 的 min-clamp，且在 clamp 落地前是承重设计；现由该 clamp 兜底
-/// 文件内覆盖，此残留不构成执行缺口。
+/// Two-layer depth guard for multi-agent sessions. Mounted only in
+/// multi-agent EngineConfig; ordinary conversations do not use it. The
+/// session cap lets first-level agents spawn one more layer; the hook
+/// intercepts the positive depth-override field explicitly passed by the
+/// main session (nested subagent calls bypass ToolCallBefore and are
+/// backstopped by the inherited cap plus admission/concurrency quota);
+/// Workflow top-level `source_path` must switch to inline script/plan,
+/// since the hook cannot inspect file-internal args. The engine side also
+/// has a `path` manual alias not written into the schema (the
+/// `optional_str` fallback on `workflow_source`, not a serde alias); that
+/// alias is not intercepted here (bare-key matching would false-hit nested
+/// `path` fields inside plan payloads). The `path` interception predates
+/// the engine's #5253 min-clamp and was load-bearing before the clamp
+/// landed; the clamp now backstops in-file overrides, so this leftover is
+/// not an execution gap.
 pub const MULTIAGENT_DEPTH_GUARD_SH: &str =
     include_str!("../../../../resources/common/bundle/multiagent_depth_guard.sh");
 pub const MULTIAGENT_DEPTH_GUARD_PS1: &str =
