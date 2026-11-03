@@ -17,9 +17,23 @@ $ErrorActionPreference = "Stop"
 $toolName = [string]$env:DEEPSEEK_TOOL_NAME
 $toolArgs = [string]$env:DEEPSEEK_TOOL_ARGS
 
+# Opaque-source gate.  The engine also honors a top-level "path" as a
+# manual fallback for source_path (an optional_str fallback inside
+# workflow_source in workflow/mod.rs, not part of the tool schema), and
+# matching that bare key hit ordinary nested "path" fields inside
+# structured plan payloads (child tool args etc.), denying legitimate
+# calls; the deny message then named only source_path.  The gate now
+# triggers on any string-valued "source_path" key — grep cannot count
+# JSON nesting depth, so a nested source_path in a free-form payload
+# still denies (conservative, fail-closed) — and the message names
+# exactly that key.  The "path" fallback is not intercepted: bare-path
+# interception predates the engine's per-call max_depth min-clamp
+# (#5253) and was load-bearing only before it landed; the clamp now
+# bounds any override inside the file the engine loads, so this residual
+# is bounded by the same engine rule this hook exists to state.
 $hasOpaqueWorkflowSource = $toolName -eq "workflow" -and [regex]::IsMatch(
     $toolArgs,
-    '(?<!\\)"(source_path|path)"\s*:'
+    '(?<!\\)"source_path"\s*:\s*"'
 )
 
 if ($hasOpaqueWorkflowSource) {

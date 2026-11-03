@@ -442,3 +442,9 @@ rebase 纳入 main #724「模型侧文案复审」四项(doc-manage/message desc
 同名同构;本地分叉为「本轮(1.1.0)品悟适配清单」六类、历次审计登记、「上游同步
 (2026-09-15,wecom-cli 1.2.1)」与「上游同步(2026-10-18,wecom-cli 1.3.4)」的合并
 口径,以及 2026-10-07/10-08 三轮模型向文本审计登记的全部本地修改。
+
+## 业务失败指引与会议 ID 口径修正（2026-11-02,2026-10-07 审计未交付项,下次 sync 需重放）
+
+1. **wecomcli-meeting/SKILL.md 规则 1 删 open_vid≡userid 等价句**：原第 4 条「`open_vid` 和 `userid` 是同一概念的不同叫法，其他系统返回的 `open_vid` 可直接作为 `userid` 使用」与本包「userid（`wo` 前缀）」「参会人一律经 wecomcli-contact 搜索解析、禁止拼接/编造」口径矛盾（同款等价句已在 2026-08-27 smartpage 审计中整句删除）。改写为：`userid` 只经 wecomcli-contact 搜索解析获取（上下文中已有的合法 userid（`wo` 前缀）可直接使用，对齐 meeting-create/meeting-update reference 的跳过搜索口径），其他系统用户标识（如 `open_vid`）不是同一概念、不能替代或按形态拼接。
+2. **wecomcli-contact / wecomcli-doc / wecomcli-doc-manage 各补「业务失败处理」节**（对照 dws SKILL.md「错误处理」节与本包 meeting 技能「规则 6: 错误重试上限」风格，不过度承诺）：同一操作失败最多重试 2 次、仍失败如实报告等人工介入；自动重试仅限读取类操作，网络超时可重试、权限不足/参数错误不重试；写操作超时属结果不明（2026-11-03 复审两次收紧）：接口无调用级凭据，读回/名称检索均不能归因到本次调用（同文可能早已存在、同名新 docid 可能来自其他用户、原请求也可能延迟生效）——一律停止自动操作并如实报告「结果未知」，由用户人工核对确认后才可补写一次（计入上限），禁止自动判定成败或自行补写，避免 append 等非幂等写重复落地或漏写谎报成功。contact 补无命中不编造 userid、`hint` 限制如实说明；doc 补 `docid` 无效按使用规则重新获取、导入 `task_status` 非 `succ` 如实提示，append/overwrite 参考文档各补「超时与结果不明」核对流程；doc-manage 补搜索无结果走「无候选必须追问用户」、写操作失败如实告知且写超时先核对再补做。
+3. **wecomcli-contact/SKILL.md 返回表 `users[].userid` 补前缀标注**（2026-11-02 复审补充，非审计项）：说明改为「用户唯一标识（企微通讯录内部成员为 `wo` 前缀）」，与 meeting/calendar 包「userid（`wo` 前缀）」口径对齐——meeting 规则 1 的新句子经 contact 搜索解析 userid 时，解析来源包自身不再缺少前缀标注。
