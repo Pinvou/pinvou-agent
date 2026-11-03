@@ -438,7 +438,11 @@
 //!   `7z.exe` archive spellings, `cmd /c`-style nested
 //!   invocations, `attrib +h …`-style plus-flag-first forms, mixed- or
 //!   forward-separator spellings under the Windows prefixes
-//!   (`%userprofile%/.ssh/id_rsa`), double-quoted backslash paths (the
+//!   (`%userprofile%/.ssh/id_rsa`), UNC admin-share spellings of the
+//!   user's own profile (`\\localhost\c$\Users\me\…` — no rule
+//!   composes the host-share form of the resolved home; bounded because
+//!   Full lanes prompt anyway and Yolo drops per-file credential faces by
+//!   design), double-quoted backslash paths (the
 //!   foundation deny-scan dequotes with POSIX semantics, stripping
 //!   backslashes inside `"…"` — the expanded token loses its separators;
 //!   unquoted and single-quoted spellings still match), and prefix-agnostic

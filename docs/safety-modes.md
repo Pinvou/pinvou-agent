@@ -61,8 +61,9 @@ OFF）」列描述的是这一新增面的 OFF 行为，不是 Auto 档的总体
   表，与 mode 共用同一 io 互斥、原子写（`features/sessions/mode_state.rs`）。
   落盘失败语义按命令分流：**mode 切换（`set_mode`）只记日志不打断交互**——
   内存切换已生效，落盘只做尽力持久化；**开关翻转（`set_ask_on_guardrail`）
-  则回滚**——条目与覆盖镜像恢复到调用前状态，任何读侧都不会看到盘上不存在的
-  值（fail-consistent）。中断写入留不下截断文件，损坏文件在装载时静默跳过。
+  则先落盘后发布**——侧车 RMW 成功之前不写条目与覆盖镜像，任何读侧都不会
+  看到盘上不存在的值（fail-consistent；失败路径没有回滚动作：内存从未离开
+  调用前状态）。中断写入留不下截断文件，损坏文件在装载时静默跳过。
   会话删除/驱逐时侧车条目随保留策略一并清除。
 - lane 全局默认（settings.json `mode_defaults.work` /
   `code_permission.last_mode`）**永不写入 `"auto"` 字面量**：显式 Auto 选择
@@ -293,15 +294,17 @@ Authority transition (host): agent (Full Access, guardrail prompts armed) -> age
 转录等非权威输入）运行的是逐轮降低的姿态，由窄化回执行族（`Authority
 narrowing:` / `Authority transition:`）如实上报——它们既不触发 `(host)` 行
 （把逐轮窄化误标为宿主翻转），也不污染站姿 baseline（否则下一个权威轮会把
-窄化解除渲染成一次无人做过的反向 host 翻转）；真正的宿主翻转落在同一窗口时，
-由下一个权威轮从窄化前的站姿出发渲染。Auto-Review 下的窄化降级
+窄化解除渲染成一次无人做过的反向 host 翻转）。窄化判定跟随当轮是否实际产生
+窄化事件（`narrowing.is_some()`）：站姿本就没有可降的 auto 权威（如 Ask）时
+该轮不产生窄化事件，按权威轮处理——其渲染的数据始终为真；真正的宿主翻转落
+在同一窗口时，由下一个权威轮从窄化前的站姿出发渲染。Auto-Review 下的窄化降级
 （Auto→Suggest）与 Bypass 降级同样携带结构化窄化事件，不再静默。未改动前，姿态变更只能靠下一轮的常设姿态行被模型「观察到」，
 行为突变（突然免批/突然要批）读起来没有解释；这一行让变更自述原因
 （`crates/tui/src/core/authority.rs`，机制登记见底座 PR (b)）。
 
 ## 8. 测试与登记
 
-- **底座**（CodeWhale#131）：本行为新增 22 条 `forkguard_` pin——提交
+- **底座**（CodeWhale#131）：本行为新增 24 条 `forkguard_` pin——提交
   `998ffe27e` 7 条 + 复审加固 6 条 + 评审修复 1 条 + 复审修复二 `5c13fc561`
   4 条（武装发布粘滞、armed composer 硬拒、armed Auto-Review 升级恒拒、
   preview 计划姿态与 live 线体哈希一致）+ 复审修复三 `f972884e5`
