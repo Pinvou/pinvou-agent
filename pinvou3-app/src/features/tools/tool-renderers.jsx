@@ -750,6 +750,28 @@ const ToolOutput = ({ item, t }) => {
       try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
       return { pre: text.length > 400 ? `${text.slice(0, 400)}…` : text };
     };
+    const ApprovalInputBlock = ({ inputView, t }) => {
+      if (!inputView) return null;
+      return (
+        <>
+          {inputView.lines ? (
+            <div className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] space-y-0.5`}>
+              {inputView.lines.map(([key, value]) => (
+                <div key={key}><span className="text-[#0B57D0] dark:text-[#8AB4F8]">{key}</span>: {value}</div>
+              ))}
+            </div>
+          ) : (
+            <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
+          )}
+          {inputView.full ? (
+            <details className="mb-1">
+              <summary className="text-[12px] cursor-pointer select-none text-[#0B57D0] dark:text-[#8AB4F8]">{t.approvalShowFullInput}</summary>
+              <pre className={`text-[12px] font-mono rounded-lg p-2 mt-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.full}</pre>
+            </details>
+          ) : null}
+        </>
+      );
+    };
     const ApprovalCard = ({ item, t, onDecide }) => {
       const webReadOnly = multiAgentWebReadOnly();
       const done = !!item.resolved;
@@ -792,17 +814,7 @@ const ToolOutput = ({ item, t }) => {
               <span className="font-medium">{t.approvalIntent}: </span>{item.intentSummary}
             </div>
           ) : null}
-          {inputView ? (
-            inputView.lines ? (
-              <div className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3] space-y-0.5`}>
-                {inputView.lines.map(([key, value]) => (
-                  <div key={key}><span className="text-[#0B57D0] dark:text-[#8AB4F8]">{key}</span>: {value}</div>
-                ))}
-              </div>
-            ) : (
-              <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
-            )
-          ) : null}
+          <ApprovalInputBlock inputView={inputView} t={t} />
           <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
           {done || unknownOutcome ? (
             <div className={`text-[13px] font-medium text-[#444746] dark:text-[#C4C7C5]`}>{statusText}</div>

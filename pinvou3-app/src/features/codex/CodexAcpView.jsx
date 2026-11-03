@@ -570,8 +570,12 @@ function nativeGuardrailReasonText(reason, copy) {
 // ApprovalCard 的 approvalInputView 同一规则——两处保持渲染语义一致）。
 function nativeApprovalInputView(input) {
   if (input == null) return null;
+  // full = 完整原文（评审 P2：原生审批卡同样必须能查看完整的较长输入）。
   if (typeof input === 'string') {
-    return { pre: input.length > 400 ? `${input.slice(0, 400)}…` : input };
+    if (input.length > 400) {
+      return { pre: `${input.slice(0, 400)}…`, full: input };
+    }
+    return { pre: input };
   }
   if (typeof input !== 'object') return { pre: String(input) };
   const keys = Object.keys(input);
@@ -584,7 +588,10 @@ function nativeApprovalInputView(input) {
   }
   let text;
   try { text = JSON.stringify(input, null, 2) || String(input); } catch { text = String(input); }
-  return { pre: text.length > 400 ? `${text.slice(0, 400)}…` : text };
+  if (text.length > 400) {
+    return { pre: `${text.slice(0, 400)}…`, full: text };
+  }
+  return { pre: text };
 }
 
 function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
@@ -623,6 +630,12 @@ function NativeApprovalCard({ item, responding, t, copy, onDecide }) {
         ) : (
           <pre className={`text-[12px] font-mono rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.pre}</pre>
         )
+      ) : null}
+      {inputView && inputView.full ? (
+        <details className="mb-1">
+          <summary className="text-[12px] cursor-pointer select-none text-[#0B57D0] dark:text-[#8AB4F8]">{copy.nativeApprovalShowFullInput}</summary>
+          <pre className={`text-[12px] font-mono rounded-lg p-2 mt-1 overflow-x-auto whitespace-pre-wrap break-all bg-white dark:bg-[#131314] text-[#1F1F1F] dark:text-[#E3E3E3]`}>{inputView.full}</pre>
+        </details>
       ) : null}
       <div className={`h-px my-2.5 bg-black/10 dark:bg-white/10`}></div>
       {done || unknownOutcome ? (

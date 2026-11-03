@@ -93,7 +93,7 @@ const codexZh = {
   nativePlanSuperseded:'📜 已被新方案覆盖', nativePlanHistorical:'📜 历史方案',
   nativePlanAcceptFailed:'⚠️ accept_plan 失败: ', nativePlanDiscardFailed:'⚠️ discard_plan 失败: ',
   // tri-mode 审批卡终态 / 守卫硬拒通知（reason 稳定键在前端按键映射）。
-  nativeApprovalAllowed:'✅ 已允许', nativeApprovalAllowedSession:'✅ 本会话允许', nativeApprovalDenied:'🚫 已拒绝', nativeApprovalCancelled:'✕ 已取消',
+  nativeApprovalAllowed:'✅ 已允许', nativeApprovalAllowedSession:'✅ 本会话允许', nativeApprovalDenied:'🚫 已拒绝', nativeApprovalCancelled:'✕ 已取消', nativeApprovalShowFullInput:'查看完整输入',
   nativeApprovalOutcomeUnknown:'⚠️ 结果未知——请以会话中的实际执行结果为准',
   nativeGuardrailDenied:'守卫拦截', nativeGuardrailDeniedSession:'该会话已拒绝此操作（换参数需重新请批）',
   nativeGuardrailDeniedPlan:'Plan 模式为只读，已拒绝', nativeGuardrailDeniedAskOff:'守卫询问已关闭，已直接拒绝',
@@ -599,6 +599,7 @@ export const dictZh = {
         approvalTitle: '需要你审批的工具调用', approvalIntent: '模型意图',
         approvalAllow: '允许', approvalAllowSession: '本会话允许', approvalDeny: '拒绝',
         approvalAllowed: '✅ 已允许', approvalAllowedSession: '✅ 本会话允许', approvalDenied: '🚫 已拒绝', approvalSubmitting: '提交中…',
+        approvalShowFullInput: '查看完整输入',
         approvalOutcomeUnknown: '⚠️ 结果未知——引擎可能在迟交这次决策；请以会话中的实际执行结果为准',
         // 品悟检阅卡(PinvouSummonCard/Rows/Loading)。品/悟 字形是品牌、保留;周边文案随语言。
         pvLoadingPin: 'Pinvou 品·查错检阅', pvLoadingWu: 'Pinvou 悟·发散补全',
