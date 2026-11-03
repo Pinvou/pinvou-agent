@@ -2284,7 +2284,7 @@ mod tests {
     use super::*;
     // map_scroll is only exercised by the scroll-parity pins; keeping it
     // out of the lib-target imports avoids an unused-import deny there.
-    use super::super::helpers::map_scroll;
+    use super::super::super::helpers::map_scroll;
 
     /// The private class-name table is load-bearing: these exact names are
     /// the Apple CGVirtualDisplay private API surface (DeskPad lineage).
