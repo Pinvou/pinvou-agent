@@ -4075,7 +4075,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         className={`text-[13px] px-4 py-2 rounded-full ${'bg-[#E1E5EA] hover:bg-[#D3D9E0] dark:bg-[#333537] dark:hover:bg-[#444746]'} ${su.cancelling ? 'opacity-50' : ''}`}>
                         {su.installing ? (su.cancelling ? chatCopy.cancelling : chatCopy.cancelDownload) : chatCopy.cancel}</button>
                       {!su.installing && (
-                        <button type="button" onClick={() => bridge.voice.installVoiceAsr()} disabled={!su.status?.installable}
+                        <button type="button" onClick={() => bridge.voice.installVoiceAsr?.()} disabled={!su.status?.installable}
                           className={`text-[13px] font-medium px-4 py-2 rounded-full ${'bg-[#0B57D0] text-white hover:bg-[#1967D2] dark:bg-[#A8C7FA] dark:text-[#041E49] dark:hover:bg-[#C2D7FB]'} ${su.status?.installable ? '' : 'opacity-50'}`}>
                           {su.status?.installable ? (needModel ? chatCopy.downloadModel : chatCopy.install) : chatCopy.repairInstall}</button>
                       )}

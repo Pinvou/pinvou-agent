@@ -51,6 +51,14 @@ vm.runInContext(
     /onClick=\{\(\) => \{ pendingVoiceAfterIntroRef\.current = null; bridge\.voice\.cancelVoiceAsrSetup\?\.\(\); \}\}/,
     "the setup dialog cancel button must also drop the pending voice intent",
   );
+  // installVoiceAsr is desktop-only (bridge_domain_contract.mjs desktopOnlyBridgeApi):
+  // the install button must optional-chain it like the cancel button so the
+  // call site stays valid against the web bridge surface.
+  assert.match(
+    chatSource,
+    /onClick=\{\(\) => bridge\.voice\.installVoiceAsr\?\.\(\)\} disabled=\{!su\.status\?\.installable\}/,
+    "the setup dialog install button must optional-chain the desktop-only installVoiceAsr",
+  );
   assert.match(chatSource, /disabled=\{su\.cancelling\}/);
   assert.match(chatSource, /const chatCopy = t\.uiChat;/);
   assert.match(

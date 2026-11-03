@@ -67,7 +67,7 @@ Pinvou Agent は、単なるチャットウィンドウではありません。�
 
 - ローカル MCP サーバー、リモート MCP サーバー、CLI ツール、API コネクターをまとめて管理する**統合ツールストア**
 - 対応サービスでは **OAuth / SSO 認証**を利用可能 — キーを手動で貼り付ける必要はありません
-- **Feishu (Lark)、DingTalk、WeCom、Tencent Meeting、Tencent ima、Obsidian**、企業ナレッジベース、法務 / 企業データサービス向けのすぐに使えるコネクター
+- **Feishu (Lark)、DingTalk、WeCom、Tencent Meeting、Tencent Docs、Tencent ima、Obsidian** のほか、QCC・PatSnap・Canva・AMap Weather など、すぐに使えるコネクター
 - **リモートコントロール** — スマートフォンで QR コードを読み取るだけで、実行中のワークスペースを確認・操作できます
 
 ### 🖥️ 日常の運用を支える機能
