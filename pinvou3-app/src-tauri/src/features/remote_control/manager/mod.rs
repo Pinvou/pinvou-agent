@@ -1769,6 +1769,9 @@ impl RemoteControlManager {
         if inner.web_session_downloads.contains_key(&download_id) {
             return Err("requested Session download id is already active".into());
         }
+        if inner.web_session_downloads.len() >= MAX_WEB_SESSION_DOWNLOADS {
+            transfer::evict_oldest_ready_session_download(&mut inner);
+        }
         ensure_web_session_download_capacity(&inner, reserved_bytes)?;
         let file = download_dir
             .create_delete_on_close_file(&format!("{download_id}.json"))
@@ -4374,6 +4377,12 @@ mod tests {
             }),
         );
 
+        // Round-15 复审(S18 F7):本测试直接读 PINVOU3_HOME(经
+        // pinvou3_home 与 settle 内的 redact_storage_prefix),而 paths 的
+        // 其他测试在同一测试二进制里并行改写该 env——不加 ENV_LOCK 会偶
+        // 发误红/空折叠。与其他 env 敏感测试同一脚手架。
+        let (_env_guard, _env_restore) =
+            crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let raw_error = format!(
             "create {}: disk full",
             paths::pinvou3_home()
@@ -4525,6 +4534,19 @@ mod tests {
         assert!(
             body.contains("RPC_TIMED_OUT_CODE") && body.contains("outcome_unknown_completion()"),
             "the repair must convert the timeout placeholder to the truthful outcome_unknown"
+        );
+        // Round-15 复审(S18 F8,突变分析):放宽 repair 匹配(去掉
+        // `!completion.ok` 或 RPC_TIMED_OUT_CODE 腿,让全部打标占位——包
+        // 括从未受理的——都被改写为 outcome_unknown)时,上面的朴素
+        // contains 仍全绿。钉死匹配合取的三个腿的原样文本:任一腿被删
+        // 即红。
+        assert!(
+            body.contains("(*swept_acknowledged
+                    && !completion.ok
+                    && completion.error_code.as_deref() == Some(RPC_TIMED_OUT_CODE))"),
+            "the repair predicate must keep all three legs (swept-marked, failed, \
+             timeout-coded); loosening any leg rewrites never-executed requests' \
+             honest timeouts into fabricated outcome_unknown",
         );
 
         let source = include_str!("mod.rs");
@@ -5312,6 +5334,41 @@ mod tests {
     }
 
     #[test]
+    fn full_download_slots_evict_the_oldest_ready_orphan() {
+        // Round-15 复审:满槽时 begin 先逐出最旧的 ready 孤儿(手机从未
+        // 收到其 download_id,字节无人认领);引擎仍在写的未 ready 条目
+        // 不可作受害者,此时保留既有满槽错误。
+        let mut inner = Inner::default();
+        for (download_id, ready) in [
+            ("download_old", true),
+            ("download_new", false),
+        ] {
+            inner.web_session_downloads.insert(
+                download_id.to_string(),
+                WebSessionDownload {
+                    session_id: "session_a".into(),
+                    reservation_id: format!("reservation_{download_id}"),
+                    file: tempfile::tempfile().unwrap(),
+                    reserved_bytes: 1,
+                    total: 1,
+                    ready,
+                    last_touched: Instant::now(),
+                },
+            );
+            inner.web_session_download_order.push_back(download_id.to_string());
+        }
+        assert!(transfer::evict_oldest_ready_session_download(&mut inner));
+        assert!(!inner.web_session_downloads.contains_key("download_old"));
+        assert!(inner.web_session_downloads.contains_key("download_new"));
+        assert_eq!(inner.web_session_download_order, ["download_new"]);
+
+        // 只剩未 ready(引擎写入中):无受害者,返回 false 且原样保留。
+        assert!(!transfer::evict_oldest_ready_session_download(&mut inner));
+        assert_eq!(inner.web_session_downloads.len(), 1);
+        assert_eq!(inner.web_session_download_order, ["download_new"]);
+    }
+
+    #[test]
     fn cancelled_session_download_releases_only_the_matching_lease() {
         let mut inner = Inner::default();
         inner.web_session_download_order =
@@ -5984,6 +6041,17 @@ mod tests {
             "the readiness gate must be consulted at the synchronize call site; \
              inlining unwrap_or(true) back lets clients that omit state_ready skip it"
         );
+        // Round-15 复审(S18 F5):仅存在绑定不够——删除下游消费(让
+        // state_ready 从不参与判定)时上面的 contains 仍然全绿。断言绑定
+        // 之后确有读取。
+        let bound = body
+            .find("let state_ready = client_state_ready(value);")
+            .expect("the binding assert above guarantees the anchor");
+        let after_binding = &body[bound + "let state_ready = client_state_ready(value);".len()..];
+        assert!(
+            after_binding.contains("state_ready"),
+            "state_ready must be consumed downstream of its binding, not bound and discarded",
+        );
     }
 
     /// 接线钉(Round-11 复审 minor):`reserve_web_attachments` 的拒绝串
@@ -6104,6 +6172,15 @@ mod tests {
         assert!(
             !body.contains("pending_revocation_backlog = ledger.entries"),
             "the plain disk-overwrite must not come back; it drops memory-only salvaged entries"
+        );
+        // Round-15 复审(S14/S18 F4,突变实证):把合并种子从 held 换成
+        // ledger.entries(磁盘优先、同键冲突保留磁盘版本)后,上面两条
+        // 断言仍然全绿——键去重行 token 对称,不区分优先方向。钉死内存
+        // 优先的种子行:同键不同值保留内存版本(在飞工人重试的正是它)。
+        assert!(
+            body.contains("let mut merged = held;"),
+            "the merge must seed from the in-process backlog (memory wins conflicts); \
+             seeding from the ledger silently inverts the documented precedence"
         );
     }
 
