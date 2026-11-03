@@ -46,12 +46,41 @@ pub fn redact_storage_prefix(text: &str) -> String {
     if prefix.is_empty() {
         return text.to_string();
     }
-    let folded = text.replace(&prefix, "~/.pinvou3");
+    // Round-15 复审 F4:Windows 的盘符/用户段大小写不稳定(错误文本里的
+    // `c:\users\…` 对 home `C:\Users\…` 此前完全不折叠,绝对路径带过
+    // relay)。匹配改为 ASCII 无关大小写;Linux 上大小写敏感文件系统的
+    // 异拼只是显示层过折叠(方向安全),不影响任何路径解析。
+    let folded = replace_ascii_case_insensitive(text, &prefix, "~/.pinvou3");
     if folded == text {
         folded
     } else {
         folded.replace('\\', "/")
     }
+}
+
+/// ASCII 无关大小写的字面替换(非 `replace` 的大小写折叠变体,避免引入
+/// 正则依赖)。逐字符推进,UTF-8 多字节字符按整字符拷贝。
+fn replace_ascii_case_insensitive(text: &str, from: &str, to: &str) -> String {
+    let bytes = text.as_bytes();
+    let needle = from.as_bytes();
+    if needle.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + needle.len() <= bytes.len()
+            && bytes[i..i + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            out.push_str(to);
+            i += needle.len();
+        } else {
+            let ch = text[i..].chars().next().expect("slice at a char boundary");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
 }
 
 pub fn settings_path() -> PathBuf {
@@ -1004,6 +1033,34 @@ pub(crate) mod tests {
         });
     }
 
+    /// Round-15 复审 F4:Windows 错误文本的盘符/用户段大小写漂移此前
+    /// 完全不折叠,绝对路径带过 relay;匹配改为 ASCII 无关大小写。语义
+    /// 保留:非前缀文本不折叠;前缀后跟非分隔符仍按既有约定折叠(过
+    /// 折叠是展示层安全方向,见 sibling 钉)。
+    #[test]
+    fn redact_storage_prefix_matches_case_insensitively() {
+        crate::platform::test_support::with_temp_home("paths-redact-case", || {
+            let root = pinvou3_home();
+            let lower = format!(
+                "{}\\user\\memory\\x.json",
+                root.display().to_string().to_ascii_lowercase()
+            );
+            assert!(
+                redact_storage_prefix(&lower).starts_with("~/.pinvou3"),
+                "a case-variant absolute path must fold"
+            );
+            let mixed = format!("{}\\User\\MEMORY\\x.json", root.display());
+            assert!(
+                redact_storage_prefix(&mixed).starts_with("~/.pinvou3"),
+                "a mixed-case spelling must fold"
+            );
+            assert_eq!(
+                redact_storage_prefix("no path here"),
+                "no path here",
+                "non-prefix text stays untouched"
+            );
+        });
+    }
     #[test]
     fn redact_storage_prefix_passes_already_folded_text_through() {
         crate::platform::test_support::with_temp_home("paths-redact-folded", || {

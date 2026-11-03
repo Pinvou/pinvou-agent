@@ -84,14 +84,31 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // prefix or stored verbatim roots never compare equal to compat-spelled
     // candidates (compose's workspace ancestor grant failed exactly that way
     // on Windows: the recorded provenance root stayed `\\?\C:\...` while the
-    // delivery judgment compared the compat spelling).
-    let verbatim = path.starts_with(r"\\?\UNC\") || path.starts_with(r"\\?\");
-    let stripped = path
-        .strip_prefix(r"\\?\UNC\")
-        .map(|rest| format!(r"\\{rest}"))
-        .or_else(|| path.strip_prefix(r"\\?\").map(str::to_string))
-        .unwrap_or_else(|| path.to_string());
-    let folded = stripped.replace('\\', "/").to_lowercase();
+    // delivery judgment compared the compat spelling). The NT object
+    // namespace is case-insensitive, so the prefix match itself must fold
+    // too: a lowercase `\\?\unc\…` spelling is the same share as the
+    // uppercase form (Round-15 复审 F3;此前字节精确 strip 只漏判成不同
+    // key,fail-closed 方向)。
+    let folded_prefix = path.to_ascii_lowercase();
+    let verbatim = folded_prefix.starts_with(r"\\?\unc\") || folded_prefix.starts_with(r"\\?\");
+    let stripped = if folded_prefix.starts_with(r"\\?\unc\") {
+        format!(r"\\{}", &path["\\\\?\\UNC\\".len()..])
+    } else if folded_prefix.starts_with(r"\\?\") {
+        path[r"\\?\".len()..].to_string()
+    } else {
+        path.to_string()
+    };
+    // 与词法折叠原语同一拼表层(ſ/K/ı 显式替换 + lowercase):NTFS 按
+    // $UpCase 解析,ı→I 这类保证等价此前被 to_lowercase 漏判成不同 key,
+    // 已授予的祖先根会被静默丢弃(Round-15 复审 F2)。
+    //
+    // 已知残余(Round-15 复审 F1,文档化):Rust 的 to_lowercase 对
+    // İ(U+0130) 产生 `i`+U+0307,与 `i`+U+0307 自身同键——而 $UpCase 视
+    // 二者为不同文件,这里发生 over-fold(两个不同目录可能同键)。影响
+    // 限于 grant 嵌套判定把一个异拼目录当成已授予根(后续操作落在新目录
+    // 上,不泄露原根内容);完美模拟 $UpCase 需要 std 之外的简单大小写映
+    // 射,残留按已接受取舍记录。
+    let folded = super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"));
     if !has_win32_normalization_sensitive_component(path) {
         return folded;
     }
@@ -107,11 +124,13 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // so plain dotted/spaced names compare equal to their resolved plain
     // spelling exactly as Win32 resolves them; the verbatim spelling is
     // literal, so its key keeps the unstripped components under a `\\?/`
-    // namespace marker that no plain key can produce.
+    // namespace marker that no plain key can produce. (Round-15 fix wave
+    // reconcile:the namespace guard合入本波的共享折叠表层——两个方向
+    // 互不削弱。)
     if verbatim {
         return format!(r"\\?/{folded}");
     }
-    stripped
+    let normalized = stripped
         .split(['\\', '/'])
         .map(|component| {
             if component == "." || component == ".." {
@@ -121,8 +140,8 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("/")
-        .to_lowercase()
+        .join("/");
+    super::super::interface::volume_fold_spelling(&normalized)
 }
 
 /// Whether any component's spelling is rewritten by Win32 path
@@ -780,6 +799,27 @@ mod tests {
             filesystem_path_identity_key(r"\\?\UNC\server\share\dir"),
             filesystem_path_identity_key(r"\\server\share\dir"),
             "the verbatim UNC prefix denotes the same file as the plain UNC spelling"
+        );
+        // Round-15 复审 F3:NT 对象命名空间大小写不敏感,小写 verbatim
+        // 前缀拼写同一 share,identity key 必须同键(此前字节精确 strip
+        // 产生独立 key,fail-closed 方向的漏判)。
+        assert_eq!(
+            filesystem_path_identity_key(r"\\?\unc\server\share\dir"),
+            filesystem_path_identity_key(r"\\server\share\dir"),
+            "a lowercase verbatim-UNC spelling is the same NT path and must fold"
+        );
+        assert_eq!(
+            filesystem_path_identity_key(r"\\?\c:\Users\pinvou\project"),
+            plain,
+            "a lowercase verbatim drive prefix is the same NT path and must fold"
+        );
+        // Round-15 复审 F2:NTFS $UpCase 把 ı 折为 I,同文件不同拼写必须
+        // 同键(此前 to_lowercase 漏判,已授予祖先根被静默丢弃);与
+        // path_component_eq 的 volume_fold_spelling 同表。
+        assert_eq!(
+            filesystem_path_identity_key(r"C:\Users\p\ıd_rsa"),
+            filesystem_path_identity_key(r"C:\Users\p\ID_RSA"),
+            "dotless-i folds to I under $UpCase, matching the volume-fold primitive"
         );
         // Separators and case fold exactly as before the prefix stripping.
         assert_eq!(
