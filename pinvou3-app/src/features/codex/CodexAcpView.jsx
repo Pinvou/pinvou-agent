@@ -1806,14 +1806,14 @@ export function CodexAcpView({
   }
 
   /// 会话级「守卫命中时询问」开关（tri-mode）：乐观翻转 → set_ask_on_guardrail
-  /// → refreshNativeControls 权威复核；请求期间可能已切会话，只有仍是目标会话
-  /// 时才回滚旧值（switchNativeMultiAgent 同款归属保护）。
+  /// → refreshNativeControls 权威复核。失败不回滚请求发起时捕获的旧值：
+  /// 两次相反的写入都失败时，各自回滚自己捕获的值会把显示停在两次写都没
+  /// 落库的状态上（reviewer P3）——失败同样走 refreshNativeControls 权威
+  /// 重读收敛到后端事实；其请求序号 + 归属守卫在重读在途期间切会话或有
+  /// 更新权威刷新时丢弃本次陈旧读取（chat:mode_changed 同款代际保护）。
   async function toggleNativeAskOnGuardrail(enabled) {
     const targetSessionId = activeId;
     if (!targetSessionId) return; // 草稿态无会话级开关（跟随全局默认，物化时落后端）
-    const previous = nativeControlsSessionRef.current === targetSessionId
-      ? nativeControls.askOnGuardrail !== false
-      : true;
     setNativeControls(current => (nativeControlsSessionRef.current === targetSessionId
       ? { ...current, askOnGuardrail: Boolean(enabled) }
       : current));
@@ -1821,12 +1821,8 @@ export function CodexAcpView({
       await invoke('set_ask_on_guardrail', { sessionId: targetSessionId, enabled: Boolean(enabled) });
       await refreshNativeControls(targetSessionId);
     } catch (err) {
-      if (targetSessionId === activeIdRef.current) {
-        setNativeControls(current => (nativeControlsSessionRef.current === targetSessionId
-          ? { ...current, askOnGuardrail: previous }
-          : current));
-      }
       showError(err);
+      await refreshNativeControls(targetSessionId);
     }
   }
 

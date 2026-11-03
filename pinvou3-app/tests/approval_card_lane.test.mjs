@@ -336,6 +336,13 @@ try {
     '守卫询问开关 invoke 形状（显式 sessionId）');
   assert.match(interaction, /const previousAsk = \(state\.modeState && state\.modeState\.askOnGuardrail\) !== false;/,
     '乐观翻转前必须记录旧值（失败回滚用，setMultiAgentMode 同款）');
+  // reviewer P3：失败权威复核必须带 epoch 校验——重读发出到返回之间若落到
+  // 更新的权威写回/广播（applyAuthoritativeModeState 统一 bump 共享 epoch
+  // 表），本次读取已陈旧，应用它会覆盖更新的权威状态；丢弃后回滚值兜底
+  // （syncModeState 同一契约）。没有这道校验，双击相反开关且两次写都失败
+  // 时，后到的陈旧重读可能盖掉并发广播刚收敛的显示。
+  assert.match(interaction, /const rereadEpoch = modeStateEpochs\[sid\] \|\| 0;[\s\S]{0,300}?if \(\(modeStateEpochs\[sid\] \|\| 0\) === rereadEpoch\) \{[\s\S]{0,120}?applyAuthoritativeModeState\(sid, ms\);/,
+    'setAskOnGuardrail 失败重读必须捕获并校验 epoch（陈旧读取不得覆盖权威广播）');
   assert.match(interaction, /async function decideApproval\(approvalId, decision, targetSessionId\)/,
     '决策回传支持显式目标会话');
   assert.match(interaction, /invoke\("decide_approval", \{ sessionId: sid, approvalId, decision \}\)/,
@@ -371,6 +378,19 @@ try {
     '还原按「查询 camelCase → 事件 snake_case」重灌（与 live 事件同一去重键）');
   assert.match(codexView, /if \(name === 'chat:mode_changed' && sessionId === activeIdRef\.current\) \{[\s\S]{0,300}?refreshNativeControls\(sessionId\)/,
     'mode_changed 经 refreshNativeControls 权威刷新（请求序号 + 归属保护）');
+  // reviewer P3：原生开关失败不再回滚捕获旧值——两次相反写入都失败时各自
+  // 回滚会把显示停在两次写都没落库的值上；失败改走 refreshNativeControls
+  // 权威重读（自带请求序号代际 + 归属守卫）收敛到后端事实。
+  {
+    const toggleSlice = codexView.slice(
+      codexView.indexOf('async function toggleNativeAskOnGuardrail'),
+      codexView.indexOf('/// 确认卡【确认】'),
+    );
+    assert.ok(toggleSlice.includes('async function toggleNativeAskOnGuardrail'), '切片必须命中开关函数');
+    assert.match(toggleSlice, /catch \(err\) \{[\s\S]{0,200}?showError\(err\);[\s\S]{0,200}?await refreshNativeControls\(targetSessionId\);/,
+      '开关失败必须走 refreshNativeControls 权威重读收敛（不恢复捕获旧值）');
+    assert.ok(!toggleSlice.includes('previous'), '开关失败路径不得残留捕获旧值回滚');
+  }
   // v3.5：Auto→Yolo 直达（旧代码无此分支，Yolo 点击静默落空）；确认门对
   // 一切进入 Yolo 的切换生效。
   assert.match(codexView, /if \(target === 'yolo'\) \{\s*\n\s*const prefs = await refreshCodePermPrefs\(\);/,
