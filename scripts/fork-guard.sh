@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 112 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 113 maintenance commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,9 +10,10 @@ EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
 # plus the PR809 round-15 fix trio 7c735bebd + 5420b3e08 + fec1193f2 (child
 # approval keys bind to the effective execution context; summary compaction
 # keeps the retained-turn baseline linkage; the prune fixture pins its system
-# prompt).
-EXPECTED_HEAD="fec1193f2fc277cf055c9e957ec1837fc913603a"
-EXPECTED_COMMITS=112
+# prompt) plus the round-16 compile fix 93c3aa279 (drops the stale
+# retained_user_messages import the trio left behind; test-only relocation).
+EXPECTED_HEAD="93c3aa27921ff48b642ebdcff935546a657ae122"
+EXPECTED_COMMITS=113
 # Published maintenance base of this integration.
 MAINTENANCE_BASE="f1eb10efcfe2468fde42d1724d7f5f19d54b904c"
 # The immutable r1 closure must remain an ancestor of the registered head.
