@@ -1311,18 +1311,34 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // sessions.js 的重放同键检查，跨 await 的迟到快照不再复活已决审批。
   // 键带 sid：审批 id 由引擎分配，不假设跨会话唯一。上限 512 逐条淘汰：
   // 墓碑只服务在途快照窗口，登记表删除后重放本就不会再见到该 id，超限
-  // 丢弃是安全的。
+  // 丢弃是安全的——但在途窗口内的墓碑除外（reviewer P3）：会话切换发出的
+  // get_pending_approvals 快照可能包含某条刚落定的审批，其墓碑正是回程
+  // 拦截的唯一证据；足够多的无关决议（absent 卡 + 未终态 target turn，
+  // 终态代栅栏管不到）能在旧快照回程前把它挤出 512 上限，已决审批被当
+  // 活卡插回，后端不会再对该请求授权。因此在途快照窗口内落下的墓碑被
+  // pin 住（sessions.js 重放发出/回程维护 approvalReplayInFlight 计数，
+  // 窗口关闭后按 sid 释放 approvalReplayPinnedTombstones），淘汰跳过被钉
+  // 条目；无未钉条目可淘汰时允许 map 暂时超限，钉集合随快照回程释放。
   function approvalTombstoneMap() {
     if (!state.approvalReplayTombstones) state.approvalReplayTombstones = new Map();
     return state.approvalReplayTombstones;
   }
   function tombstoneApproval(sid, approvalId) {
     const map = approvalTombstoneMap();
-    if (map.size >= 512) {
-      const oldest = map.keys().next();
-      if (!oldest.done) map.delete(oldest.value);
+    const key = String(sid) + "\u0000" + String(approvalId);
+    const inFlight = (state.approvalReplayInFlight && state.approvalReplayInFlight.get(String(sid))) || 0;
+    if (inFlight > 0) {
+      if (!state.approvalReplayPinnedTombstones) state.approvalReplayPinnedTombstones = new Set();
+      state.approvalReplayPinnedTombstones.add(key);
     }
-    map.set(String(sid) + "\u0000" + String(approvalId), true);
+    if (map.size >= 512) {
+      for (const oldest of map.keys()) {
+        if (state.approvalReplayPinnedTombstones && state.approvalReplayPinnedTombstones.has(oldest)) continue;
+        map.delete(oldest);
+        break;
+      }
+    }
+    map.set(key, true);
   }
   function approvalIsTombstoned(sid, approvalId) {
     return !!approvalId && approvalTombstoneMap().has(String(sid) + "\u0000" + String(approvalId));

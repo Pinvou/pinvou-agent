@@ -787,8 +787,9 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
   // 审批重放墓碑（评审 P2，与 chat-events.js 同键同界）：重放的
   // get_pending_approvals 快照在 await 期间可能已从另一表面落定——live 的
   // chat:approval_resolved 落空时留下的墓碑，拦住旧快照回程把已决审批当
-  // 活卡插回。键带 sid；超限逐条淘汰是安全的（登记表删除后重放本就不会
-  // 再见到该 id）。
+  // 活卡插回。键带 sid；超限逐条淘汰时跳过在途快照钉住的条目（见下方
+  // replayPendingApprovals 的窗口计数；「登记表删除后重放本就不会再见到
+  // 该 id」只对不在任何在途窗口内的墓碑成立）。
   function approvalIsTombstoned(sid, approvalId) {
     const map = state.approvalReplayTombstones;
     return !!approvalId && !!map && map.has(String(sid) + "\u0000" + String(approvalId));
@@ -802,13 +803,40 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     const map = state.approvalReplayTerminalSeq;
     return (map && map.get(String(sid))) || 0;
   }
+  // 在途重放窗口计数（reviewer P3）：快照发出到回程之间落下的 resolved
+  // 墓碑可能正是回程拦截所需的唯一证据，512 淘汰不得把它挤掉。窗口内
+  // chat-events.tombstoneApproval 把键记入 approvalReplayPinnedTombstones
+  // 并在淘汰时跳过；本侧在窗口关闭（最后一个在途快照回程）后按 sid 前缀
+  // 释放 pin，集合不跨窗口累积。
+  function releaseApprovalReplayPins(sid) {
+    const pinned = state.approvalReplayPinnedTombstones;
+    if (!pinned) return;
+    const prefix = String(sid) + "\u0000";
+    for (const key of pinned) {
+      if (key.startsWith(prefix)) pinned.delete(key);
+    }
+  }
   async function replayPendingApprovals(sid) {
     if (!sid) return;
     const terminalFence = approvalTerminalSeq(sid);
-    let pending = [];
-    try { pending = await invoke("get_pending_approvals", { sessionId: sid }) || []; }
-    catch { return; }
-    if (!pending.length) return;
+    if (!state.approvalReplayInFlight) state.approvalReplayInFlight = new Map();
+    const flightKey = String(sid);
+    state.approvalReplayInFlight.set(flightKey, (state.approvalReplayInFlight.get(flightKey) || 0) + 1);
+    let pending = null;
+    try {
+      pending = await invoke("get_pending_approvals", { sessionId: sid }) || [];
+    } catch {
+      pending = null; // 读取失败静默跳过：恢复是尽力而为，不得阻塞会话切换
+    } finally {
+      const remaining = (state.approvalReplayInFlight.get(flightKey) || 1) - 1;
+      if (remaining <= 0) {
+        state.approvalReplayInFlight.delete(flightKey);
+        releaseApprovalReplayPins(sid);
+      } else {
+        state.approvalReplayInFlight.set(flightKey, remaining);
+      }
+    }
+    if (!pending || !pending.length) return;
     if (approvalTerminalSeq(sid) !== terminalFence) return;
     let changed = false;
     runSyncOnSession(sid, function () {
