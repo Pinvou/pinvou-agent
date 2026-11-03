@@ -316,9 +316,7 @@ fn finish_organize_report(report: &mut MemoryOrganizeReport) {
         // 存储根;desktop 日志保留原始明细。
         let raw = format!("persist organize history: {error}");
         eprintln!("[memory] {raw}");
-        let detail = crate::platform::paths::redact_storage_prefix(&format!(
-            "persist organize history: {error}"
-        ));
+        let detail = crate::platform::paths::redact_storage_prefix(&raw);
         report.warnings.push(detail);
     }
     append_memory_review_diagnostic(
@@ -355,6 +353,19 @@ pub fn load_organize_history() -> Vec<MemoryOrganizeReport> {
     values
         .into_iter()
         .filter_map(|value| serde_json::from_value::<MemoryOrganizeReport>(value).ok())
+        .map(|mut report| {
+            // Round-16 follow-up 复审(M3):创建侧折叠(apply 阶段六臂 +
+            // persist 警告)只管本 PR 之后入库的条目;历史文件里更早的条目
+            // (≤ ORGANIZE_HISTORY_MAX_REPORTS,自然轮转淘汰)warnings 仍带
+            // 原始存储根绝对路径,而本查询出站(Web 允许清单内)。读路径统
+            // 一补折叠:redact 幂等,已折叠条目二次折叠为无操作。
+            report.warnings = report
+                .warnings
+                .iter()
+                .map(|warning| crate::platform::paths::redact_storage_prefix(warning))
+                .collect();
+            report
+        })
         .collect()
 }
 

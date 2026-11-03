@@ -3289,6 +3289,53 @@ async fn organize_memory_without_content_skips_llm_and_reports_no_change() {
     assert_eq!(load_organize_history().len(), 1);
 }
 
+// Round-16 follow-up 复审(M3):创建侧折叠只覆盖本 PR 之后入库的条目;
+// 历史文件里更早的条目 warnings 仍带原始存储根绝对路径,而本查询出站
+// (get_memory_organize_history 在 Web 允许清单内)。读路径统一补折叠:
+// 遗留条目出站为 ~/.pinvou3 形态;redact 幂等,已折叠/无路径条目原样
+// 通过;下一轮 persist(load→insert→truncate→write)顺带把文件落盘 healed。
+#[test]
+fn organize_history_readback_folds_legacy_raw_storage_prefixes() {
+    let home = IsolatedPinvouHome::new("organize-history-legacy-fold");
+    let raw_path = super::io::organize_history_path();
+    std::fs::create_dir_all(raw_path.parent().unwrap()).unwrap();
+    let legacy_report = serde_json::json!({
+        "started_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:00:01Z",
+        "model": "legacy",
+        "scanned": {"preference": 1},
+        "deleted": {},
+        "updated": {},
+        "merged": {},
+        "skipped_sensitive": 0,
+        "no_change": true,
+        "warnings": [
+            format!("persist organize history: failed writing {}", raw_path.display()),
+            "clean warning without any path".to_string(),
+        ],
+    });
+    write_json_atomic(&super::io::organize_history_path(), &vec![legacy_report]).unwrap();
+
+    let history = load_organize_history();
+    assert_eq!(history.len(), 1);
+    let warnings = &history[0].warnings;
+    assert_eq!(warnings.len(), 2);
+    assert!(
+        warnings[0].starts_with("persist organize history: failed writing ~/.pinvou3/"),
+        "the legacy raw storage-root path must fold on readback, got {:?}",
+        warnings[0]
+    );
+    assert!(
+        !warnings[0].contains(&home.root.display().to_string()),
+        "the folded warning must not retain the raw home prefix"
+    );
+    assert_eq!(warnings[1], "clean warning without any path");
+
+    // 读侧折叠幂等:二次读取与首读完全一致(不会出现双重折叠变形)。
+    let again = load_organize_history();
+    assert_eq!(again[0].warnings, history[0].warnings);
+}
+
 #[tokio::test]
 async fn organize_memory_requires_memory_enabled() {
     let _home = IsolatedPinvouHome::new("organize-disabled");
