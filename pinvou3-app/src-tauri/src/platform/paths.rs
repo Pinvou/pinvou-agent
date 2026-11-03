@@ -80,9 +80,9 @@ fn replace_ascii_case_insensitive(text: &str, from: &str, to: &str) -> String {
                     out.push(ch);
                     i += ch.len_utf8();
                 }
-                // `i` always advances by whole characters, so the slice is
-                // exhausted rather than mid-char; the trailing push below
-                // copies nothing for an empty remainder.
+                // Unreachable: the loop condition guarantees `text[i..]` is
+                // non-empty, so `chars().next()` is always `Some` (the
+                // loop advances by whole characters only).
                 None => break,
             }
         }

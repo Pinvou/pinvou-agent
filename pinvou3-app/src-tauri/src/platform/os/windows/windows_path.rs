@@ -102,12 +102,14 @@ pub fn filesystem_path_identity_key(path: &str) -> String {
     // $UpCase 解析,ı→I 这类保证等价此前被 to_lowercase 漏判成不同 key,
     // 已授予的祖先根会被静默丢弃(Round-15 复审 F2)。
     //
-    // 已知残余(Round-15 复审 F1,文档化):Rust 的 to_lowercase 对
-    // İ(U+0130) 产生 `i`+U+0307,与 `i`+U+0307 自身同键——而 $UpCase 视
-    // 二者为不同文件,这里发生 over-fold(两个不同目录可能同键)。影响
-    // 限于 grant 嵌套判定把一个异拼目录当成已授予根(后续操作落在新目录
-    // 上,不泄露原根内容);完美模拟 $UpCase 需要 std 之外的简单大小写映
-    // 射,残留按已接受取舍记录。
+    // 已知残余(Round-15 复审 F1,文档化;Round-17 复审补全影响面):Rust
+    // 的 to_lowercase 对 İ(U+0130) 产生 `i`+U+0307,与 `i`+U+0307 自身同
+    // 键——而 $UpCase 视二者为不同文件,这里发生 over-fold(两个不同目录
+    // 可能同键)。影响双向:grant 嵌套判定可能把一个 İ/i̇ 异拼的兄弟目录
+    // 当成已授予根(其内容随后可在该授予根下访问),也可能把操作落在新
+    // 目录上(不泄露原根内容)。需要 İ/i̇ 拼写的兄弟目录才可触达,构造性
+    // 强;完美模拟 $UpCase 需要 std 之外的简单大小写映射,残留按已接受
+    // 取舍记录。
     let folded = super::super::interface::volume_fold_spelling(&stripped.replace('\\', "/"));
     if !has_win32_normalization_sensitive_component(path) {
         return folded;
