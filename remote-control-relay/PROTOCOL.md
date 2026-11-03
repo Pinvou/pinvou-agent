@@ -237,6 +237,7 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 | `bad_json` | A text frame is not valid JSON, repeats the `v` key in any object, or nests any value more than 128 levels deep. |
 | `bad_message` | The parsed frame is not a JSON object. |
 | `binary_unsupported` | A binary WebSocket frame arrived. |
+| `frame_too_large` | An authenticated web frame whose size plus the relay's forward envelope would exceed the desktop's inbound frame bound (4 MiB − 64 KiB). The connection stays open; only the frame is refused. Desktop→web frames are not measured against this bound — the browser has no matching cap. |
 | `unsupported_protocol_version` | `v` is missing or is not `2`. |
 | `legacy_token_alias_unsupported` | The message carries a legacy top-level `token` or `pairing_token` field. |
 | `authentication_required` | A non-handshake message arrived before authentication completed. |

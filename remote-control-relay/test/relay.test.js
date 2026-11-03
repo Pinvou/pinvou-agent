@@ -2208,6 +2208,55 @@ test("rejects a web frame whose envelope would exceed the desktop bound with fra
   }
 });
 
+test("forwards a legal desktop event inside the old role-blind false-positive window", async () => {
+  // Round-16 复审(M3):桌面入站界只约束 web→desktop。落在
+  // 「桌面界限 − 信封余量 < 帧大小 ≤ 桌面自身的出站上限」窗口内的
+  // desktop→web 事件此前被误判 frame_too_large 并静默丢弃(浏览器无
+  // 上限,转发本可成功);角色收窄后必须照常送达 web 客户端。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_role_scope_${Date.now()}`;
+  const accessToken = "access-token-role-scope-00000000000001";
+  const desktopSecret = "desktop-secret-role-scope-000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    // 桌面合法事件(≤ 桌面自身出站上限 4,128,768),但加转发信封余量后
+    // 落入旧误判窗(> 4,128,768 − 512)。
+    const target = 4_128_543;
+    const base = JSON.stringify({
+      v: 2,
+      type: "event",
+      event: "chat:delta",
+      stream_epoch: "epoch-big",
+      seq: 1,
+      payload: "",
+    });
+    const padLength = target - Buffer.byteLength(base);
+    const frame = base.replace('"payload":""', `"payload":"${"x".repeat(padLength)}"`);
+    assert.equal(Buffer.byteLength(frame), target);
+    const eventPromise = nextMessage(web.ws, "event");
+    desktop.ws.send(frame);
+
+    const event = await eventPromise;
+    assert.equal(event.payload.length, padLength,
+      "the desktop event must reach the web client intact: the desktop bound \
+       only governs web→desktop forwards, not this direction");
+    await expectNoMessage(desktop.ws, "error");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
 test("survives a desktop frame the relay cannot serialize and lets a fresh web client rejoin with the rejoin flag", async () => {
   const isolated = await spawnRelay();
   const endpointId = `endpoint_deep_event_${Date.now()}`;
@@ -2224,14 +2273,24 @@ test("survives a desktop frame the relay cannot serialize and lets a fresh web c
 
     if (await deepFrameRejectedAtIngress(desktop, web, isolated)) return;
 
-    await waitForClose(web.ws);
+    // #781 之后该帧类已在入口被拒(上面的 bad_json 断言),桌面帧不再能
+    // 杀死 web socket——旧尾巴的 waitForClose 在现行为下不可达(round-16
+    // 复审 M4:测试名承诺的重连旗标从未被驱动)。改为显式断开/重入,使
+    // 本测试对名字承诺的 web_rejoining=true 有真实断言。
     assert.equal(desktop.ws.readyState, desktop.ws.OPEN);
     await expectNoMessage(desktop.ws, "error");
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
 
-    // A fresh web client joins and the desktop forwards normally again.
+    const disconnected = nextMessage(desktop.ws, "web_client_disconnected");
+    closeSocket(web.ws);
+    await disconnected;
+    const rejoinNotice = nextMessage(desktop.ws, "web_client_connected");
     const rejoined = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    const rejoin = await rejoinNotice;
+    assert.equal(rejoin.web_rejoining, true,
+      "a fresh web client after a real disconnect must be flagged as a rejoin, \
+       not a takeover — this is what the test name promises");
     assert.equal(rejoined.joined.desktop_connected, true);
     const event = nextMessage(rejoined.ws, "event");
     desktop.ws.send(JSON.stringify({

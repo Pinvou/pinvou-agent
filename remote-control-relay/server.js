@@ -1448,7 +1448,8 @@ wss.on("connection", (ws, req) => {
 
   ws.on("message", (raw, isBinary) => {
     if (ws.policyClosing || ws.revokePending) return;
-    if (!consumeIngress(ws, rawMessageBytes(raw))) {
+    const rawBytes = rawMessageBytes(raw);
+    if (!consumeIngress(ws, rawBytes)) {
       rejectSocket(ws, "ingress_rate_limited", "websocket ingress rate limit exceeded");
       return;
     }
@@ -1458,7 +1459,6 @@ wss.on("connection", (ws, req) => {
     }
     let msg;
     const rawText = String(raw);
-    const rawBytes = rawMessageBytes(raw);
     try {
       assertNoDuplicateVersionKey(rawText);
       msg = JSON.parse(rawText);
@@ -1479,7 +1479,14 @@ wss.on("connection", (ws, req) => {
       return;
     }
     // Round-15 复审:转发前预检桌面侧帧界(见 DESKTOP_MAX_FRAME_BYTES)。
-    if (rawBytes + DESKTOP_ENVELOPE_HEADROOM_BYTES > DESKTOP_MAX_FRAME_BYTES) {
+    // Round-16 复审(M3):该界是桌面端的入站上限,只约束 web→desktop 方向
+    // ——desktop→web 转发的接收方(浏览器)没有对应上限,按桌面入站界
+    // 拒桌面事件会把合法帧错杀成 frame_too_large(静默丢弃,无重放路)。
+    // 预检只对已认证的 web socket 生效;未认证帧走各自的握手/限流路径。
+    if (
+      ws.role === "web"
+      && rawBytes + DESKTOP_ENVELOPE_HEADROOM_BYTES > DESKTOP_MAX_FRAME_BYTES
+    ) {
       send(ws, {
         v: 2,
         type: "error",
