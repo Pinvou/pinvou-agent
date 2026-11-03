@@ -499,9 +499,14 @@ async function planStuckReplan(itemId) { return pinvouSharedtauriInteraction().p
       // setting is disabled. The authoritative re-read converges the chip to
       // what the backend actually kept; a re-read failure must not mask the
       // original error, so the rollback value above stays the fallback.
+      // syncModeState 同款 epoch 纪律：重读发起前捕获、await 返回后校验——
+      // 窗口内落地的 chat:mode_changed 权威广播已 bump epoch，此读取即陈旧：
+      // 跳过写回（保留上面 rollback 值；权威值已由广播经收敛点落位），否则
+      // 旧快照会把权威值打回去，直到下一次事件才恢复一致（round-7 复核）。
+      const epoch = modeStateEpochs[sid] || 0;
       try {
         const ms = await invoke("get_mode_state", { sessionId: sid });
-        applyAuthoritativeModeState(sid, ms);
+        if ((modeStateEpochs[sid] || 0) === epoch) applyAuthoritativeModeState(sid, ms);
       } catch { /* keep the optimistic rollback value */ }
     }
     notify();

@@ -53,6 +53,25 @@ function loadInteractionRuntime() {
       return deferred[name];
     },
   };
+  // #263 注入的权威写回收敛点（bridge.js）：任何权威 modeState 写回必须经它
+  // （bump epoch + 定向写）。mock 镜像真实实现的 tri-mode 收敛形状（ask 缺省
+  // 开、multi_agent 缺失保留当前显示），走 runSyncMock 保留路由证据。它同时
+  // 是 chat:mode_changed 广播的落点（chat-events 处理器只做
+  // applyAuthoritativeModeState(sid, payload)），经 runtime.broadcastModeState
+  // 暴露给用例，模拟「广播在重读窗口内落地」。
+  function applyAuthoritativeModeStateMock(sid, st) {
+    epochTable[sid] = (epochTable[sid] || 0) + 1;
+    runSyncMock(sid, function () {
+      state.modeState = {
+        mode: st.mode || 'yolo',
+        multiAgent: st.multi_agent === undefined
+          ? !!(state.modeState && state.modeState.multiAgent)
+          : !!st.multi_agent,
+        askOnGuardrail: st.ask_on_guardrail == null ? true : !!st.ask_on_guardrail,
+      };
+    });
+  }
+  runtime.broadcastModeState = applyAuthoritativeModeStateMock;
   runtime.api = factory({
     state,
     notify() { runtime.notifyCount += 1; },
@@ -62,16 +81,9 @@ function loadInteractionRuntime() {
     addChatItem() {},
     timeStr() { return ''; },
     runSyncOnSession: runSyncMock,
-    // #263 注入的权威写回收敛点（bridge.js）：任何权威 modeState 写回必须经它
-    // （bump epoch + 定向写）。mock 镜像真实实现，走 runSyncMock 保留路由证据。
     modeStateEpochs: epochTable,
     bumpModeStateEpoch(sid) { epochTable[sid] = (epochTable[sid] || 0) + 1; },
-    applyAuthoritativeModeState(sid, st) {
-      epochTable[sid] = (epochTable[sid] || 0) + 1;
-      runSyncMock(sid, function () {
-        state.modeState = { mode: st.mode || 'yolo', multiAgent: !!st.multi_agent };
-      });
-    },
+    applyAuthoritativeModeState: applyAuthoritativeModeStateMock,
     getBuffer() { return null; },
     flushAssistantMessageToHistory() {},
     resetPendingAssistant() {},
@@ -274,4 +286,28 @@ test('setAskOnGuardrail 失败后重读 get_mode_state 收敛权威态', async (
   const reReads = rt.invokeCalls.filter(c => c.name === 'get_mode_state');
   assert.ok(reReads.length >= 1,
     '失败路径必须重读权威态（两个相反翻转都失败时各自回放捕获的乐观值，芯片会与持久值背离）');
+});
+
+// ── round-7：失败重读的 epoch 护栏 ──────────────────────────────────
+// 场景：toggle 失败 → 回滚 → 重读在途窗口内，chat:mode_changed 权威广播落地
+// （bump epoch + 经收敛点写回）。随后重读返回的是广播前的陈旧快照：epoch
+// 校验必须丢弃它，否则旧读取把广播值打回 pre-click 值，直到下一次事件。
+test('setAskOnGuardrail 失败重读窗口内落地的 mode_changed 广播存活', async () => {
+  const rt = loadInteractionRuntime();
+  rt.state.modeState = { mode: 'yolo', multiAgent: false, askOnGuardrail: false };
+  const setAsk = rt.defer('set_ask_on_guardrail');
+  const reRead = rt.defer('get_mode_state');
+  const p = rt.api.setAskOnGuardrail('chat-a', true);       // 乐观翻转 ask=true
+  setAsk.reject(new Error('persist failed'));               // 失败 → 回滚 ask=false
+  // setImmediate 排空微任务：跨 realm await 多耗 tick，须确保 catch 回滚已
+  // 落地、重读已发起，广播才算落在「重读窗口内」。
+  await new Promise(resolve => setImmediate(resolve));
+  // 广播在重读窗口内落地（负载形状同 chat:mode_changed：mode/ask_on_guardrail）。
+  rt.broadcastModeState('chat-a', { mode: 'plan', ask_on_guardrail: true });
+  reRead.resolve({ mode: 'yolo', multi_agent: false, ask_on_guardrail: false }); // 陈旧快照
+  await p;
+  assert.equal(rt.state.modeState.askOnGuardrail, true,
+    '广播值必须存活：陈旧重读快照被 epoch 校验丢弃（无护栏时被回写为 pre-click 值 false）');
+  assert.equal(rt.state.modeState.mode, 'plan', '广播写回的 mode 同样不得被陈旧快照覆盖');
+  assert.equal(rt.errorItems.length, 1, '失败提示恰好一条（重读护栏不改变失败路径的回滚与提示）');
 });
