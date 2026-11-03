@@ -4943,11 +4943,17 @@ async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm();
   }
 
   // ── lane global defaults (work/code split, aligned with the tauri bridge) ───────
-  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认，缺省 yolo。
+  // 草稿态（无 active 会话）的 modeState：取当前 lane 的全局默认；绑定草稿
+  // 兜底 plan、未绑定草稿兜底 auto（与桌面收敛点同口径，绝不兜底最宽档）。
   function currentDraftModeState() {
-    const lane = state.modeLane === "code" ? "code" : "work";
+    const boundDraft = !!state.draftWorkspacePath;
+    // Bound drafts always show the code lane default (plan fallback, the safe
+    // side, same as the desktop bridge); unbound drafts follow the current
+    // lane (design was merged into work, #428) and fall back to auto, which
+    // is what the backend resolves for a fresh unbound plain session.
+    const lane = boundDraft || state.modeLane === "code" ? "code" : "work";
     const d = state.modeDefaults && state.modeDefaults[lane];
-    return { mode: d || "yolo", multiAgent: false };
+    return { mode: d || (boundDraft ? "plan" : "auto"), multiAgent: false };
   }
   async function refreshModeDefaults() {
     try {
@@ -5091,7 +5097,16 @@ function thinkingTool(name) { return pinvouSharedweb().thinkingTool(name); }
 function thinkingIdle() { return pinvouSharedweb().thinkingIdle(); }
 function stopThinking() { return pinvouSharedweb().stopThinking(); }
   function applyModeFromState(st) {
-    state.modeState = { mode: st.mode || "yolo", multiAgent: !!st.multi_agent };
+    // tri-mode 权威形状与 tauri applyAuthoritativeModeState 同一收敛形状：
+    // ask_on_guardrail 缺失按默认开（后端 default_true；旧负载不把开关翻成
+    // 关）；multi_agent 缺失 = 负载不携带该字段，保留当前显示值不得误置 false。
+    state.modeState = {
+      mode: st.mode || "yolo",
+      multiAgent: st.multi_agent === undefined
+        ? !!(state.modeState && state.modeState.multiAgent)
+        : !!st.multi_agent,
+      askOnGuardrail: st.ask_on_guardrail == null ? true : !!st.ask_on_guardrail,
+    };
   }
 
   // 权威 modeState 写回收敛点（评审 P1，与 tauri 端对齐）：任何「invoke 返回 /
