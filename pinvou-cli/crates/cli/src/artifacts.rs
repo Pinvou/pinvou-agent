@@ -128,7 +128,12 @@ fn crosses_sensitive_component_suffix(canonical: &Path) -> Option<&'static str> 
 /// the prefix list here silently missed the macOS `/private/{etc,var,tmp}`
 /// alias expansion that `check_sensitive_components` gained — canonicalized
 /// spellings on macOS resolve `/etc/...` to `/private/etc/...`, which matches
-/// no list entry, so the GUI refused paths this mirror shipped.
+/// no list entry, so the GUI refused paths this mirror shipped. Disclosed
+/// asymmetry (Round-15 复审 F3): this lane keeps the pre-PR shape of
+/// applying the component legs without the system-prefix leg; the upstream
+/// list widening that added `/var/root/` therefore widens the documented
+/// root-install divergence (GUI refuses every artifact under a root home,
+/// the CLI still serves them) rather than closing it.
 pub(crate) fn check_sensitive_path(canonical: &Path) -> Result<(), String> {
     check_sensitive_canonical(canonical, cfg!(target_os = "macos"))
 }
@@ -682,6 +687,19 @@ fn write(
 
 #[cfg(test)]
 mod tests {
+    /// Round-15 复审 F1:生产接线的别名 flag(`cfg!(target_os = "macos")`)
+    /// 本身无钉——既有别名钉全部驱动显式参数的 helper,flag 回归成 `false`
+    /// 时 macOS 的 `/private/etc/*` 车道在全部测试保持绿的状态下重新敞开
+    /// (round-6 M2 孔)。macOS 门控的行为钉经真实生产入口驱动真实 flag;
+    /// 其余平台该入口的行为由显式参数钉覆盖。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn system_prefix_hits_run_through_the_production_alias_flag() {
+        assert!(super::check_sensitive_path(Path::new("/private/etc/shadow")).is_err());
+        assert!(super::check_sensitive_path(Path::new("/private/var/root/x")).is_err());
+        assert!(super::check_sensitive_path(Path::new("/etc/shadow")).is_err());
+    }
+
     use super::*;
     // Round-6 复审:生产半边已上收为上游组合谓词,系统前缀清单只剩测试
     // 在用——随用随导入,避免非测试构建的 unused_imports 硬门报错。

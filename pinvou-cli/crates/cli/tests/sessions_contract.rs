@@ -1304,15 +1304,19 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     );
     // Round-11 复审 minor:写向同样经前缀/尾序列腿(.env.local 与
     // .m2/settings.xml 的写拒绝在 resolve_session_artifact 上游,文件不动)。
-    expect_failed(&["pinvou", "artifacts", "write", &id, ".env.local", "--stdin"]);
-    expect_failed(&[
-        "pinvou",
-        "artifacts",
-        "write",
-        &id,
-        ".m2/settings.xml",
-        "--stdin",
-    ]);
+    // Round-15 复审 F2:此前只断言 expect_failed——markdown 后缀检查会先
+    // 拒绝非 .md 目标,敏感门被删时钉仍全绿(装饰性)。断言拒绝码使
+    // 门删除转红;`expect_failed` 返回 CliError,消息携带稳定码。
+    for target in [".env.local", ".m2/settings.xml"] {
+        let error = expect_failed(&["pinvou", "artifacts", "write", &id, target, "--stdin"]);
+        assert!(
+            error
+                .to_string()
+                .contains("artifact_crosses_sensitive_component"),
+            "write to {target} must be refused by the sensitive gate, not the markdown \
+             suffix check; got: {error}"
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(workspace_dir.join(".m2").join("settings.xml")).unwrap(),
         "<server/>"
