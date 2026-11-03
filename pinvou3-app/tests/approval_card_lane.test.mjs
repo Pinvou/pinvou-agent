@@ -451,10 +451,10 @@ try {
     assert.ok(setSessionAt > draftAt, '草稿分支先于已物化会话的 setSessionMode 路径');
     assert.match(handler, /await bridge\.interaction\.setDraftMode\(target\);/,
       '草稿态 auto/yolo 切换写 lane 全局默认（setDraftMode），不吞没');
-    assert.match(handler, /chatYoloGateAllows\(null, 'yolo'\)/,
+    assert.match(handler, /chatYoloGateAllows\(null\)/,
       '未绑定草稿点 Yolo 过一次性确认门');
-    assert.match(chatView, /let boundTarget = chatYoloGateApplies\(\{[\s\S]{0,300}?if \(!boundTarget && !gateSid && gateTarget === 'yolo'\) boundTarget = true;/,
-      '草稿 Yolo 的门判定扩展（lane 默认作用于未来所有会话）');
+    assert.match(chatView, /await resolveBindingForGate\(gateSid\);[\s\S]{0,400}?if \(typeof bridge\.interaction\.getCodePermissionPrefs === 'function'\) \{[\s\S]{0,400}?needsYoloConfirmation\(prefs\)/,
+      'round-7 P2：门判定不再按目录绑定收窄——未绑定会话同样咨询 prefs（entry-scoped）');
   }
 
   // round-2 M4：codex Yolo 确认门在 entry 捕获发起会话，确认回程切会话也

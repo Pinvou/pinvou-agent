@@ -219,7 +219,7 @@ import {
 import { ComposerWorkspaceSelector } from './ComposerWorkspaceSelector.jsx';
 import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
-import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
+import { CHAT_YOLO_GATE_UNKNOWN_BINDING, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
 import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
 import {
   VoiceComposerButton,
@@ -2904,19 +2904,21 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // bridge without prefs support); false when the confirmation card was
       // opened (or the click went stale mid-await and the action must be
       // abandoned).
-      async function chatYoloGateAllows(gateSid, gateTarget) {
-        const sessionBinding = await resolveBindingForGate(gateSid);
+      async function chatYoloGateAllows(gateSid) {
+        // Round-7 review P2: the gate is a YOLO-entry gate, not a
+        // workspace-binding gate — an unbound materialized session is exactly
+        // the population that can flip to full-auto without a second look,
+        // and the codex lane already gates every Yolo entry. The binding
+        // query stays (it refreshes the chip cache); the adjudication no
+        // longer keys on it. Prefs still decide (needsYoloConfirmation is
+        // false once yolo_confirmed is recorded), so this only widens who
+        // gets asked, never bypasses anyone.
+        await resolveBindingForGate(gateSid);
         // If the user switched away during the query round-trip, the
         // adjudication belongs to the session captured at click time — the
         // action must be abandoned.
         if (gateSid !== activeSessionIdRef.current) return false;
-        let boundTarget = chatYoloGateApplies({
-          activeSessionId: gateSid,
-          sessionBinding,
-          draftWorkspacePath: bs && bs.draftWorkspacePath,
-        });
-        if (!boundTarget && !gateSid && gateTarget === 'yolo') boundTarget = true;
-        if (boundTarget && typeof bridge.interaction.getCodePermissionPrefs === 'function') {
+        if (typeof bridge.interaction.getCodePermissionPrefs === 'function') {
           const prefs = await bridge.interaction.getCodePermissionPrefs();
           // Re-check after the second await as well.
           if (gateSid !== activeSessionIdRef.current) return false;
@@ -2998,7 +3000,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         // needsYoloConfirmation 对草稿生效，两车道同约）。
         if (!activeSessionId) {
           if (target !== 'auto' && target !== 'yolo') return;
-          if (target === 'yolo' && !(await chatYoloGateAllows(null, 'yolo'))) return;
+          if (target === 'yolo' && !(await chatYoloGateAllows(null))) return;
           await bridge.interaction.setDraftMode(target);
           return;
         }

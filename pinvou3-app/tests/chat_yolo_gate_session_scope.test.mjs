@@ -40,8 +40,8 @@ assert.doesNotMatch(
 // 2. handleModeChipSwitch re-checks the latest ref value after the binding query await.
 assert.match(
   src,
-  /const sessionBinding = await resolveBindingForGate\(gateSid\);\s*\n[\s\S]*?if \(gateSid !== activeSessionIdRef\.current\) return;/,
-  'gate must re-check the active session after the binding query await',
+  /await resolveBindingForGate\(gateSid\);[\s\S]{0,200}?if \(gateSid !== activeSessionIdRef\.current\) return false;/,
+  'gate must re-check the active session after the binding query await (round-7 P2: the query result no longer feeds the adjudication, but the await and its staleness re-check stay)',
 );
 
 // 3. Re-check again after the prefs query await (the second await).

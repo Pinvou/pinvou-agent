@@ -1,7 +1,7 @@
 /**
  * Logic tests for regular-chat "bound workspace" sessions (safety posture
  * matching the code mode):
- *   - Pure logic: chatYoloGateApplies (which targets the confirmation gate
+ *   - Pure logic: the binding-chip decision (the confirmation gate went
  *     applies to) and shouldShowWorkspaceBindingChip (when the indicator
  *     shows);
  *   - sessions bridge: getSessionWorkspaceBinding normalization and failure
@@ -26,16 +26,20 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const bridgeDir = path.join(here, '..', 'src', 'platform', 'tauri', 'bridge');
 
 const {
-  chatYoloGateApplies,
   shouldShowWorkspaceBindingChip,
 } = await import('../src/features/chat/chat-workspace-binding.js');
 // ── Pure logic: gate applicability ─────────────────────────────────────
-test('chatYoloGateApplies：已生成会话看目录绑定，草稿看 draftWorkspacePath', () => {
-  assert.equal(chatYoloGateApplies({ activeSessionId: 's1', sessionBinding: '/work/p', draftWorkspacePath: null }), true);
-  assert.equal(chatYoloGateApplies({ activeSessionId: 's1', sessionBinding: null, draftWorkspacePath: '/work/p' }), false,
-    '活动会话未绑定时不因残留草稿选择误触发');
-  assert.equal(chatYoloGateApplies({ activeSessionId: null, sessionBinding: null, draftWorkspacePath: '/work/p' }), true);
-  assert.equal(chatYoloGateApplies({ activeSessionId: null, sessionBinding: null, draftWorkspacePath: null }), false);
+test('round-7 P2：Yolo 确认门 entry-scoped，绑定只管 chip 不再收窄门判定', () => {
+  // chatYoloGateApplies 已删除：门判定不再按目录绑定收窄（未绑定会话
+  // 同样过 needsYoloConfirmation 咨询，codex 车道同约）。判定逻辑内联在
+  // ChatView.chatYoloGateAllows，由 approval_card_lane 的源码钉咬住；
+  // 本文件保留 binding-chip 纯逻辑的覆盖。
+  const source = fs.readFileSync(
+    path.join(here, '..', 'src', 'features', 'chat', 'chat-workspace-binding.js'),
+    'utf8',
+  );
+  assert.ok(!/chatYoloGateApplies/.test(source), '绑定收窄的辅助函数不得回潮');
+  assert.match(source, /entry-scoped/, '门判定的 entry-scoped 语义须就地注明');
 });
 
 // ── Pure logic: binding indicator visibility ──────────────────────────────────
