@@ -110,6 +110,43 @@ for (const method of Object.keys(api.computerUse)) {
 }
 assert.equal(api.sendMessage, undefined, 'Web flat command facade must stay private');
 
+// 评审 P2：Web 面的 Auto→Yolo 逃生（interaction.setSessionMode）必须真实
+// 接线。此前该方法只存在于桌面桥，ChatView 的存在性守卫在 Web 早退——
+// Auto 会话的模式芯片 Yolo 动作是死按钮，Web 发送门（webAutoSendBlocked）
+// 把浏览器用户锁死在无法发送的 Auto 档。域面存在性由上方 expectedApi
+// 契约 deepEqual 钉住；这里钉运行时行为：invoke 定向裁决会话、权威写回
+// 收敛点拿到返回态、可选 askOnGuardrail 仅显式携带、无 sid 保持桌面同款
+// 纯 no-op（composer-controls 的兜底 setSessionMode(null,'auto') 在 Web
+// 不得变成可达的进入-Auto 写入）。本块置于此处：后续步骤会往 state 灌
+// 附件/粘贴等重状态，notify 的发布校验不为本块背锅。
+let webSetSessionModeArgs = null;
+invokeResponse = async (command, args) => {
+  if (command !== 'set_session_mode') return null;
+  webSetSessionModeArgs = { ...args };
+  return { mode: 'yolo', multi_agent: false };
+};
+await api.interaction.setSessionMode('web-auto-sid', 'yolo');
+assert.deepEqual(
+  webSetSessionModeArgs,
+  { sessionId: 'web-auto-sid', mode: 'yolo' },
+  'web setSessionMode must invoke set_session_mode pinned to the adjudicated session',
+);
+await api.interaction.setSessionMode('web-auto-sid', 'auto', false);
+assert.deepEqual(
+  webSetSessionModeArgs,
+  { sessionId: 'web-auto-sid', mode: 'auto', askOnGuardrail: false },
+  'web setSessionMode must carry an explicit askOnGuardrail override',
+);
+webSetSessionModeArgs = null;
+await api.interaction.setSessionMode(null, 'auto');
+await api.interaction.setSessionMode('', 'auto');
+assert.equal(
+  webSetSessionModeArgs,
+  null,
+  'web setSessionMode must stay a no-op without a session id (entering Auto stays desktop-only)',
+);
+invokeResponse = async () => null;
+
 snapshotReads = 0;
 const state = api.state.getMany(['sessions', 'settings']);
 assert.equal(snapshotReads, 1, 'getMany must derive all slices from one consistent state snapshot');

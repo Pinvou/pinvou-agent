@@ -118,6 +118,26 @@ assert.doesNotMatch(
   'the gate paths must not fall back to the live-active exitPlanToYolo() form (any call shape)',
 );
 
+// 10. 评审 P2：Auto→Yolo 逃生在 Web 必须可达，而进入 Auto 必须仍被挡住。
+//     Web 桥带 setSessionMode 后，存在性守卫不再区分表面：进入 Auto 若只
+//     靠守卫，浏览器用户会把会话切进一个自己无法发送（webAutoSendBlocked）
+//     也无法决策审批卡（decideApproval 不在 Web 白名单）的档位。
+//     Auto→Yolo 走同一命令、在 Web 可达；进入 Auto 显式挡 Web。
+const autoEntry = src.slice(
+  src.indexOf('if (target === \'auto\') {'),
+  src.indexOf("if (target !== 'yolo') return;"),
+);
+assert.match(
+  autoEntry,
+  /if \(isWeb \|\| typeof bridge\.interaction\.setSessionMode !== 'function'\) return;/,
+  'entering Auto must stay blocked on the web surface (approval cards have no web decision face)',
+);
+assert.match(
+  src,
+  /await bridge\.interaction\.setSessionMode\(gateSid, 'yolo'\)/,
+  'Auto→Yolo must route through the unified set_session_mode with the adjudicated sid',
+);
+
 console.log('chat_yolo_gate_session_scope: ok');
 
 // ── R9 MAJOR 1: the plan-stuck card's Go must pass the same one-time gate ─────────
@@ -183,6 +203,50 @@ assert.match(
   src,
   /useEffect\(\(\) => \{\s*\n\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;/,
   'session switch must clear the pending action',
+);
+
+// ── 评审 P2：Web 面的 Auto→Yolo 逃生 ──────────────────────────────────────
+// Web 桥此前缺 setSessionMode，ChatView 的存在性守卫让 Auto 会话的 Yolo
+// 动作在 Web 静默无操作（发送门把浏览器用户锁死在 Auto 档）。运行时行为
+// 由 web_bridge_domain_contract.test.mjs 钉；这里钉两侧源码契约：
+// 12. Web 桥的 setSessionMode 必须镜像桌面契约：entry 捕获 sid（显式裁决
+//     sid 优先）、统一 set_session_mode invoke、权威 modeState 写回、无
+//     sid 纯 no-op（composer-controls 的兜底 setSessionMode(null,'auto')
+//     在 Web 不得变成可达的进入-Auto 写入）。
+const webSetSessionMode = webBridge.slice(
+  webBridge.indexOf('async function setSessionMode'),
+  webBridge.indexOf('async function setSessionMode') + 1200,
+);
+assert.match(
+  webSetSessionMode,
+  /await invoke\("set_session_mode", args\)/,
+  'web setSessionMode must invoke the unified set_session_mode command',
+);
+assert.match(
+  webSetSessionMode,
+  /applyAuthoritativeModeState\(sid, st\)/,
+  'web setSessionMode must converge through the authoritative modeState write-back',
+);
+assert.match(
+  webSetSessionMode.slice(0, webSetSessionMode.indexOf('try {')),
+  /if \(!sid\) return;/,
+  'web setSessionMode must no-op without a session id before any invoke',
+);
+// 13. ChatView：进入 Auto 仍显式挡 Web（Web 面无审批决策面，decideApproval
+//     不在 Web 白名单），Auto→Yolo 走同一命令、在 Web 可达。
+const webAutoEntry = src.slice(
+  src.indexOf("if (target === 'auto') {"),
+  src.indexOf("if (target !== 'yolo') return;"),
+);
+assert.match(
+  webAutoEntry,
+  /if \(isWeb \|\| typeof bridge\.interaction\.setSessionMode !== 'function'\) return;/,
+  'entering Auto must stay blocked on the web surface (approval cards have no web decision face)',
+);
+assert.match(
+  src,
+  /await bridge\.interaction\.setSessionMode\(gateSid, 'yolo'\)/,
+  'Auto→Yolo must route through the unified set_session_mode with the adjudicated sid',
 );
 
 console.log('chat_yolo_gate_session_scope: ok (incl. bridge-layer no-arg ban)');

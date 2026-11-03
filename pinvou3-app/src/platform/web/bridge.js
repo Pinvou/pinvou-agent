@@ -2819,8 +2819,9 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // 发送受理前的姿态门（评审 P2）：Auto 档会话可能弹出 Web 端无法决策/
   // 重放的审批卡——旧行为在这里照单全收，turn 卡住后才靠事后通告兜底。
   // 在受理前解析会话姿态并显式拒绝该不受支持的执行路径；逃生路径真实
-  // 存在（模式芯片 setPlanModeNext/exitPlanToYolo 在 Web 白名单内，只有
-  // 进入 Auto 的 setSessionMode 是桌面专属）。姿态命令失败不拦发送——
+  // 存在（模式芯片 setPlanModeNext/exitPlanToYolo 在 Web 白名单内，
+  // Auto→Yolo 的 setSessionMode 同样在白名单内——只有进入 Auto 仍由
+  // ChatView 的 Web 门挡住，审批卡在 Web 面无决策面）。姿态命令失败不拦发送——
   // 事后通告仍是竞态兜底；与上方 remote-sync 拦截同一拒绝面（Promise.reject
   // 走调用方既有的失败提示）。
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
@@ -5254,6 +5255,29 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
     } catch (e) { addSystemItemFor(sid, bt("exitPlanFailed") + e); }
     notify();
   }
+  // tri-mode 统一模式切换（评审 P2：Web 面的 Auto→Yolo 逃生此前是死按钮——
+  // ChatView 的存在性守卫早退，Auto 会话的发送门又把用户锁死在无法发送的
+  // 档位）。sid 捕获与 exitPlanToYolo 同一约定：调用方可显式钉住裁决会话，
+  // 无参调用读 live-active；无 sid（草稿态/裁空）保持桌面同款纯 no-op，
+  // composer-controls 的兜底 setSessionMode(null, 'auto') 在 Web 不得变成
+  // 可达的进入-Auto 写入。权威写回一律走 applyAuthoritativeModeState（共享
+  // epoch 表）；失败按触发会话提示，不回滚乐观值（本命令无乐观翻转）。
+  // 进入 Auto 仍是桌面专属：Web 面的审批卡无法在浏览器决策
+  // （decideApproval 不在 Web 白名单），放行进入会把会话钉死在发送门后。
+  async function setSessionMode(targetSessionId, mode, askOnGuardrail) {
+    const sid = typeof targetSessionId === 'string' && targetSessionId
+      ? targetSessionId
+      : state.activeSessionId;
+    if (!sid) return;
+    try {
+      const args = { sessionId: sid, mode };
+      // 可选参数：仅显式传入时携带（undefined 不上线，保持协议指纹最小）。
+      if (askOnGuardrail === true || askOnGuardrail === false) args.askOnGuardrail = askOnGuardrail;
+      const st = await invoke("set_session_mode", args);
+      applyAuthoritativeModeState(sid, st);
+    } catch (e) { addSystemItemFor(sid, bt("switchModeFailed") + e); }
+    notify();
+  }
   // 灯泡 toggle：plan ↔ yolo
 async function setPlanModeNext() { return pinvouSharedweb().setPlanModeNext(); }
   // plan-stuck / fallback / execution-stuck 卡片动作
@@ -6699,6 +6723,9 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     acceptPlan,
     discardPlan,
     exitPlanToYolo,
+    // tri-mode 统一模式切换：Auto→Yolo 逃生在 Web 同样可达（评审 P2）；
+    // 进入 Auto 仍由 ChatView 的 Web 门挡住（Web 面无审批决策面）。
+    setSessionMode,
     setPlanModeNext,
     // tri-mode M1：草稿态三档切换统一走 lane 全局默认（ChatView 草稿分支直调）
     setDraftMode,

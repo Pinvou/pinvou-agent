@@ -150,7 +150,7 @@
     // the related commands are not in the web access-policy allowlist, the capability bit is always false, and the whole domain is an empty stub on the web.
     vllm: {},
     models: domain(["saveModel", "revealModelApiKey", "deleteModel", "setActiveModel", "loadSessionModel", "switchModel", "testModelConnection", "getImageInputCapability", "testImageInputCapability", "probeLocalServerKind"]),
-    interaction: domain(["toggleSuperPerm", "acceptPlan", "discardPlan", "exitPlanToYolo", "setPlanModeNext", "setDraftMode", "setModeLane", "getCodePermissionPrefs", "confirmCodeYolo", "syncModeState", "planStuckReplan", "planStuckGo", "submitUserInput", "cancelUserInput", "summonPinvou", "inspectPinvou", "resolvePinvouReview", "dismissPinvouReview", "editLastTurn"]),
+    interaction: domain(["toggleSuperPerm", "acceptPlan", "discardPlan", "exitPlanToYolo", "setSessionMode", "setPlanModeNext", "setDraftMode", "setModeLane", "getCodePermissionPrefs", "confirmCodeYolo", "syncModeState", "planStuckReplan", "planStuckGo", "submitUserInput", "cancelUserInput", "summonPinvou", "inspectPinvou", "resolvePinvouReview", "dismissPinvouReview", "editLastTurn"]),
     rendering: domain(["renderMarkdown"]),
     // Remote control (desktop web-proxy management) is a desktop-only surface: an empty stub on the web (capability bit
     // always false, web_access_* commands not in the allowlist).

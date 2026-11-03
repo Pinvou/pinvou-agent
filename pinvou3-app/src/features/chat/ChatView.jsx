@@ -3004,9 +3004,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         }
         // Auto（tri-mode 逐项审批档）：无一次性确认门——门只对 yolo 生效。
         // 目标会话在 entry 捕获：await 期间切走也切的是发起会话的 mode。
-        // 桌面专属命令：Web 桥无此方法（desktop-only API），存在性守卫早退。
+        // 进入 Auto 仍是桌面专属（评审 P2 修复后 Web 桥带 setSessionMode，
+        // 存在性守卫不再区分表面）：Web 面的审批卡无法在浏览器决策
+        // （decideApproval 不在 Web 白名单），放行进入会把会话钉死在
+        // Web 发送门（webAutoSendBlocked）之后；Auto→Yolo 逃生走下方
+        // 同一命令，在 Web 可达。
         if (target === 'auto') {
-          if (typeof bridge.interaction.setSessionMode !== 'function') return;
+          if (isWeb || typeof bridge.interaction.setSessionMode !== 'function') return;
           await bridge.interaction.setSessionMode(activeSessionId, 'auto');
           return;
         }
