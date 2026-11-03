@@ -1104,11 +1104,14 @@ mod tests {
             .expect("memory.rs must keep its tests behind #[cfg(test)]");
         let mut arms = 0;
         let mut raw_arms = 0;
-        // Round-15 复审 minor:扫描同时覆盖 `.map_err(|e|` 与
-        // `.map_err(|error|` 两种拼写——此前 organize 命令的两臂用后者
-        // 拼写,本钉看不见,断言信息夸大了覆盖面。
+        // Round-15 复审 minor:扫描覆盖 `.map_err(|e|` 与 `.map_err(|error|`
+        // 两种拼写——此前 organize 命令的两臂用后者拼写,本钉看不见,断言
+        // 信息夸大了覆盖面。Round-16 复审(M6b):改为统一扫描 `.map_err(|`
+        // ——按拼写枚举是打地鼠(`|err|` 拼写突变实证可绕过),闭包参数名
+        // 不属于被钉契约的一部分。
         let scan = production;
-        for spelling in [".map_err(|e|", ".map_err(|error|"] {
+        let spelling = ".map_err(|";
+        {
             let mut pos = 0;
             while let Some(found) = scan[pos..].find(spelling) {
                 arms += 1;
@@ -1126,7 +1129,7 @@ mod tests {
         }
         assert!(
             arms >= 11,
-            "expected the ten folded error arms plus the edit_last_turn chain, found {arms}"
+            "expected the folded error arms plus the edit_last_turn chain, found {arms}"
         );
         assert_eq!(
             raw_arms, 0,

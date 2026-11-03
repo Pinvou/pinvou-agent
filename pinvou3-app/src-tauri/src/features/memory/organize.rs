@@ -891,8 +891,13 @@ fn apply_organize_actions(
         Err(error) => {
             // Without the fresh views no action can be verified against the
             // current store: apply nothing rather than trusting the snapshot.
+            // Round-16 复审(M5):io 错误的 Display 携带绝对存储路径
+            // (bounded-read 原语的错误即 path.display()),随 report 载荷
+            // 与历史查询出站(Web 允许清单内)前必须折叠存储根——本函数
+            // 六个 error 警告臂同口径,与 finish_organize_report 一致。
             warnings.push(format!(
-                "organize: reload stores before applying actions: {error}; no action applied"
+                "organize: reload stores before applying actions: {}; no action applied",
+                crate::platform::paths::redact_storage_prefix(&error.to_string()),
             ));
             return (deleted, updated, merged, warnings, capped);
         }
@@ -976,8 +981,11 @@ fn apply_organize_actions(
                             }
                         },
                         Err(error) => {
-                            warnings
-                                .push(format!("organize: delete {} {id}: {error}", action.kind));
+                            warnings.push(format!(
+                                "organize: delete {} {id}: {}",
+                                action.kind,
+                                crate::platform::paths::redact_storage_prefix(&error.to_string()),
+                            ));
                         }
                     }
                 }
@@ -1013,7 +1021,11 @@ fn apply_organize_actions(
                         ));
                     }
                     Err(error) => {
-                        warnings.push(format!("organize: update {} {id}: {error}", action.kind));
+                        warnings.push(format!(
+                            "organize: update {} {id}: {}",
+                            action.kind,
+                            crate::platform::paths::redact_storage_prefix(&error.to_string()),
+                        ));
                     }
                 }
             }
@@ -1103,8 +1115,9 @@ fn apply_organize_actions(
                     }
                     Err(error) => {
                         warnings.push(format!(
-                            "organize: merge {} {keep}: {error}; merge skipped",
-                            action.kind
+                            "organize: merge {} {keep}: {}; merge skipped",
+                            action.kind,
+                            crate::platform::paths::redact_storage_prefix(&error.to_string()),
                         ));
                     }
                 }
@@ -1147,8 +1160,9 @@ fn apply_organize_actions(
                             // merge, keep is already updated and this source item lingers, so
                             // the report must pinpoint it as a merge's cleanup delete.
                             warnings.push(format!(
-                                "organize: merge {} cleanup delete {id}: {error}",
-                                action.kind
+                                "organize: merge {} cleanup delete {id}: {}",
+                                action.kind,
+                                crate::platform::paths::redact_storage_prefix(&error.to_string()),
                             ));
                         }
                     }
@@ -1164,7 +1178,10 @@ fn apply_organize_actions(
     // compaction reloads the store it rewrites.
     for kind in ["current_focus", "recent_activity"] {
         if let Err(error) = io::compact_timed_memory_store_unlocked(kind) {
-            warnings.push(format!("organize: compact {kind}: {error}"));
+            warnings.push(format!(
+                "organize: compact {kind}: {}",
+                crate::platform::paths::redact_storage_prefix(&error.to_string())
+            ));
         }
     }
     (deleted, updated, merged, warnings, capped)

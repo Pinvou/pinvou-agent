@@ -4398,6 +4398,9 @@ fn memory_block_marker_gate_is_case_insensitive() {
 /// `report.warnings`——该载荷随 organize_memory 命令与历史查询出站
 /// (Web 允许清单内),与其他 memory 警告同口径折叠存储根。退回裸
 /// `format!(…)` 推送时本钉转红(desktop 日志保留原始明细,与折叠并行)。
+/// Round-16 复审(M6a):断言只看非注释行——折叠删掉、仅在注释里提及
+/// `redact_storage_prefix` 而推裸文本的突变曾保持全绿(突变实证),与
+/// 裸读扫描钉同一过滤口径。
 #[test]
 fn organize_report_persist_warning_folds_the_storage_prefix() {
     let source = include_str!("organize.rs");
@@ -4405,24 +4408,84 @@ fn organize_report_persist_warning_folds_the_storage_prefix() {
         .find("fn finish_organize_report(")
         .expect("finish_organize_report must exist");
     let body = &source[start..];
-    let end = ["\nfn ", "\npub fn ", "\n#[cfg(test)]"]
+    let end = ["\nfn ", "\npub fn ", "\n#[cfg(test]"]
         .iter()
         .filter_map(|marker| body.find(marker))
         .min()
         .unwrap_or(body.len());
     let body = &body[..end];
+    let code = body
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        body.contains("redact_storage_prefix"),
+        code.contains("redact_storage_prefix"),
         "the organize report persist warning rides phone-visible payloads and must fold the storage prefix",
     );
     assert!(
-        body.contains("report.warnings.push(detail)"),
+        code.contains("report.warnings.push(detail)"),
         "the warning must still reach the report (folded), not be dropped",
     );
     assert!(
-        body.contains("eprintln!(\"[memory] {raw}\")"),
+        code.contains("eprintln!(\"[memory] {raw}\")"),
         "the desktop log keeps the raw detail; only the outbound copy is folded",
     );
+}
+
+/// Round-16 复审(M5):`apply_organize_actions` 的六个 error 警告臂随
+/// `report.warnings` 载荷与历史查询出站(Web 允许清单内),而 bounded-read
+/// 原语的 io 错误 Display 携带绝对存储路径(path.display())。折叠已按
+/// persist 警告同一口径落进各臂;本钉逐臂取窗口断言,非注释行才算数
+/// (与上一钉同一过滤),删任一臂的折叠即红。
+#[test]
+fn organize_apply_warnings_fold_the_storage_prefix() {
+    let source = include_str!("organize.rs");
+    let production = source
+        .split("#[cfg(test)]")
+        .next()
+        .expect("organize.rs must keep its tests behind #[cfg(test)]");
+    let start = production
+        .find("fn apply_organize_actions(")
+        .expect("apply_organize_actions must exist");
+    let body = &production[start..];
+    let end = ["\nfn ", "\npub fn "]
+        .iter()
+        .filter_map(|marker| body.find(marker))
+        .min()
+        .unwrap_or(body.len());
+    let body = &body[..end];
+    let code = body
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    const ERROR_ARM_PREFIXES: [&str; 6] = [
+        "organize: reload stores before applying actions: {}",
+        "organize: delete {} {id}: {}",
+        "organize: update {} {id}: {}",
+        "organize: merge {} {keep}: {}",
+        "organize: merge {} cleanup delete {id}: {}",
+        "organize: compact {kind}: {}",
+    ];
+    for prefix in ERROR_ARM_PREFIXES {
+        let at = code
+            .find(prefix)
+            .unwrap_or_else(|| panic!("{prefix} warning arm must exist in apply_organize_actions"));
+        let window = &code[at.saturating_sub(120)..(at + prefix.len() + 300).min(code.len())];
+        assert!(
+            window.contains("redact_storage_prefix"),
+            "the `{prefix}` warning interpolates an io error whose Display carries \
+             the absolute storage path; it rides phone-visible payloads and must \
+             fold via redact_storage_prefix"
+        );
+    }
 }
 
 /// Round-15 复审(S14 F1):封界读原语的行为钉只覆盖 journal 与权威读两
