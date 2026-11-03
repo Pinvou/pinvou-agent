@@ -4544,6 +4544,11 @@ fn organize_apply_warnings_fold_the_storage_prefix() {
 /// 约扫三个文件生产半边的裸读调用行(注释行的字面提及不算)。
 #[test]
 fn memory_store_lanes_keep_raw_reads_routed_through_the_bounded_primitive() {
+    // Round-16 follow-up 复审(M4):扫描此前只覆盖 7 个生产文件中的 3 个
+    // (mod.rs/llm_review.rs/render.rs/types.rs 不在列),且 token 形态漏
+    // read_to_end/BufReader/File::open 逐字读取族。本模块现在生产文件全
+    // 覆盖 + 全 token 族;绕行捷径(读 helper 挪到模块外再被扫描文件调
+    // 用)仍属本钉边界之外,由引用侧评审把关。
     let scan = |source: &str| {
         source
             .split("#[cfg(test)]")
@@ -4554,19 +4559,27 @@ fn memory_store_lanes_keep_raw_reads_routed_through_the_bounded_primitive() {
                 let trimmed = line.trim_start();
                 !(trimmed.starts_with("//") || trimmed.starts_with("///"))
             })
-            .any(|line| line.contains("read_to_string") || line.contains("fs::read("))
+            .any(|line| {
+                line.contains("read_to_string")
+                    || line.contains("read_to_end")
+                    || line.contains("fs::read(")
+                    || line.contains("BufReader")
+                    || line.contains("File::open")
+            })
     };
-    assert!(
-        !scan(include_str!("io.rs")),
-        "io.rs must not read store files with raw unbounded reads; route through \
-         platform::filesystem::read_private_data_file"
-    );
-    assert!(
-        !scan(include_str!("organize.rs")),
-        "organize.rs must not read store files with raw unbounded reads"
-    );
-    assert!(
-        !scan(include_str!("util.rs")),
-        "util.rs must not read store files with raw unbounded reads"
-    );
+    for (name, source) in [
+        ("io.rs", include_str!("io.rs")),
+        ("organize.rs", include_str!("organize.rs")),
+        ("util.rs", include_str!("util.rs")),
+        ("mod.rs", include_str!("mod.rs")),
+        ("llm_review.rs", include_str!("llm_review.rs")),
+        ("render.rs", include_str!("render.rs")),
+        ("types.rs", include_str!("types.rs")),
+    ] {
+        assert!(
+            !scan(source),
+            "{name} must not read store files with raw unbounded reads; route \
+             through platform::filesystem::read_private_data_file"
+        );
+    }
 }
