@@ -2185,9 +2185,9 @@ test("rejects a web frame whose envelope would exceed the desktop bound with fra
     web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
     await connected;
 
-    // 大于「桌面界限 − 信封余量」、小于 ingress 上限:此前被 ingress 放行、
-    // 转发后超桌面 tungstenite 界限,桌面强制断线(自愈闪断);现在在转发
-    // 前以 frame_too_large 明确拒绝。
+    // 大于桌面界限、小于 ingress 上限:此前被 ingress 放行、转发后超桌面
+    // tungstenite 界限,桌面强制断线(自愈闪断);现在在转发前按真实编码
+    // 长度以 frame_too_large 明确拒绝。
     const pad = "x".repeat(4_150_000);
     web.ws.send(JSON.stringify({ v: 2, type: "rpc_request", request_id: "req-big", command: "chat", args: { pad } }));
 
@@ -2198,9 +2198,62 @@ test("rejects a web frame whose envelope would exceed the desktop bound with fra
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
 
-    // 同一 web 会话随后仍可正常转发(错误是帧级的,不断链)。
+    // 同一 web 会话随后仍可正常转发(错误是帧级的,不断链)——正向断言:
+    // client_ready 必须真实到达桌面,而不是仅有「无错误」的否定断言。
+    const readyReceived = nextMessage(desktop.ws, "client_ready");
     web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-b", after_seq: 0 }));
+    const ready = await readyReceived;
+    assert.equal(ready.stream_epoch, "epoch-b");
     await expectNoMessage(desktop.ws, "error");
+  } finally {
+    closeSocket(web?.ws);
+    closeSocket(desktop?.ws);
+    await stopRelay(isolated.child);
+  }
+});
+
+test("rejects a web frame whose encoded forward expands past the desktop bound", async () => {
+  // Round-17 复审修正:JSON 再序列化会膨胀数字字面量——4 字节的 `1e20`
+  // 重编码为 21 位精确十进制(每元素 +17 字节)。构造一帧:raw 远小于
+  // ingress 上限(旧 raw+余量近似门直接放行),但转发编码膨胀后超过桌面
+  // 界限;门量真实编码长度,必须以 frame_too_large 拒绝且桌面不掉线。
+  const isolated = await spawnRelay();
+  const endpointId = `endpoint_expand_${Date.now()}`;
+  const accessToken = "access-token-expand-0000000000000001";
+  const desktopSecret = "desktop-secret-expand-000000000000001";
+  let desktop;
+  let web;
+  try {
+    desktop = await registerDesktop(endpointId, accessToken, desktopSecret, isolated.wsUrl);
+    const connected = nextMessage(desktop.ws, "web_client_connected");
+    web = await joinWeb(endpointId, accessToken, {}, isolated.wsUrl);
+    await connected;
+
+    const base = { v: 2, type: "rpc_request", request_id: "req-expand", command: "chat", args: { nums: [] } };
+    const overhead = Buffer.byteLength(JSON.stringify(base));
+    // 每个元素 raw `1e20,` = 5 字节 → 解析后重编码 `100000000000000000000,`
+    // = 22 字节:按编码侧反推元素数,保证编码越过桌面界限而 raw(≈ 编码
+    // 的 23%)远低于 ingress 上限。字面量必须以文本形式拼进 wire 帧
+    // (JSON.stringify 会直接输出 21 位十进制,膨胀就无从发生)。
+    const elementCount = Math.ceil((4 * 1024 * 1024 - 64 * 1024 + 4096 - overhead) / 22);
+    const elementText = Array.from({ length: elementCount }, () => "1e20").join(",");
+    const frame = JSON.stringify(base).replace('"nums":[]', `"nums":[${elementText}]`);
+    assert.equal(frame.includes("1e20"), true,
+      "the raw frame must carry exponential literals (the expansion vector)");
+    assert.equal(Buffer.byteLength(frame) < 4 * 1024 * 1024, true,
+      "the raw frame must pass the ingress payload cap");
+    const expanded = Buffer.byteLength(JSON.stringify(JSON.parse(frame)));
+    assert.equal(expanded > 4 * 1024 * 1024 - 64 * 1024, true,
+      "the re-serialized encoding must exceed the desktop bound");
+
+    web.ws.send(frame);
+    const rejected = await nextMessage(web.ws, "error");
+    assert.equal(rejected.code, "frame_too_large",
+      "the gate must measure the forwarded encoding, not the raw bytes");
+    assert.equal(desktop.ws.readyState, desktop.ws.OPEN,
+      "the desktop socket must not be disturbed by the expanding web frame");
+    assert.equal(isolated.child.exitCode, null);
+    assert.equal(isolated.child.signalCode, null);
   } finally {
     closeSocket(web?.ws);
     closeSocket(desktop?.ws);

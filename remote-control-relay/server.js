@@ -43,12 +43,13 @@ const MAX_WIRE_NESTING_DEPTH = 128;
 // Round-15 复审:桌面侧 tungstenite 的入站上限是协议文档的 4 MiB−64 KiB。
 // Web→desktop 转发会在载荷外再包一层(endpoint_id + lease_id + v),恰好
 // 4 MiB 的 web 帧此前被 ingress 放行、转发后超桌面界限,触发桌面强制断
-// 线重连(自愈但会闪断)。ingress 不动(上限语义不变);转发前按
-// raw 字节数 + 富余余量预检,超限回显明确的 frame_too_large,而非让桌
-// 面在界限上撞死。富余量宽松覆盖 endpoint_id(32 字节 token)、lease_id
-// 与键名开销。
+// 线重连(自愈但会闪断)。ingress 不动(上限语义不变)。
+// Round-17 复审修正:门量的是转发编码的实际字节数,不是 ingress 字节数
+// ——JSON 再序列化会膨胀数字字面量(4 字节的 `1e20` 重序列化为 21 位
+// 精确十进制),raw+固定余量的近似拦不住这种帧;现在转发前编码一次,
+// 按真实编码长度拒绝(超限回显明确的 frame_too_large,而非让桌面在界
+// 限上撞死),命中的同一编码串直接交给桌面,量即所发。
 const DESKTOP_MAX_FRAME_BYTES = 4 * MIB - 64 * 1024;
-const DESKTOP_ENVELOPE_HEADROOM_BYTES = 512;
 const MAX_ENDPOINTS = boundedInteger(
   process.env.MAX_ENDPOINTS ?? process.env.MAX_ROOMS,
   2000,
@@ -286,6 +287,15 @@ function send(ws, value) {
     terminateDestination(ws);
     return false;
   }
+  return sendEncoded(ws, encoded, bytes);
+}
+
+// Shared delivery half of send(): the open/policy checks, the high-water-mark
+// bound, and the per-destination error cleanup for an already-encoded frame.
+// The desktop-bound gate encodes once, measures the real byte length, and
+// hands the exact same encoding here so what was measured is what is sent.
+function sendEncoded(ws, encoded, bytes) {
+  if (!ws || ws.readyState !== ws.OPEN || ws.policyClosing) return false;
   if (bytes > WS_MAX_BUFFERED_BYTES
     || ws.bufferedAmount + bytes > WS_MAX_BUFFERED_BYTES) {
     terminateDestination(ws);
@@ -1372,12 +1382,41 @@ function forwardAuthenticatedMessage(ws, msg) {
       });
       return;
     }
-    send(endpoint.desktop, {
-      ...withoutCredentials(msg),
-      v: 2,
-      endpoint_id: endpoint.endpoint_id,
-      lease_id: endpoint.lease_id,
-    });
+    // Round-15 复审:桌面入站界只约束 web→desktop 方向(桌面→web 的接收
+    // 方——浏览器——没有对应上限),门只挂在 web 转发臂;未认证帧走各自
+    // 的握手/限流路径。Round-17 复审修正:量转发编码的真实字节数——JSON
+    // 再序列化会膨胀数字字面量(如 1e20),raw 字节数只是下界近似。编码
+    // 一次,超界回 frame_too_large 并只丢该帧;命中边界的同一编码串直接
+    // 交给桌面(量即所发)。encodeFrame 对 JSON.parse 产物实际不可抛,
+    // catch 仅防御性保持双端存活。
+    let forwardEncoded;
+    let forwardBytes;
+    try {
+      ({ encoded: forwardEncoded, bytes: forwardBytes } = encodeFrame({
+        ...withoutCredentials(msg),
+        v: 2,
+        endpoint_id: endpoint.endpoint_id,
+        lease_id: endpoint.lease_id,
+      }));
+    } catch {
+      send(ws, {
+        v: 2,
+        type: "error",
+        code: "bad_message",
+        message: "web frame could not be re-encoded for forwarding",
+      });
+      return;
+    }
+    if (forwardBytes > DESKTOP_MAX_FRAME_BYTES) {
+      send(ws, {
+        v: 2,
+        type: "error",
+        code: "frame_too_large",
+        message: "web frame forwarded to the desktop exceeds the desktop frame bound",
+      });
+      return;
+    }
+    sendEncoded(endpoint.desktop, forwardEncoded, forwardBytes);
     return;
   }
 
@@ -1476,23 +1515,6 @@ wss.on("connection", (ws, req) => {
         "unsupported_protocol_version",
         "protocol version 2 is required",
       );
-      return;
-    }
-    // Round-15 复审:转发前预检桌面侧帧界(见 DESKTOP_MAX_FRAME_BYTES)。
-    // Round-16 复审(M3):该界是桌面端的入站上限,只约束 web→desktop 方向
-    // ——desktop→web 转发的接收方(浏览器)没有对应上限,按桌面入站界
-    // 拒桌面事件会把合法帧错杀成 frame_too_large(静默丢弃,无重放路)。
-    // 预检只对已认证的 web socket 生效;未认证帧走各自的握手/限流路径。
-    if (
-      ws.role === "web"
-      && rawBytes + DESKTOP_ENVELOPE_HEADROOM_BYTES > DESKTOP_MAX_FRAME_BYTES
-    ) {
-      send(ws, {
-        v: 2,
-        type: "error",
-        code: "frame_too_large",
-        message: "web frame plus relay envelope exceeds the desktop frame bound",
-      });
       return;
     }
     if (hasLegacyTokenAlias(msg)) {

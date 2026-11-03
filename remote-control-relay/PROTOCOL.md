@@ -237,7 +237,7 @@ after 5 seconds, so the drain cannot outlive ws's own 30-second close timeout.
 | `bad_json` | A text frame is not valid JSON, repeats the `v` key in any object, or nests any value more than 128 levels deep. |
 | `bad_message` | The parsed frame is not a JSON object. |
 | `binary_unsupported` | A binary WebSocket frame arrived. |
-| `frame_too_large` | An authenticated web frame whose size plus the relay's forward envelope would exceed the desktop's inbound frame bound (4 MiB − 64 KiB). The connection stays open; only the frame is refused. Desktop→web frames are not measured against this bound — the browser has no matching cap. |
+| `frame_too_large` | An authenticated web frame whose forwarded encoding — the exact JSON the Relay would hand the desktop, envelope included — exceeds the desktop's inbound frame bound (4 MiB − 64 KiB). The connection stays open; only the frame is refused. Desktop→web frames are not measured against this bound — the browser has no matching cap. |
 | `unsupported_protocol_version` | `v` is missing or is not `2`. |
 | `legacy_token_alias_unsupported` | The message carries a legacy top-level `token` or `pairing_token` field. |
 | `authentication_required` | A non-handshake message arrived before authentication completed. |
@@ -272,11 +272,16 @@ kill) observes the implicit `1006` abnormal-closure code on its side. A
 hostile upgrade is rejected before any WebSocket exists: the peer sees a
 failed HTTP upgrade (a 4xx/429/503 banner or a bare destroy), not `1006`.
 
-A Web frame whose byte size plus the Relay's forward envelope (endpoint_id,
-lease_id, `v`) would exceed the desktop's documented `4 MiB - 64 KiB` frame
-bound is rejected with `frame_too_large` before forwarding (Round-15 复审:
-previously such a frame was accepted at ingress and then killed the desktop
-socket at the boundary, forcing a self-healing reconnect flap).
+A Web frame whose forwarded encoding — the exact JSON the Relay re-serializes
+for the desktop, `endpoint_id`/`lease_id` envelope included — exceeds the
+desktop's documented `4 MiB - 64 KiB` frame bound is rejected with
+`frame_too_large` before forwarding (Round-15 复审: previously such a frame
+was accepted at ingress and then killed the desktop socket at the boundary,
+forcing a self-healing reconnect flap. Round-17 复审修正: the gate measures
+the re-serialized encoding rather than the ingress byte size, because JSON
+re-serialization can expand numeric literals — the 4-byte `1e20` re-encodes
+as the 21-digit exact decimal — so the earlier raw-bytes-plus-headroom
+approximation let crafted frames through).
 
 ## HTTP and operational behavior
 
