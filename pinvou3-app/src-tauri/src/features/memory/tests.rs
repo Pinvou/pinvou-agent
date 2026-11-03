@@ -4408,7 +4408,10 @@ fn organize_report_persist_warning_folds_the_storage_prefix() {
         .find("fn finish_organize_report(")
         .expect("finish_organize_report must exist");
     let body = &source[start..];
-    let end = ["\nfn ", "\npub fn ", "\n#[cfg(test]"]
+    // f47c45d6 曾把末位 marker 笔误成 `"\n#[cfg(test]"`(少个右括号)——
+    // 该 marker 因此永不匹配,静默失效;organize.rs 今天没有测试模块所以
+    // 恰好无害,恢复原形以免日后 organize.rs 落测试时窗口失界。
+    let end = ["\nfn ", "\npub fn ", "\n#[cfg(test)]"]
         .iter()
         .filter_map(|marker| body.find(marker))
         .min()

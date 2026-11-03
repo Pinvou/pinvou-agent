@@ -1108,15 +1108,32 @@ mod tests {
         // 两种拼写——此前 organize 命令的两臂用后者拼写,本钉看不见,断言
         // 信息夸大了覆盖面。Round-16 复审(M6b):改为统一扫描 `.map_err(|`
         // ——按拼写枚举是打地鼠(`|err|` 拼写突变实证可绕过),闭包参数名
-        // 不属于被钉契约的一部分。
-        let scan = production;
+        // 不属于被钉契约的一部分。Round-17 复审(M4 余项):窗口判定改为
+        // 只看非注释行——折叠删掉、仅在 400 字节窗口内的注释里提及
+        // `redact_storage_prefix`(或 `[edit_last_turn]`)而推裸文本的突变,
+        // 原实现保持全绿;注释行先滤除后,字面提及不再能掩护裸臂(与
+        // organize.rs 三钉同一过滤口径)。
+        let scan = production
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let spelling = ".map_err(|";
         {
             let mut pos = 0;
             while let Some(found) = scan[pos..].find(spelling) {
                 arms += 1;
                 let start = pos + found;
-                let window_end = (start + 400).min(scan.len());
+                let mut window_end = (start + 400).min(scan.len());
+                // 400 字节窗口不得落在多字节字符中间:start+400 撞进 CJK 行
+                // 时切片会 panic(编译崩而非断言红,失败语言错误);回退到
+                // 最近字符边界。
+                while window_end < scan.len() && !scan.is_char_boundary(window_end) {
+                    window_end -= 1;
+                }
                 let window = &scan[start..window_end];
                 if !(window.contains("redact_storage_prefix")
                     || window.contains("reserve edit_last_turn")
