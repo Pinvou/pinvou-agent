@@ -25,9 +25,11 @@ function buildPlugins(mode) {
 test('startup gates remain active in desktop and web production builds', () => {
   // PR #787's 485_000 re-cut, PR #782's 486_000 desktop raise, the
   // tri-mode frontend's 492_000 desktop raise and the round-2 fixes'
-  // 496_000 desktop raise are measured per policy;
-  // the config comment preserves each raise's both-platform measurements.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 496_000);
+  // 496_000 desktop raise are measured per policy (the 496_000 raise
+  // overshot the policy's next-thousand-step; round-9 reset the ceiling
+  // to the honest 493_000 after re-measuring the entry at 492,861 B);
+  // the config comment preserves each raise's measurements.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 493_000);
   assert.equal(WEB_MAIN_ENTRY_BUDGET_BYTES, 128_000);
   for (const mode of ['production', 'web']) {
     const pluginNames = new Set(buildPlugins(mode).map(plugin => plugin.name));

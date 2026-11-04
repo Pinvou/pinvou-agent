@@ -575,11 +575,16 @@ function enforceLazyChunks() {
 // the draft Yolo gate extension), the plan-stuck Auto availability guard
 // (tool-renderers.jsx) and the zh strings for the approval-cancelled key.
 // Same-base build measures 491,616 → 492,003 B desktop; build:web stays
-// green under its own ceiling. The desktop ceiling takes the next
-// thousand step, leaving ~4.0 kB headroom. Bridge classic scripts remain
-// copied verbatim (the chat-events approval_resolved listener does not
-// move this entry).
-export const MAIN_ENTRY_BUDGET_BYTES = 496_000;
+// green under its own ceiling. Round-9 correction: the raise to 496_000
+// took the FOURTH thousand step above the 492,003 measurement while this
+// comment claimed the "next thousand step" — every recorded precedent
+// takes the literal next step. Reset to the honest 493_000 after the
+// round-9 wave re-measured the entry at 492,861 B (round-8 confirm-gate
+// and round-9 web-gatenotice work ride the entry via ChatView), leaving
+// 139 B headroom at the local node 24 measurement. Bridge classic scripts
+// remain copied verbatim (the chat-events approval_resolved listener does
+// not move this entry).
+export const MAIN_ENTRY_BUDGET_BYTES = 493_000;
 export const WEB_MAIN_ENTRY_BUDGET_BYTES = 128_000;
 
 function mainEntryBudgetBytesFor(mode) {
