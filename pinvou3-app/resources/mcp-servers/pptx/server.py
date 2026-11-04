@@ -877,8 +877,10 @@ TOOL_DEFS = [{
             "slides": {
                 "type": "array",
                 "description": (
-                    "deck 的 slides 数组。每页一个对象,`layout` 选版式,并**必须按版式填正文字段**"
-                    "(只给 title 会得到空白页!)。每版式的必填字段已写进对应分支的 required:\n"
+                    "deck 的 slides 数组。每页一个对象,`layout` 选版式,并**按版式填该分支"
+                    "required 的正文字段**(agenda/bullets/two_col/kpi/chart/table 缺正文"
+                    "字段会得到空白正文页;cover/section/image/end 仅 title 即完整)。"
+                    "每版式的必填字段已写进对应分支的 required:\n"
                     "- cover: {title}(subtitle/date 可选)\n"
                     "- agenda: {title, items}  章节条目数组\n"
                     "- section: {title}  ← 章节分隔页\n"
@@ -889,7 +891,7 @@ TOOL_DEFS = [{
                     "- table: {title, headers, rows}\n"
                     "- image: {title}(image/bullets/caption 可选)\n"
                     "- end: {title}(subtitle 可选)  ← 结尾页\n"
-                    "正文要有真实内容/数据,不要只放标题。"
+                    "正文版式(agenda/bullets/two_col/kpi/chart/table)要有真实内容/数据,不要只放标题。"
                 ),
                 # Per-layout anyOf:每版式一分支,分支 required 即该版式语义必填
                 # 字段 —— 对受限解码(Kimi K3 等)的最小合法补全倾向的缓解手段。
