@@ -400,6 +400,8 @@ unsafe fn build_mode() -> Result<Retained<AnyObject>, ComputerUseError> {
     // SAFETY: probed selector; Allocated → init family ownership transfer
     // with three encoded primitive arguments (u32, u32, f64).
     let allocated: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
+    // SAFETY: probed selector; the init consumes the allocated object and
+    // answers +1 or null (the Option models the null).
     let mode: Option<Retained<AnyObject>> = unsafe {
         msg_send![
             allocated,
@@ -420,6 +422,8 @@ unsafe fn build_display(descriptor: &AnyObject) -> Result<Retained<AnyObject>, C
     };
     // SAFETY: probed selector; Allocated → init family ownership transfer.
     let allocated: Allocated<AnyObject> = unsafe { msg_send![class, alloc] };
+    // SAFETY: probed selector; the init consumes the allocated object and
+    // answers +1 or null (the Option models the null).
     let display: Option<Retained<AnyObject>> =
         unsafe { msg_send![allocated, initWithDescriptor: descriptor] };
     display.ok_or_else(|| {
@@ -562,6 +566,8 @@ fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
     // SAFETY: config is the live configuration from the successful begin;
     // both ids are real display ids.
     let main_result = unsafe { CGConfigureDisplayOrigin(config, main, 0, 0) };
+    // SAFETY: same live configuration; display_id is a real display id and
+    // park_x was rounded from the main display's real bounds.
     let vd_result = unsafe { CGConfigureDisplayOrigin(config, display_id, park_x, 0) };
     if main_result != CGError::Success || vd_result != CGError::Success {
         // SAFETY: abandoning the configuration cancels it exactly once.
@@ -614,6 +620,11 @@ fn park_right_of_main(display_id: u32) -> Result<(), ComputerUseError> {
 ///   display.
 struct VdHandle(Retained<AnyObject>);
 
+// SAFETY: the wrapped CGVirtualDisplay object may legally move between
+// threads (plain objc_release has an atomic refcount and needs no pool —
+// see the struct docs); the handle is messaged nowhere after creation and
+// dropped on the worker thread, so Send only covers the one-way hand-off
+// and the drop.
 unsafe impl Send for VdHandle {}
 
 impl VdHandle {
@@ -655,7 +666,7 @@ fn dictionary_number(dict: &CFDictionary, key: &CFString) -> Option<f64> {
     }
     // SAFETY: raw points at a live CFNumber owned by `dict` (the kCGWindow*
     // values are all CFNumbers); `value()` only writes the out buffer.
-    let number = unsafe { &*(raw as *const CFNumber) };
+    let number = unsafe { &*raw.cast::<CFNumber>() };
     let mut out = 0.0f64;
     // SAFETY: out is a valid f64 out buffer; CFNumberGetValue converts any
     // CFNumber to kCFNumberFloat64Type.
@@ -681,7 +692,7 @@ fn dictionary_string(dict: &CFDictionary, key: &CFString) -> Option<String> {
     }
     // SAFETY: raw points at a live CFString owned by `dict` (the
     // kCGWindowOwnerName entry is a CFString), borrowed only for this copy.
-    let string = unsafe { &*(raw as *const CFString) };
+    let string = unsafe { &*raw.cast::<CFString>() };
     Some(string.to_string())
 }
 
@@ -738,11 +749,14 @@ fn rect_intersects(ax: f64, ay: f64, aw: f64, ah: f64, bx: f64, by: f64, bw: f64
 fn parse_hit_window(dict: &CFDictionary) -> Option<HitWindow> {
     // SAFETY: the kCGWindow* statics are CoreFoundation-exported CFStrings
     // valid for the process lifetime; reading an extern static (a stable
-    // address) is the only unsafe step — the value is then borrowed for the
-    // length of the call.
+    // address) is the only unsafe step — each value is then borrowed only
+    // for the length of its lookup call.
     let layer = dictionary_number(dict, unsafe { kCGWindowLayer });
+    // SAFETY: same extern-static read as kCGWindowLayer above.
     let pid = dictionary_number(dict, unsafe { kCGWindowOwnerPID })?;
+    // SAFETY: same extern-static read as kCGWindowLayer above.
     let owner_name = dictionary_string(dict, unsafe { kCGWindowOwnerName });
+    // SAFETY: same extern-static read as kCGWindowLayer above.
     let bounds_key = unsafe { kCGWindowBounds };
     // SAFETY: bounds_key is a valid CFString key; the value pointer is
     // owned by the parent dictionary and checked non-null before use.
@@ -752,7 +766,7 @@ fn parse_hit_window(dict: &CFDictionary) -> Option<HitWindow> {
     }
     // SAFETY: the bounds value is a live CFDictionary owned by the parent
     // dictionary, borrowed only within this function.
-    let bounds_dict = unsafe { &*(bounds_raw as *const CFDictionary) };
+    let bounds_dict = unsafe { &*bounds_raw.cast::<CFDictionary>() };
     let x = dictionary_number(bounds_dict, NSString::from_str("X").as_ref())?;
     let y = dictionary_number(bounds_dict, NSString::from_str("Y").as_ref())?;
     let width = dictionary_number(bounds_dict, NSString::from_str("Width").as_ref())?;
@@ -791,7 +805,7 @@ fn on_screen_windows() -> Vec<HitWindow> {
         }
         // SAFETY: CGWindowListCopyWindowInfo produces a CFArray of
         // CFDictionary; the borrow below does not outlive `list`.
-        let dict = unsafe { &*(raw as *const CFDictionary) };
+        let dict = unsafe { &*raw.cast::<CFDictionary>() };
         if let Some(window) = parse_hit_window(dict) {
             windows.push(window);
         }
@@ -1664,7 +1678,7 @@ impl MacosVirtualDisplayBackend {
         }
         // SAFETY: the guard holds the +1 and the type is verified; the
         // array is borrowed only within this function.
-        let array = unsafe { &*(guard.0.as_ptr() as *const CFArray) };
+        let array = unsafe { &*guard.0.as_ptr().cast::<CFArray>() };
         let count = usize::try_from(array.count()).unwrap_or(0);
         if count == 0 {
             log::warn!("[computer_use:macos-vd] the launched app reports no windows yet");
@@ -1683,6 +1697,9 @@ impl MacosVirtualDisplayBackend {
         let Some(window_ptr) = NonNull::new(window_raw.cast::<AXUIElement>().cast_mut()) else {
             return;
         };
+        // SAFETY: window_ptr is the +1 element taken from the array (Copy
+        // rule, checked non-null above); CFRetained::retain adopts it and
+        // releases it exactly once on drop.
         let window = unsafe { CFRetained::retain(window_ptr) };
         let bounds = CGDisplayBounds(self.display_id);
         let mut position = CGPoint {
