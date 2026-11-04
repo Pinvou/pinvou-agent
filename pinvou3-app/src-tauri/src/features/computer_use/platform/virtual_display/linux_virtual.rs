@@ -2774,8 +2774,14 @@ mod tests {
             child_identity_matches_with(&record, |_| { Some("/opt/My App/bin/app".to_string()) }),
             "an argv[0] with spaces must still match its recorded basename"
         );
+        // The gate compares BASENAMES, not full paths: a different directory
+        // housing the same program name still matches its own record.
         assert!(
-            !child_identity_matches_with(&record, |_| { Some("/opt/Other/bin/app".to_string()) }),
+            child_identity_matches_with(&record, |_| { Some("/opt/Other/bin/app".to_string()) }),
+            "the same basename under another directory must still match"
+        );
+        assert!(
+            !child_identity_matches_with(&record, |_| { Some("/usr/bin/other".to_string()) }),
             "a different basename must not match"
         );
     }
