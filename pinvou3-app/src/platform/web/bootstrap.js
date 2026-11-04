@@ -754,6 +754,14 @@
           // "connected" client with no transport whenever close() delivered
           // normally; scheduleReconnect self-guards, so the gated late
           // close/error events stay harmless.
+          // Round-19 复审:与救援同一验证分支(bootstrap.js:463)——投机周期
+          // 内被事件失败摘除的 socket 若不是投机源本身,这次已证实的处理
+          // 失败必须计入失败阶梯并清掉投机旗标:不清旗标,本次重连文案仍
+          // 被投机语义压住一个周期(已证实的失败被宣布成「疑似」),阶梯
+          // 也少计一次。投机源自身(从未通过 join 验证)仍按既有契约宽恕。
+          if (this.speculativeReconnect && sourceSocket !== this.speculativeSource) {
+            this.noteSpeculativeFailure();
+          }
           this.scheduleReconnect("事件处理失败，正在重新连接…");
         });
       return this.eventDispatch;
