@@ -4452,7 +4452,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               error={chatYoloConfirmError}
               busy={chatYoloConfirmBusy}
               onConfirm={confirmChatYoloSwitch}
-              onCancel={() => setPendingChatYoloSwitch(false)}
+              onCancel={() => {
+                // Cancel must dispose the pending continue action, not just
+                // close the dialog: the gate only fills the action when it is
+                // empty, so a stale planStuckGo/modeChip left here rides the
+                // next confirmation — a later mode-only Yolo entry in this
+                // session would confirm into the canceled continuation
+                // (mark the plan card handled + send its command). Same
+                // invalidation convention as the session-switch effect above.
+                pendingChatYoloSwitchSidRef.current = null;
+                pendingChatYoloActionRef.current = null;
+                setPendingChatYoloSwitch(false);
+              }}
             />
           )}
 

@@ -205,6 +205,30 @@ assert.match(
   'session switch must clear the pending action',
 );
 
+// ── Review P2: canceling the confirm must dispose the pending action ─────────
+// The cancel callback used to only close the dialog, leaving the captured
+// pendingChatYoloActionRef (e.g. { kind: 'planStuckGo', itemId }) in place.
+// Within the same session the gate later fills the action only when it is
+// empty (`if (!pendingChatYoloActionRef.current)`), so a subsequent
+// mode-only Yolo entry re-opened the card on top of the stale action and
+// confirming executed the CANCELED continuation: the plan card got marked
+// handled and its continue command sent even though the user had canceled.
+// Same-session scope: the session-switch effect cannot be relied on (it only
+// fires on activeSessionId changes). Negative-first: on the unfixed source
+// this match fails (onCancel closes the dialog only); the fresh-confirm pins
+// above double as the negative control that a non-canceled Yolo confirm still
+// dispatches its own action.
+assert.match(
+  src,
+  /onCancel=\{\(\) => \{\n(?:[^\n]*\n){0,12}?\s*pendingChatYoloSwitchSidRef\.current = null;\s*\n\s*pendingChatYoloActionRef\.current = null;\s*\n\s*setPendingChatYoloSwitch\(false\);\s*\n\s*\}\}/,
+  'canceling the YOLO confirm must dispose the pending action (not just close the dialog)',
+);
+assert.doesNotMatch(
+  src,
+  /onCancel=\{\(\) => setPendingChatYoloSwitch\(false\)\}/,
+  'the cancel-only dialog close must not come back (stale pending action rider)',
+);
+
 // ── 评审 P2：Web 面的 Auto→Yolo 逃生 ──────────────────────────────────────
 // Web 桥此前缺 setSessionMode，ChatView 的存在性守卫让 Auto 会话的 Yolo
 // 动作在 Web 静默无操作（发送门把浏览器用户锁死在 Auto 档）。运行时行为
