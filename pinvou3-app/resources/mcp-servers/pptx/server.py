@@ -693,10 +693,15 @@ def make_pptx(theme="business-blue", slides=None, filename="演示文稿"):
 # 单值(选分支即选版式)、required 只放该版式渲染函数会读且缺了会出空白
 # 正文的字段。2026-11-04 活体探针 A2:本形态是唯一一次 10 页构成完全达标,
 # 字节成本 +6%;对照组"全字段塞 required"= 模型填空值+乱选 enum(+76%
-# token,证伪)。MFJS(walle 校验器)规范已把 anyOf 列为正式成员:分支须
-# 显式 type:object、type 不与 anyOf 同层、anyOf ≤10 分支、全文档
-# properties 总数 ≤100、嵌套深度 ≤5 —— 本 schema 恰好用满 10 分支,新增
-# 版式会撞 anyOf 预算(需合并分支或等底座放宽)。旧底座会把 anyOf 展平成
+# token,证伪)。walle 校验器已把 anyOf 列为正式成员(上游 ValidateAnyOf);
+# 而"分支须显式 type:object、type 不与 anyOf 同层、anyOf ≤10 分支、全文档
+# properties 总数 ≤100、嵌套深度 ≤5"是 CodeWhale 引擎镜像自定的更严策略
+# (f1eb10efc 起即有;walle 上游默认 MaxAnyOfItems=500、
+# MaxTotalPropertiesKeysNum=3000、MaxSchemaDepth=30,且 lite 接受 type 与
+# anyOf 同层 —— 2026-11-05 对 MoonshotAI/walle 上游 main 实抓核实),放宽
+# 需改 CodeWhale 镜像常量而非等 Moonshot。本 schema 恰好用满 10 分支,
+# 处置路径:父仓未来新增版式时,提升 CodeWhale 镜像预算或裁剪 fixture
+# (合并版式分支),并随 T11 登记同步。旧底座会把 anyOf 展平成
 # 单对象:required 交集退化为 ["layout"],即"其余字段全部可选"的旧行为,
 # 不会更糟,安全向后兼容。
 def _slides_item_branch(layout, layout_label, required, blurb, fields):

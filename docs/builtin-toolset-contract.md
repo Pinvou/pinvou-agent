@@ -143,11 +143,18 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   is further capped at 7500 combined literal bytes) — the validator silently
   drops the whole tool for any of these.
 - **anyOf unions and the per-layout mitigation** (2026-11-04): `anyOf` is a formal
-  MFJS member — the Moonshot walle validator ships `ValidateAnyOf`, and the MFJS
-  tool-schema spec lists the branch rules (each branch carries an explicit
-  `type`, `type` never sits on the `anyOf` level, ≤ 10 branches, ≤ 100 total
-  properties, nesting depth ≤ 5) — and the base pipeline is legalizing
-  root-level `anyOf`; `strict` defaults to true on the constrained route.
+  MFJS member — the Moonshot walle validator ships `ValidateAnyOf` and the base
+  pipeline is legalizing root-level `anyOf`. The branch rules the engine enforces
+  (each branch carries an explicit `type`, `type` never sits on the `anyOf` level,
+  ≤ 10 branches, ≤ 100 total properties, nesting depth ≤ 5) are the CodeWhale
+  engine's own MFJS mirror policy — present since the upstream maintenance head
+  f1eb10efc and deliberately stricter than the walle defaults (MaxAnyOfItems=500,
+  MaxTotalPropertiesKeysNum=3000, MaxSchemaDepth=30; walle's lite check also
+  accepts `type` and `anyOf` on the same layer — verified against MoonshotAI/walle
+  upstream main on 2026-11-05). Loosening these budgets means changing the
+  CodeWhale mirror constants, not waiting for Moonshot. `strict` defaults to true
+  on the constrained route (inferred from the 2026-11-04 single-turn live probe,
+  not quoted from official documentation).
   The pptx `make_pptx` schema is the shipped precedent: `slides.items` is an
   `anyOf` union of exactly one `type:object` branch per layout whose
   `required` lists exactly the fields that layout's renderer cannot draw a

@@ -140,9 +140,16 @@ def content_json(response: dict) -> dict:
 # fields each layout's renderer cannot draw without; see
 # pinvou3-app/resources/mcp-servers/pptx/server.py). anyOf is a formal MFJS
 # member (the base pipeline is legalizing root-level anyOf via
-# ValidateAnyOf: branches must carry an explicit type, no type sibling at
-# the anyOf level, ≤ 10 branches, ≤ 100 total properties, depth ≤ 5); this
-# guard already walks unions at any node position. Note the root rule
+# ValidateAnyOf). The branch rules this guard mirrors — explicit branch
+# type, no type sibling at the anyOf level, ≤ 10 branches, ≤ 100 total
+# properties, depth ≤ 5 — are the CodeWhale engine's own MFJS mirror
+# policy (present since upstream f1eb10efc), deliberately stricter than
+# the walle upstream defaults (MaxAnyOfItems=500, MaxSchemaDepth=30,
+# MaxTotalPropertiesKeysNum=3000; walle's lite check also accepts type and
+# anyOf on the same layer — verified against MoonshotAI/walle upstream
+# main on 2026-11-05), so loosening them means changing the CodeWhale
+# constants, not waiting for Moonshot; this guard already walks unions at
+# any node position. Note the root rule
 # below still bans a root-level anyOf because the guard mirrors the
 # validator at the PINNED CodeWhale gitlink, where a root union is
 # stripped/flattened — updating that rule rides the gitlink bump, not this

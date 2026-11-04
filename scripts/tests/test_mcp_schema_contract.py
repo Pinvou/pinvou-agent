@@ -614,8 +614,12 @@ class SchemaContractWalkerTest(unittest.TestCase):
         # The per-layout mitigation shape (pptx slides.items, 2026-11-04):
         # an items anyOf whose branches are explicit type:object nodes with
         # their own properties and required. MFJS legalizes this union
-        # (ValidateAnyOf; branches carry explicit types, no type sibling at
-        # the anyOf level), so the guard must stay green — the constrained
+        # (ValidateAnyOf; the rules the engine enforces here — explicit
+        # branch types, no type sibling at the anyOf level, the 10/100/5
+        # budgets — are the CodeWhale mirror's own policy, deliberately
+        # stricter than the walle upstream defaults of 500 branches / 3000
+        # properties / 30 depth, verified against walle main on
+        # 2026-11-05), so the guard must stay green — the constrained
         # decoder reads each branch's required as the fields it must fill.
         branches = [
             {"type": "object",
