@@ -2254,6 +2254,15 @@ test("rejects a web frame whose encoded forward expands past the desktop bound",
       "the desktop socket must not be disturbed by the expanding web frame");
     assert.equal(isolated.child.exitCode, null);
     assert.equal(isolated.child.signalCode, null);
+
+    // Round-18 复审:「desktop undisturbed」此前只采样 readyState——与
+    // 信封测试同口径补一条真实转发断言:拒绝后同一 web 会话的合法帧仍
+    // 完整到达桌面(错误是帧级的,不断链)。
+    const readyReceived = nextMessage(desktop.ws, "client_ready");
+    web.ws.send(JSON.stringify({ v: 2, type: "client_ready", stream_epoch: "epoch-expansion", after_seq: 0 }));
+    const ready = await readyReceived;
+    assert.equal(ready.stream_epoch, "epoch-expansion");
+    await expectNoMessage(desktop.ws, "error");
   } finally {
     closeSocket(web?.ws);
     closeSocket(desktop?.ws);

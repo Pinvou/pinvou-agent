@@ -275,13 +275,16 @@ failed HTTP upgrade (a 4xx/429/503 banner or a bare destroy), not `1006`.
 A Web frame whose forwarded encoding — the exact JSON the Relay re-serializes
 for the desktop, `endpoint_id`/`lease_id` envelope included — exceeds the
 desktop's documented `4 MiB - 64 KiB` frame bound is rejected with
-`frame_too_large` before forwarding (Round-15 复审: previously such a frame
-was accepted at ingress and then killed the desktop socket at the boundary,
-forcing a self-healing reconnect flap. Round-17 复审修正: the gate measures
-the re-serialized encoding rather than the ingress byte size, because JSON
-re-serialization can expand numeric literals — the 4-byte `1e20` re-encodes
-as the 21-digit exact decimal — so the earlier raw-bytes-plus-headroom
-approximation let crafted frames through).
+`frame_too_large` before forwarding. The check runs on the connected-desktop
+path: while the desktop is offline the frame is answered `desktop_offline`
+first and is never measured or forwarded (round-18 review: the code
+partition documented here). (The round-15 review found the original hole:
+such a frame was accepted at ingress and then killed the desktop socket at
+the boundary, forcing a self-healing reconnect flap. The round-17 review
+correction: the gate measures the re-serialized encoding rather than the
+ingress byte size, because JSON re-serialization can expand numeric literals
+— the 4-byte `1e20` re-encodes as the 21-digit exact decimal — so the
+earlier raw-bytes-plus-headroom approximation let crafted frames through.)
 
 ## HTTP and operational behavior
 
