@@ -4528,7 +4528,17 @@ fn organize_apply_warnings_fold_the_storage_prefix() {
         let at = code
             .find(prefix)
             .unwrap_or_else(|| panic!("{prefix} warning arm must exist in apply_organize_actions"));
-        let window = &code[at.saturating_sub(120)..(at + prefix.len() + 300).min(code.len())];
+        // Round-18 复审:窗口切片此前未落地字符边界——at-120 / at+len+300
+        // 撞进多字节行时切片 panic(编译崩而非断言红,失败语言错误),与
+        // memory.rs 折叠扫描钉同款回退。
+        let floor = |source: &str, mut index: usize| {
+            while index > 0 && !source.is_char_boundary(index) {
+                index -= 1;
+            }
+            index
+        };
+        let window = &code[floor(&code, at.saturating_sub(120))
+            ..floor(&code, (at + prefix.len() + 300).min(code.len()))];
         assert!(
             window.contains("redact_storage_prefix"),
             "the `{prefix}` warning interpolates an io error whose Display carries \
@@ -4536,6 +4546,17 @@ fn organize_apply_warnings_fold_the_storage_prefix() {
              fold via redact_storage_prefix"
         );
     }
+    // Round-18 复审:六臂清单是枚举式钉——新增裸 error 臂不可见。折叠
+    // 计数普查让任何折叠数变化显眼:新增带折叠的臂会因计数 7≠6 转红,
+    // 迫使前缀清单一并更新;新增裸 error 臂仍是本钉边界(organize 的臂
+    // 是 match 臂,没有 map_err 那样的统一 token 可穷举扫描,与命令层
+    // 钉的穷尽口径不同,按已披露残留处理)。
+    let fold_count = code.matches("redact_storage_prefix(&").count();
+    assert_eq!(
+        fold_count, 6,
+        "apply_organize_actions must carry exactly the six error-arm folds; a new \
+         error-bearing arm must join ERROR_ARM_PREFIXES with its own fold"
+    );
 }
 
 /// Round-15 复审(S14 F1):封界读原语的行为钉只覆盖 journal 与权威读两
