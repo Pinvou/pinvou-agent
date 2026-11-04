@@ -417,11 +417,15 @@ impl ScheduledChatExecutor {
                 // Same redaction as the chat command layer's organize_memory: the
                 // bridge-resolution and LLM error chains can carry endpoint or
                 // credential-probing details, and run records are persisted and
-                // rendered verbatim in the task-detail UI.
-                error: Some(format!(
+                // rendered verbatim in the task-detail UI. Round-18 复审:链上
+                // 还有 bounded-read 原语的 io Display(path.display() 的绝对
+                // 存储路径,来自 refresh_recent_work_expiry / snapshot load
+                // 的 context)——run record 经 list_scheduled_task_runs 出站
+                // (Web 允许清单内),与命令层同一口径折叠存储根。
+                error: Some(crate::platform::paths::redact_storage_prefix(&format!(
                     "memory organize: {}",
                     crate::platform::credential_store::redact_secret(&format!("{error:#}"))
-                )),
+                ))),
                 terminal_reason: TaskTerminalReason::Failed,
             },
         }
@@ -1363,6 +1367,47 @@ mod tests {
         assert!(
             failure_arm < redact,
             "the redaction sits inside the delivery-failure arm"
+        );
+    }
+
+    /// Round-18 复审:memory_organize 的失败原因此前只过 `redact_secret`
+    /// (其注释还声称与命令层同一处理——命令层自 round-15 起额外折叠存储
+    /// 根,注释失实)。organize 的错误链携带 bounded-read 原语的 io
+    /// Display(path.display() 的绝对存储路径),run record 经
+    /// `list_scheduled_task_runs` 出站(Web 允许清单内)。行为测试无法在
+    /// 无 AppHandle 的执行器环境构造失败 organize,按本文件 round-15 N10
+    /// 的同一先例钉源码形态;双重边界(先绑生产半边,再绑本臂),删任一
+    /// 层 redact 即红。
+    #[test]
+    fn memory_organize_failure_reason_folds_the_storage_prefix() {
+        let source = include_str!("executor.rs");
+        let production = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("the production half present");
+        let body = production
+            .split("async fn execute_memory_organize")
+            .nth(1)
+            .expect("the memory-organize run body present")
+            .split("\n    async fn ")
+            .next()
+            .expect("the memory-organize arm must be bounded by the next item");
+        let arm = body
+            .find("Err(error) => TaskExecutionResult")
+            .expect("the failure arm present");
+        let fold = body
+            .find("crate::platform::paths::redact_storage_prefix(&format!(")
+            .expect(
+                "the failure reason must fold the storage root via redact_storage_prefix; \
+                 io error Displays carry the absolute path",
+            );
+        let secret = body
+            .find("redact_secret(&format!(\"{error:#}\"))")
+            .expect("the failure reason must still pass through redact_secret");
+        assert!(
+            arm < fold && fold < secret,
+            "the fold wraps the secret redaction inside the failure arm (outer \
+             redact_storage_prefix, inner redact_secret)"
         );
     }
 
