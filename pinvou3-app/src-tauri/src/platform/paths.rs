@@ -52,7 +52,13 @@ pub fn redact_storage_prefix(text: &str) -> String {
     // 异拼只是显示层过折叠(方向安全),不影响任何路径解析。(Round-18
     // 复审残留注记:替换在两个方向上都只限 ASCII——PINVOU3_HOME 本身
     // 含非 ASCII 字母时,错误文本里这些字节层面的异拼仍不折叠; 极罕见
-    // 的安装形态,按已披露残留处理。)
+    // 的安装形态,按已披露残留处理。Round-19 复审补记两类同层残留:
+    // needle 是 pinvou3_home() 的原生 Display 拼写,故 (a) 正斜杠拼写的
+    // 绝对路径(`C:/Users/…`,外部工具 stderr / file URL 等)与 (b)
+    // UNC 家目录的 verbatim-UNC 规范化拼写(`\\?\UNC\server\share\…`,
+    // canonicalize 类构造才产生)都不含 needle 原文,不折叠;两者在本
+    // PR 前的逐字节 replace 下同样漏,非回归。已核当前错误构造器无一
+    // 产生这两种拼写;未来引入 canonicalize 类构造时须同步扩 needle。)
     let folded = replace_ascii_case_insensitive(text, &prefix, "~/.pinvou3");
     if folded == text {
         folded
