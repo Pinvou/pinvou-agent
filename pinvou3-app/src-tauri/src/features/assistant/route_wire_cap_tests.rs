@@ -151,17 +151,22 @@ struct WireCapEngine {
     provider_kind: deepseek_tui::config::ApiProvider,
 }
 
+/// `expected_declared_output` 为 `Some` 时钉住引擎收到的路由申报
+/// （PINVOU_DOCUMENTED_OUTPUT 的表行值）；`None` 跳过该锚点断言，供申报值
+/// 依赖进程级底座目录缓存、非本回归主题的用例（K3.1 钢丝省略）复用同一
+/// 引导缝。`customize_model` 在装配前微调 SavedModel（vendor / 存储档位）。
 async fn boot_wire_cap_engine(
     label: &str,
     preset: crate::platform::prefs::ModelPreset,
     model: &str,
     base_url: &str,
     project: &Path,
-    expected_declared_output: u64,
+    expected_declared_output: Option<u64>,
+    customize_model: impl FnOnce(&mut crate::platform::prefs::SavedModel),
 ) -> WireCapEngine {
     let mut bridge =
         Pinvou3Bridge::boot_with_workspace(project.to_path_buf()).expect("boot wire-cap bridge");
-    bridge.prefs.advanced.saved_models = vec![crate::platform::prefs::SavedModel {
+    let mut saved_model = crate::platform::prefs::SavedModel {
         id: "wire-cap-model".to_string(),
         name: model.to_string(),
         alias: None,
@@ -181,19 +186,23 @@ async fn boot_wire_cap_engine(
         credential_state: crate::platform::credential_store::CredentialState::Missing,
         has_secret: false,
         credential_action: None,
-    }];
+    };
+    customize_model(&mut saved_model);
+    bridge.prefs.advanced.saved_models = vec![saved_model];
     bridge.prefs.advanced.active_model_id = Some("wire-cap-model".to_string());
 
     let dt_config = bridge.build_dt_config();
     let provider_kind = dt_config.api_provider();
     let engine_config = bridge.build_engine_config_for_session("wire-cap-session");
-    assert_eq!(
-        engine_config
-            .active_route_limits
-            .and_then(|limits| limits.output_tokens),
-        Some(expected_declared_output),
-        "{label}: the engine config must carry the documented output declaration"
-    );
+    if let Some(expected_declared_output) = expected_declared_output {
+        assert_eq!(
+            engine_config
+                .active_route_limits
+                .and_then(|limits| limits.output_tokens),
+            Some(expected_declared_output),
+            "{label}: the engine config must carry the documented output declaration"
+        );
+    }
     let mut engine_config = engine_config;
     engine_config.snapshots_enabled = false;
     engine_config.terminal_chrome_enabled = false;
@@ -251,7 +260,7 @@ async fn run_turn_against_mock(
     model: &str,
     base_url: &str,
     project: &Path,
-    expected_declared_output: u64,
+    expected_declared_output: Option<u64>,
 ) {
     let engine = boot_wire_cap_engine(
         label,
@@ -260,6 +269,7 @@ async fn run_turn_against_mock(
         base_url,
         project,
         expected_declared_output,
+        |_| {},
     )
     .await;
     let op = engine
@@ -275,7 +285,7 @@ async fn run_turn_against_mock(
     drive_wire_cap_turn_to_completion(label, &engine, op).await;
     engine.engine_run.abort();
     eprintln!(
-        "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output}",
+        "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output:?}",
         engine.provider_kind
     );
 }
@@ -372,7 +382,8 @@ async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
         ),
     ] {
         let (base_url, probe, server_task) = start_wire_cap_probe().await;
-        run_turn_against_mock(label, preset, model, &base_url, &project, declared_output).await;
+        run_turn_against_mock(label, preset, model, &base_url, &project, Some(declared_output))
+            .await;
         let bodies = probe.bodies.lock().expect("wire-cap bodies").clone();
         server_task.abort();
         assert!(
@@ -418,7 +429,8 @@ async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
         "deepseek-flash",
         &base_url,
         &project,
-        384_000,
+        Some(384_000),
+        |_| {},
     )
     .await;
     let first = engine
@@ -463,6 +475,93 @@ async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
         Some(EXPECTED_WIRE_MAX_TOKENS),
         "edit resend: the re-derived route must keep the host-declared output fact on the wire (issue #703: was clamped back to 8192)"
     );
+
+    let _ = std::fs::remove_dir_all(&env.root);
+}
+
+/// K3.1 wire omission (round-3 review 5763106970 P2): the K3.1 spellings are
+/// always-reasoning per the vendor contract — depth rides the top-level
+/// `reasoning_effort` (low/high/max, omission documented-valid and resolved
+/// to the vendor default) and the `thinking` parameter is NOT supported for
+/// K3.1. The prefs load path drops stored effort and the catalog UI offers
+/// no tier control for these rows, so the bridge must not re-inject a tier
+/// either: the `_ => Some("high")` default used to re-introduce the field,
+/// which the pinned foundation's generic Moonshot arm translated into
+/// `thinking:{type:enabled}` on the wire (the exact-K3 shapers only learn
+/// bare k3 spellings, so nothing stripped it). Drives the real normal-chat
+/// path (bridge → engine → foundation wire shaping → HTTP) against the local
+/// mock endpoint and asserts the FINAL request body: no `thinking` and no
+/// `reasoning_effort` key, for both the platform and Kimi Code K3.1
+/// spellings.
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::await_holding_lock)]
+async fn k31_normal_chat_wire_body_omits_thinking_and_reasoning_effort() {
+    let env = lock_wire_cap_env();
+    let project = env.root.join("user-project");
+
+    for (label, model) in [
+        ("k31-platform", "kimi-k3.1-pro"),
+        ("k31-kimi-code", "k3.1-pro-highspeed"),
+    ] {
+        let (base_url, probe, server_task) = start_wire_cap_probe().await;
+        let engine = boot_wire_cap_engine(
+            label,
+            crate::platform::prefs::ModelPreset::Kimi,
+            model,
+            &base_url,
+            &project,
+            None,
+            |saved| {
+                // Catalog rows stamp the vendor; the bridge routes by it
+                // (vendor "kimi" → moonshot) and recognizes the K3.1 family
+                // through the same case-folded predicate as prefs.
+                saved.vendor = Some("kimi".to_string());
+            },
+        )
+        .await;
+        assert_eq!(
+            engine.provider_kind,
+            deepseek_tui::config::ApiProvider::Moonshot,
+            "{label}: the turn must ride the moonshot wire for the omission to be meaningful"
+        );
+        let op = engine
+            .bridge
+            .build_send_message_op(
+                "wire-cap-session",
+                "Say ok.".to_string(),
+                AppMode::Agent,
+                None,
+                false,
+            )
+            .expect("build k31 turn");
+        drive_wire_cap_turn_to_completion(label, &engine, op).await;
+        engine.engine_run.abort();
+
+        let bodies = probe.bodies.lock().expect("wire-cap bodies").clone();
+        server_task.abort();
+        assert!(
+            !bodies.is_empty(),
+            "{label}: the mock endpoint must capture the outbound request"
+        );
+        for (index, body) in bodies.iter().enumerate() {
+            let value: serde_json::Value = serde_json::from_str(body).unwrap_or_else(|error| {
+                panic!("{label} request {index} is not JSON: {error}\n{body}")
+            });
+            assert_eq!(
+                value.get("model").and_then(serde_json::Value::as_str),
+                Some(model),
+                "{label} request {index}: the wire model id must be preserved"
+            );
+            assert!(
+                value.get("thinking").is_none(),
+                "{label} request {index}: K3.1 does not support the thinking parameter, got {body}"
+            );
+            assert!(
+                value.get("reasoning_effort").is_none(),
+                "{label} request {index}: omitted effort resolves to the documented vendor default, got {body}"
+            );
+        }
+    }
 
     let _ = std::fs::remove_dir_all(&env.root);
 }
