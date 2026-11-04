@@ -1732,11 +1732,17 @@ impl SessionStore {
     }
 
     pub fn confirm_code_yolo(&self) -> Result<CodePermissionPrefs, String> {
-        UserPrefs::update_transaction(|prefs| {
-            prefs.code_permission.yolo_confirmed = true;
-            Ok(())
-        })?;
-        self.code_permission.write().yolo_confirmed = true;
+        // 镜像发布走 post_commit（round-10 评审）：放在 USER_PREFS_LOCK 临界区
+        // 内与并发事务全序化——锁外发布时，两笔交错事务的镜像/磁盘会各停在
+        // 不同提交上（读分裂直到重启）。与 update_transaction_with_post_commit
+        // 的 keyring 清理钩子同一临界区语义。
+        UserPrefs::update_transaction_with_post_commit(
+            |prefs| {
+                prefs.code_permission.yolo_confirmed = true;
+                Ok(())
+            },
+            || self.code_permission.write().yolo_confirmed = true,
+        )?;
         Ok(self.code_permission_prefs_view())
     }
 
@@ -1752,11 +1758,18 @@ impl SessionStore {
         &self,
         enabled: bool,
     ) -> Result<CodePermissionPrefs, String> {
-        UserPrefs::update_transaction(|prefs| {
-            prefs.code_permission.ask_on_guardrail_default = enabled;
-            Ok(())
-        })?;
-        self.code_permission.write().ask_on_guardrail_default = enabled;
+        // 镜像发布走 post_commit（round-10 评审）：镜像写留在锁外时，两个
+        // 并发 toggle 的镜像可能停在先提交的那笔、磁盘停在后提交的那笔，
+        // getter 与播种点此后一直答陈旧值直到重启。临界区内发布后镜像与
+        // settings.json 全序一致（该值交替变化，不能依赖幂等性——与
+        // confirm_code_yolo 的恒 true 写不同）。
+        UserPrefs::update_transaction_with_post_commit(
+            |prefs| {
+                prefs.code_permission.ask_on_guardrail_default = enabled;
+                Ok(())
+            },
+            || self.code_permission.write().ask_on_guardrail_default = enabled,
+        )?;
         Ok(self.code_permission_prefs_view())
     }
 }
