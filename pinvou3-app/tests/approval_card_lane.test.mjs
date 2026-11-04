@@ -1321,12 +1321,51 @@ try {
     // 事后通告不是完成态；姿态命令失败不拦发送（fail-open，通告兜底）。
     assert.match(web, /invoke\("get_mode_state", \{ sessionId: sid \}\)/,
       'web 发送受理前必须解析会话姿态');
-    assert.match(web, /modeState && modeState\.mode === "auto"[\s\S]{0,200}webAutoSendBlocked/,
+    assert.match(web, /modeState && modeState\.mode === "auto"[\s\S]{0,700}webAutoSendBlocked/,
       'Auto 姿态必须在受理前显式拒绝（webAutoSendBlocked 三语文案）');
     const blockedHits = (web.match(/webAutoSendBlocked:/g) || []).length;
     assert.ok(blockedHits >= 3, `webAutoSendBlocked 文案必须三语齐备（实得 ${blockedHits} 处）`);
     assert.match(web, /function doSendForAdmitted\(/,
       '发送主体必须拆出为 doSendForAdmitted（姿态门先行，不重构调用方）');
+    // 拒绝必须自带用户面（评审回执）：Auto 门只 throw 不落通告时，composer
+    // 路径与后台 flushQueued 都表现为静默不动。
+    assert.match(web, /if \(modeState && modeState\.mode === "auto"\) \{[\s\S]{0,700}?runSyncOnSession\(sid, function \(\) \{[\s\S]{0,500}?addSystemItem\(bt\("webAutoSendBlocked"\)\);[\s\S]{0,150}?throw new Error\(bt\("webAutoSendBlocked"\)\);/,
+      'Auto 门拒绝必须先经 runSyncOnSession 落系统通告再 throw（按 sid 路由,后台 flush 重试也标注正确会话）');
+    assert.match(web, /webAutoSendNoticeSids = new Map\(\)/,
+      'Auto 拦截通告必须按 sid 去重（flushQueued 每 turn-end 重试,不去重会逐轮刷屏）');
+    assert.match(web, /webAutoSendNoticeSids\.size > WEB_AUTO_SEND_NOTICE_CAP/,
+      'Auto 拦截通告去重必须有界（512 最旧逐出,同 webApprovalNoticeIds 口径）');
+    assert.match(web, /if \(p\.mode !== "auto"\) webAutoSendNoticeSids\.delete\(String\(p\.session_id\)\);/,
+      '会话离开 Auto（chat:mode_changed）必须清除该 sid 的拦截通告去重（下次进 Auto 允许再提示一次）');
+    // 新加入的 Web 客户端补看在途审批：chat:approval_required 不重放,新标签页/
+    // 新光标加入必须经会话历史首次加载补读一次 get_pending_approvals；
+    // 列表非空 ⇒ 有 turn 在等审批,用 markRemoteTurn 复原 busy 面让停止键
+    // 渲染（不伪造审批卡）；按 sid 在途标记防并发重复读。
+    assert.match(web, /invoke\("get_pending_approvals", \{ sessionId: sid \}\)/,
+      'Web 桥必须在会话历史首次加载时补读在途审批（get_pending_approvals,桌面切换会话同款）');
+    assert.match(web, /markRemoteTurn\(sid, getBuffer\(sid\), false, "web_pending_approvals_replay"\)/,
+      '在途审批补读列表非空时必须用 markRemoteTurn 复原 busy/remoteTurnActive 面（停止键可见,不伪造审批卡）');
+    assert.match(web, /const webPendingApprovalsInFlight = Object\.create\(null\);/,
+      '在途审批补读必须按 sid 在途标记防重叠加载并发重复读');
+    assert.match(web, /buf\.loadedFromDisk = true;[\s\S]{0,160}webReplayPendingApprovals\(sid\);/,
+      '后台会话历史首次落客户端后必须触发在途审批补读');
+    assert.match(web, /scheduleShellPoll\(id, true\);[\s\S]{0,300}webReplayPendingApprovals\(id\);/,
+      '会话切换全量加载（含 live 合并分支）后必须触发在途审批补读');
+    // web 物化必须应用全部三档 lane 默认（与桌面 sessions.js 未绑定 plain
+    // 分支逐字镜像）：tri-mode 对账之前只应用 plan,显式的 yolo/auto work
+    // 默认被静默丢弃。
+    assert.match(web, /if \(\["plan", "yolo", "auto"\]\.includes\(laneDefault\)\) \{[\s\S]{0,300}?set_plan_mode_next[\s\S]{0,200}?set_session_mode[\s\S]{0,200}?mode: laneDefault/,
+      'web 物化必须应用全部三档 lane 默认（plan→set_plan_mode_next,yolo/auto→set_session_mode）');
+    // 普通聊天车道首轮不得再经 create_and_chat 快车道绕过姿态门：后端把
+    // 未绑定 plain session 解析成 Auto,快车道让首轮无门禁跑 Auto 且草稿期
+    // lane 默认来不及应用——已改为先物化再走 doSendFor 受门发送。负面锚定
+    // 分发门槛；剩余的命令文本出现在 runFirstTurnSubmission 的不可达旧切片
+    // （voice_operation_lifecycle 按源码切片钉住,摘除归其所有者）,已无活
+    // 调用方（aux 车道走 web_access_chat,从不使用该命令）。
+    assert.doesNotMatch(web, /canInvoke\("web_access_create_session_and_chat"\)/,
+      'sendMessage 的 create_and_chat 快车道分发必须摘除（首轮统一先物化再受门发送）');
+    assert.match(web, /const materialized = await ensureSession\(draftOwner\);/,
+      'web 草稿首轮必须先经 ensureSession 物化（应用 lane 默认）再走 doSendFor 受门发送');
 
     const sessionsBridge = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
     assert.match(sessionsBridge, /const terminalFence = approvalTerminalSeq\(sid\)/,

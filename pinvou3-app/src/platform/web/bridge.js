@@ -821,6 +821,11 @@ function bt(key) { return pinvouSharedweb().bt(key); }
   // Web 草稿首条消息的本地提交记录。内容只留在当前页面内，用固定 RPC ID
   // 支撑断线重发与人工重试；切走草稿后不会把待发内容泄漏到其他会话。
   const firstTurnSubmissions = Object.create(null);
+  // Round-9：草稿物化在途旗（draftEpoch 作用域）。旧快车道经 chatItems 的
+  // deliveryState 气泡判重并发首条；改走 ensureSession 物化后该窗口没有
+  // 界面痕迹可判重，由 sendMessage 入口守卫与置位点共同接替旧竞态契约。
+  let webDraftMaterializeInFlight = false;
+  let webDraftMaterializeEpoch = 0;
   const authoritativeTranscriptSyncs = Object.create(null);
   let authoritySyncTraceSequence = 0;
   function recordAuthoritySyncDiagnostic(event, details) {
@@ -1361,6 +1366,8 @@ function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedweb().ro
       rerenderFromMessages();
     });
     buf.loadedFromDisk = true;
+    // 历史首次落客户端后补看在途审批（fail-open,见 webReplayPendingApprovals）。
+    webReplayPendingApprovals(sid);
   }
   // 把 active 工作集存好后切到 id 的 buffer(opts.fresh=新建空 buffer)。
   function switchActiveTo(id, opts) {
@@ -2003,18 +2010,22 @@ async function createNewSession() { return pinvouSharedweb().createNewSession();
         getBuffer(meta.id).sessionRevision = String(meta.transcript_revision || meta.transcriptRevision || "");
         await refreshHistoryList();
         await syncModeState();
-        // Two-lane semantics: the backend's plain default is always Yolo and
-        // lanes are only work/code; when the materializing session's lane
-        // global default is plan, apply it right now (the write becomes that
-        // session's own per-session record; the global default is
-        // unaffected).
+        // Two-lane semantics (#428 merged design into work)：后端把未绑定
+        // plain session 解析成 Auto（无 lane 默认时）；用户显式选择的 lane
+        // 全局默认（plan / yolo / auto）此刻就地应用，成为该会话自己的
+        // per-session 记录（全局默认不受影响）。tri-mode 对账之前这里只应用
+        // "plan"，显式的 yolo/auto work 默认被静默丢弃——与桌面
+        // sessions.js 物化分支逐字镜像（yolo/auto 经 set_session_mode，
+        // 确认门在草稿期选定该档时已过，物化不再弹窗）。
         const laneDefault = state.modeDefaults
           && state.modeDefaults[state.modeLane === "code" ? "code" : "work"];
         // 用物化时捕获的 meta.id 而非 activeSessionId：上面的 await 期间用户
-        // 可能已切走，对当前 active 会话执行 set_plan_mode_next 会改错对象。
-        if (laneDefault === "plan") {
+        // 可能已切走，对当前 active 会话执行模式命令会改错对象。
+        if (["plan", "yolo", "auto"].includes(laneDefault)) {
           try {
-            const laneModeState = await invoke("set_plan_mode_next", { sessionId: meta.id });
+            const laneModeState = laneDefault === "plan"
+              ? await invoke("set_plan_mode_next", { sessionId: meta.id })
+              : await invoke("set_session_mode", { sessionId: meta.id, mode: laneDefault });
             applyAuthoritativeModeState(meta.id, laneModeState);
           } catch (laneModeError) {
             runSyncOnSession(meta.id, function () {
@@ -2366,6 +2377,10 @@ function interruptedDisplayRange(item) { return pinvouSharedwebN158313().interru
     // selected. Start Shell reconciliation only after that rebuild; polling
     // earlier can attach task ids to a transient card which hydration replaces.
     scheduleShellPoll(id, true);
+    // 历史首次落客户端（全量加载/live 合并两条分支都经过这里）后补看在途
+    // 审批（fail-open,见 webReplayPendingApprovals）；已缓存 buffer 的快速
+    // 切换路径在各自加载时已补看,不重复读。
+    webReplayPendingApprovals(id);
     const presentationSync = beginSessionPresentationSync(id, requestToken);
     publishSessionTranscriptReady(options);
     await presentationSync;
@@ -2831,12 +2846,30 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // ChatView 的 Web 门挡住，审批卡在 Web 面无决策面）。姿态命令失败不拦发送——
   // 事后通告仍是竞态兜底；与上方 remote-sync 拦截同一拒绝面（Promise.reject
   // 走调用方既有的失败提示）。
+  // Auto 拦截通告去重（评审回执）：拒绝必须自带用户面——之前只 throw，composer
+  // 路径与后台 flushQueued 都表现为静默不动。通告按 sid 去重（512 上限最旧
+  // 逐出，同 webApprovalNoticeIds 口径），flushQueued 每个 turn-end 重试不再
+  // 刷屏；会话离开 Auto（chat:mode_changed）即清除该 sid，允许下一次进 Auto
+  // 再提示一次。
+  const webAutoSendNoticeSids = new Map();
+  const WEB_AUTO_SEND_NOTICE_CAP = 512;
   function doSendFor(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure) {
     const admitted = function () {
       return doSendForAdmitted(sid, text, displayText, attachmentsPayload, meta, restrictTools, surfaceFailure);
     };
     return invoke("get_mode_state", { sessionId: sid }).then(function (modeState) {
       if (modeState && modeState.mode === "auto") {
+        // 通告先落再拒绝：经 runSyncOnSession 落到 sid 自己的 buffer，后台
+        // flushQueued 的重试也标注正确的会话；throw 继续走调用方既有的失败
+        // 恢复（composer 恢复草稿 / flushQueued 原位保留队首）。
+        runSyncOnSession(sid, function () {
+          if (webAutoSendNoticeSids.has(sid)) return;
+          webAutoSendNoticeSids.set(sid, true);
+          if (webAutoSendNoticeSids.size > WEB_AUTO_SEND_NOTICE_CAP) {
+            webAutoSendNoticeSids.delete(webAutoSendNoticeSids.keys().next().value);
+          }
+          addSystemItem(bt("webAutoSendBlocked"));
+        });
         throw new Error(bt("webAutoSendBlocked"));
       }
       return admitted();
@@ -2982,6 +3015,10 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     notify();
     doSendFor(sid, item.payloadText == null ? item.text : item.payloadText, displayText, attachments, item.meta || null, !!item.restrictTools, true)
       .catch(function () {
+        // 失败一律原位保留队首（unshift 回队首）：Auto 门拒绝同样如此——
+        // 队首留着等后续 turn-end flush 重试，拒绝原因由 doSendFor 落的
+        // 去重通告解释（按 sid 去重，turn-end 重试不刷屏），模式切走 Auto
+        // 后的下一次 flush 即可发出。
         const retryQueue = sid === state.activeSessionId
           ? state.queued
           : (sessionStates[sid] && sessionStates[sid].queued);
@@ -3042,26 +3079,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     state.scheduledTaskPendingGuide = snapshot.scheduledTaskPendingGuide;
     state.scheduledTaskCreationSessionId = snapshot.scheduledTaskCreationSessionId;
     state.activeSkill = snapshot.activeSkill;
-  }
-
-  function consumeFirstTurnUiState(text, meta) {
-    const snapshot = {
-      scheduledTaskPendingGuide: state.scheduledTaskPendingGuide,
-      scheduledTaskCreationSessionId: state.scheduledTaskCreationSessionId,
-      activeSkill: state.activeSkill,
-    };
-    const requestedPayloadText = meta && meta.pinvouPayloadText
-      ? String(meta.pinvouPayloadText || "").trim()
-      : "";
-    let payloadText = requestedPayloadText || text;
-    let restrictTools = false;
-    if (state.scheduledTaskPendingGuide) {
-      payloadText = state.scheduledTaskPendingGuide + "\n\n" + (requestedPayloadText || text);
-      restrictTools = true;
-      state.scheduledTaskPendingGuide = null;
-    }
-    state.activeSkill = null;
-    return { snapshot, payloadText, restrictTools };
   }
 
   function seedAcceptedFirstTurn(sessionId, buffer, submission) {
@@ -3213,49 +3230,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
     }
   }
 
-  function submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
-    const prepared = consumeFirstTurnUiState(text, meta);
-    const clientMessageId = webRequestId("chat");
-    const requestId = "first_turn_" + clientMessageId;
-    const time = timeStr();
-    const optimisticItem = {
-      type: "user",
-      text: displayText,
-      time,
-      messageIndex: 0,
-      deliveryState: "sending",
-      deliveryError: "",
-      clientMessageId,
-    };
-    if (meta && meta.pinvouScene) optimisticItem.pinvouScene = meta.pinvouScene;
-    addChatItem(optimisticItem);
-    const submission = {
-      clientMessageId,
-      requestId,
-      draftEpoch: state.draftEpoch,
-      optimisticItemId: optimisticItem.id,
-      time,
-      displayText,
-      pinvouScene: meta && meta.pinvouScene,
-      readyAttachments: [...readyAttachments],
-      uiSnapshot: prepared.snapshot,
-      voiceOperationId: meta && meta.voiceOperationId,
-      args: {
-        message: prepared.payloadText,
-        attachmentHandles: attachmentsPayload.map(function (attachment) {
-          return attachment && attachment.handle;
-        }).filter(Boolean),
-        restrictTools: !!prepared.restrictTools,
-      },
-      inFlight: false,
-      lastErrorCode: "",
-      lastError: "",
-    };
-    firstTurnSubmissions[clientMessageId] = submission;
-    notify();
-    runFirstTurnSubmission(submission);
-  }
-
   function retryFirstTurn(clientMessageId) {
     const submission = firstTurnSubmissions[String(clientMessageId || "")];
     if (!submission || submission.inFlight || !firstTurnStillVisible(submission)) return;
@@ -3263,20 +3237,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       submission.requestId = "first_turn_" + webRequestId("retry");
     }
     runFirstTurnSubmission(submission);
-  }
-
-  // Return protocol (issue #406; mirrors the tauri bridge's sendMessage):
-  // - true         dispatched: sent or queued for delivery.
-  // Web first turn (no session yet): a first turn already in flight blocks a
-  // duplicate admission; otherwise the first turn dispatches through its own
-  // pipeline. Returns the send verdict for the caller.
-  function maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
-    const existingFirstTurn = state.chatItems.some(function (item) {
-      return item && item.type === "user" && !!item.deliveryState;
-    });
-    if (existingFirstTurn) return false;
-    submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
-    return true;
   }
 
   // Materialization-abort recovery: the scoped restore owns the stripped body
@@ -3328,8 +3288,25 @@ function pinvouSharedwebN247496() {
     const displayText = formatAttachmentDisplayText(text, readyAttachments);
     const attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
-    if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
-      return maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
+    // 首轮不再走 web_access_create_session_and_chat 快车道（tri-mode 评审）：
+    // 后端把未绑定的 plain session 解析成 Auto，快车道让首轮在任意姿态门
+    // 之前就以 Auto 无门禁跑起来，草稿期暂存的 lane 默认也来不及应用。改为
+    // 统一先物化（下方 ensureSession，物化即应用三档 lane 默认），再走
+    // doSendFor 的受门发送——多一次中继往返可接受，正确性优先。快捷通道的
+    // 首轮提交入口（maybeSubmitFirstWebTurn/submitFirstWebTurn/
+    // consumeFirstTurnUiState）已随快车道摘除；runFirstTurnSubmission 及其
+    // 重试面（retryFirstTurn，仍在共享 chat 域 API 里）保留：它只被
+    // firstTurnSubmissions 里已存在的记录驱动，而该登记簿再无生产写入方
+    // （voice_operation_lifecycle 仍按源码切片钉住其主体，摘除归其所有者）。
+
+    // 草稿物化在途守卫（round-9，接替旧 existingFirstTurn 竞态契约）：首条
+    // 消息的 ensureSession 在途时，同一草稿的并发发送直接返回 false——旧
+    // 快车道经 chatItems 的 deliveryState 气泡判重，新流程的物化段还没有
+    // 可判重的界面痕迹，必须显式记在途旗（按 draftEpoch 作用域：切到新
+    // 草稿的发送不受旧草稿在途物化拖累）。
+    if (!state.activeSessionId && webDraftMaterializeInFlight
+      && webDraftMaterializeEpoch === Number(state.draftEpoch || 0)) {
+      return false;
     }
 
     if (!state.activeSessionId) {
@@ -3339,37 +3316,45 @@ function pinvouSharedwebN247496() {
       // 错误会话（审计 #257）。
       const draftOwner = { sessionId: null, draftEpoch: Number(state.draftEpoch || 0),
         operationId: meta && meta.voiceOperationId, restored: false };
-      const materialized = await ensureSession(draftOwner);
-      // Materialization aborted (the session was switched away during the
-      // await) → restore against the original draft ownership; never write
-      // into whatever session is currently selected. (Mirrors the tauri lane,
-      // round-2 finding F3; ensureSession itself reports the real reason.)
-      if (!materialized || state.activeSessionId !== materialized) {
-        if (materialized) draftOwner.createdSessionId = materialized;
-        // Round-27 asto MAJOR 2(a), mirrors the tauri m2(a) write: the
-        // commit-then-navigate tail COMMITS the created session to a
-        // background buffer (the draft epoch is dead) even though
-        // ensureSession returned null — report it so the send closure's
-        // verdict mapping routes the chips to the created session. The web
-        // lane has no rollback tail (desktop-only), so any null-return with
-        // a createdSessionId binding is this shape.
-        if (!materialized && draftOwner.createdSessionId && meta) {
-          meta.materializedSessionId = draftOwner.createdSessionId;
+      // Round-9 在途旗：物化窗口内同一草稿的并发发送在入口处即被拒（见上
+      // 方守卫）。finally 覆盖全部退出路径——物化中止的 restore 早退也要
+      // 摘旗，否则该草稿后续发送永远 false。
+      webDraftMaterializeInFlight = true;
+      webDraftMaterializeEpoch = Number(state.draftEpoch || 0);
+      try {
+        const materialized = await ensureSession(draftOwner);
+        // Materialization aborted (the session was switched away during the
+        // await) → restore against the original draft ownership; never write
+        // into whatever session is currently selected. (Mirrors the tauri lane,
+        // round-2 finding F3; ensureSession itself reports the real reason.)
+        if (!materialized || state.activeSessionId !== materialized) {
+          if (materialized) draftOwner.createdSessionId = materialized;
+          // Round-27 asto MAJOR 2(a), mirrors the tauri m2(a) write: the
+          // commit-then-navigate tail COMMITS the created session to a
+          // background buffer (the draft epoch is dead) even though
+          // ensureSession returned null — report it so the send closure's
+          // verdict mapping routes the chips to the created session. The web
+          // lane has no rollback tail (desktop-only), so any null-return with
+          // a createdSessionId binding is this shape.
+          if (!materialized && draftOwner.createdSessionId && meta) {
+            meta.materializedSessionId = draftOwner.createdSessionId;
+          }
+          return restoreAbortedMaterialization(text, draftOwner);
         }
-        return restoreAbortedMaterialization(text, draftOwner);
+        // Round-24 MAJOR (PR #586 review, mirrors the tauri lane): report the
+        // committed materialization through the caller-owned meta out-param —
+        // the composer's scope effect cannot observe a draft→session transition
+        // that lands while ChatView is unmounted, so the send closure records
+        // the ledger mapping itself. Lane boundary (round-27 asto MAJOR 2(b)):
+        // with the retired web_access_create_session_and_chat fast path, every
+        // web first send now goes through this ensureSession leg, so the
+        // materialization report covers the whole normal lane (the unreachable
+        // legacy first-turn slice has no dispatch exit and never settles a
+        // verdict of its own).
+        if (meta) meta.materializedSessionId = materialized;
+      } finally {
+        webDraftMaterializeInFlight = false;
       }
-      // Round-24 MAJOR (PR #586 review, mirrors the tauri lane): report the
-      // committed materialization through the caller-owned meta out-param —
-      // the composer's scope effect cannot observe a draft→session transition
-      // that lands while ChatView is unmounted, so the send closure records
-      // the ledger mapping itself. Lane boundary (round-27 asto MAJOR 2(b)):
-      // this covers the legacy-ensureSession first send; the optimistic
-      // web_access_create_session_and_chat first turn returns true BEFORE the
-      // create runs, so its settle precedes any materialization and no
-      // report can exist for it (async failure recovery is the retry-chip
-      // path, not a settle verdict) — disclosed in the PR's Current
-      // limitations.
-      if (meta) meta.materializedSessionId = materialized;
     }
     const sid = state.activeSessionId;
     // In-bridge submission gate (mirrors the tauri chat bridge): any future
@@ -3480,10 +3465,12 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
       settleAcceptedVoiceSubmission(meta, sid);
       return true;
     }
-    // Admission rejected (notice already surfaced by doSendFor): nothing was
-    // dispatched, so the cleared composer draft is the caller's to restore
-    // (issue #406 — it used to resolve undefined here and the draft was
-    // silently lost).
+    // Admission rejected: nothing was dispatched, so the cleared composer
+    // draft is the caller's to restore (issue #406 — it used to resolve
+    // undefined here and the draft was silently lost). The Auto send-gate
+    // rejection surfaces its own (per-session deduped) system notice inside
+    // doSendFor; other admission failures keep doSendForAdmitted's existing
+    // turn-error notice handling — no duplicate notice is added here.
     restoreUiTurnState(preparation.snapshot);
     notify();
     return false;
@@ -4159,8 +4146,59 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
     const p = e.payload || {};
     if (!p.session_id) return;
     applyAuthoritativeModeState(String(p.session_id), p);
+    // 离开 Auto 即解锁下一次拦截通告（doSendFor 的 webAutoSendNoticeSids 按
+    // sid 去重）：同会话再次进 Auto 后,下一次被拦发送允许再提示一次。负载缺
+    // mode 按 applyModeFromState 的权威兜底口径视为非 Auto。
+    if (p.mode !== "auto") webAutoSendNoticeSids.delete(String(p.session_id));
     notify();
   }); });
+
+  // 新加入的 Web 客户端补看在途审批（tri-mode）：新标签页/新光标加入时,
+  // 在途审批的 chat:approval_required 早已发出且不重放,客户端对等待一无所
+  // 知（表现为会话看起来空闲、停止键缺失、无人解释为何没有回声）。会话历史
+  // 首次在客户端加载时读一次 get_pending_approvals（access-policy 白名单内,
+  // 桌面切换会话同款补读）：未通告过的 approval id 复用 webApprovalNoticeIds
+  // 去重（同键 会话\0approvalId）落同一系统通告——后续 live 事件同键去重,
+  // 不刷屏；列表非空还说明有 turn 正在等审批——用 markRemoteTurn 复原
+  // busy/remoteTurnActive 面让停止键渲染。不伪造审批卡（Web 无决策面）。
+  // 读取失败保持 fail-open（静默继续,live chat:approval_required 仍是主
+  // 路径）；每个 sid 用在途标记防重叠加载并发重复读。
+  const webPendingApprovalsInFlight = Object.create(null);
+  function webReplayPendingApprovals(sid) {
+    if (!sid || webPendingApprovalsInFlight[sid]) return;
+    webPendingApprovalsInFlight[sid] = true;
+    invoke("get_pending_approvals", { sessionId: sid }).then(function (pending) {
+      const entries = Array.isArray(pending) ? pending : [];
+      if (!entries.length) return;
+      runSyncOnSession(sid, function () {
+        entries.forEach(function (entry) {
+          const approvalId = String(entry && entry.approvalId || "");
+          if (!approvalId) return;
+          const dedupKey = String(sid) + "\u0000" + approvalId;
+          if (webApprovalNoticeIds.has(dedupKey)) return;
+          webApprovalNoticeIds.set(dedupKey, true);
+          if (webApprovalNoticeIds.size > WEB_APPROVAL_NOTICE_CAP) {
+            webApprovalNoticeIds.delete(webApprovalNoticeIds.keys().next().value);
+          }
+          const tool = entry && entry.toolName ? String(entry.toolName) : "";
+          addSystemItem(bt("webApprovalUnsupported") + (tool ? ": " + tool : ""), {
+            webApprovalUnsupported: true,
+            toolName: tool,
+          });
+        });
+        // 与通告去重解耦：通告可能已被更早的加载落过,但本客户端此刻的
+        // buffer 仍需要 busy/remoteTurnActive 才能渲染停止键（列表非空 ⇒
+        // 后端登记表里确有 turn 在等）。markRemoteTurn 对已 active 的轮次
+        // 幂等,且 localTurnOwned 时自守（不覆盖本地轮次权威）。
+        markRemoteTurn(sid, getBuffer(sid), false, "web_pending_approvals_replay");
+      });
+      notify();
+    }, function () {
+      // fail-open：补读失败不落任何用户可见内容,等 live 事件兜底。
+    }).then(function () {
+      delete webPendingApprovalsInFlight[sid];
+    });
+  }
 
   listen("chat:tool_start", function (e) { onSessionEvent(e, function () {
     const p = e.payload || {};
