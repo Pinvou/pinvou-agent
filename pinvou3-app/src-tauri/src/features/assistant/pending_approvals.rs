@@ -653,6 +653,18 @@ mod tests {
         session.to_string()
     }
 
+    /// 注册表与 `generation` 都是进程级全局（单例 `PENDING`）：并行测试线程的
+    /// 任何登记变更都会推进 generation，令依赖「快照窗口内无并发变更」断言的
+    /// 测试随机红（round-10 评审实证：forkguard 全量 84 条并发跑 2/4 红，命中
+    /// `restore_if_generation_is` 与 `pending_card_stamps` 两条）。凡触碰注册
+    /// 表的测试先取本锁串行化；纯载荷构造/源码钉测试不需要。
+    fn test_registry_lock() -> std::sync::MutexGuard<'static, ()> {
+        static REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        REGISTRY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     fn sample(approval_id: &str, approval_key: &str, grouping_key: &str) -> PendingApproval {
         PendingApproval {
             approval_id: approval_id.to_string(),
@@ -840,6 +852,7 @@ mod tests {
 
     #[test]
     fn forkguard_approval_surface_record_dedupes_by_approval_id() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-dedupe-test");
         record(&session, sample("ap-1", "k-1", "g-1"), None);
         record(&session, sample("ap-1", "k-1", "g-1"), None);
@@ -857,6 +870,7 @@ mod tests {
 
     #[test]
     fn forkguard_approval_surface_remove_returns_entry_and_cleans_empty_session() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-remove-test");
         record(&session, sample("ap-1", "k-1", "g-1"), None);
         let removed = remove(&session, "ap-1");
@@ -874,6 +888,7 @@ mod tests {
 
     #[test]
     fn forkguard_remove_fenced_returns_atomic_generation_snapshot() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-remove-fenced-test");
         record(&session, sample("ap-f1", "k-f1", "g-f1"), None);
         let (removed, generation_after_remove) = remove_fenced(&session, "ap-f1")
@@ -902,6 +917,7 @@ mod tests {
 
     #[test]
     fn forkguard_restore_if_generation_is_compares_and_inserts_atomically() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-cas-restore-test");
         record(&session, sample("ap-r1", "k-r1", "g-r1"), None);
         let (pending, snapshot) = remove_fenced(&session, "ap-r1")
@@ -934,6 +950,7 @@ mod tests {
 
     #[test]
     fn forkguard_approval_surface_grant_and_denial_scoping() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-scope-test");
         let other = isolate("approval-scope-other");
         // 授予按 grouping_key：同组变体放行，异组不连坐。
@@ -971,6 +988,7 @@ mod tests {
 
     #[test]
     fn forkguard_approval_surface_clear_pending_keeps_session_memory() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-clear-pending-test");
         record(&session, sample("ap-1", "k-1", "g-1"), None);
         remember_grant(&session, "g-1", None);
@@ -994,6 +1012,7 @@ mod tests {
     /// 静默丢弃 worker 审批 = 把 `WaitingForUser` 的 worker 永久悬挂。
     #[test]
     fn forkguard_approval_surface_terminal_split_returns_child_ids() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-terminal-split-test");
         record(&session, sample("ap-parent-1", "k-1", "g-1"), None);
         let mut child = sample("agent:ag-1:approval:boot-1:1", "k-2", "g-2");
@@ -1027,6 +1046,7 @@ mod tests {
     /// 活得久）。
     #[test]
     fn forkguard_emit_chat_terminal_denies_child_approvals_after_terminal() {
+        let _registry = test_registry_lock();
         let src = include_str!("engine.rs");
         let production = src.split("#[cfg(test)]").next().expect("non-empty source");
         let sweep = production
@@ -1048,6 +1068,7 @@ mod tests {
 
     #[test]
     fn forkguard_approval_surface_clear_session_wipes_memory() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-clear-test");
         let other = isolate("approval-clear-other");
         record(&session, sample("ap-1", "k-1", "g-1"), None);
@@ -1078,6 +1099,7 @@ mod tests {
     /// 比对臂即核心断言红；移除 advance（代不推进）即「迟交写入被拒」红。
     #[test]
     fn forkguard_late_old_scope_decision_is_rejected_after_rebind() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-req-gen-late");
         // 卡片在 A 目录（无代）弹出：实例 spawn 代快照为 None。
         record(&session, sample("ap-late", "k-late", "g-late"), None);
@@ -1147,6 +1169,7 @@ mod tests {
     /// 快照接线另有 source pin）。
     #[test]
     fn forkguard_pending_card_stamps_emitting_instance_generation() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-inst-gen");
         // 旧实例（spawn 于 A 目录、无代）在绑定提交点的代推进之后才弹卡：
         // 登记携带实例的 spawn 代（None），不是收卡时的当前代。
@@ -1199,6 +1222,7 @@ mod tests {
     /// 新实例的重放携带自己的 spawn 代（与实例来源语义一致）。
     #[test]
     fn forkguard_record_replace_recaptures_request_generation() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-req-gen-recapture");
         record(&session, sample("ap-re", "k-re", "g-re"), None);
         assert_eq!(list(&session)[0].request_workspace_generation, None);
@@ -1231,6 +1255,7 @@ mod tests {
     /// 语义）；record 改章收卡时刻当前代 → 第一对断言红。
     #[test]
     fn forkguard_coldstart_identity_survives_rebind_before_first_mint() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-coldstart-gen");
         // Startup（A 目录冷启动）：spawn 链同步段经生产捕获函数快照身份代
         // （从未重绑 → None）。
@@ -1292,6 +1317,7 @@ mod tests {
     /// 接受），gen_b 随 spawn 传给转发器盖章。
     #[test]
     fn forkguard_capture_identity_happy_path_single_round() {
+        let _registry = test_registry_lock();
         let session = isolate("capture-happy");
         let expected = "A-root".to_string();
         let resolves = std::cell::Cell::new(0usize);
@@ -1314,6 +1340,7 @@ mod tests {
     /// （首轮撕裂快照会被直接放行）。
     #[test]
     fn forkguard_capture_identity_retries_advance_inside_window() {
+        let _registry = test_registry_lock();
         let session = isolate("capture-window-advance");
         let expected = "A-root".to_string();
         let first_round = std::cell::Cell::new(true);
@@ -1349,6 +1376,7 @@ mod tests {
     /// 变异：删掉重试上限的 Err 臂（耗尽后照常返回），本测试红。
     #[test]
     fn forkguard_capture_identity_exhausts_under_persistent_advance() {
+        let _registry = test_registry_lock();
         let session = isolate("capture-persistent-advance");
         let expected = "A-root".to_string();
         let error = capture_workspace_identity(&session, &expected, || {
@@ -1371,6 +1399,7 @@ mod tests {
     /// 用例锁「旧根+新代」。变异：删掉 roots 比较臂，两条断言红。
     #[test]
     fn forkguard_capture_identity_rejects_roots_drift() {
+        let _registry = test_registry_lock();
         let session = isolate("capture-roots-drift");
         let expected = "A-root".to_string();
         // 漂移一轮：resolve 返回换根后的新 roots（代未推进——advance 尚未
@@ -1418,6 +1447,7 @@ mod tests {
     /// 入口复现同一形态）。
     #[test]
     fn forkguard_identity_switch_cleanup_preserves_workspace_generation() {
+        let _registry = test_registry_lock();
         let session = isolate("approval-ws-gen-preserve");
         let other = isolate("approval-ws-gen-preserve-other");
         // A 目录（无代）的预重绑决策。
@@ -1472,6 +1502,7 @@ mod tests {
     /// 列：mode | ask | force | granted | denied → 处置。
     #[test]
     fn forkguard_approval_surface_decision_truth_table() {
+        let _registry = test_registry_lock();
         use ApprovalDenyReason::*;
         use ApprovalSurfaceDecision::*;
         let table: &[(
