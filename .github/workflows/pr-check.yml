@@ -48,7 +48,8 @@ name: PR Check
 # - windows-rustup-repair-test: Relevant PRs corrupt a copied toolchain in an
 #   isolated RUSTUP_HOME and verify download-source fallback and reinstall.
 # - macos-cli-check:macOS-gated pinvou-cli code (#[cfg(target_os = "macos")]) must
-#   type-check somewhere; compile-only leg mirroring the Windows CLI compile check
+#   type-check somewhere; mostly-compile-only leg (the one gated production pin runs
+#   via a filtered cargo test) mirroring the Windows CLI compile check
 #   for ready cli_rust/rust_full PRs, the matching Merge Queue combined tree, and
 #   main push (cumulative; Linux cannot type-check macOS-gated code).
 # - rust-loongarch64-check:交叉 compile-only leg:用发布 job 同一套钉死 loong64
@@ -3111,9 +3112,10 @@ jobs:
   # pinvou-cli contains #[cfg(target_os = "macos")] code (support/supervise.rs,
   # voice.rs's non-linux/non-windows arms, ...) that compiles nowhere else in CI:
   # cli-test is ubuntu-only and the macOS
-  # runner above only smokes the Node ACP bridge. This compile-only leg mirrors
+  # runner above only smokes the Node ACP bridge. This leg mirrors
   # the windows-rust-test "pinvou-cli Windows compile check" step for exactly
-  # that risk class. No Tauri system packages are needed on macOS (system frameworks
+  # that risk class (mostly compile-only; the one gated production pin runs
+  # below). No Tauri system packages are needed on macOS (system frameworks
   # are preinstalled; same minimum as the Windows compile check), and no zram setup
   # is required (macOS runners are out of the gate-policy memory scope).
   # Cache policy: this leg gets the same restorable treatment as
