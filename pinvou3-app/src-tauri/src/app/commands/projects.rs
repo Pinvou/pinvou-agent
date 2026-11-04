@@ -1658,6 +1658,18 @@ pub async fn rebind_workspace_root(
     // sidecar whose write failed stays on disk with the old path, is reported
     // below, and the next run's `from` scan still matches it.
     let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);
+    // Approval-memory isolation at the identity-switch commit point (review
+    // round P2, round-8 R8-2): both binding passes above are the moment a
+    // session's runtime directory actually changes, so the session's grant /
+    // denial memory must drop HERE — not at the metadata sync, where every
+    // failure arm and the pre-sync-unknown branch would otherwise leave
+    // stale pre-rebind decisions answering post-rebind requests. The codex
+    // prefix translation (prefix_outcome.affected) and the plain sidecar
+    // moves (plain_rebind.rebound) are the moved-this-run populations.
+    clear_approval_memory_for_rebound_sessions(plain_rebind.rebound.iter().map(|(sid, _)| sid));
+    clear_approval_memory_for_rebound_sessions(
+        prefix_outcome.affected.iter().map(|(sid, _)| sid),
+    );
     let binding_final_stale: Vec<String> = plain_rebind.failed_session_ids.clone();
     // Round-20 minor 2: plain chats whose sidecar move FAILED must not
     // capture a codex-lane baseline when their metadata sync succeeds —
@@ -1829,13 +1841,6 @@ pub async fn rebind_workspace_root(
         // (that is the strand shape), which the run-global from→to map cannot
         // see. Loaded once here, before set_workspace overwrites it.
         let mut per_session_from: Option<PathBuf> = None;
-        // Pre-write metadata workspace, kept for the approval-memory clear at
-        // the set_workspace commit below (the working-directory identity
-        // switch): the loop head is the only point where the session's
-        // PRE-rebind directory is still readable — set_workspace overwrites
-        // it, and the approval memory must be judged against what it was
-        // decided under, not what it will run under.
-        let mut pre_sync_workspace: Option<PathBuf> = None;
         let new_path = match repaired_target
             .clone()
             .or_else(|| SessionAgentStore::rebind_target_path(bound_path, &from, &to_display))
@@ -1860,7 +1865,6 @@ pub async fn rebind_workspace_root(
                 match sessions.load(session_id) {
                     Ok(session) => {
                         let pre_sync = session.metadata.workspace.clone();
-                        pre_sync_workspace = Some(pre_sync.clone());
                         if metadata_behind_binding(&pre_sync, bound_path)
                             || repaired_target.is_some()
                         {
@@ -1911,7 +1915,6 @@ pub async fn rebind_workspace_root(
                         if identity(&session.metadata.workspace.to_string_lossy())
                             != identity(&bound_path.to_string_lossy())
                         {
-                            pre_sync_workspace = Some(session.metadata.workspace.clone());
                             per_session_from = Some(session.metadata.workspace.clone());
                             Some(bound_path.clone())
                         } else {
@@ -2077,26 +2080,11 @@ pub async fn rebind_workspace_root(
         match sessions.set_workspace(session_id, new_path.clone()) {
             Ok(()) => {
                 synced_this_loop = true;
-                // Working-directory identity switch (review round P2): the
-                // session id survives the rebind and its old run instances
-                // are recycled, but the host-side interactive-approval
-                // memory (grants/denials) keys on the session id alone and
-                // the engine mints operation-scoped approval keys for normal
-                // (non-delegated) calls — a grant or denial decided under
-                // the old directory would silently answer the same operation
-                // executed under the new one. Clear it when the committed
-                // workspace differs from the pre-write one; a same-directory
-                // commit (healthy to-lane eviction candidate) keeps the
-                // memory. Mirrors the engine's own workspace-switch
-                // semantics (apply_workspace_runtime_state clears the whole
-                // grant/denial set when the primary moves).
-                if let Some(previous_workspace) = &pre_sync_workspace {
-                    clear_approval_memory_on_identity_switch(
-                        session_id,
-                        previous_workspace,
-                        &new_path,
-                    );
-                }
+                // Approval memory was already dropped at the binding-move
+                // commit point above (round-8 R8-2): the identity switch
+                // happened when the binding moved, not when the metadata
+                // caught up, and gating the clear here would skip it on
+                // every failure arm and on an unreadable pre-sync record.
                 // Post-write owner re-check (round-24 MAJOR 1): a delete
                 // landing between this save's lock release and the report
                 // push would otherwise push a freshly dead id into the
@@ -2997,33 +2985,35 @@ fn metadata_behind_binding(pre_sync: &Path, bound_path: &Path) -> bool {
             .trim_end_matches('/')
 }
 
-/// Drop one session's interactive-approval memory (pending cards, grants,
-/// denials) when a rebind truly switches its working-directory identity —
-/// the reviewer P2: the session id survives the rebind while its run
-/// instances are recycled, but the host-side grant/denial cache keys on the
-/// session id alone and the engine mints operation-scoped approval keys for
-/// normal (non-delegated) calls, so pre-rebind decisions would otherwise
-/// answer post-rebind requests executed under the moved directory. Mirrors
-/// the engine's own semantics: a TUI workspace switch clears the whole
-/// session grant/denial set (`apply_workspace_runtime_state`), and the
-/// host-side clean point had been session deletion only. The folded
-/// identity-key compare shares `metadata_behind_binding`'s domain — a
-/// case/separator alias of the same directory is not a switch and keeps the
-/// memory, so non-rebind flows (same-directory commits, healthy to-lane
-/// eviction candidates) see no behavior change. Returns whether a switch
-/// was detected; clearing always goes through
-/// `pending_approvals::clear_session`, whose per-session shares leave other
+/// Drop the interactive-approval memory (pending cards, grants, denials) of
+/// every session whose runtime binding THIS RUN moved across the rebind
+/// geometry — the reviewer P2, fixed at the identity-switch commit point
+/// instead of the metadata sync. The session id survives the rebind while its
+/// old run instances are recycled, but the host-side grant/denial cache keys
+/// on the session id alone and the engine mints operation-scoped approval
+/// keys for normal (non-delegated) calls, so a grant or denial decided under
+/// the old directory would silently answer the same operation executed under
+/// the new one. The runtime resolves its workspace through the binding
+/// first, so the binding write IS the identity switch: every later failure
+/// arm (artifact rebase, acp-state, set_workspace) and every pre-sync load
+/// failure leaves the run on the NEW directory with decisions made under the
+/// OLD one, which is why the clear cannot stay in the `set_workspace` Ok arm
+/// (the round-15 fix's residual: partial failures and `pre_sync_workspace ==
+/// None` skipped it). Clearing at the commit point is fail-safe by
+/// construction — re-prompting is cheap, a stale silent approval is not —
+/// and a later step failing cannot un-switch the binding. The run's
+/// from→to geometry cannot be an alias-equal no-op here: same-directory
+/// invocations early-return before the binding passes, so reaching this
+/// point already implies a true identity switch. Mirrors the engine's own
+/// semantics (a TUI workspace switch clears the whole grant/denial set,
+/// `apply_workspace_runtime_state`); the per-session shares leave other
 /// sessions' grants untouched.
-fn clear_approval_memory_on_identity_switch(
-    session_id: &str,
-    previous_workspace: &Path,
-    committed_workspace: &Path,
-) -> bool {
-    let switched = metadata_behind_binding(previous_workspace, committed_workspace);
-    if switched {
+fn clear_approval_memory_for_rebound_sessions<'a>(
+    rebound_ids: impl Iterator<Item = &'a String>,
+) {
+    for session_id in rebound_ids {
         crate::features::assistant::pending_approvals::clear_session(session_id);
     }
-    switched
 }
 
 fn metadata_rebind_targets(
@@ -4905,24 +4895,23 @@ mod tests {
     /// a matching request executed under the moved directory. Mutation
     /// (negative-first): no-op'ing the `clear_session` call inside
     /// `clear_approval_memory_on_identity_switch` fails the first two
-    /// asserts.
-    #[test]
     fn rebind_identity_switch_clears_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
+        let rebound: Vec<String> = vec!["approval-rebind-switch".to_string()];
         approvals::clear_session("approval-rebind-switch");
+        approvals::clear_session("approval-rebind-bystander");
         approvals::remember_grant("approval-rebind-switch", "shell:11:cargo build");
         approvals::remember_denial("approval-rebind-switch", "shell:29:rm -rf /tmp/x");
+        approvals::remember_grant("approval-rebind-bystander", "shell:11:cargo build");
         assert!(approvals::session_granted("approval-rebind-switch", "shell:11:cargo build"));
         assert!(approvals::session_denied("approval-rebind-switch", "shell:29:rm -rf /tmp/x"));
+        assert!(approvals::session_granted("approval-rebind-bystander", "shell:11:cargo build"));
 
-        // The rebind commits a different directory: both sides of the
-        // session-level memory must go (fail-safe: re-prompting is cheap,
-        // a stale silent approval is not).
-        assert!(clear_approval_memory_on_identity_switch(
-            "approval-rebind-switch",
-            Path::new("/home/user/old-root"),
-            Path::new("/home/user/new-root"),
-        ));
+        // The binding passes moved these sessions across directories: both
+        // faces of the session-level memory must go for every rebound id,
+        // and ONLY those (fail-safe: re-prompting is cheap, a stale silent
+        // approval is not; other sessions' shares stay untouched).
+        clear_approval_memory_for_rebound_sessions(rebound.iter());
         assert!(
             !approvals::session_granted("approval-rebind-switch", "shell:11:cargo build"),
             "a pre-rebind grant must not satisfy a matching post-rebind request"
@@ -4931,13 +4920,19 @@ mod tests {
             !approvals::session_denied("approval-rebind-switch", "shell:29:rm -rf /tmp/x"),
             "a pre-rebind denial must not suppress a matching post-rebind request"
         );
+        assert!(
+            approvals::session_granted("approval-rebind-bystander", "shell:11:cargo build"),
+            "untouched sessions keep their shares"
+        );
         approvals::clear_session("approval-rebind-switch");
+        approvals::clear_session("approval-rebind-bystander");
     }
 
-    /// Negative control for the same P2: a same-directory commit (healthy
-    /// to-lane eviction candidate, alias spelling of the same directory) is
-    /// not an identity switch and must keep the cache, so normal
-    /// same-directory reuse still hits it.
+    /// Scoping control for the same P2: a session whose binding did NOT move
+    /// this run is simply not in the rebound set, so the helper never touches
+    /// it — the same-directory keep semantics now live in the run gate
+    /// (alias-equal from→to early-returns before the binding passes) plus set
+    /// membership, not in a per-call identity compare.
     #[test]
     fn rebind_same_directory_commit_keeps_session_approval_memory() {
         use crate::features::assistant::pending_approvals as approvals;
@@ -4945,76 +4940,69 @@ mod tests {
         approvals::remember_grant("approval-rebind-same-dir", "shell:11:cargo build");
         approvals::remember_denial("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x");
 
-        // No switch: identical directory.
-        assert!(!clear_approval_memory_on_identity_switch(
-            "approval-rebind-same-dir",
-            Path::new("/home/user/root"),
-            Path::new("/home/user/root"),
-        ));
+        // The session is not in the moved set: nothing clears it.
+        clear_approval_memory_for_rebound_sessions(Vec::<String>::new().iter());
         assert!(approvals::session_granted("approval-rebind-same-dir", "shell:11:cargo build"));
         assert!(approvals::session_denied("approval-rebind-same-dir", "shell:29:rm -rf /tmp/x"));
-
-        // Still no switch: trailing-separator alias of the same directory
-        // (the folded compare's domain) keeps the memory too.
-        assert!(!clear_approval_memory_on_identity_switch(
-            "approval-rebind-same-dir",
-            Path::new("/home/user/root/"),
-            Path::new("/home/user/root"),
-        ));
-        assert!(approvals::session_granted("approval-rebind-same-dir", "shell:11:cargo build"));
         approvals::clear_session("approval-rebind-same-dir");
     }
 
-    /// Wiring pin for the same P2: the metadata loop must snapshot the
-    /// PRE-write workspace at the loop head (set_workspace overwrites it)
-    /// and route the set_workspace commit through the identity-switch clear,
-    /// before the session is reported rebound. Source-level like the other
-    /// command-layer probes (no mock_app precedent — the command needs
-    /// AppHandle/State). Mutation: deleting the gated call at the commit
-    /// point fails the ordering assert.
+
+    /// Wiring pin for the same P2 (round-8 R8-2): the approval-memory clear
+    /// must sit at the BINDING-MOVE commit point — right after the two
+    /// binding passes, before the metadata loop — and the old
+    /// metadata-success-gated clear must be gone (it skipped every failure
+    /// arm and the unreadable-pre-sync branch, leaving stale pre-rebind
+    /// decisions live under the new directory). Source-level like the other
+    /// command-layer probes. Mutation: moving the clear back inside the
+    /// set_workspace Ok arm (or gating it on any metadata success) fails the
+    /// ordering asserts; deleting the helper call pair fails the find.
     #[test]
-    fn rebind_metadata_loop_clears_approval_memory_on_identity_switch() {
+    fn rebind_clears_approval_memory_at_the_binding_commit_point() {
         let src = production_source();
-        let snapshot = src
-            .find("let mut pre_sync_workspace: Option<PathBuf> = None;")
-            .expect("the loop head must snapshot the pre-write workspace");
-        let capture = src
-            .find("pre_sync_workspace = Some(pre_sync.clone());")
-            .expect("the pre-sync load must capture the pre-write workspace");
+        let plain = src
+            .find("let plain_rebind = sessions.apply_rebind_workspace_bindings(plain_plan);")
+            .expect("the plain binding pass must exist");
+        let clear_plain = src
+            .find("clear_approval_memory_for_rebound_sessions(plain_rebind.rebound.iter()")
+            .expect("the plain rebound set must be cleared");
+        let clear_codex = src
+            .find("clear_approval_memory_for_rebound_sessions(\n        prefix_outcome.affected.iter()")
+            .expect("the codex rebound set must be cleared too");
         let set_ws = src
             .find("sessions.set_workspace(session_id, new_path.clone())")
             .expect("set_workspace must exist");
         assert!(
-            snapshot < capture && capture < set_ws,
-            "the pre-write workspace must be captured before set_workspace overwrites it"
+            plain < clear_plain && clear_plain < set_ws,
+            "the approval-memory clear must sit at the binding commit point, before any metadata step can fail"
         );
-        let commit = &src[set_ws..];
-        let gate = commit
-            .find("if let Some(previous_workspace) = &pre_sync_workspace {")
-            .expect("the commit-point clear must gate on the captured pre-write workspace");
-        let clear = commit[gate..]
-            .find("clear_approval_memory_on_identity_switch(")
-            .expect("the commit must route through the identity-switch clear");
-        let ghost = commit
-            .find("absent_record_outcome_if_ghost(")
-            .expect("the post-write ghost probe must exist");
         assert!(
-            gate < ghost && clear < ghost,
-            "the approval-memory clear must run inside the set_workspace Ok arm"
+            clear_plain < clear_codex && clear_codex < set_ws,
+            "both moved populations must clear at the commit point"
+        );
+        assert!(
+            !src.contains("clear_approval_memory_on_identity_switch("),
+            "the metadata-success-gated clear must be gone (it skipped failure arms and pre-sync-unknown)"
+        );
+        assert!(
+            !src.contains("let mut pre_sync_workspace"),
+            "the pre-sync snapshot for the removed clear must be gone with it"
+        );
+        assert!(
+            !src.contains("if let Some(previous_workspace) = &pre_sync_workspace {"),
+            "the Ok-arm gate for the removed clear must be gone with it"
         );
         let helper = src
-            .find("fn clear_approval_memory_on_identity_switch(")
+            .find("fn clear_approval_memory_for_rebound_sessions<")
             .expect("the helper must exist");
         let helper_body = &src[helper..];
         let clear_call = helper_body
             .find("pending_approvals::clear_session(session_id)")
             .expect("the helper must clear through pending_approvals::clear_session");
-        let switched = helper_body
-            .find("metadata_behind_binding(previous_workspace, committed_workspace)")
-            .expect("the helper must reuse the folded identity compare");
+        let loop_head = helper_body.find("for session_id in rebound_ids {").expect("the helper must iterate the moved ids");
         assert!(
-            switched < clear_call,
-            "the clear must be gated on the identity comparison"
+            loop_head < clear_call,
+            "the helper must clear inside the moved-id iteration"
         );
     }
 
