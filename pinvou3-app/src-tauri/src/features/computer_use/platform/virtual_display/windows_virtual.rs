@@ -94,11 +94,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     ChildWindowFromPoint, FindWindowW, GW_HWNDLAST, GW_HWNDNEXT, GW_HWNDPREV, GetClassNameW,
     GetCursorPos, GetForegroundWindow, GetParent, GetSystemMetrics, GetTopWindow, GetWindow,
-    GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos, SetForegroundWindow,
-    WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WindowFromPoint,
+    GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, PW_RENDERFULLCONTENT, PostMessageW,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos,
+    SetForegroundWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, PWSTR};
 
@@ -126,11 +126,6 @@ use super::VirtualAvailability;
 unsafe extern "system" {
     fn PrintWindow(hwnd: HWND, hdcblt: HDC, nflags: u32) -> i32;
 }
-
-/// `PW_RENDERFULLCONTENT` (Win32::UI::WindowsAndMessaging has it as a plain
-/// u32; the typed `PRINT_WINDOW_FLAGS` twin lives in the un-enabled
-/// `Win32_Storage_Xps` module). Value 2 = include DX/layered content.
-const PW_RENDERFULLCONTENT: u32 = 2;
 
 /// Shell window whose presence signals the hidden desktop's explorer shell
 /// is up (design §6 readiness probe).
@@ -205,11 +200,48 @@ const MK_RBUTTON: usize = 0x0002;
 const MK_MBUTTON: usize = 0x0010;
 
 /// Cheap availability probe (design §6): the hidden-desktop API set is part
-/// of Win32 and present on every supported Windows — no external binaries to
-/// look for, no side effects (this runs on every status read; creation only
-/// happens later via [`create_backend`]).
+/// of Win32, so the only hard external dependency is the shell binary the
+/// desktop launches — probe %WINDIR%\explorer.exe (pure stat, no spawn, no
+/// side effects; this runs on every status read, creation happens later via
+/// [`create_backend`]). A miss answers Unavailable so the one-time target
+/// decision falls back to the physical desktop instead of building a session
+/// that fails on its first spawn.
 pub(crate) fn probe() -> VirtualAvailability {
-    VirtualAvailability::Available
+    match explorer_presence() {
+        ExplorerPresence::Found => VirtualAvailability::Available,
+        ExplorerPresence::Missing { detail } => VirtualAvailability::Unavailable { detail },
+    }
+}
+
+/// Pure probe core over an injectable existence check (unit-testable
+/// without machine state).
+fn explorer_missing_with(explorer_exists: impl Fn(&str) -> bool) -> Option<String> {
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let explorer = format!("{windir}\\explorer.exe");
+    if explorer_exists(&explorer) {
+        return None;
+    }
+    Some(format!(
+        "the hidden-desktop shell {explorer} was not found; the virtual display needs \
+         the Windows shell to run its session"
+    ))
+}
+
+/// Real existence check for the probe.
+fn explorer_presence() -> ExplorerPresence {
+    match explorer_missing_with(|path| {
+        std::fs::metadata(path)
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+    }) {
+        None => ExplorerPresence::Found,
+        Some(detail) => ExplorerPresence::Missing { detail },
+    }
+}
+
+enum ExplorerPresence {
+    Found,
+    Missing { detail: String },
 }
 
 // ── pure helpers (unit-tested below; no OS calls) ──────────────────────────
@@ -481,20 +513,20 @@ fn validate_open_request(program: &str, args: &[String]) -> Result<(), ComputerU
 
 /// The hidden desktop's shell launch plan: (lpApplicationName, lpCommandLine).
 /// The application path is passed RAW (lpApplicationName is never parsed, so
-/// quoting it would corrupt the path); the folder argument in the command
-/// line is quoted. The folder opens a window immediately so the desktop is
-/// never blank even before shell initialization (rustyvnc's refinement over
-/// a bare explorer launch).
-fn explorer_launch_plan(windir: Option<&str>, user_profile: Option<&str>) -> (String, String) {
+/// The hidden desktop's shell launch plan: (lpApplicationName, lpCommandLine).
+/// The application path is passed RAW (lpApplicationName is never parsed, so
+/// quoting it would corrupt the path). NO folder argument: the desktop starts
+/// blank and `wait_for_shell_tray` gates readiness — opening a default folder
+/// (the old plan used %USERPROFILE%) would put the user's home-directory file
+/// listing into every early screenshot, leaking private names into
+/// agent-visible output. The tray window appears with a bare launch too.
+fn explorer_launch_plan(windir: Option<&str>) -> (String, String) {
     let windir = windir
         .filter(|value| !value.is_empty())
         .unwrap_or("C:\\Windows");
-    let folder = user_profile
-        .filter(|value| !value.is_empty())
-        .unwrap_or("C:\\");
     (
         format!("{windir}\\explorer.exe"),
-        format!("explorer.exe {}", quote_command_line_part(folder)),
+        "explorer.exe".to_string(),
     )
 }
 
@@ -805,11 +837,23 @@ unsafe fn launch_suspended_in_job(
             )));
         }
         let resumed = ResumeThread(info.hThread);
+        if resumed == u32::MAX {
+            // The process is contained (assigned to the kill-on-close job)
+            // but still SUSPENDED — it would linger until session end.
+            // Terminate it now, mirroring the assign-failure path above,
+            // BEFORE the handles close.
+            // SAFETY: termination of our own just-launched, still-suspended
+            // process handle (never resumed, so nothing ran).
+            unsafe {
+                let _ = TerminateProcess(info.hProcess, 1);
+            }
+        }
         let _ = CloseHandle(info.hProcess);
         let _ = CloseHandle(info.hThread);
         if resumed == u32::MAX {
             return Err(ComputerUseError::failed(
-                "the contained process could not be resumed",
+                "the contained process could not be resumed and was terminated \
+                 while still suspended",
             ));
         }
         Ok(info.dwProcessId)
@@ -1095,10 +1139,14 @@ impl GdiPool {
                 DIB_RGB_COLORS,
             );
             SelectObject(self.composite_dc, HGDIOBJ(self.composite_bitmap.0));
-            if lines == 0 {
-                return Err(ComputerUseError::unavailable(
-                    "hidden desktop capture: GetDIBits returned no scan lines",
-                ));
+            // A short read (fewer scan lines than requested, e.g. under GDI
+            // pressure) would leave the buffer tail zeroed — half-black
+            // frames reported as good captures. Fail explicitly instead.
+            if lines != self.rect.height as u32 {
+                return Err(ComputerUseError::unavailable(format!(
+                    "hidden desktop capture: GetDIBits returned {lines} of {} scan lines",
+                    self.rect.height
+                )));
             }
             flip_and_swizzle_bgrx_to_rgba(
                 &mut buffer,
@@ -1436,10 +1484,11 @@ impl WindowsVirtualDesktopBackend {
 
         // 5. Explorer shell (design §6 command shape; explicit
         //    lpApplicationName to avoid command-line parsing ambiguity).
-        let (application, command_line) = explorer_launch_plan(
-            std::env::var("WINDIR").ok().as_deref(),
-            std::env::var("USERPROFILE").ok().as_deref(),
-        );
+        //    NO folder argument (see explorer_launch_plan: the old
+        //    %USERPROFILE% default put the user's home listing into the
+        //    first captures).
+        let (application, command_line) =
+            explorer_launch_plan(std::env::var("WINDIR").ok().as_deref());
         let application_wide = to_wide(&application);
         // SAFETY: contained suspended launch into our job.
         let explorer_pid = unsafe {
@@ -2586,39 +2635,39 @@ mod tests {
         );
     }
 
-    /// The shell launch plan: %WINDIR%\explorer.exe + %USERPROFILE% (or the
-    /// documented fallbacks). The application path stays RAW (it feeds
-    /// lpApplicationName, which is never command-line-parsed — quoting it
-    /// would corrupt paths with spaces); only the folder argument quotes.
+    /// The shell launch plan: %WINDIR%\explorer.exe, NO folder argument.
+    /// The application path stays RAW (it feeds lpApplicationName, which is
+    /// never command-line-parsed — quoting it would corrupt paths with
+    /// spaces). The old plan opened %USERPROFILE% so the desktop would not
+    /// be blank; that put the user's home-directory listing into every
+    /// early capture, so the plan now launches bare (readiness comes from
+    /// the Shell_TrayWnd wait, not from a folder window).
     #[test]
     fn explorer_launch_plan_resolves_env_fallbacks() {
-        let (application, command_line) =
-            explorer_launch_plan(Some(r"C:\Windows"), Some(r"C:\Users\u"));
+        let (application, command_line) = explorer_launch_plan(Some(r"C:\Windows"));
         assert_eq!(application, r"C:\Windows\explorer.exe");
-        assert_eq!(command_line, "explorer.exe \"C:\\Users\\u\"");
-        let (fallback_app, fallback_cmd) = explorer_launch_plan(None, None);
+        assert_eq!(command_line, "explorer.exe");
+        let (fallback_app, fallback_cmd) = explorer_launch_plan(None);
         assert_eq!(fallback_app, r"C:\Windows\explorer.exe");
-        // The `C:\` fallback carries a trailing backslash and needs no
-        // quotes (no spaces), so it stays BARE — quoting it would require
-        // doubling that backslash (`"C:\\"`), while a bare backslash is
-        // literal under the argv rules. The old pinned value `"C:\"` was
-        // the corrupted shape (the trailing backslash escaped the closing
-        // quote).
-        assert_eq!(fallback_cmd, r"explorer.exe C:\");
+        assert_eq!(fallback_cmd, "explorer.exe");
         // Empty env values fall back like missing ones.
-        let (empty_env_app, _) = explorer_launch_plan(Some(""), Some(""));
+        let (empty_env_app, empty_env_cmd) = explorer_launch_plan(Some(""));
         assert_eq!(empty_env_app, r"C:\Windows\explorer.exe");
-        // A spaced windir stays raw for lpApplicationName; the folder quotes.
-        let (spaced_app, spaced_cmd) =
-            explorer_launch_plan(Some(r"D:\ Win"), Some(r"C:\My Files".to_string().as_str()));
+        assert_eq!(empty_env_cmd, "explorer.exe");
+        // A spaced windir stays raw for lpApplicationName.
+        let (spaced_app, spaced_cmd) = explorer_launch_plan(Some(r"D:\ Win"));
         assert_eq!(spaced_app, "D:\\ Win\\explorer.exe");
-        assert_eq!(spaced_cmd, "explorer.exe \"C:\\My Files\"");
-        // A spaced folder WITH a trailing backslash quotes and doubles it.
-        let (_, trailing_cmd) = explorer_launch_plan(
-            Some(r"C:\Windows"),
-            Some(r#"C:\My Files\"#.to_string().as_str()),
-        );
-        assert_eq!(trailing_cmd, r#"explorer.exe "C:\My Files\\""#);
+        assert_eq!(spaced_cmd, "explorer.exe");
+    }
+
+    /// The probe core answers the actionable detail exactly when the shell
+    /// binary is missing (and None when present) — the condition behind the
+    /// documented physical fallback.
+    #[test]
+    fn probe_core_requires_the_shell_binary() {
+        assert!(explorer_missing_with(|_| true).is_none());
+        let detail = explorer_missing_with(|_| false).expect("missing shell");
+        assert!(detail.contains("explorer.exe"), "{detail}");
     }
 
     /// The GDI-leak tripwire tolerance: small jitter stays quiet, monotonic
